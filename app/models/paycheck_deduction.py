@@ -42,15 +42,22 @@ class PaycheckDeduction(
     expressed by editing the existing row rather than creating a
     duplicate, and a previously-disabled deduction (``is_active =
     False``) is reactivated rather than re-created.
+
+    **How often the line is taken is a RECURRENCE RULE against the pay
+    calendar, since plan step salary:R15-b** (rulings **R-SAL3**,
+    **R-SAL32**; ledger row **F-21**): :attr:`recurrence_rule`, the third arm
+    of ``budget.recurrence_rules``' owning arc, or ``None`` for *every
+    paycheck*.  It replaced ``deductions_per_year``, a three-valued MODE (26 /
+    24 / 12) wearing a biweekly count that the engine only ever compared
+    against and that could not say what a weekly-paid owner's benefit premium
+    does.  The engine asks the rule's own occurrence walk whether a payday is
+    an admitted paycheck
+    (:meth:`~app.services.payroll_basis.PayrollBasis.deduction_applies_on`).
     """
 
     __tablename__ = "paycheck_deductions"
     __table_args__ = (
         db.CheckConstraint("amount > 0", name="ck_paycheck_deductions_positive_amount"),
-        db.CheckConstraint(
-            "deductions_per_year > 0",
-            name="ck_paycheck_deductions_positive_per_year",
-        ),
         db.CheckConstraint(
             "annual_cap IS NULL OR annual_cap > 0",
             name="ck_paycheck_deductions_positive_cap",
@@ -118,10 +125,6 @@ class PaycheckDeduction(
     )
     name = db.Column(db.String(200), nullable=False)
     amount = db.Column(db.Numeric(12, 4), nullable=False)
-    deductions_per_year = db.Column(
-        db.Integer, default=26, nullable=False,
-        server_default=db.text("26"),
-    )
     annual_cap = db.Column(db.Numeric(12, 2))
     inflation_enabled = db.Column(
         db.Boolean, nullable=False, default=False,
@@ -142,6 +145,39 @@ class PaycheckDeduction(
     deduction_timing = db.relationship("DeductionTiming", lazy="joined")
     calc_method = db.relationship("CalcMethod", lazy="joined")
     target_account = db.relationship("Account", lazy="joined")
+    # The line's cadence, or ``None`` for every paycheck (plan step
+    # salary:R15-b).  Spelled as the two template kinds spell theirs, so
+    # :func:`~app.services.recurrence.author_rule` binds a deduction through
+    # the same ``owner.recurrence_rule`` assignment: the FK is on the rule,
+    # the database cascades the rule with this row (``passive_deletes``), and
+    # ``delete-orphan`` disposes of a rule the owner drops in the session.
+    # ``lazy="joined"`` like the three ref relationships above: the paycheck
+    # engine reads every line's rule once per basis, on whichever door loaded
+    # the profile (nine construct a basis), so the rule rides in the same
+    # SELECT as the line rather than costing one lazy load per line per
+    # basis -- ``test_projection_inputs``'s no-query gate walks a hundred
+    # projected paychecks over a line WITH a rule and counts no statement.
+    recurrence_rule = db.relationship(
+        "RecurrenceRule",
+        uselist=False, lazy="joined",
+        cascade="all, delete-orphan", passive_deletes=True,
+        back_populates="paycheck_deduction",
+    )
+
+    @property
+    def user_id(self) -> int:
+        """The owner, reached through the profile this deduction belongs to.
+
+        What :func:`~app.services.recurrence.author_rule` checks a spec's
+        owner against, and what
+        :attr:`~app.models.recurrence_rule.RecurrenceRule.user_id` reads
+        through the deduction arm -- the same one value the profile stores,
+        under the name every rule reader asks for.
+
+        Returns:
+            The owning user's id.
+        """
+        return self.salary_profile.user_id
 
     def __repr__(self):
         return f"<PaycheckDeduction '{self.name}' ${self.amount}>"

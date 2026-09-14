@@ -130,17 +130,67 @@ class FakeCalcMethod:
         self.name = name
 
 
+class FakeRule:
+    """Minimal stand-in for a deduction's ``RecurrenceRule`` row.
+
+    Carries exactly the attributes :func:`app.services.recurrence
+    .recurrence_spec` reads off a row (plan step salary:R15-b), so the engine
+    resolves it against the basis's calendar as it would a stored rule.
+    ``user_id`` is what the row's owning arc would answer; the calendar the
+    :func:`payroll_basis` helper derives belongs to user 1.
+    """
+
+    def __init__(self, *, unit, placement, starts_on, interval_n=1,
+                 max_per_month=None, user_id=1):
+        # pylint: disable=import-outside-toplevel
+        from app import ref_cache
+        self.user_id = user_id
+        self.unit_id = ref_cache.recurrence_unit_id(unit)
+        self.placement_id = ref_cache.period_placement_id(placement)
+        self.interval_n = interval_n
+        self.starts_on = starts_on
+        self.max_per_month = max_per_month
+        self.nominal_day = None
+        self.due_day_of_month = None
+        self.end_date = None
+        self.max_occurrences = None
+
+
+def twenty_four_rule(starts_on, **kwargs):
+    """The rule migration 542c61e48ee8 writes for a 24-per-year line."""
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+    return FakeRule(
+        unit=RecurrenceUnitEnum.PERIOD,
+        placement=PeriodPlacementEnum.CONTAINING_DATE,
+        starts_on=starts_on, max_per_month=2, **kwargs,
+    )
+
+
+def twelve_rule(starts_on, **kwargs):
+    """The rule migration 542c61e48ee8 writes for a 12-per-year line."""
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+    return FakeRule(
+        unit=RecurrenceUnitEnum.MONTH,
+        placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+        starts_on=starts_on, **kwargs,
+    )
+
+
 class FakeDeduction:
     """Minimal stand-in for a PaycheckDeduction ORM object."""
 
-    def __init__(self, name="401k", amount="200", deductions_per_year=26,
+    def __init__(self, name="401k", amount="200", recurrence_rule=None,
                  calc_method="flat", deduction_timing="pre_tax",
                  inflation_enabled=False, inflation_rate=None,
                  inflation_effective_month=None, is_active=True,
                  annual_cap=None):
         self.name = name
         self.amount = Decimal(str(amount))
-        self.deductions_per_year = deductions_per_year
+        # The line's cadence (plan step salary:R15-b): a :class:`FakeRule`,
+        # or ``None`` for every paycheck, as the real column pair reads.
+        self.recurrence_rule = recurrence_rule
         self.calc_method = FakeCalcMethod(calc_method)
         self.deduction_timing = FakeDeductionTiming(deduction_timing)
         self.inflation_enabled = inflation_enabled
@@ -1072,12 +1122,18 @@ class TestDeductionCalculation:
         assert "Roth" not in pre_names
 
     def test_24_per_year_skipped_on_third_paycheck(self):
-        """deductions_per_year=24 + is_third → skipped."""
+        """A 24-per-year line's rule (at most 2 a month) skips the third paycheck.
+
+        The rule plan step salary:R15-b migrates a 24 onto: every paycheck
+        from the opening payday, at most 2 a month.  Taken on the first two
+        of a three-payday month and not on the third -- the same answer the
+        column's ordinal rule gave, now the walk's.
+        """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
             deductions=[
                 FakeDeduction(name="Health", amount="100",
-                              deductions_per_year=24),
+                              recurrence_rule=twenty_four_rule(date(2026, 1, 2))),
             ],
         )
         # Build a month with 3 paychecks
@@ -1088,21 +1144,27 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, all_periods), p3, gross, 3,
-            ),
-            _timing_id("pre_tax"),
-        )
-        assert len(result) == 0
+        basis = payroll_basis(profile, all_periods)
+        taken = [
+            len(_calculate_deductions(
+                _DeductionContext(basis, p, gross), _timing_id("pre_tax"),
+            ))
+            for p in all_periods
+        ]
+        assert taken == [1, 1, 0]
 
     def test_12_per_year_only_first_of_month(self):
-        """deductions_per_year=12 applied on first paycheck of month."""
+        """A 12-per-year line's rule (monthly, first paycheck on/after the 1st) is taken once.
+
+        The rule plan step salary:R15-b migrates a 12 onto: each month's 1st,
+        placed on the first paycheck on or after it -- the month's first
+        payday, which is the column's ``ordinal == 1``.
+        """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
             deductions=[
                 FakeDeduction(name="Life", amount="50",
-                              deductions_per_year=12),
+                              recurrence_rule=twelve_rule(date(2026, 2, 1))),
             ],
         )
         p1 = _period(start_date=date(2026, 2, 13), period_id=4)
@@ -1112,21 +1174,19 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, all_periods), p1, gross, 1,
-            ),
+            _DeductionContext(payroll_basis(profile, all_periods), p1, gross),
             _timing_id("pre_tax"),
         )
         assert len(result) == 1
         assert result[0].amount == Decimal("50")
 
     def test_12_per_year_skipped_non_first(self):
-        """deductions_per_year=12 skipped on second paycheck of month."""
+        """The monthly rule is not taken on the month's second paycheck."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
             deductions=[
                 FakeDeduction(name="Life", amount="50",
-                              deductions_per_year=12),
+                              recurrence_rule=twelve_rule(date(2026, 2, 1))),
             ],
         )
         p1 = _period(start_date=date(2026, 2, 13), period_id=4)
@@ -1136,9 +1196,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, all_periods), p2, gross, 2,
-            ),
+            _DeductionContext(payroll_basis(profile, all_periods), p2, gross),
             _timing_id("pre_tax"),
         )
         assert len(result) == 0
@@ -1169,7 +1227,7 @@ class TestDeductionCalculation:
 
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("0.00"), 1,
+                payroll_basis(profile, [period]), period, Decimal("0.00"),
             ),
             _timing_id("pre_tax"),
         )
@@ -1199,7 +1257,7 @@ class TestDeductionCalculation:
 
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("0.00"), 1,
+                payroll_basis(profile, [period]), period, Decimal("0.00"),
             ),
             _timing_id("post_tax"),
         )
@@ -1223,13 +1281,13 @@ class TestDeductionAnnualCap:
         return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
     def _amounts_over(self, profile, periods, *, timing="pre_tax",
-                      month_ordinal=1, history_opens_on=None):
+                      history_opens_on=None):
         """Per-period deduction amount for the single deduction on ``profile``.
 
-        ``month_ordinal`` is stated rather than derived so these cases grade
-        the CAP and nothing else: every one of them uses a 26-per-year
-        deduction, which is taken on every payday, so ordinal 1 makes the
-        cadence arm a no-op and any zero in the result is the cap's doing.
+        Every case here uses a line with NO rule, which is taken on every
+        payday (R-SAL3), so the cadence read is a no-op and any zero in the
+        result is the cap's doing.  (Until plan step salary:R15-b the cases
+        stated a month ordinal of 1 for the same reason.)
 
         ``history_opens_on`` says how far back the owner's paychecks reach and
         defaults to the column's own ``None``, which since ruling
@@ -1246,7 +1304,7 @@ class TestDeductionAnnualCap:
                     payroll_basis(
                         profile, periods, history_opens_on=history_opens_on,
                     ),
-                    p, gross, month_ordinal,
+                    p, gross,
                 ),
                 _timing_id(timing),
             )
@@ -1260,7 +1318,7 @@ class TestDeductionAnnualCap:
             deductions=[FakeDeduction(name="HSA", amount="600",
                                       annual_cap="1000")],
         )
-        # Four 2026 periods; deductions_per_year defaults to 26 (no cadence
+        # Four 2026 periods; the line has no rule (every paycheck, no cadence
         # skip), so only the cap zeroes the later periods.
         periods = [
             _period(start_date=date(2026, 1, 2), period_id=1),
@@ -1589,8 +1647,10 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
         """
         profile = FakeProfile(
             annual_salary=91675, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="Health", amount="500",
-                                      deductions_per_year=24)],
+            deductions=[FakeDeduction(
+                name="Health", amount="500",
+                recurrence_rule=twenty_four_rule(date(2026, 3, 12)),
+            )],
         )
         basis = payroll_basis(profile, self._biweekly_from_march())
         unheld = _period(start_date=date(2026, 3, 13), period_id=99)
@@ -1664,8 +1724,10 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
         2026-03-12 is a day the developer really was paid on and the app holds
         no row for -- the exact day X-bh-1's refusal named.  Once he says his
         paychecks began earlier it is on the rhythm, so it prices at the same
-        rate as a recorded paycheck AND takes March's first position, which is
-        the one a 12-per-year deduction is charged on.
+        rate as a recorded paycheck AND takes March's first position (the
+        cockpit's badge; a 12-per-year line was charged on it until plan step
+        salary:R15-b, whose migration docstring states what a line's rule
+        does below the record instead).
 
         Paired with the two refusals above, this is what separates "the rhythm
         reaches here" from "the engine answers anything": one day apart, 03-12
@@ -1744,7 +1806,7 @@ class TestInflationAdjustment:
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, gross, 1,
+                payroll_basis(profile, [period]), period, gross,
             ),
             _timing_id("pre_tax"),
         )
@@ -1772,7 +1834,7 @@ class TestInflationAdjustment:
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, gross, 1,
+                payroll_basis(profile, [period]), period, gross,
             ),
             _timing_id("pre_tax"),
         )
@@ -1805,7 +1867,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("1000.49"), 1,
+                payroll_basis(profile, [period]), period, Decimal("1000.49"),
             ),
             _timing_id("pre_tax"),
         )
@@ -1828,7 +1890,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("2307.69"), 1,
+                payroll_basis(profile, [period]), period, Decimal("2307.69"),
             ),
             _timing_id("pre_tax"),
         )
@@ -3057,7 +3119,7 @@ class TestPreTaxDeductionTaxImpact:
             deductions=[
                 FakeDeduction(
                     name="Health Insurance", amount="100",
-                    deductions_per_year=24,
+                    recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
                     deduction_timing="pre_tax",
                 ),
             ],
@@ -3961,7 +4023,7 @@ class TestCalibrationIntegration:
                 FakeDeduction(
                     name="401k", amount="200",
                     deduction_timing="pre_tax",
-                    deductions_per_year=24,
+                    recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -4759,7 +4821,6 @@ class TestTheBasisNamesItsRaiseSet:
                         basis.annual_salary_on(eleventh.start_date),
                         basis.periods_per_year,
                     ),
-                    _month_ordinal(basis.calendar, eleventh.start_date),
                 ),
                 _timing_id("pre_tax"),
             )[0].amount
@@ -4769,3 +4830,220 @@ class TestTheBasisNamesItsRaiseSet:
             "the capped deduction's year-to-date replay priced prior paydays "
             "off the profile's rows, not the raise set the basis names"
         )
+
+
+# ── salary:R15-b: the basis READS each line's cadence ────────────────
+
+
+class TestTheBasisReadsEachLinesCadence:
+    """A line's frequency is its recurrence rule's answer, read once per basis.
+
+    Plan step **salary:R15-b** (rulings **R-SAL3**, **R-SAL29**).  Both
+    deduction passes ask :meth:`PayrollBasis.deduction_applies_on`, which
+    resolves each line's rule ONCE and walks it ONCE through the occurrence
+    walk every recurring definition is generated by; a line with no rule is
+    every paycheck.  The retired ``deductions_per_year`` compared a stored
+    count against the payday's month ordinal per paycheck and, for a capped
+    line, per prior payday of the year (ledger row SAL-556).
+    """
+
+    @staticmethod
+    def _january():
+        return [
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=4),
+        ]
+
+    def test_a_line_with_no_rule_is_every_paycheck(self):
+        """R-SAL3's NULL: no rule, taken on every payday the calendar names."""
+        line = FakeDeduction(name="401k", amount="200")
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        assert all(basis.deduction_applies_on(line, p.start_date) for p in self._january())
+
+    def test_a_fake_with_no_rule_attribute_at_all_is_every_paycheck(self):
+        """A duck-typed line that never heard of rules reads as the column's old 26."""
+        line = FakeDeduction(name="401k", amount="200")
+        del line.recurrence_rule
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        assert basis.deduction_applies_on(line, date(2026, 1, 30))
+
+    def test_the_rule_is_resolved_and_walked_once_per_basis(self, monkeypatch):
+        """Twenty asks, one resolution, one walk: the memo is per basis, not per ask."""
+        # pylint: disable=import-outside-toplevel
+        from app.services import payroll_basis as module
+
+        line = FakeDeduction(
+            name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
+        )
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        resolves, walks = [], []
+        real_resolve, real_walk = module.resolve, module.projected_occurrence_placements
+
+        def counted_resolve(*args, **kwargs):
+            resolves.append(args)
+            return real_resolve(*args, **kwargs)
+
+        def counted_walk(*args, **kwargs):
+            walks.append(args)
+            return real_walk(*args, **kwargs)
+
+        monkeypatch.setattr(module, "resolve", counted_resolve)
+        monkeypatch.setattr(module, "projected_occurrence_placements", counted_walk)
+        answers = [
+            basis.deduction_applies_on(line, p.start_date)
+            for p in self._january() * 5
+        ]
+        assert answers[:4] == [True, True, False, True]
+        assert len(resolves) == 1 and len(walks) == 1
+
+    def test_the_walk_reaches_paydays_past_the_saved_schedule(self):
+        """A projected payday years past the record is admitted or skipped by the same rule.
+
+        The engine prices projected paychecks (a 20-year retirement
+        projection), so the memo walks past the saved horizon as far as it
+        is asked: June 2028 holds three paydays on this rhythm, two and a
+        half years past the seeded schedule, and the 24 line is taken on its
+        first two and skipped on its third.
+        """
+        line = FakeDeduction(
+            name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
+        )
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        rhythm = [date(2026, 1, 2) + timedelta(days=14 * k) for k in range(80)]
+        june_2028 = [d for d in rhythm if (d.year, d.month) == (2028, 6)]
+        assert len(june_2028) == 3, june_2028
+        assert [basis.deduction_applies_on(line, d) for d in june_2028] == [True, True, False]
+        may_2028 = [d for d in rhythm if (d.year, d.month) == (2028, 5)]
+        assert len(may_2028) == 2, may_2028
+        assert all(basis.deduction_applies_on(line, d) for d in may_2028)
+
+    def test_lines_with_one_cadence_share_one_walk(self, monkeypatch):
+        """Eleven 24-per-year lines resolve to one cadence and are walked ONCE.
+
+        The developer's eleven lines are exactly this shape (measured
+        2026-09-13 on a clone: one walk instead of eleven took the 63-paycheck
+        pricing from 800 ms to 9 ms beside the base tree's 5 ms).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import payroll_basis as module
+
+        lines = [
+            FakeDeduction(
+                name=f"line {n}", amount="10",
+                recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
+            )
+            for n in range(11)
+        ]
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=lines), self._january())
+        walks = []
+        real_walk = module.projected_occurrence_placements
+        monkeypatch.setattr(
+            module, "projected_occurrence_placements",
+            lambda *a, **k: walks.append(a) or real_walk(*a, **k),
+        )
+        for line in lines:
+            for p in self._january():
+                basis.deduction_applies_on(line, p.start_date)
+        assert len(walks) == 1
+        assert len({id(c) for c in basis._line_cadences.values()}) == 1  # pylint: disable=protected-access
+
+    def test_the_walk_extends_when_asked_past_its_reach(self, monkeypatch):
+        """Every walk reaches a year past the ask, and a re-walk at least doubles the span.
+
+        Asked 2026-01-02 the walk reaches 2027-01-03; asked 2028-06-16 it
+        must extend, to max(2028-06-16 + 366 days = 2029-06-17, the doubled
+        span 2028-01-04) = 2029-06-17; asked 2028-06-02 and 2028-06-30 (June
+        2028's first and third paydays), both within reach, no walk.  The
+        year past the ask is what an adversarial review of this step showed
+        to be load-bearing (the containing-date case below).
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services import payroll_basis as module
+
+        line = FakeDeduction(
+            name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
+        )
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        reaches = []
+        real_walk = module.projected_occurrence_placements
+        monkeypatch.setattr(
+            module, "projected_occurrence_placements",
+            lambda *a, **k: reaches.append(k["through"]) or real_walk(*a, **k),
+        )
+        basis.deduction_applies_on(line, date(2026, 1, 2))
+        basis.deduction_applies_on(line, date(2026, 12, 18))
+        assert reaches == [date(2027, 1, 3)]
+        basis.deduction_applies_on(line, date(2028, 6, 16))
+        assert reaches == [date(2027, 1, 3), date(2029, 6, 17)]
+        assert basis.deduction_applies_on(line, date(2028, 6, 2)) is True
+        assert basis.deduction_applies_on(line, date(2028, 6, 30)) is False  # June's third
+        assert reaches == [date(2027, 1, 3), date(2029, 6, 17)]
+
+    def test_a_containing_date_occurrence_after_the_payday_is_admitted_at_the_reach(self):
+        """An occurrence up to a period AFTER a payday places on it; the reach must cover it.
+
+        Reproduced by the review of this step on the first memo shape, which
+        set the reach exactly at the payday asked: a monthly-on-the-15th line
+        under CONTAINING_DATE places 2028-01-15 on the paycheck of 2028-01-14,
+        and an ask for 2028-01-14 that jumped past the reach walked through
+        2028-01-14, missed the 15th, and CACHED the wrong ``False``.  Neither
+        migrated shape can meet it (a paycheck occurrence IS its payday, and
+        a monthly-first occurrence precedes its paycheck), and neither does a
+        form-authored line: R15-c derives a monthly line's first occurrence
+        as the 1st (ruling R-SAL36), so the 15th here is the engine's own
+        contract, graded on a shape a hand-authored rule can still state --
+        a CONTAINING_DATE monthly line from the 1st meets the same reach
+        concern whenever the 1st falls the day after a payday.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+
+        fifteenth = FakeRule(
+            unit=RecurrenceUnitEnum.MONTH,
+            placement=PeriodPlacementEnum.CONTAINING_DATE,
+            starts_on=date(2026, 1, 15),
+        )
+        line = FakeDeduction(name="Union dues", amount="25", recurrence_rule=fifteenth)
+        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        assert basis.deduction_applies_on(line, date(2026, 1, 2)) is True   # Jan 2-15 holds the 15th
+        # A far ask, then the same payday asked again: both must be True.
+        assert basis.deduction_applies_on(line, date(2028, 1, 14)) is True  # Jan 14-27 holds the 15th
+        assert basis.deduction_applies_on(line, date(2028, 1, 14)) is True
+        assert basis.deduction_applies_on(line, date(2028, 1, 28)) is False
+
+    def test_the_cumulative_asks_no_month_ordinal(self):
+        """The capped line's year-to-date replays membership, not the month (SAL-556).
+
+        Structural: the deduction module no longer imports the ordinal
+        reader at all, so the per-prior-payday month derivation the ledger
+        row measured cannot be reintroduced without this line noticing.
+        """
+        # pylint: disable=import-outside-toplevel
+        import inspect
+        from app.services.paycheck_calculator import _deductions as module
+
+        source = inspect.getsource(module)
+        assert "_month_ordinal" not in source
+        assert "deduction_applies_on" in source
+
+    def test_a_capped_twenty_four_line_caps_over_the_paydays_it_is_taken_on(self):
+        """The year-to-date sums only admitted paydays: the cap lands one paycheck later than it would at 26."""
+        line = FakeDeduction(
+            name="HSA", amount="600", annual_cap="1500",
+            recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
+        )
+        periods = self._january()
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), deductions=[line])
+        basis = payroll_basis(profile, periods)
+        gross = (Decimal("60000") / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
+        amounts = [
+            [l.amount for l in _calculate_deductions(
+                _DeductionContext(basis, p, gross), _timing_id("pre_tax"),
+            )]
+            for p in periods
+        ]
+        # Jan 2 and Jan 16 taken (600, 600 -> 1200 of the 1500 cap); Jan 30 is
+        # the third paycheck, skipped; Feb 13 takes the remaining 300.
+        assert amounts == [[Decimal("600.00")], [Decimal("600.00")], [], [Decimal("300.00")]]

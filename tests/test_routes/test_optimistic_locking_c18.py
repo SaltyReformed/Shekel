@@ -254,7 +254,6 @@ def _make_paycheck_deduction(profile_id):
         calc_method_id=method.id,
         name="Health Insurance",
         amount=Decimal("100.00"),
-        deductions_per_year=26,
     )
     db.session.add(ded)
     db.session.commit()
@@ -1154,7 +1153,6 @@ class TestPaycheckDeductionStaleFormPrevention:
                     "calc_method_id": str(method_id),
                     "amount": "999.99",
                     "amount_as_rendered": "250.00",
-                    "deductions_per_year": "26",
                     "version_id": str(stale),
                 },
                 follow_redirects=True,

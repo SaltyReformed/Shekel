@@ -10,18 +10,100 @@ from HERE; an earlier draft of this sentence made the consumer argument while
 all nine still reached the type through the engine, which is a claim its own
 import graph refuted.
 
-Pure: no Flask, no ORM import, no clock, no database.  The profile is typed
-loosely on purpose (see the class).
+No Flask, no clock, no database access of its own.  What it reads off the
+profile it is handed -- the raise rows, and since plan step salary:R15-b each
+deduction's recurrence rule -- it reads as ATTRIBUTES the caller loaded (the
+engine's loader eager-loads both; ``test_projection_inputs`` counts the
+statements a walk issues and finds none), converting each to a value through
+the reader that owns its vocabulary: :func:`~app.services.salary_raises
+.terms_of` for a raise, :func:`~app.services.recurrence.recurrence_spec` for
+a rule.  The profile is typed loosely on purpose (see the class).
 """
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from functools import cached_property
 from typing import Any
 
 from app.services.pay_calendar import PayCalendar
+from app.services.recurrence import (
+    ResolvedRecurrence,
+    projected_occurrence_placements,
+    recurrence_spec,
+    resolve,
+)
 from app.services.salary_raises import RaiseTerms, apply_raises, terms_of
 from app.utils.money import round_money
+
+#: How far past an ask a cadence is walked before it is asked again: every
+#: walk reaches at least a year past the payday asked, and each later
+#: extension also doubles the span walked so far, so a projection that asks
+#: ascending paydays for twenty years re-walks about five times and never
+#: walks past twice its horizon.  A walk to the application's last date was
+#: the first shape and it cost 800 ms per basis on the developer's eleven
+#: lines (measured 2026-09-13): past the saved schedule the ceiling arm
+#: re-projects the month for every occurrence, so the walk must reach only
+#: what is asked of it.  **The year past the ask is load-bearing, not
+#: slack** (an adversarial review of this step): under ``CONTAINING_DATE`` an
+#: occurrence up to a full period AFTER a payday places on that payday, so a
+#: reach set exactly at the payday asked stops the walk before the
+#: occurrence that admits it and caches the wrong ``False``.
+_REACH_PAST_ASK = timedelta(days=366)
+
+
+@dataclass
+class _WalkedCadence:
+    """One resolved cadence's admitted paydays, walked as far as it has been asked.
+
+    Mutable, and private to :class:`PayrollBasis`: a memo, not a value.
+    Every line that resolves to the same :class:`ResolvedRecurrence` shares
+    one of these -- the developer's eleven 24-per-year lines are ONE walk --
+    because the occurrence set is a function of the cadence and the calendar
+    alone.
+
+    Attributes:
+        resolved: The cadence walked.
+        through: The last day the walk has reached, or ``None`` before it is
+            asked anything.
+        admitted: Every payday the walk placed an occurrence on, through
+            :attr:`through`.
+    """
+
+    resolved: ResolvedRecurrence
+    through: date | None = None
+    admitted: frozenset[date] = frozenset()
+
+    def admits(self, calendar: PayCalendar, payday: date) -> bool:
+        """Whether an occurrence lands on the paycheck of *payday*, walking further if needed.
+
+        Refuses nothing: a payday this calendar cannot place is simply not in
+        the set.  The engine's refusal of such a payday is
+        :func:`~app.services.paycheck_calculator._calendar_questions
+        ._month_ordinal`'s, read before any line is priced.
+        """
+        if self.through is None or payday > self.through:
+            self._walk(calendar, payday)
+        return payday in self.admitted
+
+    def _walk(self, calendar: PayCalendar, payday: date) -> None:
+        """Re-walk from the cadence's first occurrence to a year past *payday* at least.
+
+        A later walk also doubles the span walked so far, so the reach grows
+        geometrically with the asks; the set is REPLACED by the longer walk's,
+        which is a superset of the shorter's (the same cadence over a longer
+        window).
+        """
+        through = payday + _REACH_PAST_ASK
+        if self.through is not None:
+            through = max(through, self.through + (self.through - self.resolved.starts_on))
+        self.admitted = frozenset(
+            placement.period.start_date
+            for placement in projected_occurrence_placements(
+                self.resolved, calendar, through=through,
+            )
+            if placement.period is not None
+        )
+        self.through = through
 
 
 @dataclass(frozen=True)
@@ -143,6 +225,68 @@ class PayrollBasis:
         return terms_of(
             self.profile.raises if self.raise_terms is None else self.raise_terms
         )
+
+    @cached_property
+    def _line_cadences(self) -> "dict[Any, _WalkedCadence | None]":
+        """Each deduction's cadence, resolved ONCE and walked as it is asked.
+
+        The paycheck engine's one read of a deduction's FREQUENCY (plan step
+        salary:R15-b, rulings **R-SAL3** and **R-SAL29**): a line's
+        :attr:`~app.models.paycheck_deduction.PaycheckDeduction
+        .recurrence_rule` is read through :func:`~app.services.recurrence
+        .recurrence_spec`, resolved against THIS calendar, and its
+        occurrences placed on saved and projected paychecks alike through
+        :func:`~app.services.recurrence.projected_occurrence_placements` --
+        the walk every recurring definition is generated by, so a 24-per-year
+        line skipping a month's third paycheck and a bill skipping it are
+        the same rule read the same way.  Lines that resolve to the SAME
+        cadence share one :class:`_WalkedCadence`, and a walk reaches only as
+        far as it is asked (:data:`_REACH_PAST_ASK`): the engine prices any payday
+        the calendar can name, in no fixed order -- a projection walks
+        forward, a capped line's year-to-date replays backward -- and the
+        memo grows to meet it.
+
+        ``None`` for a line with no rule: every paycheck, R-SAL3's NULL.  Keyed
+        by the deduction object itself because the engine prices duck-typed
+        deductions in its tests (a fake need carry no id), and read through
+        ``getattr`` for the same reason the sibling optional columns are.
+
+        Cached on the basis as :attr:`raises` is: one basis prices every
+        payday of one profile at one raise set, and a frozen dataclass admits
+        ``cached_property`` because it writes the instance dict directly.
+
+        Returns:
+            ``{deduction: its walked cadence, or None}`` for every deduction
+            on the profile.
+        """
+        walks: dict[ResolvedRecurrence, _WalkedCadence] = {}
+        cadences: dict[Any, _WalkedCadence | None] = {}
+        for deduction in self.profile.deductions:
+            # ``getattr`` for the reason the engine reads ``annual_cap`` and
+            # ``target_account_id`` that way: a deduction-like duck type (a
+            # test fake) may omit the optional attribute.
+            rule = getattr(deduction, "recurrence_rule", None)
+            if rule is None:
+                cadences[deduction] = None
+                continue
+            resolved = resolve(recurrence_spec(rule), self.calendar)
+            cadences[deduction] = walks.setdefault(resolved, _WalkedCadence(resolved))
+        return cadences
+
+    def deduction_applies_on(self, deduction, payday: date) -> bool:
+        """Whether *deduction* is taken on the paycheck of *payday*.
+
+        Args:
+            deduction: One of this profile's deductions.
+            payday: The day the paycheck arrives -- a payday on this calendar,
+                saved or projected.
+
+        Returns:
+            ``True`` when the line has no rule (every paycheck) or when its
+            rule's walk placed an occurrence on this paycheck.
+        """
+        cadence = self._line_cadences[deduction]
+        return cadence is None or cadence.admits(self.calendar, payday)
 
     def annual_salary_on(self, payday: date) -> Decimal:
         """Return the annual salary in effect on *payday*, raises applied.
@@ -295,7 +439,8 @@ def gross_per_paycheck(
             imprecision that refusal exists to keep out.
         periods_per_year: How many paychecks the owner receives in a year,
             off :attr:`PayrollBasis.periods_per_year` -- which derives it from
-            ``budget.pay_schedule.cadence_days`` and from nothing else.
+            the owner's pay era's cadence (``budget.pay_eras`` since plan
+            step ``pay_calendar:C17-a``) and from nothing else.
 
     Returns:
         The gross for one paycheck, quantized to the cent.

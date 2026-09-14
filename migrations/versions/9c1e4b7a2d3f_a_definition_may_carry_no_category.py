@@ -1,7 +1,7 @@
 """a definition may carry no category
 
 Revision ID: 9c1e4b7a2d3f
-Revises: 3ec5291ca4e2
+Revises: 542c61e48ee8
 Create Date: 2026-09-13 23:10:00.000000
 
 Plan step **balance:X-bi-7b** (leaf 7b-1) of
@@ -58,7 +58,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "9c1e4b7a2d3f"
-down_revision = "3ec5291ca4e2"
+down_revision = "542c61e48ee8"
 branch_labels = None
 depends_on = None
 

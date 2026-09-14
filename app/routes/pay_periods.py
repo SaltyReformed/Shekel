@@ -33,12 +33,11 @@ from app.schemas.validation import (
     PayPeriodResetSchema,
     PayPeriodTruncateSchema,
     PayScheduleSchema,
+    rhythm_to_wire,
 )
-from app import ref_cache
 from app.services import (
     pay_period_admin,
     pay_period_write,
-    pay_rhythm,
     pay_schedule_service,
 )
 from app.services.pay_calendar import calendar_at_schedule
@@ -197,7 +196,7 @@ def generate():
     # rhythm is asked only HOW MANY MORE paychecks, and the days come from
     # the owner's own plan (``pay_period_write.continue_paydays``, since
     # plan step ``C17-c-2b``) by way of the shared continue path -- so
-    # ``start_date``, ``cadence_days`` and ``shift`` are not consulted for them.
+    # ``start_date`` and ``rhythm`` are not consulted for them.
     #
     # **P80's write is unrepresentable THROUGH THIS DOOR** (this step) **and
     # through every other since plan step ``pay_calendar:C17-c-2a``.**  This
@@ -256,10 +255,10 @@ def generate():
             user_id=current_user.id,
             first_payday=data["start_date"],
             num_periods=data["num_periods"],
-            rhythm=pay_rhythm.Rhythm(
-                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
-                shift=data["shift"],
-            ),
+            # The schema built the value from the kind control and its
+            # arm's inputs (plan step pay_calendar:C17-d-3, ruling R-PC84);
+            # no route spells a cadence's constructor.
+            rhythm=data["rhythm"],
         )
         # POPULATE, like every other door that creates a pay period (ruling
         # **R-R38**).
@@ -286,14 +285,22 @@ def generate():
         # land BETWEEN two existing ones is rejected.  Surfaced on the
         # start_date field, mirroring the schema 422 -- and that attribution
         # is PROVABLE rather than assumed.  ``record_paydays`` refuses for
-        # FIVE reasons -- an undatable payday, a batch size out of range, a
-        # cadence out of range, a convention the cadence cannot carry, and the
-        # forward-only floor -- and the first four cannot reach this line:
+        # SEVEN reasons (its own ``Raises:`` block is the census) -- an
+        # undatable payday, a batch size out of range, a cadence out of
+        # range, a first payday off the rhythm's grid (plan step
+        # ``pay_calendar:C17-d-2``), a convention the cadence cannot carry,
+        # the forward-only floor, and the skipped-paycheck ceiling (plan step
+        # ``C17-c-2a``) -- and the first five cannot reach this line:
         # ``fields.Date`` guarantees a plain ``date``, and
         # ``PayPeriodGenerateSchema`` bounds the batch size and the cadence to
         # exactly the ranges the writer and the column accept AND asks the
-        # cadence-convention pair through ``validate_derivable_rhythm``, so the
-        # schema's own 422 answers them first.
+        # grid question and the cadence-convention pair through
+        # ``validate_derivable_rhythm`` (the grid question since plan step
+        # ``C17-d-3``), so the schema's own 422 answers them first.  The
+        # ceiling cannot either, for the reason the floor cannot (next
+        # paragraph): with no surviving payday it returns before judging.
+        # *An adversarial review of C17-d-3 found this count at SIX with the
+        # ceiling missing -- the same class as the C4-c correction below.*
         #
         # **Since ``C14-f`` the FLOOR cannot reach this line either, and the
         # enumeration above inverted rather than shrank** (found by this step's
@@ -442,10 +449,7 @@ def regenerate():
     try:
         new_periods = pay_period_admin.regenerate_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            pay_rhythm.Rhythm(
-                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
-                shift=data["shift"],
-            ),
+            data["rhythm"],
             confirm_discard=data["confirm_discard"],
         )
         # The rebuilt tail comes back EMPTY; this fills it.  See the extend
@@ -482,14 +486,17 @@ def regenerate():
             "params": {
                 "new_start_date": data["new_start_date"].isoformat(),
                 "num_periods": data["num_periods"],
-                "cadence_days": data["cadence_days"],
                 # Back to the WIRE spelling, because the confirm banner
                 # re-POSTs each of these as a hidden input and this door
-                # requires the field: the schema hands out an enum member and
-                # a member rendered into ``value=""`` is not one this form can
-                # submit back.  Omitting it would refuse every discard-confirm
-                # rather than only mis-stating one.
-                "shift": ref_cache.business_day_shift_id(data["shift"]),
+                # requires the kind and the convention: the schema hands out
+                # a ``Rhythm`` value, and a value rendered into ``value=""``
+                # is not one this form can submit back.  ``rhythm_to_wire``
+                # is the schema's own inverse -- the kind's token, the
+                # chosen arm's inputs and the convention's id -- so the
+                # round trip cannot mis-state a month kind.  Omitting any of
+                # it would refuse every discard-confirm rather than only
+                # mis-stating one.
+                **rhythm_to_wire(data["rhythm"]),
             },
         }}, status=422)
 
@@ -524,10 +531,7 @@ def reset():
     try:
         new_periods = pay_period_admin.reset_pay_periods(
             current_user.id, data["new_start_date"], data["num_periods"],
-            pay_rhythm.Rhythm(
-                cadence=pay_rhythm.FixedDays(data["cadence_days"]),
-                shift=data["shift"],
-            ),
+            data["rhythm"],
         )
         # LAST, after the wipe, the rebuild and both posting re-syncs -- see
         # ``reset_pay_periods`` for why the re-syncs cannot see what this

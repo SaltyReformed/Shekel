@@ -50,6 +50,7 @@ from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _PROFILE_UPDATE_FIELDS,
     _create_schema,
+    _deduction_cadence_context,
     _get_investment_accounts,
     _regenerate_salary_transactions,
     _update_schema,
@@ -65,8 +66,10 @@ def _paychecks_per_year() -> "int | None":
     dropdown** (plan step R-F16).  The engine divides the annual salary by this
     number, so the page has to state it or the gross it previews is
     unexplainable -- but it is not the owner's to choose HERE: it derives from
-    ``budget.pay_schedule.cadence_days``, which the pay-period settings own,
-    and offering a second control was the finding.
+    the owner's pay era's cadence (``budget.pay_eras`` since plan step
+    ``pay_calendar:C17-a``; ``budget.pay_schedule.cadence_days`` until then),
+    which the pay-period settings own, and offering a second control was the
+    finding.
 
     ``None`` for an owner with no resolvable cadence, which the template
     renders as a pointer to generate a schedule.  Answered rather than raised:
@@ -87,6 +90,12 @@ def _paychecks_per_year() -> "int | None":
     production, on two pages that load a calendar for nothing else.
     ``resolve_cadence`` is the SOFT door and is what this form wants -- the one
     fact both of those read, asked directly, and answered rather than raised.
+    *Since plan step salary:R15-b the same page DOES derive the owner's
+    calendar whenever a deduction line carries a cadence rule
+    (``_helpers._deduction_cadence_phrases``: a rule is described against
+    it, and a rule is authored against one, so that derivation cannot meet
+    the refusal); this read stays on the soft door because the page must
+    still render for the owner with no schedule and no rules.*
 
     Returns:
         The paycheck count as an ``int``, or ``None``.
@@ -392,6 +401,7 @@ def edit_profile(profile_id):
         inactive_profiles=inactive_profiles,
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
+        **_deduction_cadence_context(profile),
     )
 
 

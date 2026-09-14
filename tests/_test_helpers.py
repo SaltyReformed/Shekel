@@ -2766,7 +2766,12 @@ def register_form_data(**overrides):
         "password": "securepass123",
         "confirm_password": "securepass123",
         "last_payday": display_today().isoformat(),
-        "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+        # The cadence-kind control's three radio arms and every arm's boxes
+        # (plan step pay_calendar:C17-d-3, ruling R-PC84): a browser posts
+        # the checked arm's token AND every rendered box, the unchosen arms'
+        # blank.  Spelled by ``cadence_form_values`` so this body and the
+        # settings doors' cases state the wire one way.
+        **cadence_form_values(),
         # The payday convention the form's <select> renders (plan step
         # pay_calendar:C14-b), as the ``ref.business_day_shifts`` id that
         # control's chosen <option> carries -- a browser posts an id, not an
@@ -2784,6 +2789,62 @@ def register_form_data(**overrides):
         "history_opens_on": "",
     }
     body.update(overrides)
+    return body
+
+
+def cadence_form_values(cadence=None):
+    """Return what a schedule form's cadence-kind control and its arms post.
+
+    Plan step ``pay_calendar:C17-d-3``, ruling **R-PC84**: the four doors
+    render three RADIO ARMS -- every N days, monthly on a day, twice a month
+    on two days -- each holding its own number boxes, and a browser submits
+    the checked arm's token under ``cadence_kind`` together with EVERY
+    rendered box, the unchosen arms' boxes blank (the every-N-days box
+    carries the app's default whichever arm is checked, because the form
+    pre-fills it).  A body that posted only the chosen arm would exercise a
+    payload no browser can produce, which is the defect class
+    :func:`register_form_data`'s own docstring records.
+
+    **The tokens and keys are spelled HERE by hand, not read off the
+    schema's wire table**, so a test posting this body grades the
+    application's spelling against an independent one: a token or a key
+    that drifted in ``_pay_rhythm`` or in the macro would fail here rather
+    than agree with itself.
+
+    Args:
+        cadence: The :class:`~app.services.pay_rhythm.FixedDays`,
+            :class:`~app.services.pay_rhythm.Monthly` or
+            :class:`~app.services.pay_rhythm.SemiMonthly` the owner states;
+            ``None`` means the form's untouched default, every
+            ``DEFAULT_PAY_CADENCE_DAYS`` days.
+
+    Returns:
+        dict -- the five wire keys, every value a string as a form posts it.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.config import BaseConfig
+    from app.services.pay_rhythm import FixedDays, Monthly, SemiMonthly
+    if cadence is None:
+        cadence = FixedDays(BaseConfig.DEFAULT_PAY_CADENCE_DAYS)
+    body = {
+        "cadence_kind": "fixed_days",
+        "cadence_days": str(BaseConfig.DEFAULT_PAY_CADENCE_DAYS),
+        "day_of_month": "",
+        "first_day_of_month": "",
+        "second_day_of_month": "",
+    }
+    if isinstance(cadence, FixedDays):
+        body["cadence_days"] = str(cadence.days)
+    elif isinstance(cadence, Monthly):
+        body["cadence_kind"] = "monthly"
+        body["day_of_month"] = str(cadence.day)
+    elif isinstance(cadence, SemiMonthly):
+        lower, upper = cadence.days
+        body["cadence_kind"] = "semi_monthly"
+        body["first_day_of_month"] = str(lower)
+        body["second_day_of_month"] = str(upper)
+    else:
+        raise TypeError(f"cadence_form_values() got {cadence!r}, not a cadence")
     return body
 
 
@@ -5742,6 +5803,60 @@ def make_every_period_rule(db_session, owner):  # pylint: disable=unused-argumen
         calendar,
         owner,
     )
+
+
+def make_deduction_cadence_rule(db_session, deduction, per_year):  # pylint: disable=unused-argument
+    """Author the rule migration ``542c61e48ee8`` writes for a 24 / 12 line.
+
+    **The shared cadence builder for every fixture that gave a deduction a
+    ``deductions_per_year`` of 24 or 12** before plan step salary:R15-b
+    deleted the column (rulings R-SAL3, R-SAL29, R-SAL30): the same two
+    shapes the migration writes, authored through the write door onto the
+    deduction as its owner, so a fixture's line is taken on exactly the
+    paydays the migrated production line is.
+
+    Args:
+        db_session: The test session; unused for the reason
+            :func:`make_every_period_rule` gives.
+        deduction: A flushed ``PaycheckDeduction`` on a profile whose owner
+            has pay periods.  Mutated: its ``recurrence_rule`` is set.
+        per_year: ``24`` -- every paycheck, at most 2 a month, from the
+            owner's opening payday -- or ``12`` -- monthly, on the first
+            paycheck on or after the 1st, from the first of the opening
+            payday's month.  A 26 line has NO rule; do not call this for one.
+
+    Returns:
+        The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
+
+    Raises:
+        ValueError: *per_year* is neither 24 nor 12.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import RecurrenceSpec, author_rule
+
+    calendar = calendar_for(deduction.user_id)
+    opening = calendar.opening_bound()
+    if per_year == 24:
+        spec = RecurrenceSpec(
+            user_id=deduction.user_id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=opening,
+            max_per_month=2,
+        )
+    elif per_year == 12:
+        spec = RecurrenceSpec(
+            user_id=deduction.user_id,
+            unit=RecurrenceUnitEnum.MONTH,
+            placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+            starts_on=opening.replace(day=1),
+        )
+    else:
+        raise ValueError(
+            f"per_year must be 24 or 12 (a 26 line carries no rule); got {per_year!r}"
+        )
+    return author_rule(spec, calendar, deduction)
 
 
 def first_occurrence_on_day(user_id, fires_on_day, fires_in_month=None):

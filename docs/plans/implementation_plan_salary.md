@@ -8,13 +8,14 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 
 ## Where this stands
 
-**`S3-f-4` shipped 2026-09-13 (`329b663d`): every readiness what-if refusal is the rail at 422 and
-retires on edit** (**R-SAL33**, **R-SAL34**), and `S3` -- the engine prices the WHOLE horizon --
-ships with it; the whole `S3` span is archived (`historical/salary_s3_as_built_2026-09-13.md`, the
-`S3-f` leaves in `historical/salary_s3f_as_built_2026-09-13.md`). The same day `R15-a` (`bdd77055`)
-gave a recurrence rule's cadence a per-month CEILING (**R-SAL29**), the vocabulary `R15-b` migrates
-every 24 / 12 deduction onto. Also archived: the `R14` span
-(`historical/salary_r14_as_built_2026-09-11.md`), `S3-e-2`'s record
+**`R15` shipped 2026-09-14 (`77901fe0`): a payroll deduction's FREQUENCY is a recurrence rule on the
+row** -- `R15-b` migrated every 24 line onto the ceiling vocabulary `R15-a` gave the walk and every
+12 line onto a monthly rule, dropping `deductions_per_year` (byte-identical over 63 paychecks);
+`R15-c` gave the form the shared cadence controls; the span is archived
+(`historical/salary_r15_as_built_2026-09-14.md`). Before it `S3-f-4` (`329b663d`) made every
+readiness refusal the rail and shipped `S3`, archived in
+`historical/salary_s3_as_built_2026-09-13.md` and `salary_s3f_as_built_2026-09-13.md`. Also
+archived: the `R14` span (`historical/salary_r14_as_built_2026-09-11.md`), `S3-e-2`'s record
 (`historical/salary_s3e2_as_built_2026-09-11.md`) and `S2`'s
 (`historical/salary_s2_as_built_2026-09-04.md`). Nine steps were re-filed or minted into this arc
 when it was created (**R-SAL1**), with their ledger rows and the four `balance:X-au-d` findings that
@@ -183,29 +184,18 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [x] **S3-e-2** `a6af5b3c` -- the feed prices a payday ON DEMAND (**R-SAL15**, **R-SAL19**); MOVED
       `+$194,321.85` on `/investment` and `-$4,909.81` on `/retirement`. As built:
       `historical/salary_s3e2_as_built_2026-09-11.md`.
-- [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (**R-SAL3**; findings **F-21**,
-      **SAL-549**; **N-395** left at R15-a's tick, its fix having shipped at `R14-b` `e0f0c05f`).
-      `deductions_per_year` stores 26 / 24 / 12 as a three-valued MODE the engine only compares
-      against; 11 of the developer's 12 live deductions carry 24, a cadence the recurrence
-      vocabulary could not say. The DECOMPOSED parent, split into THREE leaves 2026-09-13 once its
-      four forks were ruled (**R-SAL29**-**R-SAL32**); ships with `R15-c`.
+- [x] **R15** `77901fe0` -- what a payroll deduction's own FREQUENCY means: a RECURRENCE RULE on the
+      row (**R-SAL3**, **R-SAL29**-**R-SAL32**, **R-SAL35**-**R-SAL37**); ticked with `R15-c`, its
+      last leaf. The span as it stood: `historical/salary_r15_as_built_2026-09-14.md`.
 - [x] **R15-a** `bdd77055` -- the per-month CEILING as the cadence's third value (**R-SAL29** as
-      amended: a paycheck cadence counts the month's paydays on the OWNER'S calendar; a week cadence
-      its own first N): `budget.recurrence_rules.max_per_month` + CHECK (migration `ef32dfe4cd8e`),
-      `_ceilinged` between the walk and the bound, `monthly_equivalent` off the aggregator, the
-      template form end to end; three pure moves for the line ceiling. NO FIGURE MOVED; the browser
-      drive was run by the developer.
-- [ ] **R15-b** -- the third owning arm `paycheck_deduction_id` (an exactly-one-of-three CHECK),
-      `PayrollBasis` resolving each line's rule ONCE and the engine asking it whether a payday is an
-      admitted occurrence, and the migration writing one rule per 24 / 12 line (`starts_on` = the
-      owner's opening payday, **R-SAL30**) then DROPPING `deductions_per_year` and
-      `_deduction_applies_at`; graded byte-identical over the 63 saved paychecks. **How a NEW
-      deduction states its cadence between this leaf and `R15-c` -- or whether the two ship in one
-      PR -- is a question for the developer before it is built.** Closes **F-21**, **SAL-549**;
-      carries **SAL-556** (ex N-399). A migration; own review.
-- [ ] **R15-c** -- the deduction form takes `_recurrence_fields.html` (**R-SAL31**), the end-bound
-      and due-day rows off by flag and the ceiling on, replacing the 26 / 24 / 12 select and
-      `app.js`'s prefill.
+      amended); migration `ef32dfe4cd8e`; NO FIGURE MOVED. Archived with `R15`.
+- [x] **R15-b** `4ed9b5b3` -- the third owning arm `paycheck_deduction_id`, the engine reading each
+      line's rule, the migration `542c61e48ee8` writing one rule per 24 / 12 line and DROPPING
+      `deductions_per_year`; byte-identical over the 63 saved paychecks. Closed **F-21**,
+      **SAL-549**, **SAL-556**. Archived with `R15`.
+- [x] **R15-c** `77901fe0` -- the deduction form takes the shared recurrence partial's CADENCE
+      controls, placed alone (**R-SAL31**, **R-SAL36**, **R-SAL37**); a browser drive. Opened
+      **SAL-557** (owner `S6`), **SAL-558** (owner `S5`). Archived with `R15`.
 - [ ] **S4 -- a payroll deduction's `annual_cap` is a DATED figure** (finding **N-540**, re-pointed
       here at `S3-f-3`'s tick, developer ruling 2026-09-12). The column is read raw and never
       escalated, so a statutory limit that rises every year is modelled as fixed and understates
@@ -213,17 +203,18 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       from the latest configured one and says so, which is the shape a dated cap should take.
       `$0.00` today (no live deduction's cap binds). Needs a RULING first.
 - [ ] **S5 -- every readiness region renders its own refusals** (findings **SAL-550**, **SAL-551**,
-      both from the `S3-f-4` session 2026-09-13). The readiness GET answers every refusal as the
-      assumptions rail (**R-SAL33**), so the assumed-return, months and contribution inputs outside
-      the rail, and a stale or foreign raise id, still leave the card silently at its previous
-      picture; and the SWR refusal says "less than or equal to 1" beside a percent box.
-      Display-only, `$0.00`.
+      both from the `S3-f-4` session 2026-09-13; **SAL-558**, the deduction form's refusal swapping
+      a page body into its section). The readiness GET answers every refusal as the assumptions rail
+      (**R-SAL33**), so the assumed-return, months and contribution inputs outside the rail, and a
+      stale or foreign raise id, still leave the card silently at its previous picture; and the SWR
+      refusal says "less than or equal to 1" beside a percent box. Display-only, `$0.00`.
 - [ ] **S6 -- the rail's raise set is the projection's, and a stale Save is refused** (findings
       **SAL-552**, **SAL-553**, **SAL-554**, the `S3-f` span's openings filed 2026-09-13 when it
-      shipped). The `/retirement` rail lists every ACTIVE profile's raises rather than the set the
-      page projects; its raise row carries no `version_id`, so a Save from a stale rail is
-      last-write-wins on one column; the regeneration is handed one read pass per profile. Needs a
-      RULING on the race first. `$0.00`.
+      shipped; **SAL-557**, the cadence-only edit that bumps no `version_id`, the same family). The
+      `/retirement` rail lists every ACTIVE profile's raises rather than the set the page projects;
+      its raise row carries no `version_id`, so a Save from a stale rail is last-write-wins on one
+      column; the regeneration is handed one read pass per profile. Needs a RULING on the race
+      first. `$0.00`.
 - [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
       PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
       file. `$0.00`.

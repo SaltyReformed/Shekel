@@ -137,7 +137,6 @@ def _add_pretax_deduction(profile, amount, name="401k"):
         calc_method_id=flat.id,
         name=name,
         amount=Decimal(amount),
-        deductions_per_year=26,
     )
     _db.session.add(ded)
     _db.session.flush()

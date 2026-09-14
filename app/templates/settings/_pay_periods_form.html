@@ -1,4 +1,5 @@
 {% from "_form_macros.html" import render_field, render_select, render_errors, form_card %}
+{% from "_pay_cadence_fields.html" import cadence_kind_controls with context %}
 {# Shared Generate-Pay-Periods card (polyglot audit TPLB/TPL-09):
    included by settings/_pay_periods.html (settings tab) and
    pay_periods/generate.html (standalone page).  The form_card title is
@@ -40,30 +41,35 @@
      schema and the service refuse the same set independently. #}
   {{ render_field("num_periods", "Number of Periods", type="number",
                    value=config['DEFAULT_PAY_PERIOD_HORIZON'],
-                   input_attrs='min="%s" max="%s"'|format(PERIOD_BATCH_MIN, PERIOD_BATCH_MAX),
+                   input_attrs={"min": PERIOD_BATCH_MIN, "max": PERIOD_BATCH_MAX},
                    help_text="52 periods = 2 years of biweekly pay.",
                    errors=errors) }}
 
-  {{ render_field("cadence_days", "Days Between Paydays", type="number",
-                   value=config['DEFAULT_PAY_CADENCE_DAYS'],
-                   input_attrs='min="%s" max="%s"'|format(CADENCE_DAYS_MIN, CADENCE_DAYS_MAX),
-                   help_text="14 = biweekly (most common).",
-                   errors=errors) }}
+  {# The rhythm's KIND and its inputs (plan step pay_calendar:C17-d-3, ruling
+     R-PC84): three radio arms from the one macro every door renders.  This
+     card renders only for an owner holding no paydays, so there is no stored
+     rhythm to preselect and ``pp_rhythm`` is passed for the 422 re-render's
+     sake alone -- the macro reads ``request.form`` first.  It is ABSENT on
+     the standalone /pay-periods/generate page, which is why it is guarded
+     the way the convention below is. #}
+  {{ cadence_kind_controls(stored=(pp_rhythm if pp_rhythm is defined else none),
+                           errors=errors) }}
 
   {# What payroll does when one of these paydays lands on a closed day (plan
      step pay_calendar:C14-b, ruling R-PC56 -- asked wherever a cadence is).
      The option list is ONE list, PAYDAY_SHIFT_OPTIONS, so four forms cannot
      word the same three choices differently.
 
-     ``pp_era`` -- the owner's latest era, whose fact the convention is
-     since plan step pay_calendar:C17-a -- is the settings tab's context and
+     ``pp_rhythm`` -- the owner's latest era's rhythm in wire spelling, whose
+     fact the convention is since plan step pay_calendar:C17-a (the era ROW,
+     ``pp_era``, until C17-d-3) -- is the settings tab's context and
      is ABSENT on the standalone /pay-periods/generate page, so the current
      answer is read where there is one and falls back to "pay on that day
      anyway" where there is not.  That fallback is the honest one for a first-time owner
      and the ``is defined`` guard is cheap insurance rather than the thing
      that prevents a reset: it guards the NAME, and since this app does not
      configure ``StrictUndefined``, a bare truth test would behave
-     identically on both an absent name and a ``None`` row.  What prevents a
+     identically on both an absent name and a ``None`` value.  What prevents a
      silent reset is the ``or`` chain below.  A first draft of this comment
      credited the guard with that, and an adversarial review of 2026-09-05
      measured it false.
@@ -78,8 +84,8 @@
   {{ render_select("shift", PAYDAY_SHIFT_LABEL,
                    PAYDAY_SHIFT_OPTIONS,
                    selected_value=(request.form.get('shift')
-                                   or (pp_era.shift_id
-                                       if pp_era is defined and pp_era
+                                   or (pp_rhythm.shift
+                                       if pp_rhythm is defined and pp_rhythm
                                        else SHIFT_NONE)),
                    help_text=PAYDAY_SHIFT_HELP,
                    errors=errors) }}

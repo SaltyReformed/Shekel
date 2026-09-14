@@ -24,6 +24,7 @@ from app.schemas.validation._helpers import (
     _RAISE_YEAR_RANGE,
     _normalize_empty_inputs,
 )
+from app.schemas.validation._recurrence import RecurrenceCadenceFieldsMixin
 from app.services.salary_raises import (
     RAISE_END_MODES,
     EndYearError,
@@ -337,8 +338,27 @@ class RaiseUpdateSchema(RaiseCreateSchema):
     version_id = RowId(validate=validate.Range(min=1))
 
 
-class DeductionCreateSchema(BaseSchema):
+class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
     """Validates POST data for adding a paycheck deduction.
+
+    **The line's CADENCE arrives through the shared recurrence controls since
+    plan step salary:R15-c** (ruling **R-SAL31**): the four fields
+    :class:`~app.schemas.validation._recurrence.RecurrenceCadenceFieldsMixin`
+    declares -- ``recurrence_unit``, ``interval_n``, ``recurrence_placement``,
+    ``max_per_month`` -- and its two cross-field rules, exactly as the two
+    template forms submit them, replacing the 26 / 24 / 12 ``select`` the
+    column plan step R15-b dropped stood behind.  The mixin's other five
+    (``starts_on``, ``nominal_day``, the closing bound's three) are NOT
+    declared here, and their absence is the point: a payroll line's first
+    occurrence is DERIVED from the owner's schedule (rulings **R-SAL30**,
+    **R-SAL36**; ``app.routes.salary.items`` writes it into the payload
+    before the recurrence seam reads it), it carries no due day and no
+    closing bound, so a crafted POST stating any of them meets
+    ``BaseSchema``'s ``unknown = EXCLUDE`` rather than a field the door would
+    honour.  An empty unit (the form's "Does not repeat") arrives as a present
+    ``None`` -- every paycheck, ruling **R-SAL3** -- and an ABSENT unit is a
+    submission that said nothing about the cadence, which the update route
+    reads as "leave the stored rule alone".
 
     The ``amount`` field carries dual semantics keyed off
     ``calc_method_id``:
@@ -380,9 +400,6 @@ class DeductionCreateSchema(BaseSchema):
         validate=validate.Range(
             min=Decimal("0.0001"), max=Decimal("1000000"),
         ),
-    )
-    deductions_per_year = fields.Integer(
-        load_default=26, validate=validate.OneOf([12, 24, 26])
     )
     # F-012 / C-24: ``annual_cap`` is nullable in the model (NULL =
     # uncapped); when present, must be positive (DB CHECK

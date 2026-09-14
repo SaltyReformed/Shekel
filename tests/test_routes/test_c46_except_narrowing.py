@@ -308,7 +308,6 @@ class TestSalaryNarrowCatch:
                         "deduction_timing_id": pre_tax.id,
                         "calc_method_id": flat_method.id,
                         "amount": "200.00",
-                        "deductions_per_year": "26",
                     },
                     follow_redirects=False,
                 )
@@ -398,7 +397,6 @@ class TestSalaryNarrowCatch:
                         "deduction_timing_id": pre_tax.id,
                         "calc_method_id": flat_method.id,
                         "amount": "500.00",
-                        "deductions_per_year": "26",
                     },
                     follow_redirects=False,
                 )

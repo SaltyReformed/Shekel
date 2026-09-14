@@ -51,7 +51,14 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
-from app.models.pay_era import CADENCE_DAYS_MAX, CADENCE_DAYS_MIN
+from app.models.pay_era import (
+    CADENCE_DAYS_MAX,
+    CADENCE_DAYS_MIN,
+    DAY_OF_MONTH_MAX,
+    DAY_OF_MONTH_MIN,
+)
+from app.schemas.validation import cadence_kind_token
+from app.services.pay_rhythm import FixedDays, Monthly, SemiMonthly
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 from app.services.pay_period_batch import PERIOD_BATCH_MAX, PERIOD_BATCH_MIN
 
@@ -268,6 +275,20 @@ def register_pay_calendar_bound_globals(app: Flask) -> None:
         "PAYDAY_NOMINAL_HELP": PAYDAY_NOMINAL_HELP,
         "CADENCE_DAYS_MIN": CADENCE_DAYS_MIN,
         "CADENCE_DAYS_MAX": CADENCE_DAYS_MAX,
+        # The day-of-month arms' bounds (plan step pay_calendar:C17-d-3),
+        # the model's 1..31, for the same reason the cadence pair is here.
+        "DAY_OF_MONTH_MIN": DAY_OF_MONTH_MIN,
+        "DAY_OF_MONTH_MAX": DAY_OF_MONTH_MAX,
+        # What each radio arm of the cadence-kind control POSTS (ruling
+        # R-PC84), read from the schema's own wire table rather than
+        # spelled in the macro: the ``value=`` a browser sends and the token
+        # ``CadenceKindField`` maps to a type are one spelling this way.
+        # Module constants with no ref-cache precondition, like the bounds,
+        # because R-PC80 dropped the kind's ref table -- the kind is the
+        # value's TYPE, and its token is the schema's.
+        "CADENCE_KIND_FIXED_DAYS": cadence_kind_token(FixedDays),
+        "CADENCE_KIND_MONTHLY": cadence_kind_token(Monthly),
+        "CADENCE_KIND_SEMI_MONTHLY": cadence_kind_token(SemiMonthly),
         "PERIOD_BATCH_MIN": PERIOD_BATCH_MIN,
         "PERIOD_BATCH_MAX": PERIOD_BATCH_MAX,
         # How far this application's calendar reaches (plan step

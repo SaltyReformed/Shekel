@@ -1,0 +1,155 @@
+{# The cadence-KIND control every door that states a pay rhythm renders
+   (plan step pay_calendar:C17-d-3, ruling R-PC84).  Three RADIO ARMS, each
+   holding its own number inputs and nothing hidden:
+
+     ( ) Every so many days          [every] [14] [days]
+     ( ) Monthly, on one day         [on day] [  ] [of the month]
+     ( ) Twice a month, on two days  [on days] [  ] [and] [  ]
+
+   Every arm's inputs are rendered and SUBMITTED whichever arm is chosen --
+   a form posts every control it renders -- and the schema builds the value
+   from the chosen arm's and no other's
+   (app.schemas.validation._pay_rhythm.rhythm_from_wire), which is why none
+   of the boxes carries the HTML ``required`` attribute: a required box on an
+   unchosen arm would block the submit.  What every box DOES keep is its
+   ``min`` / ``max``, and the schema's field range with it: a 40 typed into
+   the monthly box and left there is refused by the browser, and by the
+   schema, whichever arm is checked -- the price of arms that are all
+   rendered and never disabled, stated rather than glossed.  No script: the
+   arms are visible at once, so nothing has to be revealed, and there is no
+   hidden input to disable.  The arms read as the value's own phrase
+   ("every 14 days", "monthly on day 15", "twice a month on days 1 and 15").
+
+   ONE macro on all four doors -- registration, the generate card and its
+   standalone page, regenerate and reset -- so the wording, the ``name=``
+   attributes and the ``value=`` tokens cannot drift between the door that
+   sets a rhythm and the door that corrects it; the same discipline
+   render_select + PAYDAY_SHIFT_OPTIONS keep for the convention.  The tokens
+   are the CADENCE_KIND_* Jinja globals, read off the schema's own wire table
+   (jinja_globals.register_pay_calendar_bound_globals), never spelled here.
+
+   Every attribute is written LITERALLY, with Jinja only inside its quotes
+   or as a whole-attribute {% if %}: the ``{{ 'attr="x"' if c }}`` shape the
+   shared render_field macro USED is autoescaped to ``attr=&#34;x&#34;``,
+   which the browser reads as a quoted-looking unquoted value and discards
+   (measured at C17-d-3 on every render_field caller; fixed at plan step
+   pay_calendar:C20, ledger row PC-515, which rewrote _form_macros.html the
+   same way).
+
+   Arguments:
+     stored     -- the owner's current rhythm in WIRE spelling
+                   (rhythm_to_wire: cadence_kind, the chosen arm's inputs,
+                   shift), or none/undefined for an owner with no era.  The
+                   manage forms pass it so a regenerate run for an unrelated
+                   reason cannot silently restate the rhythm; ``request.form``
+                   comes FIRST so a refused submission re-renders the owner's
+                   own answer rather than snapping back.
+     errors     -- the Marshmallow error dict a 422 re-render carries, or
+                   none; each arm's box shows its own message.
+     id_prefix  -- distinguishes ids and ``for=`` targets when two forms on
+                   one page render this control (regenerate and reset share
+                   the settings page); ``name=`` is never prefixed.
+
+   The month arms' boxes are BLANK when nothing is stored: pre-filling a day
+   would describe one as usual, which R-PC56 refused for the convention and
+   which no owner was asked.  The fixed arm carries the app's own default
+   (config DEFAULT_PAY_CADENCE_DAYS), as the old single box did. #}
+{% macro cadence_kind_controls(stored=none, errors=none, id_prefix="") %}
+{% set stored = stored or {} %}
+{% set p = id_prefix ~ '-' if id_prefix else '' %}
+{% set chosen = request.form.get('cadence_kind') or stored.get('cadence_kind') or CADENCE_KIND_FIXED_DAYS %}
+{% set kind_errors = errors.get('cadence_kind', []) if errors else [] %}
+{% set days_errors = errors.get('cadence_days', []) if errors else [] %}
+{% set day_errors = errors.get('day_of_month', []) if errors else [] %}
+{% set first_errors = errors.get('first_day_of_month', []) if errors else [] %}
+{% set second_errors = errors.get('second_day_of_month', []) if errors else [] %}
+<fieldset class="mb-3">
+  <legend class="form-label fs-6">How often are you paid?</legend>
+  {% if kind_errors %}
+  <div class="text-danger small" role="alert">{{ kind_errors|join('. ') }}</div>
+  {% endif %}
+
+  <div class="form-check mb-2">
+    <input class="form-check-input" type="radio" name="cadence_kind"
+           id="{{ p }}cadence_kind_fixed_days" value="{{ CADENCE_KIND_FIXED_DAYS }}"
+           {{ 'checked' if chosen == CADENCE_KIND_FIXED_DAYS else '' }}>
+    <label class="form-check-label" for="{{ p }}cadence_kind_fixed_days">
+      Every so many days
+    </label>
+    <div class="input-group input-group-sm mt-1 {{ 'has-validation' if days_errors else '' }}">
+      <span class="input-group-text">every</span>
+      <input type="number" id="{{ p }}cadence_days" name="cadence_days"
+             class="form-control interval-box {{ 'is-invalid' if days_errors else '' }}"
+             min="{{ CADENCE_DAYS_MIN }}" max="{{ CADENCE_DAYS_MAX }}"
+             aria-label="Days between paydays"
+             aria-describedby="{{ (p ~ 'cadence_days-error ') if days_errors else '' }}{{ p }}cadence_days-help"
+             {% if days_errors %}aria-invalid="true"{% endif %}
+             value="{{ request.form.get('cadence_days') or stored.get('cadence_days') or config['DEFAULT_PAY_CADENCE_DAYS'] }}">
+      <span class="input-group-text">days</span>
+      {% if days_errors %}
+      <div id="{{ p }}cadence_days-error" class="invalid-feedback" role="alert">{{ days_errors|join('. ') }}</div>
+      {% endif %}
+    </div>
+    <div id="{{ p }}cadence_days-help" class="form-text">14 for every other week, 7 for weekly.</div>
+  </div>
+
+  <div class="form-check mb-2">
+    <input class="form-check-input" type="radio" name="cadence_kind"
+           id="{{ p }}cadence_kind_monthly" value="{{ CADENCE_KIND_MONTHLY }}"
+           {{ 'checked' if chosen == CADENCE_KIND_MONTHLY else '' }}>
+    <label class="form-check-label" for="{{ p }}cadence_kind_monthly">
+      Monthly, on one day of the month
+    </label>
+    <div class="input-group input-group-sm mt-1 {{ 'has-validation' if day_errors else '' }}">
+      <span class="input-group-text">on day</span>
+      <input type="number" id="{{ p }}day_of_month" name="day_of_month"
+             class="form-control interval-box {{ 'is-invalid' if day_errors else '' }}"
+             min="{{ DAY_OF_MONTH_MIN }}" max="{{ DAY_OF_MONTH_MAX }}"
+             aria-label="Day of the month you are paid on"
+             aria-describedby="{{ (p ~ 'day_of_month-error ') if day_errors else '' }}{{ p }}day_of_month-help"
+             {% if day_errors %}aria-invalid="true"{% endif %}
+             value="{{ request.form.get('day_of_month') or stored.get('day_of_month') or '' }}">
+      <span class="input-group-text">of the month</span>
+      {% if day_errors %}
+      <div id="{{ p }}day_of_month-error" class="invalid-feedback" role="alert">{{ day_errors|join('. ') }}</div>
+      {% endif %}
+    </div>
+    <div id="{{ p }}day_of_month-help" class="form-text">Use 31 for the last day of the month.</div>
+  </div>
+
+  <div class="form-check">
+    <input class="form-check-input" type="radio" name="cadence_kind"
+           id="{{ p }}cadence_kind_semi_monthly" value="{{ CADENCE_KIND_SEMI_MONTHLY }}"
+           {{ 'checked' if chosen == CADENCE_KIND_SEMI_MONTHLY else '' }}>
+    <label class="form-check-label" for="{{ p }}cadence_kind_semi_monthly">
+      Twice a month, on two days of the month
+    </label>
+    {# ONE feedback line for the pair -- a pair rule names both days -- so
+       both boxes are described by it, and each still marks itself invalid
+       on its own. #}
+    {% set pair_errors = first_errors + second_errors %}
+    <div class="input-group input-group-sm mt-1 {{ 'has-validation' if pair_errors else '' }}">
+      <span class="input-group-text">on days</span>
+      <input type="number" id="{{ p }}first_day_of_month" name="first_day_of_month"
+             class="form-control interval-box {{ 'is-invalid' if first_errors else '' }}"
+             min="{{ DAY_OF_MONTH_MIN }}" max="{{ DAY_OF_MONTH_MAX }}"
+             aria-label="First day of the month you are paid on"
+             aria-describedby="{{ (p ~ 'day_pair-error ') if pair_errors else '' }}{{ p }}day_pair-help"
+             {% if first_errors %}aria-invalid="true"{% endif %}
+             value="{{ request.form.get('first_day_of_month') or stored.get('first_day_of_month') or '' }}">
+      <span class="input-group-text">and</span>
+      <input type="number" id="{{ p }}second_day_of_month" name="second_day_of_month"
+             class="form-control interval-box {{ 'is-invalid' if second_errors else '' }}"
+             min="{{ DAY_OF_MONTH_MIN }}" max="{{ DAY_OF_MONTH_MAX }}"
+             aria-label="Second day of the month you are paid on"
+             aria-describedby="{{ (p ~ 'day_pair-error ') if pair_errors else '' }}{{ p }}day_pair-help"
+             {% if second_errors %}aria-invalid="true"{% endif %}
+             value="{{ request.form.get('second_day_of_month') or stored.get('second_day_of_month') or '' }}">
+      {% if pair_errors %}
+      <div id="{{ p }}day_pair-error" class="invalid-feedback" role="alert">{{ pair_errors|join('. ') }}</div>
+      {% endif %}
+    </div>
+    <div id="{{ p }}day_pair-help" class="form-text">For example 1 and 15, or 15 and 31 for the 15th and the last day.</div>
+  </div>
+</fieldset>
+{% endmacro %}
