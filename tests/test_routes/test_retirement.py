@@ -2,9 +2,9 @@
 Tests for retirement planning routes.
 """
 
-import json
 import logging
 import re
+from pathlib import Path
 from datetime import date
 from decimal import Decimal
 
@@ -17,7 +17,7 @@ from app.models.pension_profile import PensionProfile
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER, RETARGET_HEADER
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
@@ -2628,14 +2628,22 @@ class TestReadinessFragment:
     def test_garbage_params_are_422(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Out-of-bounds what-if params return 422 with field errors."""
-        for query in (
-            "swr=-5",                       # negative percent
-            "months=181",                   # above the +180 solver cap
-            "months=abc",                   # non-numeric offset
-            "contribution=-1",              # negative money
-            "contribution=100001",          # above the 100000 bound
-            "contribution=abc",             # non-numeric money
+        """Out-of-bounds what-if params are the assumptions rail at 422.
+
+        Every refusal of this GET is the rail, re-rendered with each message
+        on its control and RETARGETED at the rail's region, since plan step
+        salary:S3-f-4 (ruling **R-SAL33**; it was a JSON no panel swapped
+        in).  The SWR box renders its refusal; the lever steppers are
+        controls outside the rail, so theirs render nowhere yet -- the
+        response is still the rail, and the rail is clean.
+        """
+        for query, refused_control in (
+            ("swr=-5", "safe_withdrawal_rate"),     # negative percent
+            ("months=181", None),                   # above the +180 solver cap
+            ("months=abc", None),                   # non-numeric offset
+            ("contribution=-1", None),              # negative money
+            ("contribution=100001", None),          # above the 100000 bound
+            ("contribution=abc", None),             # non-numeric money
         ):
             resp = auth_client.get(
                 f"/retirement/readiness?{query}",
@@ -2644,7 +2652,17 @@ class TestReadinessFragment:
             assert resp.status_code == 422, (
                 f"{query}: expected 422, got {resp.status_code}"
             )
-            assert "errors" in resp.get_json()
+            assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1", query
+            assert resp.headers.get(RETARGET_HEADER) == "#assumptions-region", query
+            html = resp.data.decode()
+            assert 'id="assumptions-panel"' in html, query
+            if refused_control is None:
+                assert "is-invalid" not in html, query
+                continue
+            control = re.search(
+                r'<input[^>]*name="%s"[^>]*>' % refused_control, html,
+            ).group(0)
+            assert "is-invalid" in control, query
 
 
 class TestDashboardReadinessContext:
@@ -2745,6 +2763,30 @@ class TestTheRailProbesARaisesEndYear:
         )
         return resp.status_code, resp.data.decode()
 
+    def _refused(self, auth_client, params):
+        """GET with *params* expecting the rail at 422; return its html.
+
+        The refusal's shape since plan step salary:S3-f-4 (ruling
+        **R-SAL33**): the designed-fragment marker, htmx's retarget at the
+        rail's region (this request targets the readiness CARD), and the
+        rail itself as the body.
+        """
+        resp = auth_client.get(
+            "/retirement/readiness", query_string=params,
+            headers={"HX-Request": "true"},
+        )
+        assert resp.status_code == 422
+        assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+        assert resp.headers.get(RETARGET_HEADER) == "#assumptions-region"
+        html = resp.data.decode()
+        assert 'id="assumptions-panel"' in html
+        return html
+
+    @staticmethod
+    def _rows(html):
+        """Every rendered raise row, keyed by its id as a string."""
+        return dict(re.findall(_RAISE_ROW_MARKUP, html, re.S))
+
     def test_what_the_rail_emits_is_the_stored_plan(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
@@ -2807,19 +2849,24 @@ class TestTheRailProbesARaisesEndYear:
     def test_a_probe_on_a_raise_that_does_not_exist_is_refused(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A stale bookmark or a URL edit is a designed 422, not a silent no-op."""
+        """A stale bookmark or a URL edit is a designed 422, not a silent no-op.
+
+        The refusal is keyed to the stale id's mode control, which no rendered
+        row carries: the rail comes back as the rows ARE -- the stale row
+        gone, the live row clean -- and the sentence itself renders nowhere.
+        A rail-level notice for a refusal that names no row is a known
+        opening, not built here.
+        """
         raise_id, _ = self._seed_forever_raise(seed_user, db)
         stale = raise_id + 999
-        status, body = self._fragment(auth_client, {
+        html = self._refused(auth_client, {
             f"raise_end_mode_{stale}": "none",
             f"raise_end_year_{stale}": "",
         })
-        assert status == 422
-        errors = json.loads(body)["errors"]
-        assert list(errors["raise_probes"]) == [str(stale)]
-        assert errors["raise_probes"][str(stale)] == [
-            "Not one of your recurring raises; reload the page.",
-        ]
+        rows = self._rows(html)
+        assert set(rows) == {str(raise_id)}
+        assert "is-invalid" not in rows[str(raise_id)]
+        assert "Not one of your recurring raises" not in html
 
     def test_a_probe_on_another_owners_raise_is_refused_and_discloses_nothing(
         self, auth_client, seed_user, seed_second_user, db, seed_periods_today,
@@ -2830,10 +2877,15 @@ class TestTheRailProbesARaisesEndYear:
         review of this step).  The probe is resolved against THIS owner's rows
         -- never by querying the submitted id -- so a foreign id has no row to
         be graded against, and the refusal is the constant not-found sentence.
-        The probe deliberately names a year BEFORE the foreign raise's
-        effective year: a resolver that looked the row up by id would answer
-        "it takes effect in <that year>", leaking a fact about a stranger's
-        salary, and this case would then fail on both assertions.
+        **The probe names a year the rule would ACCEPT for the foreign row**
+        (a second adversarial review, at plan step S3-f-4, when the answer
+        became the rail): a resolver that looked the row up by id would find
+        it, accept the year and answer 200 with the card, so the 422 is the
+        assertion that carries the control.  A year BEFORE the foreign
+        effective year -- the case as first written -- is refused by such a
+        resolver too, with "takes effect in <year>" keyed to a control no row
+        renders, and every assertion on the rail passed with the IDOR in
+        place; the JSON body this case read until S3-f-4 was what caught it.
         """
         self._seed_forever_raise(seed_user, db)
         foreign_profile = _create_salary_profile(seed_second_user, db.session)
@@ -2843,19 +2895,18 @@ class TestTheRailProbesARaisesEndYear:
         )
         db.session.commit()
 
-        status, body = self._fragment(auth_client, {
+        html = self._refused(auth_client, {
             f"raise_end_mode_{foreign.id}": "year",
-            f"raise_end_year_{foreign.id}": str(foreign_effective - 1),
+            f"raise_end_year_{foreign.id}": str(foreign_effective + 1),
         })
-        assert status == 422
-        assert json.loads(body)["errors"]["raise_probes"] == {
-            str(foreign.id): [
-                "Not one of your recurring raises; reload the page.",
-            ],
-        }
-        assert str(foreign_effective) not in body, (
-            "the refusal disclosed another owner's raise effective year"
+        assert str(foreign.id) not in self._rows(html), (
+            "the rail rendered a row for another owner's raise"
         )
+        # No row renders the foreign id and the refusal is keyed to its
+        # control, so no message renders at all; a message here would be a
+        # fact about the row.  (Checked on the messages rather than on the
+        # whole body: the csrf tokens the rows carry are random text.)
+        assert "invalid-feedback" not in html
 
     def test_a_year_before_the_raises_effective_year_is_refused(
         self, auth_client, seed_user, db, seed_periods_today,
@@ -2867,28 +2918,245 @@ class TestTheRailProbesARaisesEndYear:
         both call ``salary_raises.end_year_of``.
         """
         raise_id, effective = self._seed_forever_raise(seed_user, db)
-        status, body = self._fragment(auth_client, {
+        html = self._refused(auth_client, {
             f"raise_end_mode_{raise_id}": "year",
             f"raise_end_year_{raise_id}": str(effective - 1),
         })
-        assert status == 422
-        assert json.loads(body)["errors"]["raise_probes"] == {
-            str(raise_id): [
-                f"A raise cannot end before it starts: it takes effect in "
-                f"{effective}.",
-            ],
-        }
+        row = self._rows(html)[str(raise_id)]
+        assert (
+            f"A raise cannot end before it starts: it takes effect in {effective}."
+            in row
+        )
+        year_input = re.search(
+            r'<input[^>]*name="raise_end_year_%d"[^>]*>' % raise_id, row, re.S,
+        ).group(0)
+        assert "is-invalid" in year_input
+        assert f'value="{effective - 1}"' in year_input, "the refused year was not echoed"
+        assert '<option value="year" selected>' in row, "the submitted mode was not echoed"
 
     def test_a_mode_outside_the_vocabulary_is_refused_by_the_schema(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """The field-tier half of the rule stays the schema's, as on the form."""
+        """The field-tier half of the rule stays the schema's, as on the form.
+
+        marshmallow's nested report is re-keyed onto the row's mode control,
+        exactly as the Save re-keys it -- the readiness GET no longer emits
+        that nested shape (ledger row SAL-548's second 422 shape).
+        """
         raise_id, _ = self._seed_forever_raise(seed_user, db)
-        status, body = self._fragment(auth_client, {
+        html = self._refused(auth_client, {
             f"raise_end_mode_{raise_id}": "forever",
         })
-        assert status == 422
-        assert "raise_probes" in json.loads(body)["errors"]
+        row = self._rows(html)[str(raise_id)]
+        select = re.search(r"<select[^>]*>", row).group(0)
+        assert "is-invalid" in select
+        assert "Must be one of: year, none." in row
+        assert "raise_probes" not in html
+
+    def test_a_refused_probe_echoes_the_swr_what_if_and_every_other_row(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The rail comes back stating what is ON SCREEN, not the stored plan.
+
+        Every rail what-if rides on every refresh, so the refusal echoes the
+        query string: the other raise row's pair, and the SWR what-if -- which
+        arrives under the GET's name ``swr`` and must land in the SWR box AND
+        its mirror, or the next refresh would carry the stored rate under a
+        box stating 3.5.  The date row, which no refresh carries, states its
+        stored value.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        profile = (
+            db.session.query(SalaryProfile)
+            .filter_by(user_id=seed_user["user"].id).one()
+        )
+        other = make_recurring_raise(
+            profile.id, db.session, effective_year=effective + 1,
+            terminal_year=effective + 4,
+        )
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.safe_withdrawal_rate = Decimal("0.0400")
+        planned = settings.planned_retirement_date
+        db.session.commit()
+        other_id = other.id
+
+        # The other row's probe DIFFERS from its stored year, so a rail that
+        # stated the stored value instead of the echo would fail here (an
+        # adversarial review: probing the stored year measured nothing).
+        html = self._refused(auth_client, {
+            "swr": "3.5",
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective - 1),
+            f"raise_end_mode_{other_id}": "year",
+            f"raise_end_year_{other_id}": str(effective + 3),
+        })
+        rows = self._rows(html)
+        assert "is-invalid" in rows[str(raise_id)]
+        other_row = rows[str(other_id)]
+        assert "is-invalid" not in other_row
+        assert '<option value="year" selected>' in other_row
+        assert f'value="{effective + 3}"' in other_row, "the other row's what-if was not echoed"
+        assert f'value="{effective + 4}"' not in other_row
+        swr_box = re.search(r'<input[^>]*name="safe_withdrawal_rate"[^>]*>', html).group(0)
+        assert 'value="3.5"' in swr_box, "the SWR what-if was reset to the stored rate"
+        assert "is-invalid" not in swr_box
+        mirror = re.search(r'<input[^>]*id="swr-whatif-mirror"[^>]*>', html).group(0)
+        assert 'value="3.5"' in mirror, "the mirror lost the what-if the box states"
+        date_input = re.search(r'<input[^>]*name="planned_retirement_date"[^>]*>', html).group(0)
+        assert f'value="{planned.isoformat()}"' in date_input
+
+    def test_no_swr_what_if_leaves_the_box_on_its_stored_rate(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """An untouched mirror submits ``swr=`` -- no what-if -- and echoes nothing.
+
+        The mirror starts empty and every refresh carries it, so the empty
+        string is the ordinary case; a rail that echoed it would blank the
+        SWR box on every refused probe.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.safe_withdrawal_rate = Decimal("0.0350")
+        db.session.commit()
+
+        html = self._refused(auth_client, {
+            "swr": "",
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective - 1),
+        })
+        swr_box = re.search(r'<input[^>]*name="safe_withdrawal_rate"[^>]*>', html).group(0)
+        assert 'value="3.50"' in swr_box
+        mirror = re.search(r'<input[^>]*id="swr-whatif-mirror"[^>]*>', html).group(0)
+        assert 'value=""' in mirror
+
+    def test_an_swr_what_if_outside_its_range_is_refused_on_its_box(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The SWR box's refusal renders on the box, under the GET's own name.
+
+        The box is one control with two names -- ``safe_withdrawal_rate`` on
+        its Save, ``swr`` on the what-if -- and the browser's ``max`` fences
+        only a form submit, not the htmx refresh, so 150 reaches the schema.
+        Until plan step salary:S3-f-4 the answer was a JSON the page never
+        rendered.
+        """
+        raise_id, _ = self._seed_forever_raise(seed_user, db)
+        html = self._refused(auth_client, {
+            "swr": "150",
+            f"raise_end_mode_{raise_id}": "none",
+            f"raise_end_year_{raise_id}": "",
+        })
+        swr_box = re.search(r'<input[^>]*name="safe_withdrawal_rate"[^>]*>', html).group(0)
+        assert "is-invalid" in swr_box
+        assert 'value="150"' in swr_box
+        feedback = re.search(
+            r'name="safe_withdrawal_rate".*?<div class="invalid-feedback">(.*?)</div>',
+            html, re.S,
+        )
+        assert feedback and "Must be" in feedback.group(1)
+        assert "is-invalid" not in self._rows(html)[str(raise_id)]
+
+    def test_a_lever_refusal_beside_a_bad_year_is_the_rail_with_the_row_unasked(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """One answer for every refusal, and the tiers are asked in order.
+
+        A stepper outside its range is the SCHEMA's refusal, which answers
+        before the rows are consulted -- the ONE end-year rule is asked only
+        of a payload the schema accepted, as on the Save -- so the year row
+        comes back unmarked, its pair echoed.  The steppers are controls
+        outside the rail, so the refusal itself renders nowhere yet; the
+        answer is still the rail, not a JSON.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        html = self._refused(auth_client, {
+            "months": "181",
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective - 1),
+        })
+        row = self._rows(html)[str(raise_id)]
+        assert "is-invalid" not in row
+        assert f'value="{effective - 1}"' in row
+        assert "invalid-feedback" not in html
+
+    def test_the_refusal_is_the_saves_own_body(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """ONE 422 shape: the what-if's refusal IS the Save's, retargeted.
+
+        The same pair refused by the same rule through both doors renders the
+        same rail, byte for byte once the per-render csrf tokens are set
+        aside; the Save's answer is built for its form's target and the GET's
+        carries the retarget that points it there.
+        """
+        raise_id, effective = self._seed_forever_raise(seed_user, db)
+        pair = {
+            f"raise_end_mode_{raise_id}": "year",
+            f"raise_end_year_{raise_id}": str(effective - 1),
+        }
+        probed = auth_client.get(
+            "/retirement/readiness", query_string=pair,
+            headers={"HX-Request": "true"},
+        )
+        saved = auth_client.post(
+            "/retirement/settings", data=pair, headers={"HX-Request": "true"},
+        )
+        assert probed.status_code == saved.status_code == 422
+        assert probed.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+        assert saved.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+        assert probed.headers.get(RETARGET_HEADER) == "#assumptions-region"
+        assert RETARGET_HEADER not in saved.headers
+
+        def without_tokens(html):
+            return re.sub(r'name="csrf_token" value="[^"]*"', 'name="csrf_token"', html)
+
+        assert without_tokens(probed.data.decode()) == without_tokens(saved.data.decode())
+        assert f"it takes effect in {effective}." in probed.data.decode()
+
+
+class TestTheRailRegionIsSpelledOnce:
+    """The rail's region and the refresh trigger are named in four files.
+
+    ``dashboard.html`` renders ``#assumptions-region`` and the
+    ``#readiness-refresh`` trigger; every rail Save form targets the region;
+    ``retirement_controls.js`` watches the region for the post-save reload
+    and aborts the trigger's request on a keystroke; and the readiness GET
+    retargets its refusal at the region (plan step salary:S3-f-4, ruling
+    **R-SAL33**).  No pytest renders htmx, so a rename in one file passes
+    every route test and breaks the page: this is the gate an adversarial
+    review of that step asked for, in the shape of
+    ``test_header_name_matches_js_listener``.
+    """
+
+    @staticmethod
+    def _source(relative):
+        return (Path(__file__).resolve().parents[2] / relative).read_text()
+
+    def test_the_rail_region_selector_matches_every_spelling(self):
+        """The route's selector is the dashboard's id, the forms' target, the JS's guard."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.retirement import _RAIL_REGION
+
+        assert _RAIL_REGION == "#assumptions-region"
+        dashboard = self._source("app/templates/retirement/dashboard.html")
+        assert 'id="assumptions-region"' in dashboard
+        rail = self._source("app/templates/retirement/_assumptions.html")
+        targets = re.findall(r'hx-target="([^"]+)"', rail)
+        assert targets and set(targets) == {_RAIL_REGION}, targets
+        controls = self._source("app/static/js/retirement_controls.js")
+        assert 'event.target.id !== "assumptions-region"' in controls
+
+    def test_the_refresh_trigger_id_matches_the_abort_handle(self):
+        """The JS aborts the request of the element the dashboard renders."""
+        dashboard = self._source("app/templates/retirement/dashboard.html")
+        controls = self._source("app/static/js/retirement_controls.js")
+        assert 'id="readiness-refresh"' in dashboard
+        assert 'hx-sync="this:replace"' in dashboard
+        assert 'document.getElementById("readiness-refresh")' in controls
 
 
 class TestTheRailSavesARaisesEndYear:
