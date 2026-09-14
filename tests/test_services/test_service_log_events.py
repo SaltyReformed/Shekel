@@ -175,7 +175,10 @@ class TestPayPeriodServiceLogging:
         assert record.category == BUSINESS
         assert record.user_id == bare_user["user"].id
         assert record.count == 3
-        assert record.cadence_days == 14
+        # The rhythm as its kind's PHRASE (ruling R-PC82, plan step
+        # pay_calendar:C17-d-2): one field every kind can fill, where
+        # ``cadence_days`` had nothing to say for a month kind.
+        assert record.cadence == "every 14 days"
         assert record.start_date == "2027-01-01"
 
 

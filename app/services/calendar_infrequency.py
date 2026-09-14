@@ -80,10 +80,7 @@ def badge_cadence(
             below) rather than reading one a caller hands it -- so the refusal
             is its own to make and belongs in its own signature.
     """
-    if not any(
-        txn.template is not None and txn.template.recurrence_rule is not None
-        for txn in transactions
-    ):
+    if not any(txn.recurs for txn in transactions):
         return None
     return cadence_for(user_id)
 
@@ -98,9 +95,11 @@ def is_infrequent(
     True when the definition's cadence fires fewer than
     :data:`_INFREQUENT_BELOW_PER_YEAR` times a year -- the three the retired
     enumeration listed, and the two shapes of today's closed set it got wrong;
-    see that constant's comment.  False for a transaction with no template or
-    no recurrence rule, the last of which is how a non-recurring definition is
-    modelled (plan step R2e-3).
+    see that constant's comment.  False for a transaction that does not
+    ``recurs`` -- no template, or a template with no recurrence rule, the
+    last of which is how a non-recurring definition is modelled (plan step
+    R2e-3); the one accessor since plan step balance:X-bi-7a, where this
+    function and :func:`badge_cadence` each spelled it inline.
 
     Args:
         txn: The transaction whose definition is being classified.
@@ -132,11 +131,9 @@ def is_infrequent(
             silent ``False`` here would tell the user an annual bill is a
             frequent one.
     """
-    if txn.template is None:
+    if not txn.recurs:
         return False
     rule = txn.template.recurrence_rule
-    if rule is None:
-        return False
     if pay_cadence is None:
         raise PayCalendarError(
             f"transaction {txn.id} has a recurrence rule but this calendar "

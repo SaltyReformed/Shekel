@@ -23,7 +23,7 @@ from app.utils.dates import display_today
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction import Transaction
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.utils import archive_helpers
@@ -31,6 +31,7 @@ from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import (
     account_service,
     category_service,
+    definition_delete,
     posting_service,
     recurrence_engine,
     template_amount_service,
@@ -38,6 +39,7 @@ from app.services import (
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.balance_predicates import is_projected_clause
+from app.routes.templates._instances import propagate_to_non_repeating_rows
 from app.routes.templates._validation import validate_template_form
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
@@ -429,7 +431,7 @@ def update_template(template_id):
     # template never recurred", which must not.
     before = PreEditTemplateState(
         amount=template.default_amount,
-        had_recurrence_rule=template.recurrence_rule is not None,
+        had_recurrence_rule=template.recurs,
     )
 
     # Re-point, rebuild, or clear the recurrence rule from the update payload
@@ -493,6 +495,16 @@ def update_template(template_id):
     # instances (see _apply_fields_and_propagate_rename for the rationale).
     _apply_fields_and_propagate_rename(template, data)
 
+    # A definition that neither has nor had a rule does not regenerate at all
+    # (the gate inside ``regenerate_or_conflict_chooser`` returns before
+    # touching a row -- that is what closes defect D16), so the rows it holds
+    # are reached HERE or nowhere (plan step balance:X-bi-7a; the transfer
+    # twin's ``_regenerate_and_commit_template`` takes the same fork).  A
+    # CLEARED cadence goes through the regeneration below instead, which
+    # retires or retains what the deleted rule generated.
+    if not before.had_recurrence_rule and not template.recurs:
+        propagate_to_non_repeating_rows(template)
+
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
     # chooser rolls the pending edit back; its Apply re-runs this same edit).
@@ -529,7 +541,7 @@ def update_template(template_id):
     # actual -- is now RETAINED rather than removed (ruling R-R19), so the
     # earlier wording asserted a removal that did not happen and contradicted
     # the warning ``_flash_retained`` emits in the same response.
-    if before.had_recurrence_rule and template.recurrence_rule is None:
+    if before.had_recurrence_rule and not template.recurs:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
             "entries were removed; settled ones, hand-edited ones, and any "
@@ -571,36 +583,6 @@ def delete_amount_version(template_id, version_id):
 
 
 
-def _rows_holding_purchase_postings(*scope):
-    """Return the template rows matching *scope* that hold ledger postings.
-
-    **A PROJECTED row can hold postings since plan step X-f3b** (ruling
-    **R-FM**): a purchase whose bank posting day the owner recorded books its
-    own balanced cash leg whatever its envelope's status is.  Every bulk
-    statement in this module was written under the opposite premise -- "a
-    Projected row has no postings, so a bulk archive / restore / delete cannot
-    touch the ledger" -- and that premise is what fell.
-
-    The narrowing is what keeps the cost honest: a template generates ~50 rows
-    over the forward horizon and at most a handful can ever hold a purchase, so
-    this returns the empty list with ONE indexed read in the ordinary case and
-    the callers loop over nothing.
-
-    Args:
-        *scope: The SQLAlchemy clauses selecting the rows the bulk statement is
-            about to touch -- built by the caller, so this reader can never
-            select a different set from the statement it guards.
-
-    Returns:
-        The matching :class:`~app.models.transaction.Transaction` rows.
-    """
-    return (
-        db.session.query(Transaction)
-        .filter(*scope, posting_service.posted_purchase_exists_clause())
-        .all()
-    )
-
-
 @templates_bp.route("/templates/<int:template_id>/archive", methods=["POST"])
 @require_owner
 def archive_template(template_id):
@@ -631,7 +613,7 @@ def archive_template(template_id):
     # posted must come back out FIRST -- and it must be first: the deploy
     # resync skips ``is_deleted`` rows, so a leg stranded here is stranded for
     # good rather than until the next boot (plan step X-f3b, ruling **R-FM**).
-    for txn in _rows_holding_purchase_postings(*scope):
+    for txn in definition_delete.rows_holding_purchase_postings(*scope):
         posting_service.reverse_postings_before_delete(txn)
     deleted_count = db.session.query(Transaction).filter(
         *scope,
@@ -677,7 +659,7 @@ def unarchive_template(template_id):
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(True),
     )
-    restored = _rows_holding_purchase_postings(*restore_scope)
+    restored = definition_delete.rows_holding_purchase_postings(*restore_scope)
     restored_count = db.session.query(Transaction).filter(
         *restore_scope,
     ).update({"is_deleted": False}, synchronize_session="fetch")
@@ -692,7 +674,7 @@ def unarchive_template(template_id):
 
     # Regenerate to fill in any missing future periods, on the one read pass
     # this restore's generate runs in (plan step R7d-c-1).
-    if template.recurrence_rule:
+    if template.recurs:
         ctx = BalanceContext.build(current_user.id)
         if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
@@ -735,10 +717,13 @@ def hard_delete_template(template_id):
          sentence naming which of the two reasons applied.
       2. If no settled history exists, all linked NON-SETTLED transactions
          are deleted first, then the template itself is permanently
-         removed.  ``Transaction.template_id`` is a FK with ON DELETE SET
-         NULL, so any rows that survive the filtered delete keep their
-         financial data intact with a NULL template_id rather than
-         cascading away.
+         removed -- ``definition_delete.permanently_delete_definition``, the
+         one act, shared with the account hard-delete since plan step
+         ``balance:X-bi-7a``.  ``Transaction.template_id`` is a FK with ON
+         DELETE SET NULL, so any row that survived the filtered delete
+         would keep its financial data with a NULL template_id rather than
+         cascading away; guard 1 is what makes that set empty (ruling
+         **R-JE**).
 
     Defense in depth (CRIT-05 / E-22): the bulk delete is constrained to
     non-settled rows via the semantic ``Status.is_settled`` boolean.
@@ -806,7 +791,7 @@ def hard_delete_template(template_id):
                 is_projected_clause(Transaction),
                 Transaction.is_deleted.is_(False),
             )
-            for txn in _rows_holding_purchase_postings(*fallback_scope):
+            for txn in definition_delete.rows_holding_purchase_postings(*fallback_scope):
                 posting_service.reverse_postings_before_delete(txn)
             db.session.query(Transaction).filter(
                 *fallback_scope,
@@ -824,33 +809,12 @@ def hard_delete_template(template_id):
                 return conflict
         return redirect(url_for("templates.list_templates"))
 
-    # No settled history -- safe to permanently delete.  Restrict the
-    # bulk delete to non-settled rows via ``Status.is_settled`` so a
-    # race-window mark-done (or any future caller that bypasses the
-    # guard above) cannot destroy real Paid/Received history.
-    # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
-    # any row that survives this filter keeps its financial data with
-    # a null template_id rather than being cascaded away.
+    # No settled history and no standing rule -- the one act that permanently
+    # removes a definition, shared with the account hard-delete since plan step
+    # balance:X-bi-7a (its docstring carries the order: purchase postings
+    # reversed, the non-settled rows deleted, then the definition).
     template_name = template.name
-    settled_status_ids = db.session.query(Status.id).filter(
-        Status.is_settled.is_(True)
-    ).scalar_subquery()
-    delete_scope = (
-        Transaction.template_id == template.id,
-        Transaction.status_id.notin_(settled_status_ids),
-    )
-    # The strongest form of the same rule: ``transaction_entries`` CASCADE from
-    # their parent and ``journal_entries.transaction_entry_id`` is ON DELETE SET
-    # NULL, so a purchase deleted here without a reversal leaves both of its
-    # legs on their ledger accounts with nothing left to explain them -- the
-    # RESIDUE the posted walk can absorb and never account for.
-    for txn in _rows_holding_purchase_postings(*delete_scope):
-        posting_service.reverse_postings_before_delete(txn)
-    db.session.query(Transaction).filter(
-        *delete_scope,
-    ).delete(synchronize_session="fetch")
-
-    db.session.delete(template)
+    definition_delete.permanently_delete_definition(template)
     conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
         log_label="hard_delete_template",

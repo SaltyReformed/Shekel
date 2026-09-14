@@ -42,15 +42,22 @@ door's own precondition, asked before the sequence starts.
    them.  Both are ``ON DELETE SET NULL``: reversing afterwards is impossible
    and the original legs would be stranded on their ledger accounts with
    nothing to offset them.
-4. **Remove the row**, soft or hard by whether a template generated it.
+4. **Remove the row**, soft or hard by whether its definition RECURS.
 
-**Why the FORK at step 4 is about the template and not about the status.**  A
-template-linked row is one instance of a rule that keeps generating: deleting
-it hard would let the next regeneration put it straight back, so the row stays
-as a tombstone the engine reads (``recurrence_engine`` skips the OCCURRENCE
-a ``is_deleted`` row answers -- ``_recurrence_common.OccurrenceClaims`` counts
-every state -- and both generation indexes exclude it so a replacement can be
-created only where the owner has not said no).  An ad-hoc row answers to nobody, so it goes.
+**Why the FORK at step 4 is about the cadence and not about the status.**  A
+row of a recurring definition is one instance of a rule that keeps generating:
+deleting it hard would let the next regeneration put it straight back, so the
+row stays as a tombstone the engine reads (``recurrence_engine`` skips the
+OCCURRENCE a ``is_deleted`` row answers -- ``_recurrence_common.OccurrenceClaims``
+counts every state -- and both generation indexes exclude it so a replacement
+can be created only where the owner has not said no).  A row nothing
+regenerates -- a link-less one, or one whose definition has no rule -- answers
+to nobody, so it goes.  **Keyed on ``Transaction.recurs`` since plan step
+``balance:X-bi-7a``**, not on the link: a rule-less definition's row is a
+one-off (ruling **R-BAL20**), and a soft arm there would keep a tombstone no
+pass will ever read, restorable from an archive drawer for a definition that
+generates nothing -- the twin's live defect on its own table (finding
+**N-386**).
 
 Boundary discipline (``CLAUDE.md`` Architecture): an ORM row in, a frozen
 dataclass out, no Flask import.  It MUTATES and does NOT commit -- the caller
@@ -83,9 +90,10 @@ class RowDeletion:
     2026-08-25).
 
     Attributes:
-        soft: Whether the row stays as a tombstone (a template generated it)
-            rather than leaving the table.  The two are one act to the owner
-            and two facts to the engine, so the door reports which it was
+        soft: Whether the row stays as a tombstone (its definition recurs,
+            ``Transaction.recurs``) rather than leaving the table.  The two
+            are one act to the owner and two facts to the engine, so the door
+            reports which it was
             instead of the caller re-deriving it from a column on a row it may
             no longer hold.
         paybacks: The names of the live CC payback rows that go down with it,
@@ -128,7 +136,7 @@ def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
         ``(soft, leaving)`` -- whether the row stays as a tombstone, and every
         row this commit really removes from the table.
     """
-    soft = txn.template_id is not None
+    soft = txn.recurs
     chain = credit_workflow.live_payback_chain(txn)
     return soft, ([] if soft else [txn]) + chain
 

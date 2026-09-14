@@ -2278,6 +2278,10 @@ def loan_income_shadow(db_session, transfer_id, loan_account_id):
 #: and ``budget.pay_periods.period_index``.
 _C4C_REVISION_FILE = "b7a41e2c9d63_a_pay_period_is_one_fact.py"
 _C17A_REVISION_FILE = "6fc77e86d76f_a_pay_schedule_is_a_sequence_of_eras.py"
+#: Plan step ``pay_calendar:C17-d-2``'s revision, whose ``downgrade()`` puts
+#: ``budget.pay_eras.kind_id`` and ``ref.pay_cadence_kinds`` back -- the
+#: objects ``C17-a``'s downgrade drops, so it runs FIRST in the rewind.
+_C17D2_REVISION_FILE = "3ec5291ca4e2_a_pay_eras_kind_is_which_columns_it_carries.py"
 
 
 def restore_pay_schedule_rhythm_columns(db_session):
@@ -2353,12 +2357,20 @@ def rewind_pay_schedule_rhythm(db_session):
     reader working.  Call it FIRST: that helper skips once the columns exist,
     and the restore statement it would run reads the table this drops.
 
-    It refuses a schedule row holding no era, as the shipped downgrade does.
+    **It runs ``C17-d-2``'s downgrade before ``C17-a``'s** (plan step
+    ``pay_calendar:C17-d-2``), Alembic's newest-first order: the head has no
+    ``kind_id`` and no ``ref.pay_cadence_kinds`` for ``C17-a``'s downgrade
+    to drop, and the later revision's downgrade is what puts them back.  It
+    refuses a day-of-month era, as that downgrade does, and a schedule row
+    holding no era, as ``C17-a``'s does.
 
     Args:
         db_session: The test ``db.session``, in the scope that currently holds
             the schedule table's locks.
     """
+    run_migration_callable(
+        load_migration_module(_C17D2_REVISION_FILE).downgrade, db_session,
+    )
     run_migration_callable(
         load_migration_module(_C17A_REVISION_FILE).downgrade, db_session,
     )
@@ -2930,10 +2942,11 @@ def mint_fixture_era(user_id, effective_from, cadence_days,
 
     The state every payday-holding owner has, for a fixture that then writes
     its ``budget.pay_periods`` rows BY HAND -- a corrupt shape a checker must
-    catch, or a calendar-monthly schedule no door can yet write (ledger row
-    **P78**).  ``fk_pay_periods_schedule`` needs the row and a calendar needs
-    the era; the ordinary fixtures go through ``record_paydays``, which does
-    both, and this is the one line for the fixtures that cannot.
+    catch.  (A calendar-monthly schedule was the other reason until plan
+    step ``pay_calendar:C17-d-2`` gave it a door, ledger row **P78**.)
+    ``fk_pay_periods_schedule`` needs the row and a calendar needs the era;
+    the ordinary fixtures go through ``record_paydays``, which does both,
+    and this is the one line for the fixtures that cannot.
 
     Plan step ``pay_calendar:C17-a``: it replaces the
     ``upsert_schedule(user_id, rhythm, None)`` line those fixtures carried,
@@ -8420,7 +8433,7 @@ def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
     else:
         raise AssertionError(
             f"record_paydays would accept a batch from {first_payday} x "
-            f"{num_periods} at {rhythm.cadence.days} days for user {user_id}; "
+            f"{num_periods} paid {rhythm.cadence.phrase} for user {user_id}; "
             f"this helper is only for a batch that skips a paycheck of the "
             f"plan.  Call pay_period_write.record_paydays instead."
         )
@@ -8439,6 +8452,28 @@ def record_paydays_across_a_hole(user_id, first_payday, num_periods, rhythm):
 
 
 def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
+    """Rebuild *user_id*'s WHOLE schedule on a fixed-days rhythm, through the reset door.
+
+    :func:`rebuild_calendar_on`'s fixed-days spelling, which is what every
+    caller before plan step ``pay_calendar:C17-d-2`` meant by a cadence;
+    that function carries the argument and the books bound.
+
+    Args:
+        user_id: The owning user's id.
+        first_payday: The opening payday of the rebuilt schedule.
+        num_periods: How many periods to build from it.
+        cadence_days: Days between them, persisted as the owner's cadence by
+            the writer (the cadence rule, plan step C3-b).
+
+    Returns:
+        :func:`rebuild_calendar_on`'s answer.
+    """
+    return rebuild_calendar_on(
+        user_id, first_payday, num_periods, rhythm_of(cadence_days),
+    )
+
+
+def rebuild_calendar_on(user_id, first_payday, num_periods, rhythm):
     """Rebuild *user_id*'s WHOLE pay-period schedule through the reset door.
 
     **Plan step ``pay_calendar:C4-b-1``.**  The one place the test tree says
@@ -8483,10 +8518,15 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
 
     Args:
         user_id: The owning user's id.
-        first_payday: The opening payday of the rebuilt schedule.
+        first_payday: The opening payday of the rebuilt schedule, a day on
+            *rhythm*'s grid.
         num_periods: How many periods to build from it.
-        cadence_days: Days between them, persisted as the owner's cadence by
-            the writer (the cadence rule, plan step C3-b).
+        rhythm: The :class:`~app.services.pay_rhythm.Rhythm` the schedule
+            runs on, persisted as the owner's era by the writer.  A
+            day-of-month cadence here (plan step ``pay_calendar:C17-d-2``)
+            is what lets the cross-page fixtures state a calendar-monthly
+            schedule through the door rather than by hand (ledger row
+            **P78**).
 
     Returns:
         The owner's periods, payday ascending -- :func:`all_periods`' answer,
@@ -8552,7 +8592,7 @@ def rebuild_calendar(user_id, first_payday, num_periods, cadence_days):
         f"Ask for a later first payday, or open that account's books earlier."
     )
     pay_period_admin.reset_pay_periods(
-        user_id, first_payday, num_periods, rhythm_of(cadence_days),
+        user_id, first_payday, num_periods, rhythm,
     )
     # The door is one transaction its ROUTE commits, so a test caller commits
     # it, and expires: the caller may hold rows the wipe deleted.

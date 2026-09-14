@@ -22,7 +22,11 @@ from app.utils.dates import display_today
 from app.services.auth_service import hash_password
 from app.services import account_service
 
-from tests._test_helpers import create_loan_account, loan_params_for
+from tests._test_helpers import (
+    create_loan_account,
+    loan_params_for,
+    make_every_period_rule,
+)
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -457,7 +461,15 @@ class TestAccountHardDelete:
     def test_hard_delete_blocked_by_transaction_templates(
         self, app, auth_client, seed_user, db,
     ):
-        """C-5A.5-26: Account referenced by a transaction template cannot be deleted."""
+        """C-5A.5-26: Account referenced by a RECURRING definition cannot be deleted.
+
+        The definition carries a cadence since plan step balance:X-bi-7a
+        (ruling **R-BAL23**: the refusal counts definitions with a rule).  It
+        was built bare, and a bare definition -- no rule, no row -- defines
+        nothing and is disposed of with the account now (developer
+        2026-09-13); ``test_accounts.TestHardDeleteAndTheAccountsDefinitions``
+        grades that arm.  What this case grades is guard 3 itself.
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user, db.session, name="Template Acct")
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -471,6 +483,8 @@ class TestAccountHardDelete:
                 default_amount=Decimal("50.00"),
             )
             db.session.add(template)
+            db.session.flush()
+            make_every_period_rule(db.session, template)
             db.session.commit()
 
             resp = auth_client.post(

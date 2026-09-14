@@ -33,8 +33,12 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
+from app.services._recurrence_common import classify_unruled_work
 from app.services.recurrence_engine._generate import _selector
-from app.services.recurrence_engine._amounts import _derive_row_fields
+from app.services.recurrence_engine._amounts import (
+    _derive_row_fields,
+    _derive_unruled_fields,
+)
 from app.services.recurrence_engine._pass import (
     MaintainActs,
     PassReporting,
@@ -367,6 +371,69 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
             row, settled=row.status.is_settled,
         )
     return created, updated
+
+
+def propagate_to_unruled_definition(template, rows) -> "list[int]":
+    """Apply a RULE-LESS definition's edit to the rows it holds.
+
+    **The maintain pass's decision, for the one shape that does not
+    regenerate** -- the transaction twin of
+    ``transfer_recurrence.propagate_to_unruled_template`` (plan step
+    ``balance:X-bi-7a``, ruling **R-BAL20**).  A definition with no rule
+    names no occurrence, so a regeneration would RETIRE every record-free row
+    it holds (defect **D16**) and the route gates the sweep on "the
+    definition IS or WAS recurring" instead; until this function existed its
+    rows were reached by nothing but the bulk rename in
+    ``routes/templates/crud._apply_fields_and_propagate_rename``, so a new
+    category, account or type stayed on the Recurring page and never reached
+    the grid.  Every row a rule-less definition holds is one of these: a
+    one-off's placed row once the family's cutover mints it a definition, and
+    today the rows a CLEARED cadence left behind.
+
+    **The same refusal the regular pass makes, decided in the same place**
+    (``_recurrence_common.classify_unruled_work``, over this engine's
+    :func:`_rows_holding_owner_records` and
+    :func:`_rows_the_definition_reattributes`), so an edit means one thing
+    whether or not the definition repeats: a row whose ACCOUNT the definition
+    moved and which holds the owner's own records is RETAINED where it is.
+    Every other row takes :func:`~._amounts._derive_unruled_fields` whole --
+    the definition's account, name, category, type and TEMPLATE ownership,
+    with the row's own due date -- through the same ``setattr`` splat
+    :func:`_apply_maintain_work` uses, and its postings are reconciled
+    after the flush for the same reason: an updated row may have moved
+    money's category or account.  Ownership is written as a declaration and
+    never a figure (plan step X-au-e).  The caller selects rows that are not
+    overridden, so a figure the owner typed at the grid (OWN with the flag
+    beside it) is never reached here; an OWN figure written WITHOUT the flag
+    -- ``salary_profile_service``'s archive freeze -- is reached exactly as
+    the regular pass reaches it, which is that pass's standing shape and not
+    this twin's to decide.
+
+    Args:
+        template: The updated rule-less TransactionTemplate, its new field
+            values already applied.
+        rows: Its live, rule-owned rows -- Projected, not overridden and not
+            soft-deleted, which the caller selects
+            (``routes/templates/_instances.non_repeating_live_rows``).
+
+    Returns:
+        The ids this pass RETAINED: rows whose account the definition moved
+        and which carry the owner's own records, left exactly as found.
+    """
+    work = classify_unruled_work(
+        rows,
+        with_records=_rows_holding_owner_records(rows),
+        reattributed=_rows_the_definition_reattributes(rows, template),
+    )
+    for row in work.update:
+        for field, value in _derive_unruled_fields(template, row)._asdict().items():
+            setattr(row, field, value)
+    db.session.flush()
+    for row in work.update:
+        posting_service.sync_transaction_postings(
+            row, settled=row.status.is_settled,
+        )
+    return work.retained_ids
 
 
 #: The acts a regeneration performs that are THIS engine's own -- what

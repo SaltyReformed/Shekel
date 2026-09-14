@@ -97,6 +97,7 @@ from ._eras import (
     projected_payday,
     validate_cadence,
 )
+from ._grid import cadence_steps_to, nominal_payday
 
 
 @dataclass(frozen=True)
@@ -531,7 +532,7 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
     Plan step ``pay_calendar:C17-b-2``.  Held to :func:`~._eras.validate_cadence`'s
     standard, and for the same reason: every reader below walks the sequence
     without re-checking it, so a bad one refused here is refused once rather
-    than answered wrongly four ways.  Four things are refused, and each is a
+    than answered wrongly four ways.  Five things are refused, and each is a
     state the storage or the write door already keeps a STORED sequence out
     of -- so reaching this means a caller assembled the tuple by hand and got
     it wrong, and failing loud is the only safe disposition.
@@ -542,6 +543,19 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
       travels here for a reader to remember to test.
     * **A cadence outside the column's bound**, per era, through
       :func:`~._eras.validate_cadence`.
+    * **A phase OFF its own grid**, per era (plan step ``C17-d-2``).  An
+      era's ``effective_from`` is its first nominal payday, so its grid
+      passes through it: ``nominal_payday(effective_from, cadence, 0)`` is
+      the day itself.  A fixed-days grid passes through any anchor and
+      cannot fail this; a day-of-month grid passes through its stated day
+      only, so a ``Monthly(15)`` era phased on the 10th, or a
+      ``SemiMonthly`` one phased on neither day, would project a step-zero
+      payday that is not its own anchor and every reader would read the
+      seam a day off.  The storage cannot hold that state (the anchor's own
+      day IS the meant day unless ``nominal_day`` records the clamp, and
+      ``ck_pay_eras_nominal_day`` ties that to a month too short to carry
+      it) and ``pay_era_write.reject_phase_off_grid`` refuses it at the
+      write door, so it reaches here from a hand-built sequence only.
     * **Eras out of order.**  ``effective_from`` must strictly ascend;
       ``uq_pay_eras_user_effective_from`` and the loader's ``ORDER BY`` hold
       that for a stored sequence.
@@ -570,7 +584,8 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
 
     Raises:
         PayCalendarError: The tuple is empty; an era's cadence is refused by
-            :func:`~._eras.validate_cadence`; two consecutive eras are out of
+            :func:`~._eras.validate_cadence`; an era's ``effective_from`` is
+            off its own cadence's grid; two consecutive eras are out of
             order by ``effective_from``; or a non-latest era would pay no
             payday under the seam rule.
     """
@@ -584,6 +599,22 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
         )
     for era in eras:
         validate_cadence(era.rhythm.cadence)
+        cadence = era.rhythm.cadence
+        if nominal_payday(era.effective_from, cadence, 0) != era.effective_from:
+            before = cadence_steps_to(era.effective_from, cadence, era.effective_from)
+            raise PayCalendarError(
+                f"pay era {era.effective_from.isoformat()} is phased on a "
+                f"day its own grid does not pass through: paid "
+                f"{cadence.phrase}, the grid days either side of it are "
+                f"{nominal_payday(era.effective_from, cadence, before).isoformat()} "
+                f"and "
+                f"{nominal_payday(era.effective_from, cadence, before + 1).isoformat()}."
+                f"  An era's effective_from is its first nominal payday, so "
+                f"it must lie on the stated day of the month; "
+                f"pay_era_write.reject_phase_off_grid refuses this at the "
+                f"write door and the storage cannot hold it, so this sequence "
+                f"was assembled by hand."
+            )
     for earlier, later in zip(eras, eras[1:]):
         if later.effective_from <= earlier.effective_from:
             raise PayCalendarError(
@@ -602,8 +633,8 @@ def validate_eras(eras: "tuple[Era, ...]") -> None:
                 f"payday ({first_payday_of(following).isoformat()}) falls "
                 f"before the previous era's second planned payday "
                 f"({projected_payday(era.effective_from, era.rhythm, 1).isoformat()}"
-                f", from {era.effective_from.isoformat()} at a "
-                f"{era.rhythm.cadence.days}-day cadence), so that era would "
+                f", from {era.effective_from.isoformat()}, paid "
+                f"{era.rhythm.cadence.phrase}), so that era would "
                 f"pay nothing: a later era's first payday replaces the "
                 f"earlier era's last planned payday at or before it (ruling "
                 f"R-PC75).  pay_period_batch's floor keeps a minted era's "

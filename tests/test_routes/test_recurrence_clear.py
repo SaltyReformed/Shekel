@@ -43,7 +43,7 @@ retires the ``Once`` pattern.
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
@@ -62,6 +62,7 @@ from app.services import (
 )
 from tests._test_helpers import (
     all_periods,
+    create_account_of_type,
     create_loan_account,
     derived_span,
     generate_row_of,
@@ -434,6 +435,154 @@ class TestATemplateThatNeverRecurredIsNotSwept:
 
         db.session.expire_all()
         assert db.session.get(Transaction, manual_id) is not None
+
+
+class TestARuleLessDefinitionsEditReachesItsRows:
+    """The transaction twin of ``propagate_to_unruled_template``.
+
+    Plan step ``balance:X-bi-7a`` (ruling **R-BAL20**).  A definition that
+    neither has nor had a rule never enters the regeneration, so until this
+    step its rows were reached by the bulk RENAME alone: a new category,
+    account or type stayed on the Recurring page and never reached the grid.
+    The route now hands such a definition's live rows to
+    ``recurrence_engine.propagate_to_unruled_definition``, which applies the
+    same two refusals the maintain pass makes.  Each case makes the
+    definition rule-less the way the edit door does (the engine's row under
+    a cadence, then the cadence cleared), which is the one way a
+    rule-less transaction definition holds a row today.
+    """
+
+    def _rule_less_with_a_row(self, seed_user, seed_periods):
+        """Return ``(template, its one live row)``, the cadence cleared."""
+        template = _recurring_txn_template(seed_user, recurs=False)
+        _every_period_rule(template)
+        row = generate_row_of(template, seed_periods[6])
+        template.recurrence_rule = None
+        db.session.commit()
+        assert template.recurs is False
+        return template, row
+
+    def _edit(self, auth_client, template, seed_periods, **fields):
+        """POST the edit form with *fields*, the way the page submits it."""
+        return auth_client.post(f"/templates/{template.id}", data={
+            "name": template.name,
+            "effective_from": seed_periods[0].start_date.isoformat(),
+            "version_id": str(template.version_id),
+            **fields,
+        }, follow_redirects=True)
+
+    def test_a_category_and_type_change_reaches_the_row(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The definition speaks to its row: category, type AND name land."""
+        with app.app_context():
+            template, row = self._rule_less_with_a_row(seed_user, seed_periods)
+            groceries = seed_user["categories"]["Groceries"]
+            income = db.session.query(TransactionType).filter_by(name="Income").one()
+            assert row.category_id != groceries.id
+            due_before = row.due_date
+
+            resp = self._edit(
+                auth_client, template, seed_periods,
+                name="Streaming (renamed)",
+                category_id=str(groceries.id),
+                transaction_type_id=str(income.id),
+            )
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert row.name == "Streaming (renamed)"
+            assert row.category_id == groceries.id
+            assert row.transaction_type_id == income.id
+            # The one field the definition does NOT state: the row's own date.
+            assert row.due_date == due_before
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+    def test_an_account_move_reaches_a_row_holding_nothing(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A row carrying nothing follows its definition's account freely."""
+        with app.app_context():
+            template, row = self._rule_less_with_a_row(seed_user, seed_periods)
+            other = create_account_of_type(
+                seed_user, db.session, "Checking", "Other Checking",
+            )
+            db.session.commit()
+
+            resp = self._edit(
+                auth_client, template, seed_periods, account_id=str(other.id),
+            )
+            assert resp.status_code == 200
+            assert b"kept the value" not in resp.data
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, row.id).account_id == other.id
+
+    def test_an_account_move_retains_a_row_holding_a_record_and_says_so(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """THE refusal the recurring pass makes, made here too.
+
+        A row with the owner's own note is RETAINED where it is when the
+        definition moves its account -- ``_rows_holding_owner_records`` and
+        ``_rows_the_definition_reattributes``, the same two functions -- and
+        the owner is told, exactly as the transfer twin does
+        (``test_a_non_repeating_transfer_holding_a_record_is_retained_too``).
+        """
+        with app.app_context():
+            template, row = self._rule_less_with_a_row(seed_user, seed_periods)
+            row.notes = "paid from the old account already"
+            db.session.commit()
+            old_account = row.account_id
+            other = create_account_of_type(
+                seed_user, db.session, "Checking", "Other Checking",
+            )
+            db.session.commit()
+
+            resp = self._edit(
+                auth_client, template, seed_periods,
+                name="Streaming (moved)", account_id=str(other.id),
+            )
+            assert resp.status_code == 200
+            assert b"kept the value it already had" in resp.data
+
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert row.account_id == old_account
+            # The bulk rename still reaches it: retention is about the fields
+            # the definition would REATTRIBUTE, and a name moves nothing.
+            assert row.name == "Streaming (moved)"
+
+    def test_an_overridden_row_is_left_alone(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A typed figure (OWN, ``is_override``) is the owner's, not the rule's.
+
+        Until ``X-bi-7b`` builds R-BAL21's restate door a typed figure lands
+        OWN on the row with the flag beside it (developer 2026-09-13), and
+        the flag is what keeps this pass off it: `$99.00` typed survives a
+        category change on the definition.
+        """
+        with app.app_context():
+            template, row = self._rule_less_with_a_row(seed_user, seed_periods)
+            repriced_by_the_owner(row, "99.00")
+            db.session.commit()
+            groceries = seed_user["categories"]["Groceries"]
+
+            resp = self._edit(
+                auth_client, template, seed_periods,
+                category_id=str(groceries.id),
+            )
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert row.estimated_amount == Decimal("99.00")
+            assert row.amount_source_id is None
+            assert row.category_id != groceries.id
 
 
 # ── Transfer templates ───────────────────────────────────────────────

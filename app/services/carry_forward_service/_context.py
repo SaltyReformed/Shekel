@@ -169,9 +169,9 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         )
 
     # Routed through ``is_projected_clause`` (D6-09 / MED-02) so the
-    # source-period projected-only query, the discrete-template bulk
-    # UPDATE, and the discrete-adhoc bulk UPDATE below share one
-    # definition of the rule with every other Projected SQL filter.
+    # source-period projected-only query and the two discrete bulk UPDATEs
+    # (rows of a recurring definition, and the rest) share one definition of
+    # the rule with every other Projected SQL filter.
     projected_txns = (
         db.session.query(Transaction)
         .filter(
@@ -189,19 +189,25 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     for txn in projected_txns:
         if txn.transfer_id is not None:
             shadow_txns.append(txn)
-        elif txn.template_id is not None and txn.tracks_purchases:
+        elif txn.recurs and txn.tracks_purchases:
             # Envelope ROLLOVER folds the unspent leftover into the
-            # template's next-period canonical (created via
-            # recurrence_engine.generate_for_template).  An ad-hoc
-            # envelope row (tracks purchases on its own say-so, no
-            # template) has no next canonical, so it intentionally falls
-            # through to the discrete bucket and moves whole, carrying its
-            # entries.  The template gate STAYS: a bare
-            # ``txn.tracks_purchases`` would sweep those rows into the
-            # rollover.  The envelope half reaches the one accessor rather
-            # than restating ``template.is_envelope`` beside it (plan step
-            # balance:X-bi-1, ruling R-IZ), and the gate reads the key
-            # rather than the relationship so an ad-hoc row costs no load.
+            # definition's next-period canonical (created via
+            # recurrence_engine.generate_for_template) or, where the rule
+            # names no row there, a fresh row of the SAME definition.  An
+            # envelope row NO RULE generated -- ad-hoc, or a rule-less
+            # definition's -- has no next canonical and no rule to place a
+            # leftover row by, so it intentionally falls through to the
+            # discrete bucket and moves whole, carrying its entries.  **The
+            # gate is ``recurs`` since plan step balance:X-bi-7a** (ruling
+            # R-BAL20; ``from_scratch_architecture.md`` 10.4 trace 4): it
+            # read the LINK, so a definition whose cadence the owner cleared
+            # took the rollover and gained a second row answering no
+            # occurrence -- two rows on a definition that places one.  A bare
+            # ``txn.tracks_purchases`` would sweep every envelope in.  The
+            # envelope half reaches the one accessor rather than restating
+            # ``template.is_envelope`` beside it (plan step balance:X-bi-1,
+            # ruling R-IZ); ``recurs`` reads the key first, so a link-less
+            # row costs no load.
             envelope_txns.append(txn)
         else:
             discrete_txns.append(txn)
@@ -431,8 +437,12 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
             _TargetKind.TOP_UP, row=recipient,
             base=resolve_transaction_amount(recipient, basis),
         )
+    # ``source_txn.template`` is never ``None`` here: the context routes a row
+    # into ``envelope_txns`` only when it RECURS (plan step balance:X-bi-7a),
+    # and a row that recurs names a definition.  A ``template is not None``
+    # guard stood on both reads until then and was dead under the old link
+    # gate too (a linked row's template loads); it went with the re-key.
     if (not non_deleted
-            and source_txn.template is not None
             and recurrence_engine.can_generate_in_period(
                 source_txn.template, target_period.period_id,
                 basis.scenario_id, schedule=schedule,
