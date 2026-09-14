@@ -16,13 +16,16 @@ from app.extensions import db
 from app.models.ref import TransactionType
 from app.models.transaction_template import TransactionTemplate
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
+from tests._test_helpers import cadence_payload, make_cadence_rule
+from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
 def _make_template(seed_user, name="Test Template",
-                   txn_type="Expense", track=False, companion=False):
+                   txn_type="Expense", track=False, companion=False,
+                   recurs=False):
     """Create a template with configurable tracking and companion flags.
 
     Args:
@@ -31,6 +34,11 @@ def _make_template(seed_user, name="Test Template",
         txn_type: 'Income' or 'Expense' (ref table name).
         track: Value for is_envelope.
         companion: Value for companion_visible.
+        recurs: Whether to author an every-paycheck rule onto it.  The
+            Recurring LIST shows definitions with a rule and only those since
+            plan step ``balance:X-bi-7b`` (R-BAL23), so the badge cases that
+            read the list ask for one; the edit-form and update cases read
+            the definition directly and do not.
 
     Returns:
         TransactionTemplate: the created template.
@@ -50,12 +58,19 @@ def _make_template(seed_user, name="Test Template",
         companion_visible=companion,
     )
     db.session.add(template)
+    db.session.flush()
+    if recurs:
+        make_cadence_rule(template, EVERY_PERIOD)
     db.session.commit()
     return template
 
 
 def _base_form_data(seed_user, txn_type="Expense", **overrides):
     """Build minimal valid form data for creating a template.
+
+    Carries a cadence, because a transaction template REQUIRES one since plan
+    step ``balance:X-bi-7b`` (R-BAL23): a definition with no rule is a
+    one-off's, made at the grid, and the form's schema refuses an empty unit.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -74,8 +89,25 @@ def _base_form_data(seed_user, txn_type="Expense", **overrides):
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": txn_type_obj.id,
         "account_id": seed_user["account"].id,
+        **cadence_payload(),
     }
     data.update(overrides)
+    return data
+
+
+def _update_form_data(seed_user, txn_type="Expense", **overrides):
+    """Build form data for UPDATING a template: the create payload minus its cadence.
+
+    The update schema is partial and an omitted ``recurrence_unit`` means
+    "leave the stored cadence alone" (a present empty one is refused since
+    plan step ``balance:X-bi-7b``, R-BAL23).  The update cases here grade the
+    two flags on a definition ``_make_template`` built WITHOUT a rule, so a
+    payload carrying a cadence would author one as a side effect -- the
+    make-this-repeat path, which is not what these cases are about.
+    """
+    data = _base_form_data(seed_user, txn_type=txn_type, **overrides)
+    for key in ("recurrence_unit", "recurrence_placement", "interval_n", "starts_on"):
+        data.pop(key, None)
     return data
 
 
@@ -203,7 +235,7 @@ class TestUpdateTemplateFlags:
         with app.app_context():
             template = _make_template(seed_user, name="Groceries", track=False)
 
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, name="Groceries",
                 is_envelope="on",
             )
@@ -222,7 +254,7 @@ class TestUpdateTemplateFlags:
         with app.app_context():
             template = _make_template(seed_user, name="Gas", companion=False)
 
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, name="Gas",
                 companion_visible="on",
             )
@@ -250,7 +282,7 @@ class TestUpdateTemplateFlags:
             assert template.companion_visible is True
 
             # Submit form WITHOUT the checkbox fields -- simulates unchecking.
-            form = _base_form_data(seed_user, name="Both Flags")
+            form = _update_form_data(seed_user, name="Both Flags")
             resp = auth_client.post(
                 f"/templates/{template.id}", data=form,
                 follow_redirects=True,
@@ -273,7 +305,7 @@ class TestUpdateTemplateFlags:
                 seed_user, name="Stay Tracked", track=True,
             )
 
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, name="Stay Tracked",
                 is_envelope="on",
             )
@@ -303,7 +335,7 @@ class TestTrackingExpenseOnlyValidation:
                 seed_user, name="Income Template", txn_type="Income",
             )
 
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, txn_type="Income", name="Income Template",
                 is_envelope="on",
             )
@@ -331,7 +363,7 @@ class TestTrackingExpenseOnlyValidation:
                 seed_user, name="Was Expense", track=True,
             )
 
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, txn_type="Income", name="Was Expense",
                 is_envelope="on",
             )
@@ -380,7 +412,7 @@ class TestTrackingExpenseOnlyValidation:
             # Enable tracking but OMIT transaction_type_id so the schema
             # validator returns early and only the route fallback (against
             # the stored income type) can reject.
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, name="Stored Income", is_envelope="on",
             )
             del form["transaction_type_id"]
@@ -410,7 +442,7 @@ class TestTrackingExpenseOnlyValidation:
             )
 
             # Don't include is_envelope -- simulates unchecking.
-            form = _base_form_data(
+            form = _update_form_data(
                 seed_user, txn_type="Income", name="Type Change",
             )
             resp = auth_client.post(
@@ -558,7 +590,7 @@ class TestListBadges:
         """Template with track=True shows tracking badge, not companion badge."""
         with app.app_context():
             _make_template(
-                seed_user, name="Track Badge", track=True, companion=False,
+                seed_user, recurs=True, name="Track Badge", track=True, companion=False,
             )
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
@@ -573,7 +605,7 @@ class TestListBadges:
         """Template with companion=True shows companion badge, not tracking badge."""
         with app.app_context():
             _make_template(
-                seed_user, name="Companion Badge", track=False, companion=True,
+                seed_user, recurs=True, name="Companion Badge", track=False, companion=True,
             )
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
@@ -588,7 +620,7 @@ class TestListBadges:
         """Template with both flags shows both badges."""
         with app.app_context():
             _make_template(
-                seed_user, name="Both Badges", track=True, companion=True,
+                seed_user, recurs=True, name="Both Badges", track=True, companion=True,
             )
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
@@ -601,7 +633,7 @@ class TestListBadges:
         """Template with both flags False shows no badges."""
         with app.app_context():
             _make_template(
-                seed_user, name="No Badges", track=False, companion=False,
+                seed_user, recurs=True, name="No Badges", track=False, companion=False,
             )
             resp = auth_client.get("/templates")
             assert resp.status_code == 200
@@ -618,15 +650,15 @@ class TestListBadges:
         """
         with app.app_context():
             _make_template(
-                seed_user, name="Tracked Groceries",
+                seed_user, recurs=True, name="Tracked Groceries",
                 track=True, companion=False,
             )
             _make_template(
-                seed_user, name="Visible Bill",
+                seed_user, recurs=True, name="Visible Bill",
                 track=False, companion=True,
             )
             _make_template(
-                seed_user, name="Plain Rent",
+                seed_user, recurs=True, name="Plain Rent",
                 track=False, companion=False,
             )
 
@@ -668,6 +700,7 @@ class TestFlagSchemaValidation:
             "category_id": "1",
             "transaction_type_id": str(expense_id),
             "account_id": "1",
+            **cadence_payload(),
             "is_envelope": "on",
         })
         assert data["is_envelope"] is True
@@ -681,6 +714,7 @@ class TestFlagSchemaValidation:
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
+            **cadence_payload(),
         })
         assert data["is_envelope"] is False
         assert data["companion_visible"] is False
@@ -694,6 +728,7 @@ class TestFlagSchemaValidation:
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
+            **cadence_payload(),
             "is_envelope": "invalid",
         })
         assert "is_envelope" in errors
@@ -754,6 +789,7 @@ class TestEnvelopeOnlyOnExpenseSchema:
                 "category_id": "1",
                 "transaction_type_id": str(income_id),
                 "account_id": "1",
+            **cadence_payload(),
                 "is_envelope": "on",
             })
 
@@ -778,6 +814,7 @@ class TestEnvelopeOnlyOnExpenseSchema:
             "category_id": "1",
             "transaction_type_id": str(expense_id),
             "account_id": "1",
+            **cadence_payload(),
             "is_envelope": "on",
         })
         assert data["is_envelope"] is True
@@ -797,6 +834,7 @@ class TestEnvelopeOnlyOnExpenseSchema:
             "category_id": "1",
             "transaction_type_id": str(income_id),
             "account_id": "1",
+            **cadence_payload(),
         })
         assert data["is_envelope"] is False
 
@@ -863,6 +901,7 @@ class TestEnvelopeOnlyOnExpenseSchema:
             "category_id": "1",
             "transaction_type_id": str(income_id),
             "account_id": "1",
+            **cadence_payload(),
             "is_envelope": "on",
         })
         assert "is_envelope" in errors

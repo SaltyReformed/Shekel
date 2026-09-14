@@ -183,16 +183,50 @@ def _derive_row_fields(template, rule, period):
     )
 
 
-def _derive_unruled_fields(template, row):
-    """Resolve what a RULE-LESS *template*'s definition says about *row*.
+def unruled_row_fields(template, due_date):
+    """Resolve what a RULE-LESS *template*'s definition says about a row due on *due_date*.
 
     FIVE of the six columns, exactly as ``transfer_recurrence._derive_unruled_fields``
     states them for the twin table (plan step ``balance:X-bi-7a``).  A
     definition with no recurrence places no occurrence, so it states no DUE
-    DATE and the row keeps its own -- the owner's to state under ruling
-    **R-BAL22** -- which is expressed by deriving that field FROM the row
-    rather than by carrying a shorter tuple, so there is still exactly one
-    statement of what a generated row's definition says.
+    DATE: the row's is the owner's to state under ruling **R-BAL22** (its
+    placed paycheck's start unless they say otherwise), and it is taken as an
+    argument rather than dropped from the tuple so there is still exactly one
+    statement of what a definition says about a row.
+
+    **Two callers, one statement** (plan step ``balance:X-bi-7b``).  The
+    maintain twin :func:`_derive_unruled_fields` brings an EXISTING row back
+    into line with its definition and reads the date off the row; the one-off
+    producer ``one_off.place_row_of`` states a NEW row and knows the date
+    before the row exists.  Written as one function so the row a one-off is
+    born with and the row its definition's edit re-declares cannot come to
+    differ in any of the five.
+
+    Args:
+        template: The rule-less
+            :class:`~app.models.transaction_template.TransactionTemplate`.
+        due_date: The day the row is due on, which is the day amount rule 3
+            prices it (``ck_transactions_template_row_needs_due_date`` says a
+            row of a definition always has one).
+
+    Returns:
+        The :class:`DerivedRowFields` this definition says about such a row.
+    """
+    return DerivedRowFields(
+        account_id=template.account_id,
+        name=template.name,
+        category_id=template.category_id,
+        transaction_type_id=template.transaction_type_id,
+        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
+        due_date=due_date,
+    )
+
+
+def _derive_unruled_fields(template, row):
+    """Resolve what a RULE-LESS *template*'s definition says about *row*.
+
+    :func:`unruled_row_fields` read at the row's own due date -- the maintain
+    twin's spelling, for a row that already exists.
 
     Args:
         template: The rule-less
@@ -203,11 +237,4 @@ def _derive_unruled_fields(template, row):
     Returns:
         The :class:`DerivedRowFields` this definition says about *row*.
     """
-    return DerivedRowFields(
-        account_id=template.account_id,
-        name=template.name,
-        category_id=template.category_id,
-        transaction_type_id=template.transaction_type_id,
-        amount_ownership=derived_ownership(AmountSourceEnum.TEMPLATE),
-        due_date=row.due_date,
-    )
+    return unruled_row_fields(template, row.due_date)

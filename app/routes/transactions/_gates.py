@@ -135,8 +135,9 @@ def _reject_generated_due_date_edit(txn, data):
     anyway; this arm exists so the owner reads *why* rather than the generic
     invalid-reference sentence a constraint hit renders, which is the
     screens-stating-what-is-false defect this arc keeps closing.  The popover
-    stops offering the clear at the family's doors leaf (``X-bi-7b``); until
-    then this is the sentence a cleared box meets.
+    stops offering the clear at the doors leaf's second half (``X-bi-7b``,
+    leaf 7b-2); until then this is the sentence a cleared box meets -- on a
+    one-off the grid itself minted, since leaf 7b-1.
 
     Args:
         txn: The Transaction being edited.

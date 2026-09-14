@@ -24,10 +24,23 @@ envelope holds postings once a purchase records its bank day).  Then the
 definition goes through the session, so ``amount_versions``' delete-orphan
 and the rule's cascade run.  The delete is restricted to non-settled rows via
 ``Status.is_settled`` (CRIT-05 / E-22) so a race-window mark-done cannot
-destroy Paid / Received history; **the caller has already asked
-:func:`~app.utils.archive_helpers.template_has_paid_history`** -- soft-deleted
-settled rows included -- and refused, which is what makes the restriction a
-backstop rather than a filter that leaves a survivor.
+destroy Paid / Received history; **the two definition doors have already
+asked :func:`~app.utils.archive_helpers.template_has_paid_history`** --
+soft-deleted settled rows included -- and refused, which is what makes the
+restriction a backstop rather than a filter that leaves a survivor.  The
+ROW door (below) does not ask it, and correctly: it reaches here only for a
+definition whose LAST row is the one being deleted, so the only settled row
+that could be its history is the one the owner is deliberately removing,
+already deleted through that door's own reversal of its postings.
+
+**A ONE-OFF's definition goes with its LAST row** (plan step
+``balance:X-bi-7b``, ruling **R-BAL23**; the row's delete door is the third
+caller): a rule-less definition with no row defines nothing (**R-BAL27**), so
+``transaction_service.delete_transaction`` asks
+:func:`is_last_row_of_its_definition` and disposes of the definition through
+the same act.  A definition holding OTHER rows -- a bank-born envelope's
+paycheck rows (**R-BAL24**), a cleared cadence's survivors, a soft-deleted
+one-off (still the definition's, 10.8) -- keeps them and stays.
 
 Boundary discipline (``CLAUDE.md`` Architecture): an ORM row in, no Flask
 import.  It MUTATES and does NOT commit -- the caller owns the unit of work.
@@ -69,6 +82,42 @@ def rows_holding_purchase_postings(*scope):
         .filter(*scope, posting_service.posted_purchase_exists_clause())
         .all()
     )
+
+
+def is_last_row_of_its_definition(txn) -> bool:
+    """Return whether deleting *txn* would leave a RULE-LESS definition with no row.
+
+    The predicate the row's delete door and its dialog share (plan step
+    ``balance:X-bi-7b``): TRUE for a one-off's only row, FALSE for a row of a
+    recurring definition (its rows are the RULE's, soft-deleted as
+    tombstones), for a link-less row (nothing to dispose of), and for a row of
+    a rule-less definition that holds any OTHER row.  **Soft-deleted rows
+    count as rows**: a soft-deleted one-off is still its definition's (10.8),
+    and disposing of the definition under it would leave a TEMPLATE-priced
+    tombstone with ``template_id NULL`` -- ruling **R-JE**'s state, one door
+    over.
+
+    One indexed read (``idx_transactions_template``; the partial undated
+    index cannot serve a predicate that must see soft-deleted and dated
+    rows), issued only for a rule-less definition's row.
+
+    Args:
+        txn: The :class:`~app.models.transaction.Transaction` being deleted.
+
+    Returns:
+        Whether *txn*'s definition has no row but *txn*.
+    """
+    if txn.template_id is None or txn.recurs:
+        return False
+    another = (
+        db.session.query(Transaction.id)
+        .filter(
+            Transaction.template_id == txn.template_id,
+            Transaction.id != txn.id,
+        )
+        .first()
+    )
+    return another is None
 
 
 def permanently_delete_definition(template) -> None:

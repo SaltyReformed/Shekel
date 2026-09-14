@@ -204,7 +204,6 @@ from ._batch import Consent, ReviewedBatch, apply_reviewed
 from ._container import MintedEnvelopes
 from ._candidates import (
     candidates_for,
-    destinations_for,
     matched_subjects,
     unmatched_destinations,
 )
@@ -219,6 +218,7 @@ from ._creations import (
     PurchaseDestination,
     RecordedIncome,
 )
+from ._destinations import destinations_for
 from ._income import record_income_from_line
 from ._leftovers import CreatableLine, RecordableInflow
 from ._offers import (

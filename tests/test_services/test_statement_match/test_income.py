@@ -34,6 +34,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    AmountSourceEnum,
     LedgerAccountClassEnum,
     SettledDayBasisEnum,
     StatusEnum,
@@ -51,6 +52,7 @@ from app.models.statement_match import (
     StatementMatchMember,
 )
 from app.models.transaction import Transaction
+from app.models.transaction_template import TransactionTemplate
 from app.services import statement_match
 from app.services.statement_match import (
     Consent,
@@ -73,6 +75,7 @@ from ._builders import (
 )
 from tests._test_helpers import (
     last_covered_day,
+    resolved_amount,
 )
 
 
@@ -150,9 +153,12 @@ class TestTheRowItWrites:
         assert row.transaction_type_id == ref_cache.txn_type_id(
             TxnTypeEnum.INCOME,
         )
-        # The MAGNITUDE is stored, because the column is non-negative by
-        # ``ck_transactions_estimated_amount``; the direction is the type.
-        assert row.estimated_amount == Decimal("0.15")
+        # The MAGNITUDE is what the row is worth and the direction is the
+        # type.  Read through the one resolver: the row is priced by the
+        # definition the door mints since plan step balance:X-bi-7b
+        # (R-BAL21), so the column it used to store the figure in is empty.
+        assert resolved_amount(row) == Decimal("0.15")
+        assert row.template.default_amount == Decimal("0.15")
 
     def test_it_carries_NO_category(self, app, db, seed_user):
         """R-FN's clause: the app does not know what this money was."""
@@ -180,16 +186,42 @@ class TestTheRowItWrites:
         )
         assert row.status.is_settled
 
-    def test_it_OWNS_its_amount(self, app, db, seed_user):
-        """It names no template, transfer or card spend, so it reads none."""
+    def test_it_is_a_ONE_OFF_priced_by_its_rule_less_definition(
+        self, app, db, seed_user,
+    ):
+        """It names a definition with no rule and reads its price from it.
+
+        **It asserted "OWNS its amount, names no template" until plan step
+        balance:X-bi-7b** (rulings R-BAL20 / R-BAL24): every plan item has
+        exactly one definition, so the row a bank line's money requires is
+        born through the one-off producer -- a rule-less definition carrying
+        the name, type and figure (one version dated on the row's due date)
+        plus this placed row, priced ``derived(TEMPLATE)``.  A link-less row
+        owning its figure was a third meaning of ``template_id IS NULL``.
+        It still names no transfer and no card spend.
+        """
         line = _a_deposit(seed_user)
 
         recorded = _record(seed_user, line)
 
         row = db.session.get(Transaction, recorded.transaction_id)
-        assert row.amount_source_id is None
-        assert row.template_id is None
+        assert row.template_id is not None
+        assert row.recurs is False
+        assert row.template.recurrence_rule is None
+        assert row.amount_source_id == ref_cache.amount_source_id(
+            AmountSourceEnum.TEMPLATE,
+        )
+        assert row.estimated_amount is None
         assert row.transfer_id is None
+        assert row.credit_payback_for_id is None
+        # The definition carries what the row used to: no category (R-FN),
+        # the deposit's type, the merchant's name.
+        assert row.template.category_id is None
+        assert row.template.transaction_type_id == row.transaction_type_id
+        assert row.template.name == row.name
+        # Dated at its paycheck's start (R-BAL22) and answering that day (R-BAL25).
+        assert row.due_date is not None
+        assert row.occurs_on == row.due_date
 
     def test_it_is_placed_by_the_POSTING_day(self, app, db, seed_user):
         """The residual's rule, not the purchase's: this row IS the movement.
@@ -405,10 +437,20 @@ class TestTheLineStopsBeingUnexplained:
     def test_UNDOING_the_match_removes_the_row_again(
         self, app, db, seed_user,
     ):
-        """The inverse, end to end: the books go back to where they were."""
+        """The inverse, end to end: the books go back to where they were.
+
+        **The DEFINITION goes with the row** (plan step balance:X-bi-7b,
+        R-BAL27): the door mints a rule-less definition per deposit, and an
+        undo that left one behind with no row would leave a definition that
+        defines nothing, once per undo, listed nowhere.
+        """
         line = _a_deposit(seed_user)
         recorded = _record(seed_user, line)
         db.session.commit()
+        definition_id = db.session.get(
+            Transaction, recorded.transaction_id,
+        ).template_id
+        assert definition_id is not None
 
         statement_match.release_match(
             seed_user["user"].id, seed_user["account"].id, recorded.match_id,
@@ -416,6 +458,7 @@ class TestTheLineStopsBeingUnexplained:
         db.session.commit()
 
         assert db.session.get(Transaction, recorded.transaction_id) is None
+        assert db.session.get(TransactionTemplate, definition_id) is None
         assert [
             item.line.line_id
             for item in review_set(a_scope(seed_user)).recordable_inflows

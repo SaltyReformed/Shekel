@@ -28,7 +28,11 @@ from app.models.ref import TransactionType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import template_amount_service as tas
-from tests._test_helpers import create_savings_account, make_every_period_rule
+from tests._test_helpers import (
+    cadence_payload,
+    create_savings_account,
+    make_every_period_rule,
+)
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
@@ -126,6 +130,9 @@ class TestCreateOpensTheSeries:
                 "transaction_type_id": db.session.query(TransactionType)
                     .filter_by(name="Expense").one().id,
                 "account_id": seed_user["account"].id,
+                # A transaction template REQUIRES a cadence since plan step
+                # balance:X-bi-7b (R-BAL23); the series is what this grades.
+                **cadence_payload(),
             }, follow_redirects=True)
             assert resp.status_code == 200
 

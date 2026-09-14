@@ -43,6 +43,17 @@ door's own precondition, asked before the sequence starts.
    and the original legs would be stranded on their ledger accounts with
    nothing to offset them.
 4. **Remove the row**, soft or hard by whether its definition RECURS.
+5. **Dispose of the definition the row was the LAST of** (plan step
+   ``balance:X-bi-7b``, rulings **R-BAL23** / **R-BAL27**): a one-off is a
+   rule-less definition plus its placed row, and a rule-less definition with
+   no row defines nothing -- so its series and it go, through
+   ``definition_delete.permanently_delete_definition``, the ONE act both
+   definition doors already call.  AFTER the row, and asked of the row's
+   definition rather than assumed: a definition holding any other row (a
+   bank-born envelope's other paychecks, a cleared cadence's survivors, a
+   soft-deleted one-off) stays.  Where a standing merchant rule names the
+   definition the delete never gets here -- ``deletion_refusal`` refused it
+   at step 0's neighbour, because the rule would cascade away with it.
 
 **Why the FORK at step 4 is about the cadence and not about the status.**  A
 row of a recurring definition is one instance of a rule that keeps generating:
@@ -71,7 +82,12 @@ from dataclasses import dataclass
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import credit_workflow, match_withdrawal, posting_service
+from app.services import (
+    credit_workflow,
+    definition_delete,
+    match_withdrawal,
+    posting_service,
+)
 from app.services.match_withdrawal import MatchWithdrawal
 from app.services.transaction_service._row_rules import deletion_refusal
 
@@ -208,12 +224,21 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {txn.id} not found.")
 
-    refusal = deletion_refusal(txn)
+    # Asked ONCE and threaded: the refusal's third arm and step 5 below want
+    # the same answer, and one request asks a producer once.
+    last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
+    refusal = deletion_refusal(
+        txn, last_row_of_definition=last_row_of_definition,
+    )
     if refusal is not None:
         raise ValidationError(refusal)
 
     soft, leaving = _leaves_the_table(txn)
     paybacks = tuple(row.name for row in leaving if row.id != txn.id)
+    # The definition is read off the row BEFORE the row is deleted: the
+    # relationship may not be loaded yet, and a lazy load on an instance the
+    # session has already deleted is not a read this door may rely on.
+    definition = txn.template if last_row_of_definition else None
     withdrawn = match_withdrawal.withdraw_for_rows(leaving, owner_id)
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)
     posting_service.reverse_postings_before_delete(txn)
@@ -222,4 +247,9 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
         txn.is_deleted = True
     else:
         db.session.delete(txn)
+    if definition is not None:
+        # Step 5.  The act's own read autoflushes the row's DELETE first, so
+        # its scan of the definition's non-settled rows finds none and what
+        # is left to remove is the definition and its series.
+        definition_delete.permanently_delete_definition(definition)
     return RowDeletion(soft=soft, paybacks=paybacks, withdrawn=withdrawn)

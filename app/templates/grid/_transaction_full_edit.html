@@ -446,10 +446,15 @@
       </div>
       {% endif %}
 
-      {# Ad-hoc tracking / visibility flags.  Only ad-hoc rows
-         (template_id IS NULL) carry their own flags; template-generated
-         rows inherit them from the template, so the controls are hidden
-         for those.  Each checkbox is followed by a hidden "false" input so
+      {# Ad-hoc tracking / visibility flags.  Only LEGACY ad-hoc rows
+         (template_id IS NULL) carry their own flags; a row of a definition
+         reads them from the definition, so the controls are hidden for
+         those.  **A ONE-OFF's row is such a row since plan step
+         balance:X-bi-7b** (its definition has no rule and carries the flags,
+         ruling R-BAL20): the family's second leaf (7b-2) renders these
+         controls for it and lands them on the DEFINITION; until then a new
+         one-off's flags are the ones its create door set, stated here rather
+         than left to be discovered.  Each checkbox is followed by a hidden "false" input so
          an explicit value is always submitted: werkzeug's MultiDict keeps
          the FIRST value, so a checked box yields "true" (checkbox first)
          and an unchecked box yields only the hidden "false".  This lets

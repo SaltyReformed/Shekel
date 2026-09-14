@@ -21,7 +21,7 @@ collapse the two facts a purchase keeps apart, and it would give a later
 statement line nowhere to go.  So the only question the owner answers is which
 budget line CONTAINS it, and there are exactly two answers:
 
-* an existing envelope, from the set :func:`~._candidates.destinations_for` offers;
+* an existing envelope, from the set :func:`~._destinations.destinations_for` offers;
 * a NEW envelope this door creates in the line's own pay period, named from
   what the bank called it.
 
@@ -539,7 +539,7 @@ def create_purchase_from_line(
     # would raise the entry list's out-of-period warning
     # (``entry_service.entry_list_view``, which asks
     # ``DerivedPeriod.covers``) on a row this door had just built.
-    pay_period_id = scope.period_holding(made_on, "this purchase")
+    pay_period_id = scope.period_holding(made_on, "this purchase").period_id
     envelope, created = resolve_destination(
         creation, pay_period_id, scope, matched, minted,
     )

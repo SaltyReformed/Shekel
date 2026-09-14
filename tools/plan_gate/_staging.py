@@ -238,14 +238,23 @@ def an_identity_class_with_leaves() -> tuple[list[str], list[str]]:
 
     Returns:
         ``(member keys, leaf keys)`` for the first class in table order that
-        declares at least one member a parent and has at least one leaf.
+        declares at least one SHIPPED member a parent and has at least one
+        leaf.
 
     Raises:
         AssertionError: The corpus holds no such class.
     """
     rows = registry.step_rows()
     for row in rows:
-        if not row.alias_keys() or not row.is_decomposed_parent:
+        if not row.alias_keys() or not row.is_decomposed_parent or not row.shipped:
+            # SHIPPED, because :func:`stage_an_open_leaf` re-opens a leaf to make
+            # the decomposition arm FIRE on the parent, and a parent that is still
+            # a container fires nothing.  Until 2026-09-14 no OPEN class had this
+            # shape; `bank_import:X-f6c` (a declared parent whose three leaves are
+            # `balance:X-bi-7b-1..3`, X-bi-7b-1's tick) then preceded the shipped
+            # specimen in table order and the control went RED -- measured on
+            # that tick: `test_a_parent_is_graded_over_its_whole_identity_class`
+            # asserts a finding and got `[]`.
             continue
         members = identity_class(row, rows)
         if len(members) < 2:

@@ -53,6 +53,7 @@ from ._builders import (
 )
 from tests._test_helpers import (
     last_covered_day,
+    resolved_amount,
 )
 
 MERCHANT = "Food Lion"
@@ -1381,7 +1382,8 @@ class TestAStandingRuleFilesADepositByItself:
                 .all()
             )
             assert len(recorded) == 1
-            assert recorded[0].estimated_amount == Decimal("0.15")
+            # Priced by the definition the door mints (balance:X-bi-7b, R-BAL21).
+            assert resolved_amount(recorded[0]) == Decimal("0.15")
             assert recorded[0].settled_on == day
             assert recorded[0].settled_day_basis_id == (
                 ref_cache.settled_day_basis_id(SettledDayBasisEnum.OBSERVED)

@@ -2,6 +2,7 @@
 
 
 from marshmallow import (
+    ValidationError,
     fields,
     pre_load,
     validate,
@@ -19,6 +20,15 @@ from app.schemas.validation._helpers import (
 from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 
 
+#: The sentence a transaction template stated with no cadence meets (ruling
+#: **R-BAL23**, plan step ``balance:X-bi-7b``).  ONE spelling, shared by the
+#: create and the update schema, so the two doors refuse in the same words.
+A_CADENCE_IS_REQUIRED = (
+    "A recurring transaction needs a cadence -- choose how it repeats. "
+    "Something that happens once is added on the Budget grid instead."
+)
+
+
 class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for creating a transaction template.
 
@@ -30,6 +40,16 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     spending money.  Income flows are settled via the
     ``Projected -> Received`` workflow and the discrete
     carry-forward path; they have no rollover.
+
+    **A transaction template REQUIRES a cadence since plan step
+    ``balance:X-bi-7b``** (ruling **R-BAL23**, developer 2026-09-13 for the
+    edit form too): a transaction definition with no rule is a ONE-OFF, made
+    at the Budget grid through ``one_off.place_one_off`` and never through
+    this form, so the form's *Does not repeat* option is gone and an empty or
+    absent ``recurrence_unit`` is REFUSED here
+    (:meth:`validate_a_cadence_is_chosen`) rather than read as "author no
+    rule".  The transfer schemas keep the option: that form IS the one-time
+    transfer's door until the transfer's own step decides.
     """
 
     @pre_load
@@ -65,6 +85,23 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     due_day_of_month = fields.Integer(
         validate=validate.Range(min=1, max=31), allow_none=True,
     )
+
+    @validates_schema
+    def validate_a_cadence_is_chosen(self, data, **kwargs):
+        """Refuse a transaction template stated with no cadence (**R-BAL23**).
+
+        On a CREATE the unit is required outright: absent and empty are the
+        same statement, that the owner chose nothing, and the form's
+        placeholder posts the empty value.  :class:`TemplateUpdateSchema`
+        narrows this to the PRESENT-and-empty case, because a partial update
+        that omits the field means "leave the stored cadence alone".
+
+        Raises:
+            ValidationError: On the ``recurrence_unit`` field, with
+                :data:`A_CADENCE_IS_REQUIRED`.
+        """
+        if data.get("recurrence_unit") is None:
+            raise ValidationError(A_CADENCE_IS_REQUIRED, "recurrence_unit")
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):
@@ -121,6 +158,24 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     # ruling and for where the one authoring branch of an update is refused
     # instead.
     recurrence_start_is_required = False
+
+    @validates_schema
+    def validate_a_cadence_is_chosen(self, data, **kwargs):
+        """Refuse CLEARING the cadence; an omitted unit leaves it alone.
+
+        The update half of :meth:`TemplateCreateSchema.validate_a_cadence_is_chosen`.
+        A submission that carries the field EMPTY is the placeholder (or the
+        retired *Does not repeat*) being saved, which would delete the rule
+        and turn a recurring definition into scattered one-offs listed
+        nowhere -- refused.  A submission with no ``recurrence_unit`` at all is
+        a partial update and states nothing about the cadence.
+
+        Raises:
+            ValidationError: On the ``recurrence_unit`` field, with
+                :data:`A_CADENCE_IS_REQUIRED`.
+        """
+        if "recurrence_unit" in data and data["recurrence_unit"] is None:
+            raise ValidationError(A_CADENCE_IS_REQUIRED, "recurrence_unit")
 
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))

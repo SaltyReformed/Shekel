@@ -69,9 +69,18 @@ class TransactionTemplate(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # NULLABLE since plan step ``balance:X-bi-7b`` (ruling **R-BAL24**), for
+    # ONE producer: ``statement_match._uncategorized.mint_uncategorized`` mints
+    # a definition for the row a bank line's money requires, and two of its
+    # three callers state no category -- the app does not know what that
+    # money was, and saying so is what books its counter leg to the per-owner
+    # Uncategorized LEDGER ACCOUNT (**R-FN**) rather than misfiling it.  Every
+    # definition the template form or the grid mints carries one (their
+    # schemas require it).  Migration ``9c1e4b7a2d3f``; its downgrade
+    # re-adds ``NOT NULL`` and REFUSES while a category-less definition exists.
     category_id = db.Column(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
     )
     transaction_type_id = db.Column(
         db.Integer, db.ForeignKey("ref.transaction_types.id", ondelete="RESTRICT"),

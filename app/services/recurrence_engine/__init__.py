@@ -75,6 +75,7 @@ Every public name is re-exported here, so the split moved no call site.
 
 from app.services.recurrence_engine._amounts import (
     DerivedRowFields,
+    unruled_row_fields,
 )
 from app.services.recurrence_engine._conflicts import resolve_conflicts
 from app.services.recurrence_engine._generate import (
@@ -113,4 +114,5 @@ __all__ = [
     "regenerate_for_template",
     "resolve_conflicts",
     "resolve_generation_plan",
+    "unruled_row_fields",
 ]

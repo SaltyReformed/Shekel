@@ -29,11 +29,27 @@ exists at all:
 * its settle day is the bank's posting day on the ``observed`` basis (plan step
   ``balance:X-az``), because a statement SHOWED the money -- it is neither a
   bound nor a day the owner typed;
-* it **OWNS its amount** (``amount_source_id`` NULL beside a stored figure,
-  which ``ck_transactions_amount_ownership`` pairs): it names no template, no
-  transfer and no card spend, so there is no derivation for it to read.  The
-  stored figure is the MAGNITUDE and the DIRECTION is the transaction type,
-  which is what ``ck_transactions_estimated_amount`` (``>= 0``) requires;
+* it is a ONE-OFF -- **a rule-less DEFINITION plus its placed row** (plan
+  step ``balance:X-bi-7b``, rulings **R-BAL20** and **R-BAL24**), minted
+  through the one producer of a one-off
+  (:func:`app.services.one_off.place_one_off`; the grid's two create doors
+  call it too, and the envelope minter joins at the family's third leaf).
+  The definition carries the
+  name, the type and the figure -- as ONE version of its price series, dated
+  on the row's due date -- and the row is priced by it through amount rule 3;
+  the row states no figure of its own.  It was a link-less row owning its
+  amount until that step, which was a third meaning of ``template_id IS
+  NULL`` beside the transfer shadow and the CC payback.  The definition's
+  category is ``NULL`` where the movement's is, which is why
+  ``transaction_templates.category_id`` became nullable (migration
+  ``9c1e4b7a2d3f``).  The magnitude is what is stated and the DIRECTION is
+  the transaction type, which is what the definition's ``>= 0`` CHECK
+  requires;
+* it is **due on its paycheck's start** (**R-BAL22**): the bank stated the
+  day the money POSTED, which is the row's settle day below, and no day it
+  was DUE -- so the row takes the one rule a one-off with no stated day
+  takes, and ``occurs_on`` records that day as the occurrence it answers
+  (**R-BAL25**);
 * it is the **BASELINE scenario**, unconditionally: a what-if scenario is a
   hypothesis about money that has not moved, and this row records money the
   bank has already moved.
@@ -54,11 +70,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import SettledDayBasisEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.amount_ownership import AmountOwnership
-from app.models.transaction import Transaction
 from app.services import transaction_service
+from app.services.one_off import OneOffToPlace, place_one_off
+from app.services.pay_calendar import DerivedPeriod
 from app.services.scenario_resolver import require_baseline_scenario
 from app.services.settle_day import SettleDay
 
@@ -99,13 +115,16 @@ class MovementToRecord:
             :func:`~._candidates.transaction_candidate` answers ``None`` for
             one, which the writer treats as a broken contract rather than an
             outcome.
-        pay_period_id: The paycheck this movement belongs to, resolved by the
+        period: The paycheck this movement belongs to, resolved by the
             caller through :meth:`~._scope.ReviewScope.period_holding`.
             **Resolved THERE rather than in the writer, and that is a
             correctness property rather than tidying**: that lookup can refuse,
             and a refusal raised mid-write would leave written work behind for
             a caller that had already moved rows -- which :mod:`._accept`
-            explicitly declines to lean on its SAVEPOINT for.
+            explicitly declines to lean on its SAVEPOINT for.  **The whole
+            derived period and not its id** (plan step ``balance:X-bi-7b``):
+            the one-off producer dates the row at the paycheck's START, and
+            that day is on the value the lookup already found.
         posts_on: The day the bank posted the money, which this row settles on.
         category_id: What the money IS, where something can say so, else
             ``None`` -- which is what BOTH original callers pass and what the
@@ -124,7 +143,7 @@ class MovementToRecord:
 
     name: str
     signed_amount: Decimal
-    pay_period_id: int
+    period: DerivedPeriod
     posts_on: date
     category_id: "int | None" = None
 
@@ -173,29 +192,29 @@ def mint_uncategorized(
     # *the app does not know what this money was*, which for that caller is
     # false.  A separate minting function for it would be a second spelling of
     # every other clause here: born Projected and settled through the app's own
-    # verb, the bank's posting day on the ``observed`` basis, owning its
-    # amount, on the baseline scenario.
-    row = Transaction(
-        # The pass is the ONE statement of whose row this is (plan step
-        # ``pay_calendar:C13-a``), the same source ``account_id`` and the
-        # baseline scenario below already read.
-        user_id=scope.owner_id,
-        account_id=scope.account_id,
-        pay_period_id=movement.pay_period_id,
-        scenario_id=require_baseline_scenario(scope.owner_id).id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=movement.name[:NAME_LIMIT],
-        category_id=movement.category_id,
-        transaction_type_id=ref_cache.txn_type_id(
-            TxnTypeEnum.INCOME if movement.signed_amount > 0
-            else TxnTypeEnum.EXPENSE,
+    # verb, the bank's posting day on the ``observed`` basis, priced by its
+    # definition, on the baseline scenario.
+    #
+    # **The row is born through the one-off producer** (plan step
+    # ``balance:X-bi-7b``): the pass is the ONE statement of whose plan item
+    # this is (``pay_calendar:C13-a``), and what the bank observed is what the
+    # definition says.  The producer flushes, so the settle verb below reads a
+    # row with an id and a type.
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=scope.owner_id,
+            account_id=scope.account_id,
+            transaction_type_id=ref_cache.txn_type_id(
+                TxnTypeEnum.INCOME if movement.signed_amount > 0
+                else TxnTypeEnum.EXPENSE,
+            ),
+            name=movement.name[:NAME_LIMIT],
+            amount=abs(movement.signed_amount),
+            category_id=movement.category_id,
         ),
-        amount_ownership=AmountOwnership.own(abs(movement.signed_amount)),
-        is_envelope=False,
+        movement.period,
+        scenario_id=require_baseline_scenario(scope.owner_id).id,
     )
-    db.session.add(row)
-    # The settle verb reads the row's own type and id, so it must exist first.
-    db.session.flush()
     transaction_service.apply_requested_status(
         row,
         transaction_service.settled_status_id(row),
