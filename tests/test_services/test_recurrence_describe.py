@@ -169,6 +169,54 @@ class TestTheCadencePhrase:
         assert describe(resolved).cadence == expected
 
 
+class TestThePerMonthCeilingNote:
+    """The ceiling closes the bracket, on every unit (plan step salary:R15-a)."""
+
+    def test_every_paycheck_at_most_two_a_month(self):
+        """The developer's payroll benefit, worded from the rule rather than a count.
+
+        The deduction table spelled it "24x/yr (skip 3rd paycheck)" -- a
+        biweekly count that lies at any other pay cadence (finding F-21).
+        """
+        resolved = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            max_per_month=2,
+        )
+
+        assert describe(resolved).cadence == "Every paycheck (at most 2 a month)"
+
+    def test_the_note_follows_the_axes_parenthetical(self):
+        """On a unit with a coordinate the ceiling is the bracket's LAST clause."""
+        resolved = resolved_value(
+            unit=RecurrenceUnitEnum.WEEK, starts_on=date(2026, 3, 26),
+            max_per_month=2,
+        )
+
+        # 2026-03-26 is a Thursday.
+        assert describe(resolved).cadence == (
+            "Weekly (Thursdays, at most 2 a month)"
+        )
+
+    def test_a_counted_stem_takes_the_note_too(self):
+        """Every 2 paychecks at most 1 a month reads as the pair says."""
+        resolved = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+            interval_n=2, max_per_month=1,
+        )
+
+        assert describe(resolved).cadence == (
+            "Every 2 paychecks (at most 1 a month)"
+        )
+
+    def test_no_ceiling_adds_no_note(self):
+        """The bare stem is unchanged for every rule authored before the step."""
+        resolved = resolved_value(
+            unit=RecurrenceUnitEnum.PERIOD, starts_on=date(2026, 3, 26),
+        )
+
+        assert describe(resolved).cadence == "Every paycheck"
+
+
 class TestTheDayItNames:
     """The day comes from ``ResolvedRecurrence.day_of_month``, not the anchor."""
 
@@ -355,6 +403,7 @@ class TestItRefusesWhatItCannotWord:
             shift=BusinessDayShiftEnum.NONE,
             closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
+            max_per_month=None,
         )
 
         with pytest.raises(RecurrenceDescriptionError, match="has no wording"):
@@ -385,6 +434,7 @@ class TestItRefusesWhatItCannotWord:
             shift=BusinessDayShiftEnum.NONE,
             closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
+            max_per_month=None,
         )
 
         with pytest.raises(
@@ -412,6 +462,7 @@ class TestItRefusesWhatItCannotWord:
             shift=BusinessDayShiftEnum.NONE,
             closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
+            max_per_month=None,
         )
 
         with pytest.raises(
@@ -636,6 +687,7 @@ class TestTheDeferredCollapseNamesItsPlacement:
             shift=BusinessDayShiftEnum.NONE,
             closing=Closing(authored=NEVER_ENDS),
             nominal_day=None,
+            max_per_month=None,
         )
 
         # Today it is refused outright, which is the safe half of the

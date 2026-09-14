@@ -94,6 +94,11 @@ from app.routes._redirect_target import RedirectTarget
 #: ``tests/test_routes/test_form_errors.py`` pins the tuple against the schema
 #: package BOTH ways, so neither a renamed field nor a new refusal can silence
 #: its own message again.
+#:
+#: * ``max_per_month`` -- the per-month ceiling (plan step salary:R15-a),
+#:   whose one authored refusal names a ceiling beside a monthly or yearly
+#:   schedule; the gate below is what put it here in the same commit as the
+#:   message, rather than a review late.
 ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "is_envelope",
     "recurrence_unit",
@@ -101,6 +106,7 @@ ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "interval_n",
     "starts_on",
     "nominal_day",
+    "max_per_month",
     "recurrence_end_mode",
     "end_date",
     "max_occurrences",

@@ -55,7 +55,10 @@ against ``app.utils.money.PAY_PERIODS_PER_YEAR``, a hardcoded ``Decimal("26")``
 for an owner not paid biweekly.  Both entry points now take the owner's
 schedule, resolved ONCE per request by the caller and threaded, never looked up
 per row.  The month denominator (``MONTHS_PER_YEAR``) stays a constant, because
-12 is a property of the calendar rather than of an owner.
+12 is a property of the calendar rather than of an owner -- and since plan step
+salary:R15-a the division itself lives on
+:meth:`~app.services.recurrence.Cadence.monthly_equivalent`, where a rule's
+per-month ceiling gives it a second arm this module must not restate.
 
 **They take the whole :class:`~app.services.pay_calendar.PayCalendar` rather
 than its cadence, since plan step R7b-3**, and the extra is what step 2 of the
@@ -68,16 +71,18 @@ the HIGH-05 defect this module exists to have fixed, reappearing on the other
 bound.  Two savings call sites trade ``cadence_for``'s one query for
 ``calendar_for``'s two to pay for it.
 
-**And the conversion itself is ONE expression** (plan step R7a-2b).  It lived
-in ``savings_goal_service.amount_to_monthly`` as a seven-branch switch over
+**And the conversion itself is ONE expression, on the recurrence value**
+(plan step R7a-2b, moved at plan step salary:R15-a).  It lived in
+``savings_goal_service.amount_to_monthly`` as a seven-branch switch over
 ``pattern_id`` -- in a savings module, though no savings code called it and its
-inputs are a recurrence and a pay cadence.  A monthly equivalent is
-``amount * occurrences_per_year / 12`` for every cadence there is, so the
-branches were seven spellings of one formula, each of which had to be written
-again for every cadence plan step R8 adds.  The formula lives here, where this
-module's own first sentence says it should; how often a cadence FIRES is
-``recurrence.Cadence.occurrences_per_year``, which is the recurrence package's
-to answer.
+inputs are a recurrence and a pay cadence -- so the branches were seven
+spellings of one formula, each of which had to be written again for every
+cadence plan step R8 adds.  R7a-2b collapsed them to the one division spelled
+here; R15-a gave that division a second arm (a rule whose per-month ceiling
+binds costs ``amount x ceiling``, exactly) and moved both onto
+``recurrence.Cadence.monthly_equivalent``, so how often a cadence FIRES and
+what that costs a month are the recurrence package's to answer and this
+module reads the figure.
 
 **Both entry points take the READ PASS** (plan step R7d-e), the
 :class:`~app.services.balance_at.BalanceContext` the route built, because
@@ -102,7 +107,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services.balance_at import BalanceContext
 from app.services.recurrence import RuleReading, cadence_of, has_ended
 from app.services.recurring_definition import read_definition
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import round_money
 
 # Either ORM template class exposes ``recurrence_rule`` and
 # ``default_amount`` -- the aggregator reads them via attribute
@@ -235,18 +240,14 @@ def monthly_or_none(
     if has_ended(rule, reading, on=ctx.as_of):
         return None
 
-    # ONE division, and the denominator is an exact integer: a monthly
+    # ONE producer, on the value (plan step salary:R15-a): a monthly
     # equivalent is an amount times how often it happens in a year, over
-    # twelve.  Dividing by ``interval_n`` HERE rather than taking
-    # ``occurrences_per_year`` is what keeps it to one rounding -- that
-    # quotient is inexact for an interval that does not divide its unit's
-    # year, and multiplying money by it moved 31,072 displayed cents in a
-    # 52,000,000-case sweep, wrongly (see ``Cadence.units_per_year``).
-    cadence = cadence_of(rule)
-    return (
-        amount * cadence.units_per_year(ctx.calendar().cadence)
-        / (cadence.interval_n * MONTHS_PER_YEAR)
-    )
+    # twelve, divided ONCE by an exact integer -- or, for a rule whose
+    # per-month ceiling binds, the amount times the ceiling exactly.  The
+    # division was spelled inline here until that step gave it a second arm;
+    # ``Cadence.monthly_equivalent`` carries both and the 31,072-cent
+    # measurement of why neither may round twice.
+    return cadence_of(rule).monthly_equivalent(amount, ctx.calendar().cadence)
 
 
 def template_monthly_or_none(

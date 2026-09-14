@@ -188,6 +188,12 @@ def build_preview_spec(
         # :func:`recurrence_preview_fragment` for why every bound is stated
         # once rather than a third time on this endpoint.
         nominal_day=request.args.get("nominal_day", type=int),
+        # The per-month ceiling (plan step salary:R15-a), read the way the
+        # nominal day is: unbounded here, refused by ``RecurrenceSpec`` and
+        # ``resolve`` beside a unit that cannot hold it or below one, so the
+        # preview lists the same dates the save would generate -- "at most 2
+        # a month" previews the third paycheck skipped.
+        max_per_month=request.args.get("max_per_month", type=int),
         # Composed through the SUBMISSION door, not the storage one (plan
         # step R7b-3).  These are query args -- a submission -- so a
         # mistake in them is user input, and
