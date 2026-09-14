@@ -68,21 +68,30 @@ _MUST_BE_HEARD = (
         "Invalid funding choice.",
         {"recurrence_placement": "999999"},
     ),
-    # The "Ends" bound's three, from plan step R7b-3.  They live in a
-    # ``@post_load`` hook, which is why this arm LOADS rather than validating.
-    (
-        "Choose when this stops repeating.",
-        {"recurrence_end_mode": "whenever"},
-    ),
-    (
-        "Choose the date this stops repeating, or set it to never end.",
-        {"recurrence_end_mode": "on_date"},
-    ),
-    (
-        "Enter how many times this repeats, or set it to never end.",
-        {"recurrence_end_mode": "after_occurrences"},
-    ),
 )
+
+
+
+def _a_cadence():
+    """Return a well-formed every-paycheck cadence to state a refusal BESIDE.
+
+    Since plan step ``balance:X-bi-7b`` (ruling R-BAL23) a transaction
+    template with no unit is refused first -- ``recurrence_unit`` leads the
+    allowlist -- so the "Ends" bound's three refusals below carry one, or the
+    assertion would read the cadence refusal and never theirs.  A function,
+    because the ids are an app-context read.
+    """
+    return {
+        "recurrence_unit": str(
+            ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
+        ),
+        "recurrence_placement": str(
+            ref_cache.period_placement_id(PeriodPlacementEnum.CONTAINING_DATE),
+        ),
+        "interval_n": "1",
+        "starts_on": "2026-04-15",
+    }
+
 
 #: The three refusals that were dead copy until plan step R7c-c, as
 #: ``(message, payload_builder)`` -- a callable rather than a literal because
@@ -91,6 +100,20 @@ _MUST_BE_HEARD = (
 #: Separate from :data:`_MUST_BE_HEARD` for that reason alone; the arm that
 #: drives them is the same.
 _MUST_BE_HEARD_WITH_A_CADENCE = (
+    # The "Ends" bound's three, from plan step R7b-3.  They live in a
+    # ``@post_load`` hook, which is why this arm LOADS rather than validating.
+    (
+        "Choose when this stops repeating.",
+        lambda: {**_a_cadence(), "recurrence_end_mode": "whenever"},
+    ),
+    (
+        "Choose the date this stops repeating, or set it to never end.",
+        lambda: {**_a_cadence(), "recurrence_end_mode": "on_date"},
+    ),
+    (
+        "Enter how many times this repeats, or set it to never end.",
+        lambda: {**_a_cadence(), "recurrence_end_mode": "after_occurrences"},
+    ),
     (
         "Say how often this repeats.  Enter a number beside the unit, like 3 "
         "for every 3 months.",

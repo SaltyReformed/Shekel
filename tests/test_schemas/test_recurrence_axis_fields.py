@@ -40,6 +40,7 @@ from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.ref import PeriodPlacement, RecurrenceUnit
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
+from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from app.schemas.validation.transfers import (
     TransferTemplateCreateSchema,
     TransferTemplateUpdateSchema,
@@ -225,16 +226,39 @@ class TestTheModelledCasesStillPass:
 
     @pytest.mark.parametrize("label,schema_cls", _SCHEMAS)
     @pytest.mark.parametrize("field,_enum,_accessor,_refusal", _AXES)
-    def test_an_explicit_none_still_passes(
+    def test_an_explicit_none_passes_the_axis_field_itself(
         self, app, label, schema_cls, field, _enum, _accessor, _refusal,
     ):
-        """``None`` is the "does not repeat" choice and must survive.
+        """``None`` short-circuits the FIELD: the membership check never sees it.
 
-        ``allow_none`` short-circuits before the field deserializes, so the
-        membership check must not see it.  Plan step R2e-1 made a present
-        ``None`` mean CLEAR THE RECURRENCE, so refusing it here would break the
-        only way to end a cadence.
+        ``allow_none`` is what lets the transfer form's "does not repeat" post
+        an empty unit (plan step R2e-1 made a present ``None`` mean CLEAR THE
+        RECURRENCE there).  **On the two TRANSACTION schemas a ``None`` unit
+        is refused one layer up since plan step ``balance:X-bi-7b``** (ruling
+        R-BAL23: a transaction definition with no rule is a one-off made at the
+        grid, so the form no longer offers the option) -- by
+        ``validate_a_cadence_is_chosen``, a schema-level rule, never by this
+        field.  So the field is asked directly here, and the schema-level
+        refusal is graded in ``TestTheTransactionSchemasRequireACadence``.
         """
+        with app.app_context():
+            declared = schema_cls().fields.get(field)
+
+            assert declared is not None, f"{label} does not declare {field}"
+            assert declared.deserialize(None) is None, label
+
+    @pytest.mark.parametrize(
+        "label,schema_cls",
+        (
+            ("TransferTemplateCreateSchema", TransferTemplateCreateSchema),
+            ("TransferTemplateUpdateSchema", TransferTemplateUpdateSchema),
+        ),
+    )
+    @pytest.mark.parametrize("field,_enum,_accessor,_refusal", _AXES)
+    def test_an_explicit_none_still_loads_on_the_transfer_schemas(
+        self, app, label, schema_cls, field, _enum, _accessor, _refusal,
+    ):
+        """The transfer form keeps "does not repeat", so its ``None`` loads whole."""
         with app.app_context():
             loaded = schema_cls().load({field: None}, partial=True)
 
@@ -709,3 +733,43 @@ class TestTheNominalDayMustFitTheFirstOccurrence:
 
             assert loaded["nominal_day"] == 31
             assert "starts_on" not in loaded
+
+
+class TestTheTransactionSchemasRequireACadence:
+    """Plan step ``balance:X-bi-7b``, ruling R-BAL23: no *Does not repeat* here."""
+
+    @pytest.mark.parametrize(
+        "label,schema_cls",
+        (
+            ("TemplateCreateSchema", TemplateCreateSchema),
+            ("TemplateUpdateSchema", TemplateUpdateSchema),
+        ),
+    )
+    def test_a_present_empty_unit_is_refused_with_the_one_sentence(
+        self, app, label, schema_cls,
+    ):
+        """The placeholder's empty value, on both doors, meets ``A_CADENCE_IS_REQUIRED``."""
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc_info:
+                schema_cls().load({"recurrence_unit": None}, partial=True)
+
+            assert exc_info.value.messages["recurrence_unit"] == [
+                A_CADENCE_IS_REQUIRED,
+            ], label
+
+    def test_a_create_with_no_unit_at_all_is_refused_too(self, app):
+        """A create states a whole definition: absent and empty are one statement."""
+        with app.app_context():
+            with pytest.raises(ValidationError) as exc_info:
+                TemplateCreateSchema().load({"name": "Rent"}, partial=True)
+
+            assert exc_info.value.messages["recurrence_unit"] == [
+                A_CADENCE_IS_REQUIRED,
+            ]
+
+    def test_an_update_with_no_unit_at_all_leaves_the_cadence_alone(self, app):
+        """A partial update that omits the field states nothing about the cadence."""
+        with app.app_context():
+            loaded = TemplateUpdateSchema().load({"name": "Rent"}, partial=True)
+
+            assert "recurrence_unit" not in loaded

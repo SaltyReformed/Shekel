@@ -614,20 +614,31 @@ def rule_naming(
     destination either carries a template or does not, and each arm resolves
     back to the very row it was read from:
 
-    * a TEMPLATE-generated row is named by :attr:`RuleAnswer.TEMPLATE`, which
+    * a row a RECURRING definition generated is named by
+      :attr:`RuleAnswer.TEMPLATE`, which
       :func:`~._placement._template_placement` resolves to that template's row
       in whatever period the line falls in -- which is the identity across
       periods ruling **R-GA** says a rule needs;
-    * a row NO template generated is named by :attr:`RuleAnswer.NEW_ENVELOPE`
+    * a row NO CADENCE made is named by :attr:`RuleAnswer.NEW_ENVELOPE`
       carrying that row's own name and category, which
       :func:`~._placement._new_envelope_placement` resolves to *an envelope of
-      that name and category that no template generated* -- this row -- and
+      that name and category that no cadence made* -- this row -- and
       creates one only where the period holds none.  That is not a
       substitution: those rows are what such a rule creates, so the answer and
       the row are the same fact read from two ends.  Measured 2026-08-30 on
       the developer's own account: 223 of his 256 offerable destinations carry
       a template and 33 do not, and every one of the 33 was minted by a
       new-envelope answer.
+
+    **Keyed on ``recurs`` rather than on the link since plan step
+    ``balance:X-bi-7b``.**  A one-off is a rule-less definition plus its
+    placed row from that step, so an envelope the owner made at the grid
+    carries a ``template_id`` -- and a TEMPLATE answer naming a definition
+    that generates nothing would resolve UNRESOLVED in every other paycheck
+    (the regression 10.6-D of ``from_scratch_architecture.md`` dates to this
+    leaf).  The family's third leaf (``X-f6c``) makes a rule-less definition a
+    rule's destination in its own right, at which point this arm answers
+    TEMPLATE for every definition-linked row and the key goes.
 
     So there is no refusal arm here, and a card need not withhold the control
     for some destinations and offer it for others -- which is the shape this
@@ -643,7 +654,7 @@ def rule_naming(
         :func:`state_rules` is the door, and it re-derives everything it
         checks.
     """
-    if destination.template_id is not None:
+    if destination.recurs:
         return RuleSubmission(
             merchant_id=merchant_id,
             answer=RuleAnswer.TEMPLATE,

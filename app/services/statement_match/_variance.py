@@ -105,6 +105,7 @@ import logging
 from decimal import Decimal
 
 from app.exceptions import ValidationError
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_RESIDUAL_RECORDED,
@@ -666,7 +667,7 @@ def reject_unrecordable(
 
 def mint(
     difference: Decimal,
-    pay_period_id: int,
+    period: DerivedPeriod,
     scope: ReviewScope,
     lines,
     days: MatchDays,
@@ -695,7 +696,7 @@ def mint(
             the owner accepted by :func:`reject_unrecordable`.  Passed rather
             than re-derived here, because the value that was tested and the
             value that is written must be one.
-        pay_period_id: The paycheck this movement belongs to, resolved by the
+        period: The paycheck this movement belongs to, resolved by the
             caller through :meth:`~._scope.ReviewScope.period_holding` for the
             reason :func:`~._uncategorized.mint_uncategorized` states.
         scope: The pass, which is the ONE statement of whose account and whose
@@ -716,7 +717,7 @@ def mint(
         MovementToRecord(
             name=_named_for(lines),
             signed_amount=difference,
-            pay_period_id=pay_period_id,
+            period=period,
             posts_on=days.posts_on,
         ),
         scope,
@@ -727,7 +728,7 @@ def mint(
         user_id=scope.owner_id,
         account_id=scope.account_id,
         transaction_id=candidate.row_id,
-        pay_period_id=pay_period_id,
+        pay_period_id=period.period_id,
         amount=str(difference),
         posts_on=days.posts_on.isoformat(),
         line_count=len(lines),

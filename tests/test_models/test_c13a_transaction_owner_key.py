@@ -569,10 +569,14 @@ class TestTheOwnerTravelsWithTheRowThroughItsWriters:
             assert resp.status_code == 201, resp.data[:400]
 
             from app.extensions import db as _db  # noqa: PLC0415
+            # Found by the NAME the door defaulted, not by a figure: the row
+            # states none since plan step balance:X-bi-7b (its definition
+            # prices it, R-BAL21).  The definition takes the same owner.
             row = _db.session.query(Transaction).filter_by(
-                estimated_amount=Decimal("31.00"),
+                name=category.display_name,
             ).one()
             assert row.user_id == seed_user["user"].id
+            assert row.template.user_id == seed_user["user"].id
 
     def test_the_owner_is_not_a_DERIVED_field(self):
         """``user_id`` is not in ``DerivedRowFields``, and that is placement.

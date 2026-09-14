@@ -758,8 +758,13 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
         ValidationError: From the purchase door, which this step's own rule
             has already been asked (:func:`planned_removals` reads the same
             state) -- reachable only if the row moved between the two.  The
-            transaction verb's own refusals (a transfer shadow, a CC payback)
-            cannot fire: an act creates neither shape.
+            transaction verb's own refusals cannot fire: an act creates
+            neither a transfer shadow nor a CC payback, and the third (a
+            merchant rule naming the last row's definition, plan step
+            ``balance:X-bi-7b``) needs an OFFERABLE definition, which a
+            bank-minted one never is (``is_envelope`` False).  Since that step
+            a bank-minted row is a one-off -- a rule-less definition plus its
+            row -- and the verb disposes of the definition with the row.
     """
     if row.kind is RowKind.PURCHASE:
         entry_service.delete_entry(row.row_id, owner_id)

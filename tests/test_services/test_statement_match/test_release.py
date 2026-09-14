@@ -1199,12 +1199,14 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         be asked it.  A door reading the id deletes ``named``; one removing the
         row it was handed deletes ``carried``.
         """
-        # AD-HOC, because that is the only shape this path ever removes: a
-        # residual names no template and a created envelope is built without
-        # one, so the delete verb's SOFT arm is unreachable from here and its
-        # hard delete is what runs.  A templated row would be flagged rather
-        # than removed, and both assertions below would read the same either
-        # way.
+        # NOT RECURRING, because that is the only shape this path ever
+        # removes: a residual is a rule-less definition's row since plan step
+        # balance:X-bi-7b and a created envelope is built link-less (until
+        # 7b-3), so the delete verb's SOFT arm -- keyed on ``recurs`` -- is
+        # unreachable from here and its hard delete is what runs.  A RECURRING
+        # row would be flagged rather than removed, and both assertions below
+        # would read the same either way.  Built link-less here: the question
+        # is which of two ids the door reads, not what it deletes.
         carried = a_transaction(
             seed_user, name="Carried", amount="11.00", template=False,
         )

@@ -43,6 +43,7 @@ from app.services.statement_match._verbs import Verb
 from ._builders import (
     a_bank_line,
     a_later_period,
+    a_one_off_envelope,
     a_rule,
     a_merchant,
     a_scope,
@@ -511,6 +512,39 @@ class TestARuleNamesTheDestinationTheCardChose:
 
         assert rule.answer is RuleAnswer.NEW_ENVELOPE
         assert rule.envelope_name == destination.name
+        assert rule.category_id == destination.category_id
+
+    def test_a_ONE_OFFS_envelope_is_named_by_its_own_NAME_though_it_has_a_definition(
+        self, app, db, seed_user,
+    ):
+        """Plan step balance:X-bi-7b: the key is ``recurs``, not the link.
+
+        An envelope the owner made at the grid carries a RULE-LESS definition
+        since that step.  Naming it TEMPLATE would resolve UNRESOLVED in every
+        other paycheck (nothing generates a rule-less definition's rows until
+        the family's third leaf), so the offered rule stays NEW-ENVELOPE by
+        name and category -- exactly what a link-less envelope earned before.
+        **Through the real scan**: ``destinations_for`` is what sets
+        ``PurchaseDestination.recurs``, so this fires if either the scan or
+        ``rule_naming`` reverts to the link.
+        """
+        envelope = a_one_off_envelope(seed_user, name="Home Improvement")
+        scope = a_scope(seed_user)
+        destination = next(
+            one for one in scope.destinations
+            if one.transaction_id == envelope.id
+        )
+        assert destination.template_id is not None, (
+            "this case needs a one-off's DEFINITION-linked row or it grades "
+            "nothing"
+        )
+        assert destination.recurs is False
+
+        rule = rule_naming(7, destination)
+
+        assert rule.answer is RuleAnswer.NEW_ENVELOPE
+        assert rule.template_id is None
+        assert rule.envelope_name == "Home Improvement"
         assert rule.category_id == destination.category_id
 
     def test_the_rule_RESOLVES_BACK_to_the_row_it_was_read_from(

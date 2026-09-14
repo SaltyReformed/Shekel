@@ -69,9 +69,6 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, RecurrenceUnit
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.routes._recurrence_form_refusals import (
-    UNREPAIRED_CADENCE_CANNOT_BE_CLEARED,
-)
 from app.services import account_service
 from app.services.recurrence import _picker
 from app.services.recurrence import (
@@ -929,11 +926,13 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             assert resp.status_code == 200
             # The REASON is asserted, not just the survival: without it this
             # test passes against a route that refused the POST for an
-            # unrelated reason, and the message is the whole of what
-            # UNREADABLE_CADENCE_MESSAGE promised the user on the way in.
-            assert UNREPAIRED_CADENCE_CANNOT_BE_CLEARED.split(
-                ",", maxsplit=1,
-            )[0].encode() in resp.data
+            # unrelated reason.  **The sentence is the SCHEMA's since plan
+            # step balance:X-bi-7b** (R-BAL23): a transaction template refuses
+            # an empty unit before the route reads a field, so the reader
+            # meets "choose how it repeats" -- what the unset picker asks --
+            # and ``UNREPAIRED_CADENCE_CANNOT_BE_CLEARED`` is now the transfer
+            # door's sentence alone (``test_the_transfer_door_refuses_it_too``).
+            assert b"needs a cadence" in resp.data
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
             assert reloaded.recurrence_rule.id == rule_id, (
@@ -1313,9 +1312,28 @@ class TestTheCopyTheUserActuallyReads:
     def test_the_unit_options_read_as_plurals(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The unit select is worded for "Repeats <unit>", so plural."""
+        """The unit select is worded for "Repeats <unit>", so plural.
+
+        **The first entry is a PLACEHOLDER on the transaction form since plan
+        step balance:X-bi-7b** (ruling R-BAL23): a transaction definition with
+        no rule is a one-off, made at the Budget grid, so this form offers no
+        "Does not repeat" -- the empty entry asks for a cadence and the schema
+        refuses its value.  The transfer form keeps the option
+        (``test_the_transfer_form_still_offers_does_not_repeat``).
+        """
         assert seed_periods_today
         body = auth_client.get("/templates/new").data.decode()
+
+        assert _option_labels(body, "recurrence_unit") == [
+            "Choose how it repeats", "paychecks", "months", "years",
+        ]
+
+    def test_the_transfer_form_still_offers_does_not_repeat(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The transfer form IS the one-time transfer's door until its own step decides."""
+        assert seed_periods_today
+        body = auth_client.get("/transfers/new").data.decode()
 
         assert _option_labels(body, "recurrence_unit") == [
             "Does not repeat", "paychecks", "months", "years",
@@ -1349,32 +1367,70 @@ class TestTheCopyTheUserActuallyReads:
             "The first paycheck starting on or after the date",
         ]
 
-    def test_both_forms_word_every_control_identically(
+    def test_both_forms_word_every_cadence_identically(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A user meets one vocabulary whichever kind they are creating."""
+        """A user meets one vocabulary whichever kind they are creating.
+
+        Every CADENCE reads the same on both forms.  The one entry that differs
+        is the empty one, by ruling (R-BAL23, plan step balance:X-bi-7b): the
+        transfer form's "Does not repeat" is a choice and the transaction
+        form's "Choose how it repeats" is a placeholder, so it is compared
+        separately above rather than folded into this equality.
+        """
         assert seed_periods_today
         transaction = auth_client.get("/templates/new").data.decode()
         transfer = auth_client.get("/transfers/new").data.decode()
 
-        for select_id in ("recurrence_unit", "recurrence_placement"):
-            assert _option_labels(transaction, select_id) == _option_labels(
-                transfer, select_id,
-            ), select_id
+        assert _option_labels(transaction, "recurrence_unit")[1:] == (
+            _option_labels(transfer, "recurrence_unit")[1:]
+        )
+        assert _option_labels(transaction, "recurrence_placement") == (
+            _option_labels(transfer, "recurrence_placement")
+        )
 
 
-class TestADeliberateClearStillWorks:
-    """The negative control for the refusal above.
+class TestADeliberateClearIsRefusedOnATransactionTemplate:
+    """The empty unit is no longer a choice on this kind (R-BAL23, balance:X-bi-7b).
 
-    Without it, a route that refused EVERY clear would pass every test in the
-    class above -- and "does not repeat" is a real choice on both kinds, made
-    from a form that offered the template's own cadence.
+    This class was the negative control for the unreadable-cadence refusal
+    above -- "a rule the form COULD show is cleared by the empty unit" -- and
+    the developer ruled that door shut (2026-09-13): a transaction definition
+    with no rule is a one-off, made at the Budget grid, so a cadence cannot be
+    CLEARED from the form.  The control that a route refusing EVERY save would
+    still fail is that a real cadence change lands (``test_a_modelled_rule_
+    can_be_re_pointed``); the transfer twin's clear is graded in
+    ``test_recurrence_clear``.
     """
 
-    def test_a_modelled_rule_can_still_be_cleared(
+    def test_a_modelled_rule_is_not_cleared_by_the_empty_unit(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A rule the form COULD show is cleared by the empty unit."""
+        """The empty unit meets ``A_CADENCE_IS_REQUIRED``; rule and amount stand."""
+        assert seed_periods_today
+        with app.app_context():
+            template = _template_with_cadence(seed_user, EVERY_PERIOD)
+            template_id, rule_id = template.id, template.recurrence_rule.id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                "name": "Rent",
+                "default_amount": "1300.00",
+                "recurrence_unit": "",
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"needs a cadence" in resp.data
+            db.session.expire_all()
+            reloaded = db.session.get(TransactionTemplate, template_id)
+            assert reloaded.recurrence_rule is not None
+            assert reloaded.recurrence_rule.id == rule_id
+            assert db.session.get(RecurrenceRule, rule_id) is not None
+            assert reloaded.default_amount == Decimal("1200.00")
+
+    def test_a_modelled_rule_can_be_re_pointed(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing control: a stated cadence still lands on the same door."""
         assert seed_periods_today
         with app.app_context():
             template = _template_with_cadence(seed_user, EVERY_PERIOD)
@@ -1383,14 +1439,18 @@ class TestADeliberateClearStillWorks:
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
                 "default_amount": "1200.00",
-                "recurrence_unit": "",
+                **cadence_payload(unit=RecurrenceUnitEnum.MONTH),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
+            assert b"needs a cadence" not in resp.data
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
-            assert reloaded.recurrence_rule is None
-            assert db.session.get(RecurrenceRule, rule_id) is None
+            assert reloaded.recurrence_rule is not None
+            assert reloaded.recurrence_rule.id == rule_id
+            assert reloaded.recurrence_rule.unit_id == ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.MONTH,
+            )
 
 
 @pytest.mark.usefixtures("app")

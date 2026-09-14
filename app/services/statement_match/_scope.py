@@ -62,7 +62,8 @@ from app.services.cash_ledger import (
     reject_line_before_books_open,
 )
 
-from ._candidates import candidates_for, destinations_for
+from ._candidates import candidates_for
+from ._destinations import destinations_for
 from ._creations import PurchaseDestination
 from ._offers import BankLine, Candidates
 
@@ -259,7 +260,7 @@ class ReviewScope:
             (:func:`~._candidates.candidates_for`), before any claim is
             narrowed out.
         destinations: Every budget line a bank line could become a purchase
-            against (:func:`~._candidates.destinations_for`), before any claim
+            against (:func:`~._destinations.destinations_for`), before any claim
             is narrowed out.
     """
 
@@ -271,8 +272,16 @@ class ReviewScope:
     candidates: Candidates
     destinations: "tuple[PurchaseDestination, ...]"
 
-    def period_holding(self, day: "date", subject: str) -> int:
-        """Return the id of the pay period covering *day*, refusing if none does.
+    def period_holding(self, day: "date", subject: str) -> "pay_calendar.DerivedPeriod":
+        """Return the pay period covering *day*, refusing if none does.
+
+        **The PERIOD and not its id since plan step ``balance:X-bi-7b``**: the
+        one-off producer the minting doors call dates a placed row at its
+        paycheck's START (ruling **R-BAL22**), and that day is on the derived
+        period this lookup already found.  Handing back the id alone made the
+        producer re-resolve the same period from the same calendar -- a
+        second lookup of one fact inside one request -- so the whole value is
+        threaded and a caller that needs the id reads ``period_id`` off it.
 
         **ONE statement of it for the whole package** (plan step
         ``bank_import:X-f6d-4``): :mod:`._create` places a purchase it records
@@ -313,7 +322,8 @@ class ReviewScope:
                 name the act they performed.
 
         Returns:
-            The covering period's id.
+            The covering :class:`~app.services.pay_calendar.DerivedPeriod`,
+            always a SAVED one (its ``period_id`` is set).
 
         Raises:
             ValidationError: When no SAVED period covers it.  **Both of
@@ -329,7 +339,7 @@ class ReviewScope:
             raise ValidationError(
                 f"{no_period_refusal(day, subject)}  Nothing was changed."
             )
-        return period.period_id
+        return period
 
     def reject_line_before_books_open(
         self, posted_on: "date", subject: str,

@@ -26,11 +26,17 @@ refusal here that RAISES rather than returning its sentence, because no screen
 asks it.
 
 Boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a bool or a
-raise out; no Flask import, no writes.
+raise out; no Flask import, no writes.  **One arm READS** since plan step
+``balance:X-bi-7b``: :func:`deletion_refusal`'s merchant-rule refusal asks two
+small reads (is this a one-off's last row -- indexed; does a standing rule
+name its definition -- a scan of the owner's few merchant rules, which carry
+no index on ``template_id``), issued only for a rule-less definition's row.
 """
 
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
+from app.services.definition_delete import is_last_row_of_its_definition
+from app.utils.archive_helpers import template_has_standing_rule
 
 
 def settles_from_entries(txn: Transaction) -> bool:
@@ -145,7 +151,9 @@ def repays_tracked_purchases(txn: Transaction) -> bool:
     return source is not None and source.tracks_purchases
 
 
-def deletion_refusal(txn: Transaction) -> "str | None":
+def deletion_refusal(
+    txn: Transaction, *, last_row_of_definition: "bool | None" = None,
+) -> "str | None":
     """Return why *txn* may not be deleted on its own, or ``None``.
 
     **A REFUSAL that returns its own sentence**, the shape
@@ -194,11 +202,33 @@ def deletion_refusal(txn: Transaction) -> "str | None":
     takes the whole live chain down inside the source's own delete, which
     leaves nothing unrepaid.  Nothing here is asked on that path.
 
+    **A THIRD row may not be deleted, and it is refused for what its delete
+    would take with it** (plan step ``balance:X-bi-7b``, ruling **R-BAL23**).
+    A one-off is a rule-less definition plus its placed row, and the
+    definition goes with its LAST row (**R-BAL27**: with no row it defines
+    nothing) -- but ``fk_merchant_rules_template_account`` is ``ON DELETE
+    CASCADE``, so where a standing merchant rule files a merchant's bank
+    spending into that definition, the bare delete would take an owner's
+    stated answer with it under a dialog that named only the row.  The same
+    refusal ``routes/templates/crud.hard_delete_template`` makes for the
+    definition's own door, on this door.  Restating the rule (*ask me every
+    time*, another destination) is what frees the row; a rule is never
+    un-stated (**R-GS**), so the door cannot offer to.  A row of a definition
+    that holds OTHER rows is not refused: nothing is disposed of.
+
     Args:
         txn: The row a door or a screen is asking about.  Reads ``transfer_id``
             and ``credit_payback_for_id``, and -- only for a payback -- the
             source relationship the repair fork needs.  Two column reads for
-            every ordinary row, so a card render pays nothing for asking.
+            every ordinary row, so a card render pays nothing for asking; a
+            rule-less definition's row adds the two small reads the third arm
+            needs.
+        last_row_of_definition: Whether deleting *txn* would leave a
+            rule-less definition with no row
+            (:func:`~app.services.definition_delete.is_last_row_of_its_definition`),
+            when the caller has already asked -- the delete verb needs the
+            same answer for its own step 5, and one request asks a producer
+            once.  ``None`` (the card render) asks here.
 
     Returns:
         The sentence to show the owner, or ``None`` when the row may go.
@@ -208,6 +238,15 @@ def deletion_refusal(txn: Transaction) -> "str | None":
             "This row is one leg of a transfer, and a transfer's two legs "
             "always move together. Delete the transfer itself and both legs "
             "go with it."
+        )
+    if last_row_of_definition is None:
+        last_row_of_definition = is_last_row_of_its_definition(txn)
+    if last_row_of_definition and template_has_standing_rule(txn.template_id):
+        return (
+            "This is the last row of an item where a merchant's bank spending "
+            "goes, so deleting it would delete that answer with it. Answer for "
+            "that merchant again on the statement screen first; then this row "
+            "can go."
         )
     if not repays_card_spend(txn):
         return None

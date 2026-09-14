@@ -9,11 +9,16 @@ Tests each Marshmallow schema's load() method directly for:
   - @validates_schema cross-field rules
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
 from marshmallow import ValidationError
 
+from app.enums import RecurrenceUnitEnum
+from app.schemas.validation._helpers import _normalize_empty_inputs
+from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
+from tests._test_helpers import cadence_payload
 from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
@@ -155,16 +160,37 @@ class TestTemplateCreateSchema:
     """Tests for TemplateCreateSchema."""
 
     def test_valid_data(self):
-        """Valid template data loads with all required fields."""
+        """Valid template data loads with all required fields -- a cadence among them.
+
+        A transaction template REQUIRES a cadence since plan step
+        ``balance:X-bi-7b`` (ruling R-BAL23): a definition with no rule is a
+        one-off's, made at the grid, so the form's *Does not repeat* is gone
+        and ``validate_a_cadence_is_chosen`` refuses an absent or empty unit.
+        """
         data = TemplateCreateSchema().load({
             "name": "Monthly Rent",
             "default_amount": "1200.00",
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
+            **cadence_payload(),
         })
         assert data["name"] == "Monthly Rent"
         assert data["default_amount"] == Decimal("1200.00")
+
+    def test_no_cadence_is_refused(self):
+        """Absent and empty units are one statement on a create: refused (R-BAL23)."""
+        base = {
+            "name": "Monthly Rent",
+            "default_amount": "1200.00",
+            "category_id": "1",
+            "transaction_type_id": "1",
+            "account_id": "1",
+        }
+        for unit in ({}, {"recurrence_unit": ""}):
+            with pytest.raises(ValidationError) as exc:
+                TemplateCreateSchema().load({**base, **unit})
+            assert exc.value.messages["recurrence_unit"] == [A_CADENCE_IS_REQUIRED]
 
     def test_missing_required_field(self):
         """Missing name raises ValidationError."""
@@ -217,6 +243,7 @@ class TestTemplateCreateSchema:
             "transaction_type_id": "1",
             "account_id": "1",
             "offset_periods": "7",
+            **cadence_payload(),
         })
         assert "offset_periods" not in data
 
@@ -264,8 +291,15 @@ class TestTemplateCreateSchema:
         ``recurrence_placement`` takes the same side, because the browser
         posts both controls whatever the unit says: an empty placement beside
         an empty unit must not read as a partial update either.
+
+        **Asked of the hook itself since plan step ``balance:X-bi-7b``.**  The
+        transaction schemas REFUSE a present empty unit one layer up (ruling
+        R-BAL23), so ``load()`` can no longer hand back the normalised payload
+        for this shape -- and it is exactly the normalised ``None`` that
+        reaches that refusal, which is what this contract now feeds.
         """
-        data = TemplateCreateSchema().load({
+        schema = TemplateCreateSchema()
+        data = _normalize_empty_inputs(schema, {
             "name": "Test",
             "default_amount": "100.00",
             "category_id": "1",
@@ -1225,13 +1259,19 @@ class TestTemplateCreateSchemaBoundary:
     """Boundary tests for TemplateCreateSchema recurrence fields."""
 
     def _valid_template_data(self, **overrides):
-        """Return a valid template payload with optional overrides."""
+        """Return a valid template payload with optional overrides.
+
+        Carries a MONTH cadence, because a transaction template requires one
+        since plan step ``balance:X-bi-7b`` (R-BAL23) and ``nominal_day`` is a
+        month-unit fact.
+        """
         data = {
             "name": "Test Template",
             "default_amount": "100.00",
             "category_id": "1",
             "transaction_type_id": "1",
             "account_id": "1",
+            **cadence_payload(unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 4, 30)),
         }
         data.update(overrides)
         return data

@@ -28,9 +28,11 @@ from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
-    rhythm_of,
+    cadence_payload,
     last_covered_day,
     make_every_period_rule,
+    resolved_amount,
+    rhythm_of,
 )
 from app.services.balance_at import BalanceContext
 from app.models.amount_ownership import AmountOwnership
@@ -128,6 +130,10 @@ class TestTemplateDoubleSubmit:
                 "category_id": seed_user["categories"]["Rent"].id,
                 "transaction_type_id": expense_type.id,
                 "account_id": seed_user["account"].id,
+                # A transaction template REQUIRES a cadence since plan step
+                # balance:X-bi-7b (R-BAL23); the double-submit is what this
+                # case grades.
+                **cadence_payload(),
             }
 
             # First submit.
@@ -305,8 +311,11 @@ class TestTransactionDoubleSubmit:
                 scenario_id=seed_user["scenario"].id,
                 name="Rent",
             ).filter(Transaction.is_deleted.is_(False)).all()
+            # Each row is priced by ITS OWN definition since plan step
+            # balance:X-bi-7b (R-BAL21) -- two one-offs are two definitions --
+            # so the figure is read through the one resolver.
             for txn in txns:
-                assert txn.estimated_amount == Decimal("2000.00")
+                assert resolved_amount(txn) == Decimal("2000.00")
 
     def test_transaction_create_first_valid_second_invalid(
         self, app, auth_client, seed_user, seed_periods,
@@ -354,7 +363,7 @@ class TestTransactionDoubleSubmit:
             ).filter(Transaction.is_deleted.is_(False)).all()
             assert len(txns) == 1
             assert txns[0].name == "Electric Bill"
-            assert txns[0].estimated_amount == Decimal("150.00")
+            assert resolved_amount(txns[0]) == Decimal("150.00")
 
     def test_transaction_create_first_invalid_second_valid(
         self, app, auth_client, seed_user, seed_periods,
@@ -400,7 +409,7 @@ class TestTransactionDoubleSubmit:
             ).filter(Transaction.is_deleted.is_(False)).all()
             assert len(txns) == 1
             assert txns[0].name == "Water Bill"
-            assert txns[0].estimated_amount == Decimal("75.00")
+            assert resolved_amount(txns[0]) == Decimal("75.00")
 
 
 # ── Pay Period Generation Idempotency ────────────────────────────────

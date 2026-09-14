@@ -76,6 +76,7 @@ from ._builders import (
     a_bank_line,
     a_later_period,
     a_merchant,
+    a_one_off_envelope,
     a_rule,
     a_scope,
     a_statement,
@@ -140,6 +141,9 @@ def _destination(txn, *, is_settled=False):
         ],
         is_settled=is_settled,
         template_id=txn.template_id,
+        # Whether a cadence stands behind it, as ``destinations_for`` reads it
+        # (plan step balance:X-bi-7b).
+        recurs=txn.recurs,
     )
 
 
@@ -1819,6 +1823,40 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         assert placement.kind is PlacementKind.RECORD_IN
         assert placement.destination.transaction_id == existing.id
         assert placement.select_value == str(existing.id)
+
+    def test_a_ONE_OFF_envelope_of_that_name_HERE_is_recorded_into(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL for plan step balance:X-bi-7b's re-key.
+
+        An envelope the owner made at the grid carries a rule-less DEFINITION
+        since that step, so the old exclusion -- ``template_id is None`` --
+        would have skipped it and minted a second "Home Improvement" beside it
+        in the same period: finding N-327's fragmentation back.  The exclusion
+        is keyed on ``recurs`` now, read off the REAL destinations scan here
+        (``a_scope``), so this fires if the scan stops setting ``recurs`` or
+        the placement reverts to the link.
+        """
+        category = seed_user["categories"]["Groceries"]
+        existing = a_one_off_envelope(
+            seed_user, name="Home Improvement", category=category,
+        )
+        rule = StandingRule(
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=RuleAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+        offered = [
+            one for one in a_scope(seed_user).destinations
+            if one.transaction_id == existing.id
+        ]
+        assert len(offered) == 1 and offered[0].template_id is not None
+
+        placement = placements_for(
+            _MERCHANT, _view(rule, categories={category.id}), offered,
+        )
+
+        assert placement.kind is PlacementKind.RECORD_IN
+        assert placement.destination.transaction_id == existing.id
 
     def test_a_period_holding_NONE_of_that_name_still_creates(
         self, app, db, seed_user,

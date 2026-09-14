@@ -131,7 +131,16 @@ class TransactionUpdateSchema(BaseSchema):
 
 
 class TransactionCreateSchema(BaseSchema):
-    """Validates POST data for creating an ad-hoc transaction."""
+    """Validates POST data for creating a ONE-OFF from the Add Transaction modal.
+
+    A one-off is a rule-less DEFINITION plus its placed row since plan step
+    ``balance:X-bi-7b`` (ruling **R-BAL20**), so this schema validates the
+    inputs to BOTH: what the definition says (``name``, the figure, the
+    category, the type, the two flags) and where its row goes (the account,
+    the paycheck, the scenario, an optional due date and note).  The route
+    hands the first set to ``one_off.OneOffToPlace`` and the second to the
+    producer's placing arguments.
+    """
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
     estimated_amount = fields.Decimal(
@@ -152,23 +161,29 @@ class TransactionCreateSchema(BaseSchema):
     # Projected, then marking it done.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
-    # Ad-hoc tracking / visibility flags.  load_default=False so a create
-    # that omits them (e.g. the Add Transaction modal) defaults to off,
-    # which is the correct baseline for a brand-new transaction.
+    # The DEFINITION's tracking / visibility flags (plan step
+    # ``balance:X-bi-7b``): the one-off's definition carries them and every
+    # row it places reads them from there; the row's own cells are never
+    # written by a create.  load_default=False so a create that omits them
+    # (the modal's unticked boxes) defaults to off, which is the correct
+    # baseline for a brand-new plan item.
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):
-        """Reject ``is_envelope=True`` on an ad-hoc income transaction."""
+        """Reject ``is_envelope=True`` on an income one-off's definition."""
         _reject_envelope_on_income(
             data, "Purchase tracking is only available for expenses."
         )
 
 
 class InlineTransactionCreateSchema(BaseSchema):
-    """Validates POST data for inline transaction creation from the grid.
+    """Validates POST data for creating a ONE-OFF from a grid cell.
 
+    The same definition-plus-row split :class:`TransactionCreateSchema`
+    describes, minus the due date the cell's forms do not offer (the row
+    takes its paycheck's start, ruling **R-BAL22**).
     Unlike TransactionCreateSchema, the name field is OPTIONAL: the
     quick-create form offers it so an ad-hoc row can be named at the
     Tier-1 entry point (grid audit A5), and the route falls back to the
@@ -191,7 +206,8 @@ class InlineTransactionCreateSchema(BaseSchema):
     # submitted status is dropped by ``unknown=EXCLUDE``; the route assigns
     # Projected and the status seam owns every later transition.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
-    # Ad-hoc tracking / visibility flags.  load_default=False so the
+    # The DEFINITION's tracking / visibility flags, as on
+    # :class:`TransactionCreateSchema`.  load_default=False so the
     # quick-create form (which omits these controls) defaults to off.
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
@@ -203,7 +219,7 @@ class InlineTransactionCreateSchema(BaseSchema):
 
     @validates_schema
     def validate_envelope_only_on_expense(self, data, **kwargs):
-        """Reject ``is_envelope=True`` on an ad-hoc income transaction."""
+        """Reject ``is_envelope=True`` on an income one-off's definition."""
         _reject_envelope_on_income(
             data, "Purchase tracking is only available for expenses."
         )

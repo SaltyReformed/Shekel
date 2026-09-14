@@ -353,7 +353,8 @@ def record_income_from_line(
     # A line posted past the last SAVED pay period is not split off by the
     # review screen's own bounds, so this refusal is live rather than
     # theoretical.
-    pay_period_id = scope.period_holding(line.posted_on, "this deposit")
+    period = scope.period_holding(line.posted_on, "this deposit")
+    pay_period_id = period.period_id
     candidate = mint_uncategorized(
         MovementToRecord(
             # What the BANK NAMES the merchant, not the whole line, for the
@@ -366,7 +367,7 @@ def record_income_from_line(
             # back to the description for a source that names no merchant.
             name=merchant_label(line.merchant_name, line.description),
             signed_amount=amount,
-            pay_period_id=pay_period_id,
+            period=period,
             posts_on=line.posted_on,
             # **What the owner said this money IS, or nothing** (**R-HT(a)**).
             # It is not read from the wire: the Reconcile card renders no

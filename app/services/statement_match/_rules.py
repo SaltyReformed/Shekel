@@ -26,7 +26,7 @@ what R-FZ removed, and a remembered default would be one.
 
 **A rule resolves against the pass's own offer set, so it can never widen
 it.**  :func:`~._placement.placements_for` picks from
-:func:`~._candidates.destinations_for` -- narrowed by what this pass has
+:func:`~._destinations.destinations_for` -- narrowed by what this pass has
 already matched -- rather than querying for a row of its own, which is the
 property :func:`~._resolve.resolve_rows` rests on: a destination the screen may
 not offer is one a rule cannot reach either.  Every way a rule can fail to
@@ -749,14 +749,22 @@ def account_merchants(account_id: int) -> "dict[int, str]":
 
 
 def offerable_templates(account_id: int) -> "dict[int, str]":
-    """Return the recurring definitions a rule on this account may name.
+    """Return the envelope definitions a rule on this account may name.
+
+    **A one-off's definition is among them since plan step ``balance:X-bi-7b``
+    and BY RULING** (**R-BAL24** rejected a ``recurs`` filter here): an
+    envelope the owner made at the grid carries a rule-less definition now,
+    and picking it names one row, which resolves UNRESOLVED in every other
+    paycheck until the family's third leaf (``X-f6c``) makes such a definition
+    place its row -- the cost 10.10 of ``from_scratch_architecture.md``
+    states.
 
     **Not every template, and the filter is the create door's own.**
     :func:`~._create.create_purchase_from_line` files a purchase through
     ``entry_service.create_entry``, which refuses a parent that does not track
     purchases -- so a rule naming a template that generates a plain budget
     line would be an answer whose every placement is refused.  The other two
-    clauses mirror :func:`~._candidates.destinations_for`: a transfer's legs
+    clauses mirror :func:`~._destinations.destinations_for`: a transfer's legs
     are the transfer service's, and money coming IN is not a purchase.
 
     Args:
