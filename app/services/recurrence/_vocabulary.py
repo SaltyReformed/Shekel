@@ -33,7 +33,7 @@ enum outlived this module's interest in them by exactly one step: plan step
 with it.  The form does not choose a cadence NAME; it authors
 ``(interval_n, unit, placement)``, so what the options are and what they are
 called is :mod:`app.services.recurrence._picker`'s -- derived there from
-``_frequency.authorable_cadences``, which is what makes an unresolvable cadence
+``_offer.authorable_cadences``, which is what makes an unresolvable cadence
 unofferable rather than merely unoffered.  ``_PATTERN_LABELS``,
 ``PatternChoice``, ``pattern_choices``, ``pattern_choices_for`` and
 ``UNAVAILABLE_PATTERN_LABEL`` went with it: with no pattern ``<select>`` there

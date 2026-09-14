@@ -33,6 +33,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import (
@@ -67,6 +68,7 @@ from app.services.recurrence import (
     scheduling_day_of_month,
     reauthor_rule,
     recurrence_spec,
+    recurrence_spec_with_cadence,
     resolve,
     rule_occurrences,
 )
@@ -149,10 +151,13 @@ _OWNING_ARC_COLUMNS = frozenset({
 #: **``offset_periods`` left at plan step R7c-c** with the column: the phase is
 #: derived on every read and stored nowhere.  ``interval_n`` ARRIVED in the same
 #: step, from the authored list -- see it for why a canonicalised cadence makes
-#: it a derived value even though a caller states it.
+#: it a derived value even though a caller states it.  ``max_per_month``
+#: ARRIVED at plan step salary:R15-a on the same footing: the write door takes
+#: it off the canonical cadence ``resolve`` answers, beside the interval and
+#: the unit, so the stored ceiling is the resolver's and not the request's.
 _DERIVED_COLUMNS = (
     "interval_n", "unit_id", "placement_id", "shift_id", "starts_on",
-    "nominal_day",
+    "nominal_day", "max_per_month",
 )
 
 #: The two columns the DATABASE assigns, which no caller may author: the
@@ -512,6 +517,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
                 "shift_id": ref_cache.business_day_shift_id(resolved.shift),
                 "starts_on": resolved.starts_on,
                 "nominal_day": resolved.nominal_day,
+                "max_per_month": resolved.max_per_month,
             }, (
                 f"the {cadence} rule's stored cadence columns disagree "
                 f"with what the resolver answers for it, so the table states "
@@ -581,6 +587,85 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
             "OR on the value the resolver returns -- is one a caller can "
             "state and the table will not carry."
         )
+
+
+@pytest.mark.usefixtures("seed_periods")
+class TestThePerMonthCeilingRoundTrips:
+    """The cadence's third value survives the write door and the read door.
+
+    Plan step salary:R15-a: ``_author`` writes ``max_per_month`` off the
+    resolved value, ``recurrence_spec`` reads it back, and the read door that
+    takes a STATED cadence drops it where that cadence cannot hold it -- the
+    nominal day's own rule, one column over.
+    """
+
+    def test_a_ceilinged_rule_stores_and_reads_its_ceiling(self, seed_user, db):
+        """Every paycheck at most 2 a month round-trips through the row."""
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+
+        rule = author_rule(
+            spec_for(EVERY_PERIOD, user_id=user_id, max_per_month=2),
+            calendar,
+            bare_expense_template(db.session, seed_user),
+        )
+        db.session.flush()
+
+        assert rule.max_per_month == 2
+        assert recurrence_spec(rule).max_per_month == 2
+        assert resolve(recurrence_spec(rule), calendar).max_per_month == 2
+        assert_reauthoring_changes_nothing(rule)
+
+    def test_the_stated_cadence_reader_drops_a_ceiling_a_month_unit_cannot_hold(
+        self, seed_user, db,
+    ):
+        """Re-cadencing a ceilinged paycheck rule to monthly reads no ceiling.
+
+        The edit form's repair path: it states the NEW cadence over the stored
+        row, and a stored ceiling carried across would build the pair
+        ``RecurrenceSpec`` refuses, turning an ordinary edit into a 500.
+        """
+        user_id = seed_user["user"].id
+        calendar = calendar_for(user_id)
+        rule = author_rule(
+            spec_for(EVERY_PERIOD, user_id=user_id, max_per_month=2),
+            calendar,
+            bare_expense_template(db.session, seed_user),
+        )
+        db.session.flush()
+
+        restated = recurrence_spec_with_cadence(
+            rule,
+            interval_n=1,
+            unit=RecurrenceUnitEnum.MONTH,
+            placement=PeriodPlacementEnum.CONTAINING_DATE,
+            max_per_month=rule.max_per_month,
+        )
+
+        assert restated.max_per_month is None
+        # And a paycheck cadence keeps what was stated for it.
+        assert recurrence_spec_with_cadence(
+            rule,
+            interval_n=3,
+            unit=RecurrenceUnitEnum.PERIOD,
+            placement=PeriodPlacementEnum.CONTAINING_DATE,
+            max_per_month=1,
+        ).max_per_month == 1
+
+    def test_the_database_refuses_a_zero_ceiling(self, seed_user, db):
+        """``ck_recurrence_rules_positive_max_per_month`` is the floor at the table."""
+        user_id = seed_user["user"].id
+        rule = author_rule(
+            spec_for(EVERY_PERIOD, user_id=user_id, max_per_month=2),
+            calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
+        )
+        db.session.flush()
+
+        rule.max_per_month = 0
+        with pytest.raises(IntegrityError, match="positive_max_per_month"):
+            db.session.flush()
+        db.session.rollback()
 
 
 class TestTheWriteDoorRefusesAnInvertedStoredPair:

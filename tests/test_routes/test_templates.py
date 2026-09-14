@@ -4695,3 +4695,273 @@ class TestTheBoundsRefusalsReachTheUser:
             assert db.session.query(TransactionTemplate).filter_by(
                 name="Refused",
             ).one_or_none() is None
+
+
+class TestThePerMonthCeilingOnTheTemplateForm:
+    """The cadence's third value, posted as the browser posts it (plan step salary:R15-a).
+
+    The control renders and ENABLES only beside a unit whose occurrences can
+    repeat within a month, so a real submission carries ``max_per_month``
+    beside a paycheck cadence and omits it beside a monthly one.  Every case
+    below posts one of those two shapes, plus the empty-box shape an enabled
+    control produces when the user clears it.
+    """
+
+    def _create(self, auth_client, seed_user, name, **cadence):
+        """POST a recurring expense template named *name* and return its rule."""
+        txn_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        resp = auth_client.post("/templates", data={
+            "name": name,
+            "default_amount": "24.99",
+            "category_id": seed_user["categories"]["Rent"].id,
+            "transaction_type_id": txn_type.id,
+            "account_id": seed_user["account"].id,
+            **cadence_payload(**cadence),
+            **end_bound_payload(),
+        }, follow_redirects=True)
+        assert resp.status_code == 200
+        return db.session.query(TransactionTemplate).filter_by(
+            name=name,
+        ).one().recurrence_rule
+
+    def test_a_create_stores_the_ceiling_and_the_cell_words_it(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Every paycheck at most 2 a month is stored as 2 and read as such."""
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Benefit Premium", max_per_month=2,
+            )
+
+            assert rule.max_per_month == 2
+            assert recurrence_spec(rule).max_per_month == 2
+
+            listing = auth_client.get("/templates").data.decode()
+            assert "at most 2 a month" in listing
+
+    def test_a_create_with_the_box_empty_stores_no_ceiling(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An enabled, untouched box posts ``""`` and authors no ceiling."""
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            resp = auth_client.post("/templates", data={
+                "name": "No Ceiling",
+                "default_amount": "24.99",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                **cadence_payload(),
+                "max_per_month": "",
+                **end_bound_payload(),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            rule = db.session.query(TransactionTemplate).filter_by(
+                name="No Ceiling",
+            ).one().recurrence_rule
+            assert rule.max_per_month is None
+
+    def test_a_ceiling_beside_a_monthly_cadence_is_refused_at_the_door(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A crafted POST pairing the ceiling with a month unit is REFUSED, and heard.
+
+        Two assertions, because one is not enough: with the schema's
+        cross-field rule deleted the pair reaches ``RecurrenceSpec``, which
+        refuses it as a broken invariant -- an unhandled 500 that also
+        creates nothing.  The designed answer is a 200 after the redirect
+        carrying the refusal's own sentence.
+        """
+        with app.app_context():
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            resp = auth_client.post("/templates", data={
+                "name": "Contradiction",
+                "default_amount": "24.99",
+                "category_id": seed_user["categories"]["Rent"].id,
+                "transaction_type_id": txn_type.id,
+                "account_id": seed_user["account"].id,
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH, max_per_month=2,
+                ),
+                **end_bound_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert (
+                "a per-month limit has nothing to limit" in resp.data.decode()
+            )
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="Contradiction",
+            ).one_or_none() is None
+
+    def test_an_update_that_states_the_ceiling_replaces_it(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PRESENT replaces: 2 becomes 1."""
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Replaced", max_per_month=2,
+            )
+            template_id = rule.transaction_template_id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                **cadence_payload(max_per_month=1),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).recurrence_rule.max_per_month == 1
+
+    def test_an_update_that_omits_the_key_leaves_the_ceiling_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """ABSENT leaves alone: a disabled control states nothing.
+
+        The shape a partial edit produces, and the shape the update door
+        must not read as a clear -- the same rule the due day and the
+        opening bound already run on.
+        """
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Kept", max_per_month=2,
+            )
+            template_id = rule.transaction_template_id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                **cadence_payload(),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).recurrence_rule.max_per_month == 2
+
+    def test_an_update_with_the_box_cleared_removes_the_ceiling(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A present ``""`` is a stated clear."""
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Cleared", max_per_month=2,
+            )
+            template_id = rule.transaction_template_id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                **cadence_payload(),
+                "max_per_month": "",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).recurrence_rule.max_per_month is None
+
+    def test_re_cadencing_to_monthly_drops_a_stored_ceiling(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The edit form's repair path: a month unit posts no ceiling and keeps none.
+
+        The control is disabled beside a monthly unit, so the key is absent;
+        the stored 2 cannot ride through onto a cadence that cannot hold it,
+        or the re-author would build the pair the spec refuses -- a 500 out
+        of an ordinary edit.
+        """
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Re-cadenced", max_per_month=2,
+            )
+            template_id = rule.transaction_template_id
+
+            resp = auth_client.post(f"/templates/{template_id}", data={
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    starts_on=date(2026, 4, 15),
+                ),
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            db.session.expire_all()
+            stored = db.session.get(
+                TransactionTemplate, template_id,
+            ).recurrence_rule
+            assert stored.unit_id == ref_cache.recurrence_unit_id(
+                RecurrenceUnitEnum.MONTH,
+            )
+            assert stored.max_per_month is None
+
+    def test_the_edit_form_prefills_the_stored_ceiling_enabled(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The server renders the box with the stored value and NOT disabled."""
+        with app.app_context():
+            rule = self._create(
+                auth_client, seed_user, "Prefilled", max_per_month=2,
+            )
+
+            body = auth_client.get(
+                f"/templates/{rule.transaction_template_id}/edit",
+            ).data.decode()
+
+            control = re.search(
+                r'<input[^>]*id="max_per_month"[^>]*>', body,
+            ).group(0)
+            assert 'value="2"' in control
+            assert "disabled" not in control
+
+    def test_the_edit_form_renders_the_box_disabled_beside_a_monthly_rule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A calendar-month rule's box starts disabled, so it posts nothing."""
+        with app.app_context():
+            template = _create_template(seed_user, cadence=MONTHLY)
+            db.session.commit()
+
+            body = auth_client.get(
+                f"/templates/{template.id}/edit",
+            ).data.decode()
+
+            control = re.search(
+                r'<input[^>]*id="max_per_month"[^>]*>', body,
+            ).group(0)
+            assert "disabled" in control
+
+    def test_the_preview_skips_the_third_paycheck_under_a_ceiling(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The preview lists what the save would generate: January's third payday goes.
+
+        ``seed_periods`` opens on 2026-01-02 at 14 days, so January holds
+        three paydays (the 2nd, 16th and 30th).  Unceilinged, the first five
+        occurrences are Jan 2, Jan 16, Jan 30, Feb 13 and Feb 27; at most two
+        a month, Jan 30 drops out and Mar 13 comes in.
+        """
+        with app.app_context():
+            query = {
+                **cadence_payload(starts_on=date(2026, 1, 2)),
+                **end_bound_payload(),
+            }
+
+            plain = auth_client.get(
+                "/templates/preview-recurrence", query_string=query,
+            ).data.decode()
+            ceilinged = auth_client.get(
+                "/templates/preview-recurrence",
+                query_string={**query, "max_per_month": "2"},
+            ).data.decode()
+
+            assert "Jan 30, 2026" in plain
+            assert "Mar 13, 2026" not in plain
+            assert "Jan 30, 2026" not in ceilinged
+            assert "Jan 16, 2026" in ceilinged
+            assert "Mar 13, 2026" in ceilinged
