@@ -36,6 +36,8 @@ from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
 from app.services import account_service, status_seam, transaction_service
+from app.services.loan_loaders import load_loan_params
+from app.services.rate_period_engine import first_installment_date
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
@@ -3831,10 +3833,25 @@ class TestALoanPaymentsOpeningBoundIsDerived:
         unit as a side effect, and a paycheck-space rule's first occurrence is
         normalised onto a payday -- so the bound would move for a reason that
         has nothing to do with what this test measures.
+
+        **MOVED BY RULING at plan step R7d-g-2 (R-R85)**: the fixture's rule
+        starts on the schedule's first 1st, NOT the loan's first contractual
+        installment -- the stale-cache shape plan ledger row **D35**
+        measured -- and this case asserted the rename left that stale date
+        in place.  Every door where the standing payment is written now
+        brings its start onto the contract afterwards, the update door
+        included, so the rename HEALS it: the stored start is the first
+        installment, and the absent key still cleared nothing.
         """
         with app.app_context():
             template = _loan_payment_template(seed_user)
-            before = template.recurrence_rule.starts_on
+            params = load_loan_params(template.to_account_id)
+            first_installment = first_installment_date(
+                params.origination_date, params.payment_day,
+            )
+            assert template.recurrence_rule.starts_on != first_installment, (
+                "precondition: the fixture's start is not the contract's"
+            )
 
             auth_client.post(
                 f"/transfers/{template.id}",
@@ -3854,7 +3871,8 @@ class TestALoanPaymentsOpeningBoundIsDerived:
             db.session.expire_all()
             stored = db.session.get(TransferTemplate, template.id)
             assert stored.name == "Renamed Loan Payment"
-            assert stored.recurrence_rule.starts_on == before
+            assert stored.recurrence_rule is not None, "the absent key cleared the rule"
+            assert stored.recurrence_rule.starts_on == first_installment
 
 
 class TestALoanPaymentCannotBeMadeOneTime:

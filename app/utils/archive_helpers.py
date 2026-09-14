@@ -190,16 +190,34 @@ def account_has_history(account_id: int) -> bool:
     financial records -- even Projected transactions represent
     user-entered data worth preserving.
 
+    **A live row of a DEFINITION on this account counts too** (plan step
+    ``balance:X-bi-7a``, developer ruling 2026-09-13).  The hard-delete door
+    refuses an account only for its RECURRING definitions now (ruling
+    **R-BAL23**), and a rule-less one goes with the account when it defines
+    nothing -- so the row that makes it define something has to be seen here
+    even when it sits on another account, which a retained row does after its
+    definition's account moved (``recurrence_engine`` keeps a row holding the
+    owner's records where it is).  ``transactions.template_id`` is
+    ``ON DELETE SET NULL`` until the family's cutover: deleting such a
+    definition under a live derived row would leave one with no definition
+    to price it, which ``cash_ledger`` refuses on every screen that loads it.
+
     Args:
         account_id: The Account.id to check.
 
     Returns:
-        True if the account has any non-deleted transaction history.
+        True if the account has any non-deleted transaction history, on it or
+        under one of its definitions.
     """
 
     return db.session.query(
-        db.session.query(Transaction).filter(
-            Transaction.account_id == account_id,
+        db.session.query(Transaction)
+        .outerjoin(Transaction.template)
+        .filter(
+            db.or_(
+                Transaction.account_id == account_id,
+                TransactionTemplate.account_id == account_id,
+            ),
             Transaction.is_deleted.is_(False),
         ).exists()
     ).scalar()

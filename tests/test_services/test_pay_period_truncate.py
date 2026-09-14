@@ -736,6 +736,41 @@ class TestTruncateDiscardGate:
                     user_id, keep_through_period_id=periods[1].id,
                 )
 
+    def test_a_rule_less_definitions_projected_row_requires_confirm(
+        self, app, db, seed_user,
+    ):
+        """A row no rule would write back needs confirmation, link or not.
+
+        Plan step balance:X-bi-7a, the transaction half of ledger row
+        **BAL-492**: the gate's transaction arm read ``template_id IS NULL``
+        in SQL, so a rule-less definition's row -- template-linked, Projected,
+        not overridden -- was counted REGENERABLE and truncate promised back
+        a row no rule will write.  The arm loads the rows and asks each one
+        ``recurs`` now (the shape ruling **R-BAL19** gave the companion
+        query), so this row counts exactly as the hand-entered one above.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=4)
+            user_id = seed_user["user"].id
+            template = make_expense_template(db.session, seed_user)
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
+            template.recurrence_rule = None
+            db.session.commit()
+            kept = db.session.query(Transaction).filter_by(
+                pay_period_id=periods[2].id,
+            ).one()
+            assert kept.template_id == template.id
+            assert kept.is_override is False
+            before = _count_periods(db.session, user_id)
+
+            with pytest.raises(PayPeriodDiscardRequired) as excinfo:
+                pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_period_id=periods[1].id,
+                )
+            # Two rows in the tail (periods 3 and 4), each unrecoverable.
+            assert excinfo.value.count == 2
+            assert _count_periods(db.session, user_id) == before
+
     def test_projected_template_rows_need_no_confirm(self, app, db, seed_user):
         """Plain projected template rows are regenerable -- no confirm gate."""
         with app.app_context():

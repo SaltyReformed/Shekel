@@ -133,14 +133,28 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # (D6-09 / MED-02) so this re-check shares one definition with
         # the source-period SELECT above.
         #
-        # Two passes are required because template-linked rows must
-        # flip ``is_override = TRUE`` as part of the same SQL UPDATE
-        # to keep the row index-safe (both partial unique generation
-        # indexes exclude override rows, so flipping the flag and the
-        # period together avoids any transient state that could collide
-        # with the rule-generated row already in the target period).  Ad-hoc
-        # rows (``template_id IS NULL``) sit outside that index in
-        # every state and only need the period flip.
+        # Two passes are required because a row of a RECURRING definition
+        # must flip ``is_override = TRUE`` as part of the same SQL UPDATE:
+        # the flag is what keeps the maintain and generate passes off a row
+        # the owner placed elsewhere, and flipping it with the period leaves
+        # no transient state for the undated generation index (which excludes
+        # override rows) to collide on with the rule's own row in the target.
+        # A row NO RULE generated -- ad-hoc, or a rule-less definition's --
+        # only needs the period flip: no pass will ever write over it, and a
+        # flag there would hide it from
+        # ``recurrence_engine.propagate_to_unruled_definition`` (the twin's
+        # defect **BAL-493** on this table) and from a rule added later
+        # (R-BAL25).  **The split is ``recurs`` since plan step
+        # balance:X-bi-7a**, not the link (ruling R-BAL20).  A rule-less
+        # definition's row keeps its ``occurs_on`` where it has one, so the
+        # occurrence index is indifferent to the move.  Its UNDATED
+        # non-override shape -- a pre-R17 row the ``occurs_on`` backfill left
+        # NULL (6 on production 2026-09-13, all immutable, so none this
+        # branch can move) -- is still keyed on its paycheck by the undated
+        # index, and two such rows of one cleared cadence would collide on a
+        # move; ``recurrence:R19-b`` (``occurs_on`` NOT NULL) is what deletes
+        # that shape, and the flip this branch used to make there was the
+        # one thing keeping it out of the index.
         #
         # The ``Transaction.version_id: + 1`` assignment honors the
         # optimistic-lock contract from C-17 / F-009: every UPDATE
@@ -154,18 +168,14 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # ``no_autoflush`` invariant that the in-memory state never
         # diverges from the database while the loop runs.
         if ctx.discrete_txns:
-            template_ids = [
-                t.id for t in ctx.discrete_txns if t.template_id is not None
-            ]
-            adhoc_ids = [
-                t.id for t in ctx.discrete_txns if t.template_id is None
-            ]
+            recurring_ids = [t.id for t in ctx.discrete_txns if t.recurs]
+            unruled_ids = [t.id for t in ctx.discrete_txns if not t.recurs]
 
-            if template_ids:
+            if recurring_ids:
                 count += (
                     db.session.query(Transaction)
                     .filter(
-                        Transaction.id.in_(template_ids),
+                        Transaction.id.in_(recurring_ids),
                         is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
@@ -179,11 +189,11 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
                     )
                 )
 
-            if adhoc_ids:
+            if unruled_ids:
                 count += (
                     db.session.query(Transaction)
                     .filter(
-                        Transaction.id.in_(adhoc_ids),
+                        Transaction.id.in_(unruled_ids),
                         is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
@@ -249,9 +259,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # **The DISCRETE rows need one too, since plan step X-f3b** (ruling
     # **R-FM**).  They are RELOCATED rather than settled -- two bulk UPDATEs
     # above set ``pay_period_id`` to the target -- and a posting carries the
-    # BUDGET column its source row is attributed to, so an ad-hoc ENVELOPE
-    # (``is_envelope`` with no template, which ``_context`` routes here
-    # deliberately, "moves whole, carrying its entries") would leave its
+    # BUDGET column its source row is attributed to, so an ENVELOPE no rule
+    # generated (ad-hoc, or a rule-less definition's, which ``_context``
+    # routes here deliberately, "moves whole, carrying its entries") would leave its
     # purchases' legs filed under the period it left.  The comment above used to
     # justify skipping them with "carry-forward moves only Projected rows",
     # which was sound while only a settled row held postings and is the same
@@ -586,11 +596,19 @@ def _leftover_due_date(template, target_period) -> date:
     ``grid_view_service.due_captions_by_id`` renders a caption where it
     rendered none.
 
+    **It reads the definition's rule with no ``None`` arm since plan step
+    balance:X-bi-7a.**  An arm dated a CLEARED cadence's leftover row from the
+    paycheck's start, because such a definition's rows used to take the
+    rollover; the context routes a row here only when its definition
+    ``recurs`` now (ruling **R-BAL20**), so a rule-less definition's row moves
+    whole and never reaches this function.  The arm was unreachable, and an
+    unreachable arm with a reason attached is a sentence the code contradicts.
+
     Args:
         template: The envelope's
             :class:`~app.models.transaction_template.TransactionTemplate`.
-            Never ``None`` -- ``_build_carry_forward_context`` routes a row
-            into ``envelope_txns`` only when it has a template and
+            Never ``None`` and never rule-less -- ``_build_carry_forward_context``
+            routes a row into ``envelope_txns`` only when it ``recurs`` and
             ``tracks_purchases``.
         target_period: The destination
             :class:`~app.services.pay_calendar.DerivedPeriod`.
@@ -604,16 +622,7 @@ def _leftover_due_date(template, target_period) -> date:
             propagates rather than being absorbed, which is the refusal every
             other reader of that rule already makes.
     """
-    rule = template.recurrence_rule
-    if rule is None:
-        # A definition whose cadence was CLEARED
-        # (``_recurrence_form_helpers._clear_recurrence_rule``) still states a
-        # price series, so its rows still need a date to resolve on -- but
-        # there is no rule left to date them from.  The paycheck's start is
-        # ``compute_due_date``'s OWN answer for a cadence that names no day of
-        # the month, so the two arms are one rule rather than two.
-        return target_period.start_date
-    return compute_due_date(rule, target_period)
+    return compute_due_date(template.recurrence_rule, target_period)
 
 
 def _create_target_override_row(source_txn, target_period, scenario_id):
