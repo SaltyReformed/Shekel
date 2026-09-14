@@ -90,10 +90,16 @@ def decomposition_leaf_keys(parent: Step, rows: list[Step]) -> list[str]:
 
     **The asymmetry the previous derivation documented is preserved**: the
     parent set and the CLASS are both DECLARED, and only the leaf set is
-    derived.  Deriving the parent set too would claim ``pay_calendar:C1`` as
-    the parent of ``C10`` / ``C11`` / ``C12``, three unrelated steps; the
-    specimen is derived by :func:`_staging.a_prefix_trap` rather than named
-    here, because the one this sentence named until 2026-08-20 went stale.
+    derived.  Deriving the parent set too would read a FOLLOW-UP as a
+    decomposition: six rows that are no container carry suffix-spelled
+    successors -- ``X-bi-1`` -> ``X-bi-1b``, ``X-bv`` -> ``X-bv-2``, ``X-gd``
+    -> ``X-gd-1`` / ``X-gd-2``, ``X-ge`` -> ``X-ge-1``, ``X-gi-2`` ->
+    ``X-gi-2a``, ``X-bi-6`` -> ``X-bi-6a`` (measured 2026-09-14) -- and five
+    of them have SHIPPED with the successor open, which a derived parent set
+    would report as five parents shipped ahead of a leaf.  (Until 2026-09-14
+    the reason given here was ``C1`` against ``C10`` / ``C11`` / ``C12``; the
+    number boundary :func:`is_leaf_ident` added that day makes those no
+    leaves of ``C1`` on either side, so that example no longer argues it.)
 
     Args:
         parent: The container whose leaves to derive.
@@ -111,7 +117,36 @@ def decomposition_leaf_keys(parent: Step, rows: list[Step]) -> list[str]:
             if (
                 row.arc == member.arc
                 and (row.arc, row.ident) not in member_idents
-                and row.ident.startswith(member.ident)
+                and is_leaf_ident(member.ident, row.ident)
             ):
                 seen.setdefault(row.key, None)
     return list(seen)
+
+
+def is_leaf_ident(parent_ident: str, ident: str) -> bool:
+    """Return whether *ident* is spelled as a leaf of *parent_ident*.
+
+    Rule 2's decomposition spelling appends a SUFFIX to the parent's id, and the
+    corpus writes that suffix two ways: ``C2-f3e``, ``R16-b-2`` with a hyphen,
+    and ``C5a``, ``X-bi-7a``, ``X-f1`` without one.  What a suffix never does is
+    CONTINUE the parent's trailing NUMBER -- ``C20`` is the twentieth
+    pay-calendar step, not a leaf of ``C2``, exactly as ``C10`` is not one of
+    ``C1``.  Until 2026-09-14 this derivation was a bare ``startswith``, and the
+    first ``C2x`` id ever minted (``C20``, at ``C17-d-3``'s tick) made the arm
+    report the shipped identity class ``X-l`` / ``C2`` / ``R-F12`` as having
+    shipped ahead of an open leaf.  The number boundary reproduces every
+    declared parent's leaf set on that corpus (56 parents) except that one
+    false member, which is the measurement this rule was written from.
+
+    Args:
+        parent_ident: The container's bare id.
+        ident: The candidate's bare id, same arc.
+
+    Returns:
+        ``True`` iff *ident* extends *parent_ident* without continuing a
+        trailing digit run.
+    """
+    if not ident.startswith(parent_ident) or ident == parent_ident:
+        return False
+    nxt = ident[len(parent_ident)]
+    return not (parent_ident[-1].isdigit() and nxt.isdigit())
