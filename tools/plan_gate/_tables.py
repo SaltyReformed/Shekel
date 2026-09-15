@@ -40,6 +40,11 @@ STEPS_HEADER = (
 )
 FORKS_HEADER = ("defect", "competing remedies", "ruled")
 RULINGS_HEADER = ("arc", "id", "also", "date", "what was ruled")
+#: ``steps.md``'s OUTCOMES: the developer's ruled scopes the PATH tier is derived
+#: from (conventions.md rule 14, the 2026-09-15 tiers).  A header of its own so
+#: the preamble table is READ rather than merely tolerated, which is N-234's
+#: lesson applied forward: a table the gate needs is one it locates by name.
+OUTCOMES_HEADER = ("outcome", "scope")
 
 #: Which document each header lives in, so a refused row can be named by FILE
 #: without :func:`rows_under` taking a path it never reads.  A header is a
@@ -49,6 +54,7 @@ DOCUMENT_OF_HEADER = {
     STEPS_HEADER: "steps.md",
     FORKS_HEADER: "steps.md",
     RULINGS_HEADER: "rulings.md",
+    OUTCOMES_HEADER: "steps.md",
 }
 
 #: An ``order`` cell placing a step in the sequence: ``#12``.  The three legal
@@ -140,7 +146,7 @@ class StepRow:
 
     def alias_keys(self) -> list[str]:
         """The ``arc:id`` keys this step is also known by."""
-        return _key_list(self.aliases)
+        return key_list(self.aliases)
 
     @property
     def is_decomposed_parent(self) -> bool:
@@ -195,7 +201,7 @@ class StepRow:
         so the key is parsed OUT of the entry rather than the entry being read
         as a key.
         """
-        return _key_list(self.blocked)
+        return key_list(self.blocked)
 
 
 @dataclass(frozen=True)
@@ -332,11 +338,12 @@ class Fork:
         return re.findall(r"\b([a-z_]+:[A-Za-z0-9][A-Za-z0-9-]*)", self.defect)
 
 
-def _key_list(cell: str) -> list[str]:
+def key_list(cell: str) -> list[str]:
     """Return the ``arc:id`` keys a ``/``-separated step-key cell names.
 
-    Shared by :meth:`StepRow.alias_keys` and :meth:`StepRow.blocked_keys`,
-    which is the whole point: ``aliases`` and ``blocked by`` carry the SAME
+    Shared by :meth:`StepRow.alias_keys`, :meth:`StepRow.blocked_keys` and the
+    OUTCOMES table's ``scope`` cell (:func:`_order.outcome_scopes`), which is
+    the whole point: ``aliases`` and ``blocked by`` carry the SAME
     shape -- a list of step keys, each optionally annotated in parentheses --
     and rule 13 grades the second against the first's identity classes, so the
     two cells being read by two grammars would let a class agree about its
