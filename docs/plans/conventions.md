@@ -231,8 +231,13 @@ end.
 14. **`steps.md` states the EXECUTION ORDER, and the order is graded against the graph it must
     obey.** Rule 13's column is a CONSTRAINT and it under-determines the answer by a wide margin
     (`steps.md` states the READY count; a copy here is rule 16's arm 2), so the graph says "any of
-    these" and never "this one next". The sequence is therefore a DECISION -- taken from each arc's
-    own stated sequencing -- and rule 13 is what keeps that decision honest rather than produces it.
+    these" and never "this one next". The sequence is therefore a DECISION -- the OUTCOME TIERS
+    `steps.md`'s preamble states (developer, 2026-09-15; the PATH tier is derived from the graph and
+    graded, the horizon is a KEY) and, within a tier, each arc's own stated sequencing -- and rule
+    13 is what keeps that decision honest rather than produces it. **The PATH tier is the ranked
+    rows' own LEADING BLOCK, and the horizon is stated once, as
+    `**The horizon opens at `arc:id`.**`, naming an open ranked row outside the path**;
+    `_order.tier_violations` reconciles both, as this rule reconciles `starts`.
     **The `order` cell has exactly three spellings**: `#N`, `container` and `SHIPPED`. Ranks are
     dense from 1, so "the first row that is not done" is always the next step; a rank repeats only
     across an IDENTITY CLASS, for the reason rule 11 makes one share a tick state; and a step is
