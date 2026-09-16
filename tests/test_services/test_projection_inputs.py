@@ -51,8 +51,10 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_payroll_feeds,
     load_payroll_wiring,
-    load_shadow_income_contributions_for_account,
     price_payroll_feeds,
+)
+from app.services.recorded_contributions import (
+    load_shadow_income_contributions_for_account,
 )
 from tests._test_helpers import (
     an_entered_day,

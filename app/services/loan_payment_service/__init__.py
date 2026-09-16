@@ -72,16 +72,20 @@ critical invariant -- because the pricing leaf's
 template to ``loan_payment_settings``, and had to: discovering WHICH transfers
 are loan payments is a question about that table.
 
-**That query left with the pricing pair at plan step X-au-g-2a, so the claim is
-true again -- and it is restated as a MEASUREMENT rather than reinstated as a
-motto.**  What remains here reads ``budget.transactions`` alone
-(:func:`get_payment_history` through
-:func:`app.services.loan_loaders.query_shadow_income`) plus the loan's own
-params, rate history and escrow lines.  Invariant 5 binds the BALANCE
-CALCULATOR ("Balance calculator queries ONLY budget.transactions") rather than
-every loan reader, so the claim was never load-bearing for the invariant; it is
-kept because a sentence that was false once is worth keeping honest, and the
-next name added here is the one that could make it false again.
+**That query left with the pricing pair at plan step X-au-g-2a, and the claim
+was true again from then until plan step balance:X-bi-6a, when it became false
+BY DESIGN and is restated as a MEASUREMENT.**  What is read here now:
+:func:`get_payment_history` takes a loan's payments from
+:func:`app.services.loan_ledger.payment_installments`, whose SETTLED half is
+the shadow rows in ``budget.transactions``
+(:func:`app.services.loan_loaders.settled_income_shadows`) and whose PROJECTED
+half is the parent rows in ``budget.transfers`` as derived legs
+(:func:`app.services.loan_loaders.projected_income_legs`; ruling **R-BAL13**,
+Transfer Invariant 5 as restated at that step), plus the loan's own params,
+rate history and escrow lines.  No amount is read off a transfer for a
+payment that has settled.  The paragraph above predicted that "the next name
+added here is the one that could make it false again", and it was: this is
+that sentence being kept honest rather than kept.
 
 Shared by:
   - ``app/routes/loan/`` (dashboard and payoff calculator)

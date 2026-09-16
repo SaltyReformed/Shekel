@@ -39,6 +39,7 @@ from app.services.cash_ledger import (
     CashLedgerWalk,
     sum_projected,
 )
+from app.services.transfer_legs import PlannedTransferLeg
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
@@ -350,8 +351,10 @@ def _budget_legs(
 
     Every row ATTRIBUTED to a reported period, whatever day its money moved:
     settled rows at the confirmed cash leg the walk already valued them at, and
-    still-projected rows at the shared ``sum_projected`` reduction -- the same
-    engine :func:`~._cash_fold._planned_day_nets` reduces the same rows through
+    still-projected rows -- the account's own, and one derived leg per
+    still-projected transfer it is on (plan step **X-bi-6a**) -- at the shared
+    ``sum_projected`` reduction -- the same
+    engine :func:`~._cash_fold._planned_day_nets` reduces the same items through
     on the other clock, through the same
     :class:`~app.services.cash_ledger.AmountBasis`, which is why the two
     groupings reconcile to the cent.
@@ -404,7 +407,12 @@ def _budget_legs(
             # **bank_import:R-II**) -- comes out as a NEGATIVE expense, which
             # is the classification this function pins by TYPE.
             expense[fact.pay_period_id] -= fact.delta
-    by_period: "dict[int, list[Transaction]]" = defaultdict(list)
+    # A transfer LEG files under its PARENT's period (plan step X-bi-6a):
+    # ``PlannedTransferLeg.pay_period_id`` reads the parent's column, so the
+    # one attribute this grouping asks is answered by rows and legs alike.
+    by_period: "dict[int, list[Transaction | PlannedTransferLeg]]" = (
+        defaultdict(list)
+    )
     for txn in plan.rows:
         if txn.pay_period_id in income:
             by_period[txn.pay_period_id].append(txn)
