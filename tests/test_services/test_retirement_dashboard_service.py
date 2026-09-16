@@ -275,6 +275,7 @@ def _current_paycheck(net_pay, gross_biweekly, annual_salary):
         period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
         earnings=paycheck_calculator.Earnings(
             annual_salary=annual_salary,
+            base_biweekly=gross_biweekly,
             gross_biweekly=gross_biweekly,
             net_pay=net_pay,
         ),

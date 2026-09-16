@@ -108,10 +108,16 @@ _REF_TABLE_SEEDS = (
         "head_of_household",
     ]),
     # ``PaycheckLineKind`` -- where a payroll line sits in the paycheck's
-    # waterfall (plan step salary:R18-a, ruling R-SAL38).  ``ref.deduction_
-    # timings`` (``pre_tax`` / ``post_tax``) until then; the migration renames
-    # the table and the two rows, and this reseed finds them present.
-    ("PaycheckLineKind", ["pre_tax_deduction", "post_tax_deduction"]),
+    # waterfall (ruling R-SAL38), in waterfall order.  ``ref.deduction_
+    # timings`` (``pre_tax`` / ``post_tax``) until plan step salary:R18-a,
+    # whose migration renamed the table and those two rows; R18-b's
+    # migration inline-seeds the two earning kinds (the dual-seed pattern),
+    # so a freshly upgraded database resolves the enum before this
+    # idempotent reseed runs.
+    ("PaycheckLineKind", [
+        "taxable_earning", "pre_tax_deduction", "post_tax_deduction",
+        "after_tax_earning",
+    ]),
     ("CalcMethod", ["flat", "percentage"]),
     ("TaxType", ["flat", "none", "bracket"]),
     ("RaiseType", ["merit", "cola", "custom"]),

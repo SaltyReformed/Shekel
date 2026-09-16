@@ -1,14 +1,14 @@
 """
 Shekel Budget App -- Per-deduction annual-cap clamp (salary domain)
 
-A payroll deduction may carry an ``annual_cap`` (``PaycheckLine.annual_cap``):
+A payroll line may carry an ``annual_cap`` (``PaycheckLine.annual_cap``):
 a user-set dollar ceiling on how much of that deduction is taken across a single
 calendar year.  Once the year-to-date total reaches the cap, the deduction stops
 for the remainder of the year and resumes the following January.
 
 This module owns the single definition of "how much of a deduction applies this
 period given the cap and the year-to-date total so far."  Both the net-pay path
-(``paycheck_calculator._calculate_deductions``) and the investment-contribution
+(``paycheck_calculator._lines._priced_lines``) and the investment-contribution
 timeline (``investment_projection.build_contribution_timeline``) clamp through
 this one function so the two surfaces can never disagree on a capped deduction.
 

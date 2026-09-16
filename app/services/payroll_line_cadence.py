@@ -1,4 +1,8 @@
-"""Shekel Budget App -- What a payroll deduction's cadence MEANS, stated once.
+"""Shekel Budget App -- What a payroll line's cadence MEANS, stated once.
+
+``deduction_cadence`` until plan step salary:R18-b, when the earning kinds
+joined the lines it words (ruling **R-SAL38**); every function here reads a
+line of any kind the same way.
 
 Plan step **salary:R15-b** (rulings **R-SAL3**, **R-SAL32**): a deduction's
 frequency is a recurrence rule on the row, or no rule for *every paycheck*,

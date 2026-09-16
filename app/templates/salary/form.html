@@ -199,8 +199,8 @@
     {# ── Raises Section ── #}
     {% include "salary/_raises_section.html" %}
 
-    {# ── Deductions Section ── #}
-    {% include "salary/_deductions_section.html" %}
+    {# ── Payroll lines section (deductions and earnings, plan step salary:R18-b) ── #}
+    {% include "salary/_lines_section.html" %}
 
     {# ── Calibration ── #}
     <div class="card mb-3">
@@ -294,7 +294,7 @@
 {% endblock content %}
 
 {% block scripts %}
-{# The deduction form's cadence controls are the shared recurrence partial's
+{# The payroll-line form's cadence controls are the shared recurrence partial's
    (plan step salary:R15-c), and this is the script that links them. #}
 <script src="{{ url_for('static', filename='js/recurrence_form.js') }}"></script>
 {% endblock scripts %}

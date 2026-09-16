@@ -42,8 +42,8 @@ from app.models.ref import PeriodPlacement, RecurrenceUnit
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from app.schemas.validation.salary import (
-    DeductionCreateSchema,
-    DeductionUpdateSchema,
+    PaycheckLineCreateSchema,
+    PaycheckLineUpdateSchema,
 )
 from app.schemas.validation.transfers import (
     TransferTemplateCreateSchema,
@@ -82,8 +82,8 @@ _SCHEMAS = (
 #: ``starts_on`` and no ``nominal_day``, and the one sweep that states the
 #: pair stays on :data:`_SCHEMAS`.
 _CADENCE_SCHEMAS = _SCHEMAS + (
-    ("DeductionCreateSchema", DeductionCreateSchema),
-    ("DeductionUpdateSchema", DeductionUpdateSchema),
+    ("PaycheckLineCreateSchema", PaycheckLineCreateSchema),
+    ("PaycheckLineUpdateSchema", PaycheckLineUpdateSchema),
 )
 
 #: The two axes, each with the field name it posts under, the enum whose members
@@ -441,8 +441,8 @@ class TestTheTripleMustBeStorable:
         [
             ("create", TemplateCreateSchema),
             ("update", TemplateUpdateSchema),
-            ("deduction create", DeductionCreateSchema),
-            ("deduction update", DeductionUpdateSchema),
+            ("deduction create", PaycheckLineCreateSchema),
+            ("deduction update", PaycheckLineUpdateSchema),
         ],
     )
     def test_a_unit_with_no_interval_is_refused(self, app, label, schema_cls):
@@ -900,7 +900,7 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
 
     A payroll deduction's rule has a DERIVED first occurrence (rulings
     R-SAL30, R-SAL36), no due day and no closing bound, so
-    :class:`~app.schemas.validation.salary.DeductionCreateSchema` inherits
+    :class:`~app.schemas.validation.salary.PaycheckLineCreateSchema` inherits
     ``RecurrenceCadenceFieldsMixin`` and not the fuller mixin.  What that
     buys is asserted here: a crafted POST stating any of the five undeclared
     controls meets ``BaseSchema``'s ``unknown = EXCLUDE`` and never reaches
@@ -918,7 +918,7 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
 
     @pytest.mark.parametrize(
         ("label", "schema_cls"),
-        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+        [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
     def test_the_four_are_declared_and_the_five_are_not(self, app, label, schema_cls):
         """Exactly the cadence, on both deduction schemas."""
@@ -933,7 +933,7 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
 
     @pytest.mark.parametrize(
         ("label", "schema_cls"),
-        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+        [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
     def test_a_crafted_calendar_coordinate_is_dropped_not_loaded(
         self, app, label, schema_cls,
@@ -1011,7 +1011,7 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
             )
             for expected, payload in cases:
                 with pytest.raises(ValidationError) as exc_info:
-                    DeductionCreateSchema().load(payload, partial=True)
+                    PaycheckLineCreateSchema().load(payload, partial=True)
                 assert flash_message_for_errors(
                     exc_info.value.normalized_messages(),
                 ) == expected

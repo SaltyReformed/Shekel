@@ -212,7 +212,7 @@ class TestDeductionDoubleSubmit:
     """
 
     def test_duplicate_deduction_rejected(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/<id>/deductions twice creates exactly one deduction."""
+        """POST /salary/<id>/lines twice creates exactly one deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
             pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
@@ -227,14 +227,14 @@ class TestDeductionDoubleSubmit:
 
             # First submit -- success.
             resp1 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=data, follow_redirects=True,
             )
             assert b"401k" in resp1.data
 
             # Second submit with same data -- idempotent rejection.
             resp2 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=data, follow_redirects=True,
             )
             assert resp2.status_code == 200

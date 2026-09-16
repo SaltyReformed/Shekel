@@ -5,8 +5,9 @@ The six dataclasses :func:`~._pricing.calculate_paycheck` assembles and every
 reader of a paycheck consumes -- the salary cockpit, the projection ledger,
 the amount model, the payroll feeds.  They carry no behaviour beyond the
 section totals that belong to the section owning the data (``taxes.total``,
-``deductions.total_pre_tax``, ``earnings.take_home_rate_pct``), so this leaf
-imports nothing of the engine and every other leaf may import it.
+``deductions.total_pre_tax``, ``earnings.total_taxable``,
+``earnings.take_home_rate_pct``), so this leaf imports nothing of the engine
+and every other leaf may import it.
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**), which is what put the package where the module had been; the
@@ -21,8 +22,16 @@ from app.utils.money import ZERO
 
 
 @dataclass
-class DeductionLine:
-    """A single deduction line item in a paycheck breakdown."""
+class PricedLine:
+    """One payroll line PRICED for one paycheck: a name and what it is worth.
+
+    ``DeductionLine`` until plan step **salary:R18-b** (ruling **R-SAL38**),
+    which prices the earning kinds through the same pass; a line of any of
+    the four kinds is this value once priced, and which side it is on is
+    which list of the breakdown holds it.  ``target_account_id`` is the
+    account a DEDUCTION funds (the contribution feed reads it) and ``None``
+    for every earning.
+    """
     name: str
     amount: Decimal
     target_account_id: int = None
@@ -45,8 +54,8 @@ class TaxLines:
 @dataclass
 class DeductionBreakdown:
     """Pre- and post-tax deduction line items for a single paycheck."""
-    pre_tax: list[DeductionLine] = field(default_factory=list)
-    post_tax: list[DeductionLine] = field(default_factory=list)
+    pre_tax: list[PricedLine] = field(default_factory=list)
+    post_tax: list[PricedLine] = field(default_factory=list)
 
     @property
     def total_pre_tax(self) -> Decimal:
@@ -61,11 +70,50 @@ class DeductionBreakdown:
 
 @dataclass
 class Earnings:
-    """Gross-to-net dollar figures for a single paycheck."""
+    """The earnings side of a single paycheck: base pay, its lines, and the figures they make.
+
+    **Base pay plus a list of lines, since plan step salary:R18-b** (ruling
+    **R-SAL38**; ledger row **D59**).  Until then this was four scalars and
+    ``gross_biweekly`` WAS the salary rate, so nothing could add a dollar to
+    a paycheck that was not an annual-salary raise; an employer allowance
+    with a cadence had to be a separate income template, and one payroll
+    deposit met two or three app rows.
+
+    Attributes:
+        annual_salary: The post-raise annual salary in effect on the payday.
+        base_biweekly: What the SALARY pays for one paycheck -- the rate
+            :func:`~app.services.payroll_basis.gross_per_paycheck` derives,
+            and the base every PERCENTAGE line is a percentage of
+            (R-SAL38: never of gross, so a percentage earning is not circular
+            and no existing line moves when an earning joins).
+        gross_biweekly: ``base_biweekly`` plus the TAXABLE earning lines --
+            the stub's gross, the FICA base, what withholding annualises and
+            what the year-to-date wage cumulative sums.
+        taxable_income: ``gross_biweekly`` less the pre-tax deductions,
+            floored at zero; the income-tax base.
+        net_pay: The deposit: gross less both deduction passes and the
+            withholding, plus the AFTER-TAX earning lines.
+        taxable: The taxable earning lines priced for this paycheck, in
+            the profile's line order.
+        after_tax: The after-tax earning lines priced for this paycheck.
+    """
     annual_salary: Decimal
+    base_biweekly: Decimal
     gross_biweekly: Decimal
     taxable_income: Decimal = ZERO
     net_pay: Decimal = ZERO
+    taxable: list[PricedLine] = field(default_factory=list)
+    after_tax: list[PricedLine] = field(default_factory=list)
+
+    @property
+    def total_taxable(self) -> Decimal:
+        """Return the sum of the taxable earning lines (``gross - base``)."""
+        return sum((line.amount for line in self.taxable), ZERO)
+
+    @property
+    def total_after_tax(self) -> Decimal:
+        """Return the sum of the after-tax earning lines."""
+        return sum((line.amount for line in self.after_tax), ZERO)
 
     @property
     def take_home_rate_pct(self) -> Decimal | None:

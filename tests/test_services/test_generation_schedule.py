@@ -93,7 +93,7 @@ from tests._test_helpers import (
     derived_span,
     last_covered_day,
     make_cadence_rule,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_transfer_template,
     payroll_basis,
     populate_in_a_fresh_pass,
@@ -618,7 +618,7 @@ class TestThePaycheckSeesTheWholeSchedule:
         )
         db.session.add(deduction)
         db.session.flush()
-        make_deduction_cadence_rule(db.session, deduction, 24)
+        make_line_cadence_rule(db.session, deduction, 24)
         seed_tax_bracket_set(seed_user["user"].id)
         seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
         seed_fica_config(seed_user["user"].id)

@@ -18,12 +18,14 @@ The package -- one private leaf per verb
 
 **A package since plan step salary:C12** (ledger row **P64**), in one-way
 import order: :mod:`._breakdown` (the six value types a priced paycheck IS),
+:mod:`._lines` (the one pass that prices a line of any kind, with its
+cadence, cap and escalation rules, and the one producer of the gross),
 :mod:`._calendar_questions` (the month-position and year-to-date reads the
-next section names), :mod:`._deductions` (the two deduction passes with their
-cadence, cap and escalation rules), :mod:`._withholding` (the calibrated and
-the bracket tax paths) and :mod:`._pricing` (the two public entries, which
-compose the rest).  The engine sat at EXACTLY 1000 of pylint's 1000-line
-ceiling as one module on 2026-08-17, ``recurrence:R-F16`` bought 127 lines
+next section names; the year-to-date replays the gross producer),
+:mod:`._withholding` (the calibrated and the bracket tax paths) and
+:mod:`._pricing` (the two public entries, which compose the rest).  The
+engine sat at EXACTLY 1000 of pylint's 1000-line ceiling as one module on
+2026-08-17, ``recurrence:R-F16`` bought 127 lines
 of room two days later, and the steps since had spent all but three of them
 by 2026-09-12 -- so each edit shaved prose to add a line, which is how a
 measured claim gets deleted for length.  A package is the answer
@@ -41,7 +43,7 @@ about where its payday SITS among this owner's other paydays:
 * whether it is the THIRD payday of its calendar month -- the cockpit's
   badge, and until plan step salary:R15-b the one a 24-per-year deduction
   skipped (each line's cadence is its own recurrence rule now, read through
-  the occurrence walk by ``PayrollBasis.deduction_applies_on``);
+  the occurrence walk by ``PayrollBasis.line_applies_on``);
 * whether it is the FIRST, which was likewise the only payday a 12-per-year
   deduction was taken on;
 * the gross this owner has already been paid this calendar year, which drives
@@ -107,10 +109,16 @@ divergence; the capped half is unchanged.*
 The per-paycheck gross -- a RATE, not a share of a year
 -------------------------------------------------------
 
-``gross_biweekly`` is the (post-raise) annual salary divided by the owner's
+``base_biweekly`` is the (post-raise) annual salary divided by the owner's
 PAYCHECK COUNT and rounded once, at the cent.  The division lives in ONE place
 for the whole application, :func:`app.services.payroll_basis.gross_per_paycheck`,
 which carries the argument for the rule and the measurements behind it.
+*It was ``gross_biweekly`` until plan step salary:R18-b (ruling R-SAL38),
+when the gross became the base plus the paycheck's TAXABLE EARNING lines --
+an employer allowance with a cadence, priced through the same pass as a
+deduction (``_lines``) -- and the net gained the AFTER-TAX earning lines;
+every percentage line is a percentage of the BASE, so what this section
+argues about the rate is unchanged by a line joining it.*
 
 The paycheck count is :attr:`PayrollBasis.periods_per_year`, derived from the
 owner's pay cadence and from nothing else since plan step **R-F16**; that class
@@ -177,20 +185,20 @@ schedule -- is what survives that flip unchanged; only the input improves.
 
 from ._breakdown import (
     DeductionBreakdown,
-    DeductionLine,
     Earnings,
     PaycheckBreakdown,
     PeriodInfo,
+    PricedLine,
     TaxLines,
 )
 from ._pricing import calculate_paycheck, project_salary
 
 __all__ = [
     "DeductionBreakdown",
-    "DeductionLine",
     "Earnings",
     "PaycheckBreakdown",
     "PeriodInfo",
+    "PricedLine",
     "TaxLines",
     "calculate_paycheck",
     "project_salary",

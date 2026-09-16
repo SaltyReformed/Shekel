@@ -1,12 +1,19 @@
 {% from "_money_macros.html" import money %}
 {% from "_recurrence_fields.html" import recurrence_cadence_controls with context %}
-<div class="card mb-3" id="deductions-section">
+{# The profile's PAYROLL LINES (plan step salary:R18-b, ruling R-SAL38): a
+   paycheck is base pay plus a list of lines, and a line's KIND is its
+   position in the waterfall -- a taxable earning joins gross, a pre-tax
+   deduction leaves before tax, a post-tax deduction after, an after-tax
+   earning joins the deposit.  One section and one form for all four; the
+   kind's label comes from the one producer
+   (app.services.paycheck_line_kinds), never derived from the ref name. #}
+<div class="card mb-3" id="lines-section">
   <div class="card-header d-flex justify-content-between align-items-center">
-    <h6 class="mb-0"><i class="bi bi-dash-circle"></i> Deductions</h6>
+    <h6 class="mb-0"><i class="bi bi-list-check"></i> Payroll lines</h6>
     <button class="btn btn-sm btn-outline-primary" type="button"
-            data-toggle-target="add-deduction-form"
-            data-ded-reset="true">
-      <i class="bi bi-plus"></i> Add Deduction
+            data-toggle-target="add-line-form"
+            data-line-reset="true">
+      <i class="bi bi-plus"></i> Add line
     </button>
   </div>
   <div class="card-body">
@@ -16,7 +23,7 @@
       <thead>
         <tr>
           <th>Name</th>
-          <th>Timing</th>
+          <th>Kind</th>
           <th>Method</th>
           <th class="text-end">Amount</th>
           <th>Frequency</th>
@@ -30,13 +37,14 @@
         <tr>
           <td>{{ d.name }}</td>
           <td>
-            {# Timing chip on the shared flag-chip (P-SA2 / RC3): pre-tax
+            {# Kind chip on the shared flag-chip (P-SA2 / RC3): pre-tax
                wears the accent -- matching the cockpit's accent pre-tax
-               bars -- and post-tax the neutral variant; the label, not
-               the color, carries the meaning.  ID comparison, never the
-               ref name string. #}
+               bars -- and every other kind the neutral variant; the label,
+               not the color, carries the meaning.  ID comparison, never the
+               ref name string; the label from the kind vocabulary's one
+               producer. #}
             <span class="flag-chip {{ '' if d.paycheck_line_kind_id == LINE_KIND_PRE_TAX_DEDUCTION else 'flag-chip--neutral' }}">
-              {{ d.paycheck_line_kind.name|replace('_', '-') }}
+              {{ kind_labels[d.paycheck_line_kind_id] }}
             </span>
           </td>
           <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
@@ -50,7 +58,7 @@
           {# The line's cadence, worded by the recurrence package through the
              route's ``cadence_phrases`` (plan step salary:R15-b): its rule's
              description, or "Every paycheck" for a line with none. #}
-          <td data-ded-cadence="{{ d.id }}">{{ cadence_phrases[d.id] }}</td>
+          <td data-line-cadence="{{ d.id }}">{{ cadence_phrases[d.id] }}</td>
           <td class="text-end font-mono">
             {{ money(d.annual_cap) if d.annual_cap else '--' }}
           </td>
@@ -72,30 +80,30 @@
                hide the rest. #}
             {% set cadence = selected_cadences[d.id] %}
             <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
-                    data-ded-edit="{{ d.id }}"
-                    data-ded-name="{{ d.name }}"
-                    data-ded-kind-id="{{ d.paycheck_line_kind_id }}"
-                    data-ded-method-id="{{ d.calc_method_id }}"
-                    data-ded-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
-                    data-ded-unit-id="{{ cadence.unit_id if cadence else '' }}"
-                    data-ded-interval="{{ cadence.interval_n if cadence else '' }}"
-                    data-ded-placement-id="{{ cadence.placement_id if cadence else '' }}"
-                    data-ded-max-per-month="{{ cadence.max_per_month if cadence and cadence.max_per_month is not none else '' }}"
-                    data-ded-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
-                    data-ded-target-account="{{ d.target_account_id or '' }}"
-                    data-ded-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
-                    data-ded-inflation-rate="{{ '%.2f'|format((d.inflation_rate|to_percent)) if d.inflation_rate else '' }}"
-                    data-ded-inflation-month="{{ d.inflation_effective_month or '' }}"
-                    data-ded-version-id="{{ d.version_id }}"
-                    data-ded-edit-url="{{ url_for('salary.update_deduction', ded_id=d.id) }}">
+                    data-line-edit="{{ d.id }}"
+                    data-line-name="{{ d.name }}"
+                    data-line-kind-id="{{ d.paycheck_line_kind_id }}"
+                    data-line-method-id="{{ d.calc_method_id }}"
+                    data-line-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
+                    data-line-unit-id="{{ cadence.unit_id if cadence else '' }}"
+                    data-line-interval="{{ cadence.interval_n if cadence else '' }}"
+                    data-line-placement-id="{{ cadence.placement_id if cadence else '' }}"
+                    data-line-max-per-month="{{ cadence.max_per_month if cadence and cadence.max_per_month is not none else '' }}"
+                    data-line-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
+                    data-line-target-account="{{ d.target_account_id or '' }}"
+                    data-line-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
+                    data-line-inflation-rate="{{ '%.2f'|format((d.inflation_rate|to_percent)) if d.inflation_rate else '' }}"
+                    data-line-inflation-month="{{ d.inflation_effective_month or '' }}"
+                    data-line-version-id="{{ d.version_id }}"
+                    data-line-edit-url="{{ url_for('salary.update_line', line_id=d.id) }}">
               <i class="bi bi-pencil"></i>
             </button>
             <form method="POST" class="d-inline"
-                  action="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
-                  hx-post="{{ url_for('salary.delete_deduction', ded_id=d.id) }}"
-                  hx-target="#deductions-section"
+                  action="{{ url_for('salary.delete_line', line_id=d.id) }}"
+                  hx-post="{{ url_for('salary.delete_line', line_id=d.id) }}"
+                  hx-target="#lines-section"
                   hx-swap="outerHTML"
-                  hx-confirm="Delete this deduction?"
+                  hx-confirm="Delete this payroll line?"
                   hx-disabled-elt="find button[type=submit]">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove">
@@ -109,24 +117,24 @@
     </table>
     </div>
     {% else %}
-    <p class="text-muted mb-0">No deductions configured.</p>
+    <p class="text-muted mb-0">No payroll lines configured.</p>
     {% endif %}
 
-    {# Add/edit deduction form (collapsed) #}
-    <div class="collapse mt-3" id="add-deduction-form">
+    {# Add/edit line form (collapsed) #}
+    <div class="collapse mt-3" id="add-line-form">
       <hr>
-      <form method="POST" id="deduction-form"
-            action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
-            hx-post="{{ url_for('salary.add_deduction', profile_id=profile.id) }}"
-            hx-target="#deductions-section"
+      <form method="POST" id="line-form"
+            action="{{ url_for('salary.add_line', profile_id=profile.id) }}"
+            hx-post="{{ url_for('salary.add_line', profile_id=profile.id) }}"
+            hx-target="#lines-section"
             hx-swap="outerHTML"
             hx-disabled-elt="find button[type=submit]"
-            data-add-action="{{ url_for('salary.add_deduction', profile_id=profile.id) }}">
+            data-add-action="{{ url_for('salary.add_line', profile_id=profile.id) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         {# Optimistic-locking pin (commit C-18 / F-010).  Empty for
            the create flow; populated by app.js when the form is
-           switched to edit mode for an existing deduction. #}
-        <input type="hidden" name="version_id" id="deduction-version-id" value="">
+           switched to edit mode for an existing line. #}
+        <input type="hidden" name="version_id" id="line-version-id" value="">
         {# Row 1: Identity #}
         <div class="row g-2 mb-2">
           <div class="col-md-6">
@@ -135,10 +143,12 @@
                    required placeholder="e.g. 401(k)">
           </div>
           <div class="col-md-6">
-            <label class="form-label">Timing</label>
+            <label class="form-label">Kind</label>
+            {# The four kinds in waterfall order, labelled by the vocabulary's
+               one producer (kind_options); the value is the id. #}
             <select name="paycheck_line_kind_id" class="form-select form-select-sm" required>
-              {% for dt in paycheck_line_kinds %}
-              <option value="{{ dt.id }}">{{ dt.name|replace('_', '-')|title }}</option>
+              {% for kind_id, kind_label in kind_options %}
+              <option value="{{ kind_id }}">{{ kind_label }}</option>
               {% endfor %}
             </select>
           </div>
@@ -155,7 +165,7 @@
               {% endfor %}
               {% endif %}
             </select>
-            <small class="text-muted">Select the retirement or investment account this deduction contributes to. The deducted amount will appear as a contribution in that account's growth projection.</small>
+            <small class="text-muted">Deductions only: the retirement or investment account this deduction contributes to. The deducted amount will appear as a contribution in that account's growth projection; an earning is paid to you and funds no account.</small>
           </div>
         </div>
         {# Row 3: Amount #}
@@ -163,7 +173,7 @@
           <div class="col-md-4">
             <label class="form-label">Method</label>
             <select name="calc_method_id" class="form-select form-select-sm" required
-                    data-action="update-deduction-labels">
+                    data-action="update-line-labels">
               {% for cm in calc_methods %}
               {# data-name carries the semantic ref name ("percentage"/"flat")
                  so app.js keys the amount-label toggle off it instead of the
@@ -174,6 +184,8 @@
           </div>
           <div class="col-md-4">
             <label class="form-label amount-label">Amount</label>
+            {# A percentage is of BASE pay (ruling R-SAL38), never of the
+               gross a taxable earning joins. #}
             <input type="number" step="0.01" name="amount"
                    class="form-control form-control-sm" required
                    placeholder="e.g. 500">
@@ -195,7 +207,7 @@
            does on the two template forms; it is loaded by salary/form.html
            and re-initialises itself after the HTMX swap that re-renders this
            section.  ``selected`` is none: the ADD form opens unset, and an
-           EDIT is filled by app.js from the row's data-ded-* attributes. #}
+           EDIT is filled by app.js from the row's data-line-* attributes. #}
         <div class="row g-2 mb-2">
           <div class="col-12">
             {{ recurrence_cadence_controls(recurrence_picker, none) }}
@@ -213,8 +225,8 @@
           <div class="col-md-2">
             <div class="form-check mt-4">
               <input type="checkbox" name="inflation_enabled" class="form-check-input"
-                     id="ded-inflation">
-              <label class="form-check-label" for="ded-inflation">
+                     id="line-inflation">
+              <label class="form-check-label" for="line-inflation">
                 <small>Inflation</small>
               </label>
             </div>
@@ -230,7 +242,7 @@
                    class="form-control form-control-sm" placeholder="1-12">
           </div>
           <div class="col-md-3 d-flex align-items-end">
-            <button type="submit" class="btn btn-sm btn-primary" id="ded-submit-btn">
+            <button type="submit" class="btn btn-sm btn-primary" id="line-submit-btn">
               <i class="bi bi-plus"></i> Add
             </button>
           </div>

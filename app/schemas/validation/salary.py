@@ -16,6 +16,7 @@ from marshmallow import (
 
 from app import ref_cache
 from app.enums import CalcMethodEnum
+from app.services import paycheck_line_kinds
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
@@ -338,8 +339,15 @@ class RaiseUpdateSchema(RaiseCreateSchema):
     version_id = RowId(validate=validate.Range(min=1))
 
 
-class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
-    """Validates POST data for adding a paycheck deduction.
+class PaycheckLineCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
+    """Validates POST data for adding a payroll line to a salary profile.
+
+    **A line of any of the four kinds since plan step salary:R18-b** (ruling
+    **R-SAL38**): ``paycheck_line_kind_id`` names its position in the
+    paycheck's waterfall, and the one rule that differs by side --
+    ``target_account_id``, the account a DEDUCTION funds -- is
+    :meth:`validate_target_account_is_a_deduction`.  ``DeductionCreateSchema``
+    until then.
 
     **The line's CADENCE arrives through the shared recurrence controls since
     plan step salary:R15-c** (ruling **R-SAL31**): the four fields
@@ -367,9 +375,10 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
         dollar amount (e.g. "500.00") that is persisted as-is in
         ``salary.paycheck_lines.amount`` (``Numeric(12, 4)``).
       - ``CalcMethodEnum.PERCENTAGE`` -- the user enters a percent
-        of gross pay (e.g. "6" for 6%); the route divides by 100
-        before persistence so the storage value is the decimal
-        fraction.
+        of BASE pay (e.g. "6" for 6%; ruling **R-SAL38**: the salary
+        rate, never the gross a taxable earning joins); the route
+        divides by 100 before persistence so the storage value is
+        the decimal fraction.
 
     The wide field-level ``Range`` accommodates the dollar case;
     the cross-field validator ``validate_amount_against_calc_method``
@@ -462,21 +471,56 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
             return
         if amount > Decimal("100"):
             raise ValidationError(
-                "Percentage deductions must be at most 100%.",
+                "Percentage lines must be at most 100%.",
                 field_name="amount",
             )
 
+    @validates_schema
+    def validate_target_account_is_a_deduction(self, data, **kwargs):
+        """Refuse a target account on an EARNING kind.
 
-class DeductionUpdateSchema(DeductionCreateSchema):
-    """Validates POST data for updating an existing paycheck deduction.
+        A deduction may name the account it funds -- the contribution feed
+        (``app.services.projection_inputs``) reads every active line's
+        ``target_account_id`` as a payroll contribution INTO that account.  An
+        earning is money the paycheck pays OUT to the owner and funds nothing,
+        so a target on one would feed the investment projection a
+        contribution nobody makes; the door refuses it here, which is the
+        one place the pair is authored (plan step salary:R18-b, ruling
+        **R-SAL38**).  The side is read through
+        :func:`app.services.paycheck_line_kinds.is_deduction`, IDs for logic.
 
-    Inherits the required-field rules and the
-    ``validate_amount_against_calc_method`` cross-field rule from
-    :class:`DeductionCreateSchema` (the salary edit form submits the
+        Raises:
+            ValidationError: When ``target_account_id`` is set and
+                ``paycheck_line_kind_id`` is an earning kind.
+        """
+        kind_id = data.get("paycheck_line_kind_id")
+        if kind_id is None or data.get("target_account_id") is None:
+            return
+        if not paycheck_line_kinds.is_deduction(kind_id):
+            raise ValidationError(
+                paycheck_line_kinds.EARNING_TARGET_REFUSAL,
+                field_name="target_account_id",
+            )
+
+
+class PaycheckLineUpdateSchema(PaycheckLineCreateSchema):
+    """Validates POST data for updating an existing payroll line.
+
+    Inherits the required-field rules and the two cross-field rules from
+    :class:`PaycheckLineCreateSchema` (the salary edit form submits the
     full record on every save), and adds the optimistic-locking
     ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
     contract.  Commit C-18 of the 2026-04-15 security remediation
     plan.
+
+    **The earning-kind target rule is only half answered here** (plan step
+    salary:R18-b, an adversarial review of it): the cross-field rule below
+    reads the POSTED pair, and this door treats an absent key as *leave the
+    stored value alone* (the cadence keys' contract), so a payload that
+    flips a stored deduction's kind to an earning and omits the target
+    passes it.  :func:`app.routes.salary.items.update_line` judges the
+    EFFECTIVE pair -- the posted kind beside the target the row will carry
+    -- with the same sentence.
     """
 
     version_id = RowId(validate=validate.Range(min=1))

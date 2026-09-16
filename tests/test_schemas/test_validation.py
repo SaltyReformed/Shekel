@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
-from app.enums import RecurrenceUnitEnum
+from app.enums import PaycheckLineKindEnum, RecurrenceUnitEnum
 from app.schemas.validation._helpers import _normalize_empty_inputs
 from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from tests._test_helpers import cadence_payload
@@ -23,7 +23,7 @@ from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
     AccountCreateSchema,
     CategoryCreateSchema,
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     FicaConfigSchema,
     InlineTransactionCreateSchema,
     PayHistorySchema,
@@ -947,15 +947,15 @@ class TestRaiseCreateSchema:
         assert "effective_month" in exc.value.messages
 
 
-# ── DeductionCreateSchema ────────────────────────────────────────────
+# ── PaycheckLineCreateSchema ────────────────────────────────────────────
 
 
 class TestDeductionCreateSchema:
-    """Tests for DeductionCreateSchema."""
+    """Tests for PaycheckLineCreateSchema."""
 
     def test_valid_data(self):
         """Valid deduction data loads with defaults."""
-        data = DeductionCreateSchema().load({
+        data = PaycheckLineCreateSchema().load({
             "name": "401k",
             "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
@@ -970,7 +970,7 @@ class TestDeductionCreateSchema:
         seam (R15-c's form), so a posted count is an unknown key: dropped by
         ``BaseSchema``'s EXCLUDE, never loaded, never written by name.
         """
-        data = DeductionCreateSchema().load({
+        data = PaycheckLineCreateSchema().load({
             "name": "401k",
             "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
@@ -978,17 +978,49 @@ class TestDeductionCreateSchema:
             "deductions_per_year": "24",
         })
         assert "deductions_per_year" not in data
-        assert "deductions_per_year" not in DeductionCreateSchema().fields
+        assert "deductions_per_year" not in PaycheckLineCreateSchema().fields
 
     def test_missing_required_field(self):
         """Missing name raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load({
+            PaycheckLineCreateSchema().load({
                 "paycheck_line_kind_id": "1",
                 "calc_method_id": "1",
                 "amount": "100.0000",
             })
         assert "name" in exc.value.messages
+
+    @pytest.mark.parametrize("member", list(PaycheckLineKindEnum))
+    def test_a_target_account_is_accepted_on_a_deduction_and_refused_on_an_earning(
+        self, member,
+    ):
+        """The one side-specific rule, swept over all four kinds (plan step salary:R18-b).
+
+        A deduction may name the account it funds; an earning funds nothing,
+        so the pair is refused on ``target_account_id`` with the sentence the
+        flash allowlist carries.  IDs for logic: the side is read through the
+        kind vocabulary, never the name.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.services import paycheck_line_kinds  # pylint: disable=import-outside-toplevel
+
+        kind_id = ref_cache.paycheck_line_kind_id(member)
+        payload = {
+            "name": "Line", "paycheck_line_kind_id": str(kind_id),
+            "calc_method_id": "1", "amount": "50.0000", "target_account_id": "7",
+        }
+        if member in paycheck_line_kinds.DEDUCTION_KINDS:
+            assert PaycheckLineCreateSchema().load(payload)["target_account_id"] == 7
+        else:
+            with pytest.raises(ValidationError) as exc:
+                PaycheckLineCreateSchema().load(payload)
+            assert exc.value.messages["target_account_id"] == [
+                "Only a deduction can fund an account; an earning line is "
+                "paid to you and has no target account.",
+            ]
+        # Without a target every kind loads.
+        del payload["target_account_id"]
+        assert PaycheckLineCreateSchema().load(payload)["paycheck_line_kind_id"] == kind_id
 
 
 # ── FicaConfigSchema ─────────────────────────────────────────────────

@@ -450,7 +450,7 @@ class TestUpdateRaiseRoute:
 
 
 class TestAddDeductionRoute:
-    """POST /salary/<id>/deductions double-submit handling."""
+    """POST /salary/<id>/lines double-submit handling."""
 
     def test_double_submit_creates_one_deduction(
         self, app, auth_client, seed_user, seed_periods,
@@ -469,7 +469,7 @@ class TestAddDeductionRoute:
                 "amount": "250.00",
             }
             r1 = auth_client.post(
-                f"/salary/{profile.id}/deductions", data=data,
+                f"/salary/{profile.id}/lines", data=data,
                 follow_redirects=True,
             )
             assert r1.status_code == 200
@@ -477,7 +477,7 @@ class TestAddDeductionRoute:
             assert b"added" in r1.data
 
             r2 = auth_client.post(
-                f"/salary/{profile.id}/deductions", data=data,
+                f"/salary/{profile.id}/lines", data=data,
                 follow_redirects=True,
             )
             assert r2.status_code == 200
@@ -507,12 +507,12 @@ class TestAddDeductionRoute:
                 "amount": "200.00",
             }
             r1 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={**base, "name": "401k"},
                 follow_redirects=True,
             )
             r2 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={**base, "name": "HSA"},
                 follow_redirects=True,
             )
@@ -528,7 +528,7 @@ class TestAddDeductionRoute:
 
 
 class TestUpdateDeductionRoute:
-    """POST /salary/deductions/<id>/edit collision handling."""
+    """POST /salary/lines/<id>/edit collision handling."""
 
     def test_rename_to_existing_name_returns_warning(
         self, app, auth_client, seed_user, seed_periods,
@@ -546,7 +546,7 @@ class TestUpdateDeductionRoute:
             target_version = target.version_id
 
             resp = auth_client.post(
-                f"/salary/deductions/{target_id}/edit",
+                f"/salary/lines/{target_id}/edit",
                 data={
                     "name": "401k",
                     "paycheck_line_kind_id": str(timing.id),

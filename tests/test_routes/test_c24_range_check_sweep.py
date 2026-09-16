@@ -8,7 +8,7 @@ remediation plan:
   - F-011: ``RaiseCreateSchema.percentage`` and ``flat_amount`` are
     bounded to a positive, column-fitting range that rejects pay-cut
     values and absurd typos.
-  - F-012: ``DeductionCreateSchema.amount`` carries a wide
+  - F-012: ``PaycheckLineCreateSchema.amount`` carries a wide
     field-level Range plus the
     ``validate_amount_against_calc_method`` cross-field rule that
     caps percent-method deductions at 100%.
@@ -59,7 +59,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service
 from app.schemas.validation import (
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     FicaConfigSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
@@ -194,11 +194,11 @@ class TestRaiseSchemaBounds:
         assert "flat_amount" in info.value.messages
 
 
-# ── F-012: DeductionCreateSchema bounds + cross-field ─────────────
+# ── F-012: PaycheckLineCreateSchema bounds + cross-field ─────────────
 
 
 class TestDeductionSchemaBounds:
-    """Schema-layer bound checks on ``DeductionCreateSchema`` (F-012 / C-24)."""
+    """Schema-layer bound checks on ``PaycheckLineCreateSchema`` (F-012 / C-24)."""
 
     def _payload(self, app, **overrides):
         """Build a baseline deduction payload with valid FK ids."""
@@ -222,26 +222,26 @@ class TestDeductionSchemaBounds:
 
     def test_minimum_amount_accepted(self, app):
         """4-decimal precision min (0.0001) is accepted."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(app, amount="0.0001"))
         assert data["amount"] == Decimal("0.0001")
 
     def test_zero_amount_rejected(self, app):
         """A zero deduction has no effect; rejected at the schema."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, amount="0"))
         assert "amount" in info.value.messages
 
     def test_dollar_amount_at_upper_accepted(self, app):
         """$1M is the wide ceiling for the flat-dollar form."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(app, amount="1000000"))
         assert data["amount"] == Decimal("1000000")
 
     def test_dollar_amount_above_upper_rejected(self, app):
         """An obvious extra-digit typo on a flat deduction is rejected."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, amount="1000001"))
         assert "amount" in info.value.messages
@@ -253,7 +253,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         payload = self._payload(
             app, calc_method_id=str(pct_id), amount="150",
         )
@@ -268,7 +268,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         payload = self._payload(
             app, calc_method_id=str(pct_id), amount="100",
         )
@@ -282,7 +282,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(
             app, calc_method_id=str(pct_id), amount="6",
         ))
@@ -290,7 +290,7 @@ class TestDeductionSchemaBounds:
 
     def test_inflation_rate_percent_input_accepted(self, app):
         """3% inflation input passes; the route divides by 100 later."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(
             app, inflation_enabled="true", inflation_rate="3",
         ))
@@ -298,7 +298,7 @@ class TestDeductionSchemaBounds:
 
     def test_inflation_rate_above_100_rejected(self, app):
         """A 150% per-year escalation is a typo, not a rate."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(
                 app, inflation_enabled="true", inflation_rate="150",
@@ -307,7 +307,7 @@ class TestDeductionSchemaBounds:
 
     def test_annual_cap_zero_rejected(self, app):
         """``annual_cap`` must be positive when present (DB CHECK > 0)."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, annual_cap="0"))
         assert "annual_cap" in info.value.messages
