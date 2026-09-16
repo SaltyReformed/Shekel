@@ -122,6 +122,7 @@ from app.services.cash_ledger import (
     walk_cash_ledger,
 )
 from app.services.pay_calendar import FiledRow, PayCalendar, PeriodWindow
+from app.services.transfer_legs import PlannedTransferLeg
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext
@@ -802,9 +803,14 @@ class _CashPlan:
     pass's context was built on).
 
     Attributes:
-        rows: Every still-Projected balance-contributing row for the account in
-            the scenario, unwindowed (:func:`~app.services.cash_ledger.planned_cash_rows`).
-        by_day: The same rows keyed by the day each LANDS on (ruling R-G's
+        rows: Every still-Projected balance-contributing row of the account's
+            OWN in the scenario, unwindowed, plus one
+            :class:`~app.services.transfer_legs.PlannedTransferLeg` per
+            still-projected transfer the account is on
+            (:func:`~app.services.cash_ledger.planned_cash_rows`; plan step
+            **X-bi-6a**, ruling **R-BAL13** -- a transfer's leg is derived
+            from the parent row rather than read off its shadow).
+        by_day: The same items keyed by the day each LANDS on (ruling R-G's
             clamp) -- the cash clock.  Empty when the account has no plan.
         basis: The READ PASS's
             :class:`~app.services.cash_ledger.AmountBasis` -- what every row is
@@ -823,8 +829,8 @@ class _CashPlan:
             needs it.
     """
 
-    rows: "list[Transaction]"
-    by_day: "dict[date, list[Transaction]]"
+    rows: "list[Transaction | PlannedTransferLeg]"
+    by_day: "dict[date, list[Transaction | PlannedTransferLeg]]"
     basis: AmountBasis
 
 
@@ -848,6 +854,16 @@ def _cash_plan(
     Rejected at the ruling: landing it on its nominal date, which on real data
     (one re-anchor every 2.3 days on Checking) silently deletes nearly every
     unpaid past-due bill within days of its being entered.
+
+    **A transfer LEG lands where its PARENT is filed** (plan step **X-bi-6a**).
+    The plan holds one :class:`~app.services.transfer_legs.PlannedTransferLeg`
+    per still-projected transfer the account is on, and the row the calendar
+    is asked to place is the parent ``Transfer`` -- its ``pay_period_id`` and
+    ``due_date`` are the leg's, and
+    :meth:`~app.services.pay_calendar.FiledRow.for_row` already takes a
+    transfer.  Under Transfer Invariant 3 that is the day the shadow row this
+    leg replaces landed on; where a pair has drifted, the parent's day wins,
+    which is ruling **R-JA**'s direction.
 
     **The SPAN it clamps against is DERIVED, since pay-calendar plan step
     C4-a-1**, which is why this function takes a calendar -- see
@@ -915,11 +931,12 @@ def _cash_plan(
         return _CashPlan(rows=[], by_day={}, basis=basis)
 
     not_before = as_of + _ONE_DAY
-    by_day: "dict[date, list[Transaction]]" = defaultdict(list)
-    for txn in rows:
-        period = calendar.require_period(FiledRow.for_row(txn))
-        nominal = period.attribution_day(txn.due_date)
-        by_day[max(nominal, not_before)].append(txn)
+    by_day: "dict[date, list[Transaction | PlannedTransferLeg]]" = defaultdict(list)
+    for item in rows:
+        filed = item.transfer if isinstance(item, PlannedTransferLeg) else item
+        period = calendar.require_period(FiledRow.for_row(filed))
+        nominal = period.attribution_day(item.due_date)
+        by_day[max(nominal, not_before)].append(item)
     return _CashPlan(rows=rows, by_day=dict(by_day), basis=basis)
 
 

@@ -427,17 +427,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-bi-5** delete the DEFINITION's `is_envelope` (the row's cell is `X-bi-7d`'s),
     `tracks_purchases`'s branch sites and the template sites, which is the fence this family makes
     structurally unnecessary rather than merely unused.
-  * [ ] **X-bi-6a** re-point every PROJECTED-shadow READER (**R-BAL13**). **The PRODUCER is
-    `X-au-f-2`'s, not this step's** -- `16f83aa0` already states that leaf's two producers take a
-    shadow
-  while **R-BAL10** puts the answer on the PARENT, so a second one here was `R-IZ`'s own failure
-    mode. What remains is the READ side, and it is FOUR sites rather than the one the first draft
-  named: `cash_ledger._facts.planned_cash_rows` is KIND-BLIND on `transfer_id` and carries the
-    general case for every account (via `_cash_fold._cash_plan`, reduced at
-  `_cash_periods.sum_projected`); `_plan.py`'s PLANNED tier is only the LOAN forward plan;
-    `_asset_contributions.py:198` and `projection_inputs.shadow_contributions` are the rest. Built
-    to the
-  one-reader scope, the next step drops projected transfers out of every account's cash fold.
+  * [x] **X-bi-6a** `323400d9` -- every PROJECTED-shadow READER re-pointed onto the parent's derived
+    legs (**R-BAL13**, ruled **R-BAL38**, the status drift disclosed and pinned under **R-BAL42**;
+    five readers, `$0.00` measured). Record: `archive/x_bi_6a_as_built_2026-09-15.md`.
   * [ ] **X-bi-6** delete the transfer shadow `Transaction` ROWS (**R-BAL13**, superseding this
     step's stored-column scope under **R-JA**). Its two columns are two of the **FIVE** clauses
   `restore_transfer` keeps by hand -- `pay_period_id`, `category_id`, `due_date`, `is_override`,

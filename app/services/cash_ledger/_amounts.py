@@ -74,7 +74,11 @@ Two rule families live here, split by the question they answer.
 What a row is worth while it is still PROJECTED -- a reservation, money not yet
 gone -- is :func:`contribution_of` for an ordinary row and
 :func:`_entry_aware_amount` for one carrying purchases, the second being the
-envelope reservation rather than a second amount rule.
+envelope reservation rather than a second amount rule.  What a still-projected
+TRANSFER is worth to one of its two accounts is :func:`planned_leg_contribution`
+over the parent's derived leg (plan step **X-bi-6a**, ruling **R-BAL13**):
+the same figure rule 5 answered for the shadow row that leg replaces, read
+from the parent without the shadow in between.
 
 What a row is worth once it has SETTLED -- money that really moved -- is the
 other, and it is deliberately neither of the above:
@@ -123,9 +127,12 @@ from app.services.row_valuation import (  # pylint: disable=unused-import
 )
 from app.utils.balance_predicates import is_projected
 
+from app.services.transfer_legs import PlannedTransferLeg
+
 from ._amount_source import (
     AmountBasis,
     resolve_transaction_amount,
+    resolve_transfer_amount,
 )
 
 
@@ -357,6 +364,46 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
     if fixed is not None:
         return fixed
     return resolve_transaction_amount(txn, basis)
+
+
+def planned_leg_contribution(
+    leg: PlannedTransferLeg, basis: AmountBasis,
+) -> Decimal:
+    """Return what one leg of a still-projected transfer is worth to its account.
+
+    The plan-half valuation of a transfer (plan step **X-bi-6a**, ruling
+    **R-BAL13**), and the ONE spelling of it: the cash fold's reduction
+    (:func:`._flows.sum_projected`), the loan forward plan's PLANNED tier, the
+    amortization feed and both investment contribution feeds all price a leg
+    here.  It is the parent's resolved amount -- rule 1, rule 3 or rule 4 by
+    :func:`~._amount_source.resolve_transfer_amount` -- which is exactly what
+    amount rule 5 answered for the shadow row the leg replaces, with the
+    shadow taken out of the walk.
+
+    **It composes NOTHING, and the difference from :func:`contribution_of` is
+    the whole design.**  A transaction's worth composes its amount with a
+    settlement record, an excluded status and an envelope's purchases; a leg
+    has none of those.  It is a PLAN by construction -- the loader admits only
+    live still-Projected parents -- so there is no record to prefer, and a
+    transfer carries no purchases, so there is no reservation to hold back.
+    What a SETTLED transfer moved is its shadow row's record until plan step
+    ``X-bi-4`` re-points the fold onto movements, and that half is priced by
+    :func:`~app.services.row_valuation.settled_contribution`, never here.
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.PlannedTransferLeg`.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`; only a
+            derive-mode loan payment's parent reads it.
+
+    Returns:
+        The parent transfer's resolved amount, as a magnitude; the leg's
+        ``is_income`` says which way it moves the account.
+
+    Raises:
+        AmountUnresolvable: When the parent's own rule cannot answer.  A
+            refusal is never a fallback (see :mod:`._amount_source`).
+    """
+    return resolve_transfer_amount(leg.transfer, basis)
 
 
 def _entry_checking_impact(entries, estimated_amount: Decimal) -> Decimal:

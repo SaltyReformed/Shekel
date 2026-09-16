@@ -36,6 +36,8 @@ from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
     load_payroll_feeds,
+)
+from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_account,
 )
 

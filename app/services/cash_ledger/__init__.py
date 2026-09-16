@@ -70,19 +70,42 @@ finding had named one -- went through in the same commit, so no reader of an
 unsettled loan-payment row is left outside the model.
 
 **IT BROUGHT A ``budget.transfers`` QUERY WITH IT, AND PLAN STEP X-au-g-2c-2
-TOOK IT BACK OUT.**  :mod:`._events` invokes Transfer Invariant 5 as a
-principle of this package ("the same reason the projection engine never queries
-``Transfer`` directly"), and ``_loan_pricing._load_live_payment_configs`` was
-the ONE statement against ``budget.transfers`` in these thirteen modules --
-the scenario's transfers INNER-joined through their template to
+TOOK IT BACK OUT.**  ``_loan_pricing._load_live_payment_configs`` was the ONE
+statement against ``budget.transfers`` in these thirteen modules -- the
+scenario's transfers INNER-joined through their template to
 ``loan_payment_settings``, to discover which of them were loan payments.  That
 question is asked per ROW off the parent it was handed now (ruling **R-FK**'s
-live refinement), because the read-time repair the map fired for is gone, so
-the package makes no statement against that table at all.  Invariant 5 binds
-the BALANCE CALCULATOR rather than every reader, so nothing was violated while
-the query stood; what would have been wrong is its arriving silently, which is
-exactly how ``loan_payment_service``'s own "queries ONLY budget.transactions"
-sentence came to be false at the top of its file for months.
+live refinement), because the read-time repair the map fired for is gone.
+What would have been wrong is its arriving silently, which is exactly how
+``loan_payment_service``'s own "queries ONLY budget.transactions" sentence
+came to be false at the top of its file for months.
+
+**THE PLAN HALF READS ``budget.transfers`` BY DESIGN SINCE PLAN STEP X-bi-6a**
+(ruling **R-BAL13**, developer ruling **R-BAL38**).  A still-projected
+transfer's two legs are not rows in ``budget.transactions``; they are the
+parent's projection onto its two accounts, and :func:`planned_cash_rows`
+derives them from the parent through
+:mod:`app.services.transfer_legs` and prices each by
+:func:`resolve_transfer_amount` -- the same figure amount rule 5 answered for
+the shadow row a leg replaces, with the shadow taken out of the walk.
+Transfer Invariant 5 is restated to say so (``CLAUDE.md``): the PLAN half of a
+transfer derives from ``budget.transfers``, the RECORD half reads
+``budget.transactions`` until ``X-bi-4`` moves it onto movements, and the fold
+still reads no AMOUNT off a transfer for any row that has settled.  **What the
+two halves can and cannot double count, measured rather than claimed.**  A
+PROJECTED shadow cannot be counted beside its leg: the plan excludes it by the
+same ``transfer_id`` test that identifies it.  A SETTLED shadow under a
+still-Projected parent -- a STATUS drift, which Transfer Invariants 3 and 4
+forbid and no door writes (0 of 350 shadow rows on the 2026-09-15 snapshot) --
+IS counted by both halves, because the record half keys settled-ness on the
+shadow's status and the plan half on the parent's: ``$250.00`` checking ->
+savings with the checking shadow settled around the service folds checking at
+``-$500.00``, and the reverse drift (parent settled, shadows Projected) folds
+``$0.00`` on both sides.  Before X-bi-6a either drift counted ONCE, because
+only the shadow was read.  Pinned in
+``tests/test_services/test_transfer_legs.py`` with ``X-bi-4`` named as the
+step that moves it; the structural end is ``X-bi-4`` + ``X-bi-6``, after which
+a transfer's status lives in ONE row and the drift is not a state at all.
 
 **The books row has no loan analog because a loan has no books to open.**  Its
 origination is ``LoanParams.original_principal``, synthesized rather than
@@ -156,6 +179,7 @@ from app.services.row_valuation import (
 # is the loader that most needs it and cannot import this package back.
 from app.utils.amount_relationships import (
     pricing_load_options,
+    transfer_pricing_load_options,
     valuation_load_options,
 )
 # The loan-pricing pair FIRST, because it is the bottom of this package's
@@ -189,6 +213,7 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
+    planned_leg_contribution,
     settled_contribution,
 )
 from ._cash_leg import (
@@ -280,6 +305,7 @@ __all__ = [
     "off_statement_sum",
     "settled_contribution",
     "planned_cash_rows",
+    "planned_leg_contribution",
     "posted_purchase_sum",
     "reconciled_through",
     "resolve_anchor",
@@ -290,6 +316,7 @@ __all__ = [
     "reject_books_open_on_or_after_matched_lines",
     "reject_books_open_on_or_after_movements",
     "pricing_load_options",
+    "transfer_pricing_load_options",
     "valuation_load_options",
     "reject_line_before_books_open",
     "reject_movement_before_books_open",

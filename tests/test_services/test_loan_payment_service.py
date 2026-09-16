@@ -28,6 +28,8 @@ from app.extensions import db
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
+from app.models.transfer import Transfer
+from app.utils.balance_predicates import settled_status_ids
 from app.services.amortization_engine import PaymentDates, PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
@@ -42,7 +44,11 @@ from app.services.loan_payment_service import (
     get_payment_history,
     prepare_payments_for_engine,
 )
-from app.services.transfer_service import TransferSpec, create_transfer
+from app.services.transfer_service import (
+    TransferSpec,
+    create_transfer,
+    delete_transfer,
+)
 from app.services import account_service
 from app.services.rate_period_engine import monthly_due_date
 from app.models.amount_ownership import AmountOwnership
@@ -244,29 +250,39 @@ class TestGetPaymentHistory:
             # No transfer_id -> excluded.
             assert result == []
 
+    @pytest.mark.parametrize("status_enum", [
+        StatusEnum.PROJECTED, StatusEnum.DONE,
+    ])
     def test_excludes_deleted_transactions(
-        self, app, db, seed_user, seed_periods,
+        self, app, db, seed_user, seed_periods, status_enum,
     ):
-        """Soft-deleted shadow transactions are excluded."""
+        """A soft-deleted payment is excluded, whichever relation it comes from.
+
+        The feed is two relations since plan step balance:X-bi-6a -- a
+        PROJECTED payment is a leg of its parent in ``budget.transfers``, a
+        SETTLED one is its shadow row in ``budget.transactions`` -- and each
+        carries its own ``is_deleted`` filter, so the case runs once per half.
+        """
         with app.app_context():
             loan = _create_loan_account(seed_user)
+            settled = ref_cache.status_id(status_enum) in settled_status_ids()
             transfer = _create_transfer_to_loan(
                 seed_user, loan, seed_periods[1], Decimal("1500.00"),
+                status_enum=status_enum,
+                settled_on=seed_periods[1].start_date if settled else None,
             )
             db.session.commit()
+            assert len(get_payment_history(
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
+            )) == 1, "the payment must be in the feed for its deletion to grade"
 
-            # Soft-delete the income shadow.
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(
-                    transfer_id=transfer.id,
-                    transaction_type_id=income_type_id,
-                    is_deleted=False,
-                )
-                .one()
-            )
-            shadow.is_deleted = True
+            # Soft-delete the payment THROUGH THE DOOR, which deletes the
+            # parent and both shadows together.  *It set ``is_deleted`` on the
+            # income shadow alone until plan step balance:X-bi-6a*, a write past
+            # Transfer Invariant 4 that left the parent live; a projected
+            # payment is read off its PARENT now (ruling R-BAL13), so only a
+            # deletion the parent carries removes it from the feed.
+            delete_transfer(transfer.id, seed_user["user"].id, soft=True)
             db.session.commit()
 
             result = get_payment_history(
@@ -1253,6 +1269,15 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
         cancelling: those two are read as statements about whether a row counts,
         and a producer could honour them while still reading the rows.  Removing
         the rows leaves nothing for a coupled producer to read at all.
+
+        **The feed is TWO relations since plan step balance:X-bi-6a**, so both
+        are emptied: the shadow rows in ``budget.transactions`` (the settled
+        half) and the parent rows in ``budget.transfers`` (the projected half,
+        as derived legs).  Deleting the shadows alone left the projected half
+        standing -- measured at 3 records before and after -- so this control
+        graded nothing about that half until the parents went too.  The feed
+        is asserted EMPTY after the delete, which is the non-vacuity the old
+        "non-empty before" assertion could not supply on its own.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -1271,7 +1296,13 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
             db.session.query(Transaction).filter(
                 Transaction.account_id == loan.id,
             ).delete(synchronize_session=False)
+            db.session.query(Transfer).filter(
+                Transfer.to_account_id == loan.id,
+            ).delete(synchronize_session=False)
             db.session.commit()
+            assert get_payment_history(
+                loan.id, _basis(seed_user), _PAYMENT_DAY,
+            ) == [], "the feed is not empty: one of its two relations survived"
 
             after = _resolve_loan_basis(loan.id)
             assert after is not None
@@ -1290,13 +1321,17 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
     def test_pricing_a_loan_issues_no_statement_against_the_payment_rows(
         self, app, db, seed_user, seed_periods,
     ):
-        """The pricing path does not query ``budget.transactions`` at all.
+        """The pricing path queries neither ``budget.transactions`` nor ``budget.transfers``.
 
         The direction that matters: a producer reading the feed and agreeing
         with it is indistinguishable from one that never read it, by value
         alone.  Naming the TABLE rather than counting statements is what makes
         this survive an eager load, which folds into a parent query and moves no
-        count.
+        count.  **Both of the feed's relations are named since plan step
+        balance:X-bi-6a**: the projected half of a loan's payments is read from
+        ``budget.transfers`` now, which is also the table
+        ``_loan_pricing._load_live_payment_configs`` once read -- the coupling
+        this control exists to keep out.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -1312,7 +1347,10 @@ class TestALoansPriceDoesNotReadItsOwnPayments:
 
             assert basis is not None
             assert seen, "the probe recorded nothing, so it graded nothing"
-            touching = [sql for sql in seen if "budget.transactions" in sql]
+            touching = [
+                sql for sql in seen
+                if "budget.transactions" in sql or "budget.transfers" in sql
+            ]
             assert not touching, (
                 "pricing a loan read its own payment rows: "
                 f"{touching}"

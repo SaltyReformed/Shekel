@@ -56,14 +56,32 @@ in, plain data out; no Flask import.
 
 from decimal import Decimal
 
+from app.services.transfer_legs import PlannedTransferLeg
 from app.utils.balance_predicates import is_projected
 
 from ._amount_source import AmountBasis
-from ._amounts import _entry_aware_amount, contribution_of
+from ._amounts import (
+    _entry_aware_amount,
+    contribution_of,
+    planned_leg_contribution,
+)
 
 
 def sum_projected(transactions, basis: AmountBasis):
     """Sum projected (unsettled) income and expenses for one pay period.
+
+    **The row set holds two kinds since plan step X-bi-6a**, and both are
+    reduced here: an ordinary still-projected :class:`Transaction`, valued as
+    below, and a :class:`~app.services.transfer_legs.PlannedTransferLeg` -- one
+    side of a still-projected transfer, derived from the parent row rather
+    than read off a shadow row (ruling **R-BAL13**) -- valued by
+    :func:`~._amounts.planned_leg_contribution` and placed on the income or
+    the expense side by which side of the parent the account is on.  ONE
+    reduction over both, so a day's or a period's net is a single walk
+    whatever mixture of rows and legs the plan holds; the Projected re-check
+    below is applied to a leg's PARENT exactly as it is to a row, so the
+    loader and this reduction cannot disagree about which legs are in the
+    plan either.
 
     Part of this module's public surface (no leading underscore): the seam's
     cash fold reaches it from another package, so the projected-sum rule lives
@@ -136,7 +154,10 @@ def sum_projected(transactions, basis: AmountBasis):
     ``test_amount_source.TestTheAmountModelReadsNoClock``).
 
     Args:
-        transactions: Transaction objects for a single pay period.
+        transactions: The plan items for a single pay period or landing day:
+            :class:`~app.models.transaction.Transaction` rows and
+            :class:`~app.services.transfer_legs.PlannedTransferLeg` values, in
+            any mixture.
         basis: The account's
             :class:`~app.services.cash_ledger._amount_source.AmountBasis` --
             the ids it was built over and the live producers' answers, built
@@ -149,6 +170,15 @@ def sum_projected(transactions, basis: AmountBasis):
     expenses = Decimal("0.00")
 
     for txn in transactions:
+        if isinstance(txn, PlannedTransferLeg):
+            if not is_projected(txn.transfer):
+                continue
+            if txn.is_income:
+                income += planned_leg_contribution(txn, basis)
+            else:
+                expenses += planned_leg_contribution(txn, basis)
+            continue
+
         if not is_projected(txn):
             continue
 
