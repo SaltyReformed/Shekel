@@ -381,12 +381,19 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     purchase is worth and when the app believes it moved, on the two sides of a
     single match.
 
-    A purchase's cash is the NEGATION of its stored figure -- a conversion,
-    total over both signs, not a direction.  It read *"always money LEAVING"*
-    until plan step ``bank_import:X-gj-2b-3``; ruling **bank_import:R-II**
-    ended that, and a stored refund of ``-28.29`` is a ``+28.29`` cash
-    candidate here, which is why :mod:`._already_held`'s positive-cash set need
-    not be income.
+    A purchase's cash is :func:`app.services.cash_ledger.movement_cash_leg`
+    -- its stored figure in its PARENT's direction, the one valuation every
+    reader of a movement shares since plan step ``balance:X-bi-3b`` (ruling
+    **R-BAL35**).  This spelled ``-entry.amount`` for itself before that
+    step, total over both signs of the figure (it read *"always money
+    LEAVING"* until plan step ``bank_import:X-gj-2b-3``; ruling
+    **bank_import:R-II** ended that, and a stored refund of ``-28.29`` is a
+    ``+28.29`` cash candidate here, which is why :mod:`._already_held`'s
+    positive-cash set need not be income) but wrong in direction for a
+    movement under an income row.  Every purchase offered here is a DEBIT
+    under a CONTRIBUTING expense row (:func:`_purchase_candidates`'s filter;
+    ``create_entry`` refuses an income parent), so on that set the two agree
+    to the cent; the producer is also total where this was not.
 
     Args:
         entry: The purchase, with its parent transaction loaded.
@@ -398,7 +405,7 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         kind=RowKind.PURCHASE,
         row_id=entry.id,
         label=f"{entry.transaction.name}: {entry.description}",
-        cash_amount=-Decimal(str(entry.amount)),
+        cash_amount=cash_ledger.movement_cash_leg(entry.transaction, entry),
         settled_on=entry.settled_on,
         is_settled=entry.settled_on is not None,
         # **A purchase always states its own figure.**  The two shapes whose

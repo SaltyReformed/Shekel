@@ -64,11 +64,7 @@ from decimal import Decimal
 from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
-from app.enums import (
-    LedgerAccountClassEnum,
-    PostingKindEnum,
-    PostingSourceEnum,
-)
+from app.enums import PostingKindEnum, PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
@@ -85,6 +81,8 @@ from app.services._posting_purchases import (
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
     emit_source_deltas,
+    emit_typed_source_deltas,
+    ledger_class_of,
     source_entry_builder,
 )
 from app.utils.balance_predicates import settled_day, settled_status_ids
@@ -291,7 +289,7 @@ def _transaction_entry_date(txn: Transaction) -> date:
     return settled_day(txn.id, txn.settled_on)
 
 
-def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
+def _settled_target(txn: Transaction) -> dict[int, Decimal]:
     """Return the debit-positive ledger target for a SETTLED transaction.
 
     The two-account map the ledger should net to once *txn* is settled:
@@ -306,25 +304,30 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
     Income/Expense ledger account (or the per-(owner, class) Uncategorized
     fallback when ``category_id`` is NULL), lazily resolved by
     ``ledger_account_service``.  The accounting class is derived from the
-    transaction *type* (Income vs Expense).
+    transaction *type* (Income vs Expense) by
+    :func:`~app.services._posting_write.ledger_class_of`, the one mapping
+    the movement writer (``_posting_purchases._purchase_target``) reads too
+    since plan step ``balance:X-bi-3b``.
 
     Resolved only on the settle side; a revert / delete passes an empty target
     and reverses whatever :func:`_posted_net_by_account` reports, so this never
     creates a category ledger account for a transaction being unwound.
 
+    The category account's owner is ``txn.user_id``, read here since plan
+    step ``balance:X-bi-3b`` finished what ``pay_calendar:C13-b`` began.
+    It arrived as an argument the caller sourced from ``txn.user_id`` --
+    and before C13-b walked ``txn.pay_period.user_id``, hydrating a
+    ``budget.pay_periods`` row to learn a value the row carries.  A read
+    that STAMPS rather than refuses, so it was never one of finding
+    **P75**'s nineteen; what moved it is the rule the developer ruled
+    C13-b to, that a row's owner has ONE home and no reader asks a second
+    object for it -- and a parameter every caller binds from that home is
+    a second home one hop away.
+
     Args:
         txn: The settled transaction.  ``account_id`` and
             ``transaction_type_id`` are immutable, so the cash account and the
             class are stable across the transaction's life.
-        owner_id: The owning user's id, the category account's owner.  The
-            caller sources it from ``txn.user_id``.  It walked
-            ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``,
-            which took it: the two are the same value, and the walk hydrated a
-            ``budget.pay_periods`` row to learn it.  It is a read that STAMPS
-            rather than refuses, so it was never one of finding **P75**'s
-            nineteen -- that census excludes it by name -- and what moved it
-            is the rule the developer ruled `C13-b` to, that a row's owner has
-            ONE home and no reader asks a second object for it.
 
     Returns:
         ``{cash_ledger_id: cash_leg, category_ledger_id: -cash_leg}``.
@@ -333,15 +336,11 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
         PostingError: If the transaction's account has no linked ledger
             account.
         ValueError: Propagated from the resolver if a non-NULL ``category_id``
-            names no category owned by ``owner_id``.
+            names no category owned by ``txn.user_id``.
     """
     cash_ledger = _ledger_account_for(txn.account_id)
-    ledger_class = (
-        LedgerAccountClassEnum.INCOME if txn.is_income
-        else LedgerAccountClassEnum.EXPENSE
-    )
     category_ledger = ledger_account_service.get_or_create_category_ledger_account(
-        owner_id, txn.category_id, ledger_class,
+        txn.user_id, txn.category_id, ledger_class_of(txn),
     )
     cash_leg = settled_cash_leg(txn)
     return {cash_ledger.id: cash_leg, category_ledger.id: -cash_leg}
@@ -595,13 +594,11 @@ def sync_transaction_postings(
     if txn.transfer_id is not None:
         return []
 
-    owner_id = txn.user_id
-    entries = _emit_transaction_deltas(txn, settled=settled, owner_id=owner_id)
+    entries = _emit_transaction_deltas(txn, settled=settled)
     for purchase in txn.entries:
         entries.extend(
             emit_purchase_deltas(
-                purchase, txn,
-                posted=purchase_posts(txn, purchase), owner_id=owner_id,
+                purchase, txn, posted=purchase_posts(txn, purchase),
             )
         )
     _self_heal_account_anchor_corrections(
@@ -611,7 +608,7 @@ def sync_transaction_postings(
 
 
 def _emit_transaction_deltas(
-    txn: Transaction, *, settled: bool, owner_id: int,
+    txn: Transaction, *, settled: bool,
 ) -> "list[JournalEntry]":
     """Emit the delta entries for the transaction's OWN cash leg.
 
@@ -622,7 +619,6 @@ def _emit_transaction_deltas(
     Args:
         txn: The transaction (already known not to be a transfer shadow).
         settled: Whether its confirmed effect should be posted.
-        owner_id: ``txn.user_id``.
 
     Returns:
         The emitted delta entries; ``[]`` when the ledger is already at target.
@@ -632,30 +628,18 @@ def _emit_transaction_deltas(
         # The target lives at the transaction's current period AND its settle
         # date (step C2's one clock); see ``sync_transfer_postings``.
         targets[(txn.pay_period_id, _transaction_entry_date(txn))] = (
-            _settled_target(txn, owner_id)
+            _settled_target(txn)
         )
     # An empty result means the ledger is already at target: a repeat settle, an
     # already-reversed revert, a cancel of a never-posted row, or an envelope
     # whose whole debit total is already carried by its own purchases.
-    return emit_source_deltas(
+    return emit_typed_source_deltas(
+        txn,
         targets=targets,
-        source_filter=JournalEntry.transaction_id == txn.id,
-        # Both legs of an ordinary-transaction entry carry the same kind, by the
-        # transaction type (mirrors Step 2, where both transfer legs are
-        # ``transfer``); no Step-3 reader differentiates per-leg kind.
-        kind_id=ref_cache.posting_kind_id(
-            PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
-        ),
-        build_entry=source_entry_builder(
-            user_id=owner_id,
-            scenario_id=txn.scenario_id,
-            source_kind_id=ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSACTION
-            ),
-            description=txn.name[:_MAX_DESCRIPTION_LENGTH],
-            transaction_id=txn.id,
-        ),
+        source=PostingSourceEnum.TRANSACTION,
+        description=txn.name[:_MAX_DESCRIPTION_LENGTH],
         log_label=f"transaction {txn.id} (settled={settled})",
+        transaction_id=txn.id,
     )
 
 
@@ -693,9 +677,8 @@ def sync_purchase_postings(entry) -> "list[JournalEntry]":
     # sets is how the fourth one is written wrongly.
     if txn.transfer_id is not None:
         return []
-    owner_id = txn.user_id
     entries = emit_purchase_deltas(
-        entry, txn, posted=purchase_posts(txn, entry), owner_id=owner_id,
+        entry, txn, posted=purchase_posts(txn, entry),
     )
     _self_heal_account_anchor_corrections(
         (entry.account_id,), txn.scenario_id, entries,
@@ -724,10 +707,7 @@ def reverse_purchase_postings_before_delete(entry) -> None:
     txn = entry.transaction
     if txn.transfer_id is not None:
         return
-    owner_id = txn.user_id
-    entries = emit_purchase_deltas(
-        entry, txn, posted=False, owner_id=owner_id,
-    )
+    entries = emit_purchase_deltas(entry, txn, posted=False)
     _self_heal_account_anchor_corrections(
         (entry.account_id,), txn.scenario_id, entries,
     )
@@ -782,14 +762,9 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     # read onto the row's own column, which reads no relationship at all.
     if txn.transfer_id is not None:
         return
-    owner_id = txn.user_id
-    entries = _emit_transaction_deltas(txn, settled=False, owner_id=owner_id)
+    entries = _emit_transaction_deltas(txn, settled=False)
     for purchase in txn.entries:
-        entries.extend(
-            emit_purchase_deltas(
-                purchase, txn, posted=False, owner_id=owner_id,
-            )
-        )
+        entries.extend(emit_purchase_deltas(purchase, txn, posted=False))
     _self_heal_account_anchor_corrections(
         (txn.account_id,), txn.scenario_id, entries,
     )

@@ -41,7 +41,8 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services.cash_ledger import off_statement_sum
+from app.models.transaction_entry import TransactionEntry
+from app.services.cash_ledger import movement_figure_for, off_statement_sum
 from app.utils.money import round_money
 
 from ._offers import CandidateRow, RowKind
@@ -330,9 +331,13 @@ def corrected_figure(
     inversion is written anyway because a row that HAS entries is expressible
     and would otherwise book its credit purchases twice.
 
-    **A PURCHASE stores its figure directly** -- its cash is the negated stored
-    amount (:func:`~._candidates.purchase_candidate`) -- so its correction is
-    that negation INVERTED, ``-bank_cash``.
+    **A PURCHASE stores its figure directly** -- its cash is its stored
+    amount in its PARENT's direction
+    (:func:`~app.services.cash_ledger.movement_cash_leg`, read by
+    :func:`~._candidates.purchase_candidate`) -- so its correction is that
+    rule INVERTED, :func:`~app.services.cash_ledger.movement_figure_for`:
+    ``-bank_cash`` under an expense row, which every purchase this arm can
+    reach today sits under.
 
     **It was ``abs(bank_cash)`` until plan step ``bank_import:X-gj-2b``, and
     the two agree only for an OUTFLOW.**  While every purchase was positive its
@@ -340,10 +345,10 @@ def corrected_figure(
     and the simpler spelling was true.  Ruling **R-II** made a merchant refund a
     NEGATIVE purchase, whose cash is POSITIVE -- and there ``abs()`` returns
     ``+X`` where the stored figure must be ``-X``, flipping a refund into a
-    charge of the same size.  The negation is the exact inverse of
-    ``purchase_candidate``'s own ``cash_amount=-Decimal(str(entry.amount))``,
-    and it reduces to the old expression for every outflow, so no
-    already-correct case moves.
+    charge of the same size.  The inverse reduces to the old expression for
+    every outflow, so no already-correct case moves.  It was spelled
+    ``-bank_cash`` here until plan step ``balance:X-bi-3b`` -- the expense
+    arm alone, a second spelling of the direction rule (rule 14).
 
     Args:
         row: The member the bank's figure is about.
@@ -359,7 +364,8 @@ def corrected_figure(
     if bank_cash is None or bank_cash == row.cash_amount:
         return None
     if row.kind is RowKind.PURCHASE:
-        return round_money(-bank_cash)
+        entry = db.session.get(TransactionEntry, row.row_id)
+        return round_money(movement_figure_for(entry.transaction, bank_cash))
     # **The TRANSACTION arm keeps ``abs()`` and that is not an oversight.**  A
     # transaction stores a GROSS, non-negative figure (``estimated_amount >= 0``,
     # ``settled_amount IS NULL OR >= 0``) whose direction comes from the

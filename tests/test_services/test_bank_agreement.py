@@ -28,6 +28,8 @@ disagreement.
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     StatementBalanceEvidenceEnum,
@@ -40,12 +42,21 @@ from app.models.statement_match import (
     StatementMatchMember,
 )
 from app.models.transaction import Transaction
-from app.services import bank_agreement, cash_ledger
+from app.services import (
+    bank_agreement,
+    cash_ledger,
+    status_seam,
+    transaction_service,
+)
 from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     add_entry,
+    an_entered_day,
     append_balance_assertion,
+    generate_row_of,
+    make_expense_template,
+    make_income_template,
     settle_day_columns,
     settlement_columns,
 )
@@ -725,6 +736,69 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
             )
 
             assert [line.matched for line in detail.lines] == [True]
+            assert [row.matched for row in detail.rows] == [True]
+
+    @pytest.mark.parametrize(
+        ("is_income", "amount", "line_amount"),
+        [(False, "40.00", "-40.00"), (True, "2572.78", "2572.78")],
+        ids=["a covered bill", "a covered paycheck"],
+    )
+    def test_a_COVERED_row_matched_by_ROW_reads_matched(
+        self, app, seed_user, seed_periods, db, is_income, amount, line_amount,
+    ):
+        """The mirror's match state is its PARENT's.
+
+        Settled through the seam, a bill's (X-bi-3a) or a paycheck's
+        (X-bi-3b) money walks as its covering movement's fact, while the
+        match names the ROW -- the matcher's subject, its mirror kept out of
+        the purchase candidates.  The case above builds its row around the
+        seam and so never met this; with the entry's own claim asked, every
+        matched bill and paycheck read as unexplained here (adversarial review
+        of X-bi-3b, 2026-09-16).
+        """
+        with app.app_context():
+            _seed_import(
+                db, seed_user["account"], stated="1000.00",
+                effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+                lines=[(date(2026, 3, 3), line_amount)],
+            )
+            make = make_income_template if is_income else make_expense_template
+            txn = generate_row_of(
+                make(db.session, seed_user, amount=amount, name="Row"),
+                seed_periods[4],
+            )
+            transaction_service.settle_transaction(
+                txn, settle_day=an_entered_day(date(2026, 3, 3)),
+            )
+            db.session.flush()
+            assert len(status_seam.covering_movements(txn)) == 1
+            line = db.session.query(BankStatementLine).filter(
+                BankStatementLine.account_id == seed_user["account"].id,
+            ).one()
+            match = StatementMatch(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                applied_by_rule=False,
+            )
+            db.session.add(match)
+            db.session.flush()
+            db.session.add(StatementMatchMember(
+                match_id=match.id, account_id=seed_user["account"].id,
+                bank_statement_line_id=line.id,
+            ))
+            db.session.add(StatementMatchMember(
+                match_id=match.id, account_id=seed_user["account"].id,
+                transaction_id=txn.id,
+            ))
+            db.session.commit()
+
+            detail = bank_agreement.day_detail(
+                seed_user["account"],
+                BalanceContext.build(seed_user["user"].id),
+                date(2026, 3, 3),
+            )
+
+            assert [row.amount for row in detail.rows] == [Decimal(line_amount)]
             assert [row.matched for row in detail.rows] == [True]
 
     def test_an_ENVELOPE_PURCHASE_is_named_from_its_ENTRY(
