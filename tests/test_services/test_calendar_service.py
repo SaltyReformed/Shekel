@@ -32,10 +32,12 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
     eras_of,
     generate_row_of,
     last_covered_day,
+    legacy_link_less_row_of,
+    one_off_row_of,
+    record_paydays_across_a_hole,
     restate_fixture_era,
     rhythm_of,
     settle_day_columns,
@@ -73,7 +75,6 @@ from app.services.pay_calendar import (
     paydays_in_month_through,
     saved_paydays_in_month_through,
 )
-from app.models.amount_ownership import AmountOwnership
 
 #: The cadence ``seed_periods`` builds: 14 days between paydays, 26 a year.
 #: An explicit input to the infrequent badge since plan step R7a-2b, where the
@@ -104,11 +105,14 @@ def _add_transaction(
     is_income=False, due_date=None,
     is_deleted=False, status=StatusEnum.PROJECTED, settled_amount=None,
 ):
-    """Create an AD-HOC transaction for testing.
+    """Create a ONE-OFF transaction for testing.
 
     It took a ``template`` to link until plan step balance:X-cf-3; a row of
-    a definition is the engine's (:func:`generate_row_of`) and this builder
-    can no longer spell one.
+    a RECURRING definition is the engine's (:func:`generate_row_of`), and
+    since plan step balance:X-bi-7c this builder places a one-off through
+    the producer (:func:`one_off_row_of`), dated on its paycheck's start
+    unless *due_date* says otherwise -- a case that means an UNDATED row
+    builds :func:`legacy_link_less_row_of` itself.
 
     Args:
         db_session: Active database session.
@@ -139,27 +143,26 @@ def _add_transaction(
         else ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     )
     status_id = ref_cache.status_id(status)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
-        # A settled row must carry the day its money moved, and the rule for a
-        # BARE-built fixture row is shared with ``_test_helpers.add_txn`` rather
-        # than restated (plan step X-f1).
-        **settle_day_columns(default_settle_day(period, status_id)),
+    txn = one_off_row_of(
+        period,
         name=name,
-        category_id=None,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(
-            default_settle_day(period, status_id), amount, settled_amount,
-        ),
         due_date=due_date,
-        is_deleted=is_deleted,
     )
-    db_session.add(txn)
+    txn.status_id = status_id
+    txn.is_deleted = is_deleted
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(
+            default_settle_day(period, status_id), amount, settled_amount,
+        ).items():
+        setattr(txn, _column, _value)
     db_session.flush()
     return txn
 
@@ -314,12 +317,25 @@ class TestDayAssignment:
             assert result.day_entries[2][0].name == "Paycheck"
 
     def test_due_date_none_fallback(self, app, seed_user, seed_periods, db):
-        """Txn with due_date=None falls back to period.start_date.day."""
+        """An UNDATED row falls back to period.start_date.day.
+
+        The undated row is the LEGACY link-less shape: every one-off is dated
+        on its paycheck's start since plan step balance:X-bi-7b, and the
+        cutover (X-bi-7d) dates production's remaining undated rows the same
+        way -- so this is built on the shape's one transitional home (plan
+        step balance:X-bi-7c, ruling R-BAL59) and 7d retires it, with the
+        ``None`` arm of ``attribution_day`` at this door if nothing else
+        reaches it.  Through ``_add_transaction`` the case had become its
+        dated sibling's duplicate, passing on the placed row's own date
+        (found by 7c-2's adversarial review).
+        """
         with app.app_context():
             p0 = seed_periods[0]  # starts Jan 2
-            _add_transaction(
-                db.session, seed_user, p0, "Manual", "50.00",
-                due_date=None,
+            legacy_link_less_row_of(
+                p0, name="Manual", amount="50.00",
+                user_id=p0.user_id, account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             )
             db.session.commit()
 
@@ -594,19 +610,17 @@ class TestCategoryInfo:
         """DayEntry carries category group and item from the transaction."""
         with app.app_context():
             cat = seed_user["categories"]["Car Payment"]
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="Car Payment",
-                category_id=cat.id,
+                amount=Decimal("350.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("350.00")),
+                category_id=cat.id,
                 due_date=date(2026, 1, 10),
             )
-            db.session.add(txn)
             db.session.commit()
 
             result = calendar_service.get_month_detail(
@@ -1455,7 +1469,7 @@ class TestEdgeCases:
             # Create a regular transaction simulating a transfer shadow.
             # Shadows have transfer_id set but are otherwise normal
             # Transaction rows.
-            txn = _add_transaction(
+            _add_transaction(
                 db.session, seed_user, seed_periods[0], "Transfer Out",
                 "500.00", due_date=date(2026, 1, 5),
             )

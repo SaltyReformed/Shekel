@@ -34,7 +34,6 @@ from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
-from app.models.transaction import Transaction
 from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
 from app.services.dashboard_service import _pulse
 from app.services.pay_calendar import PayCadence
@@ -42,6 +41,8 @@ from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    legacy_link_less_row_of,
+    one_off_row_of,
     record_paydays_across_a_hole,
     rhythm_of,
     last_covered_day,
@@ -78,31 +79,56 @@ def _add_expense(
     db_session, seed_user, period, name, amount,
     status_enum=StatusEnum.PROJECTED, due_date=None, is_deleted=False,
 ):
-    """Create a non-tracked projected expense transaction for testing.
+    """Create a non-tracked expense transaction for testing -- a ONE-OFF.
 
-    Returns the created Transaction (flushed).
+    Placed through the producer since plan step balance:X-bi-7c, so
+    ``due_date=None`` means the paycheck's start (ruling R-BAL22), never an
+    undated row: the undated shape is the LEGACY one, and a case about it
+    builds :func:`_legacy_undated_expense` instead.  Returns the created
+    Transaction (flushed).
     """
     status_id = ref_cache.status_id(status_enum)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         due_date=due_date,
-        is_deleted=is_deleted,
-        # A settled row must carry the day its money moved AND the record of
-        # what moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
-        # both resolved by the shared helpers rather than restated.
-        **settle_day_columns(default_settle_day(period, status_id)),
-        **settlement_columns(
-            default_settle_day(period, status_id), Decimal(str(amount)),
-        ),
     )
-    db_session.add(txn)
+    txn.status_id = status_id
+    txn.is_deleted = is_deleted
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(
+            default_settle_day(period, status_id), Decimal(str(amount)),
+        ).items():
+        setattr(txn, _column, _value)
+    db_session.flush()
+    return txn
+
+
+def _legacy_undated_expense(db_session, seed_user, period, name, amount):
+    """Create an UNDATED link-less expense -- the pre-7b shape, until the cutover.
+
+    The pulse's "anytime this period" shelf exists for rows with no due date,
+    and since plan step balance:X-bi-7b no door writes one: every one-off is
+    dated on its paycheck's start (R-BAL22) and the cutover (X-bi-7d) dates
+    production's 26 undated rows the same way.  Built on the shape's one
+    transitional home (plan step balance:X-bi-7c, ruling R-BAL59); 7d
+    retires the cases that call this with the shape, and the shelf with them
+    if nothing else feeds it.
+    """
+    txn = legacy_link_less_row_of(
+        period, name=name, amount=Decimal(str(amount)),
+        user_id=period.user_id, account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+    )
     db_session.flush()
     return txn
 
@@ -734,17 +760,15 @@ class TestPulsePeak:
         """
         with app.app_context():
             current = seed_periods[_CURRENT_IDX]
-            income = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                current,
                 name="Paycheck",
+                amount=Decimal("1200.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
-            db.session.add(income)
             db.session.commit()
 
             result = dashboard_service.compute_pulse_section(
@@ -1125,9 +1149,9 @@ class TestPulseDueSoon:
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
                 "Dated bill", "100.00", due_date=date(2026, 3, 22),
             )
-            _add_expense(
+            _legacy_undated_expense(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
-                "Undated bill", "50.00", due_date=None,
+                "Undated bill", "50.00",
             )
             db.session.commit()
 
@@ -1302,9 +1326,9 @@ class TestPulseDueSoonStations:
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
                 "Dated", "10.00", due_date=date(2026, 3, 18),
             )
-            _add_expense(
+            _legacy_undated_expense(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
-                "Undated", "10.00", due_date=None,
+                "Undated", "10.00",
             )
             db.session.commit()
 
@@ -1360,17 +1384,15 @@ class TestHeroChartIdentity:
                 db.session, seed_user, current, "Rent", "300.00",
                 due_date=date(2026, 3, 18),
             )
-            income = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                current,
                 name="Paycheck",
+                amount=Decimal("1200.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
-            db.session.add(income)
             tracked = _add_tracked_expense(
                 db.session, seed_user, current, "Groceries", "150.00",
             )

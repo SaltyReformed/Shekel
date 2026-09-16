@@ -4871,7 +4871,8 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
 
 def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
     period, *, name, amount, user_id, account_id, scenario_id,
-    transaction_type_id, category_id=None, is_envelope=False, due_date=None,
+    transaction_type_id, category_id=None, is_envelope=False,
+    companion_visible=False, due_date=None,
 ):
     """Hand-build the LEGACY link-less row -- the ONE home of a shape 7d deletes.
 
@@ -4889,6 +4890,10 @@ def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
     producer or onto this, and once they have the cutover deletes ONE builder
     and the cases that call it, rather than hunting the shape across the
     suite.  ``tests/manual/census_hand_built_rows.py`` counts what is left.
+    **A case moved onto the producer that still PASSES may be one of these**
+    (7c-2's adversarial review found three): a docstring saying "no
+    template", "ad-hoc", "undated" or "its own flag" over a row that is now
+    placed grades the placed branch twice and the legacy branch not at all.
 
     A fixture that does NOT mean the legacy shape -- one that wants "a row on
     this paycheck" -- is :func:`one_off_row_of`'s.  Projected, flushed; a
@@ -4907,6 +4912,7 @@ def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
         transaction_type_id: Expense or income (``ref_cache.txn_type_id``).
         category_id: What the money is, or ``None``.
         is_envelope: The row's OWN purchase-tracking cell.
+        companion_visible: The row's OWN companion-visibility cell.
         due_date: The day it falls, or ``None`` for undated.
 
     Returns:
@@ -4929,6 +4935,7 @@ def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
         transaction_type_id=transaction_type_id,
         amount_ownership=AmountOwnership.own(Decimal(str(amount))),
         is_envelope=is_envelope,
+        companion_visible=companion_visible,
         due_date=due_date,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
     )

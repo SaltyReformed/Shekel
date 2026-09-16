@@ -58,21 +58,24 @@ from app.services.cash_ledger import (
 from app.services.one_off import OneOffToPlace, place_one_off, state_due_date
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
-    figure_source_columns,
     amount_basis_for,
     create_account_of_type,
     default_settle_day,
     definition_firing_twice_in_a_paycheck,
     derived_span,
+    figure_source_columns,
     generate_row_of,
     generate_transfer_of,
+    legacy_link_less_row_of,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
     make_transfer_template,
     moved_by_the_owner,
+    one_off_row_of,
     populate_in_a_fresh_pass,
     repriced_by_the_owner,
+    resolved_amount,
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
@@ -87,11 +90,14 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
                         status_name="Projected",
                         is_deleted=False, name="Test Expense",
                         amount="100.00", settled_amount=None):
-    """Create an AD-HOC test transaction in the given period.
+    """Create a ONE-OFF test transaction in the given period.
 
     It took a ``template_id`` until plan step balance:X-cf-3; a row of a
-    definition is the engine's (:func:`generate_row_of`) and this builder
-    can no longer spell one.
+    RECURRING definition is the engine's (:func:`generate_row_of`), and since
+    plan step balance:X-bi-7c this builder places a one-off through the
+    producer (:func:`one_off_row_of`: a rule-less definition plus its row).
+    A case that means the LEGACY link-less shape builds
+    :func:`legacy_link_less_row_of` itself.  It    can no longer spell one.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -110,25 +116,24 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     _settle_day = default_settle_day(seed_periods[period_index], status.id)
 
-    txn = Transaction(
-        user_id=seed_periods[period_index].user_id,
-        pay_period_id=seed_periods[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
+    txn = one_off_row_of(
+        seed_periods[period_index],
         name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal(amount),
+        user_id=seed_periods[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
-        # A settled row carries the day its money moved AND the record of what
-        # moved, or it carries neither -- the pair is one fact in three columns
-        # (plan step X-au-c3), resolved by the shared helper rather than spelled
-        # out here.
-        **settle_day_columns(_settle_day),
-        **settlement_columns(_settle_day, amount, settled_amount),
-        is_deleted=is_deleted,
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
+    txn.status_id = status.id
+    txn.is_deleted = is_deleted
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(_settle_day).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(_settle_day, amount, settled_amount).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 
@@ -265,12 +270,21 @@ class TestAPeriodMoveRePlacesAOneOff:
         A legacy one-off (``template_id IS NULL`` until the family's cutover
         dates and links it) dated at its paycheck's start is moved and left
         dated as it was -- its date is its own optional note, and the
-        cutover is what brings it under R-BAL22.
+        cutover is what brings it under R-BAL22.  Built on the shape's one
+        transitional home (plan step balance:X-bi-7c, ruling R-BAL59); 7d
+        retires this case with the shape.
         """
         with app.app_context():
             source_start = derived_span(seed_periods[0]).start_date
-            legacy = _create_transaction(seed_user, seed_periods, name="Legacy")
-            legacy.due_date = source_start
+            legacy = legacy_link_less_row_of(
+                seed_periods[0], name="Legacy", amount="100.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                due_date=source_start,
+            )
             db.session.commit()
             assert legacy.template_id is None
             assert legacy.is_placed is False
@@ -295,14 +309,25 @@ class TestCarryForwardUnpaid:
     def test_non_template_transaction_preserves_is_override_false(
         self, app, db, seed_user, seed_periods
     ):
-        """A non-template transaction retains is_override=False after carry forward.
+        """A LEGACY link-less transaction retains is_override=False after carry forward.
 
         Existing tests verify template-linked items ARE flagged is_override=True.
-        This test verifies the inverse: ad-hoc transactions (template_id=None)
-        must NOT have is_override set to True.
+        This test verifies the inverse on the pre-7b shape: a link-less row
+        (``template_id=None``, production's until the cutover) must NOT have
+        is_override set to True.  A one-off placed today is
+        ``test_a_rule_less_definitions_row_moves_without_the_flip``'s subject;
+        this one is built on the shape's one transitional home (plan step
+        balance:X-bi-7c, ruling R-BAL59) and 7d retires it with the shape.
         """
         with app.app_context():
-            txn = _create_transaction(seed_user, seed_periods, name="Ad-hoc Expense")
+            txn = legacy_link_less_row_of(
+                seed_periods[0], name="Ad-hoc Expense", amount="100.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             assert txn.template_id is None
             assert txn.is_override is False
 
@@ -473,32 +498,30 @@ class TestCarryForwardUnpaid:
             ).one()
 
             # Baseline projected transaction.
-            baseline_txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=baseline_scenario.id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
+            baseline_txn = one_off_row_of(
+                seed_periods[0],
                 name="Baseline Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=baseline_scenario.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(baseline_txn)
+            baseline_txn.status_id = status.id
 
             # Alternative scenario projected transaction.
-            alt_txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=alt_scenario.id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
+            alt_txn = one_off_row_of(
+                seed_periods[0],
                 name="Alt Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=alt_scenario.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(alt_txn)
+            alt_txn.status_id = status.id
             db.session.flush()
 
             # Carry forward only the baseline scenario.
@@ -567,6 +590,11 @@ class TestCarryForwardStatusRecheck:
             db.session.commit()
             loser_id = txn_loser.id
             winner_id = txn_winner.id
+            # What the loser is WORTH, resolved before the race: a one-off
+            # is priced by its definition (plan step balance:X-bi-7c), so the
+            # raw UPDATE below cannot read the figure off the row's own
+            # column as it did while the row owned one.
+            loser_figure = resolved_amount(txn_loser)
 
             paid_status_id = ref_cache.status_id(StatusEnum.DONE)
 
@@ -600,7 +628,7 @@ class TestCarryForwardStatusRecheck:
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
                         "    settled_day_basis_id = :day_basis, "
-                        "    settled_amount = estimated_amount, "
+                        "    settled_amount = :figure, "
                         "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
                         "WHERE id = :tid"
@@ -618,6 +646,7 @@ class TestCarryForwardStatusRecheck:
                             SettledDayBasisEnum.ENTERED,
                         ),
                         "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
+                        "figure": loser_figure,
                         "tid": loser_id,
                     },
                 )

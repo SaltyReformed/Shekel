@@ -33,6 +33,7 @@ from app.utils.balance_predicates import settled_status_ids
 from app.services.amortization_engine import PaymentDates, PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     settlement_basis_id,
 )
@@ -230,18 +231,15 @@ class TestGetPaymentHistory:
             # Create a regular income transaction on the loan account
             # (not via transfer -- no transfer_id).
             income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=loan.id,
-                status_id=projected_id,
+            one_off_row_of(
+                seed_periods[0],
                 name="Manual Income",
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=loan.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
             )
-            db.session.add(txn)
             db.session.commit()
 
             result = get_payment_history(

@@ -57,16 +57,16 @@ from app.services.pay_calendar import calendar_for
 from app.services.reconcile_service import Statement, record_settled_days
 from app.services.settle_day import SettleDay, record_settle_day
 from tests._test_helpers import (
-    figure_source_columns,
     account_never_asserted,
-    match_two_lines,
     append_only_guard_lifted,
     create_account_of_type,
     create_settled_cash_transaction,
+    figure_source_columns,
+    match_two_lines,
+    one_off_row_of,
     restate_account_opening,
     settle_day_columns,
 )
-from app.models.amount_ownership import AmountOwnership
 
 _ONE_DAY = timedelta(days=1)
 
@@ -300,18 +300,16 @@ class TestTheOneOrmWriter:
         """
         with app.app_context():
             account = seed_user["account"]
-            row = Transaction(
-                account_id=account.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            row = one_off_row_of(
+                seed_periods[0],
                 name="seam-probe",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("25.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("25.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(row)
             db.session.flush()
             done = ref_cache.status_id(StatusEnum.DONE)
             with pytest.raises(ValidationError, match=r"books open on"):
@@ -580,18 +578,17 @@ class TestAnUnsettledRowDoesNotRESERVETheTable:
         """An unsettled row queues no event, so the table stays alterable."""
         with app.app_context():
             account = seed_user["account"]
-            db.session.add(Transaction(
-                account_id=account.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="projected-probe",
+                amount=Decimal("25.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                amount_ownership=AmountOwnership.own(Decimal("25.00")),
-            ))
+            )
             db.session.flush()
             # No exception: the WHEN clause kept the row out of the queue.
             db.session.execute(sa.text(self._DDL))

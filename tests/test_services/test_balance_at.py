@@ -54,7 +54,6 @@ from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType, CalcMethod, PaycheckLineKind
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     growth_engine,
@@ -118,12 +117,12 @@ from tests._test_helpers import (
     make_expense_template,
     make_investment_account,
     make_salary_profile,
+    one_off_row_of,
     posted_loan_balance_at,
     pricing_over,
     reassert_balance_on,
     settle_instant_on,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def _no_baseline(user_id):
@@ -2228,18 +2227,17 @@ class TestOnlyALoanIsNotATransactionSum:
             # read it was built for, and since plan step X-i4 the cash fold the
             # modelled kinds ride on is one of the derivations it holds.
             for acct in (mortgage, inv, prop):
-                db.session.add(Transaction(
-                    account_id=acct.id,
-                    user_id=periods[5].user_id,
-                    pay_period_id=periods[5].id,
-                    scenario_id=scenario.id,
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                one_off_row_of(
+                    periods[5],
                     name="typed row",
+                    amount=Decimal("9999.00"),
+                    user_id=periods[5].user_id,
+                    account_id=acct.id,
+                    scenario_id=scenario.id,
                     transaction_type_id=ref_cache.txn_type_id(
                         TxnTypeEnum.INCOME,
                     ),
-                    amount_ownership=AmountOwnership.own(Decimal("9999.00")),
-                ))
+                )
             db.session.commit()
 
             after_ctx = BalanceContext.build(user_id)
@@ -2721,16 +2719,15 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
-            db.session.add(Transaction(
-                account_id=hysa.id,
-                user_id=periods[6].user_id,
-                pay_period_id=periods[6].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                periods[6],
                 name="Deposit",
+                amount=Decimal("1000.00"),
+                user_id=periods[6].user_id,
+                account_id=hysa.id,
+                scenario_id=scenario.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            ))
+            )
             db.session.commit()
             params = (
                 db.session.query(InterestParams)
@@ -3046,16 +3043,15 @@ class TestGridBalanceView:
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
-            db.session.add(Transaction(
-                account_id=hysa.id,
-                user_id=periods[6].user_id,
-                pay_period_id=periods[6].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                periods[6],
                 name="Deposit",
+                amount=Decimal("1000.00"),
+                user_id=periods[6].user_id,
+                account_id=hysa.id,
+                scenario_id=scenario.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            ))
+            )
             db.session.commit()
 
             view = balance_at.grid_balance_view(hysa, bctx)
@@ -3847,26 +3843,24 @@ def _seed_grid_activity(db, seed_user, periods):
     """
     scenario = get_baseline_scenario(seed_user["user"].id)
     account = seed_user["account"]
-    db.session.add(Transaction(
-        account_id=account.id,
-        user_id=periods[6].user_id,
-        pay_period_id=periods[6].id,
-        scenario_id=scenario.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+    one_off_row_of(
+        periods[6],
         name="Paycheck",
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-        amount_ownership=AmountOwnership.own(Decimal("2400.00")),
-    ))
-    db.session.add(Transaction(
+        amount=Decimal("2400.00"),
+        user_id=periods[6].user_id,
         account_id=account.id,
-        user_id=periods[7].user_id,
-        pay_period_id=periods[7].id,
         scenario_id=scenario.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+    )
+    one_off_row_of(
+        periods[7],
         name="Rent",
+        amount=Decimal("1450.00"),
+        user_id=periods[7].user_id,
+        account_id=account.id,
+        scenario_id=scenario.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal("1450.00")),
-    ))
+    )
     db.session.commit()
 
 

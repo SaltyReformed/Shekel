@@ -96,6 +96,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     make_expense_template,
     make_income_template,
+    one_off_row_of,
     planted_basis,
     posted_loan_balance_at,
 )
@@ -1237,24 +1238,22 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
         the undo's refusal).
         """
         with app.app_context():
-            # An AD-HOC envelope, bare-built as the bank door still mints one
-            # (``statement_match._container._create_envelope``, until
-            # X-bi-7b-3): the flag is the row's own there, which is what the
-            # popover's untick writes -- a definition's row reads its
-            # definition's flag and offers no such control.
-            envelope = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_user["user"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            # A bank-born envelope as the bank door mints one since X-bi-7b-3
+            # (``statement_match._container._create_envelope`` on the
+            # producer): a rule-less definition's placed row, whose flag is
+            # the DEFINITION's (ruling R-BAL36) -- which is where the
+            # popover's untick lands, below.
+            envelope = one_off_row_of(
+                seed_periods[0],
                 name="Kayla's Spending Money",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Rent"].id,
                 is_envelope=True,
             )
-            db.session.add(envelope)
             db.session.flush()
             purchase = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
@@ -1267,8 +1266,9 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             _settle(envelope)
             db.session.flush()
             assert covering_movements(envelope) == []
-            envelope.is_envelope = False
+            envelope.template.is_envelope = False
             db.session.flush()
+            assert envelope.tracks_purchases is False
             transaction_service.apply_requested_status(
                 envelope, envelope.status_id, submitted=Decimal("999.99"),
             )

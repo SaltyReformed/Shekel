@@ -45,23 +45,23 @@ from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError, ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
-    figure_source_columns,
-    open_books_before_the_first_assertion,
     account_never_asserted,
     add_txn,
     an_entered_day,
     append_balance_assertion,
-    read_pass,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    figure_source_columns,
     freeze_today,
+    one_off_row_of,
+    open_books_before_the_first_assertion,
+    read_pass,
     reassert_balance_on,
     restate_account_opening,
     settle_day_columns,
 )
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
@@ -597,21 +597,19 @@ class TestSourceFactValuation:
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
-        from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
         _opened_at(account, _instant(2026, 1, 1))
-        db.session.add(Transaction(
-            account_id=account.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        one_off_row_of(
+            period,
             name="unpaid bill",
+            amount=Decimal("500.00"),
+            user_id=period.user_id,
+            account_id=account.id,
+            scenario_id=scenario.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        ))
+        )
         db.session.commit()
 
         assert settled_cash_facts(account.id, scenario.id) == []
