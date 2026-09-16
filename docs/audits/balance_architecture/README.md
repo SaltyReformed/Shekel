@@ -381,9 +381,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
-      construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
-      AST walk over their keywords, so no total is stated here).
+    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer -- the DECOMPOSED parent, split
+      2026-09-16 into the builder and four leaves of sites by file group (the AST census in
+      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked); ticks with 7c-5.
+      * [x] **X-bi-7c-1** `555410b6` -- `one_off_row_of` on the producer (the twin of
+        `generate_row_of`); the three bare builders on it; `legacy_link_less_row_of` the one
+        transitional home; `payback_row_of`; the census instrument; the 16 failures the move
+        surfaced classified in six classes and fixed; **R-BAL58** (the one app change), **R-BAL59**.
+      * [ ] **X-bi-7c-2** `tests/test_services/*`, `tests/test_utils`, `tests/test_ref_cache.py`.
+      * [ ] **X-bi-7c-3** `tests/test_routes/*` except the grid pair.
+      * [ ] **X-bi-7c-4** `tests/test_routes/test_grid.py` (72 + 7 splat) and `test_grid_regression.py`.
+      * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
+        `tests/test_performance`, `tests/test_concurrent`, `test_audit_fixes`; the marker's last figure.
     * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
