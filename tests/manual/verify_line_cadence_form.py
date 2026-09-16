@@ -276,6 +276,8 @@ def _rows(page) -> list[dict[str, str]]:
             ceiling: b.dataset.lineMaxPerMonth,
             starts_on: b.dataset.lineStartsOn,
             end_mode: b.dataset.lineEndMode,
+            end_date: b.dataset.lineEndDate,
+            max_occurrences: b.dataset.lineMaxOccurrences,
             phrase: document.querySelector('[data-line-cadence="' + b.dataset.lineEdit + '"]')
                     .textContent.trim(),
         }))"""
@@ -313,6 +315,17 @@ def _drive_edit_prefill(page, row: dict[str, str], label: str) -> None:
            str(posted))
     _check(f"{label}: the prefill posts the row's bound mode",
            posted["recurrence_end_mode"] == ([row["end_mode"]] if row["unit_id"] else []),
+           str(posted))
+    # The bound's VALUE: the one input its shape needs posts the row's value
+    # and the other posts nothing (disabled, not merely hidden) -- and under
+    # "Does not repeat" neither posts.  app.js fills the value AFTER the unit's
+    # change enables the input the mode revealed (plan step salary:R18-c).
+    wanted_end_date = [row["end_date"]] if row["unit_id"] and row["end_mode"] == "on_date" else []
+    wanted_count = (
+        [row["max_occurrences"]] if row["unit_id"] and row["end_mode"] == "after_n" else []
+    )
+    _check(f"{label}: the prefill posts the bound's value under its own shape alone",
+           posted["end_date"] == wanted_end_date and posted["max_occurrences"] == wanted_count,
            str(posted))
     _check(f"{label}: the submit button reads Update",
            "Update" in page.inner_text("#line-submit-btn"), page.inner_text("#line-submit-btn"))
@@ -398,30 +411,96 @@ def _drive_write_pass(page, profile_id: int) -> None:
     _check("W: after the swap, choosing paychecks shows the ceiling row",
            _visible(page, "field-max-per-month"), "hidden")
 
-    # --- edit the new row to monthly, through the swapped-in form -------
+    # --- give the new row a SPAN through its edit form (R18-c) -----------
+    # A typed start on a paycheck cadence is placed on the payday of the
+    # period holding it, so the stored start is read back off the row rather
+    # than compared to what was typed; the stop is stored as typed.
     _drive_edit_prefill(page, added, "W[edit prefill after swap]")
+    page.fill("#starts_on", "2026-10-01")
+    page.evaluate(
+        """() => document.getElementById('starts_on')
+                 .dispatchEvent(new Event('change', {bubbles: true}))"""
+    )
+    _settle(page)
+    page.locator("#recurrence_end_mode").select_option("on_date")
+    _settle(page)
+    page.fill("#end_date", "2026-11-30")
+    _settle(page)
+    posted = _posted(page)
+    _check("W: the span edit posts the typed start, the on_date mode and the date alone",
+           posted["starts_on"] == ["2026-10-01"] and posted["recurrence_end_mode"] == ["on_date"]
+           and posted["end_date"] == ["2026-11-30"] and posted["max_occurrences"] == [],
+           str(posted))
+    _submit_and_settle(page)
+    rows = [r for r in _rows(page) if r["name"] == MARK]
+    _check("W: the span edit swapped the section in", len(rows) == 1, str(rows))
+    if not rows:
+        return
+    spanned = rows[0]
+    stored = _sql(
+        "SELECT r.starts_on, r.end_date, r.max_occurrences, r.max_per_month "
+        "FROM budget.recurrence_rules r "
+        "JOIN salary.paycheck_lines d ON d.id = r.paycheck_line_id "
+        f"WHERE d.name = '{MARK}'",
+    )
+    _check("W: the SAME rule now carries a start on or before Oct 1, the stop, no count, ceiling 2",
+           len(stored) == 1 and stored[0].split("|")[0] <= "2026-10-01"
+           and stored[0].split("|")[0] >= "2026-09-01"
+           and stored[0].endswith("|2026-11-30||2"), str(stored))
+    _check("W: the row's prefill carries the stored start, the on_date mode and the date",
+           spanned["starts_on"] == stored[0].split("|")[0] and spanned["end_mode"] == "on_date"
+           and spanned["end_date"] == "2026-11-30" and spanned["max_occurrences"] == "",
+           str(spanned))
+    _check("W: the row's Frequency cell words the span beside the cadence",
+           spanned["phrase"].startswith("Every paycheck (at most 2 a month), from ")
+           and spanned["phrase"].endswith(", until Nov 30, 2026"), spanned["phrase"])
+    # The edit prefill of a SPANNED row: start, mode and the date, one dispatch.
+    _drive_edit_prefill(page, spanned, "W[edit prefill of the spanned row]")
+    page.click('[data-toggle-target="add-line-form"]')
+    page.wait_for_timeout(400)
+
+    # --- edit the new row to monthly, through the swapped-in form -------
+    # With the start box CLEARED and the bound put back to never: a cleared
+    # box is the derived default again (the 1st of the opening's month), and
+    # the stop goes with the mode -- the stored row says both.
+    _drive_edit_prefill(page, spanned, "W[edit prefill before the monthly edit]")
     page.locator("#recurrence_unit").select_option(units["months"])
+    _settle(page)
+    page.fill("#starts_on", "")
+    page.evaluate(
+        """() => document.getElementById('starts_on')
+                 .dispatchEvent(new Event('change', {bubbles: true}))"""
+    )
+    page.locator("#recurrence_end_mode").select_option("never")
     _settle(page)
     posted = _posted(page)
     _check("W: switching the edit to months posts no ceiling",
            posted["max_per_month"] == [], str(posted))
+    _check("W: the cleared start posts empty and the never mode posts no date",
+           posted["starts_on"] == [""] and posted["recurrence_end_mode"] == ["never"]
+           and posted["end_date"] == [] and posted["max_occurrences"] == [],
+           str(posted))
     _submit_and_settle(page)
     rows = [r for r in _rows(page) if r["name"] == MARK]
     _check("W: the edit swapped the section in", len(rows) == 1, str(rows))
     if rows:
-        _check("W: the row's Frequency cell now reads the monthly shape",
-               rows[0]["phrase"].startswith("Monthly"), rows[0]["phrase"])
+        _check("W: the row's Frequency cell now reads the monthly shape and no span",
+               rows[0]["phrase"].startswith("Monthly") and " from " not in rows[0]["phrase"]
+               and " until " not in rows[0]["phrase"], rows[0]["phrase"])
         _check("W: the row's prefill now names the months unit with no ceiling",
                rows[0]["unit"] == units["months"] and rows[0]["ceiling"] == "",
                str(rows[0]))
+        _check("W: the row's prefill carries the derived 1st and the never mode",
+               rows[0]["starts_on"].endswith("-01") and rows[0]["end_mode"] == "never"
+               and rows[0]["end_date"] == "", str(rows[0]))
     stored = _sql(
-        "SELECT r.max_per_month, r.starts_on FROM budget.recurrence_rules r "
+        "SELECT r.max_per_month, r.starts_on, r.end_date FROM budget.recurrence_rules r "
         "JOIN salary.paycheck_lines d ON d.id = r.paycheck_line_id "
         f"WHERE d.name = '{MARK}'",
     )
-    _check("W: the SAME rule row now starts on a 1st with no ceiling",
+    _check("W: the SAME rule row now starts on a 1st with no ceiling and no stop",
            len(stored) == 1 and stored[0].startswith("|")
-           and stored[0].endswith("-01"), str(stored))
+           and stored[0].endswith("-01|"), str(stored))
 
     # --- delete it through the row's form ------------------------------
     # The confirmation is the project's own modal (confirm.js intercepts
