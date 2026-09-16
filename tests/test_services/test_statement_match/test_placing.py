@@ -21,7 +21,7 @@ import pytest
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
@@ -46,7 +46,7 @@ from app.services.statement_match import (
 from app.services.statement_match._placement import placements_for
 # pylint: disable-next=shekel-private-module-import
 from app.services.statement_match._sentence import for_placement
-from tests._test_helpers import resolved_amount
+from tests._test_helpers import legacy_link_less_row_of, resolved_amount
 
 from ._builders import (
     a_bank_line,
@@ -54,7 +54,6 @@ from ._builders import (
     a_one_off_envelope,
     a_rule,
     a_scope,
-    a_transaction,
     an_answers,
     an_envelope,
     an_import,
@@ -291,9 +290,15 @@ class TestANewEnvelopeAnswerMintsOnceAndNamesTheDefinition:
         """
         with app.app_context():
             category = seed_user["categories"]["Groceries"]
-            legacy = a_transaction(
-                seed_user, name="Amazon", is_envelope=True, template=False,
-                category=category,
+            # The shape's one transitional home (plan step balance:X-bi-7c);
+            # the cutover retires this case with it.
+            legacy = legacy_link_less_row_of(
+                seed_user["bootstrap_period"], name="Amazon", amount="180.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=category.id, is_envelope=True,
             )
             statement = an_import(seed_user)
             _swipe(seed_user, statement, day=seed_user["bootstrap_period"].start_date)

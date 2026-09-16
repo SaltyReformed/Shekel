@@ -438,10 +438,45 @@ def finalised_edit_rejection(current_status, new_status, context="transaction"):
     """
     if current_status is None or not current_status.is_immutable:
         return None
-    if new_status is not None and not new_status.is_immutable:
+    if lock_lifts(current_status, new_status):
         return None
     return (
         f"Cannot edit a finalised ({current_status.name}) {context}. "
         "Revert it to Projected before changing the amount, category, "
         "period, or due date."
+    )
+
+
+def lock_lifts(current_status, new_status) -> bool:
+    """Return whether a request moving *current_status* to *new_status* UNLOCKS the row.
+
+    **The lock's lift, stated once** (plan step ``balance:X-bi-7c``, ruling
+    **R-BAL58**): a finalised row (``is_immutable`` -- Paid, Received, Credit,
+    Cancelled) is unlocked by the request that reverts it to a mutable status,
+    which is the clause :func:`finalised_edit_rejection` admits the "revert
+    and correct" edit on.  The PATCH handler asks it to ORDER its acts:
+    *unlock, edit, lock* -- a request that lifts the lock applies the status
+    transition BEFORE its field and definition edits, so the edits land on an
+    unlocked row (a placed row's definition propagation rewrites Projected
+    rows only, ``definition_edit.unruled_live_rows``), and one that settles
+    edits first.  A first build of that order asked the SETTLED band
+    (``balance_predicates.enters_settled_band``'s inverse), which is
+    narrower than the lock: un-cancelling and un-crediting lift it too, and a
+    re-category beside either took the old order (found by 7c-1's
+    adversarial review).
+
+    Args:
+        current_status: The row's current :class:`~app.models.ref.Status`
+            (``None`` is mutable, as above).
+        new_status: The :class:`~app.models.ref.Status` the request
+            transitions to, or ``None`` when it changes none.
+
+    Returns:
+        True when the row is locked now and the request leaves it unlocked.
+    """
+    return (
+        current_status is not None
+        and current_status.is_immutable
+        and new_status is not None
+        and not new_status.is_immutable
     )

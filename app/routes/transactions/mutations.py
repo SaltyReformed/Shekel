@@ -29,9 +29,11 @@ from sqlalchemy.orm.exc import StaleDataError
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.ref import Status
 from app.services import (
     credit_workflow,
     posting_service,
+    state_machine,
     status_seam,
     transaction_service,
 )
@@ -133,8 +135,11 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     """Apply a PATCH update to a regular (non-shadow) transaction.
 
     Runs the three pre-mutation gates, writes the submitted fields
-    (:func:`_apply_field_updates`), applies the requested status through
-    ``transaction_service.apply_requested_status``, deletes the auto-generated
+    (:func:`_apply_field_updates`) and applies the requested status through
+    ``transaction_service.apply_requested_status`` -- the status FIRST where
+    it lifts a finalised row's lock, the fields first otherwise, and the
+    ledger reconciled after the fields either way (*unlock, edit, lock*,
+    ruling **R-BAL58**; the comment at ``unlocks`` below) -- deletes the auto-generated
     payback when the change reverts a Credit row (mirroring ``unmark_credit``
     via the shared ``credit_workflow.delete_payback_on_credit_revert``), and
     commits under the optimistic lock.  A ``pay_period_id`` change relocates the
@@ -278,6 +283,37 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     # render as a designed 400 with the staged ``setattr`` mutations rolled back.
     new_status_id = data.get("status_id", txn.status_id)
 
+    # **UNLOCK, EDIT, LOCK** (plan step ``balance:X-bi-7c``, ruling **R-BAL58**,
+    # developer 2026-09-16).  A finalised row's item fields are locked
+    # (``state_machine.finalised_edit_rejection``; the popover disables them)
+    # and a placed row's definition propagation rewrites Projected rows only.
+    # A request that LIFTS the lock -- reverts the row to a mutable status
+    # (``state_machine.lock_lifts``, the gate's own clause for the "revert and
+    # correct" edit) -- applies the status transition FIRST, so the edits land
+    # on an unlocked row; one that settles it edits first, so the settle reads
+    # the final fields (the untick-and-settle save needs the definition's flag
+    # before the lock).  Found by moving the suite's one-off fixtures onto the
+    # producer: a revert + re-category in one PATCH landed the category on the
+    # DEFINITION and the propagation skipped the still-settled row, so the
+    # definition said Rent, the row still said Groceries, and the next settle
+    # posted `$50.00` to Groceries -- every one-off's shape after the cutover.
+    #
+    # **The ledger is reconciled LAST in BOTH orders.**  The status verb
+    # reconciles at the transition (``apply_requested_status``, so no door can
+    # forget it); in the unlock order that reconcile reads the PRE-edit row,
+    # and an edit that moves a posting-relevant field afterwards -- the period
+    # or the category of an envelope whose purchases are posted -- re-files
+    # nothing by itself: the purchase legs stayed under the old paycheck
+    # (found by 7c-1's adversarial review, measured on a settled envelope
+    # reverted and moved in one PATCH).  So the unlock order owes the row the
+    # same end-of-handler reconcile the no-status path has always made, which
+    # is the discipline ``transaction_service._door`` states: reconciled after
+    # the caller's own field writes, reading the final amount and category.
+    unlocks = "status_id" in data and state_machine.lock_lifts(
+        db.session.get(Status, txn.status_id),
+        db.session.get(Status, data["status_id"]),
+    )
+
     # **The three excepts cover the WHOLE tail, and they were split by the order
     # the phases were written in rather than by a decision** -- the same
     # unification :func:`_mark_done_regular` records, forced here by the same
@@ -291,6 +327,8 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
     # three ``ValidationError`` siblings are in ``mark_as_credit`` /
     # ``unmark_credit``, which this path does not call).
     try:
+        if unlocks:
+            _apply_status_or_postings(txn, data, new_status_id)
         # Write the submitted fields, flag a template row as overridden, and
         # refuse an amount the settle would discard -- three acts whose ORDER is
         # load-bearing and is documented at the helper.  Extracted so this
@@ -315,59 +353,9 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
         )
         if field_error is not None:
             return field_error
-        # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
-        # this form prefills the settle-day box, so an untouched Save re-submits
-        # the day the row already carries -- and without the stored pair the
-        # rule would restamp that day's BASIS as the owner's own typing, which
-        # is finding **N-332**'s own laundering arriving through the edit door.
-        settle_day = status_seam.settle_day_for_status(
-            current_user.id, new_status_id, data.get("settled_on"),
-            recorded_settle_day(txn),
-        )
-        # **A submitted FIGURE is a third reason to enter the status arm**, and
-        # without it the door never saw one (found by two independent
-        # adversarial reviews, 2026-08-17).  ``apply_requested_status`` decides
-        # what a figure MEANS -- a correction on a row already settled, a
-        # dropped echo on the way out of the band, a refusal for a figure the
-        # user CHANGED beside a revert -- but this dispatch reached it only when
-        # a STATUS or a DAY arrived too, so a PATCH carrying ``settled_amount``
-        # alone answered 200 having discarded it.  ``new_status_id`` defaults to
-        # the row's CURRENT status (above), so such a request is an identity
-        # move.  **The route no longer grades the figure itself** (2026-08-18):
-        # it called ``settled_amount_for_status``, which read the STATUS alone
-        # and so could not tell an untouched prefill from a number the user had
-        # just retyped.  That rule needs the row, and the door has it.
-        submitted_figure = data.get("settled_amount")
-        if (
-            "status_id" in data
-            or settle_day is not None
-            or submitted_figure is not None
-        ):
-            transaction_service.apply_requested_status(
-                txn, new_status_id, settle_day=settle_day,
-                submitted=submitted_figure,
-            )
+        if not unlocks:
+            _apply_status_or_postings(txn, data, new_status_id)
         elif _POSTING_RELEVANT_FIELDS & data.keys():
-            # Posting ledger reconcile (Build-Order Step 3) for the edit that
-            # moves a posted effect WITHOUT touching the status: a re-category,
-            # a corrected amount.  The status arm above owns the reconcile for
-            # every other case, which is what keeps this request to exactly ONE
-            # ledger round-trip -- ``status_id`` and ``settled_on`` are both in
-            # ``_POSTING_RELEVANT_FIELDS``, so an ungated call here would be a
-            # second reconcile of the same row on every status change.  Placed
-            # LAST -- NOT at the field write -- so it reads the FINAL amount and
-            # category, the exact discipline
-            # ``transfer_service.update_transfer`` documents (the 2.8b HIGH: a
-            # settle-and-recategorize PATCH applies category_id after status_id,
-            # so posting at the flip would book the stale category).  The
-            # reconcile reads the OLD category's posted legs back from the
-            # ledger by transaction_id, so a revert-and-recategorize reverses
-            # the old category cleanly even though ``txn.category_id`` already
-            # points at the new one (the 2.8 CRITICAL).  Gated so a notes-only
-            # edit posts nothing.  Inside the StaleDataError net for the same
-            # reason as the payback delete below: the reconcile's flush
-            # autoflushes the version-pinned row, so a concurrent commit
-            # surfaces here as a 409, not a 500.
             posting_service.sync_transaction_postings(
                 txn, settled=txn.status.is_settled,
             )
@@ -405,6 +393,86 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
             "gridRefresh" if period_changed or re_filed else "balanceChanged"
         ),
     }
+
+
+def _apply_status_or_postings(txn, data, new_status_id):
+    """Apply the status the payload asks for, else reconcile the edited row.
+
+    The status half of :func:`_apply_regular_update`, in one place so the
+    UNLOCK order there can run it before the field writes and the ordinary
+    order after them.  A payload naming a status, a settle day or a settled
+    figure goes through ``transaction_service.apply_requested_status`` (the
+    route layer's one status entry point, plan step X-ap), which reconciles
+    the ledger itself; one naming none of them but a posting-relevant field
+    owes the row its own reconcile.  Every comment below is the arm's own,
+    moved with it.
+
+    Args:
+        txn: The Transaction being edited.
+        data: The schema-loaded PATCH payload.
+        new_status_id: The status the payload asks for, or the row's own.
+    """
+    # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
+    # this form prefills the settle-day box, so an untouched Save re-submits
+    # the day the row already carries -- and without the stored pair the
+    # rule would restamp that day's BASIS as the owner's own typing, which
+    # is finding **N-332**'s own laundering arriving through the edit door.
+    settle_day = status_seam.settle_day_for_status(
+        current_user.id, new_status_id, data.get("settled_on"),
+        recorded_settle_day(txn),
+    )
+    # **A submitted FIGURE is a third reason to enter the status arm**, and
+    # without it the door never saw one (found by two independent
+    # adversarial reviews, 2026-08-17).  ``apply_requested_status`` decides
+    # what a figure MEANS -- a correction on a row already settled, a
+    # dropped echo on the way out of the band, a refusal for a figure the
+    # user CHANGED beside a revert -- but this dispatch reached it only when
+    # a STATUS or a DAY arrived too, so a PATCH carrying ``settled_amount``
+    # alone answered 200 having discarded it.  ``new_status_id`` defaults to
+    # the row's CURRENT status (above), so such a request is an identity
+    # move.  **The route no longer grades the figure itself** (2026-08-18):
+    # it called ``settled_amount_for_status``, which read the STATUS alone
+    # and so could not tell an untouched prefill from a number the user had
+    # just retyped.  That rule needs the row, and the door has it.
+    submitted_figure = data.get("settled_amount")
+    if (
+        "status_id" in data
+        or settle_day is not None
+        or submitted_figure is not None
+    ):
+        transaction_service.apply_requested_status(
+            txn, new_status_id, settle_day=settle_day,
+            submitted=submitted_figure,
+        )
+    elif _POSTING_RELEVANT_FIELDS & data.keys():
+        # Posting ledger reconcile (Build-Order Step 3) for the edit that
+        # moves a posted effect WITHOUT touching the status: a re-category,
+        # a corrected amount.  The status arm above owns the reconcile for
+        # every other case, which is what keeps this request to exactly ONE
+        # ledger round-trip -- ``status_id`` and ``settled_on`` are both in
+        # ``_POSTING_RELEVANT_FIELDS``, so an ungated call here would be a
+        # second reconcile of the same row on every status change.  (The
+        # UNLOCK order is the one request that makes two, and the caller
+        # says why.)  Placed
+        # LAST -- NOT at the field write -- so it reads the FINAL amount and
+        # category, the exact discipline
+        # ``transfer_service.update_transfer`` documents (the 2.8b HIGH: a
+        # settle-and-recategorize PATCH applies category_id after status_id,
+        # so posting at the flip would book the stale category).  The
+        # reconcile reads the OLD category's posted legs back from the
+        # ledger by transaction_id, so a revert-and-recategorize reverses
+        # the old category cleanly whichever order the door ran it in --
+        # before the field writes since the UNLOCK order (plan step
+        # ``balance:X-bi-7c``), after them until then, when
+        # ``txn.category_id`` already pointed at the new one (the 2.8
+        # CRITICAL).  Gated so a notes-only
+        # edit posts nothing.  Inside the StaleDataError net for the same
+        # reason as the caller's payback delete: the reconcile's flush
+        # autoflushes the version-pinned row, so a concurrent commit
+        # surfaces here as a 409, not a 500.
+        posting_service.sync_transaction_postings(
+            txn, settled=txn.status.is_settled,
+        )
 
 
 def _stale_form_conflict(txn, data):

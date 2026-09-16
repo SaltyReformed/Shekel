@@ -65,6 +65,7 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
@@ -88,6 +89,8 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
+    legacy_link_less_row_of,
+    settle_cash_row,
     create_settled_transfer,
     freeze_today,
     linked_ledger_account,
@@ -1380,13 +1383,25 @@ class TestDisplayLabels:
         budget category SET-NULLs the account's ``category_id`` (its ``kind_id``
         stays ``category``), so the line falls back to the account's own
         "Family: Groceries" snapshot and the amount is untouched.
+
+        **On the LEGACY link-less row, until the cutover** (plan step
+        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
+        definition references the category, ``transaction_templates.
+        category_id`` is RESTRICT, and the delete this case reproduces cannot
+        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
+        or retires this case with it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            create_settled_cash_transaction(
-                seed_user, db.session, seed_user["bootstrap_period"],
-                Decimal("100.00"), account=seed_user["account"],
-                category=seed_user["categories"]["Groceries"],
+            settle_cash_row(
+                legacy_link_less_row_of(
+                    seed_user["bootstrap_period"], name="Cash Txn",
+                    amount="100.00", user_id=user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
+                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                    category_id=seed_user["categories"]["Groceries"].id,
+                ),
                 settled_on=date(_Y, 3, 15),
             )
             db.session.commit()

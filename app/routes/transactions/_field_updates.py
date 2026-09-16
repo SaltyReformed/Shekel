@@ -243,14 +243,19 @@ def _apply_field_updates(
        status arm, because the flags govern the settle**: a save that unticks
        *Track individual purchases* beside Status = Paid settles the row on
        its own figure (act 6's own sentence), which needs the definition's
-       flag written first.  The price of that order is a crafted single PATCH
-       that REVERTS a settled placed row and re-categorises it in one request
-       (the card disables the category select on a locked row, so no form
-       posts that pair): the propagation runs while the row is still settled
-       and skips it, so the definition takes the category and the row keeps
-       the old one until its next category edit reaches it.  Found by
-       adversarial review and left, because the other order breaks the
-       reachable save.
+       flag written first.  A PATCH that REVERTS a finalised placed row and
+       re-categorises it in one request -- the "revert and correct" edit
+       ``state_machine.finalised_edit_rejection`` admits; the card disables
+       the select on a locked row, any HTTP client posts the pair -- met the
+       other side of that order until plan step ``balance:X-bi-7c``: the
+       propagation ran while the row was still locked and skipped it, so
+       the definition took the category and the row kept the old one, and
+       the next settle posted to it.  Found by 7b-2's adversarial review and
+       left as crafted-only; the suite's own posting-lifecycle cases posted
+       the pair once their rows became placed, and the handler now applies a
+       lock-lifting transition before this step and reconciles the ledger
+       after it (*unlock, edit, lock*, ruling **R-BAL58**), so the
+       propagation finds the row projected.
     5. **NEW -- the figure's OTHER half.**  A placed row whose definition
        holds ANOTHER row (a bank-born envelope's, one per paycheck) takes
        the figure as its OWN with the flag beside it, one occurrence among

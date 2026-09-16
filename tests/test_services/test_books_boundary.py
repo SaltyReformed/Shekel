@@ -737,6 +737,13 @@ class TestTheGoverningRowIsWhatIsGraded:
         for); once the movement is gone the account and its several openings
         go together.  A first draft asserted only the second half against an
         account that had never recorded anything, which could not fail.
+
+        The movement is a ONE-OFF since plan step ``balance:X-bi-7c`` -- a
+        rule-less definition plus its placed row -- and the definition
+        references the account too (``transaction_templates.account_id``,
+        RESTRICT), so "with the movement gone" disposes of the definition
+        with its last row, as the transaction delete verb does (ruling
+        **R-BAL27**).
         """
         with app.app_context():
             account = create_account_of_type(
@@ -753,6 +760,7 @@ class TestTheGoverningRowIsWhatIsGraded:
             )
             db.session.commit()
             account_id, movement_id = account.id, movement.id
+            definition_id = movement.template_id
             assert db.session.execute(
                 sa.text(_COUNT_OPENINGS), {"a": account_id},
             ).scalar() >= 3, "the cascade must take several rows, not one"
@@ -769,10 +777,15 @@ class TestTheGoverningRowIsWhatIsGraded:
             assert "cannot open its books" not in str(refusal.value)
             db.session.rollback()
 
-            # With it gone, the account and its openings go together.
+            # With it gone -- the row and the definition that was its -- the
+            # account and its openings go together.
             db.session.execute(
                 sa.text("DELETE FROM budget.transactions WHERE id = :i"),
                 {"i": movement_id},
+            )
+            db.session.execute(
+                sa.text("DELETE FROM budget.transaction_templates WHERE id = :i"),
+                {"i": definition_id},
             )
             db.session.execute(
                 sa.text("DELETE FROM budget.accounts WHERE id = :i"),
