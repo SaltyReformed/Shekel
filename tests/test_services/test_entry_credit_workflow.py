@@ -26,11 +26,11 @@ from app.services import credit_workflow, entry_service, transaction_service
 from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
 from tests._test_helpers import (
-    figure_source_columns,
     an_entered_day,
+    figure_source_columns,
     generate_row_of,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 class TestSyncEntryPayback:
@@ -1051,23 +1051,20 @@ class TestLegacyCreditGuard:
         does not have is_envelope enabled.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Non-Tracked Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
@@ -1086,23 +1083,20 @@ class TestLegacyCreditGuard:
         Projected status and deletes the payback.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Legacy Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)

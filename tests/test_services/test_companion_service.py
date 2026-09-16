@@ -3,9 +3,10 @@ Shekel Budget App -- Companion Service Tests
 
 Data isolation and visibility filtering tests for the companion
 service.  Verifies that companion users see exactly the transactions
-whose ``Transaction.visible_to_companion`` is True -- a generated row by
-its template's ``companion_visible`` flag, an ad-hoc row by its own --
-scoped to their linked owner's pay periods.  **The service asks that
+whose ``Transaction.visible_to_companion`` is True -- a row of a definition
+(generated, or a one-off's placed row) by the DEFINITION's
+``companion_visible`` flag, a legacy link-less row by its own until the
+cutover ``balance:X-bi-7d`` -- scoped to their linked owner's pay periods.  **The service asks that
 property of each loaded row since plan step ``balance:X-bi-1b``** (ruling
 **R-BAL19**); it restated the rule in SQL before, and
 :class:`TestVisibilityFiltering` holds the cases that tell the two apart.
@@ -24,22 +25,22 @@ from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.ref import TransactionType
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import (
-    figure_source_columns,
     capture_sql_statements,
-    moved_by_the_owner,
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
+    legacy_link_less_row_of,
+    moved_by_the_owner,
+    one_off_row_of,
     open_owner_calendar,
     resolved_amount,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -217,30 +218,29 @@ class TestVisibilityFiltering:
     def test_ad_hoc_transactions_excluded(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """An ad-hoc row (no template) is hidden unless its OWN flag says so.
+        """A LEGACY link-less row is hidden unless its OWN flag says so.
 
         With no template to defer to, ``visible_to_companion`` reads the
         row's own cell, and this row left it at the column's default.  (The
         sentence here said the template JOIN dropped ad-hoc rows, which was
         true once and had not been since the outer join of plan step F2.)
+        The row is production's shape until the cutover (X-bi-7d), built on
+        its one transitional home (plan step balance:X-bi-7c, ruling
+        R-BAL59); a one-off placed today reads its DEFINITION's flag, the
+        case below.  7d retires this pair with the own-cell branch.
         """
         expense_type = (
             db.session.query(TransactionType)
             .filter_by(name="Expense").one()
         )
         category = list(seed_user["categories"].values())[0]
-        txn = Transaction(
-            name="Ad-hoc",
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            transaction_type_id=expense_type.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        legacy_link_less_row_of(
+            seed_periods_today[0], name="Ad-hoc", amount="100.00",
             user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
-            category_id=category.id,
             scenario_id=seed_user["scenario"].id,
+            transaction_type_id=expense_type.id, category_id=category.id,
         )
-        db.session.add(txn)
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -252,24 +252,21 @@ class TestVisibilityFiltering:
     def test_ad_hoc_transactions_included_by_their_own_flag(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """An ad-hoc row whose own ``companion_visible`` is set is shown.
+        """A LEGACY link-less row whose own ``companion_visible`` is set is shown.
 
-        The other half of the ad-hoc rule, at the service door: the route
-        cases in ``test_adhoc_flags`` see it through the page.
+        The other half of the own-cell rule, at the service door: the route
+        cases in ``test_adhoc_flags`` see it through the page.  On the shape's
+        transitional home, as the case above; 7d retires both.
         """
-        txn = Transaction(
-            name="Shared Dinner",
-            amount_ownership=AmountOwnership.own(Decimal("60.00")),
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        txn = legacy_link_less_row_of(
+            seed_periods_today[0], name="Shared Dinner", amount="60.00",
             user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
-            category_id=list(seed_user["categories"].values())[0].id,
             scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=list(seed_user["categories"].values())[0].id,
             companion_visible=True,
         )
-        db.session.add(txn)
         db.session.commit()
 
         companion = seed_companion["user"]
@@ -277,6 +274,36 @@ class TestVisibilityFiltering:
             companion.id, period_id=seed_periods_today[0].id,
         ).transactions
         assert [t.id for t in txns] == [txn.id]
+
+    @pytest.mark.parametrize("shown", [True, False])
+    def test_a_placed_one_offs_visibility_is_its_definitions(
+        self, app, db, seed_user, seed_periods_today, seed_companion, shown,
+    ):
+        """A one-off placed today (plan step balance:X-bi-7b) reads its DEFINITION's flag.
+
+        The shape every one-off has held since 7b and every row will hold
+        after 7d: ``one_off_row_of(companion_visible=...)`` lands on the
+        definition (ruling R-BAL36), and the service shows the row by that
+        and nothing else.  Both halves, so a service that showed everything
+        or nothing fails one of them.
+        """
+        txn = one_off_row_of(
+            seed_periods_today[0], name="Shared Dinner", amount="60.00",
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=list(seed_user["categories"].values())[0].id,
+            companion_visible=shown,
+        )
+        db.session.commit()
+        assert txn.template.companion_visible is shown
+
+        companion = seed_companion["user"]
+        txns = companion_service.get_visible_transactions(
+            companion.id, period_id=seed_periods_today[0].id,
+        ).transactions
+        assert [t.id for t in txns] == ([txn.id] if shown else [])
 
     def test_a_generated_rows_own_cell_decides_nothing(
         self, app, db, seed_user, seed_periods_today, seed_companion,

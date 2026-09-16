@@ -1749,8 +1749,10 @@ class TestPeriodAttribution:
 
     The 2026-07-02 adversarial review's R2 rule (fixing H1): the supported
     revert-and-move PATCH applies the new ``pay_period_id`` BEFORE the
-    end-of-handler reconcile, so a reversal stamped with the source row's
-    CURRENT period would land in the NEW period -- leaving the original entry
+    end-of-handler reconcile (and, since ruling **R-BAL58**, the revert's own
+    reconcile runs before the move and the handler reconciles again after
+    it), so a reversal stamped with the source row's CURRENT period would
+    land in the NEW period -- leaving the original entry
     and its reversal straddling two periods, where a later truncate of the new
     period CASCADE-deletes one half and permanently strands the other
     (``transaction_id`` SET NULL, unhealable).  The reconcile instead reads

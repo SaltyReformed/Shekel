@@ -57,16 +57,16 @@ from app.services.pay_calendar import calendar_for
 from app.services.reconcile_service import Statement, record_settled_days
 from app.services.settle_day import SettleDay, record_settle_day
 from tests._test_helpers import (
-    figure_source_columns,
     account_never_asserted,
-    match_two_lines,
     append_only_guard_lifted,
     create_account_of_type,
     create_settled_cash_transaction,
+    figure_source_columns,
+    match_two_lines,
+    one_off_row_of,
     restate_account_opening,
     settle_day_columns,
 )
-from app.models.amount_ownership import AmountOwnership
 
 _ONE_DAY = timedelta(days=1)
 
@@ -300,18 +300,16 @@ class TestTheOneOrmWriter:
         """
         with app.app_context():
             account = seed_user["account"]
-            row = Transaction(
-                account_id=account.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            row = one_off_row_of(
+                seed_periods[0],
                 name="seam-probe",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("25.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("25.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(row)
             db.session.flush()
             done = ref_cache.status_id(StatusEnum.DONE)
             with pytest.raises(ValidationError, match=r"books open on"):
@@ -580,18 +578,17 @@ class TestAnUnsettledRowDoesNotRESERVETheTable:
         """An unsettled row queues no event, so the table stays alterable."""
         with app.app_context():
             account = seed_user["account"]
-            db.session.add(Transaction(
-                account_id=account.id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="projected-probe",
+                amount=Decimal("25.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                amount_ownership=AmountOwnership.own(Decimal("25.00")),
-            ))
+            )
             db.session.flush()
             # No exception: the WHEN clause kept the row out of the queue.
             db.session.execute(sa.text(self._DDL))
@@ -737,6 +734,13 @@ class TestTheGoverningRowIsWhatIsGraded:
         for); once the movement is gone the account and its several openings
         go together.  A first draft asserted only the second half against an
         account that had never recorded anything, which could not fail.
+
+        The movement is a ONE-OFF since plan step ``balance:X-bi-7c`` -- a
+        rule-less definition plus its placed row -- and the definition
+        references the account too (``transaction_templates.account_id``,
+        RESTRICT), so "with the movement gone" disposes of the definition
+        with its last row, as the transaction delete verb does (ruling
+        **R-BAL27**).
         """
         with app.app_context():
             account = create_account_of_type(
@@ -753,6 +757,7 @@ class TestTheGoverningRowIsWhatIsGraded:
             )
             db.session.commit()
             account_id, movement_id = account.id, movement.id
+            definition_id = movement.template_id
             assert db.session.execute(
                 sa.text(_COUNT_OPENINGS), {"a": account_id},
             ).scalar() >= 3, "the cascade must take several rows, not one"
@@ -769,10 +774,15 @@ class TestTheGoverningRowIsWhatIsGraded:
             assert "cannot open its books" not in str(refusal.value)
             db.session.rollback()
 
-            # With it gone, the account and its openings go together.
+            # With it gone -- the row and the definition that was its -- the
+            # account and its openings go together.
             db.session.execute(
                 sa.text("DELETE FROM budget.transactions WHERE id = :i"),
                 {"i": movement_id},
+            )
+            db.session.execute(
+                sa.text("DELETE FROM budget.transaction_templates WHERE id = :i"),
+                {"i": definition_id},
             )
             db.session.execute(
                 sa.text("DELETE FROM budget.accounts WHERE id = :i"),

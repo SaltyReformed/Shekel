@@ -71,7 +71,6 @@ budget.account_openings CASCADE`` succeeds again.
 from alembic import op
 
 from app.append_only_infrastructure import (
-    APPEND_ONLY_TABLES,
     apply_append_only_infrastructure,
     remove_append_only_infrastructure,
 )
@@ -110,6 +109,17 @@ $$ LANGUAGE plpgsql
 """
 
 
+#: The three tables this revision was written for, named LITERALLY rather
+#: than read from ``APPEND_ONLY_TABLES``: that constant grew a fourth table at
+#: ``balance:X-bj-1`` (``d2e9f4a17c63``) which does not exist at this point
+#: of the chain.  The ``opening_infrastructure`` ``arms`` precedent.
+_TABLES = (
+    "budget.account_anchor_history",
+    "budget.account_openings",
+    "budget.loan_anchor_events",
+)
+
+
 def upgrade():
     """Split the one trigger into its three arms on all three tables.
 
@@ -117,7 +127,7 @@ def upgrade():
     drops all three arm names before creating, so this runs cleanly over
     ``f4a7c2d9e51b``'s single combined trigger.
     """
-    apply_append_only_infrastructure(op.execute)
+    apply_append_only_infrastructure(op.execute, tables=_TABLES)
 
 
 def downgrade():
@@ -127,9 +137,9 @@ def downgrade():
     body and the one trigger that revision installed, so the database matches
     the revision the chain lands on rather than losing the guard entirely.
     """
-    remove_append_only_infrastructure(op.execute)
+    remove_append_only_infrastructure(op.execute, tables=_TABLES)
     op.execute(_F4A7C2D9E51B_FUNCTION)
-    for table in APPEND_ONLY_TABLES:
+    for table in _TABLES:
         op.execute(
             f"CREATE TRIGGER ck_append_only "
             f"BEFORE UPDATE OR DELETE ON {table} "

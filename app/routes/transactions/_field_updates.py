@@ -28,10 +28,12 @@ lazy loads the row's accessors make and the definition edit's own, and it
 does not commit.
 """
 
-from app.services import definition_edit, transaction_service
+from app.services import definition_delete, definition_edit, transaction_service
 from app.services.amount_ownership import state_own_amount
 from app.services.one_off import (
+    another_row_answers,
     due_date_after_move,
+    holds_a_row_in,
     restate_price,
     state_due_date,
 )
@@ -112,18 +114,73 @@ def _re_files_the_row(txn, data) -> bool:
     )
 
 
+def _place_the_date(
+    txn, data, *, period_changed, target_period, source_start,
+):
+    """Act 2 of :func:`_apply_field_updates`: a placed row's date, guarded.
+
+    The date is the owner's typed one, else the row's; a period move then
+    RE-PLACES it through ``one_off.due_date_after_move`` (ruling
+    **R-BAL33**), and a changed date is written through
+    ``one_off.state_due_date`` (**R-BAL25**), the one writer that carries
+    ``occurs_on`` with it.  The two refusals are the ones act 2 of
+    :func:`_apply_field_updates` names, asked in the order the row would
+    meet the index: the target paycheck first (``one_off.holds_a_row_in``),
+    then the day (``one_off.another_row_answers``).
+
+    Args:
+        txn: The placed row being edited.
+        data: The PATCH payload after act 0, read for ``due_date``.
+        period_changed: Whether this payload moves the row.
+        target_period: The paycheck the row moves to; ``None`` unless
+            *period_changed*.
+        source_start: The paycheck the row is leaving, its start; ``None``
+            unless *period_changed*.
+
+    Returns:
+        A designed 400 response tuple, or ``None`` when the date was placed.
+    """
+    if period_changed and holds_a_row_in(
+        txn.template_id, txn.scenario_id, target_period.period_id,
+        except_row_id=txn.id,
+    ):
+        return _error_transaction_response(
+            txn.id,
+            "That paycheck already holds this item's row, and an item "
+            "holds one row per paycheck. Record into that row instead.",
+        )
+    due = data.get("due_date", txn.due_date)
+    if period_changed:
+        due = due_date_after_move(
+            due, source_start=source_start, target=target_period,
+        )
+    if due == txn.due_date:
+        return None
+    if another_row_answers(
+        txn.template_id, txn.scenario_id, due, except_row_id=txn.id,
+    ):
+        return _error_transaction_response(
+            txn.id,
+            "Another row of this item is already due that day, so "
+            "this one cannot be. Pick a different day.",
+        )
+    state_due_date(txn, due)
+    return None
+
+
 def _apply_field_updates(
     txn, data, *, amount_authored, period_changed, target_period,
 ):
     """Write the submitted fields onto *txn*, refusing what may not be written.
 
     The FIELD half of :func:`_apply_regular_update`, extracted so the handler
-    keeps one exit per concern rather than growing a branch per rule.  SEVEN
-    acts, numbered 0 to 6, and the order is load-bearing.  **This enumeration
+    keeps one exit per concern rather than growing a branch per rule.  EIGHT
+    acts, numbered 0 to 7, and the order is load-bearing.  **This enumeration
     once said "three" and listed three while the body performed four** (found
     by X-au-j's adversarial review, in the one helper whose whole discipline
     is that its order matters), so every act is numbered below; leaf 7b-2 of
-    ``X-bi-7b`` added the pop in act 0 and acts 2 and 4, each marked NEW.
+    ``X-bi-7b`` added the pop in act 0 and acts 2 and 4, and leaf 7b-3 split
+    the figure act in two around act 4 (acts 3 and 5), each marked NEW.
 
     0. **The reads the later acts need, made BEFORE the loop.**  ``recurs``
        and ``is_placed`` may lazy-load the template, and a load after the
@@ -151,27 +208,28 @@ def _apply_field_updates(
        owner's typed one, else the row's; a period move then RE-PLACES it
        (``one_off.due_date_after_move``, **R-BAL33**): the target
        paycheck's start unless the date was not the source paycheck's start,
-       an owner-stated day read by position.  Before act 3 and act 4 because
-       both read the row's date -- the restate corrects the version it
-       reads, and the propagation re-declares the row at it.
-    3. the FIGURE.  A RECURRING row's typed figure makes the row its OWN
-       through ``amount_ownership.state_own_amount`` (shipped at X-au-c2b,
-       restated at X-au-k): a hand-priced row OWNS its figure, so storing it
-       RELEASES the relation that priced it, one act over one attribute.
-       **A PLACED row's typed figure is the DEFINITION's** (rulings
-       **R-BAL21** / **R-BAL29**): ``one_off.restate_price`` corrects the
-       version the row's due date reads, in place, and declares the row
-       priced by it with no flag -- which is also what re-attaches a row the
-       interim between leaves 7b-1 and 7b-2 left OWN (**R-BAL37**).  A
-       link-less row keeps the OWN write it always had.  **BEFORE act 4**,
-       and an adversarial review is why: the propagation there selects rows
-       that are not overridden, so a residue row re-attached here is reached
-       by it in the same request (its category follows), where the other
-       order left the row on its old category until the next edit; and the
-       definition's amount and fields then flush together, so its
-       optimistic-lock counter bumps once per edit rather than twice -- the
-       same reason the template edit form states the amount BEFORE
-       ``apply_fields``.
+       an owner-stated day read by position.  **Two refusals guard it**
+       (leaf 7b-3, found by adversarial review at this door): a period move
+       into a paycheck that already holds a row of the definition
+       (``one_off.holds_a_row_in``, R-BAL24's one row per paycheck), and a
+       day another row of the definition already answers
+       (``one_off.another_row_answers``, the occurrence index's own
+       predicate) -- each a designed 400 where the index alone gave a bare
+       *Invalid reference*.  Before act 3 and act 4 because both read the
+       row's date -- the restate corrects the version it reads, and the
+       propagation re-declares the row at it.
+    3. **NEW -- a placed row's typed figure, the ONLY-row half**
+       (rulings **R-BAL21** / **R-BAL29**; the fork is **R-BAL43**'s):
+       ``one_off.restate_price`` corrects the version the row's due date
+       reads, in place, and declares the row priced by it with no flag --
+       which is also what re-attaches a row the interim between leaves 7b-1
+       and 7b-2 left OWN (**R-BAL37**).  BEFORE act 4, and an adversarial
+       review of 7b-2 is why: the propagation there selects rows that are
+       not overridden, so a residue row re-attached here is reached by it in
+       the same request (its category follows); and the definition's amount
+       and fields then flush together, so its optimistic-lock counter bumps
+       once per edit rather than twice -- the same reason the template edit
+       form states the amount BEFORE ``apply_fields``.
     4. **NEW -- the DEFINITION's fields** (:mod:`app.services.definition_edit`,
        rulings **R-BAL23** / **R-BAL36**): the item fields taken out at act 0
        are applied to ``txn.template`` -- a changed name reaches every row of
@@ -185,16 +243,35 @@ def _apply_field_updates(
        status arm, because the flags govern the settle**: a save that unticks
        *Track individual purchases* beside Status = Paid settles the row on
        its own figure (act 6's own sentence), which needs the definition's
-       flag written first.  The price of that order is a crafted single PATCH
-       that REVERTS a settled placed row and re-categorises it in one request
-       (the card disables the category select on a locked row, so no form
-       posts that pair): the propagation runs while the row is still settled
-       and skips it, so the definition takes the category and the row keeps
-       the old one until its next category edit reaches it.  Found by
-       adversarial review and left, because the other order breaks the
-       reachable save.
-    5. ``is_override``, which sits with the field writes and ABOVE both the
-       refusal below and the status work: act 6 FLUSHES, so a flag written
+       flag written first.  A PATCH that REVERTS a finalised placed row and
+       re-categorises it in one request -- the "revert and correct" edit
+       ``state_machine.finalised_edit_rejection`` admits; the card disables
+       the select on a locked row, any HTTP client posts the pair -- met the
+       other side of that order until plan step ``balance:X-bi-7c``: the
+       propagation ran while the row was still locked and skipped it, so
+       the definition took the category and the row kept the old one, and
+       the next settle posted to it.  Found by 7b-2's adversarial review and
+       left as crafted-only; the suite's own posting-lifecycle cases posted
+       the pair once their rows became placed, and the handler now applies a
+       lock-lifting transition before this step and reconciles the ledger
+       after it (*unlock, edit, lock*, ruling **R-BAL58**), so the
+       propagation finds the row projected.
+    5. **NEW -- the figure's OTHER half.**  A placed row whose definition
+       holds ANOTHER row (a bank-born envelope's, one per paycheck) takes
+       the figure as its OWN with the flag beside it, one occurrence among
+       many (**R-BAL43**), exactly as a RECURRING row's typed figure makes
+       that row its OWN through ``amount_ownership.state_own_amount``
+       (shipped at X-au-c2b, restated at X-au-k: a hand-priced row OWNS its
+       figure, so storing it RELEASES the relation that priced it, one act
+       over one attribute); a link-less row keeps the OWN write it always
+       had.  **AFTER act 4**, and an adversarial review of 7b-3 is why: an
+       OWN row is one the propagation skips, so a category typed beside the
+       figure on a sibling's card reached the definition and every other
+       row but not the row it was typed on.  A sibling that was ALREADY the
+       owner's from an earlier figure is skipped by act 4 as any overridden
+       row is -- the engine's rule, and reported at the leaf.
+    6. ``is_override``, which sits with the field writes and ABOVE both the
+       refusal below and the status work: act 7 FLUSHES, so a flag written
        after it is written after the UPDATE it belongs in -- which for a
        period move leaves the row inside the generation index's partial
        predicate (``is_override = FALSE``) while its period is already the
@@ -206,20 +283,19 @@ def _apply_field_updates(
        template-linked row is still keyed on its paycheck by
        ``idx_transactions_template_scenario_undated``, so there the ordering
        is exactly as load-bearing as it was.  (For a PLACED row act 4 has
-       already flushed, and correctly: such a row takes no flag.)  **The
-       flag says ONE thing since plan step X-au-h: this row is the OWNER's,
-       not the rule's** -- and since this leaf it is made ONLY where the
-       definition RECURS, for a typed figure or a period move alike
+       already flushed, and correctly: a move never flags such a row, and a
+       figure flags it at act 5, before this.)  **The flag says ONE thing
+       since plan step X-au-h: this row is the OWNER's, not the rule's** --
+       and since leaf 7b-2 a MOVE makes it ONLY where the definition RECURS
        (**R-BAL28**'s stated end): a rule-less definition runs no pass to
-       keep off the row, its typed figure lives on the definition now, and a
-       flag there would only hide the row from the propagation of act 4 and
-       from a rule added later (**R-BAL25**).  Both acts were presence tests
-       before -- the amount's is finding **N-248**, and the period's had the
-       identical shape, because the popover renders a period dropdown on
-       every row and posts it whether or not it was touched;
-       ``period_changed`` is computed by the caller BEFORE the loop rewrites
-       ``pay_period_id``.
-    6. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
+       keep off the row, and a flag there would only hide the row from the
+       propagation of act 4 and from a rule added later (**R-BAL25**).  Both
+       acts were presence tests before -- the amount's is finding **N-248**,
+       and the period's had the identical shape, because the popover renders
+       a period dropdown on every row and posts it whether or not it was
+       touched; ``period_changed`` is computed by the caller BEFORE the loop
+       rewrites ``pay_period_id``.
+    7. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
        reads the RESULTING row: unchecking "Track individual purchases" in the
        same save legitimately gives the row its own amount back.  **It reads
        a LAZY relationship and therefore autoflushes**, which is why this
@@ -265,6 +341,7 @@ def _apply_field_updates(
     # Act 0.
     recurs = txn.recurs
     placed = txn.is_placed
+    only_row = placed and definition_delete.is_last_row_of_its_definition(txn)
     source_start = (
         txn.pay_period.start_date if placed and period_changed else None
     )
@@ -281,13 +358,12 @@ def _apply_field_updates(
 
     # Act 2.
     if placed:
-        due = data.get("due_date", txn.due_date)
-        if period_changed:
-            due = due_date_after_move(
-                due, source_start=source_start, target=target_period,
-            )
-        if due != txn.due_date:
-            state_due_date(txn, due)
+        refused = _place_the_date(
+            txn, data, period_changed=period_changed,
+            target_period=target_period, source_start=source_start,
+        )
+        if refused is not None:
+            return refused
 
     # Act 3.  The value is never ``None`` here: ``estimated_amount`` is not
     # ``allow_none`` on any of the transaction schemas, so
@@ -298,11 +374,8 @@ def _apply_field_updates(
     # posts every input it renders, so presence was true of a notes-only
     # save -- which took ownership of a figure nobody chose (finding
     # **N-248**).
-    if amount_authored:
-        if placed:
-            restate_price(txn, data["estimated_amount"])
-        else:
-            state_own_amount(txn, data["estimated_amount"])
+    if amount_authored and only_row:
+        restate_price(txn, data["estimated_amount"])
 
     # Act 4.
     if item:
@@ -310,10 +383,16 @@ def _apply_field_updates(
         definition_edit.propagate_to_unruled_rows(txn.template)
 
     # Act 5.
+    if amount_authored and not only_row:
+        state_own_amount(txn, data["estimated_amount"])
+        if placed:
+            txn.is_override = True
+
+    # Act 6.
     if recurs and (amount_authored or period_changed):
         txn.is_override = True
 
-    # Act 6.
+    # Act 7.
     if (
         data.get("settled_amount") is not None
         and transaction_service.settles_from_entries(txn)

@@ -373,10 +373,11 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         second read of them could disagree with the list the hand-build form
         renders, which is where the owner is being sent.
 
-        **The period is tested by the row's own SPAN**, which is what a
-        candidate carries (``expected_on`` .. ``expected_through``), rather
-        than by a pay-period id the row does not publish.  The span IS the
-        period, so the two are the same test asked of the value that has it.
+        **The period is tested by the row's own SPAN** (``expected_on`` ..
+        ``expected_through``), which for a transaction IS its period; the
+        candidate carries the period whole since plan step
+        ``bank_import:X-gz``, and :func:`~._already_held.arrivals_already_held`
+        says why the test stays on the span.
 
         Args:
             line: A recordable inflow's bank line.

@@ -908,14 +908,19 @@ class StatementBalanceEvidenceEnum(enum.Enum):
 
     **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
     figure is evidenced by its own file, by other files, or by nothing; there
-    is no fourth kind, so every import lands in exactly one member.
+    is no fourth kind, so every level lands in exactly one member -- and since
+    plan step ``balance:X-bj-1`` that includes the OWNER's own true-ups, which
+    sit in the same relation (``budget.account_anchor_history.evidence_id``)
+    at ``uncorroborated``, because a typed figure is confirmed by nothing in
+    the app.  A fourth member naming the owner was ruled out 2026-09-16: it
+    would be a SOURCE, and the source is the level's ``statement_import_id``.
 
     **There is deliberately no member meaning "this file states no balance"**,
     for the reason :class:`SettledDayBasisEnum` has none meaning *not settled*:
-    that is the ABSENCE of a member rather than one of them, so it is a NULL
-    welded to ``balance_effective_on``'s by
-    ``ck_statement_imports_balance_evidence_paired`` and no ref id is frozen
-    into the schema.
+    that is the ABSENCE of a member rather than one of them.  An import whose
+    figure was placed on no day owns no level row, so it carries no evidence
+    at all rather than a member saying so, and no ref id is frozen into the
+    schema.
 
     Application code resolves these via ``ref_cache.statement_balance_evidence_id``
     and ``ref_cache.statement_balance_evidence_member`` and compares against the

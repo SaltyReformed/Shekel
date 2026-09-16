@@ -544,8 +544,10 @@ def _day_buckets(
             continue
         if window is None:
             # A row the app can date no way at all joins no day.  It is
-            # unconstructible through either candidate arm -- both fill
-            # ``expected_on`` from a NOT NULL column -- and the branch is here
+            # unconstructible through either candidate arm -- a purchase's
+            # day is a NOT NULL column and a transaction's constructor
+            # declines a row whose period the calendar lacks -- and the
+            # branch is here
             # because the accessor is TOTAL: the alternative reading, "joins
             # every day", is the pool this function exists to remove.
             continue

@@ -1,12 +1,17 @@
 """Shared definitions for the append-only account tables' database-tier refusal.
 
-**Three account tables record FACTS that are never edited**, each a statement
+**Four account tables record FACTS that are never edited**, each a statement
 about a moment that a correction ANSWERS rather than rewrites:
 
-* ``budget.account_anchor_history`` -- what a bank showed on a day (ruling
-  **R-DH**).  The day is what every clearing link was recorded against (ruling
-  **R-FL**), so editing one silently re-points cleared purchases at a statement
-  that did not show them.  Finding **N-287**.
+* ``budget.account_anchor_history`` -- the LEVEL RELATION: what a bank, or the
+  owner, observed an account to hold at the close of a day (rulings **R-DH**,
+  **R-IS**; plan step ``balance:X-bj-1`` moved the bank's placements in).  The
+  day is what every clearing link was recorded against (ruling **R-FL**), so
+  editing one silently re-points cleared purchases at a statement that did not
+  show them.  Finding **N-287**.
+* ``budget.anchor_releases`` -- the withdrawal of one bank level, and its
+  cause (``balance:X-bj-1``).  Editing one would let a level be silently
+  reinstated, which is the ``$150.00`` hole the release exists to close.
 * ``budget.account_openings`` -- what an account held before its records begin
   (ruling **R-GX**); the latest restatement governs, so an edit destroys the
   record that the figure ever changed.
@@ -57,7 +62,7 @@ ask:
 * **UPDATE is a question about the STATEMENT.**  An edit is refused whatever
   else the transaction does, so a plain ``BEFORE UPDATE`` row trigger is exact.
 * **DELETE is a question about the transaction's END STATE**, which is why it
-  is a ``DEFERRABLE INITIALLY DEFERRED`` constraint trigger.  All three tables
+  is a ``DEFERRABLE INITIALLY DEFERRED`` constraint trigger.  All four tables
   carry :class:`app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``,
   so disposing of an account is meant to take its history with it, and the
   refusal has to let that through while stopping a row being picked off.  The
@@ -67,13 +72,37 @@ ask:
   ``INSERT`` of the same id left the account standing with its assertions
   destroyed, because at the instant the cascade ran the account genuinely did
   not exist.  Deferred, the same predicate refuses it.
+
+  **Two of the four tables have a SECOND owner, and the same end-state test is
+  asked of it** (plan step ``balance:X-bj-1``, developer ruling 2026-09-16).
+  A bank level (an ``account_anchor_history`` row with a
+  ``statement_import_id``) is its file's conclusion and cascades with its
+  import; a release cascades with the level it withdrew.  So on those two
+  tables the arm first asks whether that owner is gone at COMMIT -- the import,
+  the level -- and permits the disposal when it is, before falling through to
+  the account test.  A delete-and-recreate of the IMPORT id is refused by the
+  same reasoning that refuses one of the account id.  These are the only rows
+  in the family with an owner besides the account, and the arm names each by
+  table rather than reading a column the sibling tables lack.
+
+* **UPDATE admits exactly ONE transition, on ONE table.**  A release names the
+  import whose lines undercut the level through a key declared
+  ``ON DELETE SET NULL (released_by_import_id)``, and a referential action is
+  an UPDATE this trigger sees.  The arm lets it through when the old cause was
+  present, every other column is byte-equal (``to_jsonb(NEW)`` against the
+  old row with that one field nulled) AND the import it named no longer
+  exists -- which is true inside the referential action, since it runs after
+  the DELETE has taken effect, and false for a hand-written UPDATE erasing a
+  cause that still stands (found by the adversarial code review of the
+  step).  It is not an allowlist of columns: it is the one statement the
+  schema itself makes.
 * **TRUNCATE is invisible to row triggers**, so it gets a ``BEFORE TRUNCATE``
   statement trigger of its own.  It is the one spelling that destroyed history
   BOTH unrefused and unrecorded: ``system.audit_log`` is written by a row
   trigger too, so a measured ``TRUNCATE budget.account_openings`` with every
   account still standing took the table to zero and left the audit log
   byte-identical.  Every other path that removes a row from these tables writes
-  ``to_jsonb(OLD)`` to ``system.audit_log`` first (all three tables are in
+  ``to_jsonb(OLD)`` to ``system.audit_log`` first (all four tables are in
   ``audit_infrastructure.AUDITED_TABLES``), so closing TRUNCATE is what makes
   "history is never destroyed without a record" true rather than usual.  That
   conservation is also why these tables need no archive of their own: the audit
@@ -105,7 +134,8 @@ Three callers must produce identical infrastructure, exactly as
 :mod:`app.opening_infrastructure` do:
 
 1. The Alembic migration that installs it (``f4a7c2d9e51b``, amended by
-   ``b8e3d5a06c94``).
+   ``b8e3d5a06c94``, and by ``balance:X-bj-1``'s revision, which added the
+   fourth table and the two owner arms).
 2. ``scripts/init_database.py``, whose fresh-database path builds the schema
    with ``db.create_all()`` + an Alembic ``stamp`` and so never runs the
    migration chain.
@@ -113,11 +143,18 @@ Three callers must produce identical infrastructure, exactly as
    idempotently so the latest in-code definition wins over migration-frozen
    state.
 
-**Caller contract: all three tables and ``budget.accounts`` must already
-exist.**  ``check_function_bodies`` validates the function's table references at
-``CREATE FUNCTION`` time, so applying this before they are materialised fails
-loudly -- the right signal, and the same contract the two sibling modules
-document.
+**Caller contract: all four tables, ``budget.accounts`` and
+``budget.statement_imports`` must already exist.**  ``CREATE TRIGGER`` needs
+its table, so applying this before they are materialised fails loudly -- the
+right signal, and the same contract the two sibling modules document.  (An
+earlier version of this paragraph credited ``check_function_bodies`` with
+resolving the function's table references at ``CREATE FUNCTION`` time; for a
+PL/pgSQL body it validates syntax only, and a table name inside a statement
+resolves at first execution.)  One consequence for a chain replay from the
+start: between ``f4a7c2d9e51b`` and ``d2e9f4a17c63`` the CURRENT body is
+installed over a level table that does not yet carry ``statement_import_id``;
+the field is read only on a DELETE from that table, which no revision in that
+window performs, so an empty replay never evaluates it.
 """
 
 from __future__ import annotations
@@ -125,11 +162,14 @@ from __future__ import annotations
 from typing import Callable
 
 
-#: The one trigger function, serving all three tables and all three arms.  It
-#: can, because the only column it reads besides ``TG_OP`` is ``account_id``,
-#: which all three carry from :class:`app.models.mixins.AccountScopedMixin` --
-#: the same property that lets ``opening_infrastructure``'s movement trigger
-#: serve two tables from one body.
+#: The one trigger function, serving all four tables and all three arms.  The
+#: column every arm reads is ``account_id``, which all four carry from
+#: :class:`app.models.mixins.AccountScopedMixin`; the two tables with a second
+#: owner (``statement_import_id`` on a level, ``anchor_id`` and
+#: ``released_by_import_id`` on a release) are read only inside a branch
+#: guarded by ``TG_TABLE_NAME``, because PL/pgSQL resolves a record's fields at
+#: execution and a sibling table has no such field to resolve.  One body, so
+#: the family's disposal rules are stated in one place rather than four.
 _APPEND_ONLY_FUNCTION = "budget.refuse_append_only_change"
 
 #: One name per ARM, because the three differ in timing and a single trigger
@@ -151,6 +191,7 @@ _UPDATE_TRIGGER, _DELETE_TRIGGER, _TRUNCATE_TRIGGER = APPEND_ONLY_TRIGGERS
 #: account-scoped column for this function to read.
 APPEND_ONLY_TABLES: tuple[str, ...] = (
     "budget.account_anchor_history",
+    "budget.anchor_releases",
     "budget.account_openings",
     "budget.loan_anchor_events",
 )
@@ -174,6 +215,25 @@ BEGIN
     END IF;
 
     IF TG_OP = 'UPDATE' THEN
+        -- The ONE admitted transition: a release's cause was deleted and the
+        -- key's own SET NULL is running.  Old cause present, new cause
+        -- absent, every other column equal, AND the import it named gone --
+        -- the referential action runs after the DELETE has taken effect, so
+        -- the row is already invisible here, where a hand-written UPDATE
+        -- erasing a standing cause still sees it and is refused.  Nothing
+        -- else passes.
+        IF TG_TABLE_NAME = 'anchor_releases' THEN
+            IF OLD.released_by_import_id IS NOT NULL
+               AND to_jsonb(NEW) = jsonb_set(
+                   to_jsonb(OLD), '{{released_by_import_id}}', 'null'::jsonb
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM budget.statement_imports
+                   WHERE id = OLD.released_by_import_id
+               ) THEN
+                RETURN NEW;
+            END IF;
+        END IF;
         RAISE EXCEPTION
             '%.% is append-only; UPDATE rejected for id=%. Record a '
             'correction by inserting a new row.',
@@ -186,6 +246,26 @@ BEGIN
     -- and asking at the end is what distinguishes a genuine disposal from a
     -- delete-and-recreate, which leaves the account standing by the time
     -- anybody looks.
+    --
+    -- Two tables have a SECOND owner and are asked about it first, each
+    -- inside its own table guard so a sibling's row never has the field
+    -- looked up: a bank level goes with its import, a release with its level.
+    IF TG_TABLE_NAME = 'account_anchor_history' THEN
+        IF OLD.statement_import_id IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM budget.statement_imports
+            WHERE id = OLD.statement_import_id
+        ) THEN
+            RETURN NULL;
+        END IF;
+    END IF;
+    IF TG_TABLE_NAME = 'anchor_releases' THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM budget.account_anchor_history
+            WHERE id = OLD.anchor_id
+        ) THEN
+            RETURN NULL;
+        END IF;
+    END IF;
     IF EXISTS (SELECT 1 FROM budget.accounts WHERE id = OLD.account_id) THEN
         RAISE EXCEPTION
             '%.% is append-only; DELETE rejected for id=%. History goes only '
@@ -252,13 +332,25 @@ def _create_trigger_sql(table: str) -> tuple[str, ...]:
 
 def apply_append_only_infrastructure(
     executor: Callable[[str], object],
+    *,
+    tables: tuple[str, ...] = APPEND_ONLY_TABLES,
 ) -> None:
-    """Idempotently install the append-only refusal on all three tables.
+    """Idempotently install the append-only refusal on *tables*.
 
     Executes ``CREATE OR REPLACE FUNCTION budget.refuse_append_only_change``,
     then a guarded drop plus a fresh ``CREATE TRIGGER`` for each arm of each
-    table in :data:`APPEND_ONLY_TABLES`.  Every statement is idempotent, so a
-    second run is indistinguishable from the first.
+    table in *tables*.  Every statement is idempotent, so a second run is
+    indistinguishable from the first.
+
+    **A MIGRATION names its tables literally; the two script callers take the
+    default.**  The default is the module constant, which is what a database
+    built at HEAD wants -- and what a migration replayed from the START of
+    the chain must NOT read, because the constant names tables a later
+    revision creates (``budget.anchor_releases`` since ``balance:X-bj-1``),
+    and ``CREATE TRIGGER`` on a table that does not exist yet fails the whole
+    replay.  ``f4a7c2d9e51b`` and ``b8e3d5a06c94`` therefore pass the three
+    tables they were written for; the shape ``opening_infrastructure``'s
+    ``arms`` parameter takes for the same reason.
 
     **The caller must have LEGALISED nothing, and that is the difference from
     :func:`app.opening_infrastructure.apply_opening_infrastructure`.**  That
@@ -272,9 +364,12 @@ def apply_append_only_infrastructure(
             ``lambda s: session.execute(text(s))`` from inside a SQLAlchemy
             session.  Errors propagate -- the caller owns the outer
             transaction.
+        tables: The schema-qualified tables to attach every arm to.  A
+            migration names its own literally; the two scripts take the
+            default, :data:`APPEND_ONLY_TABLES`.
     """
     executor(_CREATE_FUNCTION_SQL)
-    for table in APPEND_ONLY_TABLES:
+    for table in tables:
         for statement in _drop_trigger_sql(table):
             executor(statement)
         for statement in _create_trigger_sql(table):
@@ -283,13 +378,16 @@ def apply_append_only_infrastructure(
 
 def remove_append_only_infrastructure(
     executor: Callable[[str], object],
+    *,
+    tables: tuple[str, ...] = APPEND_ONLY_TABLES,
 ) -> None:
     """Inverse of :func:`apply_append_only_infrastructure`.
 
-    Drops every arm on every table and then the function, so nothing is
-    dropped while something still references it.  Every statement uses
-    ``IF EXISTS``, so this is idempotent and a clean no-op on a database that
-    never carried the infrastructure.
+    Drops every arm on every table in *tables* and then the function, so
+    nothing is dropped while something still references it.  Every statement
+    uses ``IF EXISTS``, so this is idempotent and a clean no-op on a database
+    that never carried the infrastructure -- which is also what lets a
+    migration's downgrade name a table a later revision has already dropped.
 
     **It is also the documented escape for a migration that must rewrite these
     tables** -- adding a column and backfilling it is the case, and this
@@ -301,8 +399,10 @@ def remove_append_only_infrastructure(
     Args:
         executor: Single-argument callable that accepts a SQL string and runs
             it.  Same contract as :func:`apply_append_only_infrastructure`.
+        tables: The schema-qualified tables to detach every arm from; the
+            same contract as the apply's.
     """
-    for table in APPEND_ONLY_TABLES:
+    for table in tables:
         for statement in _drop_trigger_sql(table):
             executor(statement)
     executor(f"DROP FUNCTION IF EXISTS {_APPEND_ONLY_FUNCTION}()")

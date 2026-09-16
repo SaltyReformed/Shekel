@@ -21,6 +21,7 @@ from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.category import Category
 from app.models.statement_match import StatementMatch
+from app.models.merchant_rule import MerchantRule
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at, statement_match, transaction_service
@@ -209,11 +210,21 @@ class TestARuleFilesANewSwipeByItself:
             )
             assert minted.is_envelope is True
             # Nothing budgeted it, so it budgets nothing and records only its
-            # own purchases (``_container._NO_BUDGET``).
-            assert minted.estimated_amount == Decimal("0.00")
+            # own purchases (``_container._NO_BUDGET``) -- priced by its
+            # rule-less DEFINITION's one version since leaf 7b-3 of
+            # balance:X-bi-7b (ruling R-BAL24), where it carried OWN $0.00.
+            assert minted.is_placed is True
+            assert minted.estimated_amount is None
+            assert resolved_amount(minted) == Decimal("0.00")
             assert [p.amount for p in _purchases_in(minted)] == [
                 Decimal("31.56"),
             ]
+            # And the answer NAMES the definition from now on (N-328): the
+            # stored rule's NEW-ENVELOPE columns became the TEMPLATE one.
+            stored = db.session.query(MerchantRule).one()
+            assert stored.template_id == minted.template_id
+            assert stored.envelope_name is None
+            assert stored.category_id is None
 
     def test_three_swipes_on_one_answer_share_ONE_minted_envelope(
         self, app, db, seed_user,

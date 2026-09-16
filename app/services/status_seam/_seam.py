@@ -308,10 +308,12 @@ def apply_status_change(
          before it renders.
 
     It deliberately does NOT post to the ledger and does NOT flush or commit:
-    ledger emission is reconciled once at the END of each handler, after every
+    ledger emission is reconciled at the END of each handler, after every
     effect field is applied, never at the status flip (Build-Order Step 3,
-    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses);
-    the caller owns the session boundary.
+    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses;
+    the PATCH handler's UNLOCK order, ruling **R-BAL58**, runs the status verb
+    before its field writes and reconciles again after them); the caller owns
+    the session boundary.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
@@ -588,9 +590,11 @@ def apply_status_change(
         # way a purchase records an envelope's, and leaving the band releases
         # it.  Written LAST so every value it mirrors -- the day pair, the
         # link, the figure and its basis -- is the row's final one for this
-        # act.  The rule, the lifecycle and the 3c gate are
-        # :mod:`app.services.status_seam._covering`'s (the income half of
-        # the gate went at plan step X-bi-3b).
+        # act.  The rule and the lifecycle are
+        # :mod:`app.services.status_seam._covering`'s; it covers every kind
+        # of row, a transfer shadow included since plan step X-bi-3c (the
+        # kind gate went in three leaves: expense at 3a, income at 3b,
+        # transfer at 3c).
         sync_covering_movement(
             row,
             was_settled=was_settled,

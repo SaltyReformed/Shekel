@@ -31,6 +31,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.enums import SettledDayBasisEnum
+from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match import DAY_WINDOW, NEAR_MISS_BOUND
 from app.services.statement_match._near import near_misses
 from app.services.statement_match._pairing import days_outside
@@ -44,8 +45,15 @@ from app.services.statement_match._propose import propose
 _DAY = date(2026, 7, 2)
 
 #: The pay period every built row is budgeted in, as all 62 of the developer's
-#: own are: 14 days, start to end.
-_PERIOD = (date(2026, 7, 1), date(2026, 7, 14))
+#: own are: 14 days, start to end.  A
+#: :class:`~app.services.pay_calendar.DerivedPeriod` since plan step
+#: ``bank_import:X-gz`` put the whole paycheck on the row; its identity and
+#: projection flag are immaterial to every case here.
+_PERIOD = DerivedPeriod(
+    period_id=1, period_index=0,
+    start_date=date(2026, 7, 1), end_date=date(2026, 7, 14),
+    end_is_projected=False,
+)
 
 
 def _line(line_id, amount, posted_on=_DAY, merchant="Geico"):
@@ -78,7 +86,11 @@ def _row(  # pylint: disable=too-many-arguments
         cash_amount=Decimal(amount), settled_on=settled_on,
         is_settled=settled_on is not None,
         states_own_figure=states_own_figure, transfer_id=transfer_id,
-        expected_on=_PERIOD[0], expected_through=_PERIOD[1],
+        period=_PERIOD,
+        # A purchase's budget clock is its own day; the period start stands
+        # in for it here exactly as ``expected_on`` did before X-gz, and a
+        # settled row's window is its settle day either way.
+        purchased_on=_PERIOD.start_date if kind is RowKind.PURCHASE else None,
     )
 
 
@@ -97,7 +109,7 @@ def _reconciled(row_id, amount, made, asserted):
         kind=RowKind.PURCHASE, row_id=row_id, label="Groceries: Walmart",
         cash_amount=Decimal(amount), settled_on=asserted, is_settled=True,
         states_own_figure=True, parent_id=900,
-        expected_on=made, expected_through=made,
+        purchased_on=made, period=_PERIOD,
         settle_day_basis=SettledDayBasisEnum.ASSERTED,
     )
 
@@ -696,7 +708,7 @@ class TestARowNobodyHasSETTLED:
         three-valued to stop.
         """
         proposals, _ = _offered(
-            [_line(1, "-178.29", posted_on=_PERIOD[0])],
+            [_line(1, "-178.29", posted_on=_PERIOD.start_date)],
             [_row(1, "-178.32", settled_on=None)],
         )
 

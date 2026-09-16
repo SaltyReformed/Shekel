@@ -15,14 +15,15 @@ from app.models.account import Account
 from app.models.category import Category
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
 from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    create_transfer,
     figure_source_columns,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
     rhythm_of,
     settle_day_columns,
     settlement_columns,
@@ -34,21 +35,18 @@ class TestCreditWorkflow:
 
     def _create_expense(self, seed_user, seed_periods, amount="100.00"):
         """Helper: create a projected expense in the first period."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal(amount),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 
@@ -89,21 +87,18 @@ class TestCreditWorkflow:
     def test_cannot_credit_income(self, app, db, seed_user, seed_periods):
         """Marking income as credit raises ValidationError."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             with pytest.raises(ValidationError):
@@ -155,21 +150,18 @@ class TestCreditWorkflow:
         """mark_as_credit raises ValidationError when no next period exists."""
         with app.app_context():
             # Create expense in the last period (no period follows it).
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[-1].user_id,
-                pay_period_id=seed_periods[-1].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[-1],
                 name="Last Period Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=seed_periods[-1].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             with pytest.raises(ValidationError):
@@ -376,23 +368,20 @@ class TestCarryForward:
     def test_carry_forward_moves_projected_items(self, app, db, seed_user, seed_periods):
         """Carry forward moves projected items to the target period."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create two projected expenses in the first period.
             for name in ("Expense A", "Expense B"):
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=Decimal("50.00"),
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -421,37 +410,37 @@ class TestCarryForward:
     def test_carry_forward_skips_done_items(self, app, db, seed_user, seed_periods):
         """Carry forward does NOT move done/received items."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # One projected, one done.
-            t1 = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            t1 = one_off_row_of(
+                seed_periods[0],
                 name="Unpaid",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            )
-            t2 = Transaction(
+                amount=Decimal("100.00"),
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=done.id,
-                name="Already Paid",
-                category_id=seed_user["categories"]["Rent"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                # A settled row carries the whole record, resolved through the
-                # one door a bare-built fixture uses (plan step X-au-c3).
-                **settle_day_columns(seed_periods[0].start_date),
-                **settlement_columns(seed_periods[0].start_date, Decimal("500.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
+            t2 = one_off_row_of(
+                seed_periods[0],
+                name="Already Paid",
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            t2.status_id = done.id
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
+                setattr(t2, _column, _value)
+            for _column, _value in settlement_columns(seed_periods[0].start_date, Decimal("500.00")).items():
+                setattr(t2, _column, _value)
             db.session.add_all([t1, t2])
             db.session.flush()
 
@@ -500,33 +489,31 @@ class TestCarryForward:
     def test_carry_forward_skips_cancelled_items(self, app, db, seed_user, seed_periods):
         """Cancelled items stay in the source period and are not carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # One projected (should move), one cancelled (should stay).
-            t1 = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            t1 = one_off_row_of(
+                seed_periods[0],
                 name="Unpaid Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("80.00")),
-            )
-            t2 = Transaction(
+                amount=Decimal("80.00"),
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=cancelled.id,
-                name="Cancelled Expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
+            t2 = one_off_row_of(
+                seed_periods[0],
+                name="Cancelled Expense",
+                amount=Decimal("200.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
+            )
+            t2.status_id = cancelled.id
             db.session.add_all([t1, t2])
             db.session.flush()
 
@@ -550,38 +537,38 @@ class TestCarryForward:
     def test_carry_forward_skips_received_items(self, app, db, seed_user, seed_periods):
         """Received income items stay in the source period and are not carried forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             received = db.session.query(Status).filter_by(name="Received").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             # One projected expense (should move), one received income (should stay).
-            t1 = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            t1 = one_off_row_of(
+                seed_periods[0],
                 name="Unpaid Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("60.00")),
-            )
-            t2 = Transaction(
+                amount=Decimal("60.00"),
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=received.id,
-                name="Received Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-                # A settled row carries the whole record, resolved through the
-                # one door a bare-built fixture uses (plan step X-au-c3).
-                **settle_day_columns(seed_periods[0].start_date),
-                **settlement_columns(seed_periods[0].start_date, Decimal("2000.00")),
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Groceries"].id,
             )
+            t2 = one_off_row_of(
+                seed_periods[0],
+                name="Received Paycheck",
+                amount=Decimal("2000.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=seed_user["categories"]["Salary"].id,
+            )
+            t2.status_id = received.id
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
+                setattr(t2, _column, _value)
+            for _column, _value in settlement_columns(seed_periods[0].start_date, Decimal("2000.00")).items():
+                setattr(t2, _column, _value)
             db.session.add_all([t1, t2])
             db.session.flush()
 
@@ -605,23 +592,20 @@ class TestCarryForward:
     def test_carry_forward_skips_soft_deleted_items(self, app, db, seed_user, seed_periods):
         """Soft-deleted projected items are excluded from carry forward."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Soft-deleted projected expense -- should NOT be moved.
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Deleted Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("40.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("40.00")),
-                is_deleted=True,
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.is_deleted = True
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -771,7 +755,6 @@ class TestCarryForward:
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.services import account_service
-from app.models.amount_ownership import AmountOwnership
 
 
 class TestNegativePaths:
@@ -787,18 +770,17 @@ class TestNegativePaths:
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal(amount),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
+        txn.status_id = status.id
         db.session.flush()
         return txn
 
@@ -949,7 +931,6 @@ class TestNegativePaths:
         actually carried forward.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # The rule's own row (is_override=False), written by the engine.
@@ -958,19 +939,17 @@ class TestNegativePaths:
                 name="Template Expense", category_key="Groceries",
             )
             txn_with_template = generate_row_of(template, seed_periods[0])
-            # Create an ad-hoc transaction (no template).
-            txn_adhoc = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            # Create a one-off (a rule-less definition's placed row).
+            txn_adhoc = one_off_row_of(
+                seed_periods[0],
                 name="Ad-hoc Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("30.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("30.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn_adhoc)
             db.session.flush()
 
             # Carry forward with source == target -- early return.
@@ -1061,26 +1040,20 @@ class TestNegativePaths:
             db.session.add(savings)
             db.session.flush()
 
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
+            # A REAL transfer's shadow, through the transfer service (plan step
+            # balance:X-bi-7c): a first build linked a one-off's row to a
+            # transfer by hand, which is a second pricing link the CHECK
+            # ``ck_transactions_one_pricing_link`` refuses once the row
+            # carries a definition -- and a shadow is the service's row.
+            transfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], Decimal("200.00"), name="Test Transfer",
             )
-            transfer = Transfer(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=savings.id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                name="Test Transfer",
+            db.session.flush()
+            txn = next(
+                shadow for shadow in transfer.shadow_transactions
+                if shadow.account_id == seed_user["account"].id
             )
-            db.session.add(transfer)
-            db.session.flush()
-
-            # Create a shadow transaction linked to the transfer.
-            txn = self._create_expense(seed_user, seed_periods)
-            txn.transfer_id = transfer.id
-            db.session.flush()
 
             with pytest.raises(ValidationError, match="transfer"):
                 credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)

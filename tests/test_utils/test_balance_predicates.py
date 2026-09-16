@@ -53,7 +53,7 @@ from app.utils.balance_predicates import (
     is_projected_clause,
     settled_status_ids,
 )
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import one_off_row_of
 
 
 def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
@@ -66,19 +66,18 @@ def _make_txn(db, seed_user, seed_periods, status_member, *, is_deleted=False):
     than a name-string query so the helper itself never violates the
     rule the module under test enforces.
     """
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=ref_cache.status_id(status_member),
+    txn = one_off_row_of(
+        seed_periods[0],
         name=f"Test-{status_member.name}",
-        category_id=seed_user["categories"]["Rent"].id,
+        amount=Decimal("100.00"),
+        user_id=seed_periods[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
-        is_deleted=is_deleted,
+        category_id=seed_user["categories"]["Rent"].id,
     )
-    db.session.add(txn)
+    txn.status_id = ref_cache.status_id(status_member)
+    txn.is_deleted = is_deleted
     db.session.flush()
     return txn
 

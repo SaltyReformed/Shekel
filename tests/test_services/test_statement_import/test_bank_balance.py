@@ -17,9 +17,11 @@ from decimal import Decimal
 
 from app.enums import StatementBalanceEvidenceEnum
 from app.models.statement_import import BankStatementLine
+from app.models.account import AccountAnchorHistory
 from app.services.statement_import import (
     bank_balance_on,
     fold_bank_balances,
+    release_anchors_from,
 )
 
 from .test_anchor import _seed_import
@@ -206,6 +208,66 @@ class TestAnAccountWithNoAnchorHasNoBankBalance:
 
         assert fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1)],
+        ) is None
+
+
+class TestTheWalkAnchorsOnStandingBankLevelsOnly:
+    """The domain of "what the bank's record says" is the bank's own rows.
+
+    Plan step ``balance:X-bj-1``, developer ruling 2026-09-16 (fork F4): the
+    level relation holds the owner's true-ups beside the bank's placements,
+    and ``anchor + sum(lines)`` is exact only from the bank's posted end-of-day
+    figure -- a typed number may carry pending items -- so an owner's level
+    is never this fold's anchor, whatever its evidence rank.  And a released
+    level rests on lines that changed, so it anchors nothing either.
+    """
+
+    def test_an_OWNERS_level_inside_the_run_is_not_an_anchor(
+        self, app, db, seed_user,
+    ):
+        """Lines recorded, no placed statement, one true-up: nothing prices."""
+        _seed_import(
+            db, seed_user["account"], stated="2459.60", effective_on=None,
+            evidence=None, lines=[(date(2026, 3, 1), "100.00"),
+                                  (date(2026, 3, 2), "-40.00")],
+        )
+        db.session.add(AccountAnchorHistory(
+            account_id=seed_user["account"].id,
+            anchor_balance=Decimal("1060.00"),
+            observed_on=date(2026, 3, 2),
+        ))
+        db.session.flush()
+
+        assert fold_bank_balances(
+            seed_user["account"].id, [date(2026, 3, 1), date(2026, 3, 2)],
+        ) is None
+
+    def test_a_RELEASED_level_is_not_an_anchor(self, app, db, seed_user):
+        """Withdrawn by a later import's line, the level prices no day.
+
+        The level row is still in the relation -- append-only -- and the
+        release beside it is what takes it out of the walk's domain.
+        """
+        _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00"),
+                   (date(2026, 3, 3), "25.00")],
+        )
+        assert bank_balance_on(
+            seed_user["account"].id, date(2026, 3, 3),
+        ) == Decimal("1085.00")
+        cause = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-40.00")], file_name="later.csv",
+        )
+        release_anchors_from(
+            seed_user["account"].id, date(2026, 3, 2), cause.id,
+        )
+        db.session.flush()
+
+        assert fold_bank_balances(
+            seed_user["account"].id, [date(2026, 3, 3)],
         ) is None
 
 

@@ -36,8 +36,12 @@ The shapes under test, and the real act each stands for:
 * **the income arm** (plan step X-bi-3b): a paycheck is covered in its own
   direction -- the fact, the ledger and the family all read ``+figure`` --
   which is the control the plan names for that leaf;
-* **the 3c gate**: a transfer shadow holds no movement yet, stated so that
-  leaf has an arm to delete;
+* **the transfer arm** (plan step X-bi-3c): both legs of a settled transfer
+  are covered through ``transfer_service``, each in its own direction; the
+  ledger books the pair whole and the movements nowhere (ruling **R-BAL45**),
+  the reconcile tick's link reaches the leg's movement, a revert withdraws
+  both, and an endpoint move carries them (ruling **R-BAL46**); a loan
+  payment's loan-side movement moves no loan figure;
 * **the purchase doors' source rule**: a hand-typed purchase is ``typed``, a
   bank-born one ``observed``, a human amount edit ``typed``, a bank
   confirmation ``observed``, a day-only edit unchanged.
@@ -68,7 +72,15 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import entry_service, status_seam, transaction_service
+from app.services import (
+    balance_at,
+    cash_ledger,
+    entry_service,
+    posting_service,
+    status_seam,
+    transaction_service,
+    transfer_service,
+)
 from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
 from app.services.cash_ledger._amounts import _entry_aware_amount
 from app.services.entry_service import EntryDetails
@@ -76,6 +88,7 @@ from app.services.settle_day import SettleDay
 from app.services.status_seam._covering import covering_movements
 from app.services.transaction_service._settle import settle_from_entries
 from tests._test_helpers import (
+    create_loan_account,
     create_savings_account,
     create_settled_transfer,
     generate_row_of,
@@ -83,7 +96,9 @@ from tests._test_helpers import (
     linked_ledger_account,
     make_expense_template,
     make_income_template,
+    one_off_row_of,
     planted_basis,
+    posted_loan_balance_at,
 )
 
 
@@ -689,28 +704,375 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             assert ledger_net(db.session, cash.id, txn.scenario_id) == before
 
 
-class TestTheGateHoldsForTheLeafToCome:
-    """3c: a transfer shadow holds no movement."""
+def _legs_of(xfer):
+    """Return a transfer's ``(expense leg, income leg)``, by TYPE."""
+    legs = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
+    assert len(legs) == 2, "the transfer has no shadow pair"
+    expense = next(leg for leg in legs if leg.is_expense)
+    income = next(leg for leg in legs if leg is not expense)
+    return expense, income
 
-    def test_a_transfer_settles_with_no_movement_on_either_leg(
+
+def _settled_pair(seed_user, period, *, to_account=None, amount="500.00"):
+    """A settled ``Checking -> to_account`` transfer with its two covered legs.
+
+    *to_account* defaults to a fresh Savings account opened at ``$0.00``.
+    Returns ``(transfer, expense leg, income leg)``.
+    """
+    if to_account is None:
+        to_account = create_savings_account(
+            seed_user, db.session, "Savings", Decimal("0.00"),
+        )
+    xfer = create_settled_transfer(
+        seed_user, db.session, seed_user["account"], to_account,
+        period, amount=Decimal(amount),
+    )
+    db.session.flush()
+    return (xfer, *_legs_of(xfer))
+
+
+def _movement_entries(movement_ids):
+    """Return the journal entries linked to any of *movement_ids*."""
+    return (
+        db.session.query(JournalEntry)
+        .filter(JournalEntry.transaction_entry_id.in_(movement_ids))
+        .all()
+    )
+
+
+class TestATransferIsCoveredOnBothLegs:
+    """Plan step X-bi-3c: each leg of a settled transfer holds its movement.
+
+    The transfer settle reaches the seam once per shadow through
+    ``transfer_service`` (Invariant 4), so both legs are covered by the ONE
+    writer a bill and a paycheck are (ruling **R-BAL41**); each movement moves
+    in its own leg's direction.  The posted ledger keeps booking the pair as
+    ONE transfer entry and a shadow's movement posts NOWHERE through the
+    interval (ruling **R-BAL45**: the ruled endpoint, one entry per movement
+    against a transfers-in-transit account, is ``X-bi-6``'s); the walk reads
+    each leg as ``0 + movement``, so the fold is identical with and without,
+    which is the control below.  Worked on ``$500.00`` Checking -> Savings.
+    """
+
+    def test_each_leg_holds_one_movement_in_its_own_direction(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            _, expense, income = _settled_pair(seed_user, seed_periods[0])
+            for leg in (expense, income):
+                assert leg.status.is_settled
+                movement = _only_movement(leg)
+                assert movement.amount == Decimal("500.00")
+                assert movement.figure_source_id == _source(
+                    MovementFigureSourceEnum.RESOLVED,
+                )
+                assert movement.description == leg.name
+                assert movement.purchased_on == leg.settled_on
+                assert movement.settled_on == leg.settled_on
+                assert movement.account_id == leg.account_id
+                # The leg's own leg nets to zero; the movement carries the money.
+                assert settled_cash_leg(leg) == Decimal("0")
+            facts = {
+                leg.id: [
+                    fact for fact in settled_cash_facts(leg.account_id, leg.scenario_id)
+                    if fact.entry_id == _only_movement(leg).id
+                ]
+                for leg in (expense, income)
+            }
+            assert [fact.delta for fact in facts[expense.id]] == [Decimal("-500.00")]
+            assert [fact.is_income for fact in facts[expense.id]] == [False]
+            assert [fact.delta for fact in facts[income.id]] == [Decimal("500.00")]
+            assert [fact.is_income for fact in facts[income.id]] == [True]
+
+    def test_the_folds_per_day_sums_are_identical_with_and_without_on_both_accounts(
+        self, app, seed_user, seed_periods,
+    ):
+        """Ruling R-FM's identity, on the from-account and the to-account."""
+        with app.app_context():
+            _, expense, income = _settled_pair(seed_user, seed_periods[0])
+            expected = {expense: Decimal("-500.00"), income: Decimal("500.00")}
+            for leg, figure in expected.items():
+                account_id, scenario_id = leg.account_id, leg.scenario_id
+                with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
+                assert with_movement[leg.settled_on] == figure
+                movement = _only_movement(leg)
+                leg.entries.remove(movement)
+                db.session.flush()
+                db.session.expire(leg)
+                assert settled_cash_leg(leg) == figure
+                assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_movement
+
+    def test_the_ledger_books_the_pair_whole_and_the_movements_nowhere(
+        self, app, seed_user, seed_periods,
+    ):
+        """Ruling R-BAL45 as the ledger shows it, graded by the oracle.
+
+        The cash nets move by exactly the figure on each account (the ONE
+        transfer entry), no journal entry links either movement, the oracle's
+        per-account identity holds on both, and the deploy resync -- which
+        walks every settled source -- finds nothing to post.  A movement
+        posted anywhere would read ``$1,000.00`` against the oracle's
+        ``$500.00`` on that account.
+        """
+        with app.app_context():
+            # Opened BEFORE the settle day, so the pair rides on top of the
+            # opening instead of being absorbed by an assertion on the same
+            # day (the lifecycle suite's stated precondition for this identity).
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+                observed_on=seed_periods[0].start_date,
+            )
+            accounts = (seed_user["account"], savings)
+            scenario_id = seed_user["scenario"].id
+            before = {
+                account.id: posting_service.account_posting_total(account.id, scenario_id)
+                for account in accounts
+            }
+            xfer, expense, income = _settled_pair(
+                seed_user, seed_periods[0], to_account=savings,
+            )
+            movement_ids = [_only_movement(leg).id for leg in (expense, income)]
+            after = {
+                account.id: posting_service.account_posting_total(account.id, scenario_id)
+                for account in accounts
+            }
+            assert after[accounts[0].id] - before[accounts[0].id] == Decimal("-500.00")
+            assert after[savings.id] - before[savings.id] == Decimal("500.00")
+            # ONE entry for the pair, linked by the transfer, and none by a movement.
+            pair_entries = (
+                db.session.query(JournalEntry).filter_by(transfer_id=xfer.id).all()
+            )
+            assert len(pair_entries) == 1
+            assert _movement_entries(movement_ids) == []
+            for account in accounts:
+                opening = Decimal(str(cash_ledger.resolve_anchor(account).balance))
+                assert posting_service.account_posting_total(account.id, scenario_id) == (
+                    opening
+                    + posting_service.settled_transfer_effect(account.id, scenario_id)
+                    + posting_service.settled_transaction_effect(account.id, scenario_id)
+                    + posting_service.posted_purchase_effect(account.id, scenario_id)
+                )
+            db.session.commit()
+            assert posting_service.resync_all_cash_postings() == (0, 0)
+            assert _movement_entries(movement_ids) == []
+
+    def test_a_revert_withdraws_both_movements_and_the_ledger_reverses_the_pair(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("0.00"),
+                observed_on=seed_periods[0].start_date,
             )
-            xfer = create_settled_transfer(
-                seed_user, db.session, seed_user["account"], savings,
-                seed_periods[0], amount=Decimal("500.00"),
+            account_ids = (seed_user["account"].id, savings.id)
+            scenario_id = seed_user["scenario"].id
+            before = {
+                account_id: posting_service.account_posting_total(account_id, scenario_id)
+                for account_id in account_ids
+            }
+            xfer, expense, income = _settled_pair(
+                seed_user, seed_periods[0], to_account=savings,
+            )
+            movement_ids = [_only_movement(leg).id for leg in (expense, income)]
+            assert posting_service.account_posting_total(savings.id, scenario_id) != before[savings.id]
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.flush()
-            legs = (
-                db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
+            for leg in (expense, income):
+                assert not leg.status.is_settled
+                assert covering_movements(leg) == []
+            for movement_id in movement_ids:
+                assert db.session.get(TransactionEntry, movement_id) is None
+            assert {
+                account_id: posting_service.account_posting_total(account_id, scenario_id)
+                for account_id in account_ids
+            } == before
+
+    def test_the_reconcile_ticks_link_reaches_the_leg_and_its_movement_alone(
+        self, app, seed_user, seed_periods,
+    ):
+        """``transfer_service.record_clearing`` links the leg AND its mirror.
+
+        The door delegates to ``status_seam.record_clearing`` since X-bi-3c;
+        with the one-column write it had, the movement's fact walked unlinked
+        (the gap 3a closed for bills).  Per leg, still: the sibling on the
+        other account and its movement take nothing.
+        """
+        with app.app_context():
+            _, expense, income = _settled_pair(seed_user, seed_periods[0])
+            anchor = _latest_anchor(expense.account_id)
+            transfer_service.record_clearing(expense, anchor.id)
+            db.session.flush()
+            assert expense.reconciled_by_id == anchor.id
+            assert _only_movement(expense).reconciled_by_id == anchor.id
+            assert income.reconciled_by_id is None
+            assert _only_movement(income).reconciled_by_id is None
+
+    def test_a_settle_day_correction_moves_both_movements(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            corrected = expense.settled_on - timedelta(days=3)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                settle_day=SettleDay(day=corrected, basis=SettledDayBasisEnum.ENTERED),
             )
-            assert len(legs) == 2, "the transfer has no shadow pair"
-            for leg in legs:
+            db.session.flush()
+            for leg in (expense, income):
+                assert leg.settled_on == corrected
+                movement = _only_movement(leg)
+                assert movement.settled_on == corrected
+                assert movement.purchased_on == corrected
+
+    def test_a_born_settled_transfer_is_covered_on_both_legs(
+        self, app, seed_user, seed_periods,
+    ):
+        """``create_transfer``'s born-settled arm reaches the seam with a record."""
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            xfer = transfer_service.create_transfer(
+                transfer_service.TransferSpec(
+                    user_id=seed_user["user"].id,
+                    from_account_id=seed_user["account"].id,
+                    to_account_id=savings.id,
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                    status_id=ref_cache.status_id(StatusEnum.DONE),
+                    category_id=None,
+                ),
+            )
+            db.session.flush()
+            expense, income = _legs_of(xfer)
+            for leg in (expense, income):
                 assert leg.status.is_settled
-                assert list(leg.entries) == []
+                movement = _only_movement(leg)
+                assert movement.amount == Decimal("500.00")
+                assert movement.settled_on == leg.settled_on
+            assert settled_cash_leg(expense) == Decimal("0")
+            assert status_seam.settled_family_leg(expense) == Decimal("-500.00")
+            assert status_seam.settled_family_leg(income) == Decimal("500.00")
+
+
+class TestATransfersMovementsFollowItsLifecycle:
+    """Soft delete, restore, hard delete and the endpoint move (R-BAL46)."""
+
+    def test_a_soft_deleted_transfer_keeps_its_movements_worth_nothing_and_restore_revives_them(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            movement_ids = {leg.id: _only_movement(leg).id for leg in (expense, income)}
+            user_id = seed_user["user"].id
+            transfer_service.delete_transfer(xfer.id, user_id, soft=True)
+            db.session.flush()
+            for leg in (expense, income):
+                movement = db.session.get(TransactionEntry, movement_ids[leg.id])
+                assert movement is not None
+                assert cash_ledger.movement_cash_leg(leg, movement) == Decimal("0.00")
+                assert settled_cash_facts(leg.account_id, leg.scenario_id) == []
+            transfer_service.restore_transfer(xfer.id, user_id)
+            db.session.flush()
+            for leg, figure in ((expense, Decimal("-500.00")), (income, Decimal("500.00"))):
+                assert _only_movement(leg).id == movement_ids[leg.id]
+                assert _per_day(settled_cash_facts(leg.account_id, leg.scenario_id)) == {
+                    leg.settled_on: figure,
+                }
+
+    def test_a_hard_deleted_transfer_takes_its_movements_with_it(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            movement_ids = [_only_movement(leg).id for leg in (expense, income)]
+            db.session.commit()
+            transfer_service.delete_transfer(xfer.id, seed_user["user"].id, soft=False)
+            db.session.commit()
+            for movement_id in movement_ids:
+                assert db.session.get(TransactionEntry, movement_id) is None
+            assert _movement_entries(movement_ids) == []
+
+    def test_an_endpoint_move_carries_the_movements_to_the_new_account(
+        self, app, seed_user, seed_periods,
+    ):
+        """Ruling R-BAL46: the movement's account IS its parent's, on a move too.
+
+        Without migration ``c4e8a2d7f1b3``'s ``ON UPDATE CASCADE`` the move is
+        refused by ``fk_transaction_entries_parent_account`` (measured: five
+        endpoint-move cases); without the applier's own assignment the
+        session's movement still says the old account after the flush.
+        Both are read here: the in-session object before any expire, and the
+        walks of the vacated and the new account after.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            other = create_savings_account(
+                seed_user, db.session, "Other Savings", Decimal("0.00"),
+            )
+            xfer, expense, income = _settled_pair(
+                seed_user, seed_periods[0], to_account=savings,
+            )
+            movement = _only_movement(income)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, to_account_id=other.id,
+            )
+            db.session.flush()
+            assert income.account_id == other.id
+            assert movement.account_id == other.id
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, movement.id).account_id == other.id
+            assert _per_day(settled_cash_facts(other.id, income.scenario_id)) == {
+                income.settled_on: Decimal("500.00"),
+            }
+            assert settled_cash_facts(savings.id, income.scenario_id) == []
+            assert _only_movement(expense).account_id == seed_user["account"].id
+
+
+class TestALoanPaymentsLoanSideMovementMovesNoLoanFigure:
+    """The loan replay prices a payment by its RECORD, so the movement is inert.
+
+    A payment's income leg sits on the LOAN account and now carries a covering
+    movement there; every loan reader values the leg through
+    ``row_valuation.settled_contribution`` and never through the family, and
+    the ledger's loan entry is unchanged by R-BAL45 -- so the seam's balance
+    and the posted balance read identically with and without the movement.
+    """
+
+    def test_the_seam_and_the_posted_ledger_read_the_same_with_and_without(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session)
+            db.session.flush()
+            xfer, _, income = _settled_pair(
+                seed_user, seed_periods[0], to_account=loan, amount="1910.95",
+            )
+            db.session.commit()
+            user_id, scenario_id = seed_user["user"].id, seed_user["scenario"].id
+            as_of = income.settled_on
+            movement = _only_movement(income)
+            assert movement.account_id == loan.id
+
+            def _read():
+                ctx = balance_at.BalanceContext.build(user_id, as_of=as_of)
+                return (
+                    balance_at.positions(loan, ctx, [as_of])[as_of],
+                    posted_loan_balance_at(loan.id, scenario_id, as_of),
+                )
+
+            with_movement = _read()
+            income.entries.remove(movement)
+            db.session.commit()
+            db.session.expire_all()
+            assert _read() == with_movement
+            assert xfer.status.is_settled
 
 
 class TestThePurchaseDoorsStateTheSource:
@@ -876,24 +1238,22 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
         the undo's refusal).
         """
         with app.app_context():
-            # An AD-HOC envelope, bare-built as the bank door still mints one
-            # (``statement_match._container._create_envelope``, until
-            # X-bi-7b-3): the flag is the row's own there, which is what the
-            # popover's untick writes -- a definition's row reads its
-            # definition's flag and offers no such control.
-            envelope = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_user["user"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            # A bank-born envelope as the bank door mints one since X-bi-7b-3
+            # (``statement_match._container._create_envelope`` on the
+            # producer): a rule-less definition's placed row, whose flag is
+            # the DEFINITION's (ruling R-BAL36) -- which is where the
+            # popover's untick lands, below.
+            envelope = one_off_row_of(
+                seed_periods[0],
                 name="Kayla's Spending Money",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Rent"].id,
                 is_envelope=True,
             )
-            db.session.add(envelope)
             db.session.flush()
             purchase = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
@@ -906,8 +1266,9 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             _settle(envelope)
             db.session.flush()
             assert covering_movements(envelope) == []
-            envelope.is_envelope = False
+            envelope.template.is_envelope = False
             db.session.flush()
+            assert envelope.tracks_purchases is False
             transaction_service.apply_requested_status(
                 envelope, envelope.status_id, submitted=Decimal("999.99"),
             )

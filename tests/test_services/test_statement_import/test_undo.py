@@ -42,6 +42,7 @@ from app.models.merchant_rule import MerchantRule
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import statement_match
 from app.services.statement_import import delete_import, record_statement
+from app.services.statement_import._balance import bank_levels
 from app.services.statement_match import MatchSubmission, matched_subjects
 
 from tests.test_services.test_statement_match._builders import (
@@ -246,6 +247,19 @@ class TestItSaysHowManyOfTheOwnersSKIPSItDestroyed:
         assert _undo(seed_user, first.import_id).skips_forgotten == 1
 
 
+def _placements(account_id):
+    """Return ``{import_id: (level, release)}`` off the level relation.
+
+    The page's own read, keyed the way the page keys it, so a test asks the
+    relation what stands rather than a column that no longer exists (plan
+    step ``balance:X-bj-1``).
+    """
+    return {
+        level.statement_import_id: (level, release)
+        for level, release in bank_levels(account_id)
+    }
+
+
 class TestItReleasesTheANCHORSItsLinesSupported:
     """A balance anchor rests on lines, and this door takes lines away.
 
@@ -254,6 +268,14 @@ class TestItReleasesTheANCHORSItsLinesSupported:
     import's lines were deleted beneath it, so the coverage test reported
     "covered" over a `$150.00` hole and the walk returned a confident wrong
     opening.
+
+    **Since plan step ``balance:X-bj-1`` a release is an APPENDED row**
+    (``budget.anchor_releases``) naming the level and the import whose lines
+    changed, and the deleted import's OWN level cascades with it rather than
+    being withdrawn.  The delete door names the doomed import as the cause
+    BEFORE deleting it, so the cause reaches the audit log; on the row the
+    key's ``SET NULL`` then reads it as "the import responsible no longer
+    exists".
     """
 
     def test_deleting_an_import_releases_an_anchor_over_its_span(
@@ -261,8 +283,7 @@ class TestItReleasesTheANCHORSItsLinesSupported:
     ):
         """The anchor goes with the evidence it rested on."""
         outcome = _import(seed_user)
-        row = db.session.get(StatementImport, outcome.import_id)
-        assert row.balance_effective_on is not None
+        assert outcome.import_id in _placements(seed_user["account"].id)
 
         second = _import(
             seed_user,
@@ -272,15 +293,25 @@ class TestItReleasesTheANCHORSItsLinesSupported:
             )),
             file_name="later.csv",
         )
-        later = db.session.get(StatementImport, second.import_id)
-        assert later.balance_effective_on is not None
+        later_level, later_release = _placements(
+            seed_user["account"].id,
+        )[second.import_id]
+        assert later_release is None
 
         removal = _undo(seed_user, outcome.import_id)
 
-        db.session.refresh(later)
+        placements = _placements(seed_user["account"].id)
         assert removal.anchors_released == 1
-        assert later.balance_effective_on is None
-        assert later.balance_evidence_id is None
+        # The deleted import's own level went with it (cascade); the later
+        # import's level stands in the relation, withdrawn by a release that
+        # kept the day and lost its cause to the delete.
+        assert outcome.import_id not in placements
+        level, release = placements[second.import_id]
+        assert level.id == later_level.id
+        assert level.observed_on == date(2026, 3, 5)
+        assert release is not None
+        assert release.released_by_import_id is None
+        assert release.lines_changed_from == date(2026, 3, 2)
 
     def test_a_delete_that_removes_NO_LINES_releases_nothing(
         self, app, db, seed_user,
@@ -294,15 +325,16 @@ class TestItReleasesTheANCHORSItsLinesSupported:
         """
         first = _import(seed_user)
         again = _import(seed_user, file_name="again.csv")
-        early = db.session.get(StatementImport, first.import_id)
-        assert early.balance_effective_on == date(2026, 3, 4)
+        early_level, _ = _placements(seed_user["account"].id)[first.import_id]
+        assert early_level.observed_on == date(2026, 3, 4)
 
         removal = _undo(seed_user, again.import_id)
 
-        db.session.refresh(early)
         assert removal.lines_removed == 0
         assert removal.anchors_released == 0
-        assert early.balance_effective_on == date(2026, 3, 4)
+        level, release = _placements(seed_user["account"].id)[first.import_id]
+        assert level.observed_on == date(2026, 3, 4)
+        assert release is None
 
     def test_it_LEAVES_an_anchor_that_predates_the_deleted_span(
         self, app, db, seed_user,
@@ -317,13 +349,54 @@ class TestItReleasesTheANCHORSItsLinesSupported:
             )),
             file_name="later.csv",
         )
-        early = db.session.get(StatementImport, first.import_id)
 
         removal = _undo(seed_user, second.import_id)
 
-        db.session.refresh(early)
         assert removal.anchors_released == 0
-        assert early.balance_effective_on == date(2026, 3, 4)
+        level, release = _placements(seed_user["account"].id)[first.import_id]
+        assert level.observed_on == date(2026, 3, 4)
+        assert release is None
+
+    def test_the_cause_reaches_the_audit_log_before_the_delete_nulls_it(
+        self, app, db, seed_user,
+    ):
+        """The release row is INSERTed naming the doomed import, then SET NULL.
+
+        Two audit rows for one release: the INSERT carrying the cause and the
+        UPDATE the key's action wrote.  A door that released after deleting
+        would write one row carrying NULL, and the fact of WHICH import's
+        delete withdrew the level would exist nowhere.  Committed, because
+        the audit rows are written by triggers and the row under test is
+        read back by SQL.
+        """
+        outcome = _import(seed_user)
+        second = _import(
+            seed_user,
+            payload=build.build(build.chained(
+                "1534.19",
+                [(date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X")],
+            )),
+            file_name="later.csv",
+        )
+        db.session.commit()
+
+        _undo(seed_user, outcome.import_id)
+        db.session.commit()
+
+        _level, release = _placements(
+            seed_user["account"].id,
+        )[second.import_id]
+        rows = db.session.execute(db.text(
+            "SELECT operation, "
+            "       new_data ->> 'released_by_import_id' AS cause "
+            "FROM system.audit_log "
+            "WHERE table_name = 'anchor_releases' AND row_id = :row_id "
+            "ORDER BY id"
+        ), {"row_id": release.id}).all()
+        assert [(op, cause) for op, cause in rows] == [
+            ("INSERT", str(outcome.import_id)),
+            ("UPDATE", None),
+        ]
 
 
 class TestItReleasesRatherThanOrphans:

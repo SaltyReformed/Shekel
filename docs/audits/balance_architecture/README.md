@@ -246,20 +246,15 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     clears reads as `anchor + X` at every later date (**N-285**).
   * [ ] **X-f3c** the DECOMPOSED parent of THE CUTOVER, re-decomposed 2026-08-27 (**R-GW**, with
     **R-GX** and **R-GY**, the two rulings its first draft owed). Carries **N-172**, **N-174**.
-    * [x] **X-f3c-1** `2dad8512` -- the assertion RESET left the kind-blind walk (**R-J**) for `balance_at._assertions`, so `walk_cash_ledger` yields FACTS and each fold applies the policy its own kind needs. Byte-identical.
-    * [x] **X-f3c-2a** `2aa2296d` -- opening equity is a RECORDED fact (**R-GX**, **R-HE**): an append-only `budget.account_openings` read by BOTH the fold and the posted ledger, seeded at the derived value. `is_opening` decides no figure and R-I's compensator is gone.
     * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**), split 2026-08-28,
       re-cut the same day (**R-HJ**) and again 2026-08-31 (**R-ID**): the invariant is one commit,
       and the DOOR -- with the repair it is the only honest route for -- is its own three.
-      * [x] **X-f3c-2b-1** `2cf2ac0a` -- no movement may be dated on or before its account's `opened_on` (**R-HG**). Closed **N-378**. Record in `archive/two_shipped_steps_2026-08-30.md`.
       * [ ] **X-f3c-2b-2** the DECOMPOSED parent of the DOOR, split 2026-08-31
         (**R-ID**): the door is one commit, the bank line an import may not offer
         against it is the next, and the account-10 repair the door exists FOR is an
         OPERATOR act that cannot run until the first has deployed -- production is
         still at `a4c6f1d92b73` and has no `budget.account_openings` table at all.
         Carries **N-379**, **N-382**.
-        * [x] **X-f3c-2b-2a** `59b485df` -- the DOOR that restates an account's opening, append-only through the table's ONE writer (**R-ER**, **R-IE**). **N-275**, **N-379**, **N-382** stay OPEN at **X-f3c-2b-2c**; opened **N-400**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
-        * [x] **X-f3c-2b-2b** `7ef63899` -- a matched bank LINE bounds its account's opening at BOTH tiers (**R-IG**, **R-IH**), the state made unstorable by deferred triggers. Closed **N-383**; opened **N-407**. Record in `archive/eight_shipped_steps_2026-09-01.md`.
         * [ ] **X-f3c-2b-2c** the account-10 repair, performed through the app's own
           DOORS and never by a migration writing money rows (**R-HJ**). **It is an
           OPERATOR act, so this leaf is a rehearsed runbook and a re-measurement
@@ -296,7 +291,6 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
           102), the two points where the books boundary FORCES the order, the five obligations the
           neutral review left, and the post-state to reproduce. Everything below that section is
           the old design and is evidence, never instructions.
-        * [x] **X-f3c-2b-2d** `1f0c1cd7` -- the archived drawer card carries the live cell's own **Edit** link, ungated and carrying no `#books-opening` fragment (**R-JT**), so the door **R-IE** gave two entrances has a click path once an account is archived. Closed **N-430**; opened **N-453**, **N-454**.
       * [ ] **X-f3c-2b-3** `feat(cash): a balance is not declared for a day the books
         did not exist on` -- the ASSERTION side of the books boundary, which is
         the one door **X-f3c-2b-1** left unbounded: `resolve_observation_day`
@@ -313,11 +307,6 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         PLAIN account, so one dated below the books moves no money there and
         the remedy is decided against what an assertion then IS. Closes
         **N-400**.
-    * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
-      * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
-      * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
-    * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions need (**balance:R-IC**). Record in `archive/two_shipped_steps_2026-08-30.md`.
-    * [x] **X-f3c-3** `a7dbfdca` -- the account's OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings <= that day))`, ONE figure and not the per-assertion plug), on its own cash-detail card beside whether an imported statement's LINES account for the span it accumulated over. `_outstanding._books_balance_at` IS X-f3c-5's balance function, evaluated early, so the flip becomes a re-pointing. Checking reads `$2,370.02`, confirmed against the posted ledger's own `account_trueup` net. Opened **N-433**, **N-434**; re-pointed **N-400** to X-f3c-2b-3.
     * [ ] **X-f3c-4** `feat(cash): an unexplained difference is a transaction you accept` --
       **MOVES MONEY.** The explicit act **R-FN** requires, under **R-GY**'s three bounds: dated on
       the latest assertion's own day so that assertion clears it and the balance line does not move
@@ -357,15 +346,22 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   the level relation (**R-IS**), split 2026-09-03 by ruling **R-JN**: as written it claimed *a level
   never moves a balance* eight ranks before `X-f3c-5` stops an assertion resetting a plain account.
   It ticks with its second leaf; it subsumed `bank_import:X-gh` and took `X-f6g`'s coverage pass.
-  * [ ] **X-bj-1** `feat(cash): one level relation` -- the first half (**R-JN**). The owner's true-ups
-    and the bank's statement closings become ONE evidence-ranked relation of `(account, day, amount,
-    source, evidence)` -- `StatementBalanceEvidenceEnum` and `weaker_of` already rank this -- a release
-    becomes an APPENDED superseding row (**R-HY**, **R-IC**), and the existing reset READS the relation
-    until `X-f3c-5` deletes it, so one observation has one home through the interval. **It defines
-    COVERAGE once**: a level row carries its source's span and a day is covered when a span reaches it,
-    the pass `bank_import:X-f6g` owed; **N-343** is answered by choosing within the RUN, and
-    **N-434**'s column half lands here (its parser half with `X-f6b`). The OPENING stays a separate
-    constitutive fact (**R-GX**). A migration.
+  * [ ] **X-bj-1** the DECOMPOSED parent of the level relation (**R-BAL55**): 1a built it, 1b
+    chooses within the run; ticks with 1b.
+    * [x] **X-bj-1a** `1d1f7ce8` -- ONE level relation: `budget.account_anchor_history` holds the
+      owner's true-ups and the bank's placements (**R-BAL47**..**R-BAL52**), a release is an appended
+      `budget.anchor_releases` row, coverage stays the statement's (**R-BAL53**), the within-file
+      bound is a two-attachment trigger (**R-BAL54**), the two gates narrowed (**R-BAL56**,
+      **R-BAL57**); closed **BAL-485**. Record in `archive/x_bj_1a_as_built_2026-09-16.md`.
+    * [ ] **X-bj-1b** `feat(cash): the bank walk anchors within the run` -- **N-343**. `usable_anchor`
+      still chooses ONE anchor per account by evidence, so a stronger anchor in an older,
+      disconnected run leaves recent days unpriced (reproduced: a `file_chain` anchor at 2026-01-31
+      left 2026-08-21 answering nothing). `fold_bank_balances` chooses PER RUN among standing bank
+      levels the run reaches (`reaches_end_of`), strongest evidence then the latest day; every other
+      level in the run is a CHECKPOINT `walked - observed` on `BankBalances`; `BankAgreement.anchor`
+      becomes per-run anchors plus checkpoints and `statement_agreement.html` lists them. No schema
+      change; it CAN price a day unpriced today, so it is graded on its own before/after dump with
+      `tests/manual/verify_level_relation.py` and every moved day explained.
   * [ ] **X-bj-2** `feat(cash): a level is an observation, never a reset` -- the second half, riding
     **X-f3c-5** (**R-JN**): once the flip stops an assertion resetting a plain account, a level moves no
     balance and yields `discrepancy = observed - computed`, zero being healthy. It closes **N-314**: the
@@ -379,29 +375,26 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   a PLAN and a RECORD with a status column pretending one becomes the other -- 161 of 238 fold facts
   on Checking are plan rows whose status was flipped, and the movement record is `$4,270.78` from
   the bank over 155 days.
-  * [x] **X-bi-1** `18f9efac` -- the row's `is_envelope` cell SEALED (**R-BAL18**): private column, public name reads the accessor, a derived flag's class-level name refuses a query. No migration.
-  * [x] **X-bi-1b** `71e09443` -- the companion query loads and asks each row `visible_to_companion` (**R-BAL19**); `companion_visible` sealed; 232 of 951 rows byte-identical on a restore. Closes **BAL-482**.
   * [ ] **X-bi-7** the DECOMPOSED parent of the ONE-DEFINITION shape (**R-BAL20**; forks **R-BAL21**
     to **R-BAL26**): every plan item has exactly one definition, so a one-off is a rule-less
     definition plus its placed rows; argument: `../../design/from_scratch_architecture.md` section 10.
-    * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
-      "no cadence" sites and the account-delete refusal read it; **R-BAL27** and **R-BAL28** ruled
-      at the cut. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
-      parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
-      (**R-BAL24**); ticks with 7b-3.
-      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
-        (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
-        nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-      * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
-        R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
-        restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
-      * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
-        TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
-        `X-f6c`'s shape.
-    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
-      construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
-      AST walk over their keywords, so no total is stated here).
+    * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
+      DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
+      (**R-BAL24**); ticked with 7b-3.
+    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer -- the DECOMPOSED parent, split
+      2026-09-16 into the builder and four leaves of sites by file group (the AST census in
+      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked); ticks with 7c-5.
+      * [x] **X-bi-7c-1** `555410b6` -- `one_off_row_of` on the producer (the twin of
+        `generate_row_of`); the three bare builders on it; `legacy_link_less_row_of` the one
+        transitional home; `payback_row_of`; the census instrument; the 16 failures the move
+        surfaced classified in six classes and fixed; **R-BAL58** (the one app change), **R-BAL59**.
+      * [x] **X-bi-7c-2** `1c1b2de8` -- 60 rows in 25 files (`test_services`, `test_utils`,
+        `test_ref_cache`) onto the builder by the committed mover; 7 failures classified, five
+        double-graded cases moved to the legacy home and named for 7d; the marker 287 -> 227.
+      * [ ] **X-bi-7c-3** `tests/test_routes/*` except the grid pair.
+      * [ ] **X-bi-7c-4** `tests/test_routes/test_grid.py` (72 + 7 splat) and `test_grid_regression.py`.
+      * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
+        `tests/test_performance`, `tests/test_concurrent`, `test_audit_fixes`; the marker's last figure.
     * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
@@ -411,14 +404,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
     the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
-    * [x] **X-bi-3a** `65045062` -- the figure-source catalogue and the ONE settle-owned writer,
-      expense parents (**R-BAL39**); the purchase bucket in the ledger report (**BAL-502**, closed
-      here); four review findings fixed with firing controls; 47 rule-5 test edits ruled 2026-09-15.
-    * [x] **X-bi-3b** `56a8d6d7` -- ONE producer of a movement's figure in its parent's direction
-      (`movement_cash_leg`, six `-amount` spellings gone; `posted_purchase_effect` signed by type);
-      income parents covered, a settled paycheck reading `+figure`; four review findings fixed.
-    * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
-      per shadow until `X-bi-6` re-parents them onto `budget.transfers`.
+    * [x] **X-bi-3c** `68401855` -- both transfer legs covered through the seam (**R-BAL41**); the
+      ledger's endpoint ruled C (**R-BAL45**), 3c its first leaf; an endpoint move carries the
+      movements (**R-BAL46**, migration `c4e8a2d7f1b3`); the lock predicate total; six rows born.
     * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
       scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
@@ -438,7 +426,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     `status_id` (`_restore.py:144-221`) -- and the fence is **38 sites, not 20**: 20 Python branches
   in 12 modules, 7 Jinja in 3 templates, 4 inverted guards, 7 query exclusions. **The pair-drift
     repairer is `transfer_service._restore`, NOT `posting_service`**, which only skips and warns --
-  deleting the latter removes a skip arm and leaves the repairer standing. **Still after X-bi-4:
+  deleting the latter removes a skip arm and leaves the repairer standing. It also restores `NO ACTION` on
+  `fk_transaction_entries_parent_account`'s update rule (**BAL-506**): the shadow was the cascade's one
+  beneficiary. Closes **BAL-503**, **BAL-506**. **Still after X-bi-4:
     INVARIANT 5 IS WHY THE MIRROR EXISTS.** Closes **BAL-475**.
 * [ ] **X-ci** transfers take the one-definition shape their data holds (X-bi-7's 10.3): the ad-hoc
   door closes, the discardable count and detaching move are fixed. Closes **BAL-492**, **BAL-493**.
@@ -553,22 +543,14 @@ in SILENCE where a refused DELETE is loud.
   **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
   derived row's answer must be INVARIANT under a change to its own amount column, agreement being
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
-* [x] **X-au-k** `7315ecd9` -- amount ownership is ONE mapped attribute (**R-IW**); `_FIGURE_COLUMNS` gone. Closed **N-293**, opened **N-437**, **N-440**. `archive/x_au_k_as_built_2026-09-02.md`.
 * [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's and it stores none; 59 rows declared (**R-JB**), FOUR absorbed defects closed or filed. `archive/x_au_d_as_built_2026-09-03.md`.
 * [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series; 525 rows declared, the `$502.45` class dead. Closed **N-244**, **N-247**, **N-444**. Its own keep-vs-use claim was REFUTED (**R-JD**) -- see `archive/seven_shipped_pointers_2026-09-05.md` and `archive/x_au_e_as_built_2026-09-03.md`.
 * [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
   leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
   those three unblock.
-  * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS. **N-266**(a) MISDIAGNOSED, not falsified. `archive/eight_shipped_steps_2026-09-01.md`.
-  * [x] **X-au-g-2a** `b16908f7` -- rule 4's producer moved below the amount model (`_basis` /
-    `_pricing` -> `cash_ledger._loan_installment` / `._loan_pricing`), so the loan READING tier
-    may import it; byte-identical, AST-verified; opened **N-416**. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-  * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its OWN due date (**R-IJ**) and `cash_ledger` makes no clock call at all. Closed **N-40**, **N-410**; **N-409** stands, re-owned. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
   * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
     the declaration, and the escrow rule. It ticks with the last of its three leaves.
-    * [x] **X-au-g-2c-1** `cdc2c7d9` -- BOTH readers of a projected loan-side shadow take the amount model, not one. Closed **N-266**; opened **N-432**. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
-    * [x] **X-au-g-2c-2** `1f2b98a4` -- EVERY transfer shadow is DERIVED (**R-IN**), which is Transfer Invariant 3's AMOUNT clause made structural. Closed **N-401**. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
     * [ ] **X-au-g-2c-3** the DECOMPOSED parent of the escrow rule, split 2026-09-02. It ticks
       with the last of its leaves.
       **N-409 named ONE floor; the trace found the defect is a CLASS, and the class is a LAYERING
@@ -582,10 +564,7 @@ in SILENCE where a refused DELETE is loud.
       P&I to the cent, so the schedule and its 2048-12-01 payoff are byte-identical to an
       on-schedule month while the seam's fold puts the owner `$210.95` further behind and dates the
       payoff 2049-01-01. Two answers, one screen.
-      * [x] **X-au-g-2c-3a** `becf76f8` -- the ONE allocation moved to `app/utils/money.py`, the leaf every walk reaches, deleting the three restatements its old placement FORCED. Its obligation now lives in ruling **R-IZ**, which is the rule it is evidence for. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
-      * [x] **X-au-g-2c-3c** `cb6469b2` -- a FIFTH spelling of the accrual deleted; `recurrence:D52`'s 200,000-draw agreement REFUTED at 500,000, `$565.37` against `$565.36`. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
       * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
-        * [x] **X-au-g-2c-3b-1** `fd3afc59` -- the CHARGE calendar moved to `loan_ledger._charges`, the same inversion one tier up. **D53** and **D55** deliberately not taken. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
         * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE accrual and ONE escrow per INSTALLMENT, both tiers on the ONE replay (rule 14). Rules **R-IX**, files **N-439**. **A later step must NOT delete `tests/oracles/loan_monthly_composition.py`.** `archive/x_au_g_2c_3b_2_2026-09-02.md`.
         * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
           passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
@@ -625,8 +604,6 @@ in SILENCE where a refused DELETE is loud.
 * [x] **X-au-f** `cb4239a2` -- the DECOMPOSED parent of the PARENT-transfer cutover, ticked with its last leaf; split into three 2026-09-09 (**R-BAL10**) and RE-CUT into two 2026-09-10 (**R-BAL14**), `X-au-f-3` ABSORBED into `X-au-f-2`. Family record: `archive/x_au_f_family_2026-09-11.md`.
 * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER in one act (**R-BAL10**, **R-BAL11**, **R-BAL12**; `b7e4c1f38a20` empties `transfers.amount`). Closed **N-263**, **N-451**, **BAL-476**, **N-449**, **N-352**; opened **BAL-477**; **NOT N-450**, which is `X-bp`'s. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
 
-* [x] **X-bl-2a** `ee4fc2d7` -- ONE date producer and ONE settled-history derivation for the payment feed (**R-BAL7**), the eager load the CALLER's statement (**R-BAL8**); byte-identical, **25 statements -> 21**. Record: `archive/x_bl_2a_as_built_2026-09-11.md`.
-  **A LATER step must obey:** the load is stated by whoever traverses it, graded by a statement-COUNTING pair -- a presence check passed a mutant that deleted the options.
 * [x] **X-bl-2b** `0e93ec9f` -- a loan payment's three dates are ONE value both records COMPOSE and the replay takes (**R-BAL9**); `ConfirmedPayment` deleted, **101 modules -> 46**, byte-identical. Closed **N-432**; opened **BAL-472**, **BAL-473**, **BAL-474**. Record: `archive/x_bl_2b_as_built_2026-09-09.md`.
   **A LATER step must obey:** a feed reaching the replay carries its schedule SLOT, and `slotted_dates` is the one application.
 * [ ] **X-cb** `refactor(loans): the slot has one door and the predicate takes the value` -- closes
@@ -1043,21 +1020,18 @@ section 4, under their unchanged ids.*
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
-* [x] **X-bv** `66ff070b` -- closed the STRAND at its producer: a leftover carries `compute_due_date`'s answer, so `declare_derived` cannot leave a row amount rule 3 must price on a due date it has not got. **Its written remedy aimed at the wrong tier**; the CHECK is `X-bv-2`'s.
-* [x] **X-bv-2** `6fa17bac` -- the CHECK on BOTH row tables in one migration (`4d7123cd9803`); `_stated_amount`'s no-due-date arm and three fence-grading tests DELETED; BAL-463 closed.
-* [x] **X-cf** `ccf88c01` -- the DECOMPOSED parent of the suite's ONE builder for a row of a definition (**R-BAL17**), five leaves shipped 2026-09-11..12; BAL-480 closed with the last.
-* [x] **X-cf-3b** `699bd05d` -- the three plan-figure builders (164 sites) take the engine's row; `repriced_by_the_owner` and `moved_by_the_owner` are the owner's two acts, stated once.
-* [x] **X-cf-4** `ccf88c01` -- the route suites' 38 hand-built rows and four owner-act spellings take the engine's row; every BAL-480 census reads zero, and BAL-480 closed with it.
-* [x] **X-ch** `28a6317e` -- `generate_transfer_of`, R-BAL17's builder one table over, and `transfer_repriced_by_the_owner`; all 23 hand-built linked-transfer sites converted, BAL-488 closed.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
-* [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
-  **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
-* [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
+* [ ] **X-ck** `fix(seam): the delete dialog counts purchases; a movement's name is written once` --
+  closes **BAL-504**, **BAL-505**: the popover counts `txn.entries` where it means purchases, and
+  `_record_onto` rewrites the movement's name on every re-record where R-BAL39 says once.
+* [ ] **X-cl** `chore(tests): delete the dead reconcile-rules harness` -- closes **BAL-510**:
+  `tests/manual/measure_entry_reconcile_rules.py` reads and writes two deleted columns, so it
+  cannot run against any current schema; a proof instrument that cannot compile claims nothing.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
@@ -1068,8 +1042,6 @@ section 4, under their unchanged ids.*
   genuine rollback is the automatic pre-deploy dump. What the broken arm actually breaks is
   `CLAUDE.md` item 7, *migrations tested in both upgrade and downgrade directions*, which passes
   over a round trip that loses data.
-* [x] **X-bx** `f7b9e094` -- closed **BAL-465**: the fall-through by which `owned_contribution` read `estimated_amount` by hand is DELETED, not routed (**R-BAL5**), and it is `settled_contribution` now. Record: `archive/x_bx_as_built_2026-09-11.md`.
-  **A LATER STEP MUST OBEY**: `_amount_source.py` sits close under pylint's 1000-line cap (`wc -l app/services/cash_ledger/_amount_source.py`).
 * [ ] **X-bs** `fix(test): a failure must fail, and the last two ports go` -- owns **N-460** and
   **N-459**, two defects in the same files that HIDE EACH OTHER. Seven `pytest.skip` calls in
   `test_proxy_trust_and_headers.py` fire on something that RAN AND FAILED rather than on something

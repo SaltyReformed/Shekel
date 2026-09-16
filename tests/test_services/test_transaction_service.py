@@ -45,11 +45,12 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from tests._test_helpers import (
-    family_journal_filter,
-    figure_source_columns,
     amount_basis_for,
     an_entered_day,
+    family_journal_filter,
+    figure_source_columns,
     generate_row_of,
+    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     net_posted_by_day,
@@ -385,32 +386,29 @@ class TestSettleFromEntriesPreconditions:
     def test_rejects_template_less_transaction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Transactions without a template are not envelope-tracked.
+        """A LEGACY link-less transaction is not envelope-tracked.
 
-        Ad-hoc transactions (created without a recurrence template)
-        have no envelope semantics; mark_done's manual-actual branch
-        handles them.  The helper is for tracked rows only.
+        Its ``tracks_purchases`` reads the row's own cell (the ``template_id
+        is None`` arm), which production holds until the cutover (X-bi-7d);
+        mark_done's manual-actual branch handles it.  Built on the shape's
+        one transitional home (plan step balance:X-bi-7c, ruling R-BAL59);
+        7d retires this case with the arm.  A one-off placed today reads its
+        definition's flag, which ``test_rejects_non_envelope_template``
+        grades on a definition.
         """
         with app.app_context():
-            projected_status = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
-            txn = Transaction(
+            txn = legacy_link_less_row_of(
+                seed_periods[0], name="Ad-hoc expense", amount="50.00",
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected_status.id,
-                name="Ad-hoc expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             with pytest.raises(ValidationError) as exc_info:

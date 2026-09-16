@@ -873,13 +873,16 @@ class MovementFigureSource(db.Model):
 class StatementBalanceEvidence(db.Model):
     """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
 
-    The catalogue behind ``budget.statement_imports.balance_evidence_id``.  An
-    import that placed no figure on a day carries NULL here and no
-    ``balance_effective_on``; one that DID carries both, and this says how much
-    that placement can be trusted -- ``file_chain`` (the file states a balance
-    beside every line, so it proves itself), ``corroborated`` (the figure
-    agrees with a balance the app already holds which is itself evidenced) or
-    ``uncorroborated`` (nothing confirms it).
+    The catalogue behind ``budget.account_anchor_history.evidence_id``, the
+    level relation's rank (plan step ``balance:X-bj-1``; it was
+    ``budget.statement_imports.balance_evidence_id`` from X-f6e-1 until then).
+    Every level carries one, and this says how much it can be trusted --
+    ``file_chain`` (the file states a balance beside every line, so it proves
+    itself), ``corroborated`` (the figure agrees with a balance the app already
+    holds which is itself evidenced) or ``uncorroborated`` (nothing confirms
+    it, which is what a first import is and what an owner-typed figure always
+    is).  An import that placed no figure on a day owns no level and so
+    carries none.
 
     :class:`app.enums.StatementBalanceEvidenceEnum` carries why it is the
     WEAKEST LINK in the chain rather than a description of how the day was

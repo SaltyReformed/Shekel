@@ -17,6 +17,9 @@ from datetime import timedelta
 
 import pytest
 
+from app import ref_cache
+from app.enums import TxnTypeEnum
+
 # Pylint: ``shekel-private-module-import`` -- a test of a service's
 # INTERNALS reaches for them by name, which is the convention this package's
 # own test modules already keep (``test_bars``, ``test_candidates``,
@@ -54,6 +57,7 @@ from ._builders import (
     an_unexplained_outflow,
     the_merchant_id,
 )
+from tests._test_helpers import legacy_link_less_row_of
 
 #: What SECU files a card payment under, which ruling **R-GJ** reads.
 _CARD_PAYMENT = "Financial Services/Credit Card Payment"
@@ -490,15 +494,24 @@ class TestARuleNamesTheDestinationTheCardChose:
     def test_a_row_no_template_generated_is_named_by_its_own_NAME(
         self, app, db, seed_user,
     ):
-        """Those rows are exactly what a new-envelope answer creates.
+        """A LEGACY link-less envelope names nothing, so the answer is its NAME.
 
         Measured 2026-08-30 on the developer's own account: 223 of his 256
         offerable destinations carry a template and 33 do not, and every one
-        of the 33 was minted by a new-envelope answer.
+        of the 33 was minted by a new-envelope answer -- before plan step
+        ``balance:X-bi-7b`` gave that answer a definition to name.  Until the
+        cutover (``X-bi-7d``) mints those 33 their definitions this is the
+        shape they hold, built on its one transitional home (plan step
+        ``balance:X-bi-7c``, ruling **R-BAL59**); 7d retires this
+        case with the shape.
         """
-        envelope = a_transaction(
-            seed_user, name="Amazon", amount="0.00", is_envelope=True,
-            template=False,
+        envelope = legacy_link_less_row_of(
+            seed_user["bootstrap_period"], name="Amazon", amount="0.00",
+            user_id=seed_user["user"].id, account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=seed_user["categories"]["Groceries"].id,
+            is_envelope=True,
         )
         db.session.commit()
         scope = a_scope(seed_user)
@@ -514,19 +527,19 @@ class TestARuleNamesTheDestinationTheCardChose:
         assert rule.envelope_name == destination.name
         assert rule.category_id == destination.category_id
 
-    def test_a_ONE_OFFS_envelope_is_named_by_its_own_NAME_though_it_has_a_definition(
+    def test_a_ONE_OFFS_envelope_is_named_by_its_DEFINITION(
         self, app, db, seed_user,
     ):
-        """Plan step balance:X-bi-7b: the key is ``recurs``, not the link.
+        """Leaf 7b-3 of balance:X-bi-7b (ruling R-BAL24): TEMPLATE, naming the definition.
 
         An envelope the owner made at the grid carries a RULE-LESS definition
-        since that step.  Naming it TEMPLATE would resolve UNRESOLVED in every
-        other paycheck (nothing generates a rule-less definition's rows until
-        the family's third leaf), so the offered rule stays NEW-ENVELOPE by
-        name and category -- exactly what a link-less envelope earned before.
-        **Through the real scan**: ``destinations_for`` is what sets
-        ``PurchaseDestination.recurs``, so this fires if either the scan or
-        ``rule_naming`` reverts to the link.
+        (7b-1).  From 7b-1 to 7b-2 the offered rule stayed NEW-ENVELOPE by
+        name and category, because a TEMPLATE answer naming a definition that
+        generates nothing resolved UNRESOLVED in every other paycheck; 7b-3
+        makes such an answer PLACE the definition's row where a paycheck
+        holds none, so the definition is the identity a rule names -- for a
+        placed row as for a generated one.  **Through the real scan**, so
+        this fires if ``rule_naming`` reverts to the ``recurs`` key.
         """
         envelope = a_one_off_envelope(seed_user, name="Home Improvement")
         scope = a_scope(seed_user)
@@ -538,14 +551,13 @@ class TestARuleNamesTheDestinationTheCardChose:
             "this case needs a one-off's DEFINITION-linked row or it grades "
             "nothing"
         )
-        assert destination.recurs is False
+        assert destination.is_placed is True
 
         rule = rule_naming(7, destination)
 
-        assert rule.answer is RuleAnswer.NEW_ENVELOPE
-        assert rule.template_id is None
-        assert rule.envelope_name == "Home Improvement"
-        assert rule.category_id == destination.category_id
+        assert rule.answer is RuleAnswer.TEMPLATE
+        assert rule.template_id == destination.template_id
+        assert rule.envelope_name is None
 
     def test_the_rule_RESOLVES_BACK_to_the_row_it_was_read_from(
         self, app, db, seed_user,
@@ -555,12 +567,14 @@ class TestARuleNamesTheDestinationTheCardChose:
         A rule that named a DIFFERENT row than the purchase it was stated
         beside would file the next statement's spending somewhere the owner
         never chose.  This states the rule from a row and resolves it again
-        through the very producer the screen reads.
+        through the very producer the screen reads.  **On a PLACED envelope
+        since leaf 7b-3 of balance:X-bi-7b** -- the shape the app writes --
+        where it was a legacy link-less row: such a row has no definition
+        for a rule to name, so the round trip does not hold for it and the
+        family's cutover is what gives it one (the legacy case is graded in
+        ``test_rules`` as NOT reused).
         """
-        envelope = a_transaction(
-            seed_user, name="Amazon", amount="0.00", is_envelope=True,
-            template=False,
-        )
+        envelope = a_one_off_envelope(seed_user, name="Amazon")
         a_merchant(seed_user, "Amazon")
         db.session.commit()
         merchant_id = the_merchant_id(seed_user, "Amazon")
