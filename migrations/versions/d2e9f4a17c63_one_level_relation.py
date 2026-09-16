@@ -1,7 +1,7 @@
 """one level relation: the bank's placements join the owner's true-ups
 
 Revision ID: d2e9f4a17c63
-Revises: 6c15d2a97b78
+Revises: c4e8a2d7f1b3
 Create Date: 2026-09-16 09:00:00.000000
 
 Plan step **balance:X-bj-1**, rulings **R-IS** and **R-JN**, the eight forks
@@ -82,7 +82,9 @@ from app.level_infrastructure import (
 
 # revision identifiers, used by Alembic.
 revision = "d2e9f4a17c63"
-down_revision = "6c15d2a97b78"
+# ``c4e8a2d7f1b3`` (balance:X-bi-3c, DDL over the movement table) reached dev
+# first; the two touch no table in common.
+down_revision = "c4e8a2d7f1b3"
 branch_labels = None
 depends_on = None
 
