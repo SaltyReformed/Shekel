@@ -277,7 +277,7 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 57 code files `due_date` in `app/**/*.py`) --
+**The Python files NAMING `due_date` in code** (census 58 code files `due_date` in `app/**/*.py`) --
 a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
 narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
 in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
