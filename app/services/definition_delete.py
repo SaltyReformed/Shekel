@@ -88,10 +88,11 @@ def is_last_row_of_its_definition(txn) -> bool:
     """Return whether deleting *txn* would leave a RULE-LESS definition with no row.
 
     The predicate the row's delete door and its dialog share (plan step
-    ``balance:X-bi-7b``): TRUE for a one-off's only row, FALSE for a row of a
-    recurring definition (its rows are the RULE's, soft-deleted as
-    tombstones), for a link-less row (nothing to dispose of), and for a row of
-    a rule-less definition that holds any OTHER row.  **Soft-deleted rows
+    ``balance:X-bi-7b``): TRUE for a one-off's only row, FALSE for a row that
+    is not PLACED (``Transaction.is_placed``: a recurring definition's rows
+    are the RULE's, soft-deleted as tombstones; a link-less row has nothing
+    to dispose of), and for a row of a rule-less definition that holds any
+    OTHER row.  **Soft-deleted rows
     count as rows**: a soft-deleted one-off is still its definition's (10.8),
     and disposing of the definition under it would leave a TEMPLATE-priced
     tombstone with ``template_id NULL`` -- ruling **R-JE**'s state, one door
@@ -107,7 +108,7 @@ def is_last_row_of_its_definition(txn) -> bool:
     Returns:
         Whether *txn*'s definition has no row but *txn*.
     """
-    if txn.template_id is None or txn.recurs:
+    if not txn.is_placed:
         return False
     another = (
         db.session.query(Transaction.id)

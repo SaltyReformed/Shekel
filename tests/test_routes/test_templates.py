@@ -585,7 +585,7 @@ class TestTemplateUpdate:
         Those columns are owned by the archive / unarchive routes (which
         pair the flag flip with the projected-transaction soft-delete this
         route does not perform).  They are absent from both
-        ``TemplateUpdateSchema`` and ``_TEMPLATE_UPDATE_FIELDS``, so even a
+        ``TemplateUpdateSchema`` and ``definition_edit.EDITABLE_FIELDS``, so even a
         crafted form that submits them must leave the stored values
         untouched while a legitimate field still updates.
         """

@@ -4,12 +4,13 @@
    the old three-tier edit system.  Layout, top to bottom: header +
    context line, the frequent status actions, the inline amount edit,
    the purchases section for envelope rows, and the rare deep-edit
-   fields (status / period / notes / due date / flags) folded behind a
-   "More options" collapse -- the full-edit surface remains, one click
-   away inside the same card.  Form submits via HTMX PATCH targeting
-   the original cell by ID.
+   fields (status / period / notes / due date / the item's name, category
+   and flags) folded behind a "More options" collapse -- the full-edit
+   surface remains, one click away inside the same card.  Form submits via
+   HTMX PATCH targeting the original cell by ID.
 
-   Expected context: txn, period, statuses.
+   Expected context: txn, period, statuses, categories (the owner's, for a
+   placed row's category select; empty otherwise).
 
    ``period`` is the row's own paycheck as a ``DerivedPeriod``, resolved by
    the route off the ONE calendar it derives (pay-calendar plan step
@@ -119,6 +120,13 @@
        txn.version_id and short-circuits with 409 when the form is
        stale (commit C-18 / F-010). #}
     <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+    {# The DEFINITION's pin too, for a placed row: its price, name, category
+       and flags are edited here and live there, so a save that touches only
+       them bumps the definition's counter and not the row's (plan step
+       balance:X-bi-7b).  The route compares both. #}
+    {% if txn.is_placed %}
+    <input type="hidden" name="template_version_id" value="{{ txn.template.version_id }}">
+    {% endif %}
 
     {# Finalised-row notice (#26): the amounts below are locked until the
        row is reverted to Projected via the Status dropdown. #}
@@ -383,15 +391,20 @@
          ``txn.recurs`` since plan step balance:X-bi-7a, not on the link: an
          ad-hoc row owns its figure, so nothing reads its date; a rule-less
          DEFINITION's row is due when its owner says (ruling R-BAL22), no
-         cadence derives the day and no pass rewrites it.  The gate
-         (``_gates._reject_generated_due_date_edit``) is the backstop and
-         refuses a CLEAR on the latter, where the date still prices the row. #}
+         cadence derives the day and no pass rewrites it.  **On a PLACED row
+         the input is ``required``** (plan step balance:X-bi-7b, leaf 7b-2):
+         the date prices the row, so it may move and never clear, and the
+         browser refuses the clear first; the gate
+         (``_gates._reject_generated_due_date_edit``) is the backstop.  A
+         legacy link-less row's date is its own optional note and stays
+         clearable until the family's cutover dates it. #}
       <div class="mb-2">
         <label class="form-label mb-0 small">Due Date</label>
         {% if not txn.recurs %}
         <input type="date" name="due_date"
                value="{{ txn.due_date.isoformat() if txn.due_date is not none else '' }}"
                class="form-control form-control-sm"
+               {{ 'required' if txn.is_placed else '' }}
                {{ 'disabled' if locked else '' }}>
         {% else %}
         <div class="form-control form-control-sm bg-body-secondary">
@@ -446,21 +459,59 @@
       </div>
       {% endif %}
 
-      {# Ad-hoc tracking / visibility flags.  Only LEGACY ad-hoc rows
-         (template_id IS NULL) carry their own flags; a row of a definition
-         reads them from the definition, so the controls are hidden for
-         those.  **A ONE-OFF's row is such a row since plan step
-         balance:X-bi-7b** (its definition has no rule and carries the flags,
-         ruling R-BAL20): the family's second leaf (7b-2) renders these
-         controls for it and lands them on the DEFINITION; until then a new
-         one-off's flags are the ones its create door set, stated here rather
-         than left to be discovered.  Each checkbox is followed by a hidden "false" input so
-         an explicit value is always submitted: werkzeug's MultiDict keeps
-         the FIRST value, so a checked box yields "true" (checkbox first)
-         and an unchecked box yields only the hidden "false".  This lets
-         TransactionUpdateSchema apply the flag without a load_default that
-         would otherwise let a quick-edit silently clear it. #}
-      {% if txn.template_id is none %}
+      {# The ITEM's fields, for a row whose item is edited HERE.
+
+         **A ONE-OFF is a rule-less definition plus its placed row, and this
+         card is its whole lifecycle** (plan step balance:X-bi-7b, rulings
+         R-BAL20 / R-BAL23; the controls R-BAL36): its name, category and
+         two flags are the DEFINITION's, so for a PLACED row
+         (``txn.is_placed``) they render here and the PATCH door lands them
+         on the definition and brings its rows into line.  A rename or a
+         re-category moves the row to another grid row (R-BAL34), which the
+         door answers with a full ``gridRefresh``.  The category select
+         offers no way to UN-categorise: a placeholder posting the empty
+         value, which the schema drops as "leave alone", is shown only on a
+         row that has none (the bank door's row for money it could not
+         categorise, R-FN).
+
+         A LEGACY link-less row (template_id IS NULL, until the family's
+         cutover mints it a definition) carries its own flags on its own
+         sealed cells and renders the two checkboxes exactly as it always
+         did -- the predicate is ``not txn.recurs``, which both shapes
+         answer; a recurring definition's row reads its flags off the
+         definition and renders no control, and the PATCH door loads a
+         schema that declares none for it (BAL-484's writer is gone).
+
+         Each checkbox is followed by a hidden "false" input so an explicit
+         value is always submitted: werkzeug's MultiDict keeps the FIRST
+         value, so a checked box yields "true" (checkbox first) and an
+         unchecked box yields only the hidden "false".  This lets the item
+         schema apply the flag without a load_default that would otherwise
+         let a quick-edit silently clear it. #}
+      {% if not txn.recurs %}
+      {% if txn.is_placed %}
+      <div class="mb-2">
+        <label class="form-label mb-0 small" for="txn-name-{{ txn.id }}">Name</label>
+        <input type="text" name="name" id="txn-name-{{ txn.id }}"
+               value="{{ txn.name }}" maxlength="200" required
+               class="form-control form-control-sm">
+      </div>
+      <div class="mb-2">
+        <label class="form-label mb-0 small" for="txn-category-{{ txn.id }}">Category</label>
+        <select name="category_id" id="txn-category-{{ txn.id }}"
+                class="form-select form-select-sm"
+                {{ 'disabled' if locked else '' }}>
+          {% if txn.category_id is none %}
+          <option value="" selected>(no category yet)</option>
+          {% endif %}
+          {% for cat in categories %}
+          <option value="{{ cat.id }}" {{ 'selected' if txn.category_id == cat.id else '' }}>
+            {{ cat.display_name }}
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
       {% if txn.is_expense %}
       <div class="form-check mb-2">
         <input type="checkbox" class="form-check-input" id="is_envelope"
@@ -481,6 +532,19 @@
           Visible to companion
         </label>
       </div>
+      {# *Make this repeat* (ruling R-BAL23): the one act on a one-off this
+         card does not perform is giving it a cadence, and that is the
+         definition's own edit form, which opens on the cadence placeholder
+         so nothing is authored by accident (R-BAL32).  The placed row is
+         adopted by a rule that names its date, else replaced by the rule's
+         own (R-BAL25). #}
+      {% if txn.is_placed %}
+      <div class="mb-2">
+        <a class="small" href="{{ url_for('templates.edit_template', template_id=txn.template_id) }}">
+          <i class="bi bi-arrow-repeat"></i> Make this repeat
+        </a>
+      </div>
+      {% endif %}
       {% endif %}
     </div>
 
@@ -568,7 +632,10 @@
       promises is the service's own answer (``preview.soft``, the arm
       ``delete_transaction`` will take -- keyed on ``Transaction.recurs``
       since plan step balance:X-bi-7a) rather than a second reading of the
-      row's link here, so the dialog and the door cannot part.
+      row's link here, so the dialog and the door cannot part -- and so is
+      whether the ITEM goes with the row (``preview.disposes_definition``,
+      plan step balance:X-bi-7b: a one-off's definition goes with its last
+      row, R-BAL27), the same answer step 5 of the delete acts on.
 
       **``&quot;`` and not a literal quote**, the same spelling
       ``accounts/statements.html`` uses for the same reason.  A ``{% set %}``
@@ -583,7 +650,7 @@
 Delete &quot;{{ txn.name }}&quot;{% if txn.entries %} and the {{ txn.entries | length }} purchase{{ '' if txn.entries | length == 1 else 's' }} filed under it{% endif %}?
 {% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
 {% if preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
-{% endif %}{% if preview.soft %}This occurrence will not come back, and the recurring transaction behind it keeps generating the others.{% else %}This cannot be undone.{% endif %}
+{% endif %}{% if preview.soft %}This occurrence will not come back, and the recurring transaction behind it keeps generating the others.{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
 {% if withdraws and withdraws.frees_a_line %}It also withdraws {{ withdraws.matches }} accepted match{{ '' if withdraws.matches == 1 else 'es' }}, so {{ withdraws.lines | length }} bank line{{ '' if withdraws.lines | length == 1 else 's' }} {{ 'is' if withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.{% if withdraws.kept_rows %} {{ withdraws.kept_rows }} row{{ '' if withdraws.kept_rows == 1 else 's' }} {{ 'that match' if withdraws.matches == 1 else 'those matches' }} created stay{{ 's' if withdraws.kept_rows == 1 else '' }} in your books.{% endif %}{% endif %}
   {%- endset -%}
   <button type="button" class="btn btn-sm btn-outline-danger w-100"

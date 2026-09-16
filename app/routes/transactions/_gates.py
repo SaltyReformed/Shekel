@@ -135,9 +135,11 @@ def _reject_generated_due_date_edit(txn, data):
     anyway; this arm exists so the owner reads *why* rather than the generic
     invalid-reference sentence a constraint hit renders, which is the
     screens-stating-what-is-false defect this arc keeps closing.  The popover
-    stops offering the clear at the doors leaf's second half (``X-bi-7b``,
-    leaf 7b-2); until then this is the sentence a cleared box meets -- on a
-    one-off the grid itself minted, since leaf 7b-1.
+    renders the input ``required`` for such a row since leaf 7b-2 of
+    ``X-bi-7b``, so this arm is the crafted-request and stale-form backstop
+    every guard in this module is.  A MOVED date carries ``occurs_on`` with
+    it at the field write (ruling **R-BAL25**), which is not this gate's to
+    do.
 
     Args:
         txn: The Transaction being edited.
@@ -156,7 +158,7 @@ def _reject_generated_due_date_edit(txn, data):
             "transaction to move every instance, or type an amount here to make "
             "this month's figure its own.",
         )
-    if txn.template_id is not None and data["due_date"] is None:
+    if txn.is_placed and data["due_date"] is None:
         return _error_transaction_response(
             txn.id,
             "This item's due date can be moved but not cleared: its price is "

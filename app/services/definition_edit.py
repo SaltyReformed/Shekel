@@ -55,8 +55,9 @@ from app.utils.balance_predicates import is_projected_clause
 #
 # ``default_amount`` is absent for the same shape of reason since plan step
 # X-au-a: the amount is no longer a bare column but a dated SERIES, and
-# ``template_amount_service.set_amount`` is the one door that moves the scalar
-# and the series together.  A setattr here would move one without the other.
+# ``template_amount_service`` holds its two write doors (``set_amount``
+# appends a version; ``restate_in_effect`` corrects the one a date reads,
+# **R-BAL29**).  A setattr here would move the scalar without the series.
 EDITABLE_FIELDS = frozenset({
     "name", "category_id", "transaction_type_id",
     "account_id", "is_envelope", "companion_visible",
@@ -113,7 +114,11 @@ def unruled_live_rows(template) -> list[Transaction]:
     ``_recurrence_common.classify_maintain_work`` uses to decide which rows a
     recurring definition's regeneration may rewrite.  A settled row is
     immutable history and an overridden one is a deliberate per-instance
-    change; neither follows the definition, here or there.
+    change; neither follows the definition, here or there.  A placed row
+    carries no flag once the popover restates its price in place
+    (**R-BAL29**; a row the interim between leaves 7b-1 and 7b-2 detached
+    is re-attached by its next typed figure, **R-BAL37**), so for a one-off
+    this selects its every live row.
 
     Args:
         template: The rule-less
@@ -122,8 +127,9 @@ def unruled_live_rows(template) -> list[Transaction]:
     Returns:
         The matching :class:`~app.models.transaction.Transaction` rows,
         oldest first.  Normally exactly one -- a one-off's placed row -- but
-        a definition whose recurrence was CLEARED keeps whatever survived
-        that sweep, and this must be correct for both.
+        a bank-born envelope holds one per paycheck (**R-BAL24**) and a
+        definition whose recurrence was CLEARED keeps whatever survived that
+        sweep, and this must be correct for all three.
     """
     return (
         db.session.query(Transaction)

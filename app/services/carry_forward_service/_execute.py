@@ -20,6 +20,7 @@ from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
+from app.services.one_off import due_date_after_move, due_date_for
 from app.services.recurrence import compute_due_date
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
@@ -133,28 +134,49 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # (D6-09 / MED-02) so this re-check shares one definition with
         # the source-period SELECT above.
         #
-        # Two passes are required because a row of a RECURRING definition
-        # must flip ``is_override = TRUE`` as part of the same SQL UPDATE:
-        # the flag is what keeps the maintain and generate passes off a row
-        # the owner placed elsewhere, and flipping it with the period leaves
-        # no transient state for the undated generation index (which excludes
-        # override rows) to collide on with the rule's own row in the target.
-        # A row NO RULE generated -- ad-hoc, or a rule-less definition's --
-        # only needs the period flip: no pass will ever write over it, and a
-        # flag there would hide it from
+        # THREE passes, because the rows differ in what the move writes.  A
+        # row of a RECURRING definition must flip ``is_override = TRUE`` as
+        # part of the same SQL UPDATE: the flag is what keeps the maintain
+        # and generate passes off a row the owner placed elsewhere, and
+        # flipping it with the period leaves no transient state for the
+        # undated generation index (which excludes override rows) to collide
+        # on with the rule's own row in the target.  A row NO RULE generated
+        # -- ad-hoc, or a rule-less definition's -- takes no flag: no pass
+        # will ever write over it, and a flag there would hide it from
         # ``recurrence_engine.propagate_to_unruled_definition`` (the twin's
         # defect **BAL-493** on this table) and from a rule added later
         # (R-BAL25).  **The split is ``recurs`` since plan step
-        # balance:X-bi-7a**, not the link (ruling R-BAL20).  A rule-less
-        # definition's row keeps its ``occurs_on`` where it has one, so the
-        # occurrence index is indifferent to the move.  Its UNDATED
-        # non-override shape -- a pre-R17 row the ``occurs_on`` backfill left
-        # NULL (6 on production 2026-09-13, all immutable, so none this
-        # branch can move) -- is still keyed on its paycheck by the undated
-        # index, and two such rows of one cleared cadence would collide on a
-        # move; ``recurrence:R19-b`` (``occurs_on`` NOT NULL) is what deletes
-        # that shape, and the flip this branch used to make there was the
-        # one thing keeping it out of the index.
+        # balance:X-bi-7a**, not the link (ruling R-BAL20).
+        #
+        # **A PLACED row -- a rule-less definition's -- is RE-PLACED by the
+        # move** (ruling **R-BAL33**, plan step balance:X-bi-7b): due on
+        # its placed paycheck's start unless the owner stated a day
+        # (R-BAL22), so the default follows the placement and an
+        # owner-stated day, read by position, stays.  ``one_off.
+        # due_date_after_move`` is the one statement of that rule for both
+        # doors that move a row; here the rows whose answer moved are
+        # collected under it and written in one UPDATE, ``occurs_on``
+        # beside ``due_date`` because a placed row answers its own due date
+        # (R-BAL25).  The function's only other answer is the row's own
+        # date, so every re-placed row takes the target's start.  Found by
+        # 7b-1's adversarial review: a one-off is dated at birth since that
+        # leaf, and this arm moved the period alone, so a one-off rolled to
+        # the next paycheck read OVERDUE on the dashboard pulse and late in
+        # ``payment_timeliness`` where the undated row it replaced sat on
+        # the "anytime this period" shelf.  The balance is identical under
+        # either date (a one-off's series is flat, R-BAL21).
+        #
+        # The occurrence index cannot collide TODAY: a rule-less definition
+        # holds one row per scenario until leaf 7b-3 gives a bank-born
+        # envelope one per paycheck -- and then a row carried INTO a paycheck
+        # the same definition already holds a row in would take that row's
+        # ``occurs_on``, which is ledger finding **BAL-496**, that leaf's to
+        # answer before it ships.  A linked row always carries a due date
+        # (``ck_transactions_template_row_needs_due_date``), so the rule
+        # above always has one to read; the 6 pre-R17 rows the ``occurs_on``
+        # backfill left NULL (production 2026-09-13) are undated in THAT
+        # column alone, all immutable, so none reaches this branch, and
+        # ``recurrence:R19-b`` (``occurs_on`` NOT NULL) deletes the shape.
         #
         # The ``Transaction.version_id: + 1`` assignment honors the
         # optimistic-lock contract from C-17 / F-009: every UPDATE
@@ -169,7 +191,19 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # diverges from the database while the loop runs.
         if ctx.discrete_txns:
             recurring_ids = [t.id for t in ctx.discrete_txns if t.recurs]
-            unruled_ids = [t.id for t in ctx.discrete_txns if not t.recurs]
+            re_placed_due = due_date_for(None, ctx.target_period)
+            re_placed_ids = [
+                t.id for t in ctx.discrete_txns
+                if t.is_placed and due_date_after_move(
+                    t.due_date,
+                    source_start=ctx.source_period.start_date,
+                    target=ctx.target_period,
+                ) != t.due_date
+            ]
+            unruled_ids = [
+                t.id for t in ctx.discrete_txns
+                if not t.recurs and t.id not in re_placed_ids
+            ]
 
             if recurring_ids:
                 count += (
@@ -183,6 +217,25 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
                         {
                             Transaction.pay_period_id: target_period_id,
                             Transaction.is_override: True,
+                            Transaction.version_id: Transaction.version_id + 1,
+                        },
+                        synchronize_session="fetch",
+                    )
+                )
+
+            if re_placed_ids:
+                count += (
+                    db.session.query(Transaction)
+                    .filter(
+                        Transaction.id.in_(re_placed_ids),
+                        is_projected_clause(Transaction),
+                        Transaction.is_deleted.is_(False),
+                    )
+                    .update(
+                        {
+                            Transaction.pay_period_id: target_period_id,
+                            Transaction.due_date: re_placed_due,
+                            Transaction.occurs_on: re_placed_due,
                             Transaction.version_id: Transaction.version_id + 1,
                         },
                         synchronize_session="fetch",
