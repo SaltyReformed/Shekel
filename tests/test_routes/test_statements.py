@@ -31,6 +31,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
+from app.services.statement_import import bank_levels
 from app.services.statement_match import NEW_ENVELOPE, Verb
 from app.utils.log_events import (
     EVT_STATEMENT_IMPORT_DELETED,
@@ -52,6 +53,20 @@ _ENTRIES = [
     (date(2026, 3, 3), "1500.00", "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
 ]
 
+
+
+def _placed_on(account_id, import_id):
+    """Return the day *import_id*'s figure STANDS placed on, or ``None``.
+
+    The level relation's answer (plan step ``balance:X-bj-1``): a standing
+    bank level naming the import gives its day; a released one, or an import
+    that never placed a figure, gives ``None`` -- exactly what the placement
+    column on the import row used to say before the placement became a row.
+    """
+    for level, release in bank_levels(account_id):
+        if level.statement_import_id == import_id and release is None:
+            return level.observed_on
+    return None
 
 def _payload(entries=None, start="100.00", **kwargs):
     """Return a well-formed SECU CSV payload."""
@@ -1114,7 +1129,9 @@ class TestTheAccountPageLinksHere:
         ):
             _upload(auth_client, seed_user["account"].id, _payload())
             first = db.session.query(StatementImport).one()
-            assert first.balance_effective_on == date(2026, 3, 3)
+            assert _placed_on(
+                seed_user["account"].id, first.id,
+            ) == date(2026, 3, 3)
             response = _upload(
                 auth_client, seed_user["account"].id,
                 build.build(build.chained("100.00", [
@@ -1133,7 +1150,7 @@ class TestTheAccountPageLinksHere:
             for _, message in toasts
         )
         db.session.expire_all()
-        assert first.balance_effective_on is None
+        assert _placed_on(seed_user["account"].id, first.id) is None
         imported = [
             record for record in caplog.records
             if getattr(record, "event", None) == EVT_STATEMENT_IMPORTED
@@ -1256,23 +1273,23 @@ class TestTheAccountPageLinksHere:
         assert badge is not None, "the imports table renders no evidence badge"
         assert badge.group(1) == "text-bg-secondary"
 
-    def test_the_NOT_PLACED_badge_blames_the_file_for_nothing(
+    def test_the_RELEASED_badge_names_the_import_that_released_it(
         self, auth_client, db, seed_user,
     ):
-        """Plan step ``bank_import:X-gr``, finding **BI-489**, developer ruling 2026-09-12.
+        """Plan step ``balance:X-bj-1``, finding **BAL-485**.
 
-        The badge renders for a figure never placed AND for a placement the
-        app itself released, and the table cannot tell them apart because the
-        release stores nothing.  Its title read "This file's lines stop at
-        ..., so they cannot reach the day it states this figure for", which on
-        a released placement blamed the file for a state the app produced.
-        The world here is the RELEASED case -- the second import records a
-        line beneath the first's placement -- because that is the case the old
-        sentence was false for; the title is read off the badge itself.
+        The badge rendered one sentence for a figure never placed AND for a
+        placement the app itself released, because the release was an UPDATE
+        that stored nothing (``bank_import:X-gr`` wrote it for both causes,
+        ruling **R-BI6**, and named the cause as this step's).  A release is
+        a row now, so the badge says which import's line withdrew the
+        placement, on what day, and when.  The world is the RELEASED case --
+        the second import records a line beneath the first's placement -- and
+        the title is read off the badge itself.
         """
         _upload(auth_client, seed_user["account"].id, _payload())
         first = db.session.query(StatementImport).one()
-        assert first.balance_effective_on == date(2026, 3, 3)
+        assert _placed_on(seed_user["account"].id, first.id) == date(2026, 3, 3)
         _upload(
             auth_client, seed_user["account"].id,
             build.build(build.chained("100.00", [
@@ -1283,7 +1300,101 @@ class TestTheAccountPageLinksHere:
             filename="inserted.csv",
         )
         db.session.expire_all()
-        assert first.balance_effective_on is None
+        assert _placed_on(seed_user["account"].id, first.id) is None
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        badge = re.search(
+            r'<span class="badge text-bg-warning"\s+title="([^"]*)">released</span>',
+            page,
+        )
+        assert badge is not None, "the released placement renders no badge"
+        title = badge.group(1)
+        assert title.startswith(
+            "This figure had been placed on 2026-03-03 and was released on ",
+        )
+        assert (
+            'the import of &#34;inserted.csv&#34; recorded a line on 2026-03-02'
+            in title
+            or 'the import of &quot;inserted.csv&quot; recorded a line on '
+            '2026-03-02' in title
+        )
+        assert "since been deleted" not in title
+        assert ">not placed<" not in page
+
+    def test_the_RELEASED_badge_says_when_the_cause_has_been_deleted(
+        self, auth_client, db, seed_user,
+    ):
+        """The other event that leaves a placement withdrawn: the cause is gone.
+
+        Delete the releasing import and the release keeps the day whose lines
+        changed while the key's ``SET NULL`` takes the import off it; the
+        badge says that rather than guessing a file name.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        first = db.session.query(StatementImport).one()
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("100.00", [
+                _ENTRIES[0],
+                (date(2026, 3, 2), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                _ENTRIES[1],
+            ])),
+            filename="inserted.csv",
+        )
+        inserted = db.session.query(StatementImport).filter(
+            StatementImport.id != first.id,
+        ).one()
+        response = auth_client.post(
+            f"/accounts/{seed_user['account'].id}/statements/delete",
+            data={"import_id": str(inserted.id)},
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        assert db.session.get(StatementImport, inserted.id) is None
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        badge = re.search(
+            r'<span class="badge text-bg-warning"\s+title="([^"]*)">released</span>',
+            page,
+        )
+        assert badge is not None
+        assert (
+            "the recorded lines from 2026-03-02 changed and the import "
+            "responsible has since been deleted" in badge.group(1)
+        )
+        assert "inserted.csv" not in badge.group(1)
+
+    def test_the_NOT_PLACED_badge_states_its_one_cause(
+        self, auth_client, db, seed_user,
+    ):
+        """A figure never placed: no day of the file reconciled it.
+
+        The one state left in this branch once a release is told apart, so
+        the sentence names it alone -- the date-range export shape, whose
+        header states a figure its own lines cannot reach.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        # ADJACENT to the first file's last day, so the recorded opening is
+        # known (the first import's placement reaches it) and the header's
+        # figure fails to reconcile on any day -- a file the walk could not
+        # reach would be placed by ASSUMPTION instead, which is a different
+        # state and a different badge.
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(
+                build.chained("1534.19", [
+                    (date(2026, 3, 4), "-10.00", "POINT OF SALE DEBIT L340 X"),
+                ], with_running=False),
+                balance_as_of="08/16/2026", stated_balance="2501.31",
+            ),
+            filename="range.csv",
+        )
 
         page = auth_client.get(
             f"/accounts/{seed_user['account'].id}/statements"
@@ -1293,10 +1404,17 @@ class TestTheAccountPageLinksHere:
             r'<span class="badge text-bg-warning"\s+title="([^"]*)">not placed</span>',
             page,
         )
-        assert badge is not None, "the released placement renders no badge"
-        assert badge.group(1).startswith("No day holds this figure.")
-        assert "released the placement" in badge.group(1)
-        assert "cannot reach the day" not in page
+        assert badge is not None, "the unplaced figure renders no badge"
+        assert badge.group(1) == (
+            "No day holds this figure: no day this file covers reconciled it "
+            "with what was already recorded before the file&#39;s first day. "
+            "A later import can place a balance again."
+        ) or badge.group(1) == (
+            "No day holds this figure: no day this file covers reconciled it "
+            "with what was already recorded before the file's first day. "
+            "A later import can place a balance again."
+        )
+        assert "released" not in badge.group(1)
 
     def test_the_source_select_names_the_FORMAT_not_a_column_it_lacks(
         self, auth_client, seed_user,
@@ -1457,7 +1575,7 @@ class TestTheDeletePost:
         later = db.session.query(StatementImport).filter(
             StatementImport.id != first.id,
         ).one()
-        assert later.balance_effective_on == date(2026, 3, 5)
+        assert _placed_on(seed_user["account"].id, later.id) == date(2026, 3, 5)
 
         response = self._delete(
             auth_client, seed_user["account"].id, first.id,
@@ -1471,7 +1589,7 @@ class TestTheDeletePost:
         )
         assert [category for category, _ in toasts] == ["info"]
         db.session.expire_all()
-        assert later.balance_effective_on is None
+        assert _placed_on(seed_user["account"].id, later.id) is None
 
     def test_the_flash_says_NOTHING_about_placements_when_none_went(
         self, auth_client, db, seed_user,

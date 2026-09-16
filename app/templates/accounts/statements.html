@@ -220,26 +220,28 @@
                   <br>
                   <span class="badge {{ copy.badge }}"
                         title="{{ copy.sentence }}">{{ copy.label }}</span>
+                  {% elif row.balance.release %}
+                  <span class="text-muted">as of {{ row.balance.stated_on }}</span>
+                  <br>
+                  {# THE CAUSE IS A FACT NOW (plan step balance:X-bj-1,
+                     finding BAL-485): a release is an appended row beside
+                     the level it withdrew, naming the import whose lines
+                     undercut it and the day those lines changed, so this
+                     badge says which of the two events happened rather than
+                     listing both -- the sentence bank_import:X-gr had to
+                     write while the release stored nothing (R-BI6).  The
+                     cause reads NULL only once the import responsible has
+                     been deleted, and the sentence says that instead. #}
+                  <span class="badge text-bg-warning"
+                        title="This figure had been placed on {{ row.balance.release.placed_on }} and was released on {{ row.balance.release.released_at | local_datetime }}: {% if row.balance.release.by_file_name %}the import of &quot;{{ row.balance.release.by_file_name }}&quot; recorded a line on {{ row.balance.release.lines_changed_from }}, which this placement had been worked out without{% else %}the recorded lines from {{ row.balance.release.lines_changed_from }} changed and the import responsible has since been deleted{% endif %}. A later import can place a balance again.">released</span>
                   {% else %}
                   <span class="text-muted">as of {{ row.balance.stated_on }}</span>
                   <br>
-                  {# THE SENTENCE ASSERTS NO CAUSE, because this table cannot
-                     know one (plan step bank_import:X-gr, finding BI-489,
-                     developer ruling 2026-09-12).  Two states reach this
-                     branch: a figure no day of the file reconciled with what
-                     was recorded before it, and a placement the app itself
-                     RELEASED -- a later import recording a line at or before
-                     its day, or a delete removing the lines it rested on
-                     (release_anchors_from) -- which writes NULL and keeps
-                     nothing saying it was once placed.  It read "This file's
-                     lines stop at {period_end}, so they cannot reach the day
-                     it states this figure for", the never-placed case's
-                     date-range cause, and so blamed the file for a state the
-                     app produced.  balance:X-bj-1's level relation records a
-                     release as an appended superseding row; the badge names
-                     the cause once it can read one. #}
+                  {# Never placed, and since balance:X-bj-1 the ONLY state
+                     that reaches this branch: a released placement is told
+                     apart above.  So the sentence states the one cause. #}
                   <span class="badge text-bg-warning"
-                        title="No day holds this figure. Either no day this file covers reconciled it with what was already recorded before the file's first day, or a later import or a delete changed the lines it had been placed on and released the placement. A later import can place a balance again.">not placed</span>
+                        title="No day holds this figure: no day this file covers reconciled it with what was already recorded before the file's first day. A later import can place a balance again.">not placed</span>
                   {% endif %}
                   {% else %}
                   <span class="text-muted">no balance stated</span>

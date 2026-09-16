@@ -84,6 +84,7 @@ from sqlalchemy import and_
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
+from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 
@@ -609,3 +610,33 @@ def balance_contributing_clause():
         Transaction.is_deleted.is_(False),
         Transaction.status_id.notin_(balance_excluded_status_ids()),
     )
+
+
+def owner_declared_clause():
+    """Return the SQL clause matching a level the OWNER declared.
+
+    **The ONE spelling of the interim narrowing every cash-side reader of
+    the level relation composes** (plan step ``balance:X-bj-1``, ruling
+    **R-JN**).  Since that step ``budget.account_anchor_history`` holds the
+    bank's statement placements beside the owner's true-ups, and until
+    ``X-f3c-5`` stops an assertion resetting a plain account the cash fold
+    must RESET at the owner's rows and at nothing else -- a bank's closing is
+    an observation that moves no balance (ruling **R-IS**), and letting it
+    reset the fold would move money at a step that moves none.  So the
+    resolver (``cash_ledger._facts._governing_row``), the clearing boundary
+    (``reconciled_through``), the replay (``cash_anchor_facts``) and the
+    books bound (``earliest_assertion_day``) all filter through this clause
+    rather than each writing ``statement_import_id IS NULL`` for itself.
+    ``scripts/integrity_check.py``'s BA-01 spells the same predicate in raw
+    SQL, the one second spelling, named there.
+
+    **It is a FENCE with a named deleter.**  The flip deletes the reset and
+    this clause with it; after it a level is a check, not a reset, and no
+    cash reader has a reason to prefer one observer over the other.
+
+    Returns:
+        A SQLAlchemy boolean expression equivalent to
+        ``AccountAnchorHistory.statement_import_id IS NULL``, suitable for
+        ``query.filter(...)`` on any select rooted at that model.
+    """
+    return AccountAnchorHistory.statement_import_id.is_(None)

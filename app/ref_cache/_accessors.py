@@ -859,9 +859,9 @@ def statement_balance_evidence_member(evidence_id):
 
     :func:`statement_balance_evidence_id`'s inverse, and the reason it exists
     is the project's own rule rather than convenience: a reader holding
-    ``budget.statement_imports.balance_evidence_id`` needs the MEMBER to
+    ``budget.account_anchor_history.evidence_id`` needs the MEMBER to
     dispatch on, and the only other way to get one is
-    ``StatementBalanceEvidenceEnum(row.balance_evidence.name)`` -- constructing
+    ``StatementBalanceEvidenceEnum(<ref row>.name)`` -- constructing
     logic out of a column whose strings are for display.  That is the subtler
     half of the IDs-for-logic rule, the half ``shekel-refname-compare`` cannot
     see because it is a constructor rather than a comparison, and it moves
@@ -882,11 +882,12 @@ def statement_balance_evidence_member(evidence_id):
 def statement_balance_evidence_id(member):
     """Return the integer primary key for a StatementBalanceEvidenceEnum member.
 
-    An imported statement's opening-balance discriminator (plan step
-    **X-f6e-1**, ruling **R-GF**).  Stamped on
-    ``budget.statement_imports.balance_evidence_id`` by the one import door, via
-    the integer ID and never the string ``name``.  What the three members MEAN
-    is :class:`app.enums.StatementBalanceEvidenceEnum`'s to say and is not
+    The level relation's evidence rank (plan step **X-f6e-1**, ruling
+    **R-GF**; the column moved to ``budget.account_anchor_history.evidence_id``
+    at ``balance:X-bj-1``).  Stamped by the import door for a bank level and
+    by the column's own default for an owner's, via the integer ID and never
+    the string ``name``.  What the three members MEAN is
+    :class:`app.enums.StatementBalanceEvidenceEnum`'s to say and is not
     restated here.
     """
     require_init()
