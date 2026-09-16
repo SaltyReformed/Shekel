@@ -1,7 +1,7 @@
 """a paycheck has earning lines
 
 Revision ID: 6c15d2a97b78
-Revises: 0a4d2c3e89f8
+Revises: b5c7e9a1d2f4
 Create Date: 2026-09-16 01:40:00.000000
 
 Plan step **salary:R18-b** (the second leaf of R18; ruling **R-SAL38**,
@@ -9,9 +9,11 @@ developer 2026-09-15; ledger row **D59**)::
 
     ref.paycheck_line_kinds  +=  'taxable_earning', 'after_tax_earning'
 
-**Two reference rows and nothing else; no figure moves.**  A paycheck is base
-pay plus a list of lines and a line's KIND is its position in the waterfall
-(R18-a renamed the table for it); this revision gives the vocabulary its two
+**Two reference rows and nothing else; no figure moves.**  It sits above
+``b5c7e9a1d2f4`` (``balance:X-bi-3a``) in the chain only because that
+revision reached ``dev`` first; the two touch no table in common.  A paycheck
+is base pay plus a list of lines and a line's KIND is its position in the
+waterfall (R18-a renamed the table for it); this revision gives the vocabulary its two
 EARNING kinds -- ``taxable_earning`` joins the gross (the FICA base, what
 withholding annualises) and ``after_tax_earning`` joins the net, untaxed --
 in the same commit as the engine arms that price them
@@ -42,7 +44,10 @@ from sqlalchemy import text
 
 # Revision identifiers, used by Alembic.
 revision = "6c15d2a97b78"
-down_revision = "0a4d2c3e89f8"
+# Re-pointed from 0a4d2c3e89f8 onto balance:X-bi-3a's b5c7e9a1d2f4 the night
+# both landed over R18-a (the coordinator's rule: whichever lands second
+# re-points).  Nothing here reads a table that revision touches.
+down_revision = "b5c7e9a1d2f4"
 branch_labels = None
 depends_on = None
 
