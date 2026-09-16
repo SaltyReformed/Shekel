@@ -38,6 +38,7 @@ from app.services.settle_day import (
 )
 from app.services.state_machine import verify_transition
 from app.services.status_seam._record import Settlement
+from app.services.status_seam._covering import sync_covering_movement
 from app.services.status_seam._refusals import (
     StatusBearingRow,
     reject_figure_without_settled_status,
@@ -480,6 +481,9 @@ def apply_status_change(
         )
 
     verify_transition(row, new_status_id)
+    # Read BEFORE the assignment, for the covering movement below: leaving the
+    # settled band is a question about the status the row is LEAVING.
+    was_settled = row.status_id in settled_status_ids()
     row.status_id = new_status_id
 
     # Settle-day maintenance -- the day AND the basis that says how it is known,
@@ -578,5 +582,19 @@ def apply_status_change(
             row.settled_basis_id = ref_cache.settlement_basis_id(
                 settlement.basis,
             )
+        # **The record's other home** (plan step **X-bi-3a**, ruling
+        # **R-BAL39**): a settle on the manual branch is mirrored as ONE
+        # covering movement, the payment row that records a bill's money the
+        # way a purchase records an envelope's, and leaving the band releases
+        # it.  Written LAST so every value it mirrors -- the day pair, the
+        # link, the figure and its basis -- is the row's final one for this
+        # act.  The rule, the lifecycle and the 3b / 3c gate are
+        # :mod:`app.services.status_seam._covering`'s.
+        sync_covering_movement(
+            row,
+            was_settled=was_settled,
+            now_settled=new_status_id in settled_status_ids(),
+            settlement=settlement,
+        )
 
     db.session.expire(row, ["status"])

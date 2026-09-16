@@ -35,6 +35,7 @@ from app.enums import (
     AcctTypeEnum,
     AmountSourceEnum,
     SettledDayBasisEnum,
+    MovementFigureSourceEnum,
     SettlementBasisEnum,
     StatementBalanceEvidenceEnum,
     BusinessDayShiftEnum,
@@ -236,6 +237,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(StatementSourceEnum, ref_models.StatementSource),
         _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
         _RefSpec(SettledDayBasisEnum, ref_models.SettledDayBasis),
+        _RefSpec(MovementFigureSourceEnum, ref_models.MovementFigureSource),
         _RefSpec(StatementBalanceEvidenceEnum, ref_models.StatementBalanceEvidence),
     ]
 

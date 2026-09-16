@@ -31,6 +31,9 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    family_cash_leg,
+    purchases_of,
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     account_never_asserted,
@@ -58,6 +61,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     the full create_entry validation chain.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),
@@ -449,9 +453,8 @@ class TestCreateEntry:
                     ),
                 )
 
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn_id,
-            ).count() == 0
+            # No PURCHASE was recorded; the row keeps only the seam's covering movement (X-bi-3a).
+            assert purchases_of(txn_id) == []
 
     def test_create_entry_boundary_minimum_amount(
         self, app, db, seed_user, seed_entry_template,
@@ -2169,9 +2172,8 @@ class TestASettledRowsPurchasesAreClosed:
                 )
 
             assert settled_figure(txn) == recorded_before
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn.id,
-            ).count() == 0
+            # No purchase landed; the covering movement is not one (X-bi-3a).
+            assert purchases_of(txn.id) == []
 
     def test_the_BANK_POSTING_DAY_is_still_recordable(
         self, app, db, seed_user, seed_entry_template,
@@ -2481,9 +2483,8 @@ class TestASettledRowMayStillGAINAPurchase:
                     ),
                 )
 
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn.id,
-            ).count() == 0
+            # No purchase landed; the covering movement is not one (X-bi-3a).
+            assert purchases_of(txn.id) == []
 
     def test_the_state_the_refusal_prevents_publishes_a_FABRICATED_INFLOW(
         self, app, db, seed_user, seed_entry_template,
@@ -2507,10 +2508,16 @@ class TestASettledRowMayStillGAINAPurchase:
                 Transaction, seed_entry_template["transaction"].id,
             )
             self._close(txn)
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("-500.00")
+            # The close's own leg is zero since plan step X-bi-3a -- its
+            # covering movement carries the `$500.00` -- so the family is what
+            # the close booked, and the row's OWN leg is the composition under
+            # test.
+            assert family_cash_leg(txn) == Decimal("-500.00")
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("0.00")
 
             # PAST the door on purpose -- see the docstring.
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("600.00"), description="BJs",
@@ -2521,11 +2528,17 @@ class TestASettledRowMayStillGAINAPurchase:
             db.session.flush()
             db.session.expire(txn)
 
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("100.00")
-            # ...and the two legs still sum to what the close alone booked, so
-            # the account total is intact and only the COMPOSITION is false.
+            # The row's own leg reads the WHOLE illegal purchase back as an
+            # inflow now: `0 - 600` on top of a covering movement that already
+            # carries the close.  It was `-500 + 600 = +100` while the close
+            # sat on the row's leg (before X-bi-3a); the fabrication is the
+            # same kind and larger.
+            assert cash_ledger.settled_cash_leg(txn) == Decimal("600.00")
+            # ...and the row, its covering movement and the illegal purchase's
+            # own fact still sum to what the close alone booked, so the
+            # account total is intact and only the COMPOSITION is false.
             assert (
-                cash_ledger.settled_cash_leg(txn) - Decimal("600.00")
+                family_cash_leg(txn) - Decimal("600.00")
                 == Decimal("-500.00")
             )
 
@@ -2570,6 +2583,7 @@ class TestASettledRowMayStillGAINAPurchase:
             # What the refusal prevents, built past the door: the closed row's
             # OWN leg moves, on its own settle day.
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id, amount=Decimal("30.00"),
                 description="Food Lion", purchased_on=display_today(),

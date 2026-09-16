@@ -45,6 +45,7 @@ from app.services.settle_day import record_settle_day, recorded_settle_day
 from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    family_journal_filter,
     add_entry,
     amount_basis_for,
     an_asserted_day,
@@ -171,7 +172,7 @@ def _cash_leg(txn_id, account_id):
         )
         .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
         .filter(
-            JournalEntry.transaction_id == txn_id,
+            family_journal_filter(txn_id),
             Posting.ledger_account_id == ledger_id,
         )
         .scalar()
@@ -1060,7 +1061,7 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
                 "a figure correction moved the day the money moved"
             )
             assert net_posted_by_day(
-                JournalEntry.transaction_id == txn_id,
+                family_journal_filter(txn_id),
             ) == {day: Decimal("245.32")}
 
     def test_a_SECOND_correction_replaces_the_first(
@@ -1107,7 +1108,7 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
                 SettlementBasisEnum.CORRECTED,
             )
             assert net_posted_by_day(
-                JournalEntry.transaction_id == txn_id,
+                family_journal_filter(txn_id),
             ) == {day: Decimal("251.08")}
 
     def test_re_posting_a_CORRECTED_figure_unchanged_writes_nothing(

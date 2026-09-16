@@ -55,6 +55,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
 from tests._test_helpers import (
+    figure_source_columns,
     append_only_guard_lifted,
     an_entered_day,
     settle_day_columns,
@@ -195,6 +196,11 @@ def _make_entry(data, parent: Transaction, **overrides) -> TransactionEntry:
     # break it says ``settled_day_basis_id`` outright.
     if "settled_day_basis_id" not in overrides:
         fields.update(settle_day_columns(fields.get("settled_on")))
+    # WHO WROTE the figure, for the same reason (plan step **X-bi-3a**): the
+    # column is NOT NULL with no default, and the source is not this suite's
+    # subject.
+    if "figure_source_id" not in overrides:
+        fields.update(figure_source_columns())
     return TransactionEntry(**fields)
 
 

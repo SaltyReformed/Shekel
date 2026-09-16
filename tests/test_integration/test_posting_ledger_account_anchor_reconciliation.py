@@ -88,6 +88,7 @@ from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    StatusEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
@@ -102,6 +103,7 @@ from app.services import (
     anchor_service,
     cash_ledger,
     posting_service,
+    status_seam,
     transfer_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
@@ -886,8 +888,22 @@ class TestRevertAfterTrueupSelfHeals:
             db.session.commit()
             _assert_account_anchors_reconcile(scenario_id)
 
-            # Revert the pre-true-up spend via the real posting primitive; the
-            # tail self-heal re-bases the true-up in the same transaction.
+            # Revert the pre-true-up spend through the ONE status door, then
+            # reconcile via the real posting primitive; the tail self-heal
+            # re-bases the true-up in the same transaction.
+            #
+            # **The revert goes through the seam since plan step X-bi-3a.**
+            # This case drove the posting primitive alone with
+            # ``settled=False`` on a row the database still held as Paid, and
+            # the flag was enough while the money sat on the row's own leg.
+            # A settle now writes a covering MOVEMENT that carries the money
+            # (ruling R-BAL39), and a posted purchase is cash that left the
+            # bank whatever its parent's status says (ruling R-FM) -- so only
+            # the act that releases the movement, the seam's revert, takes the
+            # $200.00 back out.  Every figure below is unchanged.
+            status_seam.apply_status_change(
+                spend, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(spend, settled=False)
             db.session.commit()
 

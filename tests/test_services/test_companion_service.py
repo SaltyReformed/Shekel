@@ -31,6 +31,7 @@ from app.services import companion_service
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import (
+    figure_source_columns,
     capture_sql_statements,
     moved_by_the_owner,
     generate_row_of,
@@ -640,6 +641,7 @@ class TestEntryEagerLoading:
         )
         txn = _make_txn(seed_periods_today[0], template)
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("42.50"),
@@ -684,11 +686,13 @@ class TestEntryDataComputation:
         )
         txn = _make_txn(seed_periods_today[0], template)
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
@@ -727,11 +731,13 @@ class TestEntryDataComputation:
         )
         txn = _make_txn(seed_periods_today[0], template)
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="BP",
             purchased_on=date(2026, 1, 6),

@@ -71,6 +71,7 @@ from app.services.settle_day import SettleDay, record_settle_day
 from app.utils.dates import display_today
 from app.services.ledger_account_service import find_linked_ledger_account
 from tests._test_helpers import (
+    figure_source_columns,
     account_never_asserted,
     match_two_lines,
     create_account_of_type,
@@ -698,6 +699,7 @@ class TestTheTwoTiersAgree:
             )
             purchase_day = opened_on + timedelta(days=2)
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,

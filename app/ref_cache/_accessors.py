@@ -34,6 +34,7 @@ from app.enums import (
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
+    MovementFigureSourceEnum,
     PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -820,6 +821,37 @@ def settled_day_basis_id(member):
     """
     require_init()
     return cache().enum_ids[SettledDayBasisEnum][member]
+
+
+def movement_figure_source_id(member):
+    """Return the integer primary key for a MovementFigureSourceEnum member.
+
+    WHO WROTE a movement's FIGURE (plan step **X-bi-3a**, ruling **R-BAL39**):
+    the settle pricing it from the plan (``resolved``), a person (``typed``) or
+    the bank's own line (``observed``).  Stamped on
+    ``budget.transaction_entries.figure_source_id`` by the two writers of a
+    movement -- ``entry_service``'s purchase doors and the status seam's
+    covering-movement writer -- and read by the seam when a settle is reverted
+    or repeated: a ``resolved`` figure is re-priced, a stated one is honoured.
+    Always via the integer ID, never the string ``name``.
+
+    There is no accessor for an ABSENT source because there is no absent state:
+    the column is NOT NULL with no default, so a movement that states no source
+    is unstorable rather than conventionally "typed".
+
+    Args:
+        member: A ``MovementFigureSourceEnum`` member
+                (e.g. ``MovementFigureSourceEnum.RESOLVED``).
+
+    Returns:
+        int -- the ``ref.movement_figure_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid MovementFigureSourceEnum member.
+    """
+    require_init()
+    return cache().enum_ids[MovementFigureSourceEnum][member]
 
 
 def statement_balance_evidence_member(evidence_id):

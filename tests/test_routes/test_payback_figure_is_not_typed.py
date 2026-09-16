@@ -29,6 +29,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import credit_workflow
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import figure_source_columns
 
 
 @pytest.fixture(name="payback_pair")
@@ -145,6 +146,7 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
             _db.session.add(envelope)
             _db.session.flush()
             _db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id, description="Card purchase",
                 amount=Decimal("181.58"), is_credit=True,
@@ -214,6 +216,7 @@ class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
             _db.session.add(envelope)
             _db.session.flush()
             _db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id, description="Card purchase",
                 amount=Decimal("181.58"), is_credit=True,

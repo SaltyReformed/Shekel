@@ -94,6 +94,8 @@ from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     add_txn,
     an_entered_day,
     create_account_of_type,
@@ -143,10 +145,16 @@ def _scenario_id(seed_user):
 
 
 def _entries_for_transaction(transaction_id):
-    """Return every journal entry for *transaction_id*, oldest first."""
+    """Return every journal entry for the row's FAMILY, oldest first.
+
+    The row and its covering movement (plan step **X-bi-3a**): a settle
+    through the seam mirrors the row's money onto a movement whose entries
+    link by ``transaction_entry_id``, so a read keyed on ``transaction_id``
+    alone misses the money.  Every figure asserted through this is unchanged.
+    """
     return (
         _db.session.query(JournalEntry)
-        .filter_by(transaction_id=transaction_id)
+        .filter(family_journal_filter(transaction_id))
         .order_by(JournalEntry.id)
         .all()
     )
@@ -211,6 +219,7 @@ def _add_txn_entry(seed_user, txn, amount, *, is_credit):
     ``effective - Sigma(credit)`` formula, so this sets it directly.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

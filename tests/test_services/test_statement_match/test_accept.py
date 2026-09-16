@@ -41,6 +41,7 @@ from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
 from tests._test_helpers import (
+    family_journal_filter,
     an_entered_day,
     create_settled_cash_transaction,
 )
@@ -113,7 +114,7 @@ def _posted_cash_by_day(db, txn, account):
             LedgerAccount.id == Posting.ledger_account_id,
         )
         .filter(
-            JournalEntry.transaction_id == txn.id,
+            family_journal_filter(txn),
             LedgerAccount.account_id == account.id,
         )
         .group_by(JournalEntry.entry_date)
@@ -1032,6 +1033,29 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
     def test_it_agrees_while_it_holds(self, app, db, seed_user):
         """The control, without which every arm below could pass vacuously."""
         self._accepted_pair(db, seed_user)
+
+        groups = self._groups(seed_user)
+
+        assert len(groups) == 1
+        assert groups[0].agrees is True
+
+    def test_an_EXPENSE_row_agrees_while_it_holds(self, app, db, seed_user):
+        """The same control on the kind plan step X-bi-3a covers.
+
+        A settled bill's own cash leg is ZERO since that leaf -- its covering
+        movement carries the money -- and the register read
+        ``settled_cash_leg`` alone, so every accepted bill match reported
+        itself as no longer holding, while the income control above stayed
+        green (adversarial review, 2026-09-16).  The register prices the
+        FAMILY now, as the offer and the post-apply check do.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-148.32", posted_on=bank_day,
+        )
+        bill = a_transaction(seed_user, name="Electric", amount="148.32")
+        _submit(seed_user, lines=[line], transactions=[bill])
 
         groups = self._groups(seed_user)
 

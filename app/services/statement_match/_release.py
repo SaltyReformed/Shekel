@@ -104,8 +104,8 @@ from app.models.statement_match import (
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
-    cash_ledger,
     entry_service,
+    status_seam,
     transaction_service,
 )
 from app.utils.balance_predicates import is_balance_contributing
@@ -522,7 +522,10 @@ def _subject_removal(
     try:
         cash = (
             _entry_cash(subject) if is_purchase
-            else cash_ledger.settled_cash_leg(subject)
+            # The row's FAMILY (plan step **X-bi-3a**): the money a release
+            # takes out of the books sits on the row's covering movement,
+            # which goes with the row.
+            else status_seam.settled_family_leg(subject)
         )
     except AmountUnresolvable:
         # **AN EDIT OUTRANKS AN UNPRICEABLE ROW, and plan step balance:X-bx is
@@ -604,7 +607,8 @@ def _container_removal(container: Transaction) -> "PlannedRemoval | None":
         Its :class:`PlannedRemoval`, or ``None`` when it cannot be priced.
     """
     try:
-        cash = cash_ledger.settled_cash_leg(container)
+        # The family, for the reason ``_subject_removal`` gives.
+        cash = status_seam.settled_family_leg(container)
     except AmountUnresolvable:
         return None
     return PlannedRemoval(

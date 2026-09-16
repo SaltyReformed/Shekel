@@ -66,6 +66,7 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from tests._test_helpers import (
+    figure_source_columns,
     an_asserted_day,
     an_entered_day,
     an_observed_day,
@@ -147,6 +148,9 @@ def _make_envelope_with_purchase(seed_user, seed_periods, **entry_overrides):
         "amount": Decimal("18.64"),
         "description": "Food Lion",
         "purchased_on": seed_periods[0].start_date,
+        # WHO WROTE the figure (plan step **X-bi-3a**): NOT NULL, no default,
+        # and not this suite's subject.
+        **figure_source_columns(),
     }
     fields.update(entry_overrides)
     return parent, TransactionEntry(**fields)

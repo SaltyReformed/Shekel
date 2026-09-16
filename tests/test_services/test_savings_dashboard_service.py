@@ -38,6 +38,7 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
 
 from tests._test_helpers import (
+    figure_source_columns,
     all_periods,
     current_pay_period,
     derived_span,
@@ -2844,6 +2845,7 @@ def _add_entry(
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,

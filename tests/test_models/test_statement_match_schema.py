@@ -56,6 +56,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import account_service
 from app.services.statement_match import matched_subjects
 from tests._test_helpers import (
+    figure_source_columns,
     generate_row_of,
     load_migration_module,
     make_expense_template,
@@ -651,6 +652,7 @@ def _an_entry(db, seed_user, transaction, amount="25.00"):
         to name, not to be worth anything.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=transaction.id,
         account_id=transaction.account_id,
         user_id=seed_user["user"].id,

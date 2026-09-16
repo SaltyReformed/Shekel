@@ -333,7 +333,14 @@ def settle_transaction(
        facts, and until plan step X-au-c3 three subsystems read one column's
        NULL-ness to tell them apart, and ``settled_basis_id`` is what says it now.
     2. **The status**, through the single seam, so the transition is verified
-       and the settle day stamped by the one door that owns both.
+       and the settle day stamped by the one door that owns both -- and, since
+       plan step **X-bi-3a** (ruling **R-BAL39**), the COVERING MOVEMENT
+       written: the seam mirrors a ``derived`` / ``corrected`` record as one
+       ``transaction_entries`` row carrying the figure, who wrote it, the day
+       and the link, so a bill's money is recorded the way an envelope's
+       purchases already are (``status_seam._covering``).  Balance-neutral by
+       ruling **R-FM**'s identity, which is why act 3 needs no new arm: the
+       ledger reconcile walks ``txn.entries`` and posts the family at once.
     3. **The ledger**, reconciled LAST, so it reads the final amount rather
        than the estimate -- the discipline ``transfer_service.update_transfer``
        documents and the reason the reconcile is not at the status flip.
