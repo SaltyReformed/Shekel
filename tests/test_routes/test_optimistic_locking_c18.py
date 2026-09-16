@@ -35,9 +35,9 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.extensions import db
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus,
     RaiseType, Status, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
@@ -52,7 +52,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import figure_source_columns, generate_row_of, make_expense_template
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -155,6 +155,7 @@ def _make_envelope_template_and_txn(seed_user, period):
 def _make_entry(txn_id, user_id):
     """Insert a TransactionEntry on the given transaction."""
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn_id,
         # The parent's account, resolved from the id this helper takes: an
         # entry's account IS its parent's, and the schema refuses any other
@@ -240,17 +241,17 @@ def _make_salary_raise(profile_id):
     return sraise
 
 
-def _make_paycheck_deduction(profile_id):
-    """Insert a PaycheckDeduction (fixed amount, pre-tax)."""
+def _make_paycheck_line(profile_id):
+    """Insert a PaycheckLine (fixed amount, pre-tax)."""
     timing = (
-        db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     )
     method = (
         db.session.query(CalcMethod).filter_by(name="flat").one()
     )
-    ded = PaycheckDeduction(
+    ded = PaycheckLine(
         salary_profile_id=profile_id,
-        deduction_timing_id=timing.id,
+        paycheck_line_kind_id=timing.id,
         calc_method_id=method.id,
         name="Health Insurance",
         amount=Decimal("100.00"),
@@ -327,8 +328,8 @@ _VERSIONED_ROWS = [
     ("salary", "salary_profiles", SalaryProfile, "ck_salary_profiles_version_id_positive"),
     ("salary", "salary_raises", SalaryRaise, "ck_salary_raises_version_id_positive"),
     (
-        "salary", "paycheck_deductions", PaycheckDeduction,
-        "ck_paycheck_deductions_version_id_positive",
+        "salary", "paycheck_lines", PaycheckLine,
+        "ck_paycheck_lines_version_id_positive",
     ),
 ]
 
@@ -465,7 +466,7 @@ class TestTransactionVersionLifecycle:
         pytest.param("savings_goal", id="SavingsGoal"),
         pytest.param("salary_profile", id="SalaryProfile"),
         pytest.param("salary_raise", id="SalaryRaise"),
-        pytest.param("paycheck_deduction", id="PaycheckDeduction"),
+        pytest.param("paycheck_line", id="PaycheckLine"),
         pytest.param("transaction_entry", id="TransactionEntry"),
     ],
 )
@@ -541,13 +542,13 @@ def test_concurrent_update_raises_stale_data_error(
 
             def mutate(o):
                 o.percentage = Decimal("0.05")
-        elif factory_fn == "paycheck_deduction":
+        elif factory_fn == "paycheck_line":
             profile = _make_salary_profile(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            obj = _make_paycheck_deduction(profile.id)
+            obj = _make_paycheck_line(profile.id)
             schema, table, model = (
-                "salary", "paycheck_deductions", PaycheckDeduction,
+                "salary", "paycheck_lines", PaycheckLine,
             )
 
             def mutate(o):
@@ -1031,7 +1032,7 @@ class TestSavingsGoalStaleFormPrevention:
 
 
 # ═════════════════════════════════════════════════════════════════════
-# Stale-form prevention -- SalaryProfile / SalaryRaise / PaycheckDeduction
+# Stale-form prevention -- SalaryProfile / SalaryRaise / PaycheckLine
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -1120,8 +1121,8 @@ class TestSalaryRaiseStaleFormPrevention:
             assert persisted.percentage == pct_before
 
 
-class TestPaycheckDeductionStaleFormPrevention:
-    """``update_deduction`` (POST /salary/deductions/<id>/edit) optimistic locking."""
+class TestPaycheckLineStaleFormPrevention:
+    """``update_line`` (POST /salary/lines/<id>/edit) optimistic locking."""
 
     def test_redirects_with_warning_on_stale_version(
         self, app, auth_client, seed_user,
@@ -1131,25 +1132,25 @@ class TestPaycheckDeductionStaleFormPrevention:
             profile = _make_salary_profile(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            ded = _make_paycheck_deduction(profile.id)
+            ded = _make_paycheck_line(profile.id)
             ded_id = ded.id
             stale = ded.version_id
-            timing_id = ded.deduction_timing_id
+            timing_id = ded.paycheck_line_kind_id
             method_id = ded.calc_method_id
 
             _bump_version_outside_session(
-                "salary", "paycheck_deductions", ded_id,
+                "salary", "paycheck_lines", ded_id,
             )
             db.session.expire_all()
             amount_before = db.session.get(
-                PaycheckDeduction, ded_id,
+                PaycheckLine, ded_id,
             ).amount
 
             response = auth_client.post(
-                f"/salary/deductions/{ded_id}/edit",
+                f"/salary/lines/{ded_id}/edit",
                 data={
                     "name": "Renamed Deduction",
-                    "deduction_timing_id": str(timing_id),
+                    "paycheck_line_kind_id": str(timing_id),
                     "calc_method_id": str(method_id),
                     "amount": "999.99",
                     "amount_as_rendered": "250.00",
@@ -1162,7 +1163,7 @@ class TestPaycheckDeductionStaleFormPrevention:
             assert b"changed by another action" in response.data.lower()
 
             db.session.expire_all()
-            persisted = db.session.get(PaycheckDeduction, ded_id)
+            persisted = db.session.get(PaycheckLine, ded_id)
             assert persisted.amount == amount_before
 
 
@@ -1446,10 +1447,10 @@ class TestEditTemplatesEmitVersionPin:
                 "input on edit."
             )
 
-    def test_paycheck_deduction_edit_button_carries_version(
+    def test_paycheck_line_edit_button_carries_version(
         self, app, auth_client, seed_user,
     ):
-        """The deduction edit button carries ``data-ded-version-id``.
+        """The deduction edit button carries ``data-line-version-id``.
 
         Same shape as the raise test: the edit button surfaces the
         row's current version as a data attribute that app.js wires
@@ -1459,17 +1460,17 @@ class TestEditTemplatesEmitVersionPin:
             profile = _make_salary_profile(
                 seed_user["user"].id, seed_user["scenario"].id,
             )
-            ded = _make_paycheck_deduction(profile.id)
+            ded = _make_paycheck_line(profile.id)
             v = ded.version_id
 
             response = auth_client.get(f"/salary/{profile.id}/edit")
             assert response.status_code == 200
             body = response.data.decode()
             assert (
-                f'data-ded-version-id="{v}"' in body
+                f'data-line-version-id="{v}"' in body
             ), (
                 "Deduction edit button must include "
-                "data-ded-version-id so app.js can populate the "
+                "data-line-version-id so app.js can populate the "
                 "form's hidden version input on edit."
             )
 

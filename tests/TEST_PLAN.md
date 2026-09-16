@@ -524,11 +524,11 @@ was the hardcoded `26` this table used to name.
 
 | Category | Tests Needed                                                           | Status                                            |
 | -------- | ---------------------------------------------------------------------- | ------------------------------------------------- |
-| HP       | POST `/salary/<id>/deductions` -- adds deduction, regenerates           | ✅ `test_add_deduction`                           |
-| HP       | POST `/salary/deductions/<id>/delete` -- removes deduction, regenerates | ✅ `test_delete_deduction`                        |
-| SP       | POST `/salary/<id>/deductions` -- validation error                      | ✅ `test_add_deduction_validation_error`          |
-| IDOR     | POST `/salary/deductions/<id>/delete` -- other user's deduction         | ✅ `test_delete_other_users_deduction_redirects`  |
-| HP       | HTMX response returns `_deductions_section.html` partial               | ✅ `test_add_deduction_htmx_returns_partial`      |
+| HP       | POST `/salary/<id>/lines` -- adds deduction, regenerates           | ✅ `test_add_deduction`                           |
+| HP       | POST `/salary/lines/<id>/delete` -- removes deduction, regenerates | ✅ `test_delete_deduction`                        |
+| SP       | POST `/salary/<id>/lines` -- validation error                      | ✅ `test_add_deduction_validation_error`          |
+| IDOR     | POST `/salary/lines/<id>/delete` -- other user's deduction         | ✅ `test_delete_other_users_deduction_redirects`  |
+| HP       | HTMX response returns `_lines_section.html` partial               | ✅ `test_add_deduction_htmx_returns_partial`      |
 | BE       | Percentage input converted correctly (6 → 0.06)                        | ✅ `test_add_percentage_deduction_converts_input` |
 
 #### Breakdown & Projection
@@ -845,7 +845,7 @@ was the hardcoded `26` this table used to name.
 
 ---
 
-### 3.5 `models/paycheck_deduction.py` (PaycheckBreakdown dataclass) -- Priority P2 ✅
+### 3.5 `models/paycheck_line.py` (PaycheckBreakdown dataclass) -- Priority P2 ✅
 
 | Status | Test                                     |
 | ------ | ---------------------------------------- |
@@ -880,7 +880,7 @@ and @validates_schema cross-field rules.
 | `SavingsGoalUpdateSchema` (2)   | @pre_load strips; Boolean coercion                       |
 | `SalaryProfileCreateSchema` (4) | Required fields; OneOf pay_periods; state_code length    |
 | `RaiseCreateSchema` (5)         | percentage/flat_amount XOR; month range; both/neither    |
-| `DeductionCreateSchema` (3)     | Required fields; the frequency count left with its column (salary:R15-b) |
+| `PaycheckLineCreateSchema` (3)     | Required fields; the frequency count left with its column (salary:R15-b) |
 | `FicaConfigSchema` (2)          | All required; Decimal coercion                           |
 | `AccountCreateSchema` (3)       | Required fields; @pre_load strips empty optional         |
 | `PayPeriodGenerateSchema` (4)   | Defaults; Range num_periods/cadence; missing start_date  |
@@ -925,7 +925,7 @@ and @validates_schema cross-field rules.
 | ✅     | POST `/categories`             | Duplicate group+item → flash warning                       | `test_routes/test_categories.py` (existing)      |
 | ✅     | POST `/pay-periods/generate`   | Duplicate dates silently skipped                           | `test_routes/test_pay_periods.py` (existing)     |
 | ✅     | POST `/salary/<id>/raises`     | Creates duplicate raise (no unique constraint)             | `test_integration/test_idempotency.py`           |
-| ✅     | POST `/salary/<id>/deductions` | Creates duplicate deduction (no unique constraint)         | `test_integration/test_idempotency.py`           |
+| ✅     | POST `/salary/<id>/lines` | Creates duplicate deduction (no unique constraint)         | `test_integration/test_idempotency.py`           |
 
 **Added: 4 new tests**
 

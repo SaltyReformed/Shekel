@@ -23,27 +23,51 @@ graded against each other and not against a shape the app never writes:
 * due date -- the popover offers the input, a MOVE lands, a CLEAR is refused
   with a sentence that names the rule rather than "invalid reference";
 * period move -- ``is_override`` is NOT flipped (developer 2026-09-13: the
-  flip's MOVE half keys on ``recurs``);
-* typed figure -- ``is_override`` IS still flipped until ``X-bi-7b``'s
-  restate door (the same ruling), so the figure survives a definition edit.
+  flip's MOVE half keys on ``recurs``), **and since leaf 7b-2 the move
+  RE-PLACES the row** (ruling **R-BAL33**): the target paycheck's start
+  unless the owner had stated a day, ``occurs_on`` following (R-BAL25);
+* typed figure -- **restated on the DEFINITION, in place** (rulings
+  **R-BAL21** / **R-BAL29**, leaf 7b-2), the row never detached; a row the
+  interim between the two leaves DID detach is re-attached by the same act
+  (**R-BAL37**).  Until 7b-2 the flag flipped and the figure landed OWN.
+* the ITEM -- name, category and both flags render on the card for a
+  placed row and land on its definition (rulings **R-BAL23** / **R-BAL36**);
+  a recurring row's crafted flag is dropped by the schema (BAL-484's writer
+  gone); *make this repeat* opens the definition's edit form; the dialog
+  says the item goes with its only row.
+
+**Two shapes of rule-less row are graded**, and which each case uses is
+deliberate: ``_one_off`` is the pre-7b-1 shape (a cleared cadence, whose
+series can hold several versions -- what the restate's walk is graded on),
+``_placed`` is the shape the app writes today, through the one producer.
 """
 import re
 from datetime import timedelta
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AmountSourceEnum, TxnTypeEnum
 from app.extensions import db
+from app.models.amount_ownership import AmountOwnership
+from app.models.category import Category
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services.amount_ownership import state_own_amount
+from app.services.one_off import OneOffToPlace, place_one_off
+from app.services.template_amount_service import amount_versions
 from app.utils.dates import display_today
+from werkzeug.datastructures import MultiDict
 from tests._test_helpers import (
+    derived_span,
     generate_row_of,
     make_expense_template,
     resolved_amount,
     state_template_price,
 )
+from tests.test_routes._statement_forms import form_fields
 
 
 def _one_off(seed_user, seed_periods_today):
@@ -62,6 +86,63 @@ def _one_off(seed_user, seed_periods_today):
     assert row.template_id == template.id
     assert row.recurs is False
     return row
+
+
+def _placed(seed_user, period, *, due_date=None, name="Kayla's Kindle",
+            amount="162.25", category_key="Groceries", **flags):
+    """Place a one-off in *period* through the one producer (leaf 7b-1)."""
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name=name,
+            amount=Decimal(amount),
+            category_id=seed_user["categories"][category_key].id,
+            **flags,
+        ),
+        derived_span(period),
+        scenario_id=seed_user["scenario"].id,
+        due_date=due_date,
+    )
+    db.session.commit()
+    assert row.is_placed is True
+    return row
+
+
+def _card(auth_client, row):
+    """Return the full-edit card for *row*, rendered."""
+    resp = auth_client.get(f"/transactions/{row.id}/full-edit")
+    assert resp.status_code == 200
+    return resp.data.decode()
+
+
+def _submit(auth_client, row, **changes):
+    """PATCH *row* with what its card renders, *changes* typed over it.
+
+    A browser submits every control the card renders at the value it
+    renders, so the payload is READ off the card rather than written by
+    hand; a changed field replaces every pair of that name (a checkbox and
+    its hidden ``false`` twin are one control).
+    """
+    rendered = form_fields(
+        _card(auth_client, row), f"/transactions/{row.id}",
+        attribute="hx-patch",
+    )
+    payload = [pair for pair in rendered if pair[0] not in changes]
+    payload.extend(changes.items())
+    return auth_client.patch(
+        f"/transactions/{row.id}", data=MultiDict(payload),
+    )
+
+
+def _category_select(html):
+    """Return the card's category ``<select>`` markup alone."""
+    match = re.search(
+        r'<select name="category_id".*?</select>', html, flags=re.S,
+    )
+    assert match is not None
+    return match.group(0)
 
 
 def _recurring(seed_user, seed_periods_today):
@@ -251,12 +332,36 @@ class TestDelete:
             ).data.decode()
             assert "This cannot be undone." in html
             assert "This occurrence will not come back" not in html
+            # A one-off's ONLY row takes the item with it (R-BAL27), and the
+            # dialog says so off the same answer the door acts on.
+            assert "the item itself goes with it" in html
 
             html = auth_client.get(
                 f"/transactions/{recurring.id}/full-edit",
             ).data.decode()
             assert "This occurrence will not come back" in html
             assert "This cannot be undone." not in html
+            assert "the item itself goes with it" not in html
+
+    def test_the_dialog_does_not_promise_the_item_while_another_row_stands(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL for the pair sentence: a two-row definition keeps the item."""
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="162.25", name="Kayla's Kindle",
+                category_key="Groceries",
+            )
+            first = generate_row_of(template, seed_periods_today[0])
+            generate_row_of(template, seed_periods_today[1])
+            template.recurrence_rule = None
+            db.session.commit()
+            assert first.is_placed is True
+            html = auth_client.get(
+                f"/transactions/{first.id}/full-edit",
+            ).data.decode()
+            assert "This cannot be undone." in html
+            assert "the item itself goes with it" not in html
 
 
 class TestDueDate:
@@ -320,6 +425,53 @@ class TestDueDate:
             assert resolved_amount(one_off) == Decimal("170.00")
             assert auth_client.get("/grid").status_code == 200
 
+    def test_a_moved_date_carries_the_occurrence_with_it(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """R-BAL25: a placed row answers its own due date, so ``occurs_on`` moves too.
+
+        Leaf 7b-1 wrote both at birth and the popover's date move rewrote
+        one: two homes for one fact, and a rule added later would have
+        looked for the row at the day it no longer read.  ``one_off.
+        state_due_date`` is the one writer now.
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            assert row.occurs_on == row.due_date
+            moved_to = row.due_date + timedelta(days=5)
+            resp = _submit(auth_client, row, due_date=moved_to.isoformat())
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.due_date == moved_to
+            assert row.occurs_on == moved_to
+
+    def test_the_input_is_required_on_a_placed_row_and_not_on_a_legacy_one(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The card refuses the clear first; the gate stays the backstop."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            html = _card(auth_client, row)
+            box = re.search(r'<input type="date" name="due_date"[^>]*>', html)
+            assert box is not None and "required" in box.group(0)
+
+            legacy = Transaction(
+                name="Legacy", user_id=seed_user["user"].id,
+                pay_period_id=seed_periods_today[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                status_id=row.status_id,
+                amount_ownership=AmountOwnership.own(Decimal("5.00")),
+                template_id=None,
+            )
+            db.session.add(legacy)
+            db.session.commit()
+            html = _card(auth_client, legacy)
+            box = re.search(r'<input type="date" name="due_date"[^>]*>', html)
+            assert box is not None and "required" not in box.group(0)
+
     def test_clearing_the_date_is_refused_with_the_reason(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -357,6 +509,206 @@ class TestDueDate:
                 assert b"recurring transaction" in resp.data
                 db.session.refresh(recurring)
                 assert recurring.due_date == was
+
+
+class TestTheItemIsEditedOnTheDefinition:
+    """Rulings **R-BAL23** / **R-BAL36**: the card is a one-off's whole lifecycle."""
+
+    def test_the_card_offers_name_category_and_flags_on_a_placed_row_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The controls render for a placed row, not for a recurring one."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            html = _card(auth_client, row)
+            assert re.search(r'<input type="text" name="name"', html)
+            assert re.search(r'<select name="category_id"', html)
+            assert 'name="is_envelope"' in html
+            assert 'name="companion_visible"' in html
+            assert "Make this repeat" in html
+            assert f"/templates/{row.template_id}/edit" in html
+
+            recurring = _recurring(seed_user, seed_periods_today)
+            html = _card(auth_client, recurring)
+            assert not re.search(r'<input type="text" name="name"', html)
+            assert not re.search(r'<select name="category_id"', html)
+            assert 'name="is_envelope"' not in html
+            assert 'name="companion_visible"' not in html
+            assert "Make this repeat" not in html
+
+    def test_the_category_select_offers_active_categories_and_the_rows_own(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An archived category is not offered, unless it is the row's own.
+
+        The list is the definition's own edit form's
+        (``list_active_categories``); a first draft copied the transfer
+        branch's raw query and offered archived ones (adversarial review).
+        The row's own archived category stays so an untouched save posts
+        the category the row has rather than a browser's first option.
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            # Re-read in THIS session: the fixture's instances are detached,
+            # so a flag set on one of them would never reach the database.
+            archived = db.session.get(Category, next(
+                cat.id for key, cat in seed_user["categories"].items()
+                if key != "Groceries"
+            ))
+            archived.is_active = False
+            db.session.commit()
+            select = _category_select(_card(auth_client, row))
+            assert f'<option value="{archived.id}"' not in select
+            assert f'<option value="{row.category_id}"' in select
+
+            row.template.category_id = archived.id
+            row.category_id = archived.id
+            db.session.commit()
+            select = _category_select(_card(auth_client, row))
+            assert f'<option value="{archived.id}" selected' in select
+            resp = _submit(auth_client, row, notes="untouched category")
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.category_id == archived.id
+            assert row.template.category_id == archived.id
+
+    def test_a_category_less_placed_row_offers_a_placeholder_that_posts_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The bank door's row for money it could not categorise (R-FN).
+
+        The select shows a placeholder posting the empty value, which the
+        schema drops as "leave alone", so an untouched save keeps the row
+        uncategorised and picking a category categorises it.
+        """
+        with app.app_context():
+            row = place_one_off(
+                OneOffToPlace(
+                    user_id=seed_user["user"].id,
+                    account_id=seed_user["account"].id,
+                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                    name="Uncategorised", amount=Decimal("9.99"),
+                    category_id=None,
+                ),
+                derived_span(seed_periods_today[0]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            html = _card(auth_client, row)
+            assert "(no category yet)" in html
+
+            resp = _submit(auth_client, row, notes="still uncategorised")
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.template.category_id is None
+            assert row.category_id is None
+
+            groceries = seed_user["categories"]["Groceries"]
+            resp = _submit(auth_client, row, category_id=str(groceries.id))
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.template.category_id == groceries.id
+            assert row.category_id == groceries.id
+
+    def test_a_rename_lands_on_the_definition_and_re_files_the_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The definition is renamed, its row follows, the grid row moves (R-BAL34)."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            resp = _submit(auth_client, row, name="Kayla's Paperwhite")
+            assert resp.status_code == 200, resp.data
+            assert resp.headers["HX-Trigger"] == "gridRefresh"
+            db.session.refresh(row)
+            assert row.template.name == "Kayla's Paperwhite"
+            assert row.name == "Kayla's Paperwhite"
+
+    def test_an_untouched_save_re_files_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: the card posts the name it rendered; nothing moves."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            resp = _submit(auth_client, row, notes="a note")
+            assert resp.status_code == 200, resp.data
+            assert resp.headers["HX-Trigger"] == "balanceChanged"
+            db.session.refresh(row)
+            assert row.notes == "a note"
+            assert row.template.name == "Kayla's Kindle"
+
+    def test_a_re_category_lands_on_the_definition_and_reaches_the_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The definition's category moves, and the propagation carries it to the row."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            other = next(
+                cat for key, cat in seed_user["categories"].items()
+                if key != "Groceries"
+            )
+            resp = _submit(auth_client, row, category_id=str(other.id))
+            assert resp.status_code == 200, resp.data
+            assert resp.headers["HX-Trigger"] == "gridRefresh"
+            db.session.refresh(row)
+            assert row.template.category_id == other.id
+            assert row.category_id == other.id
+            assert row.is_override is False
+
+    def test_the_flags_land_on_the_definition_and_the_row_reads_them(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Both flags on, then off; the row's answer is the definition's."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            assert row.tracks_purchases is False
+            resp = _submit(
+                auth_client, row, is_envelope="true", companion_visible="true",
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.template.is_envelope is True
+            assert row.template.companion_visible is True
+            assert row.tracks_purchases is True
+            assert row.visible_to_companion is True
+
+            resp = _submit(
+                auth_client, row, is_envelope="false", companion_visible="false",
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.template.is_envelope is False
+            assert row.template.companion_visible is False
+            assert row.tracks_purchases is False
+            assert row.visible_to_companion is False
+
+    def test_a_recurring_rows_crafted_flag_is_dropped_by_the_schema(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """BAL-484's writer is gone: the row schema declares no flag.
+
+        The write used to LAND on the sealed cell (inert to every reader in
+        the application, readable by raw SQL).  It is unrepresentable
+        through this door now: the payload's flag is excluded before any
+        code runs, and the cell holds what it held.
+        """
+        with app.app_context():
+            recurring = _recurring(seed_user, seed_periods_today)
+            resp = auth_client.patch(f"/transactions/{recurring.id}", data={
+                "companion_visible": "true",
+                "is_envelope": "true",
+                "version_id": recurring.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            cells = db.session.execute(
+                Transaction.__table__.select()
+                .with_only_columns(
+                    Transaction.__table__.c.companion_visible,
+                    Transaction.__table__.c.is_envelope,
+                )
+                .where(Transaction.__table__.c.id == recurring.id)
+            ).one()
+            assert tuple(cells) == (False, False)
 
 
 class TestTheOverrideFlip:
@@ -400,30 +752,266 @@ class TestTheOverrideFlip:
             assert recurring.pay_period_id == target.id
             assert recurring.is_override is True
 
-    def test_a_typed_figure_still_flips_a_rule_less_definitions_row(
+    def test_a_typed_figure_restates_the_definition_and_does_not_flip(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Until ``X-bi-7b``'s restate door, a typed figure is the OWNER's.
+        """The interim's flip ENDS here (R-BAL28's stated end; R-BAL29).
 
-        Developer 2026-09-13: the figure lands OWN on the row today, and the
-        flag is what keeps the definition's next edit from re-declaring the
-        row TEMPLATE-priced and silently discarding it.  Kayla's Kindle,
-        `$162.25` on the definition, `$170.00` typed.
+        This case asserted the opposite until leaf 7b-2 -- OWN on the row
+        with the flag beside it, the figure kept safe from the definition's
+        next edit by that flag.  Kayla's Kindle, `$162.25` on the
+        definition, `$170.00` typed: the definition's ONE version now says
+        `$170.00`, the row still reads it, and there is nothing for a flag
+        to protect.
         """
         with app.app_context():
-            one_off = _one_off(seed_user, seed_periods_today)
-            companion = _rendered_companion(auth_client, one_off)
+            row = _placed(seed_user, seed_periods_today[0])
+            companion = _rendered_companion(auth_client, row)
             assert companion == "162.25"
-            resp = auth_client.patch(f"/transactions/{one_off.id}", data={
-                "estimated_amount": "170.00",
-                "estimated_amount_as_rendered": companion,
-                "pay_period_id": str(one_off.pay_period_id),
-                "status_id": str(one_off.status_id),
-                "notes": "",
-                "version_id": one_off.version_id,
-            })
+            resp = _submit(
+                auth_client, row, estimated_amount="170.00",
+            )
             assert resp.status_code == 200, resp.data
-            db.session.refresh(one_off)
-            assert str(one_off.estimated_amount) == "170.00"
-            assert one_off.amount_source_id is None
-            assert one_off.is_override is True
+            db.session.refresh(row)
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            assert row.is_override is False
+            assert resolved_amount(row) == Decimal("170.00")
+            versions = amount_versions(row.template)
+            assert [(v.effective_date, v.amount) for v in versions] == [
+                (row.due_date, Decimal("170.00")),
+            ]
+            assert row.template.default_amount == Decimal("170.00")
+
+
+class TestTheRestate:
+    """``one_off.restate_price`` at the door: R-BAL29's walk and R-BAL37's re-attach."""
+
+    def test_the_version_the_moved_date_reads_is_corrected_in_place(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """R-BAL29's own walk: date moved 05-07 -> 05-10, then `$170.00` typed.
+
+        ``set_amount(effective_on=row.due_date)`` would APPEND a 05-10
+        version and leave the 05-07 one at `$162.25`, so moving the date
+        back would silently re-read the old price.  The restate corrects the
+        version the row's date READS, so the series stays one version --
+        dated where it was born, saying the new figure.
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            born_on = row.due_date
+            moved_to = born_on + timedelta(days=3)
+            resp = _submit(auth_client, row, due_date=moved_to.isoformat())
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.due_date == moved_to
+
+            resp = _submit(auth_client, row, estimated_amount="170.00")
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            versions = amount_versions(row.template)
+            assert [(v.effective_date, v.amount) for v in versions] == [
+                (born_on, Decimal("170.00")),
+            ]
+            assert resolved_amount(row) == Decimal("170.00")
+
+            # And moving the date BACK reads the corrected figure, not an
+            # older one: the failure mode the ruling names.
+            resp = _submit(auth_client, row, due_date=born_on.isoformat())
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert resolved_amount(row) == Decimal("170.00")
+
+    def test_a_row_the_interim_detached_is_re_attached_by_its_next_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """R-BAL37 (developer 2026-09-15): definition `$162.25`, row OWN `$170.00`, `$180.00` typed.
+
+        Between leaves 7b-1 and 7b-2 a typed figure landed OWN on the row
+        with ``is_override`` beside it, the definition left at the old
+        price.  The next figure typed lands on the definition AND declares
+        the row priced by it, flag cleared: one home.  Restating alone would
+        have left the grid on `$170.00` with the typed `$180.00` invisible;
+        keeping the row detached would have left the Recurring page at
+        `$162.25`.
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            # The interim's shape, as the door wrote it then.
+            state_own_amount(row, Decimal("170.00"))
+            row.is_override = True
+            db.session.commit()
+            assert row.amount_source_id is None
+            assert resolved_amount(row) == Decimal("170.00")
+            assert resolved_amount(row) != row.template.default_amount
+
+            resp = _submit(auth_client, row, estimated_amount="180.00")
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.estimated_amount is None
+            assert row.is_override is False
+            assert resolved_amount(row) == Decimal("180.00")
+            assert row.template.default_amount == Decimal("180.00")
+            assert len(amount_versions(row.template)) == 1
+
+    def test_a_residue_row_re_priced_and_re_categorised_in_one_save_heals_whole(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The figure act runs BEFORE the definition's fields (adversarial review).
+
+        Re-attached first, the row is one the propagation selects, so its
+        category follows in the same request; the other order left it on the
+        old category until the next edit.  And the definition's lock counter
+        bumps ONCE: the restate and the fields flush together.
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            state_own_amount(row, Decimal("170.00"))
+            row.is_override = True
+            db.session.commit()
+            other = next(
+                cat for key, cat in seed_user["categories"].items()
+                if key != "Groceries"
+            )
+            definition_version = row.template.version_id
+
+            resp = _submit(
+                auth_client, row,
+                estimated_amount="180.00", category_id=str(other.id),
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert row.is_override is False
+            assert row.category_id == other.id
+            assert row.template.category_id == other.id
+            assert resolved_amount(row) == Decimal("180.00")
+            assert row.template.version_id == definition_version + 1
+
+    def test_a_recurring_rows_typed_figure_still_detaches_it(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: one occurrence among many owns its figure (R-BAL21)."""
+        with app.app_context():
+            recurring = _recurring(seed_user, seed_periods_today)
+            companion = _rendered_companion(auth_client, recurring)
+            assert companion == "100.00"
+            resp = _submit(auth_client, recurring, estimated_amount="120.00")
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(recurring)
+            assert str(recurring.estimated_amount) == "120.00"
+            assert recurring.amount_source_id is None
+            assert recurring.is_override is True
+            assert recurring.template.default_amount == Decimal("100.00")
+
+
+class TestTheDefinitionsCounterGuardsTheCard:
+    """A placed row's card pins the DEFINITION's version too (adversarial review).
+
+    A one-off's price lives on its definition since R-BAL29, so a figure-only
+    save bumps the definition's counter and not the row's -- and two cards
+    rendered before either saved would both have answered 200, the second
+    silently overwriting the first's price, where the row's own counter
+    caught that while the price lived on the row (commit C-18).
+    """
+
+    def test_the_second_of_two_stale_cards_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Two cards, two prices: the first lands, the second meets a 409."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            first = form_fields(
+                _card(auth_client, row), f"/transactions/{row.id}",
+                attribute="hx-patch",
+            )
+            second = list(first)
+            assert ("template_version_id", str(row.template.version_id)) in first
+
+            def post(fields, figure):
+                payload = [pair for pair in fields if pair[0] != "estimated_amount"]
+                payload.append(("estimated_amount", figure))
+                return auth_client.patch(
+                    f"/transactions/{row.id}", data=MultiDict(payload),
+                )
+
+            assert post(first, "170.00").status_code == 200
+            resp = post(second, "180.00")
+            assert resp.status_code == 409
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert resolved_amount(row) == Decimal("170.00")
+
+    def test_a_recurring_rows_card_pins_the_row_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: the definition's pin renders for a placed row only."""
+        with app.app_context():
+            recurring = _recurring(seed_user, seed_periods_today)
+            html = _card(auth_client, recurring)
+            assert 'name="template_version_id"' not in html
+            assert 'name="version_id"' in html
+
+
+class TestAPeriodMoveRePlaces:
+    """Ruling **R-BAL33** at the popover's period move (leaf 7b-2)."""
+
+    def test_a_default_dated_one_off_takes_the_target_paychecks_start(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Born on its paycheck's start, moved: due on the new paycheck's start.
+
+        ``occurs_on`` follows (R-BAL25), the flag stays off (R-BAL28's move
+        half), and the price is unchanged (a flat series).
+        """
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            target = seed_periods_today[1]
+            target_start = derived_span(target).start_date
+            assert row.due_date == derived_span(seed_periods_today[0]).start_date
+            resp = _submit(auth_client, row, pay_period_id=str(target.id))
+            assert resp.status_code == 200, resp.data
+            assert resp.headers["HX-Trigger"] == "gridRefresh"
+            db.session.refresh(row)
+            assert row.pay_period_id == target.id
+            assert row.due_date == target_start
+            assert row.occurs_on == target_start
+            assert row.is_override is False
+            assert resolved_amount(row) == Decimal("162.25")
+
+    def test_an_owner_dated_one_off_keeps_its_day(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: a date other than the source's start is the owner's."""
+        with app.app_context():
+            source_start = derived_span(seed_periods_today[0]).start_date
+            stated = source_start + timedelta(days=6)
+            row = _placed(seed_user, seed_periods_today[0], due_date=stated)
+            target = seed_periods_today[1]
+            resp = _submit(auth_client, row, pay_period_id=str(target.id))
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.pay_period_id == target.id
+            assert row.due_date == stated
+            assert row.occurs_on == stated
+
+    def test_a_date_typed_beside_the_move_is_the_owners(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """One save, both controls touched: the typed day wins over the default."""
+        with app.app_context():
+            row = _placed(seed_user, seed_periods_today[0])
+            target = seed_periods_today[1]
+            typed = derived_span(target).start_date + timedelta(days=4)
+            resp = _submit(
+                auth_client, row,
+                pay_period_id=str(target.id), due_date=typed.isoformat(),
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.pay_period_id == target.id
+            assert row.due_date == typed
+            assert row.occurs_on == typed

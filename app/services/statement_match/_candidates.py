@@ -58,7 +58,12 @@ from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, transaction_service, transfer_service
+from app.services import (
+    cash_ledger,
+    status_seam,
+    transaction_service,
+    transfer_service,
+)
 from app.services.settle_day import recorded_settle_day
 from app.utils.balance_predicates import balance_contributing_clause
 
@@ -295,7 +300,13 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     )
     try:
         if txn.status.is_settled:
-            return cash_ledger.settled_cash_leg(txn)
+            # **A settled row is worth its FAMILY** (plan step **X-bi-3a**,
+            # ruling **R-BAL39**): the settle mirrors the figure as a covering
+            # movement, so the row's own leg reads zero and the money sits one
+            # row down.  The bank sees one line for the pair, and the row is
+            # the subject the owner matches it to; its mirror is kept out of
+            # the purchase candidates by ``status_seam.covering_clause``.
+            return status_seam.settled_family_leg(txn)
         return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
@@ -372,12 +383,19 @@ def purchase_candidate(
     purchase is worth and when the app believes it moved, on the two sides of a
     single match.
 
-    A purchase's cash is the NEGATION of its stored figure -- a conversion,
-    total over both signs, not a direction.  It read *"always money LEAVING"*
-    until plan step ``bank_import:X-gj-2b-3``; ruling **bank_import:R-II**
-    ended that, and a stored refund of ``-28.29`` is a ``+28.29`` cash
-    candidate here, which is why :mod:`._already_held`'s positive-cash set need
-    not be income.
+    A purchase's cash is :func:`app.services.cash_ledger.movement_cash_leg`
+    -- its stored figure in its PARENT's direction, the one valuation every
+    reader of a movement shares since plan step ``balance:X-bi-3b`` (ruling
+    **R-BAL35**).  This spelled ``-entry.amount`` for itself before that
+    step, total over both signs of the figure (it read *"always money
+    LEAVING"* until plan step ``bank_import:X-gj-2b-3``; ruling
+    **bank_import:R-II** ended that, and a stored refund of ``-28.29`` is a
+    ``+28.29`` cash candidate here, which is why :mod:`._already_held`'s
+    positive-cash set need not be income) but wrong in direction for a
+    movement under an income row.  Every purchase offered here is a DEBIT
+    under a CONTRIBUTING expense row (:func:`_purchase_candidates`'s filter;
+    ``create_entry`` refuses an income parent), so on that set the two agree
+    to the cent; the producer is also total where this was not.
 
     **It takes the calendar since plan step ``bank_import:X-gz``**, for the
     reason its twin always has: the row states the paycheck it is budgeted in
@@ -402,7 +420,7 @@ def purchase_candidate(
         kind=RowKind.PURCHASE,
         row_id=entry.id,
         label=f"{entry.transaction.name}: {entry.description}",
-        cash_amount=-Decimal(str(entry.amount)),
+        cash_amount=cash_ledger.movement_cash_leg(entry.transaction, entry),
         settled_on=entry.settled_on,
         is_settled=entry.settled_on is not None,
         # **A purchase always states its own figure.**  The two shapes whose
@@ -774,6 +792,12 @@ def _purchase_candidates(
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
+            # NOT the row's own payment record (plan step **X-bi-3a**): a
+            # covering movement is the settle's mirror of its parent's figure,
+            # and the parent is what this screen offers for it -- priced at
+            # the family by :func:`_price`.  Offering both would put one bank
+            # line against two rows.
+            ~status_seam.covering_clause(),
         )
         .all()
     )

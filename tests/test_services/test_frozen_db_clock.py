@@ -37,6 +37,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     _db_clock_insert_attrs,
     _rewrite_db_clock_calls,
     create_settled_cash_transaction,
@@ -254,6 +255,7 @@ class TestTheDatabaseClockIsTheTestClock:
                 name="N-65: raw text default",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("5.00"),

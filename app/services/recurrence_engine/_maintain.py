@@ -384,7 +384,7 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
     it holds (defect **D16**) and the route gates the sweep on "the
     definition IS or WAS recurring" instead; until this function existed its
     rows were reached by nothing but the bulk rename in
-    ``routes/templates/crud._apply_fields_and_propagate_rename``, so a new
+    ``definition_edit.apply_fields``, so a new
     category, account or type stayed on the Recurring page and never reached
     the grid.  Every row a rule-less definition holds is one of these: a
     one-off's placed row once the family's cutover mints it a definition, and
@@ -414,7 +414,7 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
             values already applied.
         rows: Its live, rule-owned rows -- Projected, not overridden and not
             soft-deleted, which the caller selects
-            (``routes/templates/_instances.non_repeating_live_rows``).
+            (``definition_edit.unruled_live_rows``).
 
     Returns:
         The ids this pass RETAINED: rows whose account the definition moved

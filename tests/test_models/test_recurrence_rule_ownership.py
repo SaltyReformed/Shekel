@@ -529,18 +529,18 @@ class TestTheStorageTierIsWhatHoldsTheArc:
                        'ck_recurrence_rules_one_owner',
                        'fk_recurrence_rules_transaction_template_id',
                        'fk_recurrence_rules_transfer_template_id',
-                       'fk_recurrence_rules_paycheck_deduction_id')
+                       'fk_recurrence_rules_paycheck_line_id')
             """)).all())
 
             assert set(rows) == {
                 "ck_recurrence_rules_one_owner",
                 "fk_recurrence_rules_transaction_template_id",
                 "fk_recurrence_rules_transfer_template_id",
-                "fk_recurrence_rules_paycheck_deduction_id",
+                "fk_recurrence_rules_paycheck_line_id",
             }
             check = rows["ck_recurrence_rules_one_owner"]
             for arm in (
-                "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
+                "transaction_template_id", "transfer_template_id", "paycheck_line_id",
             ):
                 assert f"({arm} IS NOT NULL)" in check, f"the arc does not count {arm}"
             assert "= 1" in check, (
@@ -548,7 +548,7 @@ class TestTheStorageTierIsWhatHoldsTheArc:
                 "none-set are equally refused"
             )
             for arm in (
-                "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
+                "transaction_template_id", "transfer_template_id", "paycheck_line_id",
             ):
                 definition = rows[f"fk_recurrence_rules_{arm}"]
                 assert "ON DELETE CASCADE" in definition, (
@@ -574,7 +574,7 @@ class TestTheStorageTierIsWhatHoldsTheArc:
             assert set(indexes) == {
                 "uq_recurrence_rules_transaction_template_id",
                 "uq_recurrence_rules_transfer_template_id",
-                "uq_recurrence_rules_paycheck_deduction_id",
+                "uq_recurrence_rules_paycheck_line_id",
             }
             for name, definition in indexes.items():
                 assert "UNIQUE" in definition, f"{name} does not constrain"

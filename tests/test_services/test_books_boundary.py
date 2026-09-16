@@ -57,6 +57,7 @@ from app.services.pay_calendar import calendar_for
 from app.services.reconcile_service import Statement, record_settled_days
 from app.services.settle_day import SettleDay, record_settle_day
 from tests._test_helpers import (
+    figure_source_columns,
     account_never_asserted,
     match_two_lines,
     append_only_guard_lifted,
@@ -254,6 +255,7 @@ class TestTheOneOrmWriter:
                 settled_on=_books_open_on(account) + _ONE_DAY, name="parent",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,
@@ -356,6 +358,7 @@ class TestTheBulkWriterAsksForItself:
                 settled_on=opened_on + timedelta(days=5), name="envelope",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,
@@ -494,9 +497,21 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
                 source_id=account_opening_fact(account.id).source_id,
             ))
             db.session.flush()
-            # ... and only now does the movement leave the opening it is inside.
+            # ... and only now does the movement leave the opening it is inside
+            # -- the row AND its covering movement, which the seam dated with
+            # it (plan step X-bi-3a) and which the same trigger guards on its
+            # own table.
             db.session.query(Transaction).filter_by(id=row.id).update(
                 {Transaction.settled_on: later + _ONE_DAY},
+                synchronize_session=False,
+            )
+            db.session.query(TransactionEntry).filter_by(
+                transaction_id=row.id,
+            ).update(
+                {
+                    TransactionEntry.settled_on: later + _ONE_DAY,
+                    TransactionEntry.purchased_on: later + _ONE_DAY,
+                },
                 synchronize_session=False,
             )
             db.session.commit()
@@ -859,6 +874,7 @@ class TestTheGoverningRowIsWhatIsGraded:
                 settled_on=opened_on + timedelta(days=5), name="envelope",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,

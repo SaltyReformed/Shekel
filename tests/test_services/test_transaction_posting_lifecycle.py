@@ -60,6 +60,8 @@ from app.services import (
 from app.services.entry_service import EntryDetails
 from app.services.posting_reads import _ledger_account_for
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     add_txn,
     an_entered_day,
     create_envelope_txn,
@@ -122,10 +124,17 @@ def _ledger_total(ledger_account_id):
 
 
 def _entries_for_transaction(transaction_id):
-    """Return every journal entry still linked to *transaction_id*, oldest first."""
+    """Return every journal entry still linked to the row's FAMILY, oldest first.
+
+    The row and its covering movement together (plan step **X-bi-3a**): a
+    settled bill's money is posted under the movement the seam writes for
+    it, so a read keyed on ``transaction_id`` alone finds the parent's
+    now-zero leg and none of the money.  Every leg figure asserted through
+    this reader is unchanged.
+    """
     return (
         db.session.query(JournalEntry)
-        .filter_by(transaction_id=transaction_id)
+        .filter(family_journal_filter(transaction_id))
         .order_by(JournalEntry.id)
         .all()
     )
@@ -184,6 +193,7 @@ def _add_purchase(seed_user, txn, amount, *, is_credit=False):
     the entry-mutation hook call ``entry_service`` explicitly instead.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

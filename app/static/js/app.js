@@ -352,7 +352,7 @@ document.body.addEventListener("htmx:afterRequest", function(event) {
 
 // Delegated handlers for salary pages (CSP-compliant, replaces inline onclick/onchange).
 document.addEventListener('click', function(e) {
-    // Toggle target element (e.g. deduction form collapse)
+    // Toggle target element (e.g. payroll-line form collapse)
     var toggleBtn = e.target.closest('[data-toggle-target]');
     if (toggleBtn) {
         const target = document.getElementById(toggleBtn.dataset.toggleTarget);
@@ -361,8 +361,8 @@ document.addEventListener('click', function(e) {
         if (toggleBtn.hasAttribute('data-raise-reset')) {
             _resetRaiseForm();
         }
-        if (toggleBtn.hasAttribute('data-ded-reset')) {
-            _resetDeductionForm();
+        if (toggleBtn.hasAttribute('data-line-reset')) {
+            _resetLineForm();
         }
         return;
     }
@@ -374,10 +374,10 @@ document.addEventListener('click', function(e) {
         return;
     }
 
-    // Edit deduction: populate the add form with existing data and switch to edit mode.
-    var dedEditBtn = e.target.closest('[data-ded-edit]');
-    if (dedEditBtn) {
-        _populateDeductionForm(dedEditBtn);
+    // Edit payroll line: populate the add form with existing data and switch to edit mode.
+    var lineEditBtn = e.target.closest('[data-line-edit]');
+    if (lineEditBtn) {
+        _populateLineForm(lineEditBtn);
         return;
     }
 
@@ -456,7 +456,7 @@ function _populateRaiseForm(editBtn) {
 
 // Reset a collapsible add/edit form back to add mode: restore the add
 // action + hx-post, clear the fields and the optimistic-lock version pin,
-// and reset the submit button label.  Shared by the raise and deduction
+// and reset the submit button label.  Shared by the raise and payroll-line
 // forms, which differ only in their element ids and button markup (JS-10).
 function _resetForm(formId, buttonId, buttonHtml) {
     var form = document.getElementById(formId);
@@ -520,33 +520,33 @@ document.addEventListener('change', function(e) {
     _syncRaiseEndYearVisibility();
 });
 
-// Populate the deduction form fields from the edit button's data attributes
+// Populate the payroll-line form fields from the edit button's data attributes
 // and switch the form action/hx-post to the update endpoint.
-function _populateDeductionForm(editBtn) {
-    var form = document.getElementById('deduction-form');
+function _populateLineForm(editBtn) {
+    var form = document.getElementById('line-form');
     if (!form) return;
 
-    var editUrl = editBtn.dataset.dedEditUrl;
+    var editUrl = editBtn.dataset.lineEditUrl;
     form.action = editUrl;
     form.setAttribute('hx-post', editUrl);
     if (window.htmx) htmx.process(form);
 
     // Populate fields.
     var name = form.querySelector('[name=name]');
-    if (name) name.value = editBtn.dataset.dedName;
+    if (name) name.value = editBtn.dataset.lineName;
 
-    var timing = form.querySelector('[name=deduction_timing_id]');
-    if (timing) timing.value = editBtn.dataset.dedTimingId;
+    var kind = form.querySelector('[name=paycheck_line_kind_id]');
+    if (kind) kind.value = editBtn.dataset.lineKindId;
 
     var method = form.querySelector('[name=calc_method_id]');
     if (method) {
-        method.value = editBtn.dataset.dedMethodId;
+        method.value = editBtn.dataset.lineMethodId;
         // Trigger change event so the label updater runs.
         method.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     var amount = form.querySelector('[name=amount]');
-    if (amount) amount.value = editBtn.dataset.dedAmount || '';
+    if (amount) amount.value = editBtn.dataset.lineAmount || '';
 
     // The line's CADENCE, on the shared recurrence controls (plan step
     // salary:R15-c): the unit, the interval, the funding placement and the
@@ -566,47 +566,47 @@ function _populateDeductionForm(editBtn) {
     var placement = form.querySelector('[name=recurrence_placement]');
     var ceiling = form.querySelector('[name=max_per_month]');
     if (unit) {
-        if (interval) interval.value = editBtn.dataset.dedInterval || '1';
-        if (placement) placement.value = editBtn.dataset.dedPlacementId || '';
-        if (ceiling) ceiling.value = editBtn.dataset.dedMaxPerMonth || '';
-        unit.value = editBtn.dataset.dedUnitId || '';
+        if (interval) interval.value = editBtn.dataset.lineInterval || '1';
+        if (placement) placement.value = editBtn.dataset.linePlacementId || '';
+        if (ceiling) ceiling.value = editBtn.dataset.lineMaxPerMonth || '';
+        unit.value = editBtn.dataset.lineUnitId || '';
         unit.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     var cap = form.querySelector('[name=annual_cap]');
-    if (cap) cap.value = editBtn.dataset.dedCap || '';
+    if (cap) cap.value = editBtn.dataset.lineCap || '';
 
     var target = form.querySelector('[name=target_account_id]');
-    if (target) target.value = editBtn.dataset.dedTargetAccount || '';
+    if (target) target.value = editBtn.dataset.lineTargetAccount || '';
 
     var inflEnabled = form.querySelector('[name=inflation_enabled]');
-    if (inflEnabled) inflEnabled.checked = editBtn.dataset.dedInflationEnabled === 'true';
+    if (inflEnabled) inflEnabled.checked = editBtn.dataset.lineInflationEnabled === 'true';
 
     var inflRate = form.querySelector('[name=inflation_rate]');
-    if (inflRate) inflRate.value = editBtn.dataset.dedInflationRate || '';
+    if (inflRate) inflRate.value = editBtn.dataset.lineInflationRate || '';
 
     var inflMonth = form.querySelector('[name=inflation_effective_month]');
-    if (inflMonth) inflMonth.value = editBtn.dataset.dedInflationMonth || '';
+    if (inflMonth) inflMonth.value = editBtn.dataset.lineInflationMonth || '';
 
     // Optimistic-locking pin (commit C-18 / F-010): submit the
-    // deduction's version_id so the route handler can detect a
+    // line's version_id so the route handler can detect a
     // stale form before applying the update.  Cleared by
-    // _resetDeductionForm when the form returns to add mode.
+    // _resetLineForm when the form returns to add mode.
     var versionInput = form.querySelector('[name=version_id]');
-    if (versionInput) versionInput.value = editBtn.dataset.dedVersionId || '';
+    if (versionInput) versionInput.value = editBtn.dataset.lineVersionId || '';
 
     // Change submit button text.
-    var btn = document.getElementById('ded-submit-btn');
+    var btn = document.getElementById('line-submit-btn');
     if (btn) btn.innerHTML = '<i class="bi bi-check-lg"></i> Update';
 
     // Expand the form if collapsed.
-    var formDiv = document.getElementById('add-deduction-form');
+    var formDiv = document.getElementById('add-line-form');
     if (formDiv && !formDiv.classList.contains('show')) {
         formDiv.classList.add('show');
     }
 }
 
-// Reset the deduction form to add mode.
+// Reset the payroll-line form to add mode.
 //
 // form.reset() puts the cadence controls back on their rendered state --
 // "Does not repeat", an interval of 1, an empty ceiling -- but the rows
@@ -614,16 +614,16 @@ function _populateDeductionForm(editBtn) {
 // stay enabled until that script re-links off a change event, so one is
 // dispatched here: a reset form must post what a fresh one posts (plan step
 // salary:R15-c).
-function _resetDeductionForm() {
-    _resetForm('deduction-form', 'ded-submit-btn', '<i class="bi bi-plus"></i> Add');
-    var form = document.getElementById('deduction-form');
+function _resetLineForm() {
+    _resetForm('line-form', 'line-submit-btn', '<i class="bi bi-plus"></i> Add');
+    var form = document.getElementById('line-form');
     var unit = form && form.querySelector('[name=recurrence_unit]');
     if (unit) unit.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-// Update deduction form labels when calc method changes.
+// Update payroll-line form labels when calc method changes.
 document.addEventListener('change', function(e) {
-    if (!e.target.matches('[data-action="update-deduction-labels"]')) return;
+    if (!e.target.matches('[data-action="update-line-labels"]')) return;
     var form = e.target.closest('form');
     if (!form) return;
     var amountInput = form.querySelector('[name=amount]');

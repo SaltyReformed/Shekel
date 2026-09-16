@@ -64,6 +64,7 @@ from app.enums import (
     LedgerAccountClassEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    StatusEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
@@ -76,12 +77,14 @@ from app.services import (
     account_posting_service,
     ledger_report_service,
     posting_service,
+    status_seam,
 )
 from app.services.ledger_report_service import StatementWindow
 from app.services.pay_calendar import calendar_for
 import pytest
 
 from tests._test_helpers import (
+    family_journal_filter,
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
@@ -1017,6 +1020,11 @@ class TestRevertAndResidueDropped:
             )
             assert before.expense.total == Decimal("400.00")
 
+            # Through the seam first (plan step X-bi-3a; see
+            # ``_expense_ledger_for_category``).
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             db.session.commit()
 
@@ -1108,14 +1116,20 @@ class TestRevertAndResidueDropped:
             .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
             .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
             .filter(
-                JournalEntry.transaction_id == txn.id,
+                family_journal_filter(txn),
                 LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                     LedgerAccountClassEnum.EXPENSE,
                 ),
             )
             .scalar()
         )
-        # Revert the seeding settle so only the residue remains.
+        # Revert the seeding settle so only the residue remains -- through the
+        # ONE status door first (plan step X-bi-3a): a settle now writes a
+        # covering movement that carries the money, and only the seam's
+        # revert releases it; the primitive alone reconciles what is left.
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
         posting_service.sync_transaction_postings(txn, settled=False)
         db.session.flush()
         assert ledger_id is not None

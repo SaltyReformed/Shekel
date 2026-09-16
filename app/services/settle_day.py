@@ -46,7 +46,7 @@ from datetime import date
 from typing import Optional
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.models.mixins import SettleDatedMixin, reject_settle_instant
 from app.services.cash_ledger import reject_movement_before_books_open
 
@@ -117,6 +117,39 @@ class SettleDay:
             RuntimeError: If the ref cache has not been initialized.
         """
         return ref_cache.settled_day_basis_id(self.basis)
+
+
+def figure_source_of(settle_day) -> MovementFigureSourceEnum:
+    """Return WHO WROTE a movement's figure, given the day written with it.
+
+    **The ONE statement of the rule** (plan step **X-bi-3a**, ruling
+    **R-BAL39**), reached by every writer of a STATED figure: the purchase
+    doors (``entry_service``) and the status seam's covering movement for a
+    ``corrected`` record.  The bank's writer is the only one that states an
+    ``observed`` day, and it states the figure in the same act -- a match
+    asserts that the line and the row are one movement at one figure -- so
+    the day's basis is the exact discriminator between the bank and a
+    person.  A ``resolved`` figure is the seam's own arm, decided by the
+    record's basis rather than by any day.
+
+    It lives here rather than in either writer because both reach this
+    module already and neither may import the other; it is the predicate
+    migration ``b5c7e9a1d2f4`` backfilled by, stated in Python.
+
+    Args:
+        settle_day: The :class:`SettleDay` the figure is being written with,
+            or ``None`` for a purchase that carries no posting day.
+
+    Returns:
+        ``OBSERVED`` when the bank stated the day (and so the figure), else
+        ``TYPED``.
+    """
+    if (
+        settle_day is not None
+        and settle_day.basis is SettledDayBasisEnum.OBSERVED
+    ):
+        return MovementFigureSourceEnum.OBSERVED
+    return MovementFigureSourceEnum.TYPED
 
 
 def submitted_settle_day(

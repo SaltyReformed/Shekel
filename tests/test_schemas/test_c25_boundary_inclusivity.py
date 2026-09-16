@@ -25,7 +25,7 @@ import pytest
 from marshmallow import ValidationError
 
 from app.schemas.validation import (
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     LoanParamsCreateSchema,
     SavingsGoalCreateSchema,
     SavingsGoalUpdateSchema,
@@ -177,7 +177,7 @@ class TestLoanParamsOriginalPrincipal:
 
 
 # ---------------------------------------------------------------------------
-# F-135 -- paycheck_deductions.annual_cap
+# F-135 -- paycheck_lines.annual_cap
 # ---------------------------------------------------------------------------
 #
 # DB CHECK: ``annual_cap IS NULL OR annual_cap > 0``.
@@ -188,8 +188,8 @@ class TestLoanParamsOriginalPrincipal:
 # fields.
 
 
-class TestPaycheckDeductionAnnualCap:
-    """Boundary inclusivity tests for ``DeductionCreateSchema.annual_cap``."""
+class TestPaycheckLineAnnualCap:
+    """Boundary inclusivity tests for ``PaycheckLineCreateSchema.annual_cap``."""
 
     def _payload(self, annual_cap=None):
         """Return a complete create payload.
@@ -197,7 +197,7 @@ class TestPaycheckDeductionAnnualCap:
         Builds a flat-dollar Roth-style deduction so the
         ``calc_method PERCENTAGE`` cross-field rule does not fire and
         narrow the amount bound; the test focuses on annual_cap.
-        ``calc_method_id``/``deduction_timing_id`` use placeholder
+        ``calc_method_id``/``paycheck_line_kind_id`` use placeholder
         FK-eligible values -- the schema does not validate FK
         existence at load time, so any positive integer is accepted.
         """
@@ -205,7 +205,7 @@ class TestPaycheckDeductionAnnualCap:
             "name": "Roth IRA",
             "amount": "500.0000",
             "calc_method_id": "999",
-            "deduction_timing_id": "999",
+            "paycheck_line_kind_id": "999",
         }
         if annual_cap is not None:
             payload["annual_cap"] = annual_cap
@@ -218,12 +218,12 @@ class TestPaycheckDeductionAnnualCap:
         violates it but a NULL is a legal "no cap" sentinel.
         """
         with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load(self._payload("0"))
+            PaycheckLineCreateSchema().load(self._payload("0"))
         assert "annual_cap" in exc.value.messages
 
     def test_strictly_positive_annual_cap_accepted(self):
         """A strictly positive cap loads as Decimal."""
-        data = DeductionCreateSchema().load(
+        data = PaycheckLineCreateSchema().load(
             self._payload("23000.00"),
         )
         assert data["annual_cap"] == Decimal("23000.00")
@@ -234,5 +234,5 @@ class TestPaycheckDeductionAnnualCap:
         The route layer treats absent annual_cap as "no cap"; the
         schema does not synthesise a default sentinel.
         """
-        data = DeductionCreateSchema().load(self._payload())
+        data = PaycheckLineCreateSchema().load(self._payload())
         assert "annual_cap" not in data

@@ -74,6 +74,7 @@ from ._builders import (
     an_import,
 )
 from tests._test_helpers import (
+    family_journal_filter,
     last_covered_day,
     resolved_amount,
 )
@@ -298,13 +299,16 @@ class TestItMovesTheMoney:
         # booking a deposit.  Measured on the developer's own dev database
         # 2026-08-27, where a hand true-up posts a second entry doing exactly
         # that reversal.
+        # The row's FAMILY (plan step X-bi-3b): a settled paycheck's money is
+        # posted under its covering movement, as a bill's is since X-bi-3a,
+        # so the read widens to the family and the figures stand.
         legs = dict(
             db.session.query(
                 LedgerAccount.id, db.func.sum(Posting.amount),
             )
             .join(Posting, Posting.ledger_account_id == LedgerAccount.id)
             .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
-            .filter(JournalEntry.transaction_id == recorded.transaction_id)
+            .filter(family_journal_filter(recorded.transaction_id))
             .group_by(LedgerAccount.id)
             .all()
         )

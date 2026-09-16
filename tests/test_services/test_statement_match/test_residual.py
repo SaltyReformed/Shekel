@@ -71,6 +71,7 @@ from ._builders import (
     an_import,
 )
 from tests._test_helpers import (
+    family_journal_filter,
     last_covered_day,
     resolved_amount,
 )
@@ -394,6 +395,14 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         )
         assert resolved_amount(row) == Decimal("0.06")
         assert row.status_id == ref_cache.status_id(StatusEnum.DONE)
+        # The undo dialog names the money the release would take out of the
+        # books -- the whole family's (plan step X-bi-3a): the minted row's
+        # own leg is zero and its covering movement carries the `$0.06`, and
+        # a dialog reading the row alone said the release moved no money
+        # (adversarial review, 2026-09-16).
+        group = accepted_acts(seed_user)[0]
+        assert group.removes.moves_money is True
+        assert group.removes.cash_amount == Decimal("-0.06")
 
     def test_it_is_named_for_the_banks_own_merchant(
         self, app, db, seed_user,
@@ -590,13 +599,16 @@ class TestTheLedgerBooksItToUncategorized:
         )
 
         row = _minted(seed_user)[0]
+        # The row's FAMILY (plan step X-bi-3b): the minted paycheck settles
+        # covered, its money posted under its movement, so the read widens
+        # to the family and the figures stand.
         legs = (
             db.session.query(
                 LedgerAccount.is_fallback, db.func.sum(Posting.amount),
             )
             .join(Posting, Posting.ledger_account_id == LedgerAccount.id)
             .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
-            .filter(JournalEntry.transaction_id == row.id)
+            .filter(family_journal_filter(row))
             .group_by(LedgerAccount.is_fallback)
             .all()
         )

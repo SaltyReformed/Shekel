@@ -28,6 +28,7 @@ from app.models.scenario import Scenario
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    figure_source_columns,
     add_txn as _add_txn,
     dashboard_section,
     generate_row_of,
@@ -120,6 +121,7 @@ class TestBillRowSingleBase:
         from app.models.transaction_entry import TransactionEntry
         for amt in amounts:
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(str(amt)),

@@ -20,6 +20,8 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import (
+    MovementFigureSourceEnum,
+    SettledDayBasisEnum,
     SettlementBasisEnum,
     StatementSourceEnum,
     StatusEnum,
@@ -52,6 +54,7 @@ from app.services.statement_match import (
 from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    figure_source_columns,
     generate_row_of,
     last_covered_day,
     make_every_period_rule,
@@ -217,6 +220,14 @@ def a_purchase(
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.
     """
     entry = TransactionEntry(
+        # WHO WROTE the figure follows WHO stated the day (plan step
+        # **X-bi-3a**): a purchase the bank observed carries the bank's figure,
+        # every other one a person's -- the purchase doors' own rule
+        # (``entry_service.figure_source_of``) stated for a bare builder.
+        **figure_source_columns(
+            MovementFigureSourceEnum.OBSERVED
+            if settle_day_basis is SettledDayBasisEnum.OBSERVED else None
+        ),
         transaction_id=parent.id,
         account_id=parent.account_id,
         user_id=seed_user["user"].id,

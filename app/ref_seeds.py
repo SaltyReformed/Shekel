@@ -107,7 +107,17 @@ _REF_TABLE_SEEDS = (
         "single", "married_jointly", "married_separately",
         "head_of_household",
     ]),
-    ("DeductionTiming", ["pre_tax", "post_tax"]),
+    # ``PaycheckLineKind`` -- where a payroll line sits in the paycheck's
+    # waterfall (ruling R-SAL38), in waterfall order.  ``ref.deduction_
+    # timings`` (``pre_tax`` / ``post_tax``) until plan step salary:R18-a,
+    # whose migration renamed the table and those two rows; R18-b's
+    # migration inline-seeds the two earning kinds (the dual-seed pattern),
+    # so a freshly upgraded database resolves the enum before this
+    # idempotent reseed runs.
+    ("PaycheckLineKind", [
+        "taxable_earning", "pre_tax_deduction", "post_tax_deduction",
+        "after_tax_earning",
+    ]),
     ("CalcMethod", ["flat", "percentage"]),
     ("TaxType", ["flat", "none", "bracket"]),
     ("RaiseType", ["merit", "cola", "custom"]),
@@ -284,6 +294,15 @@ _REF_TABLE_SEEDS = (
     # settlement-record, amount-model, posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("SettledDayBasis", ["observed", "asserted", "entered"]),
+    # WHO WROTE a movement's FIGURE (balance arc, plan step X-bi-3a, ruling
+    # R-BAL39): ``resolved`` is the settle pricing it from the plan, ``typed``
+    # a person stating it, ``observed`` the bank's own line stating it.  The
+    # figure's twin of the settle-day basis above, on the one table that holds
+    # movements.  Every movement carries one (NOT NULL, no default), so there is
+    # no absent state to leave unseeded.  The migration ``b5c7e9a1d2f4``
+    # inline-seeds the identical rows for the same reason its siblings do.
+    # Names match the enum ``.value`` strings in ``app/enums.py`` exactly.
+    ("MovementFigureSource", ["resolved", "typed", "observed"]),
     # How strongly an imported statement's balance is EVIDENCED (bank_import
     # arc, plan step X-f6e-1, ruling R-GF): ``file_chain`` is a file stating a
     # balance beside every line, so it proves itself; ``corroborated`` is that

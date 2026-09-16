@@ -61,7 +61,7 @@ boundary.
 """
 from app import ref_cache
 from app.extensions import db
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
@@ -117,7 +117,7 @@ class EmptyAuthoredWindowError(RecurrenceResolutionError):
 #: Named rather than spelled inline because :func:`author_rule` is the one
 #: door that binds an owner; the third kind was exactly the edit this comment
 #: promised: one line here plus the column and the arm it needs.
-RecurrenceOwner = TransactionTemplate | TransferTemplate | PaycheckDeduction
+RecurrenceOwner = TransactionTemplate | TransferTemplate | PaycheckLine
 
 
 def _author(
@@ -373,7 +373,7 @@ def author_rule(
             and its phase are both measured against it, so the mismatched pair
             would produce a plausible wrong date rather than an error.
         owner: The ``TransactionTemplate``, ``TransferTemplate`` or (since
-            plan step salary:R15-b) ``PaycheckDeduction`` this rule belongs
+            plan step salary:R15-b) ``PaycheckLine`` this rule belongs
             to.  Mutated: its ``recurrence_rule`` is set to the new rule.  It
             need not be flushed -- SQLAlchemy orders the parent's INSERT
             before the rule's.

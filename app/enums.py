@@ -112,14 +112,34 @@ class AcctTypeEnum(enum.Enum):
     PROPERTY = "Property"
 
 
-class DeductionTimingEnum(enum.Enum):
-    """Deduction timing values.
+class PaycheckLineKindEnum(enum.Enum):
+    """The KIND of a payroll line: its position in the paycheck's waterfall.
 
-    Values match ``ref.deduction_timings.name`` in the database.
+    Values match ``ref.paycheck_line_kinds.name`` in the database, and the
+    members are in WATERFALL order (ruling **R-SAL38**, plan steps
+    **salary:R18-a** and **R18-b**): a paycheck is base pay plus a list of
+    lines, and a line's kind is where it sits between base pay and net pay::
+
+        base pay
+        + TAXABLE_EARNING       -> gross (the FICA base; withholding annualises it)
+        - PRE_TAX_DEDUCTION     -> taxable income (the income-tax base)
+        - withholding
+        - POST_TAX_DEDUCTION
+        + AFTER_TAX_EARNING     -> net pay (the deposit)
+
+    Sign and stage DERIVE from the kind, so the row carries one column for
+    the fact.  A pre-tax deduction leaves the income-tax base and not the
+    FICA base (the calibration's effective Social Security rate absorbs a
+    Section 125 base), while a taxable earning joins BOTH -- which is why
+    the two sides are four kinds and not two axes.  Until R18-a this was
+    ``DeductionTimingEnum`` over ``ref.deduction_timings`` (``pre_tax`` /
+    ``post_tax``), a name that could hold nothing but a deduction.
     """
 
-    PRE_TAX = "pre_tax"
-    POST_TAX = "post_tax"
+    TAXABLE_EARNING = "taxable_earning"
+    PRE_TAX_DEDUCTION = "pre_tax_deduction"
+    POST_TAX_DEDUCTION = "post_tax_deduction"
+    AFTER_TAX_EARNING = "after_tax_earning"
 
 
 class CalcMethodEnum(enum.Enum):
@@ -790,6 +810,65 @@ class SettledDayBasisEnum(enum.Enum):
     OBSERVED = "observed"
     ASSERTED = "asserted"
     ENTERED = "entered"
+
+
+class MovementFigureSourceEnum(enum.Enum):
+    """WHO WROTE a movement's FIGURE (plan step **X-bi-3a**, ruling **R-BAL39**).
+
+    A movement is a ``budget.transaction_entries`` row: a purchase recorded
+    against an envelope, or -- since X-bi-3a -- the COVERING MOVEMENT a settle
+    writes for a bill (and since X-bi-3b for a paycheck), the payment row that
+    records the parent's money the way a purchase already records an
+    envelope's.  Three writers put a figure on one,
+    and this catalogue says which, partitioned by the SOURCE of the figure --
+    the argument :class:`SettledDayBasisEnum` makes for the DAY one column
+    over, applied to the amount beside it:
+
+        resolved  -- the settle priced it from the PLAN at the moment of the
+                     settle (the definition's price series, the salary
+                     profile, the loan's schedule).  Not repeatable, which is
+                     why it is RECORDED: a re-settle re-prices it, because the
+                     app's own inference about a moment that has passed is
+                     worth less than a fresh one.
+        typed     -- a person stated it: a hand-typed purchase, or a figure
+                     read off a statement and typed over the plan's.  A fact
+                     somebody stands behind; a re-settle HONOURS it, exactly as
+                     ``status_seam.Settlement.from_settle`` honours a retained
+                     ``corrected`` record.
+        observed  -- the bank's own line stated it: a purchase born from a
+                     statement line, or one a bank line was matched to.  A
+                     match asserts the line and the purchase are one movement
+                     at one figure, so a confirmation RAISES a typed figure to
+                     observed the way it raises an ``asserted`` day.
+
+    **A reader needs it, which is why it is a column and not a label.**
+    ``Settlement.from_settle`` re-prices a ``derived`` record and honours a
+    ``corrected`` one; once a bill's figure lives on its covering movement
+    rather than on ``transactions.settled_basis_id`` (which
+    ``balance:X-bi-4`` makes derivable), that distinction has no other home.
+    The catalogue is NEW rather than a reuse of :class:`SettlementBasisEnum`
+    because that one's ``purchases`` member means nothing on a movement (a
+    movement IS a purchase) and its ``corrected`` member is defined as *a
+    human typed it*, which a bank-born purchase would have to claim falsely.
+
+    **It records the strongest statement made, and a withdrawal does not
+    launder it**: releasing a match leaves a purchase's ``observed`` day in
+    place (finding **N-333**, *the days an accepted match wrote are the APP's
+    own record*), and the figure's source stays with it.  A day-only edit
+    leaves the source alone; the source changes only when someone WRITES the
+    figure -- the human PATCH makes it ``typed``, a bank line ``observed``, a
+    settle ``resolved`` or ``typed``.
+
+    Application code resolves these via ``ref_cache.movement_figure_source_id``
+    and compares against the integer ID -- never the string ``name`` -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  NOT NULL and no default: both writers of a movement state it,
+    and a stored guess would be the shape ruling **R-IY** deletes.
+    """
+
+    RESOLVED = "resolved"
+    TYPED = "typed"
+    OBSERVED = "observed"
 
 
 class StatementBalanceEvidenceEnum(enum.Enum):

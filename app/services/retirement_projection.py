@@ -42,6 +42,8 @@ from app.services.projection_inputs import (
     PayrollWiring,
     build_investment_projection_inputs,
     load_payroll,
+)
+from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext

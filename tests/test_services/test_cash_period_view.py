@@ -55,6 +55,7 @@ from app.services.balance_at._cash_periods import (
 )
 from app.services.pay_calendar import PayCalendarError, PeriodWindow
 from tests._test_helpers import (
+    figure_source_columns,
     add_entry,
     add_txn,
     append_balance_assertion,
@@ -257,6 +258,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             (Decimal("120.00"), False), (Decimal("80.00"), True),
         ):
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=amount,
@@ -300,6 +302,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             settled_on=date(2026, 2, 5), name="Groceries",
         )
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),

@@ -142,10 +142,13 @@ class SalaryProfile(
         cascade="all, delete-orphan", lazy="select",
         order_by="SalaryRaise.effective_year, SalaryRaise.effective_month",
     )
-    deductions = db.relationship(
-        "PaycheckDeduction", back_populates="salary_profile",
+    # The profile's payroll LINES -- every deduction, and from plan step
+    # salary:R18-b every earning line too (ruling R-SAL38); which side a row
+    # is on is its ``paycheck_line_kind_id``.  ``deductions`` until R18-a.
+    lines = db.relationship(
+        "PaycheckLine", back_populates="salary_profile",
         cascade="all, delete-orphan", lazy="select",
-        order_by="PaycheckDeduction.sort_order",
+        order_by="PaycheckLine.sort_order",
     )
 
     def __repr__(self):

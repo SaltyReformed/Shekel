@@ -420,7 +420,7 @@ def edit_form_cadence(template: Any) -> SelectedCadence | None:
 
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate`` being
-            edited -- or, since plan step salary:R15-c, a ``PaycheckDeduction``,
+            edited -- or, since plan step salary:R15-c, a ``PaycheckLine``,
             whose row's edit prefill the salary page reads through this same
             function.  Read for ``recurrence_rule`` only; not mutated.
 

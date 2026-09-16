@@ -1,8 +1,18 @@
 """
-Shekel Budget App -- Paycheck Deduction Model (salary schema)
+Shekel Budget App -- Paycheck Line Model (salary schema)
 
-Defines payroll deductions (pre-tax and post-tax) that reduce a salary
-profile's gross pay to arrive at net pay.
+A payroll LINE of a salary profile: a named amount with a kind (its position
+in the paycheck's waterfall), a cadence and the escalation and cap rules,
+which the paycheck engine prices into every paycheck the profile pays.
+
+**``salary.paycheck_deductions`` until plan step salary:R18-a** (ruling
+**R-SAL38**): a paycheck is base pay plus a list of lines, and the table that
+held only the deduction side is renamed for the earning side R18-b adds to
+it -- a taxable earning joining gross and an after-tax earning joining net.
+The two kinds this tree holds are the deduction side, ``pre_tax_deduction``
+and ``post_tax_deduction`` (:class:`~app.enums.PaycheckLineKindEnum`), and
+every row is still a deduction: the rename is a change of NAME, not of
+figure, graded byte-identical over the developer's saved paychecks.
 """
 
 from app.extensions import db
@@ -15,11 +25,11 @@ from app.models.mixins import (
 )
 
 
-class PaycheckDeduction(
+class PaycheckLine(
     SalaryProfileScopedMixin, SortOrderMixin, IsActiveMixin, OptimisticLockMixin,
     TimestampMixin, db.Model,
 ):
-    """A payroll deduction (e.g., 401k, health insurance, Roth IRA).
+    """A payroll line (e.g., 401k, health insurance, Roth IRA).
 
     Optimistic locking: see :class:`Transaction` for the
     ``version_id_col`` contract.  Concurrent deduction edits race
@@ -28,7 +38,7 @@ class PaycheckDeduction(
     security remediation plan.
 
     Duplicate prevention (F-052 / C-23): the composite unique
-    constraint ``uq_paycheck_deductions_profile_name`` on
+    constraint ``uq_paycheck_lines_profile_name`` on
     ``(salary_profile_id, name)`` rejects a second deduction with
     the same name on the same salary profile.  Without it a
     double-submit of the deduction form -- network retry,
@@ -52,15 +62,15 @@ class PaycheckDeduction(
     against and that could not say what a weekly-paid owner's benefit premium
     does.  The engine asks the rule's own occurrence walk whether a payday is
     an admitted paycheck
-    (:meth:`~app.services.payroll_basis.PayrollBasis.deduction_applies_on`).
+    (:meth:`~app.services.payroll_basis.PayrollBasis.line_applies_on`).
     """
 
-    __tablename__ = "paycheck_deductions"
+    __tablename__ = "paycheck_lines"
     __table_args__ = (
-        db.CheckConstraint("amount > 0", name="ck_paycheck_deductions_positive_amount"),
+        db.CheckConstraint("amount > 0", name="ck_paycheck_lines_positive_amount"),
         db.CheckConstraint(
             "annual_cap IS NULL OR annual_cap > 0",
-            name="ck_paycheck_deductions_positive_cap",
+            name="ck_paycheck_lines_positive_cap",
         ),
         # F-077 / C-24: ``inflation_rate`` is the per-year
         # escalation applied to the deduction amount; the salary
@@ -70,7 +80,7 @@ class PaycheckDeduction(
         db.CheckConstraint(
             "inflation_rate IS NULL OR "
             "(inflation_rate >= 0 AND inflation_rate <= 1)",
-            name="ck_paycheck_deductions_valid_inflation_rate",
+            name="ck_paycheck_lines_valid_inflation_rate",
         ),
         # F-077 / C-24: ``inflation_effective_month`` is the
         # 1-indexed month in which the annual escalation takes
@@ -79,24 +89,24 @@ class PaycheckDeduction(
             "inflation_effective_month IS NULL OR "
             "(inflation_effective_month >= 1 AND "
             "inflation_effective_month <= 12)",
-            name="ck_paycheck_deductions_valid_inflation_month",
+            name="ck_paycheck_lines_valid_inflation_month",
         ),
         db.CheckConstraint(
             "version_id > 0",
-            name="ck_paycheck_deductions_version_id_positive",
+            name="ck_paycheck_lines_version_id_positive",
         ),
         db.UniqueConstraint(
             "salary_profile_id", "name",
-            name="uq_paycheck_deductions_profile_name",
+            name="uq_paycheck_lines_profile_name",
         ),
         # F-071 / F-079 / C-42: child-FK index restored after the
         # 22b3dd9d9ed3 migration dropped it without restoration.  The
-        # paycheck calculator joins paycheck_deductions to its parent
+        # paycheck calculator joins paycheck_lines to its parent
         # salary_profile on every projection; without this index the
         # join is a sequential scan that scales linearly with the
         # total deduction-row count across all users.
         db.Index(
-            "idx_deductions_profile", "salary_profile_id",
+            "idx_paycheck_lines_profile", "salary_profile_id",
         ),
         {"schema": "salary"},
     )
@@ -105,11 +115,11 @@ class PaycheckDeduction(
     # F-073 / C-43: explicit ondelete=RESTRICT + fk_* names on the
     # two ref-table FKs.  See app/extensions.py for the full
     # SHEKEL_NAMING_CONVENTION rationale.
-    deduction_timing_id = db.Column(
+    paycheck_line_kind_id = db.Column(
         db.Integer,
         db.ForeignKey(
-            "ref.deduction_timings.id",
-            name="fk_paycheck_deductions_deduction_timing_id",
+            "ref.paycheck_line_kinds.id",
+            name="fk_paycheck_lines_paycheck_line_kind_id",
             ondelete="RESTRICT",
         ),
         nullable=False,
@@ -118,7 +128,7 @@ class PaycheckDeduction(
         db.Integer,
         db.ForeignKey(
             "ref.calc_methods.id",
-            name="fk_paycheck_deductions_calc_method_id",
+            name="fk_paycheck_lines_calc_method_id",
             ondelete="RESTRICT",
         ),
         nullable=False,
@@ -141,8 +151,8 @@ class PaycheckDeduction(
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
-    salary_profile = db.relationship("SalaryProfile", back_populates="deductions")
-    deduction_timing = db.relationship("DeductionTiming", lazy="joined")
+    salary_profile = db.relationship("SalaryProfile", back_populates="lines")
+    paycheck_line_kind = db.relationship("PaycheckLineKind", lazy="joined")
     calc_method = db.relationship("CalcMethod", lazy="joined")
     target_account = db.relationship("Account", lazy="joined")
     # The line's cadence, or ``None`` for every paycheck (plan step
@@ -161,7 +171,7 @@ class PaycheckDeduction(
         "RecurrenceRule",
         uselist=False, lazy="joined",
         cascade="all, delete-orphan", passive_deletes=True,
-        back_populates="paycheck_deduction",
+        back_populates="paycheck_line",
     )
 
     @property
@@ -180,4 +190,4 @@ class PaycheckDeduction(
         return self.salary_profile.user_id
 
     def __repr__(self):
-        return f"<PaycheckDeduction '{self.name}' ${self.amount}>"
+        return f"<PaycheckLine '{self.name}' ${self.amount}>"

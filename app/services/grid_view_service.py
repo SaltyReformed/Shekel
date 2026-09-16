@@ -42,14 +42,17 @@ from app.services.pay_calendar import DerivedPeriod
 from app.utils.balance_predicates import is_cancelled
 
 
-# Lightweight struct for a single row in the budget grid.  Template-
-# linked transactions collapse to one row per (category, template)
-# regardless of per-instance name drift; standalone transactions
-# collapse to one row per (category, name).
+# Lightweight struct for a single row in the budget grid.  Rows of a
+# RECURRING definition collapse to one row per (category, template)
+# regardless of per-instance name drift; every other row -- a one-off's
+# (a rule-less definition's, ruling **R-BAL34**), a legacy link-less row,
+# a transfer shadow, a CC payback -- collapses to one row per (category,
+# name), so ``template_id`` here is set exactly when the row is a
+# recurring definition's.
 RowKey = namedtuple("RowKey", [
     "category_id",    # int -- FK to budget.categories
-    "template_id",    # int or None -- FK to budget.transaction_templates
-    "txn_name",       # str -- row label (template name or standalone txn name)
+    "template_id",    # int or None -- the RECURRING definition, else None
+    "txn_name",       # str -- row label (template name or the txn name)
     "group_name",     # str -- category group for section headers
     "item_name",      # str -- category item (used for sort tiebreaker)
     "display_name",   # str -- label shown in the row <th>
@@ -83,14 +86,21 @@ def build_row_keys(
     """Build a deterministic, sorted list of RowKeys for the grid.
 
     Scans the supplied transactions and collects one row per logical
-    line item.  Template-linked transactions dedupe by
+    line item.  Rows of a RECURRING definition dedupe by
     (category_id, template_id) and take their label from the current
     template name -- this keeps historic instances whose stored ``name``
     predates a template rename from splitting into a second row.
-    Standalone transactions (no template_id) dedupe by
-    (category_id, name) and label themselves with the instance name.
-    Results are sorted by (group_name, item_name, txn_name) for stable
-    alphabetical ordering within each category group.
+    Every other row dedupes by (category_id, name) and labels itself with
+    the instance name.  **The fork is ``recurs``, not the link** (ruling
+    **R-BAL34**, plan step ``balance:X-bi-7b``): a one-off carries a
+    definition since that family's first leaf, and keyed on the link two
+    same-named one-offs -- one grid row with two cells before -- became
+    two rows both labelled by the name.  Display is cockpit grammar and
+    identity is the correctness layer; the grid keeps the grouping the
+    owner had, so a repeated informal one-off stays one row, and a
+    one-off renamed at the popover moves to a new row as a link-less
+    rename did.  Results are sorted by (group_name, item_name, txn_name)
+    for stable alphabetical ordering within each category group.
 
     The caller controls scope: passing only visible-window transactions
     produces the default compact view (rows only for items active in
@@ -105,7 +115,8 @@ def build_row_keys(
             loaded (the grid route does this via ``selectinload``;
             the companion route does it via the join in
             ``companion_service.get_visible_transactions``) to avoid
-            per-row lazy fetches.
+            per-row lazy fetches; the rule ``recurs`` reads rides on the
+            template's own joined load.
         categories: list of Category objects, already ordered by
             (group_name, item_name).  Used to map category_id -> Category
             for sort keys and for the empty-cell template.
@@ -120,8 +131,8 @@ def build_row_keys(
     # Index categories by ID for O(1) lookup.
     cat_by_id = {c.id: c for c in categories}
 
-    # Collect unique row keys.  For template-linked rows the key
-    # carries template_id (name omitted); for standalone rows the key
+    # Collect unique row keys.  For a recurring definition's rows the key
+    # carries template_id (name omitted); for every other row the key
     # carries the instance name (template_id omitted).
     seen = set()
     row_keys: list[RowKey] = []
@@ -149,13 +160,12 @@ def build_row_keys(
         group_name = cat.group_name if cat else "Uncategorized"
         item_name = cat.item_name if cat else ""
 
-        if txn.template_id is not None:
-            # Template-linked: collapse all instances into one row
-            # labelled with the template's current name.  Falls back
-            # to the instance name only if the relationship failed
-            # to load (template.ondelete=SET NULL makes a real
-            # orphan unreachable through template_id).
-            label = txn.template.name if txn.template else txn.name
+        if txn.recurs:
+            # A recurring definition's row: collapse all instances into
+            # one row labelled with the definition's current name.  A row
+            # that ``recurs`` has loaded its template, so there is no
+            # fallback to the instance name here.
+            label = txn.template.name
             key = (txn.category_id, txn.template_id, None)
         else:
             label = txn.name
@@ -165,7 +175,7 @@ def build_row_keys(
             seen.add(key)
             row_keys.append(RowKey(
                 category_id=txn.category_id,
-                template_id=txn.template_id,
+                template_id=key[1],
                 txn_name=label,
                 group_name=group_name,
                 item_name=item_name,
@@ -193,6 +203,17 @@ def _match_row_in_period(
     individually testable without instantiating the full row-key set.
     See :func:`build_matched_by_row_period` for the predicate
     semantics.
+
+    **The two arms exclude each other's rows** (ruling **R-BAL34**): a
+    recurring definition's row is matched by its template alone, and a
+    name row is matched by name among the rows that do NOT recur.  The
+    predicate used to compare by NAME whenever EITHER side was link-less,
+    so a one-off sharing ``(category_id, name)`` with a recurring
+    definition was drawn into that definition's row AND its own, and the
+    definition's generated rows into the one-off's -- six cells on the
+    2026-09-12 production restore (``from_scratch_architecture.md`` 10.4,
+    trace 5: one-off 2584 Mother's Day against template 24, one-off 2581
+    Homeschool Curriculum against template 21).
     """
     matched: list[Transaction] = []
     for txn in txn_by_period.get(period.period_id, []):
@@ -204,10 +225,10 @@ def _match_row_in_period(
             continue
         if txn.is_deleted or is_cancelled(txn):
             continue
-        if rk.template_id is not None and txn.template_id is not None:
+        if rk.template_id is not None:
             if txn.template_id != rk.template_id:
                 continue
-        elif txn.name != rk.txn_name:
+        elif txn.recurs or txn.name != rk.txn_name:
             continue
         matched.append(txn)
     return matched
@@ -242,8 +263,10 @@ def build_matched_by_row_period(
        ``is_cancelled`` helper so the Python producer and the Jinja
        templates' Cancelled-status guard share the same cached-ID
        source per E-15 / MED-02.
-    5. If both the row key and the txn carry a ``template_id``, match
-       by template id.  Otherwise fall back to name match.
+    5. A row key carrying a ``template_id`` (a recurring definition's
+       row) matches by template id; a name row matches by name among the
+       rows that do not recur (ruling **R-BAL34**; see
+       :func:`_match_row_in_period`).
 
     Args:
         income_row_keys: row keys for the income section, in

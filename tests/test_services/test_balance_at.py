@@ -44,7 +44,7 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     CalcMethodEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -52,8 +52,8 @@ from app.exceptions import ValidationError
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import AccountType, CalcMethod, DeductionTiming
+from app.models.paycheck_line import PaycheckLine
+from app.models.ref import AccountType, CalcMethod, PaycheckLineKind
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
@@ -329,15 +329,15 @@ def _add_flat_deduction(db, profile, account, amount):
     """
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
     pre_tax_timing = (
-        db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     )
-    ded = PaycheckDeduction(
+    ded = PaycheckLine(
         salary_profile_id=profile.id,
         target_account_id=account.id,
         name=f"Contribution {account.name}",
         amount=amount,
         calc_method_id=flat_method.id,
-        deduction_timing_id=pre_tax_timing.id,
+        paycheck_line_kind_id=pre_tax_timing.id,
         is_active=True,
     )
     db.session.add(ded)
@@ -1035,12 +1035,12 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
             # below is what caught its absence.
             profile = make_salary_profile(seed_user, db.session)
             db.session.flush()
-            db.session.add(PaycheckDeduction(
+            db.session.add(PaycheckLine(
                 salary_profile_id=profile.id, target_account_id=roth.id,
                 name="Roth deferral", amount=Decimal("100.00"),
                 calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
-                deduction_timing_id=ref_cache.deduction_timing_id(
-                    DeductionTimingEnum.PRE_TAX,
+                paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                    PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
                 ),
                 is_active=True,
             ))
@@ -2835,7 +2835,7 @@ class TestTheContributionRowOnARealFeed:
     ``contribution``: only an INTEREST account reached the replay, and only an
     INVESTMENT can have a payroll feed.  This is the first commit in which one
     can, so this is where the term is proven end to end -- from a real
-    ``PaycheckDeduction`` through the replay to the column the grid renders.
+    ``PaycheckLine`` through the replay to the column the grid renders.
 
     The figures are hand-computed off a $104,000 salary, which is $4,000.00 per
     period on the fixture's 26-period year -- chosen over the helper's default

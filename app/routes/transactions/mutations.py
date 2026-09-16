@@ -40,7 +40,10 @@ from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
-from app.routes.transactions._field_updates import _apply_field_updates
+from app.routes.transactions._field_updates import (
+    _apply_field_updates,
+    _re_files_the_row,
+)
 from app.routes.transactions._gates import (
     _reject_tracking_on_income,
     _reject_generated_due_date_edit,
@@ -60,7 +63,7 @@ from app.routes.transactions._helpers import (
     _mark_done_success_response,
     _RenderTarget,
     _stale_transaction_response,
-    _update_schema,
+    _update_schema_for,
     _verify_owned_fks_in_update,
 )
 from app.routes.transactions._shadow_mutations import (
@@ -113,12 +116,20 @@ logger = logging.getLogger(__name__)
 # idempotent, so listing a field that did not move the effect is a harmless
 # no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
 # pure metadata edit.
+#
+# **A PLACED row's ``category_id`` never reaches this filter** (plan step
+# ``balance:X-bi-7b``): it is the DEFINITION's, so ``_apply_field_updates``
+# takes it out of ``data`` and lands it there, and the propagation that
+# brings the row into line reconciles the row's postings itself.  What that
+# spares is narrow -- the card posts ``status_id`` on every save, so the
+# status arm reconciles the row again anyway, idempotently -- but the filter
+# should not name a key this door no longer writes to the row.
 _POSTING_RELEVANT_FIELDS = frozenset({
     "status_id", "estimated_amount", "settled_amount", "category_id",
     "settled_on", "pay_period_id",
 })
 
-def _apply_regular_update(txn, txn_id, data):
+def _apply_regular_update(txn, txn_id, data, *, target_period):
     """Apply a PATCH update to a regular (non-shadow) transaction.
 
     Runs the three pre-mutation gates, writes the submitted fields
@@ -128,7 +139,9 @@ def _apply_regular_update(txn, txn_id, data):
     via the shared ``credit_workflow.delete_payback_on_credit_revert``), and
     commits under the optimistic lock.  A ``pay_period_id`` change relocates the
     row across the grid, so it triggers a full ``gridRefresh`` instead of the
-    in-place ``balanceChanged`` swap.
+    in-place ``balanceChanged`` swap -- and so does a placed row's rename or
+    re-category since plan step ``balance:X-bi-7b``, which moves it to
+    another grid row (ruling **R-BAL34**).
 
     **This handler does not know what a status change means, and that is plan
     step X-ap.**  It used to call the status SEAM -- the mechanics primitive --
@@ -143,10 +156,15 @@ def _apply_regular_update(txn, txn_id, data):
         txn_id: The transaction's id, used for stale-conflict logging.
         data: The schema-loaded PATCH payload (``version_id`` already
             popped by the caller).
+        target_period: The submitted paycheck as the owner's calendar
+            derived it, or ``None`` when the payload names none --
+            :func:`_verify_owned_fks_in_update`'s answer, threaded so a
+            one-off's re-placing (ruling **R-BAL33**) reads the paycheck's
+            start off the derivation the FK probe already made.
 
     Returns:
         A Flask response tuple: the updated cell + ``gridRefresh`` (on a
-        period move) or ``balanceChanged`` on success, a 409 conflict
+        period move or a re-filed row) or ``balanceChanged`` on success, a 409 conflict
         cell on a concurrent commit, or a 400 on a rejected status
         change, a locked-field edit of a finalised row (#26), the income
         purchase-tracking guard, an amount the settle would discard, or a bad
@@ -204,6 +222,13 @@ def _apply_regular_update(txn, txn_id, data):
     # ``_apply_field_updates`` ``setattr``s every key it does not recognise.
     amount_authored = figure_was_authored(data, "estimated_amount")
     data.pop(as_rendered_field("estimated_amount"), None)
+
+    # Does this edit move the row to ANOTHER GRID ROW -- a placed row's name
+    # or category, which are its definition's (plan step balance:X-bi-7b,
+    # ruling R-BAL34)?  Asked BEFORE the field write for the same reason
+    # ``period_changed`` is: the write lands the new values on the
+    # definition, after which the question cannot be asked.
+    re_filed = _re_files_the_row(txn, data)
 
     # Detect a Credit reversion before the setattr loop rewrites
     # status_id.  A Credit row leaving Credit status (the state machine
@@ -286,6 +311,7 @@ def _apply_regular_update(txn, txn_id, data):
         field_error = _apply_field_updates(
             txn, data,
             amount_authored=amount_authored, period_changed=period_changed,
+            target_period=target_period,
         )
         if field_error is not None:
             return field_error
@@ -369,13 +395,63 @@ def _apply_regular_update(txn, txn_id, data):
     logger.info("user_id=%d updated transaction %d", current_user.id, txn_id)
 
     # A period move needs a full grid refresh so the row appears under
-    # its new period; an in-place edit only needs the balance rows
-    # recomputed.  ``gridRefresh`` reloads the page (app.js); the
-    # returned cell still swaps first, which is harmless before reload.
+    # its new period, and so does a placed row renamed or re-categorised
+    # (it moves to another grid row); an in-place edit only needs the
+    # balance rows recomputed.  ``gridRefresh`` reloads the page (app.js);
+    # the returned cell still swaps first, which is harmless before reload.
     response = render_transaction_cell(txn)
     return response, 200, {
-        "HX-Trigger": "gridRefresh" if period_changed else "balanceChanged",
+        "HX-Trigger": (
+            "gridRefresh" if period_changed or re_filed else "balanceChanged"
+        ),
     }
+
+
+def _stale_form_conflict(txn, data):
+    """Return the 409 conflict cell when the card that posted *data* is stale.
+
+    The card pins the ROW's ``version_id`` (commit C-18 / F-010), and since
+    plan step ``balance:X-bi-7b`` a PLACED row's card pins its DEFINITION's
+    too: a one-off's name, category, flags and PRICE live on the definition
+    and the card edits them there, so a save that touches only those bumps
+    the definition's counter and not the row's -- and two cards rendered
+    before either saved would both have answered 200, the second silently
+    overwriting the first's price, where the row's own counter caught that
+    race while the price lived on the row.  Found by adversarial review.
+    Each pin is compared only when the card shipped it (a legacy row's card
+    ships none for the definition; a client that omits both falls through to
+    the SQLAlchemy-tier check at flush time), and both are POPPED so the
+    field loop never sees them.
+
+    Args:
+        txn: The row being edited.
+        data: The schema-loaded PATCH payload; ``version_id`` and
+            ``template_version_id`` are removed from it.
+
+    Returns:
+        The conflict cell as a ``(html, 409)`` tuple, or ``None``.
+    """
+    submitted_version = data.pop("version_id", None)
+    submitted_definition_version = data.pop("template_version_id", None)
+    if submitted_version is not None and submitted_version != txn.version_id:
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(submitted=%d, current=%d)",
+            txn.id, submitted_version, txn.version_id,
+        )
+        return render_transaction_cell(txn, conflict=True), 409
+    if (
+        submitted_definition_version is not None
+        and txn.is_placed
+        and submitted_definition_version != txn.template.version_id
+    ):
+        logger.info(
+            "Stale-form conflict on update_transaction id=%d "
+            "(definition submitted=%d, current=%d)",
+            txn.id, submitted_definition_version, txn.template.version_id,
+        )
+        return render_transaction_cell(txn, conflict=True), 409
+    return None
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["PATCH"])
@@ -429,8 +505,12 @@ def update_transaction(txn_id):
     if txn is None:
         return "Not found", 404
 
-    # Parse and validate input.
-    errors = _update_schema.validate(request.form)
+    # Parse and validate input.  WHICH schema is the row's shape's to say
+    # (plan step balance:X-bi-7b): the flags are declared only for a row
+    # whose item is editable here, so a recurring row's crafted flag is
+    # dropped before any code could land it on the dead cell (BAL-484).
+    schema = _update_schema_for(txn)
+    errors = schema.validate(request.form)
     if errors:
         # Designed fragment (marker-header convention): the cell
         # re-rendered with the flattened field errors in its hint,
@@ -440,7 +520,7 @@ def update_transaction(txn_id):
             txn.id, flatten_schema_errors(errors), status=422,
         )
 
-    data = _update_schema.load(request.form)
+    data = schema.load(request.form)
 
     # Route-boundary FK ownership (commit C-29 / F-029).  Reject
     # cross-user ``pay_period_id`` / ``category_id`` before the
@@ -448,30 +528,28 @@ def update_transaction(txn_id):
     # security response (404) takes precedence over the UX
     # response (409 conflict cell) when the same request triggers
     # both.  See :func:`_verify_owned_fks_in_update` for the
-    # threat-model details.
-    fk_error = _verify_owned_fks_in_update(data)
+    # threat-model details.  The target paycheck it derived rides on to
+    # the field write, which re-places a moved one-off on its start.
+    target_period, fk_error = _verify_owned_fks_in_update(data)
     if fk_error is not None:
         return fk_error
 
     # Stale-form check.  Performed before any mutation so audit-log
     # triggers record only successful edits.  Conditional on the
     # form having submitted a version (clients that omit it fall
-    # through to the SQLAlchemy-tier check at flush time).
-    submitted_version = data.pop("version_id", None)
-    if submitted_version is not None and submitted_version != txn.version_id:
-        logger.info(
-            "Stale-form conflict on update_transaction id=%d "
-            "(submitted=%d, current=%d)",
-            txn_id, submitted_version, txn.version_id,
-        )
-        return render_transaction_cell(txn, conflict=True), 409
+    # through to the SQLAlchemy-tier check at flush time).  ONE pin per
+    # home the card edits -- the row's, and a placed row's definition's --
+    # decided by :func:`_stale_form_conflict`.
+    conflict = _stale_form_conflict(txn, data)
+    if conflict is not None:
+        return conflict
 
     # --- Transfer detection guard ---
     if txn.transfer_id is not None:
         return _apply_shadow_update(txn, txn_id, data)
     # --- End guard ---
 
-    return _apply_regular_update(txn, txn_id, data)
+    return _apply_regular_update(txn, txn_id, data, target_period=target_period)
 
 
 @transactions_bp.route("/transactions/<int:txn_id>", methods=["DELETE"])

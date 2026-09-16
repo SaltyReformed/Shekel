@@ -27,6 +27,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -2048,6 +2049,7 @@ class TestTheReconcileRoute:
 
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
@@ -5823,6 +5825,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=user_id,
         amount=amount,

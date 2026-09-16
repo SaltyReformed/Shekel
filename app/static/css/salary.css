@@ -78,7 +78,7 @@
   grid-column: 1 / -1;
 }
 
-.salary-grid #anatomy-deductions {
+.salary-grid #anatomy-lines {
   grid-column: 1;
 }
 
@@ -94,7 +94,7 @@
     grid-template-columns: 1fr;
   }
 
-  .salary-grid #anatomy-deductions,
+  .salary-grid #anatomy-lines,
   .salary-grid .sal-right-col {
     grid-column: 1;
   }
@@ -248,15 +248,22 @@
   min-width: 2px;
 }
 
-/* Class suffixes come from the producer's timing key (the
-   DeductionTimingEnum value), generated -- not compared -- in Jinja.
-   Post-tax mirrors the spine's neutral (see --sal-post-tint above). */
-.sal-ded-bar--pre_tax {
+/* Class suffixes come from the producer's kind key (the
+   PaycheckLineKindEnum value), generated -- not compared -- in Jinja.
+   Post-tax mirrors the spine's neutral (see --sal-post-tint above); an
+   EARNING bar (plan step salary:R18-b) wears the settled-money tone, money
+   in rather than out, mixed to the same depth as the pre-tax accent. */
+.sal-ded-bar--pre_tax_deduction {
   background: color-mix(in srgb, var(--shekel-accent) 65%, var(--shekel-surface));
 }
 
-.sal-ded-bar--post_tax {
+.sal-ded-bar--post_tax_deduction {
   background: var(--sal-post-tint);
+}
+
+.sal-ded-bar--taxable_earning,
+.sal-ded-bar--after_tax_earning {
+  background: color-mix(in srgb, var(--shekel-done) 65%, var(--shekel-surface));
 }
 
 .sal-ded-amt {

@@ -36,6 +36,7 @@ from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
 from app.services.rate_period_engine import due_after_anchor, monthly_due_date
+from app.services.transfer_legs import PlannedTransferLeg
 from app.utils.dates import anchor_chronology_key
 
 from ._shadows import settled_income_shadows
@@ -552,16 +553,28 @@ def precedes_origination(params: LoanParams, installment: date) -> bool:
     return not due_after_anchor(params.origination_date, installment)
 
 
-def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
-    """Return the monthly installment a loan payment shadow satisfies.
+def loan_payment_due_date(
+    shadow: Transaction | PlannedTransferLeg, payment_day: int,
+) -> date:
+    """Return the monthly installment a loan payment satisfies.
 
     The project's SINGLE derivation of "which contractual installment is this
     payment?" -- read by the fold's event stream
     (:func:`app.services.loan_ledger.loan_event_stream`),
     the payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
-    and the settled-payment guards below, so no two of them can disagree on a
-    payment's due date.
+    the forward plan's PLANNED tier and the settled-payment guards below, so no
+    two of them can disagree on a payment's due date.
+
+    **It takes a settled SHADOW or a projected LEG** (plan step
+    balance:X-bi-6a).  A still-projected payment is a
+    :class:`~app.services.transfer_legs.PlannedTransferLeg` derived from its
+    parent transfer, and the two facts this reads -- the row's own ``due_date``
+    and its pay period's start -- are the PARENT's columns, which a leg
+    exposes under the same two names.  A transfer carries both facts a shadow
+    does (``16f83aa0`` recorded that neither producer's signature would accept
+    one; this signature does), so the derivation is one function over two
+    row shapes rather than a second spelling per shape.
 
     The shadow's OWN ``due_date`` is the answer: the recurrence engine stamps
     each generated instance with the date its rule produced
@@ -631,10 +644,12 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     ``session.get`` costs one here rather than only on the fallback path.
 
     Args:
-        shadow: The loan-payment income shadow (its ``pay_period`` must be
-            loaded; :func:`._shadows.income_shadows` eager-loads it -- see the
-            note above, and NOT :func:`._shadows.query_shadow_income`, which
-            loads only what its caller asks for).
+        shadow: The loan-payment income shadow, or the projected leg of its
+            parent transfer.  Its ``pay_period`` must be loaded:
+            :func:`._shadows.settled_income_shadows` and
+            :func:`._shadows.projected_income_legs` each eager-load it -- see
+            the note above, and NOT :func:`._shadows.query_shadow_income`,
+            which loads only what its caller asks for.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only
             by the fallback.

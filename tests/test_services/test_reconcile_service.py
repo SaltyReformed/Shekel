@@ -48,6 +48,7 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
@@ -81,6 +82,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     modules' fixtures to one shape for no gain.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),

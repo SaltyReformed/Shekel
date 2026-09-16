@@ -16,7 +16,7 @@ from decimal import Decimal
 from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus,
     Status, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
@@ -524,8 +524,8 @@ class TestXSSPrevention:
         with app.app_context():
             profile = _create_salary_profile(seed_user, seed_periods_today)
             pre_tax = (
-                db.session.query(DeductionTiming)
-                .filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind)
+                .filter_by(name="pre_tax_deduction").one()
             )
             flat_method = (
                 db.session.query(CalcMethod)
@@ -533,11 +533,11 @@ class TestXSSPrevention:
             )
 
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": payload,
                     "amount": "100",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                 },
             )

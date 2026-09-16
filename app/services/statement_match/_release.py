@@ -106,9 +106,9 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import (
     cash_ledger,
     entry_service,
+    status_seam,
     transaction_service,
 )
-from app.utils.balance_predicates import is_balance_contributing
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCH_RELEASED,
@@ -346,15 +346,15 @@ class ReleasedMatch:
 def _entry_cash(entry: TransactionEntry) -> Decimal:
     """Return the cash the account stops recording if *entry* goes.
 
-    A purchase's cash is money LEAVING, so it is the negated stored figure --
-    the sign convention :func:`~._candidates.purchase_candidate` states and
-    :mod:`app.models.statement_import` defines.  Two shapes book nothing on
-    this account and answer ``0.00``: a CARD purchase, whose money leaves
-    through its envelope's CC Payback sibling rather than through this row
-    (``cash_ledger.credit_entry_sum`` is the term that removes it), and one
-    under a row that no longer contributes to the balance at all.  It is the
-    same rule :func:`~._accepted_view._accepted_row` applies to a member, asked
-    of a row about to be destroyed.
+    :func:`app.services.cash_ledger.movement_cash_leg`, asked of a row about
+    to be destroyed: its stored figure in its PARENT's direction, and
+    ``0.00`` for the two shapes that book nothing on this account -- a CARD
+    purchase, whose money leaves through its envelope's CC Payback sibling
+    rather than through this row, and one under a row that no longer
+    contributes to the balance at all.  It is the same producer
+    :func:`~._candidates.purchase_candidate` offers with and
+    :func:`~._accepted_view._accepted_row` grades a member by; this spelled
+    the three-clause rule for itself until plan step ``balance:X-bi-3b``.
 
     Args:
         entry: The purchase, with its parent transaction loaded.
@@ -362,9 +362,7 @@ def _entry_cash(entry: TransactionEntry) -> Decimal:
     Returns:
         Its signed cash effect, positive INTO the account.
     """
-    if entry.is_credit or not is_balance_contributing(entry.transaction):
-        return Decimal("0.00")
-    return -Decimal(str(entry.amount))
+    return cash_ledger.movement_cash_leg(entry.transaction, entry)
 
 
 def _subject_of(creation: StatementMatchCreation):
@@ -522,7 +520,10 @@ def _subject_removal(
     try:
         cash = (
             _entry_cash(subject) if is_purchase
-            else cash_ledger.settled_cash_leg(subject)
+            # The row's FAMILY (plan step **X-bi-3a**): the money a release
+            # takes out of the books sits on the row's covering movement,
+            # which goes with the row.
+            else status_seam.settled_family_leg(subject)
         )
     except AmountUnresolvable:
         # **AN EDIT OUTRANKS AN UNPRICEABLE ROW, and plan step balance:X-bx is
@@ -604,7 +605,8 @@ def _container_removal(container: Transaction) -> "PlannedRemoval | None":
         Its :class:`PlannedRemoval`, or ``None`` when it cannot be priced.
     """
     try:
-        cash = cash_ledger.settled_cash_leg(container)
+        # The family, for the reason ``_subject_removal`` gives.
+        cash = status_seam.settled_family_leg(container)
     except AmountUnresolvable:
         return None
     return PlannedRemoval(

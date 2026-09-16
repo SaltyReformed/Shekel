@@ -1,4 +1,8 @@
-"""Shekel Budget App -- What a payroll deduction's cadence MEANS, stated once.
+"""Shekel Budget App -- What a payroll line's cadence MEANS, stated once.
+
+``deduction_cadence`` until plan step salary:R18-b, when the earning kinds
+joined the lines it words (ruling **R-SAL38**); every function here reads a
+line of any kind the same way.
 
 Plan step **salary:R15-b** (rulings **R-SAL3**, **R-SAL32**): a deduction's
 frequency is a recurrence rule on the row, or no rule for *every paycheck*,
@@ -148,7 +152,7 @@ def cadence_phrase(deduction, calendar: PayCalendar | None) -> str:
     """The phrase the salary page shows for how often *deduction* is taken.
 
     Args:
-        deduction: A :class:`~app.models.paycheck_deduction.PaycheckDeduction`
+        deduction: A :class:`~app.models.paycheck_line.PaycheckLine`
             (or anything carrying ``recurrence_rule``).
         calendar: The owner's pay calendar, which a rule is resolved against;
             ``None`` when the caller has none, which is only ever the case
