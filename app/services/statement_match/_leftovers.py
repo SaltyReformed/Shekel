@@ -91,7 +91,7 @@ from typing import TYPE_CHECKING
 from app.services.status_seam import day_is_in_the_future
 
 from ._bars import CreationBars, MerchantAnswers, BarredLine
-from ._creations import PurchaseDestination, envelope_answer_key
+from ._creations import NewEnvelope, PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
 from ._placement import (
     InflowPlacement,
@@ -598,30 +598,56 @@ def _marked_joining(
     distinction is real: every select opens on *leave this line alone*, so if
     they hand-pick a flagged line and leave the unflagged one alone, the line
     told "an earlier line here already creates it" is the line that creates.
-    The outcome is still one envelope per answer per period, so no money turns
-    on it; what the sentence can be wrong about is WHICH line does the
-    creating.  Named by two adversarial reviews 2026-08-20.
+    The outcome is still one definition per answer, one row of it per period,
+    so no money turns on it; what the sentence can be wrong about is WHICH
+    line does the creating.  Named by two adversarial reviews 2026-08-20.
 
     Args:
         creatable: The pass's offerable outflows, in order.
 
     Returns:
         The same lines, with :attr:`~._placement.Placement.joins_new` set on
-        every one after the first for its answer and period.
+        every one after the first for its answer, and on every PLACE line
+        after the first for its definition and paycheck.
     """
-    creating: "set[tuple[str, int, int]]" = set()
+    creating: "set[tuple]" = set()
     marked = []
     for line in creatable:
         placement = line.placement
-        if placement is not None and placement.creates:
-            key = envelope_answer_key(
-                placement.new_envelope, line.pay_period_id,
+        if placement is None:
+            marked.append(line)
+            continue
+        if placement.creates or placement.places:
+            # The ANSWER alone for a creation since leaf 7b-3 of
+            # balance:X-bi-7b: a second line of it in ANY paycheck joins the
+            # definition the first mints (a row of it placed in that
+            # paycheck), not only one in the same period.  A PLACE line joins
+            # the ROW an earlier line places in the same paycheck, keyed as
+            # the registry keys it (``MintedEnvelopes.by_row``).
+            key = (
+                envelope_answer_key(placement.new_envelope)
+                if placement.creates
+                else (placement.placed.template_id, line.pay_period_id)
             )
             if key in creating:
                 line = replace(
                     line, placement=replace(placement, joins_new=True),
                 )
             creating.add(key)
+        elif placement.records_in and placement.destination.is_placed:
+            # A NEW-ENVELOPE answer's first firing CONVERGED on a placed
+            # envelope of its name: the door then names that definition and
+            # the registry learns it (``CreatedPurchase.answer_named``), so
+            # a later line of the same answer joins it -- said here as the
+            # door will do it.  Seeded under the DESTINATION's name and
+            # category, which the door's flip compares the stored answer
+            # against, so the two cannot describe different envelopes.
+            creating.add(
+                envelope_answer_key(NewEnvelope(
+                    name=placement.destination.name,
+                    category_id=placement.destination.category_id,
+                )),
+            )
         marked.append(line)
     return tuple(marked)
 
@@ -667,7 +693,9 @@ def _one_creatable(
         # cannot succeed.
         placement=(
             None if withheld is not None
-            else placements_for(line.merchant_id, view, offered)
+            else placements_for(
+                line.merchant_id, view, offered, period_id=period_id,
+            )
         ),
         withheld=withheld,
     )

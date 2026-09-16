@@ -56,7 +56,7 @@ from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.amount_ownership import state_own_amount
-from app.services.one_off import OneOffToPlace, place_one_off
+from app.services.one_off import OneOffToPlace, place_one_off, place_row_of
 from app.services.template_amount_service import amount_versions
 from app.utils.dates import display_today
 from werkzeug.datastructures import MultiDict
@@ -891,6 +891,42 @@ class TestTheRestate:
             assert resolved_amount(row) == Decimal("180.00")
             assert row.template.version_id == definition_version + 1
 
+    def test_a_row_of_a_MANY_row_definition_takes_the_figure_as_its_own(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """R-BAL43 (developer 2026-09-16, leaf 7b-3): one occurrence among many.
+
+        A bank-born envelope holds one row per paycheck; a budget typed on
+        one paycheck's card is that occurrence's, so it lands OWN with the
+        flag -- as a recurring definition's row does -- and the definition's
+        one version stays: the sibling and every future paycheck's row read
+        `$0.00` still.  Leaf 7b-2 restated the definition here, so `$100.00`
+        typed on one paycheck re-budgeted every paycheck's (BAL-499).
+        """
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            sibling = place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            assert sibling.template_id == row.template_id
+
+            resp = _submit(auth_client, sibling, estimated_amount="100.00")
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            sibling = db.session.get(Transaction, sibling.id)
+            assert str(sibling.estimated_amount) == "100.00"
+            assert sibling.amount_source_id is None
+            assert sibling.is_override is True
+            assert resolved_amount(sibling) == Decimal("100.00")
+            assert resolved_amount(row) == Decimal("0.00")
+            assert row.template.default_amount == Decimal("0.00")
+            assert len(amount_versions(row.template)) == 1
+
     def test_a_recurring_rows_typed_figure_still_detaches_it(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -1015,3 +1051,157 @@ class TestAPeriodMoveRePlaces:
             assert row.pay_period_id == target.id
             assert row.due_date == typed
             assert row.occurs_on == typed
+
+
+class TestAMoveOntoASiblingsPaycheckOrDayIsRefused:
+    """Leaf 7b-3's two guards at the popover (found by its adversarial review).
+
+    A bank-born envelope holds one row per paycheck (R-BAL24), and every
+    row of a definition answers its own day (R-BAL25) under the occurrence
+    index.  A move onto the sibling's paycheck, or a date onto the
+    sibling's day, met that index as a bare *Invalid reference*; each is
+    a designed 400 now, and the row is left where it was.
+    """
+
+    def test_a_period_move_onto_the_paycheck_holding_a_sibling_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The target already holds this item's row: record into that one instead."""
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            sibling = place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            resp = _submit(
+                auth_client, row, pay_period_id=str(seed_periods_today[1].id),
+            )
+            assert resp.status_code == 400
+            assert b"already holds this item" in resp.data
+            assert b"Invalid reference" not in resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            sibling = db.session.get(Transaction, sibling.id)
+            assert row.pay_period_id == seed_periods_today[0].id
+            assert sibling.pay_period_id == seed_periods_today[1].id
+            assert row.due_date == derived_span(seed_periods_today[0]).start_date
+
+    def test_a_date_onto_the_day_a_sibling_answers_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An owner-stated day equal to the sibling's: pick a different day."""
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            sibling = place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            was = row.due_date
+            resp = _submit(
+                auth_client, row, due_date=sibling.due_date.isoformat(),
+            )
+            assert resp.status_code == 400
+            assert b"already due that day" in resp.data
+            assert b"Invalid reference" not in resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            assert row.due_date == was
+            assert row.occurs_on == was
+
+    def test_a_move_onto_an_empty_paycheck_beside_a_sibling_still_lands(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: the guards refuse the collision, not the sibling."""
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            target = seed_periods_today[2]
+            resp = _submit(auth_client, row, pay_period_id=str(target.id))
+            assert resp.status_code == 200, resp.data
+            db.session.refresh(row)
+            assert row.pay_period_id == target.id
+            assert row.due_date == derived_span(target).start_date
+
+
+class TestAFigureAndACategoryOnASiblingsCard:
+    """R-BAL43's act order (found by 7b-3's adversarial review).
+
+    A sibling's typed figure makes the row its OWN (act 5), and an OWN row
+    is one the definition's propagation skips (act 4) -- so with the figure
+    stated first, a category typed beside it reached the definition and
+    every OTHER row but not the row it was typed on.  The figure is stated
+    AFTER the propagation now.
+    """
+
+    def test_the_category_reaches_the_row_the_figure_was_typed_on(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """One save: the figure is the row's own AND the category lands on it."""
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            sibling = place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            other = next(
+                cat for key, cat in seed_user["categories"].items()
+                if key != "Groceries"
+            )
+            resp = _submit(
+                auth_client, sibling,
+                estimated_amount="100.00", category_id=str(other.id),
+            )
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            sibling = db.session.get(Transaction, sibling.id)
+            assert sibling.category_id == other.id
+            assert sibling.is_override is True
+            assert resolved_amount(sibling) == Decimal("100.00")
+            assert row.template.category_id == other.id
+            assert row.category_id == other.id
+            assert resolved_amount(row) == Decimal("0.00")
+
+    def test_a_sibling_already_its_own_is_skipped_by_a_later_category_edit(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Reported at the leaf: an OWN sibling keeps its category until its own next edit."""
+        with app.app_context():
+            row = _placed(
+                seed_user, seed_periods_today[0], amount="0.00", name="Amazon",
+            )
+            sibling = place_row_of(
+                row.template, derived_span(seed_periods_today[1]),
+                scenario_id=seed_user["scenario"].id,
+            )
+            db.session.commit()
+            resp = _submit(auth_client, sibling, estimated_amount="100.00")
+            assert resp.status_code == 200, resp.data
+            other = next(
+                cat for key, cat in seed_user["categories"].items()
+                if key != "Groceries"
+            )
+            groceries = seed_user["categories"]["Groceries"].id
+            resp = _submit(auth_client, row, category_id=str(other.id))
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, row.id)
+            sibling = db.session.get(Transaction, sibling.id)
+            assert row.category_id == other.id
+            assert row.template.category_id == other.id
+            assert sibling.category_id == groceries

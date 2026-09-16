@@ -213,6 +213,14 @@
       {# ASKED OF THE PLACEMENT, not by comparing NEW_ENVELOPE's own string: the
          same value that decides the minted name below decides this. #}
       <option value="new"{% if card.panel.add.placement and card.panel.add.placement.creates %} selected{% endif %}>-- a new envelope --</option>
+      {# A row of a ONE-OFF envelope's definition, placed in this paycheck
+         (plan step balance:X-bi-7b leaf 7b-3, ruling R-BAL24): offered only
+         where the owner's standing rule names such a definition and this
+         paycheck holds no row of it, and the value is the placement's own
+         (``select_value``), the one spelling of the PLACE token. #}
+      {% if card.panel.add.placement and card.panel.add.placement.places %}
+      <option value="{{ chosen }}" selected>-- {{ card.panel.add.placement.placed.name }}, placed in this paycheck --</option>
+      {% endif %}
     </select>
     {% if not card.panel.add.destinations %}
     <p class="small text-body-secondary mt-1 mb-0">
