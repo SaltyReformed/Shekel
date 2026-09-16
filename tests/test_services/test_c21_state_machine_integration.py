@@ -25,6 +25,7 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import transfer_service
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import one_off_row_of
 
 
 UNIQUE_INDEX_NAME = "uq_transactions_transfer_type_active"
@@ -358,32 +359,27 @@ class TestPartialUniqueIndexBehaviour:
         type must continue to coexist as they always have."""
         td = transfer_data
         with app.app_context():
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-            txn_a = Transaction(
-                account_id=td["account"].id,
-                user_id=td['periods'][0].user_id,
-                pay_period_id=td["periods"][0].id,
-                scenario_id=td["scenario"].id,
-                status_id=projected_id,
+            txn_a = one_off_row_of(
+                td["periods"][0],
                 name="Regular A",
-                category_id=td["categories"]["Rent"].id,
-                transaction_type_id=expense_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                transfer_id=None,
-            )
-            txn_b = Transaction(
-                account_id=td["account"].id,
+                amount=Decimal("100.00"),
                 user_id=td['periods'][0].user_id,
-                pay_period_id=td["periods"][0].id,
+                account_id=td["account"].id,
                 scenario_id=td["scenario"].id,
-                status_id=projected_id,
-                name="Regular B",
-                category_id=td["categories"]["Rent"].id,
                 transaction_type_id=expense_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                transfer_id=None,
+                category_id=td["categories"]["Rent"].id,
+            )
+            txn_b = one_off_row_of(
+                td["periods"][0],
+                name="Regular B",
+                amount=Decimal("200.00"),
+                user_id=td['periods'][0].user_id,
+                account_id=td["account"].id,
+                scenario_id=td["scenario"].id,
+                transaction_type_id=expense_type_id,
+                category_id=td["categories"]["Rent"].id,
             )
             db.session.add_all([txn_a, txn_b])
             # No IntegrityError expected; the predicate excludes NULL

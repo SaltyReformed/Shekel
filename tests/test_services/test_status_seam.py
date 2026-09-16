@@ -30,11 +30,11 @@ from app.utils.dates import display_today
 
 from tests._test_helpers import (
     an_entered_day,
+    one_off_row_of,
     settlement_if_settling,
 )
 from tests._test_helpers import freeze_today
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 #: A civil day whose EVENING in ``America/New_York`` falls on the PREVIOUS UTC
 #: day's successor -- i.e. an instant where the two calendars disagree.  Frozen
@@ -45,24 +45,24 @@ _EASTERN_EVENING_UTC_TIME = time(1, 0)
 
 
 def _make_txn(seed_user, period, *, status):
-    """Create and flush an ad-hoc expense in the given status.
+    """Create and flush a one-off expense in the given status.
 
-    The seam operates on any non-transfer transaction, so an ad-hoc expense
-    (no template, no entries) is the minimal fixture.  ``status`` is a
+    The seam operates on any non-transfer transaction, so a one-off expense
+    (a rule-less definition's placed row, no entries) is the minimal fixture
+    since plan step balance:X-bi-7c.  ``status`` is a
     :class:`StatusEnum` member resolved to its id.
     """
-    txn = Transaction(
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=ref_cache.status_id(status),
+    txn = one_off_row_of(
+        period,
         name="Seam test expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("50.00"),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal("50.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
+    txn.status_id = ref_cache.status_id(status)
     db.session.flush()
     return txn
 

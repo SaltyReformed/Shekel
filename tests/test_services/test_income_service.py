@@ -38,7 +38,6 @@ from app.models.ref import FilingStatus, RaiseType, Status, TaxType, Transaction
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.tax_config import FicaConfig, StateTaxConfig
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.pay_calendar import calendar_for, paydays_in_year_before
 from app.services.salary_raises import RaiseTerms, terms_of
@@ -54,17 +53,17 @@ from app.services.tax_config_service import (
 )
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    repriced_by_the_owner,
     all_periods,
     counting_calls,
     freeze_today,
     generate_row_of,
     make_every_period_rule,
     make_investment_account,
+    one_off_row_of,
     payroll_basis,
     pricing_over,
+    repriced_by_the_owner,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -181,8 +180,10 @@ def _make_txn(
       its definition's.  *status_name* other than Projected is then laid on
       bare, and *owned_amount* makes it the OWNER's re-priced row through the
       re-price door's two acts (``state_own_amount`` and ``is_override``).
-    * **An AD-HOC row** (no *template*) is constructed bare and OWNS
-      *owned_amount*, which it must state.
+    * **A ONE-OFF** (no *template*) is placed through the producer
+      (:func:`one_off_row_of`, plan step balance:X-bi-7c): a rule-less
+      definition of its own priced at *owned_amount*, which it must state,
+      and the row derived from it -- the shape the grid writes for a one-off.
 
     ``derived`` was a switch here until X-cf-3: with the engine writing the
     row there is no other shape a non-overridden salary row can have, so the
@@ -192,18 +193,18 @@ def _make_txn(
         seed_user: The seeded owner bundle.
         period: The pay period the row is funded in.
         template: The definition whose row is wanted, or ``None``.
-        type_name: The ad-hoc row's transaction type.
+        type_name: The one-off's transaction type.
         status_name: The status to give the row.
-        owned_amount: The figure the row OWNS, as a string.  On a definition's
-            row it means a human re-priced it; on an ad-hoc row it is the
-            row's own figure and is required.
+        owned_amount: The figure, as a string.  On a definition's row it is
+            what a human re-priced it to (the row then OWNS it); on a one-off
+            it is what its own definition is priced at, and is required.
 
     Returns:
         The flushed :class:`~app.models.transaction.Transaction`.
 
     Raises:
-        ValueError: An ad-hoc row with no *owned_amount*: such a row states a
-            figure or it is not a row the schema admits.
+        ValueError: A one-off with no *owned_amount*: its definition is
+            priced at something, and this helper will not guess what.
     """
     status = db.session.query(Status).filter_by(name=status_name).one()
     if template is not None:
@@ -214,23 +215,22 @@ def _make_txn(
         db.session.flush()
         return txn
     if owned_amount is None:
-        raise ValueError("an ad-hoc row owns its figure; pass owned_amount")
+        raise ValueError("a one-off's definition is priced; pass owned_amount")
     txn_type = (
         db.session.query(TransactionType).filter_by(name=type_name).one()
     )
     category = next(iter(seed_user["categories"].values()))
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status.id,
+    txn = one_off_row_of(
+        period,
         name="producer-test txn",
-        category_id=category.id,
+        amount=Decimal(owned_amount),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=txn_type.id,
-        amount_ownership=AmountOwnership.own(Decimal(owned_amount)),
+        category_id=category.id,
     )
-    db.session.add(txn)
+    txn.status_id = status.id
     db.session.flush()
     return txn
 

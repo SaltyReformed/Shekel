@@ -59,15 +59,14 @@ from app.models.ref import (
     Status,
     TransactionType,
 )
-from app.models.transaction import Transaction
 from app.services.cash_ledger import contribution_of
 from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
+    one_off_row_of,
     settle_day_columns,
     settlement_basis_id,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 class TestRefCacheStatuses:
@@ -269,18 +268,17 @@ class TestEffectiveAmount:
                 .filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=credit_id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Credited Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("250.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("250.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.status_id = credit_id
             db.session.flush()
 
             assert settled_contribution(txn) == Decimal("0")
@@ -298,30 +296,36 @@ class TestEffectiveAmount:
                 .filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=done_id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Paid Expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                settled_amount=Decimal("487.00"),
-                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
-                # A settled row carries the day its money moved.
-                **settle_day_columns(seed_periods[0].start_date),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
+            txn.status_id = done_id
+            txn.settled_amount = Decimal("487.00")
+            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
+                setattr(txn, _column, _value)
             db.session.flush()
 
             assert settled_contribution(txn) == Decimal("487.00")
 
-    def test_effective_amount_uses_estimated_for_projected(
+    def test_effective_amount_uses_the_plan_figure_for_projected(
         self, app, db, seed_user, seed_periods
     ):
-        """effective_amount returns estimated_amount for Projected status.
+        """effective_amount returns the PLAN figure for Projected status.
+
+        The row is a one-off since plan step balance:X-bi-7c, so its
+        ``estimated_amount`` column is ``None`` and the figure is its
+        definition's, resolved by amount rule 3 -- which is what the reader
+        below asks and a raw column read would not.
 
         Asked of the AMOUNT MODEL since plan step X-bx: a Projected row has not
         settled, so what it contributes is
@@ -330,24 +334,21 @@ class TestEffectiveAmount:
         rule; the accessor simply no longer answers for this row (**BAL-465**).
         """
         with app.app_context():
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected_id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Projected Expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert contribution_of(txn, amount_basis_for(txn)) == Decimal("500.00")
@@ -363,24 +364,21 @@ class TestGridShowsPaidNotDone:
         Verifies the template rename from Commit #1.
         """
         with app.app_context():
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected_id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Test Expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")

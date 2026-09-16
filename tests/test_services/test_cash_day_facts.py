@@ -38,7 +38,6 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account_opening import AccountOpening
 from app.models.ref import AccountType
-from app.models.transaction import Transaction
 from app.services import account_service, balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._assertions import assertion_corrections
@@ -46,12 +45,12 @@ from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
     default_settle_day,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     settle_day_columns,
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
-from app.models.amount_ownership import AmountOwnership
 
 _ZERO = Decimal("0.00")
 
@@ -66,21 +65,24 @@ def _settled(
             Checking.  A case that opens its own account states it.
     """
     status_id = ref_cache.status_id(StatusEnum.DONE)
-    txn = Transaction(
-        account_id=(seed_user["account"] if account is None else account).id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=(seed_user["account"] if account is None else account).id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(
             TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
         ),
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(day, amount, amount),
-        **settle_day_columns(day),
     )
-    db.session.add(txn)
+    txn.status_id = status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settlement_columns(day, amount, amount).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settle_day_columns(day).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 
@@ -88,22 +90,25 @@ def _settled(
 def _projected(db, seed_user, period, name, amount, due_date):
     """Insert one still-PROJECTED row -- the fold's planned tier."""
     status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(
-            default_settle_day(period, status_id), amount, None,
-        ),
         due_date=due_date,
-        **settle_day_columns(default_settle_day(period, status_id)),
     )
-    db.session.add(txn)
+    txn.status_id = status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settlement_columns(
+            default_settle_day(period, status_id), amount, None,
+        ).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 

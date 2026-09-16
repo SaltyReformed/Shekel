@@ -31,17 +31,18 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    family_cash_leg,
-    purchases_of,
-    figure_source_columns,
-    record_paydays_across_a_hole,
-    rhythm_of,
     account_never_asserted,
     an_entered_day,
+    family_cash_leg,
+    figure_source_columns,
     generate_row_of,
+    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
+    purchases_of,
     reassert_balance_on,
+    record_paydays_across_a_hole,
+    rhythm_of,
     settle_day_columns,
     settle_instant_on,
     settlement_if_settling,
@@ -168,27 +169,27 @@ class TestCreateEntry:
     def test_create_entry_rejects_no_template(
         self, app, db, seed_user, seed_periods,
     ):
-        """Reject entry on an ad-hoc transaction (template_id=None)."""
+        """Reject an entry on a LEGACY link-less transaction (template_id=None).
+
+        The ``template_id is None`` arm of ``Transaction.tracks_purchases``
+        reads the row's own cell; production holds that shape until the
+        cutover (X-bi-7d), so the row is built on its one transitional home
+        (plan step balance:X-bi-7c, ruling R-BAL59) and 7d retires this case
+        with the arm.  A one-off placed today reads its definition's flag,
+        which is the case above.
+        """
         with app.app_context():
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            txn = Transaction(
-                template_id=None,
+            txn = legacy_link_less_row_of(
+                seed_periods[0], name="Ad-hoc expense", amount="100.00",
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Ad-hoc expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             with pytest.raises(ValidationError, match="does not support"):

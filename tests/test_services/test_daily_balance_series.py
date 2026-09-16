@@ -49,22 +49,21 @@ import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    figure_source_columns,
     append_balance_assertion,
     default_settle_day,
+    figure_source_columns,
     last_covered_day,
     mark_purchase_settled,
+    one_off_row_of,
     settle_day_columns,
     settle_instant_on,
     settlement_columns,
 )
-from app.models.amount_ownership import AmountOwnership
 
 _APR_FIRST = date(2026, 4, 1)
 _APR_LAST = date(2026, 4, 30)
@@ -80,24 +79,25 @@ def _add_txn(
         TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
     )
     status_id = ref_cache.status_id(status)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(
-            default_settle_day(period, status_id), amount, settled_amount,
-        ),
         due_date=due_date,
-        # A settled row must carry the day its money moved; the rule for a
-        # BARE-built fixture row is shared rather than restated (X-f1).
-        **settle_day_columns(default_settle_day(period, status_id)),
     )
-    db.session.add(txn)
+    txn.status_id = status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settlement_columns(
+            default_settle_day(period, status_id), amount, settled_amount,
+        ).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 

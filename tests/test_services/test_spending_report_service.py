@@ -66,7 +66,6 @@ from app.services.spending_report_service._window import (
     _spent_total,
 )
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
     add_entry,
     create_envelope_txn,
     create_savings_account,
@@ -77,14 +76,15 @@ from tests._test_helpers import (
     generate_row_of,
     last_covered_day,
     make_expense_template,
+    one_off_row_of,
     pay_periods_hydrated,
+    record_paydays_across_a_hole,
     rhythm_of,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
     state_template_price,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -114,25 +114,28 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     settled_day = settled_on or default_settle_day(
         period, ref_cache.status_id(status_enum),
     )
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status_enum),
+    txn = one_off_row_of(
+        period,
         name=name,
-        category_id=cat_id,
+        amount=planned,
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
-        amount_ownership=AmountOwnership.own(planned),
+        category_id=cat_id,
         due_date=due_date or period.start_date,
-        is_deleted=is_deleted,
-        **settle_day_columns(settled_day),
-        **settlement_columns(
+    )
+    txn.status_id = ref_cache.status_id(status_enum)
+    txn.is_deleted = is_deleted
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(settled_day).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(
             settled_day, planned,
             submitted=Decimal(str(actual)) if actual is not None else None,
-        ),
-    )
-    db.session.add(txn)
+        ).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 

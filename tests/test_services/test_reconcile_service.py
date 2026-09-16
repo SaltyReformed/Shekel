@@ -48,18 +48,19 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
-    figure_source_columns,
-    record_paydays_across_a_hole,
-    rhythm_of,
     an_entered_day,
     count_amount_bases,
+    figure_source_columns,
     generate_row_of,
     last_covered_day,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
+    one_off_row_of,
     open_books_before_the_first_assertion,
+    record_paydays_across_a_hole,
     resolved_amount,
+    rhythm_of,
     settle_day_columns,
     settlement_basis_id,
     settlement_if_settling,
@@ -69,7 +70,6 @@ from tests._test_helpers import create_transfer
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -425,25 +425,22 @@ class TestTheOutstandingSet:
                 ),
             )
             db.session.flush()
-            # An AD-HOC envelope rather than a second row off the shared
-            # template: the engine's row already answers this paycheck's
-            # occurrence, and ``idx_transactions_template_scenario_occurrence``
-            # holds one row per occurrence.
-            txn_b = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account_b.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            # A ONE-OFF envelope (its own rule-less definition) rather than a
+            # second row off the shared template: the engine's row already
+            # answers this paycheck's occurrence, and
+            # ``idx_transactions_template_scenario_occurrence`` holds one row
+            # per occurrence.
+            txn_b = one_off_row_of(
+                seed_periods[0],
                 name="Groceries B",
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=account_b.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=seed_entry_template["transaction"].transaction_type_id,
                 category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=(
-                    seed_entry_template["transaction"].transaction_type_id
-                ),
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 is_envelope=True,
             )
-            db.session.add(txn_b)
             db.session.flush()
             entry_b = _outstanding_debit(txn_b, seed_user)
             db.session.commit()
@@ -478,20 +475,16 @@ class TestTheOutstandingSet:
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2026, 1, 2), num_periods=1, rhythm=rhythm_of(14),
             )[0]
-            other_txn = Transaction(
-                user_id=other_period.user_id,
-                pay_period_id=other_period.id,
-                scenario_id=seed_second_user["scenario"].id,
-                account_id=seed_second_user["account"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            other_txn = one_off_row_of(
+                other_period,
                 name="Their groceries",
-                transaction_type_id=(
-                    seed_entry_template["transaction"].transaction_type_id
-                ),
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                amount=Decimal("500.00"),
+                user_id=other_period.user_id,
+                account_id=seed_second_user["account"].id,
+                scenario_id=seed_second_user["scenario"].id,
+                transaction_type_id=seed_entry_template["transaction"].transaction_type_id,
                 is_envelope=True,
             )
-            db.session.add(other_txn)
             db.session.flush()
             other_entry = _make_entry(
                 other_txn, seed_second_user["user"], amount="50.00",
