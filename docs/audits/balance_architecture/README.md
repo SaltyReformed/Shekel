@@ -412,14 +412,14 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
       RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
       gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
-  * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
-    which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
-    Additive; nothing reads them yet and the downgrade is a column drop.
+  * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
+    its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** `settle_from_entries` becomes the ONLY settle path, its MANUAL branch writing one
-    covering movement THROUGH THE SERVICE DOOR, which is what **R-HJ** requires of any act that
-    writes money rows. **MOVES MONEY.** The 165 settled rows holding no entries include 14 with no
-    settle day and 38 transfer shadows under the four Transfer Invariants: 52 design questions a
-    human answers at a door, not a `WHERE` clause.
+    covering movement THROUGH THE SERVICE DOOR, as **R-HJ** requires of any act that writes money
+    rows; the movement carries its OWN figure's provenance, the column **R-BAL35** left this step
+    to state with its writer (`settled_basis_id` has no home once `X-bi-4` derives `settled_amount`).
+    **MOVES MONEY.** The 165 settled rows holding no entries include 14 with no settle day and 38
+    transfer shadows under the four Transfer Invariants: 52 questions a human answers at a door.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
     is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
