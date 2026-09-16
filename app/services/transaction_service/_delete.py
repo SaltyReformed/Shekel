@@ -120,11 +120,18 @@ class RowDeletion:
             (:class:`~app.services.match_withdrawal.MatchWithdrawal`), so a
             receipt can name the bank lines that are unexplained again without
             asking a relation the delete has already destroyed.
+        disposes_definition: Whether the row's DEFINITION goes with it --
+            a one-off's, of which this row is the last (step 5 of the module
+            docstring's order; rulings **R-BAL23** / **R-BAL27**, plan step
+            ``balance:X-bi-7b``).  Carried so the dialog can say the ITEM
+            goes and not only the row, off the same answer the press acts
+            on (``definition_delete.is_last_row_of_its_definition``).
     """
 
     soft: bool
     paybacks: "tuple[str, ...]"
     withdrawn: MatchWithdrawal
+    disposes_definition: bool
 
 
 def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
@@ -157,7 +164,9 @@ def _leaves_the_table(txn: Transaction) -> "tuple[bool, list[Transaction]]":
     return soft, ([] if soft else [txn]) + chain
 
 
-def preview_deletion(txn: Transaction) -> RowDeletion:
+def preview_deletion(
+    txn: Transaction, *, last_row_of_definition: "bool | None" = None,
+) -> RowDeletion:
     """Return what deleting *txn* WOULD take, without taking any of it.
 
     The read half of :func:`delete_transaction`, over the same row set, for the
@@ -165,11 +174,18 @@ def preview_deletion(txn: Transaction) -> RowDeletion:
 
     Args:
         txn: The row a screen is offering to delete.
+        last_row_of_definition: Whether deleting *txn* would leave a
+            rule-less definition with no row, when the caller has already
+            asked (the card render asks once for this and for
+            :func:`~._row_rules.deletion_refusal`); ``None`` asks here.
 
     Returns:
         Its :class:`RowDeletion`.  ``soft`` says which arm the press would
-        take, so a dialog can promise the right thing about permanence.
+        take, so a dialog can promise the right thing about permanence, and
+        ``disposes_definition`` whether the item goes with the row.
     """
+    if last_row_of_definition is None:
+        last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
     soft, leaving = _leaves_the_table(txn)
     return RowDeletion(
         soft=soft,
@@ -177,6 +193,7 @@ def preview_deletion(txn: Transaction) -> RowDeletion:
             row.name for row in leaving if row.id != txn.id
         ),
         withdrawn=match_withdrawal.pending_for_rows(leaving),
+        disposes_definition=last_row_of_definition,
     )
 
 
@@ -252,4 +269,7 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
         # its scan of the definition's non-settled rows finds none and what
         # is left to remove is the definition and its series.
         definition_delete.permanently_delete_definition(definition)
-    return RowDeletion(soft=soft, paybacks=paybacks, withdrawn=withdrawn)
+    return RowDeletion(
+        soft=soft, paybacks=paybacks, withdrawn=withdrawn,
+        disposes_definition=last_row_of_definition,
+    )

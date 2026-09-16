@@ -19,7 +19,12 @@ from app.models.transfer import Transfer
 from app.models.ref import Status
 from app.models.category import Category
 from app.models.account import Account
-from app.services import pay_period_service, transaction_service
+from app.services import (
+    category_service,
+    definition_delete,
+    pay_period_service,
+    transaction_service,
+)
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
@@ -195,9 +200,30 @@ def get_full_edit(txn_id):
     calendar = calendar_for(current_user.id)
     periods = period_move_options(calendar, txn.pay_period_id)
     amounts = fragment_amounts(txn)
+    # A PLACED row's item is edited HERE (ruling **R-BAL23**; the controls
+    # **R-BAL36**): its category select offers the owner's ACTIVE categories
+    # -- the definition's own edit form's list (``list_active_categories``:
+    # an archived category is not a selectable target), plus the row's own
+    # category when THAT is archived, so an untouched save posts the category
+    # the row has rather than the first option a browser selects when the
+    # rendered one is missing.  A first draft copied the transfer branch's
+    # raw query above and offered archived categories; found by adversarial
+    # review.  Loaded only for such a row; every other row's category is its
+    # definition's (edited on the template form) or, until the family's
+    # cutover, a legacy row's own, which the popover has never offered.
+    categories = []
+    if txn.is_placed:
+        categories = category_service.list_active_categories(current_user.id)
+        if txn.category is not None and txn.category not in categories:
+            categories.append(txn.category)
+    # The two ``is_last_row_of_its_definition`` readers below share ONE read:
+    # the refusal's merchant-rule arm and the dialog's pair sentence want the
+    # same answer, and the delete verb threads it the same way.
+    last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
+        categories=categories,
         # The row's OWN paycheck, as the DERIVED value (plan step C4-a-5).  The
         # card printed ``txn.pay_period.label`` -- the ORM row's accessor, which
         # formats the STORED ``end_date`` -- while the ``<select>`` beside it
@@ -265,7 +291,9 @@ def get_full_edit(txn_id):
         # crafted-request backstop -- the layering every guard in
         # ``_gates`` uses, with the rule in the service and the screen
         # displaying its answer.
-        delete_refusal=transaction_service.deletion_refusal(txn),
+        delete_refusal=transaction_service.deletion_refusal(
+            txn, last_row_of_definition=last_row_of_definition,
+        ),
         # **What deleting it would take back besides the row itself**
         # (:class:`~app.services.transaction_service.RowDeletion`): the CC
         # payback rows that go down with it, and the bank lines whose matches
@@ -278,7 +306,9 @@ def get_full_edit(txn_id):
         # set -- a draft read the row alone while the press also tore down its
         # payback chain, and an adversarial review measured a `$200.00` card
         # payment silently un-explained over a dialog naming no line at all.
-        delete_preview=transaction_service.preview_deletion(txn),
+        delete_preview=transaction_service.preview_deletion(
+            txn, last_row_of_definition=last_row_of_definition,
+        ),
     )
 
 

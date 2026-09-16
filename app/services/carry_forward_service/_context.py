@@ -23,6 +23,7 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.balance_predicates import is_projected_clause
 
 
@@ -45,8 +46,10 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     :class:`~app.services.recurrence.ResolvedRecurrence` precedent.
     """
 
-    source_period: object  # DerivedPeriod
-    target_period: object  # DerivedPeriod
+    # Typed since plan step balance:X-bi-7b, where they were ``object`` with
+    # the type in a comment: the re-placing arm reads ``start_date`` off both.
+    source_period: DerivedPeriod
+    target_period: DerivedPeriod
     user_id: int
     scenario_id: int
     shadow_txns: List[Transaction]

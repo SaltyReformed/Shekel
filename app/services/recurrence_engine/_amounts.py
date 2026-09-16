@@ -105,7 +105,7 @@ class DerivedRowFields(NamedTuple):
             carry.  ``_recurrence_common.classify_maintain_work`` routes that case to
             the owner, as a RETAINED conflict, instead of applying it.
         name: The template's name.  Also propagated to rows OUTSIDE this pass's
-            reach by ``routes.templates.crud._apply_fields_and_propagate_rename``,
+            reach by ``definition_edit.apply_fields``,
             which covers the historic and immutable rows a regeneration never
             touches.
         category_id: The template's category, or ``None``.

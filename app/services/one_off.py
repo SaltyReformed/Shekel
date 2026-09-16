@@ -40,7 +40,21 @@ in what they put in :class:`OneOffToPlace`.
   deleted at 7a and it reads the cadence now.)
 * **The row records its own due date as the occurrence it answers**
   (``occurs_on = due_date``, **R-BAL25**), so no row answers no occurrence
-  and ``recurrence:R19-b``'s NOT NULL binds on it.
+  and ``recurrence:R19-b``'s NOT NULL binds on it.  Every later writer of
+  a placed row's date goes through :func:`state_due_date`, so the two
+  columns cannot part.
+* **A period move RE-PLACES the row** (**R-BAL33**, leaf 7b-2): moved to
+  another paycheck it takes that paycheck's start as its due date unless
+  its date was not its old paycheck's start -- an owner-stated day, read by
+  position -- which is R-BAL22's default following the placement
+  (:func:`due_date_after_move`).  Both doors that move a row take it:
+  carry-forward's move-whole arm and the popover's period move.
+* **A typed figure is RESTATED on the definition, in place** (**R-BAL29**,
+  leaf 7b-2): the version the row's due date reads takes the figure, the
+  series stays one version, and the row stays priced by it
+  (:func:`restate_price`).  A row the interim between the family's first two
+  leaves detached (OWN with ``is_override``) is re-attached by the same act
+  (**R-BAL37**).
 * **The row carries no flag.**  ``tracks_purchases`` and
   ``visible_to_companion`` read the definition for every template-linked
   row, so the sealed cells on the row are never written here; the cutover
@@ -72,11 +86,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import template_amount_service
+from app.services.amount_ownership import declare_derived
 from app.services.pay_calendar import DerivedPeriod
 from app.services.recurrence_engine import unruled_row_fields
 
@@ -154,6 +169,107 @@ def due_date_for(stated: "date | None", period: DerivedPeriod) -> date:
         The due date.
     """
     return stated if stated is not None else period.start_date
+
+
+def due_date_after_move(
+    due_date: date, *, source_start: date, target: DerivedPeriod,
+) -> date:
+    """Return the day a placed row due on *due_date* is due once moved to *target*.
+
+    **A period move re-places a one-off** (**R-BAL33**): :func:`due_date_for`
+    applied after the move, so R-BAL22's default -- the paycheck's start --
+    follows the placement, and an owner-stated day stays.  Which of the two
+    the row carries is read BY POSITION: a date other than its source
+    paycheck's start is the owner's, since **R-BAL25** rejected a stored
+    marker; the miss (an owner who typed exactly the start day is moved to
+    the new start) is benign.  Both doors that move a row call this --
+    carry-forward's move-whole arm and the popover's period move -- so the
+    date a rolled-forward one-off reads on the dashboard pulse and in
+    payment timeliness is the same whichever door moved it.
+
+    Worked: Kayla's Kindle, born in the paycheck starting 2026-09-04 (due
+    09-04 by default), carried forward to the 09-18 paycheck and paid 09-20
+    -- due 09-18 and two days late, where the date the move left behind
+    read fourteen days overdue.  A typed 09-10 stays 09-10 and reads overdue
+    honestly.  The balance is identical under either date: a one-off's
+    series is flat (**R-BAL21**) and ``attribution_day`` budgets the row to
+    its paycheck.
+
+    Args:
+        due_date: The row's date before the move.
+        source_start: The start of the paycheck it is leaving.
+        target: The paycheck it is moving to.
+
+    Returns:
+        The row's due date after the move.
+    """
+    return due_date_for(
+        None if due_date == source_start else due_date, target,
+    )
+
+
+def state_due_date(row: Transaction, due: date) -> None:
+    """Write *due* onto *row* as its due date AND the occurrence it answers.
+
+    **The one ORM writer of a placed row's date** (**R-BAL25**: a one-off's
+    row records its own due date as the occurrence it answers, so
+    ``occurs_on = due_date`` is one fact in two columns).  :func:`place_row_of`
+    states both at birth from one local; every edit that moves the date
+    afterwards -- the popover's date input, a period move's re-placing --
+    goes through here so the pair cannot part.  (Carry-forward's bulk
+    UPDATE writes the pair in SQL, the one spelling that cannot reach an
+    ORM writer; it states the same two columns.)
+
+    Args:
+        row: A placed :class:`~app.models.transaction.Transaction`.
+        due: The day it is due, which is the occurrence it answers.
+    """
+    row.due_date = due
+    row.occurs_on = due
+
+
+def restate_price(row: Transaction, amount: Decimal) -> None:
+    """State *amount* as the price of *row*'s definition, and make *row* read it.
+
+    **A typed figure on a one-off corrects its definition's price in place**
+    (**R-BAL21**, **R-BAL29**): a grid one-off's only occurrence IS the
+    definition, so the figure is a statement about the definition and not
+    about one occurrence among many -- which is why a RECURRING row's typed
+    figure still detaches that row (OWN, ``is_override``) and this one
+    never does.  ``template_amount_service.restate_in_effect`` corrects the
+    version the row's due date reads (asked AFTER whatever the same edit
+    did to the date), so the series stays one version.  **Every placed row
+    of the definition reads that version**, and a rule-less definition
+    holding rows in several paychecks -- a bank-born envelope once
+    ``X-bi-7b-3`` mints one per paycheck (**R-BAL24**) -- would take one
+    paycheck's typed budget on every paycheck: ledger finding **BAL-499**,
+    that leaf's fork, and this docstring's premise ("only occurrence") holds
+    for the one-row shape alone.
+
+    **Then the row is declared TEMPLATE-priced and unflagged, whatever it
+    was** (**R-BAL37**, developer 2026-09-15).  Between the family's first
+    leaf and this one a typed figure landed OWN on the row with
+    ``is_override`` beside it (R-BAL28's stated interim), leaving the
+    definition at the old price -- rule 14's two homes.  Restating the
+    definition alone would leave such a row on its own stale figure and the
+    typed one invisible; keeping it detached would leave the Recurring page
+    stating a price the grid does not use.  Declaring the ruled shape here
+    -- priced by the definition, carrying no flag, which is what
+    :func:`place_row_of` writes at birth -- is idempotent on a row never
+    detached and heals a detached one on its next TYPED FIGURE (a rename, a
+    flag or a date edit alone leaves it detached).  What stays behind for a
+    residue row nobody re-prices is the cutover migration's (``X-bi-7d``).
+
+    Args:
+        row: A placed :class:`~app.models.transaction.Transaction`, its
+            ``template`` loaded or loadable.
+        amount: The figure the owner typed.
+    """
+    template_amount_service.restate_in_effect(
+        row.template, amount, on=row.due_date,
+    )
+    declare_derived(row, AmountSourceEnum.TEMPLATE)
+    row.is_override = False
 
 
 def place_row_of(
@@ -265,7 +381,10 @@ def place_one_off(
 
 __all__ = [
     "OneOffToPlace",
+    "due_date_after_move",
     "due_date_for",
     "place_one_off",
     "place_row_of",
+    "restate_price",
+    "state_due_date",
 ]
