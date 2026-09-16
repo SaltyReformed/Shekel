@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from app.models.transaction import Transaction
 from app.services.cash_ledger import resolve_transaction_amount
+from app.services.one_off import due_date_for
 from app.services.row_valuation import purchases_total
 
 from ._context import (
@@ -31,12 +32,16 @@ PLAN_KIND_ENVELOPE = "envelope"
 PLAN_KIND_DISCRETE = "discrete"
 PLAN_KIND_TRANSFER = "transfer"
 
-# String constant for ``CarryForwardPlan.block_reason_code``.  The
-# single remaining block is the AMBIGUOUS guard -- a destination period
-# with more than one mutable row for the same (template, scenario), a
-# corrupt pre-existing state.  Using a code (not a raw string) lets
-# tests assert the failure type without coupling to wording.
+# String constants for ``CarryForwardPlan.block_reason_code``.  The AMBIGUOUS
+# guard is a destination period with more than one mutable row for the same
+# (template, scenario), a corrupt pre-existing state.  Using a code (not a raw
+# string) lets tests assert the failure type without coupling to wording.
 BLOCK_AMBIGUOUS_TARGETS = "ambiguous_targets"
+# A rule-less definition's row in the target has finalised, or a row of it
+# already answers the target's start, so the leftover has no row to roll into
+# and none may be placed (ruling **R-BAL44**; ``_context._TargetKind.CLOSED``
+# carries the argument).
+BLOCK_CLOSED_TARGET = "closed_target"
 
 
 # ── Plan dataclasses ─────────────────────────────────────────────────
@@ -336,9 +341,12 @@ def _resolve_envelope_target_fields(source_txn, target_period,
         estimate, the template default the engine would generate, or
         ``Decimal("0")`` for a freshly created row) and the rollover
         bumps it to ``base + leftover``.  ``target_will_be_generated``
-        flags the two cases where a new row appears (engine-generated
-        canonical or fresh override row) so the modal can word it as a
-        creation rather than a bump.
+        flags the three cases where a new row appears (engine-generated
+        canonical, fresh override row, or a rule-less definition's row
+        placed in the target, ruling **R-BAL44**) so the modal can word it
+        as a creation rather than a bump.
+      * ``CLOSED`` -> blocked; a rule-less definition's row in the target
+        has finalised, or a row of it already answers the target's start.
     """
     if leftover == Decimal("0"):
         # Overspend / exact-spend: the mutating path settles source
@@ -358,6 +366,22 @@ def _resolve_envelope_target_fields(source_txn, target_period,
                 f"Target period {target_period.label} has more than one "
                 f"open row for this template.  Resolve the duplicate "
                 f"rows manually before retrying."
+            ),
+        }
+    if resolution.kind is _TargetKind.CLOSED:
+        return {
+            "blocked": True,
+            "block_reason_code": BLOCK_CLOSED_TARGET,
+            "block_reason": (
+                f"This envelope's row in {target_period.label} has already "
+                f"closed, so its unspent budget has nowhere to roll.  Add "
+                f"the unspent amount to a later paycheck's envelope yourself."
+            ) if resolution.row is not None else (
+                f"A row of this envelope is already due on "
+                f"{due_date_for(None, target_period).isoformat()}, the day "
+                f"its unspent budget would be placed on, so it has nowhere "
+                f"to roll.  Move that row's due date, or add the unspent "
+                f"amount to a later paycheck's envelope yourself."
             ),
         }
 

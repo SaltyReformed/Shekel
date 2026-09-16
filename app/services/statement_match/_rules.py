@@ -49,6 +49,7 @@ from app.extensions import db
 from app.models.category import Category
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
+from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 
 
@@ -572,6 +573,19 @@ class RuleView:
     active_categories: "dict[int, str]"
     stale_templates: "dict[int, str]"
     stale_categories: "dict[int, str]"
+    # The offerable definitions that have NO rule -- a grid one-off's, a
+    # bank-born envelope's -- whose rows a TEMPLATE answer PLACES where a
+    # paycheck holds none (:attr:`~._placement.PlacementKind.PLACE`, ruling
+    # **R-BAL24**, leaf 7b-3 of ``balance:X-bi-7b``).  Read off the same rows
+    # ``template_names`` is, so the two cannot name different definitions.
+    placeable_templates: "frozenset[int]"
+    # For each placeable definition, the paychecks that already hold a LIVE
+    # row of it -- any status, offerable or not -- so the PLACE arm is never
+    # offered where R-BAL24's one row per paycheck already stands
+    # (``one_off.holds_a_row_in`` is the same fact asked at the door).  One
+    # read over those definitions' rows; found by 7b-3's adversarial reviews,
+    # which placed onto a cancelled row and met the occurrence index.
+    placed_periods: "dict[int, frozenset[int]]"
 
     @classmethod
     def build(cls, owner_id: int, account_id: int) -> "RuleView":
@@ -588,12 +602,18 @@ class RuleView:
             3.6 s candidate derivation, not this.
         """
         rules = rules_for(owner_id, account_id)
-        offerable = offerable_templates(account_id)
+        offerable_rows = _offerable_template_rows(account_id)
+        offerable = {row.id: row.name for row in offerable_rows}
         active = active_category_names(owner_id)
+        placeable = frozenset(
+            row.id for row in offerable_rows if not row.recurs
+        )
         return cls(
             rules=rules,
             template_names=offerable,
             active_categories=active,
+            placeable_templates=placeable,
+            placed_periods=_placed_periods(placeable),
             stale_templates=_named_templates(
                 {
                     rule.template_id for rule in rules.values()
@@ -748,16 +768,78 @@ def account_merchants(account_id: int) -> "dict[int, str]":
     return dict(rows)
 
 
+def _offerable_template_rows(account_id: int) -> "list[TransactionTemplate]":
+    """Return the envelope definitions a rule on this account may name, as rows.
+
+    The one read behind :func:`offerable_templates` and
+    :attr:`RuleView.placeable_templates`, so the names a rule control offers
+    and the definitions a TEMPLATE answer may PLACE a row of come off one row
+    set.  The rule rides on each row's joined load, so ``recurs`` costs no
+    query per definition.
+
+    Args:
+        account_id: The account being reviewed.
+
+    Returns:
+        The rows, ordered by name.
+    """
+    return (
+        db.session.query(TransactionTemplate)
+        .filter(
+            TransactionTemplate.account_id == account_id,
+            TransactionTemplate.is_envelope.is_(True),
+            TransactionTemplate.is_active.is_(True),
+            # The reference rule: IDs for logic, strings for display.
+            TransactionTemplate.transaction_type_id != ref_cache.txn_type_id(
+                TxnTypeEnum.INCOME,
+            ),
+        )
+        .order_by(TransactionTemplate.name)
+        .all()
+    )
+
+
+def _placed_periods(placeable: "frozenset[int]") -> "dict[int, frozenset[int]]":
+    """Return, per placeable definition, the paychecks holding a live row of it.
+
+    Every live row, whatever its status: R-BAL24 gives a rule-less
+    definition ONE row per paycheck, and a cancelled or fixed-figure-closed
+    row is that paycheck's row though it is not offerable.  One query over
+    the placeable definitions' rows, for the PLACE arm's guard.
+
+    Args:
+        placeable: :attr:`RuleView.placeable_templates`.
+
+    Returns:
+        ``{template_id: frozenset(pay_period_id)}``; a definition with no
+        live row is absent.
+    """
+    if not placeable:
+        return {}
+    held: "dict[int, set[int]]" = {}
+    for template_id, period_id in (
+        db.session.query(Transaction.template_id, Transaction.pay_period_id)
+        .filter(
+            Transaction.template_id.in_(placeable),
+            Transaction.is_deleted.is_(False),
+        )
+        .distinct()
+    ):
+        held.setdefault(template_id, set()).add(period_id)
+    return {key: frozenset(value) for key, value in held.items()}
+
+
 def offerable_templates(account_id: int) -> "dict[int, str]":
     """Return the envelope definitions a rule on this account may name.
 
     **A one-off's definition is among them since plan step ``balance:X-bi-7b``
     and BY RULING** (**R-BAL24** rejected a ``recurs`` filter here): an
-    envelope the owner made at the grid carries a rule-less definition now,
-    and picking it names one row, which resolves UNRESOLVED in every other
-    paycheck until the family's third leaf (``X-f6c``) makes such a definition
-    place its row -- the cost 10.10 of ``from_scratch_architecture.md``
-    states.
+    envelope the owner made at the grid carries a rule-less definition, and
+    since the family's third leaf a TEMPLATE answer naming one PLACES its row
+    in any paycheck that holds none
+    (:func:`~._placement._template_placement`), which is what closed the
+    UNRESOLVED-everywhere cost 10.10 of ``from_scratch_architecture.md``
+    recorded for the interim.
 
     **Not every template, and the filter is the create door's own.**
     :func:`~._create.create_purchase_from_line` files a purchase through
@@ -774,21 +856,7 @@ def offerable_templates(account_id: int) -> "dict[int, str]":
         ``{template_id: name}``, which is what the rule control renders and
         what :func:`_template_placement` names in its refusals.
     """
-    rows = (
-        db.session.query(TransactionTemplate)
-        .filter(
-            TransactionTemplate.account_id == account_id,
-            TransactionTemplate.is_envelope.is_(True),
-            TransactionTemplate.is_active.is_(True),
-            # The reference rule: IDs for logic, strings for display.
-            TransactionTemplate.transaction_type_id != ref_cache.txn_type_id(
-                TxnTypeEnum.INCOME,
-            ),
-        )
-        .order_by(TransactionTemplate.name)
-        .all()
-    )
-    return {row.id: row.name for row in rows}
+    return {row.id: row.name for row in _offerable_template_rows(account_id)}
 
 
 def active_category_names(owner_id: int) -> "dict[int, str]":

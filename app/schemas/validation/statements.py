@@ -31,8 +31,10 @@ from app.schemas.validation._helpers import (
 from app.services.statement_import import supported_sources
 from app.services.statement_match import (
     NEW_ENVELOPE,
+    PlaceIn,
     ReviewedDifference,
     ReviewedRow,
+    parse_place_token,
 )
 from app.utils.digit_strings import parse_row_id
 
@@ -132,14 +134,21 @@ LEAVE_ALONE: str = ""
 
 
 class PurchaseDestination(fields.Field):
-    """Where one bank line is to be recorded: an envelope, or a new one.
+    """Where one bank line is to be recorded: an envelope, a new one, or a placed one.
 
     **One field because the owner makes one choice.**  The review screen's
     destination control is a single ``<select>`` whose options are the pay
-    period's envelopes plus :data:`NEW_ENVELOPE`, so the submission carries one
-    value and this reads it into one of two things: an ``int`` naming an
-    envelope, or the :data:`NEW_ENVELOPE` string.  Splitting it into an id plus
-    an implied arm is what let a form name both destinations at once.
+    period's envelopes plus :data:`NEW_ENVELOPE` and, where a standing rule
+    names a one-off envelope's definition with no row in this paycheck, the
+    PLACE option (plan step ``balance:X-bi-7b`` leaf 7b-3, ruling
+    **R-BAL24**) -- so the submission carries one value and this reads it
+    into one of three things: an ``int`` naming an envelope, the
+    :data:`NEW_ENVELOPE` string, or a :class:`~app.services.statement_match.PlaceIn`
+    naming the definition to place a row of.  Splitting it into an id plus
+    an implied arm is what let a form name both destinations at once.  The
+    PLACE token is spelled once, in the service that produces it
+    (``place_token`` / ``parse_place_token``), so the two directions cannot
+    drift.
 
     **The id half is exactly as strict as :class:`RowId`**, through the same
     :func:`~app.utils.digit_strings.parse_row_id`: ``'٧'``, ``' 7 '``, ``'+7'``,
@@ -162,13 +171,17 @@ class PurchaseDestination(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            :data:`NEW_ENVELOPE`, or the ``int`` id of an existing envelope.
+            :data:`NEW_ENVELOPE`, a :class:`PlaceIn`, or the ``int`` id of an
+            existing envelope.
 
         Raises:
-            ValidationError: When *value* is neither.
+            ValidationError: When *value* is none of the three.
         """
         if value == NEW_ENVELOPE:
             return NEW_ENVELOPE
+        placed = parse_place_token(value)
+        if placed is not None:
+            return PlaceIn(template_id=placed)
         row_id = parse_row_id(value) if isinstance(value, str) else None
         if row_id is None:
             raise self.make_error("invalid")
