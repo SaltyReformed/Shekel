@@ -51,13 +51,17 @@ close into them on its next settle (``settles_from_entries`` is
 mirror from a purchase by a source both can share, since an empty envelope's
 manual-branch close may take a typed correction.
 
-**Which entries are the covering movements is the row's own RECORD's
-answer, not a discriminator over the movements.**  A row whose record basis
-is ``derived`` or ``corrected`` settled on the MANUAL branch, and the purchase
-doors refuse it a purchase -- ``create_entry`` refuses a row that does not
-track purchases and ``_reject_settled_addition`` refuses a settled row that
-stores a figure -- so every entry it holds is one the seam wrote.  A
-``purchases`` record covers nothing: its entries ARE the record.
+**Which entry is the covering movement is a STORED fact of the movement**
+(``transaction_entries.covers_settlement``), never a derivation over the
+row.  A first cut read "a settled row that stores a figure holds no
+purchases, so its entries are the seam's" -- and a door refutes it: *Track
+individual purchases* unticked on a settled envelope, then a figure typed
+over it, leaves a ``corrected`` record beside real purchases
+(``test_release``'s container-beyond-the-door case drives it end to end).
+Under the derivation the seam would have overwritten one of those purchases
+as its mirror.  So the seam marks what it writes, finds it by the mark, the
+entry doors refuse to touch a marked row, and a partial unique index holds
+the count at one per row.
 
 **The 3b / 3c gate, stated so each leaf deletes its arm.**  This leaf covers
 EXPENSE parents that are not transfer shadows.  An INCOME parent waits for
@@ -86,7 +90,6 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
 from app.services.settle_day import record_settle_day, recorded_settle_day
 from app.services.status_seam._record import Settlement
-from app.utils.balance_predicates import settled_status_ids
 
 #: The settlement bases whose record a covering movement mirrors.  A
 #: ``purchases`` settlement stores no figure because the row's own purchases ARE
@@ -112,72 +115,27 @@ def _is_covered_kind(row: Transaction) -> bool:
     return row.transfer_id is None and row.is_expense
 
 
-def _records_a_covered_settlement(row: Transaction) -> bool:
-    """Return whether *row*'s retained record is one a movement mirrors."""
-    return row.settled_basis_id in {
-        ref_cache.settlement_basis_id(basis) for basis in _COVERED_BASES
-    }
-
-
-def _mirrors_of(row: Transaction) -> list[TransactionEntry]:
-    """Return every entry of *row* as a covering movement, by its record alone.
-
-    The band-blind half: correct for a row that IS settled (the doors refuse
-    it a purchase) and for the release arm, which runs after the seam has
-    already moved the row out of the band and knows the row WAS in it.
-    """
-    if not _records_a_covered_settlement(row):
-        return []
-    return list(row.entries)
-
-
 def covering_clause():
     """Return the SQL form of *this purchase is a covering movement*.
 
     :func:`covering_movements` asks the question of ONE loaded row; this asks
-    it of a query over ``TransactionEntry`` joined to its ``Transaction``, for
-    a reader that must leave the seam's mirrors OUT of a row set -- the
-    statement matcher's purchase candidates, which offer a person's purchases
-    and never the row's own payment record.  The same predicate, stated once
-    per tier as ``_posting_purchases.posted_purchase_exists_clause`` is stated
-    beside ``purchase_posts``: the parent's retained record basis is
-    ``derived`` or ``corrected``.
-
-    **NULL-safe, and that is load-bearing**: a row that has never settled
-    carries no basis, and ``NOT (NULL IN (...))`` is NULL, so a caller
-    negating a bare ``IN`` would drop every purchase under a Projected
-    envelope from its set.  The COALESCE makes the answer a plain boolean.
+    it of a query over ``TransactionEntry``, for a reader that must leave the
+    seam's mirrors OUT of a row set -- the statement matcher's purchase
+    candidates, which offer a person's purchases and never the row's own
+    payment record.
 
     Returns:
-        A SQLAlchemy boolean expression over ``Transaction.settled_basis_id``,
-        for a query that has joined the entry to its parent.
+        A SQLAlchemy boolean expression over ``TransactionEntry``.
     """
-    return db.func.coalesce(
-        db.and_(
-            Transaction.status_id.in_(settled_status_ids()),
-            Transaction.settled_basis_id.in_([
-                ref_cache.settlement_basis_id(basis) for basis in _COVERED_BASES
-            ]),
-        ),
-        False,
-    )
+    return TransactionEntry.covers_settlement.is_(True)
 
 
 def covering_movements(row: Transaction) -> list[TransactionEntry]:
     """Return the covering movements *row* holds -- the settle's, not a person's.
 
-    The row's own record answers (module docstring): a ``derived`` or
-    ``corrected`` record was written on the MANUAL branch, whose rows the
-    purchase doors refuse, so every entry such a row holds is the seam's; a
-    ``purchases`` record's entries are purchases.  Read off the RETAINED
-    basis, which a revert keeps, so the release arm sees the same answer the
-    settle did.
-
-    **And only while the row stands IN the settled band.**  A revert keeps
-    the record (X-au-c3) and deletes the mirror, so on a Projected row the
-    retained ``derived`` basis says nothing about the entries it holds now:
-    a purchase added after the revert is a purchase, and the next settle sums
-    it (``settles_from_entries``).
+    By the mark the seam left (module docstring); at most one, by the partial
+    unique index, and a list rather than an optional so a caller that walks
+    the family needs no branch.
 
     Args:
         row: The transaction, with ``entries`` loaded or loadable.
@@ -185,9 +143,7 @@ def covering_movements(row: Transaction) -> list[TransactionEntry]:
     Returns:
         The covering movements, in ``entries`` order; empty when none.
     """
-    if row.status_id not in settled_status_ids():
-        return []
-    return _mirrors_of(row)
+    return [entry for entry in row.entries if entry.covers_settlement]
 
 
 def covered_cash_leg(row: Transaction) -> Decimal:
@@ -301,6 +257,8 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
         # it on the owner's behalf, and the owner is the row's.
         user_id=row.user_id,
         is_credit=False,
+        # The mark the seam finds its own mirror by (module docstring).
+        covers_settlement=True,
     )
     _record_onto(row, movement, settlement)
     # Appended to the relationship rather than only added to the session, so
@@ -311,12 +269,8 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
 
 
 def _release(row: Transaction) -> None:
-    """Delete *row*'s covering movements: leaving the band withdraws them.
-
-    Reads the mirrors by the record alone: the seam has already assigned the
-    new status, and its ``was_settled`` is what brought us here.
-    """
-    for movement in _mirrors_of(row):
+    """Delete *row*'s covering movements: leaving the band withdraws them."""
+    for movement in covering_movements(row):
         # Reverse FIRST: ``journal_entries.transaction_entry_id`` is SET NULL
         # on delete, so legs left behind could never be reversed.
         posting_service.reverse_purchase_postings_before_delete(movement)
@@ -324,6 +278,29 @@ def _release(row: Transaction) -> None:
         # ledger reconcile walks ``txn.entries`` after the seam returns, and
         # ``delete-orphan`` on the relationship is what issues the DELETE.
         row.entries.remove(movement)
+
+
+def record_clearing(row: Transaction, anchor_id: int) -> None:
+    """Record WHICH statement showed *row*'s money, on the row and its mirror.
+
+    The transaction twin of ``transfer_service._settle.record_clearing``, and
+    the ONE writer of a transaction's ``reconciled_by_id`` outside the seam's
+    own release arms (plan step **X-bi-3a**, ruling **R-FL**).  The reconcile
+    panel records the link AFTER the settle verb returns -- the verb is shared
+    with the grid's Mark Paid, which no statement has shown -- and the settle
+    has by then mirrored the row's money onto its covering movement, whose
+    fact is the one the fold and ``StatementCoverage`` read.  A link written
+    on the row alone would leave that fact unlinked and the panel's own
+    clearing rule inert for every bill it ticks (found by
+    ``test_cash_walk``'s governing-assertion case, 2026-09-16).
+
+    Args:
+        row: The settled transaction the statement showed.
+        anchor_id: The ``account_anchor_history`` row that was being read.
+    """
+    row.reconciled_by_id = anchor_id
+    for movement in covering_movements(row):
+        movement.reconciled_by_id = anchor_id
 
 
 def sync_covering_movement(

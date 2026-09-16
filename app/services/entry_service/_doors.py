@@ -42,6 +42,7 @@ from app.services.entry_service._refusals import (
     _reject_settled_before_purchase,
     _reject_settled_parent,
     _reject_settled_removal,
+    _reject_settlement_record,
     cost_fields_changing,
 )
 from app.utils.balance_predicates import is_cancelled
@@ -537,6 +538,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     _reject_settled_parent(
         entry.transaction, cost_fields_changing(valid_updates),
     )
+    # The row's own payment record is the status seam's to write (plan step
+    # **X-bi-3a**); checked after ownership for the same 404 reason.
+    _reject_settlement_record(entry)
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
@@ -737,6 +741,9 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # purchases a statement pass created in error had no door that removes
     # one (finding **N-333**).  ``_reject_settled_removal`` weighs what the
     # close actually booked instead.
+    # The row's own payment record is withdrawn by a REVERT, never here (plan
+    # step **X-bi-3a**); named first, so the refusal says which act owns it.
+    _reject_settlement_record(entry)
     _reject_settled_removal(entry.transaction, entry)
 
     txn = entry.transaction

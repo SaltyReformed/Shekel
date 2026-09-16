@@ -44,7 +44,7 @@ from decimal import Decimal
 from sqlalchemy.orm import selectinload
 
 from app.models.transaction import Transaction
-from app.services import cash_ledger, transaction_service
+from app.services import cash_ledger, status_seam, transaction_service
 from app.services.cash_ledger import AmountBasis
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
@@ -182,8 +182,10 @@ def _settle_one(
     #
     # It follows the settle, which RELEASES any prior link as it stamps the day
     # (``status_seam``): the release is about the day that moved, and this is
-    # the new day's own fact.
-    txn.reconciled_by_id = statement.anchor.anchor_id
+    # the new day's own fact.  Through ``status_seam.record_clearing`` since
+    # plan step **X-bi-3a**: the settle mirrored the row's money onto its
+    # covering movement, and the link has to reach the fact that carries it.
+    status_seam.record_clearing(txn, statement.anchor.anchor_id)
     return corrected
 
 

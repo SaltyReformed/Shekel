@@ -1,4 +1,4 @@
-"""a movement's figure names its source
+"""a movement's figure names its source, and the settle's movement says so
 
 Plan step **balance:X-bi-3a** (leaf 3a of ``X-bi-3``) of
 ``docs/audits/balance_architecture/README.md`` section 5, under ruling
@@ -6,6 +6,8 @@ Plan step **balance:X-bi-3a** (leaf 3a of ``X-bi-3``) of
 
     ref.movement_figure_sources                       NEW, seeded
     budget.transaction_entries.figure_source_id       NEW, NOT NULL, FK RESTRICT
+    budget.transaction_entries.covers_settlement      NEW, NOT NULL, default false
+    uq_transaction_entries_one_settlement_record      NEW partial unique index
 
 **Every movement says WHO WROTE its figure.**  A row of ``transaction_entries``
 is a movement -- a purchase recorded against an envelope, and since X-bi-3a the
@@ -27,6 +29,16 @@ a bank-born purchase would have to claim falsely.
 **No figure moves.**  The column is metadata about a figure; every balance,
 fold and posting reads the figure itself, which this revision touches on no
 row.
+
+**``covers_settlement`` says which movement IS its parent's settlement
+record.**  The status seam writes one covering movement per manual-branch
+settle and must find its own mirror again on a re-settle, a revert and a day
+correction; a settled row may legitimately hold real purchases beside it
+(*Track individual purchases* unticked on a settled envelope, then a figure
+typed over it), so the record's identity is a stored fact of the movement
+and never a derivation over the row.  Default ``false``: every row this
+migration meets is a purchase, and only the seam ever writes ``true``.  The
+partial unique index holds the count at one per row.
 
 **The backfill is a PREDICATE over the row's own day basis, never over its
 parent** (ruling **R-BAL39**): a purchase whose settle day the BANK observed
@@ -202,6 +214,20 @@ def upgrade():
         "transaction_entries", "figure_source_id",
         nullable=False, schema="budget",
     )
+    op.add_column(
+        "transaction_entries",
+        sa.Column(
+            "covers_settlement", sa.Boolean(), nullable=False,
+            server_default=sa.text("false"),
+        ),
+        schema="budget",
+    )
+    op.create_index(
+        "uq_transaction_entries_one_settlement_record",
+        "transaction_entries", ["transaction_id"],
+        unique=True, schema="budget",
+        postgresql_where=sa.text("covers_settlement = true"),
+    )
 
 
 def downgrade():
@@ -210,6 +236,11 @@ def downgrade():
     The code this returns to never read either, and no balance, fold or posting
     reads the column (module docstring).
     """
+    op.drop_index(
+        "uq_transaction_entries_one_settlement_record",
+        table_name="transaction_entries", schema="budget",
+    )
+    op.drop_column("transaction_entries", "covers_settlement", schema="budget")
     op.drop_constraint(
         "fk_transaction_entries_figure_source_id", "transaction_entries",
         schema="budget", type_="foreignkey",

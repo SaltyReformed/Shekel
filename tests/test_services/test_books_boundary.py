@@ -497,9 +497,21 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
                 source_id=account_opening_fact(account.id).source_id,
             ))
             db.session.flush()
-            # ... and only now does the movement leave the opening it is inside.
+            # ... and only now does the movement leave the opening it is inside
+            # -- the row AND its covering movement, which the seam dated with
+            # it (plan step X-bi-3a) and which the same trigger guards on its
+            # own table.
             db.session.query(Transaction).filter_by(id=row.id).update(
                 {Transaction.settled_on: later + _ONE_DAY},
+                synchronize_session=False,
+            )
+            db.session.query(TransactionEntry).filter_by(
+                transaction_id=row.id,
+            ).update(
+                {
+                    TransactionEntry.settled_on: later + _ONE_DAY,
+                    TransactionEntry.purchased_on: later + _ONE_DAY,
+                },
                 synchronize_session=False,
             )
             db.session.commit()

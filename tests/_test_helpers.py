@@ -4352,11 +4352,43 @@ def family_journal_filter(txn):
     from app.services.status_seam import covering_movements
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
+    if row is None:
+        # A hard-deleted row: its postings were reversed and SET-NULLed before
+        # it went, and so were its movement's (they cascade with it), so the
+        # family is whatever still names the id -- nothing, which is the claim
+        # such a case makes.
+        return JournalEntry.transaction_id == txn
     movement_ids = [movement.id for movement in covering_movements(row)]
     own = JournalEntry.transaction_id == row.id
     if not movement_ids:
         return own
     return db.or_(own, JournalEntry.transaction_entry_id.in_(movement_ids))
+
+
+def purchases_of(txn):
+    """Return *txn*'s entries that are PURCHASES: its rows less the seam's mirror.
+
+    Plan step **X-bi-3a**: a settled bill or an envelope closed empty holds
+    one covering movement, written by the status seam and never by a person,
+    so "this row took no purchase" is graded over the entries that are not
+    that mirror (``status_seam.covering_movements``).  A refused purchase
+    still leaves the row with exactly the movement it had.
+
+    Args:
+        txn: The :class:`~app.models.transaction.Transaction`, or its id.
+
+    Returns:
+        The purchases, in ``entries`` order.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.transaction import Transaction
+    from app.services.status_seam import covering_movements
+
+    row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
+    covering = covering_movements(row)
+    return [entry for entry in row.entries if entry not in covering]
 
 
 def family_cash_leg(txn):

@@ -24,6 +24,7 @@ from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    purchases_of,
     figure_source_columns,
     an_entered_day,
     freeze_today,
@@ -464,9 +465,8 @@ class TestPostPaidEntryMutation:
 
             txn = db.session.get(Transaction, txn_id)
             assert settled_figure(txn) == Decimal("500.00")
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn_id,
-            ).count() == 0
+            # No purchase landed; the covering movement is not one (X-bi-3a).
+            assert purchases_of(txn) == []
 
     def test_entry_deleted_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,

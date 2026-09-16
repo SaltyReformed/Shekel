@@ -1241,9 +1241,11 @@ class TestApplyRequestedStatusTheDoorVerb:
 
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert txn.settled_on == display_today()
+            # The row's FAMILY (plan step X-bi-3a): the $100.00 is posted under
+            # the covering movement the seam wrote, the parent's leg is zero.
             entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn.id).all()
+                .filter(family_journal_filter(txn)).all()
             )
             assert len(entries) == 1
             # effective_amount == estimated_amount == 100.00, nothing credited,

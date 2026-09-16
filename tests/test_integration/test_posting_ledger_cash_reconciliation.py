@@ -108,6 +108,7 @@ from app.enums import (
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     PostingKindEnum,
+    PostingSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -675,9 +676,11 @@ def _assert_every_settled_transaction_posts(user_id: int) -> None:
         if _signed_cash_effect(txn) == 0:
             # A zero-effect settled row (all-credit envelope) posts nothing.
             continue
+        # The row's FAMILY (plan step X-bi-3a): a covered bill's money is
+        # posted under its covering movement, not under the row.
         entry_count = (
             _db.session.query(JournalEntry)
-            .filter_by(transaction_id=txn.id)
+            .filter(family_journal_filter(txn))
             .count()
         )
         assert entry_count >= 1, (
@@ -991,12 +994,16 @@ class TestPerEntryAndTrialBalance:
             db.session.commit()
 
             # Three settled sources -> three source-linked balanced entries
-            # (the Step-5 openings carry their own correction sources).
+            # (the Step-5 openings carry their own correction sources).  The
+            # two expense sources link by their covering movement since plan
+            # step X-bi-3a (``transaction_entry_id``); the income one still by
+            # ``transaction_id`` until X-bi-3b.
             assert (
                 _db.session.query(JournalEntry)
                 .filter(_db.or_(
                     JournalEntry.transfer_id.isnot(None),
                     JournalEntry.transaction_id.isnot(None),
+                    JournalEntry.transaction_entry_id.isnot(None),
                 ))
                 .count()
             ) == 3
@@ -1452,9 +1459,19 @@ class TestRevertedTransactionReconcilesAtZero:
                 groceries_counter, scenario_id,
             ) == Decimal("0.00")
             # Two entries survive (settle + reversal); neither was edited.
+            # They were the covering movement's (plan step X-bi-3a), and the
+            # revert deleted that mirror after reversing its legs, so the pair
+            # stands as unlinked PURCHASE-sourced history -- the reverse-
+            # before-delete discipline, seen from the ledger.
             assert (
                 _db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn_id)
+                .filter(
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.PURCHASE,
+                    ),
+                    JournalEntry.transaction_entry_id.is_(None),
+                )
                 .count()
             ) == 2
             _assert_full_reconciliation(scenario_id)
@@ -1712,7 +1729,7 @@ class TestOracleIsNotVacuous:
             # balanced trigger validates only at COMMIT, which we never reach.
             entry_id = (
                 _db.session.query(JournalEntry.id)
-                .filter_by(transaction_id=txn.id)
+                .filter(family_journal_filter(txn))
                 .scalar()
             )
             _db.session.execute(_db.text(

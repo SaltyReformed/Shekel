@@ -56,6 +56,7 @@ from app.services.statement_match._outcome import FiledMerchant
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from tests._test_helpers import (
+    purchases_of,
     count_amount_bases,
     last_covered_day,
 )
@@ -456,7 +457,10 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
                 outcome.refused[0].reason
             )
             assert outcome.refused[0].line_ids == (swipe.id,)
-            assert envelope.entries == []
+            # No PURCHASE was created; the envelope the match closed holds
+            # only the covering movement the seam wrote for its close (plan
+            # step X-bi-3a).
+            assert purchases_of(envelope) == []
 
     def test_a_matched_purchase_blocks_a_later_match_on_its_PARENT(
         self, app, db, seed_user,

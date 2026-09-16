@@ -53,9 +53,12 @@ from app.enums import (
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam, transaction_service
@@ -589,6 +592,114 @@ class TestThePurchaseDoorsStateTheSource:
                 ),
             )
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.OBSERVED)
+
+
+class TestTheRecordIsMarkedAndTheSeamsAlone:
+    """``covers_settlement``: found by the mark, held to one, closed to the doors."""
+
+    def test_a_second_record_on_one_row_is_refused_by_the_index(
+        self, app, seed_user, seed_periods,
+    ):
+        """The partial unique index, driven."""
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.covers_settlement is True
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=seed_user["user"].id, amount=Decimal("1.00"),
+                description="second record", purchased_on=txn.settled_on,
+                covers_settlement=True,
+                figure_source_id=_source(MovementFigureSourceEnum.TYPED),
+            ))
+            with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
+                db.session.flush()
+            assert "uq_transaction_entries_one_settlement_record" in str(exc.value)
+            db.session.rollback()
+
+    def test_the_entry_doors_refuse_the_record(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            _settle(envelope)
+            db.session.flush()
+            record = _only_movement(envelope)
+            with pytest.raises(ValidationError, match="payment record"):
+                entry_service.update_entry(
+                    record.id, seed_user["user"].id,
+                    settle_day=SettleDay(
+                        day=envelope.settled_on - timedelta(days=1),
+                        basis=SettledDayBasisEnum.ENTERED,
+                    ),
+                )
+            with pytest.raises(ValidationError, match="payment record"):
+                entry_service.delete_entry(record.id, seed_user["user"].id)
+            assert db.session.get(TransactionEntry, record.id) is not None
+
+    def test_a_stored_figure_row_holding_a_real_purchase_keeps_it(
+        self, app, seed_user, seed_periods,
+    ):
+        """The door path that refutes 'a stored-figure row holds no purchases'.
+
+        An envelope with a bank-born purchase is settled, its *Track
+        individual purchases* is unticked on the settled row, and a figure is
+        typed over it: a ``corrected`` record beside a real purchase.  The
+        seam must write its OWN movement beside that purchase, never
+        overwrite the purchase as its mirror (``test_release``'s
+        container-beyond-the-door case is the same path, graded there for
+        the undo's refusal).
+        """
+        with app.app_context():
+            # An AD-HOC envelope, bare-built as the bank door still mints one
+            # (``statement_match._container._create_envelope``, until
+            # X-bi-7b-3): the flag is the row's own there, which is what the
+            # popover's untick writes -- a definition's row reads its
+            # definition's flag and offers no such control.
+            envelope = Transaction(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Kayla's Spending Money",
+                category_id=seed_user["categories"]["Rent"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                is_envelope=True,
+            )
+            db.session.add(envelope)
+            db.session.flush()
+            purchase = entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    amount=Decimal("57.96"), description="Walmart",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            db.session.flush()
+            _settle(envelope)
+            db.session.flush()
+            assert covering_movements(envelope) == []
+            envelope.is_envelope = False
+            db.session.flush()
+            transaction_service.apply_requested_status(
+                envelope, envelope.status_id, submitted=Decimal("999.99"),
+            )
+            db.session.flush()
+
+            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            record = _only_movement(envelope)
+            assert record.id != purchase.id
+            assert record.amount == Decimal("999.99")
+            kept = db.session.get(TransactionEntry, purchase.id)
+            assert kept.amount == Decimal("57.96")
+            assert kept.description == "Walmart"
+            assert kept.covers_settlement is False
 
 
 class TestTheCatalogueIsSeededAndResolvable:
