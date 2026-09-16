@@ -1122,7 +1122,7 @@ class TestSalaryRaiseStaleFormPrevention:
 
 
 class TestPaycheckLineStaleFormPrevention:
-    """``update_deduction`` (POST /salary/deductions/<id>/edit) optimistic locking."""
+    """``update_line`` (POST /salary/lines/<id>/edit) optimistic locking."""
 
     def test_redirects_with_warning_on_stale_version(
         self, app, auth_client, seed_user,
@@ -1147,7 +1147,7 @@ class TestPaycheckLineStaleFormPrevention:
             ).amount
 
             response = auth_client.post(
-                f"/salary/deductions/{ded_id}/edit",
+                f"/salary/lines/{ded_id}/edit",
                 data={
                     "name": "Renamed Deduction",
                     "paycheck_line_kind_id": str(timing_id),
@@ -1450,7 +1450,7 @@ class TestEditTemplatesEmitVersionPin:
     def test_paycheck_line_edit_button_carries_version(
         self, app, auth_client, seed_user,
     ):
-        """The deduction edit button carries ``data-ded-version-id``.
+        """The deduction edit button carries ``data-line-version-id``.
 
         Same shape as the raise test: the edit button surfaces the
         row's current version as a data attribute that app.js wires
@@ -1467,10 +1467,10 @@ class TestEditTemplatesEmitVersionPin:
             assert response.status_code == 200
             body = response.data.decode()
             assert (
-                f'data-ded-version-id="{v}"' in body
+                f'data-line-version-id="{v}"' in body
             ), (
                 "Deduction edit button must include "
-                "data-ded-version-id so app.js can populate the "
+                "data-line-version-id so app.js can populate the "
                 "form's hidden version input on edit."
             )
 

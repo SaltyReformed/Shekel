@@ -2,12 +2,13 @@
 Shekel Budget App -- Paycheck engine: PRICING one paycheck, and a list of them.
 
 The two public entries: :func:`calculate_paycheck`, which prices ONE
-paycheck by composing the other leaves in the order its own nine numbered
-steps name -- the post-raise annual salary off the basis, the per-paycheck
-gross rate, the deduction passes, the wage figures, the withholding path,
-the net -- and :func:`project_salary`, the batch over a
-period list that is nothing but a loop over the first with the tax configs
-resolved per period year.
+paycheck by composing the other leaves in the order its own numbered steps
+name -- the post-raise annual salary off the basis, the per-paycheck base
+rate, the taxable earning lines and the gross they make, the deduction
+passes, the wage figures, the withholding path, the after-tax earning lines,
+the net -- and :func:`project_salary`, the batch over a period list that is
+nothing but a loop over the first with the tax configs resolved per period
+year.
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**).  This is the leaf that imports every other one; nothing else in
@@ -28,22 +29,31 @@ from ._calendar_questions import (
     _is_third_paycheck,
     _month_ordinal,
 )
-from ._deductions import _compute_deductions, _DeductionContext
-from ._withholding import _bracket_tax_lines, _calibrated_tax_lines, _WageBasis
+from ._lines import (
+    _compute_deductions,
+    _LineContext,
+    priced_after_tax,
+    priced_gross,
+)
+from ._withholding import _tax_lines, _WageBasis
 
 
 def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
                        *, calibration=None):
     """Calculate a single paycheck for a given period.
 
-    The gross is the (post-raise) annual salary divided by
+    The BASE pay is the (post-raise) annual salary divided by
     ``basis.periods_per_year`` and rounded once, at the cent
     (:func:`~app.services.payroll_basis.gross_per_paycheck`).  It is a RATE:
     the same figure for every paycheck in one salary segment, and a function of
     the salary and the cadence alone -- the payday SET does not reach it.  See
     the package docstring section "The per-paycheck gross -- a RATE, not a share
     of a year" for what that replaced (plan step **balance:X-aw**, ruling
-    **balance:R-HW**, superseding audit MED-05 / PA-07).
+    **balance:R-HW**, superseding audit MED-05 / PA-07).  **The gross is the
+    base plus the taxable earning lines admitted on the payday, since plan
+    step salary:R18-b** (ruling **R-SAL38**), and the net adds the after-tax
+    earning lines after the withholding; both come from the one pass that
+    prices the deductions, through :mod:`._lines`.
 
     Args:
         basis:        The :class:`~app.services.payroll_basis.PayrollBasis` --
@@ -78,10 +88,11 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # Step 1: Determine annual salary after raises (off the basis's raise set).
     annual_salary = basis.annual_salary_on(period.start_date)
 
-    # Step 2: Gross biweekly -- the salary over the owner's paycheck count,
-    # rounded once.  Deliberately NOT a function of the payday SET: that is
-    # what plan step balance:X-aw removed (finding N-239).
-    gross_biweekly = gross_per_paycheck(annual_salary, basis.periods_per_year)
+    # Step 2: Base pay -- the salary over the owner's paycheck count, rounded
+    # once.  Deliberately NOT a function of the payday SET: that is what plan
+    # step balance:X-aw removed (finding N-239).  The base every percentage
+    # line is a percentage of (ruling R-SAL38).
+    base_biweekly = gross_per_paycheck(annual_salary, basis.periods_per_year)
 
     # Step 3: this payday's position in its month -- read BEFORE any line is
     # priced, because the read is where a payday this calendar cannot place
@@ -92,11 +103,16 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # ordinal's own readers is the cockpit's third-paycheck badge below.
     month_ordinal = _month_ordinal(basis.calendar, period.start_date)
 
-    # Steps 4 & 8: the pre- and post-tax deduction passes share one
-    # per-paycheck context; each line's cadence is its rule's answer through
-    # the basis (plan step salary:R15-b).
-    ded_ctx = _DeductionContext(basis, period, gross_biweekly)
-    deductions = _compute_deductions(ded_ctx)
+    # Step 3b: the gross -- base pay plus the taxable earning lines admitted
+    # on this payday (plan step salary:R18-b), from the ONE producer the
+    # year-to-date wage cumulative replays for the earlier paydays.  Every
+    # kind's pass shares this per-paycheck context; each line's cadence is
+    # its rule's answer through the basis (plan step salary:R15-b).
+    line_ctx = _LineContext(basis, period.start_date, base_biweekly)
+    taxable_lines, gross_biweekly = priced_gross(line_ctx)
+
+    # Steps 4 & 8: the pre- and post-tax deduction passes.
+    deductions = _compute_deductions(line_ctx)
 
     # Step 5: Taxable income (for display -- taxes computed via Pub 15-T).
     taxable_biweekly = max(gross_biweekly - deductions.total_pre_tax, ZERO)
@@ -106,19 +122,19 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
     # computed once here and feeds the FICA SS wage-base cap on both paths
     # (CRIT-03 / F-037: the calibration path used to skip this and
     # over-charged SS after the cap on high earners).
-    wages = _WageBasis(
-        gross_biweekly,
-        taxable_biweekly,
-        _get_cumulative_wages(basis, period),
+    taxes = _tax_lines(
+        basis,
+        _WageBasis(
+            gross_biweekly,
+            taxable_biweekly,
+            _get_cumulative_wages(basis, period),
+        ),
+        deductions.total_pre_tax, tax_configs, calibration,
     )
-    if calibration is not None and getattr(calibration, "is_active", False):
-        taxes = _calibrated_tax_lines(
-            wages, calibration, tax_configs.get("fica_config"),
-        )
-    else:
-        taxes = _bracket_tax_lines(
-            basis, wages, deductions.total_pre_tax, tax_configs,
-        )
+
+    # Step 8b: the after-tax earning lines -- untaxed, joining the deposit
+    # after every deduction and withholding (plan step salary:R18-b).
+    after_tax_lines = priced_after_tax(line_ctx)
 
     # Step 9: Net pay.
     net_pay = round_money(
@@ -126,6 +142,7 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
         - deductions.total_pre_tax
         - taxes.total
         - deductions.total_post_tax
+        + sum((line.amount for line in after_tax_lines), ZERO)
     )
 
     return PaycheckBreakdown(
@@ -134,7 +151,10 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod, tax_configs,
             _is_third_paycheck(month_ordinal),
             get_raise_event(basis.raises, period),
         ),
-        earnings=Earnings(annual_salary, gross_biweekly, taxable_biweekly, net_pay),
+        earnings=Earnings(
+            annual_salary, base_biweekly, gross_biweekly, taxable_biweekly, net_pay,
+            taxable=taxable_lines, after_tax=after_tax_lines,
+        ),
         taxes=taxes,
         deductions=deductions,
     )

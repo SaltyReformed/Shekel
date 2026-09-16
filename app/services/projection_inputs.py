@@ -329,7 +329,7 @@ def load_payroll_feeds(
     ONE spelling of a profile's projection since ``salary:R14-a`` -- and hands
     each account two RESOLVERS closed over the pricers of the profiles that
     fund it, each folding the
-    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    :class:`~app.services.paycheck_calculator.PricedLine`\\ s of the
     paycheck priced for the period it is asked about by the
     ``target_account_id`` they already carry.
 
@@ -657,7 +657,7 @@ def _employee_resolver(
     """Build ONE account's ``period -> employee amount`` resolver, or ``None``.
 
     The resolver reads the amount off the
-    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    :class:`~app.services.paycheck_calculator.PricedLine`\\ s of the
     paycheck the engine prices for the period it is asked about -- raise-aware,
     inflation-escalated, cadence-placed and clamped to the line's own
     calendar-year cap -- rather than pricing anything itself.  Pre- and
@@ -712,9 +712,15 @@ def _gross_resolver(
 ) -> Callable[[DerivedPeriod], Decimal] | None:
     """Build the FUNDING profile's ``period -> gross`` resolver, or ``None``.
 
-    The employer contribution's basis (**R-SAL5**): the gross of the paycheck
-    the profile named by ``budget.investment_params.salary_profile_id`` is
-    paid on the period asked about.  ``None`` when that profile is unknown --
+    The employer contribution's basis (**R-SAL5**): the BASE pay of the
+    paycheck the profile named by ``budget.investment_params.salary_profile_id``
+    is paid on the period asked about -- ``earnings.base_biweekly``, the
+    salary rate, which ruling **R-SAL38** (plan step salary:R18-b) makes the
+    base of every percentage figure in payroll: an employer match is a
+    percentage of the salary, not of the gross a taxable allowance joins, and
+    reading the base here is what keeps this feed and the engine's own
+    percentage lines on one figure.  (``gross_biweekly`` until R18-b, which
+    WAS the base rate then.)  ``None`` when that profile is unknown --
     absent, archived, or not this owner's, the three states
     :func:`_load_funding_profiles` has already collapsed into "not in the
     map" -- which is the developer's 2026-09-04 ruling that such an account
@@ -735,7 +741,7 @@ def _gross_resolver(
         return None
 
     def _gross(period: DerivedPeriod) -> Decimal:
-        return pricer.at(period).earnings.gross_biweekly
+        return pricer.at(period).earnings.base_biweekly
 
     return _gross
 

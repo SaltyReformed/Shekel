@@ -28,7 +28,7 @@ from app.services import salary_cockpit_service as svc
 from app.services.pay_calendar import DerivedPeriod
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
-    DeductionLine,
+    PricedLine,
     Earnings,
     PaycheckBreakdown,
     PeriodInfo,
@@ -59,12 +59,16 @@ def _pair(
     pid, start, end, annual, gross, net, *,
     taxable="0", is_third=False, raise_event="",
     federal="0", state="0", ss="0", medicare="0",
-    pre=(), post=(),
+    pre=(), post=(), taxable_lines=(), after_tax=(),
 ):
     """Build a ``(period, breakdown)`` pair from plain values.
 
     ``pre`` / ``post`` are iterables of ``(name, amount_str)`` deduction
-    lines.  Every monetary value is constructed from a string.
+    lines; ``taxable_lines`` / ``after_tax`` the two earning kinds' (plan
+    step salary:R18-b).  ``gross`` is the figure the engine would report --
+    base plus the taxable lines -- and ``base_biweekly`` is derived from it
+    here so the fake carries the engine's own identity.  Every monetary
+    value is constructed from a string.
     """
     period = _fake_period(pid, start, end)
     breakdown = PaycheckBreakdown(
@@ -74,17 +78,22 @@ def _pair(
         ),
         earnings=Earnings(
             annual_salary=Decimal(annual),
+            base_biweekly=Decimal(gross) - sum(
+                (Decimal(a) for _n, a in taxable_lines), Decimal("0"),
+            ),
             gross_biweekly=Decimal(gross),
             taxable_income=Decimal(taxable),
             net_pay=Decimal(net),
+            taxable=[PricedLine(name=n, amount=Decimal(a)) for n, a in taxable_lines],
+            after_tax=[PricedLine(name=n, amount=Decimal(a)) for n, a in after_tax],
         ),
         taxes=TaxLines(
             federal=Decimal(federal), state=Decimal(state),
             social_security=Decimal(ss), medicare=Decimal(medicare),
         ),
         deductions=DeductionBreakdown(
-            pre_tax=[DeductionLine(name=n, amount=Decimal(a)) for n, a in pre],
-            post_tax=[DeductionLine(name=n, amount=Decimal(a)) for n, a in post],
+            pre_tax=[PricedLine(name=n, amount=Decimal(a)) for n, a in pre],
+            post_tax=[PricedLine(name=n, amount=Decimal(a)) for n, a in post],
         ),
     )
     return period, breakdown
@@ -426,27 +435,86 @@ class TestBuildComposition:
         comp = svc.build_composition(breakdown, calibration_active=False)
         assert comp["pct_net"] == Decimal("0")
 
+    def test_no_earning_line_leaves_the_card_as_it_was(self):
+        """Without an earning line the added keys are zero or equal net, and pct_net is of net."""
+        comp = svc.build_composition(_scenario()[2][1], calibration_active=False)
+        assert comp["base"] == Decimal("2000")
+        assert comp["taxable_earnings_total"] == Decimal("0")
+        assert comp["after_tax_total"] == Decimal("0")
+        assert comp["kept_from_gross"] == comp["net"] == Decimal("1400")
+        assert comp["pct_net"] == Decimal("70.0")
 
-class TestBuildDeductionRows:
-    """build_deduction_rows: proportional bars scaled to the largest line."""
+    def test_a_taxable_earning_is_inside_gross_and_the_split_is_stated(self):
+        """gross 2000 = base 1900 + a $100 taxable line; the spine is unchanged, the footer knows."""
+        breakdown = _pair(
+            1, date(2026, 6, 1), date(2026, 6, 14), "52000", "2000", "1400",
+            taxable="1800", state="150", ss="124", medicare="26",
+            pre=[("401k", "200")], post=[("Roth", "100")],
+            taxable_lines=[("Phone Allowance", "100")],
+        )[1]
+        comp = svc.build_composition(breakdown, calibration_active=False)
+        assert comp["gross"] == Decimal("2000")
+        assert comp["base"] == Decimal("1900")
+        assert comp["taxable_earnings_total"] == Decimal("100")
+        assert comp["kept_from_gross"] == comp["net"] == Decimal("1400")
+        assert (comp["pct_net"], comp["pct_pre_tax"], comp["pct_taxes"], comp["pct_post_tax"]) == (
+            Decimal("70.0"), Decimal("10.0"), Decimal("15.0"), Decimal("5.0"),
+        )
+
+    def test_an_after_tax_earning_sits_outside_gross_and_the_segments_still_sum(self):
+        """net 1500 = 1400 kept of a 2000 gross + a $100 after-tax line: the net segment is 70.0, not 75.0."""
+        breakdown = _pair(
+            1, date(2026, 6, 1), date(2026, 6, 14), "52000", "2000", "1500",
+            taxable="1800", state="150", ss="124", medicare="26",
+            pre=[("401k", "200")], post=[("Roth", "100")],
+            after_tax=[("Reimbursement", "100")],
+        )[1]
+        comp = svc.build_composition(breakdown, calibration_active=False)
+        assert comp["net"] == Decimal("1500")
+        assert comp["after_tax_total"] == Decimal("100")
+        assert comp["kept_from_gross"] == Decimal("1400")
+        assert comp["pct_net"] == Decimal("70.0")
+        # The four segments of gross still sum to the bar.
+        assert (comp["pct_net"] + comp["pct_pre_tax"] + comp["pct_taxes"]
+                + comp["pct_post_tax"]) == Decimal("100.0")
+
+
+class TestBuildLineRows:
+    """build_line_rows: proportional bars scaled to the largest line, four groups in waterfall order."""
 
     def test_rows_scaled_to_largest(self):
         """401k 200 (largest) -> 100.0; Roth 100 -> 50.0."""
         breakdown = _scenario()[2][1]
-        rows = svc.build_deduction_rows(breakdown)
+        rows = svc.build_line_rows(breakdown)
         assert rows == [
-            {"name": "401k", "amount": Decimal("200"), "timing": "pre_tax_deduction",
-             "bar_pct": Decimal("100.0")},
-            {"name": "Roth", "amount": Decimal("100"), "timing": "post_tax_deduction",
-             "bar_pct": Decimal("50.0")},
+            {"name": "401k", "amount": Decimal("200"), "kind": "pre_tax_deduction",
+             "kind_label": "Pre-tax deduction", "bar_pct": Decimal("100.0")},
+            {"name": "Roth", "amount": Decimal("100"), "kind": "post_tax_deduction",
+             "kind_label": "Post-tax deduction", "bar_pct": Decimal("50.0")},
         ]
 
-    def test_empty_when_no_deductions(self):
-        """A period with no deduction lines returns an empty list."""
-        assert svc.build_deduction_rows(_scenario()[0][1]) == []
+    def test_empty_when_no_lines(self):
+        """A period with no lines returns an empty list."""
+        assert svc.build_line_rows(_scenario()[0][1]) == []
 
-    def test_rows_sorted_desc_within_timing_groups(self):
-        """Each timing group sorts amount-descending; pre-tax group first.
+    def test_earning_groups_bracket_the_deductions_in_waterfall_order(self):
+        """Taxable earnings first, after-tax earnings last; bars scale across every group."""
+        breakdown = _pair(
+            1, date(2026, 6, 1), date(2026, 6, 14), "52000", "2045", "1500",
+            pre=[("401k", "200")], post=[("Roth", "100")],
+            taxable_lines=[("Phone Allowance", "45")],
+            after_tax=[("Reimbursement", "400")],
+        )[1]
+        rows = svc.build_line_rows(breakdown)
+        assert [(r["name"], r["kind"], r["kind_label"], r["bar_pct"]) for r in rows] == [
+            ("Phone Allowance", "taxable_earning", "Taxable earning", Decimal("11.3")),
+            ("401k", "pre_tax_deduction", "Pre-tax deduction", Decimal("50.0")),
+            ("Roth", "post_tax_deduction", "Post-tax deduction", Decimal("25.0")),
+            ("Reimbursement", "after_tax_earning", "After-tax earning", Decimal("100.0")),
+        ]
+
+    def test_rows_sorted_desc_within_kind_groups(self):
+        """Each kind group sorts amount-descending; pre-tax group first.
 
         Live-shape input order (calculator order): FSA 50, Vision 10,
         Dental 30, Health 200 (pre-tax); Roth 100, Life 150 (post-tax).
@@ -461,8 +529,8 @@ class TestBuildDeductionRows:
             pre=[("FSA", "50"), ("Vision", "10"), ("Dental", "30"), ("Health", "200")],
             post=[("Roth", "100"), ("Life", "150")],
         )[1]
-        rows = svc.build_deduction_rows(breakdown)
-        assert [(r["name"], r["amount"], r["timing"], r["bar_pct"]) for r in rows] == [
+        rows = svc.build_line_rows(breakdown)
+        assert [(r["name"], r["amount"], r["kind"], r["bar_pct"]) for r in rows] == [
             ("Health", Decimal("200"), "pre_tax_deduction", Decimal("100.0")),
             ("FSA", Decimal("50"), "pre_tax_deduction", Decimal("25.0")),
             ("Dental", Decimal("30"), "pre_tax_deduction", Decimal("15.0")),
@@ -477,7 +545,7 @@ class TestBuildDeductionRows:
             1, date(2026, 6, 1), date(2026, 6, 14), "52000", "2000", "1400",
             pre=[("Alpha", "25"), ("Beta", "25"), ("Gamma", "50")],
         )[1]
-        rows = svc.build_deduction_rows(breakdown)
+        rows = svc.build_line_rows(breakdown)
         # Gamma (50) leads; Alpha and Beta tie at 25 and keep their
         # calculator order (sorted() is stable).
         assert [r["name"] for r in rows] == ["Gamma", "Alpha", "Beta"]

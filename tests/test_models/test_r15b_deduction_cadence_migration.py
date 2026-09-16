@@ -37,7 +37,7 @@ from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence import RecurrenceSpec, author_rule
 from tests._test_helpers import (
     load_migration_module,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_salary_profile,
     replay_paycheck_lines_rename as _replay,
     rewind_paycheck_lines_rename as _rewind,
@@ -247,10 +247,10 @@ class TestTheUpgradeRewritesEachLine:
             assert len(paydays) >= 3
             for payday in paydays:
                 ordinal = len(paydays_in_month_through(calendar, payday))
-                assert basis.deduction_applies_on(by_name["twenty_four"], payday) is (
+                assert basis.line_applies_on(by_name["twenty_four"], payday) is (
                     ordinal < 3
                 ), f"24-line on {payday} (ordinal {ordinal})"
-                assert basis.deduction_applies_on(by_name["twelve"], payday) is (
+                assert basis.line_applies_on(by_name["twelve"], payday) is (
                     ordinal == 1
                 ), f"12-line on {payday} (ordinal {ordinal})"
             # Non-vacuous: the seeded calendar holds a first, a second and a
@@ -318,7 +318,7 @@ class TestTheDowngradeRebuildsTheColumnAndRefusesWhatItCannotSay:
         with app.app_context():
             _profile, ids = _seed_lines(seed_user, ["every", "twenty_four", "twelve"])
             for name, per_year in (("twenty_four", 24), ("twelve", 12)):
-                make_deduction_cadence_rule(
+                make_line_cadence_rule(
                     db.session, db.session.get(PaycheckLine, ids[name]), per_year,
                 )
             db.session.commit()

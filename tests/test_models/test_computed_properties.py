@@ -23,7 +23,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
-    DeductionLine,
+    PricedLine,
     Earnings,
     PaycheckBreakdown,
     PeriodInfo,
@@ -669,12 +669,13 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
+                base_biweekly=Decimal("2884.62"),
                 gross_biweekly=Decimal("2884.62"),
             ),
             deductions=DeductionBreakdown(
                 pre_tax=[
-                    DeductionLine(name="401k", amount=Decimal("250.00")),
-                    DeductionLine(name="HSA", amount=Decimal("100.00")),
+                    PricedLine(name="401k", amount=Decimal("250.00")),
+                    PricedLine(name="HSA", amount=Decimal("100.00")),
                 ],
             ),
         )
@@ -686,12 +687,13 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
+                base_biweekly=Decimal("2884.62"),
                 gross_biweekly=Decimal("2884.62"),
             ),
             deductions=DeductionBreakdown(
                 post_tax=[
-                    DeductionLine(name="Roth IRA", amount=Decimal("200.00")),
-                    DeductionLine(name="Life Insurance", amount=Decimal("25.00")),
+                    PricedLine(name="Roth IRA", amount=Decimal("200.00")),
+                    PricedLine(name="Life Insurance", amount=Decimal("25.00")),
                 ],
             ),
         )
@@ -703,6 +705,7 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
+                base_biweekly=Decimal("2884.62"),
                 gross_biweekly=Decimal("2884.62"),
             ),
             taxes=TaxLines(
@@ -720,6 +723,7 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
+                base_biweekly=Decimal("2884.62"),
                 gross_biweekly=Decimal("2884.62"),
             ),
         )
@@ -738,6 +742,7 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("75000"),
+                base_biweekly=Decimal("2307.69"),
                 gross_biweekly=Decimal("2307.69"),
                 net_pay=Decimal("1607.69"),
             ),
@@ -749,10 +754,10 @@ class TestPaycheckBreakdownTotals:
             ),
             deductions=DeductionBreakdown(
                 pre_tax=[
-                    DeductionLine(name="401k", amount=Decimal("200.00")),
+                    PricedLine(name="401k", amount=Decimal("200.00")),
                 ],
                 post_tax=[
-                    DeductionLine(name="Roth", amount=Decimal("50.00")),
+                    PricedLine(name="Roth", amount=Decimal("50.00")),
                 ],
             ),
         )
@@ -779,6 +784,7 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("52000"),
+                base_biweekly=Decimal("2000.00"),
                 gross_biweekly=Decimal("2000.00"),
                 net_pay=Decimal("2000.00"),
             ),
@@ -800,6 +806,7 @@ class TestPaycheckBreakdownTotals:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("52000"),
+                base_biweekly=Decimal("2000.00"),
                 gross_biweekly=Decimal("2000.00"),
                 net_pay=Decimal("-200.00"),
             ),
@@ -811,7 +818,7 @@ class TestPaycheckBreakdownTotals:
             ),
             deductions=DeductionBreakdown(
                 pre_tax=[
-                    DeductionLine(name="401k", amount=Decimal("1500.00")),
+                    PricedLine(name="401k", amount=Decimal("1500.00")),
                 ],
             ),
         )

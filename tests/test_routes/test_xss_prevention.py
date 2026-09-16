@@ -533,7 +533,7 @@ class TestXSSPrevention:
             )
 
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": payload,
                     "amount": "100",
