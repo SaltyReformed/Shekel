@@ -32,6 +32,7 @@ from app.services import (
     account_service,
     category_service,
     definition_delete,
+    definition_edit,
     posting_service,
     recurrence_engine,
     template_amount_service,
@@ -80,27 +81,6 @@ from app.routes.templates._bp import templates_bp
 logger = logging.getLogger(__name__)
 
 
-# Field allowlist for the template update route: which submitted form
-# fields may be written back to the template via setattr.
-#
-# Scoped to exactly the keys ``TemplateUpdateSchema`` can deserialize.
-# ``is_active`` and ``sort_order`` are deliberately absent: neither is a
-# field on the Template schema chain, so ``_update_schema.load`` (with
-# ``unknown = EXCLUDE``) can never surface them here.  ``is_active`` is
-# owned by the dedicated archive / unarchive routes, which pair the flag
-# flip with the projected-transaction soft-delete this route does not
-# perform -- allowlisting it here would invite a future schema field to
-# silently archive a template without that cleanup.
-#
-# ``default_amount`` is absent for the same shape of reason since plan step
-# X-au-a: the amount is no longer a bare column but a dated SERIES, and
-# ``template_amount_service.set_amount`` is the one door that moves the scalar
-# and the series together.  A setattr here would move one without the other.
-_TEMPLATE_UPDATE_FIELDS = {
-    "name", "category_id", "transaction_type_id",
-    "account_id", "is_envelope", "companion_visible",
-}
-
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
 
@@ -118,37 +98,6 @@ _AMOUNT_VERSION_ACTION = AmountVersionAction(
 # entry and a hand-crafted request) falls back to expense, the most common
 # recurring definition.
 _NEW_TYPE_INCOME = "income"
-
-def _apply_fields_and_propagate_rename(template, data):
-    """Apply allowlisted field updates, propagating a rename to instances.
-
-    Writes every :data:`_TEMPLATE_UPDATE_FIELDS` key present in *data* onto
-    *template*, then propagates a changed name to EVERY existing Transaction
-    generated from this template -- including soft-deleted ones.
-
-    The rename propagation is load-bearing: ``regenerate_for_template``
-    only deletes/recreates non-override rows on or after ``effective_from``,
-    so historic rows, overrides, and settled rows would otherwise keep the
-    old label and desync every view that renders ``txn.name`` directly
-    (calendar CSV export, calendar, companion card, edit form header).
-    Soft-deleted rows are renamed too, so a row later restored -- by the
-    recurrence-conflict chooser's "use" action or by carry-forward --
-    surfaces with the current name rather than a stale one.  The partial
-    unique index on transactions covers ``(template_id, pay_period_id,
-    scenario_id)`` only, so a bulk name update cannot trip a constraint.
-    Template ownership is verified by the caller, so ``template_id`` alone
-    scopes the update to the current user.
-    """
-    old_name = template.name
-    for field, value in data.items():
-        if field in _TEMPLATE_UPDATE_FIELDS:
-            setattr(template, field, value)
-
-    if template.name != old_name:
-        db.session.query(Transaction).filter(
-            Transaction.template_id == template.id,
-        ).update({"name": template.name}, synchronize_session="fetch")
-
 
 @templates_bp.route("/templates/new", methods=["GET"])
 @require_owner
@@ -500,8 +449,9 @@ def update_template(template_id):
         )
 
     # Apply allowlisted field updates, propagating any rename to existing
-    # instances (see _apply_fields_and_propagate_rename for the rationale).
-    _apply_fields_and_propagate_rename(template, data)
+    # instances -- the ONE act both definition doors call since plan step
+    # balance:X-bi-7b (``definition_edit.apply_fields`` carries the rationale).
+    definition_edit.apply_fields(template, data)
 
     # A definition that neither has nor had a rule does not regenerate at all
     # (the gate inside ``regenerate_or_conflict_chooser`` returns before

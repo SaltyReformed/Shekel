@@ -688,6 +688,31 @@ class Transaction(
         return self.template.recurs
 
     @DerivedFlag
+    def is_placed(self):
+        """True when this row was PLACED by a rule-less definition.
+
+        **The ONE accessor for "is this a one-off's row"** (plan step
+        ``balance:X-bi-7b``, ruling **R-BAL20**): a definition with no
+        recurrence rule PLACES its rows -- a grid one-off's one, a bank-born
+        envelope's one per paycheck (**R-BAL24**) -- where a definition with
+        a rule GENERATES them, and a link-less row (a transfer shadow, a CC
+        payback, a legacy ad-hoc row until the family's cutover) names no
+        definition at all.  Five doors fork on exactly this: the popover
+        edits such a row's name, category, flags and price on its
+        DEFINITION (**R-BAL23**) and restates its price in place
+        (**R-BAL29**); a period move re-places it (**R-BAL33**); its due
+        date may move but not clear; its delete disposes of the definition
+        it was the last row of (**R-BAL27**).  Each spelled
+        ``template_id is not None and not recurs`` for itself before this
+        name existed.
+
+        Reads :attr:`recurs`, so a link-less row costs no load and the rule
+        rides on the template's own joined load.  A :class:`DerivedFlag` for
+        the reason its neighbours are: the answer lives on the rule's table.
+        """
+        return self.template_id is not None and not self.recurs
+
+    @DerivedFlag
     def tracks_purchases(self):
         """True if individual purchase entries apply to this transaction.
 
