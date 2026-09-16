@@ -19,7 +19,25 @@ from app.schemas.validation._helpers import (
 
 
 class TransactionUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating a transaction.
+    """Validates PATCH data for updating a transaction: the ROW's own fields.
+
+    **Loaded for a row whose item is NOT editable at the popover** -- a
+    recurring definition's generated row -- and inherited by
+    :class:`TransactionItemUpdateSchema` for every other row.  The two
+    tracking / visibility flags left this schema at plan step
+    ``balance:X-bi-7b`` (ruling **R-BAL20**): a generated row reads them off
+    its definition, so a flag posted for such a row reached only the sealed,
+    dead cell on the row -- finding **BAL-484**'s writer.  Declared nowhere on
+    this schema, that write is unrepresentable through the PATCH door rather
+    than refused by a gate: ``Meta.unknown`` is ``EXCLUDE``.
+
+    ``name`` and ``category_id`` stay here.  A one-off's are its
+    DEFINITION's and the door lands them there
+    (``routes/transactions/_field_updates``); a legacy link-less row's are
+    its own until the family's cutover; a generated row's are its
+    definition's too, and a crafted PATCH still writes the row's copy, which
+    the next regeneration rewrites -- the same shape the due-date gate
+    closed for that field and no step has yet closed for these two.
 
     ``version_id`` is the optimistic-locking counter from the row at
     the moment the cell or popover was rendered.  The route handler
@@ -117,17 +135,38 @@ class TransactionUpdateSchema(BaseSchema):
     # moved -- the way to remove one is to move the row out of the settled
     # band, which the status seam does as part of the same write.
     settled_on = fields.Date()
-    # Ad-hoc tracking / visibility flags.  Deliberately NO load_default:
-    # this schema is shared across the quick-edit, full-edit, and inline
-    # PATCH forms, and only the full-edit popover renders these controls
-    # (for ad-hoc rows).  Without a default, a PATCH that omits them
-    # leaves the columns untouched, so a quick-edit cannot silently
-    # clear an ad-hoc row's flags.  The popover uses a checkbox + hidden
-    # "false" field so an explicit true/false is always submitted when
-    # the controls are present.
+    version_id = RowId(validate=validate.Range(min=1))
+
+
+class TransactionItemUpdateSchema(TransactionUpdateSchema):
+    """The row's fields plus the flags of the ITEM the row is.
+
+    Loaded by the PATCH door for a row whose tracking / visibility flags are
+    editable at the popover (plan step ``balance:X-bi-7b``): a PLACED row --
+    a rule-less definition's, whose flags are the definition's and land
+    there (rulings **R-BAL23**, **R-BAL36**) -- and, until the family's
+    cutover (``X-bi-7d``), a legacy link-less row, whose flags are its own
+    sealed cells.  A transfer shadow and a CC payback are link-less too and
+    load this schema as they always did; the shadow branch forwards no flag
+    and the payback keeps the legacy branch it had.
+
+    The flags carry deliberately NO load_default: the quick-edit and inline
+    PATCH forms render no flag control, and without a default a PATCH that
+    omits them leaves the flags untouched, so a quick-edit cannot silently
+    clear them.  The popover uses a checkbox + hidden "false" field so an
+    explicit true/false is always submitted when the controls are present.
+    """
+
     is_envelope = fields.Boolean()
     companion_visible = fields.Boolean()
-    version_id = RowId(validate=validate.Range(min=1))
+    # The DEFINITION's optimistic-locking counter, rendered by the card for a
+    # placed row (whose price, name, category and flags live there) and
+    # compared by the route beside the row's own ``version_id``: a save that
+    # touches only the definition bumps only its counter, so without this a
+    # second stale card would overwrite the first's price in silence.  A
+    # legacy row's card renders none, and the route ignores it for any row
+    # that is not placed.
+    template_version_id = RowId(validate=validate.Range(min=1))
 
 
 class TransactionCreateSchema(BaseSchema):

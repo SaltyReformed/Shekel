@@ -385,22 +385,17 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     to **R-BAL26**): every plan item has exactly one definition, so a one-off is a rule-less
     definition plus its placed rows; argument: `../../design/from_scratch_architecture.md` section 10.
     * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
-      "no cadence" sites and the account-delete refusal read it; the transaction twin
-      `propagate_to_unruled_definition`. Two rulings at the cut: a row-less rule-less definition is
-      DISPOSED of with its account and a definition's live row is the account's history wherever it
-      sits (**R-BAL27**); the `is_override` flip's MOVE half keys on `recurs`, its typed-figure
-      half waits for 7b's restate (**R-BAL28**). `_leftover_due_date`'s rule-less arm deleted.
+      "no cadence" sites and the account-delete refusal read it; **R-BAL27** and **R-BAL28** ruled
+      at the cut. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
     * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
       parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticks with 7b-3.
-      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off(spec, period, *, scenario_id,
-        due_date=None)`, `spec` an `OneOffToPlace` of what the definition says (**R-BAL30**); both
-        grid create doors and `mint_uncategorized` on it, `category_id` nullable (migration
-        `9c1e4b7a2d3f`); a definition goes with its last row unless a merchant rule names it;
-        *Does not repeat* gone (**R-BAL32**).
-      * [ ] **X-bi-7b-2** the popover's flag edits on the DEFINITION; **R-BAL29**'s in-place
-        restate; a moved one-off re-placed (**R-BAL33**); the grid grouping by `(category_id, name)`
-        (**R-BAL34**); the update schema's flag fields and **BAL-484**'s writer go.
+      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
+        (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
+        nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
+      * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
+        R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
+        restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
       * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
         TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
         `X-f6c`'s shape.
@@ -411,15 +406,19 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
       RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
-      gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
-  * [ ] **X-bi-2** entries gain the full movement column set: a category, a type, `scenario_id` --
-    which `cash_ledger/_amount_source.py` REFUSES a mismatch on -- and the settle-day basis pair.
-    Additive; nothing reads them yet and the downgrade is a column drop.
-  * [ ] **X-bi-3** `settle_from_entries` becomes the ONLY settle path, its MANUAL branch writing one
-    covering movement THROUGH THE SERVICE DOOR, which is what **R-HJ** requires of any act that
-    writes money rows. **MOVES MONEY.** The 165 settled rows holding no entries include 14 with no
-    settle day and 38 transfer shadows under the four Transfer Invariants: 52 design questions a
-    human answers at a door, not a `WHERE` clause.
+      gone; the residue rows re-attached (**R-BAL37**); graded by EQUALITY across the cutover. Closes **BAL-484**.
+  * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
+    its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
+  * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
+    the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
+    * [ ] **X-bi-3a** the figure-source catalogue (`resolved` / `typed` / `observed`) and the ONE
+      settle-owned writer, EXPENSE parents only; balance-neutral by **R-FM**'s identity, graded so.
+    * [ ] **X-bi-3b** the INCOME arm: three readers derive a movement's direction from its parent's
+      type (**R-BAL35**; a covered paycheck read `-figure`), then income parents are covered.
+    * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
+      per shadow until `X-bi-6` re-parents them onto `budget.transfers`.
+    * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
+      scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
     is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
@@ -428,17 +427,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-bi-5** delete the DEFINITION's `is_envelope` (the row's cell is `X-bi-7d`'s),
     `tracks_purchases`'s branch sites and the template sites, which is the fence this family makes
     structurally unnecessary rather than merely unused.
-  * [ ] **X-bi-6a** re-point every PROJECTED-shadow READER (**R-BAL13**). **The PRODUCER is
-    `X-au-f-2`'s, not this step's** -- `16f83aa0` already states that leaf's two producers take a
-    shadow
-  while **R-BAL10** puts the answer on the PARENT, so a second one here was `R-IZ`'s own failure
-    mode. What remains is the READ side, and it is FOUR sites rather than the one the first draft
-  named: `cash_ledger._facts.planned_cash_rows` is KIND-BLIND on `transfer_id` and carries the
-    general case for every account (via `_cash_fold._cash_plan`, reduced at
-  `_cash_periods.sum_projected`); `_plan.py`'s PLANNED tier is only the LOAN forward plan;
-    `_asset_contributions.py:198` and `projection_inputs.shadow_contributions` are the rest. Built
-    to the
-  one-reader scope, the next step drops projected transfers out of every account's cash fold.
+  * [x] **X-bi-6a** `323400d9` -- every PROJECTED-shadow READER re-pointed onto the parent's derived
+    legs (**R-BAL13**, ruled **R-BAL38**, the status drift disclosed and pinned under **R-BAL42**;
+    five readers, `$0.00` measured). Record: `archive/x_bi_6a_as_built_2026-09-15.md`.
   * [ ] **X-bi-6** delete the transfer shadow `Transaction` ROWS (**R-BAL13**, superseding this
     step's stored-column scope under **R-JA**). Its two columns are two of the **FIVE** clauses
   `restore_transfer` keeps by hand -- `pay_period_id`, `category_id`, `due_date`, `is_override`,
@@ -568,11 +559,9 @@ in SILENCE where a refused DELETE is loud.
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
   those three unblock.
   * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS. **N-266**(a) MISDIAGNOSED, not falsified. `archive/eight_shipped_steps_2026-09-01.md`.
-  * [x] **X-au-g-2a -- rule 4's producer moves below the amount model.** `b16908f7`. The
-    tier move `row_valuation.py` has always said this arc owes: `_basis` / `_pricing` become
-    `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
-    **A LATER step must obey:** the loan READING tier may now import the amount model, which
-    is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
+  * [x] **X-au-g-2a** `b16908f7` -- rule 4's producer moved below the amount model (`_basis` /
+    `_pricing` -> `cash_ledger._loan_installment` / `._loan_pricing`), so the loan READING tier
+    may import it; byte-identical, AST-verified; opened **N-416**. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
   * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its OWN due date (**R-IJ**) and `cash_ledger` makes no clock call at all. Closed **N-40**, **N-410**; **N-409** stands, re-owned. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
   * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
     the declaration, and the escrow rule. It ticks with the last of its three leaves.
@@ -1061,6 +1050,9 @@ section 4, under their unchanged ids.*
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.
+* [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
+  A migration's writes and the login door's own write carry no user; the row names its origin
+  instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
 * [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
   **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
 * [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.

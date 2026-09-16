@@ -588,10 +588,12 @@ def _resolver_balance(
     """
     params = loan_loaders.load_loan_params(loan_account_id)
     assert params is not None, "loan is not resolvable (no LoanParams)"
-    # The DATES alone -- no pricing tier behind them.  ``options=()`` because
-    # nothing here traverses a relationship on the rows.
+    # The DATES alone -- no pricing tier behind them.  ``options=()`` and
+    # ``leg_options=()`` because nothing here traverses a relationship on the
+    # settled rows or on the projected legs' parents.
     installments = loan_ledger.payment_installments(
-        loan_account_id, scenario_id, params.payment_day, options=(),
+        loan_account_id, scenario_id, params.payment_day,
+        options=(), leg_options=(),
     )
     periods = loan_resolver.resolve_periods(
         params, loan_loaders.load_rate_changes(loan_account_id),

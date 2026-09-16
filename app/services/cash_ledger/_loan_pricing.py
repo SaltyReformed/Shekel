@@ -28,10 +28,14 @@ below this line names a :class:`~app.models.transaction.Transaction` any more.
 it.**  ``_load_live_payment_configs`` INNER-joined the scenario's transfers
 through their template to ``loan_payment_settings`` to discover which of them
 were loan payments -- a question the amount model now asks of the parent it was
-handed, per row, off a relationship (ruling **R-FK**).  :mod:`._events` invokes
-Transfer Invariant 5 as a principle of this package ("the same reason the
-projection engine never queries ``Transfer`` directly"), and these thirteen
-modules make no statement against that table at all again.
+handed, per row, off a relationship (ruling **R-FK**).  *This paragraph went on
+to say these modules "make no statement against that table at all again", and
+plan step X-bi-6a made that sentence false BY DESIGN: the plan loader
+(:func:`._facts.planned_cash_rows`) derives a still-projected transfer's legs
+from ``budget.transfers`` through :mod:`app.services.transfer_legs` (ruling
+R-BAL13; Transfer Invariant 5 restated).  What this module still makes no
+statement against is that table for a FIGURE of its own: a loan's price is its
+terms, never its payment rows.*
 
 **It takes no SCENARIO either, and that is the same deletion one level down.**
 The scenario only ever scoped the config map; a loan's terms are not

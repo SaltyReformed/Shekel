@@ -35,18 +35,22 @@ cycle), rather than a lazy-import workaround.
 
 This package is a LEAF: it imports models, the pure engine primitives
 (:class:`~app.services.amortization_engine.RateChangeRecord`,
-:func:`~app.services.rate_period_engine.monthly_due_date`), and the shared
-balance predicates -- never another loan service.  Flask-isolated, reads only,
-no commits.
+:func:`~app.services.rate_period_engine.monthly_due_date`), the shared
+balance predicates and the transfer-leg leaf
+(:mod:`app.services.transfer_legs`, itself models and predicates only) --
+never another loan service.  Flask-isolated, reads only, no commits.
 
-This service queries ONLY budget.transactions (transfer invariant #5).
-It NEVER queries budget.transfers.
+Its SETTLED half queries ``budget.transactions`` (the record of a payment
+that moved) and, since plan step balance:X-bi-6a, its PROJECTED half queries
+``budget.transfers`` (the plan, as legs derived from the parent) -- the two
+halves of Transfer Invariant 5 as restated at that step (ruling R-BAL13).  No
+amount is read off a transfer for a payment that has settled.
 """
 
 from ._shadows import (
     ShadowSets,
     income_shadows,
-    projected_income_shadows,
+    projected_income_legs,
     query_shadow_income,
     settled_income_shadows,
 )
@@ -84,7 +88,7 @@ __all__ = [
     "load_rate_changes",
     "load_rate_history",
     "loan_payment_due_date",
-    "projected_income_shadows",
+    "projected_income_legs",
     "query_shadow_income",
     "settled_income_shadows",
     "synthesize_origination_anchor",

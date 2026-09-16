@@ -30,14 +30,19 @@ from decimal import Decimal
 from app.models.loan_params import LoanParams
 from app.services import escrow_calculator
 from app.services.amortization_engine import PaymentRecord, RateChangeRecord
-from app.services.cash_ledger import AmountBasis, contributions_by_id
+from app.models.transaction import Transaction
+from app.services.cash_ledger import (
+    AmountBasis,
+    contributions_by_id,
+    planned_leg_contribution,
+    transfer_pricing_load_options,
+)
 from app.services.loan_ledger import payment_installments
 from app.services.loan_loaders import (
     _rate_change_records_from,
     load_escrow_lines,
     load_rate_history,
 )
-from app.utils.amount_relationships import pricing_load_options
 from ._engine_prep import compute_contractual_pi, prepare_payments_for_engine
 
 
@@ -239,10 +244,21 @@ def get_payment_history(
 ) -> list[PaymentRecord]:
     """Price a debt account's payment installments into the engine's feed.
 
-    Returns PaymentRecord instances for all non-deleted, non-excluded
-    shadow income transactions linked to the given account and the basis's
-    scenario.  Shadow income transactions represent payments received by a debt
-    account via transfers.
+    Returns PaymentRecord instances for every non-deleted, non-excluded
+    payment into the given account in the basis's scenario: each settled
+    income shadow at what it RECORDED, and each still-projected transfer into
+    the account at what its parent resolves to (plan step **balance:X-bi-6a**,
+    ruling **R-BAL13** -- a projected payment is a leg derived from its
+    parent, not a shadow row).
+
+    **Two valuations, one per relation, and the split is the record/plan
+    split itself.**  A settled row is worth what moved, which
+    :func:`~app.services.cash_ledger.contributions_by_id` answers from the
+    settlement record without reaching the amount model; a projected leg is
+    worth its parent's resolved amount,
+    :func:`~app.services.cash_ledger.planned_leg_contribution`.  The settled
+    half therefore states NO pricing load -- nothing on that path reads a
+    relationship -- and the projected half states the transfer's own.
 
     **It is the JOIN of two producers since plan step balance:X-bl-2a, and owns
     neither** (finding **N-432**).  The rows, their order and their three dates
@@ -432,24 +448,33 @@ def get_payment_history(
     # hands back and pair each figure with its installment.
     installments = payment_installments(
         account_id, basis.scenario_id, payment_day,
-        # This function PRICES every row it is handed, so it is this call that
-        # states the amount model's eager set (plan step balance:X-bl-2a).  The
-        # date producer states none: it reads the pay period, which its own
-        # loader supplies.
-        options=pricing_load_options(),
+        # This function PRICES every payment it is handed, so it is this call
+        # that states the eager sets (plan step balance:X-bl-2a).  The settled
+        # half is valued from its RECORD and walks no relationship, so it
+        # states none; the projected half walks its parent's pricing graph.
+        options=(),
+        leg_options=transfer_pricing_load_options(),
     )
 
-    # One valuation pass over the whole feed.  Indexed with ``[]`` because the
-    # batch covers every id it was given, so a row it forgot to price raises
-    # where it is read rather than defaulting to a fabricated figure.
+    # One valuation pass over the settled half.  Indexed with ``[]`` because
+    # the batch covers every id it was given, so a row it forgot to price
+    # raises where it is read rather than defaulting to a fabricated figure.
     priced = contributions_by_id(
-        [installment.income_shadow for installment in installments], basis,
+        [
+            installment.source for installment in installments
+            if isinstance(installment.source, Transaction)
+        ],
+        basis,
     )
 
     return [
         PaymentRecord(
             dates=installment.dates,
-            amount=priced[installment.income_shadow.id],
+            amount=(
+                priced[installment.source.id]
+                if isinstance(installment.source, Transaction)
+                else planned_leg_contribution(installment.source, basis)
+            ),
         )
         for installment in installments
     ]

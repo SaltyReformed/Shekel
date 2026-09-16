@@ -56,10 +56,17 @@ Transfer invariants (critical -- violating any one is a critical bug):
 - Every transfer has exactly two linked shadow transactions (one expense, one
   income); shadows are never orphaned and never created without their sibling;
   shadow amounts, statuses, and periods equal the parent's; no code path mutates
-  a shadow directly (all mutations go through the transfer service); the balance
-  calculator queries ONLY budget.transactions for money, never budget.transfers
-  for a figure (the forward loan plan reads transfers for occurrence identity
-  alone, R-R66).
+  a shadow directly (all mutations go through the transfer service); a transfer's
+  PLAN half is derived from budget.transfers and its RECORD half read from
+  budget.transactions (R-BAL13 / R-BAL38, balance:X-bi-6a) -- every still-projected
+  leg a balance folds is one side of the parent priced by `resolve_transfer_amount`,
+  no balance reader reads a projected shadow row, a settled leg is its shadow's
+  record until balance:X-bi-4, and no amount is read off budget.transfers for a row
+  that has settled (the forward loan plan also reads transfers for occurrence
+  identity, R-R66). A status DRIFT between parent and shadow (forbidden by
+  invariants 3 and 4) is counted by both halves until X-bi-4 re-keys the record
+  half; that is pinned, not a new defect, but any door that could WRITE such a
+  drift is one.
 
 Design (DRY / SOLID / pythonic):
 - Duplicated logic should be extracted, not copy-pasted. `duplicate-code`

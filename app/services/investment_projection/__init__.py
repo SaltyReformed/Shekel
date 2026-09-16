@@ -17,7 +17,7 @@ used to ask each row for its ``effective_amount`` and screen it with
 ``status_contributes_to_balance`` -- a model property that cannot answer for a
 row whose amount is DERIVED, since such a row stores no figure and resolving one
 needs a database this module deliberately does not have.  Valuing at the
-BOUNDARY instead (``projection_inputs.load_shadow_income_contributions_*``)
+BOUNDARY instead (``recorded_contributions.load_shadow_income_contributions_*``)
 resolves the whole row set ONCE, drops the rows that contribute nothing, and
 retires all four copies of the status screen with them.  What is left here is
 arithmetic over plain data, which is what the paragraph above always claimed.

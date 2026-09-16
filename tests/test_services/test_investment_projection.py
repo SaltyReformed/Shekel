@@ -33,7 +33,7 @@ def _priced(amount, payday, *, is_confirmed=False, account_id=1):
     """Build one :class:`PricedContribution`, the module's real input type.
 
     Since plan step X-au-c2 this module consumes records that were VALUED and
-    SCREENED at the boundary (``projection_inputs.load_shadow_income_
+    SCREENED at the boundary (``recorded_contributions.load_shadow_income_
     contributions_*``), not ORM rows -- so the two hand-rolled transaction
     fakes that used to mirror ``effective_amount`` and carry a status are gone,
     and with them the risk of a fake drifting from the model it imitated.

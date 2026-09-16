@@ -284,7 +284,10 @@ class TestVisibilityFiltering:
 
         Two generated rows in one period, each with its own
         ``companion_visible`` cell set to the OPPOSITE of its template's
-        flag -- the inert write a crafted PATCH can make.  The row under the
+        flag -- the inert write the setter still accepts until the family's
+        cutover deletes the cell (a crafted PATCH could make it until plan
+        step ``balance:X-bi-7b`` dropped the flag from the generated row's
+        schema, BAL-484).  The row under the
         visible template is shown though its cell says hidden; the row under
         the hidden template is hidden though its cell says shown.  This is
         the case that tells the one property apart from a reader of the

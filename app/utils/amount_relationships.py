@@ -1,8 +1,8 @@
 """
 Shekel Budget App -- WHICH RELATIONSHIPS pricing a row walks.
 
-Two functions, and they exist so that the eager load the amount model needs is
-stated ONCE rather than copied into every loader that feeds it.
+Four functions, and they exist so that the eager load the amount model needs
+is stated ONCE rather than copied into every loader that feeds it.
 :mod:`app.services.cash_ledger._amount_source` owns the five rules; this owns
 the relationship graph those rules traverse, so a rule that starts reading a new
 relationship adds it here in the same edit and every routed loader gets it.
@@ -15,8 +15,11 @@ is one of the loan TERM primitives the cash ledger itself imports
 ``cash_ledger._loan_pricing`` -> ``load_escrow_lines``), and plan step X-au-g-2a
 moved rule 4's producer DOWN precisely so that arrow runs ONE way.  Its
 ``query_shadow_income`` returns nothing but transfer shadows, every one of them
-DERIVED since plan step X-au-g-2c-2, so it is the loader that most needs this --
-and it cannot ask the cash ledger for it, at module level or at call time, because
+DERIVED since plan step X-au-g-2c-2, so it was the loader that most needed this
+(its one caller reads settled rows alone since plan step X-bi-6a, and the leg
+loader beside it takes :func:`transfer_pricing_load_options` for the same
+reason) -- and it cannot ask the cash ledger for it, at module level or at
+call time, because
 ``cyclic-import`` (R0401) traces function-level imports too.  A leaf both tiers
 can reach is the same shape :mod:`app.services.row_valuation` already is, and
 this one is smaller: it names SQLAlchemy and four models and no service at all.
@@ -57,6 +60,24 @@ def period_load_option():
     return selectinload(Transaction.pay_period)
 
 
+def transfer_period_load_option():
+    """Return the loader option for a TRANSFER's pay period -- one spelling.
+
+    The :class:`~app.models.transfer.Transfer`-rooted twin of
+    :func:`period_load_option`, for the same reason (plan step X-bi-6a):
+    :func:`app.services.loan_loaders.projected_income_legs` sorts on the
+    parent's period start and adds this regardless of what its caller asked
+    for, and :func:`transfer_pricing_load_options` names the same path for
+    rule 4's DERIVE arm.  Two options naming one path with different
+    strategies is a hard SQLAlchemy error; one producer makes them unable to
+    differ.
+
+    Returns:
+        The ``selectinload`` option for :attr:`Transfer.pay_period`.
+    """
+    return selectinload(Transfer.pay_period)
+
+
 def pricing_load_options() -> tuple:
     """Return the loader options a caller resolving MANY rows should apply.
 
@@ -75,7 +96,13 @@ def pricing_load_options() -> tuple:
     a loan payment's answer onto the PARENT: the derive arm dates its
     installment from the TRANSFER's two columns now, so the chain it walks is
     ``Transaction.transfer -> pay_period`` where it was the shadow's own
-    period.  The list:
+    period.  *Since plan step X-bi-6a the tuple holds FOUR entries: the three
+    ``Transaction.transfer -> ...`` chains are one entry composing
+    :func:`transfer_pricing_load_options`, so the count of entries is no
+    longer the count of chains, and the loader elements the tuple expands to
+    are NINE (five under ``Transaction.transfer``, three under
+    ``Transaction.template``, and the period), measured by walking the
+    composed options rather than counted from this list.*  The list:
 
     * ``Transaction.template`` -> ``salary_profiles`` -- amount rule 2's
       refinement (``_amount_source._rule_within_definition``) asks whether an
@@ -144,14 +171,54 @@ def pricing_load_options() -> tuple:
         selectinload(Transaction.template).selectinload(
             TransactionTemplate.amount_versions,
         ),
-        selectinload(Transaction.transfer).selectinload(
-            Transfer.template,
-        ).selectinload(TransferTemplate.settings),
-        selectinload(Transaction.transfer).selectinload(
-            Transfer.template,
-        ).selectinload(TransferTemplate.amount_versions),
-        selectinload(Transaction.transfer).selectinload(Transfer.pay_period),
+        # The three ``Transaction.transfer -> ...`` chains are the PARENT's own
+        # pricing graph, stated once in :func:`transfer_pricing_load_options`
+        # and composed under the shadow's link here (plan step X-bi-6a), so a
+        # rule that starts reading a new relationship off a transfer adds it
+        # in one place and both a shadow and a planned leg get it.
+        selectinload(Transaction.transfer).options(
+            *transfer_pricing_load_options(),
+        ),
         period_load_option(),
+    )
+
+
+def transfer_pricing_load_options() -> tuple:
+    """Return the loader options a caller resolving MANY transfers should apply.
+
+    The TRANSFER-rooted half of :func:`pricing_load_options` (plan step
+    **X-bi-6a**), split out because the parent is now loaded in its own right:
+    a still-projected transfer's two legs are DERIVED from the parent row
+    rather than read off its shadow rows (ruling **R-BAL13**), so the loaders
+    that feed a cash fold, a loan's forward plan and the investment
+    contribution feeds select from ``budget.transfers`` and price each row
+    through :func:`app.services.cash_ledger.resolve_transfer_amount`.  What
+    that resolver walks, per row:
+
+    * ``Transfer.template`` -> ``settings`` -- rule 4's refinement asks whether
+      a loan payment's settings row hangs off the definition;
+    * ``Transfer.template`` -> ``amount_versions`` -- rule 3 and rule 4's
+      MANUAL arm price the definition's series as of the transfer's due date;
+    * ``Transfer.pay_period`` -- rule 4's DERIVE arm dates the installment from
+      the parent's period start
+      (:func:`app.services.loan_loaders.installment_for` reads it eagerly, not
+      only on its no-``due_date`` fallback), and the loan partition sorts on
+      it.
+
+    ONE spelling: :func:`pricing_load_options` composes exactly this tuple under
+    ``Transaction.transfer`` for a shadow that still reaches its parent, so the
+    two paths to a transfer's price cannot name different relationships.
+
+    Returns:
+        A tuple of SQLAlchemy loader options, splatted into ``Query.options``
+        on a select rooted at :class:`~app.models.transfer.Transfer`.
+    """
+    return (
+        selectinload(Transfer.template).selectinload(TransferTemplate.settings),
+        selectinload(Transfer.template).selectinload(
+            TransferTemplate.amount_versions,
+        ),
+        transfer_period_load_option(),
     )
 
 
