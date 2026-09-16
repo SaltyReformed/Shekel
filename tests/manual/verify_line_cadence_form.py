@@ -21,8 +21,12 @@ ship a dead control:
 2. the whole ``#lines-section`` -- form included -- is swapped by htmx
    after every add, edit and delete, so the recurrence script has to RE-RUN
    for the new elements or the next add posts no interval and is refused;
-3. the form places no ``#recurrence-fields``, no "Starts on", no due day, no
-   end bound and no preview, and the script must run without them.
+3. the form places the partial's SPAN rows -- "Starts on" and the closing
+   bound, inside ``#recurrence-fields`` (plan step salary:R18-c, ruling
+   R-SAL38 (2)) -- but no due day and no preview, so the script runs with
+   the container and without those two; a "Does not repeat" save must post
+   NOTHING under the span keys, a cadence must show the rows, and the "Starts
+   on" box must open BLANK (blank is the opening payday).
 
 It is paced to the real Redis limiter the dev app runs (30 a minute per IP),
 exactly as its sibling is.
@@ -82,9 +86,10 @@ def _posted(page) -> dict[str, list[str]]:
 
     From a real ``FormData``, for the reason the sibling drive reads one: a
     control hidden by a class still SUBMITS and a disabled one does not.
-    ``starts_on`` is read too, and must always be absent: this form renders
-    no such control, and a value under that key would be one the route's
-    derivation is supposed to own.
+    The span keys are read too (plan step salary:R18-c): absent under "Does
+    not repeat", present -- ``starts_on`` blank unless typed, the bound's
+    mode ``never`` with neither value input posting -- once a cadence is
+    chosen.
 
     Args:
         page: The Playwright page.
@@ -102,6 +107,9 @@ def _posted(page) -> dict[str, list[str]]:
                 recurrence_placement: data.getAll('recurrence_placement'),
                 max_per_month: data.getAll('max_per_month'),
                 starts_on: data.getAll('starts_on'),
+                recurrence_end_mode: data.getAll('recurrence_end_mode'),
+                end_date: data.getAll('end_date'),
+                max_occurrences: data.getAll('max_occurrences'),
             };
         }"""
     )
@@ -138,15 +146,20 @@ def _drive_add_form(page, profile_id: int) -> None:
     units = _unit_ids(page)
     _check("A: the form offers paychecks, months AND years (R-SAL37)",
            {"paychecks", "months", "years"} <= set(units), str(sorted(units)))
-    _check("A: no #recurrence-fields container is rendered",
-           page.evaluate("() => document.getElementById('recurrence-fields') === null"),
-           "a container exists")
-    _check("A: no Starts on, due day, end bound or preview control is rendered",
+    _check("A: the #recurrence-fields container holds the span rows (R18-c)",
            page.evaluate(
-               """() => ['starts_on', 'due_day_of_month', 'recurrence_end_mode',
-                         'recurrence-preview', 'nominal_day']
+               """() => ['recurrence-fields', 'starts_on', 'recurrence_end_mode',
+                         'end_date', 'max_occurrences', 'nominal_day']
+                     .every(id => document.getElementById(id) !== null)"""),
+           "a span control is missing")
+    _check("A: no due day and no preview control is rendered",
+           page.evaluate(
+               """() => ['due_day_of_month', 'recurrence-preview']
                      .every(id => document.getElementById(id) === null)"""),
            "one of them exists")
+    _check("A: the Starts on box opens BLANK (blank is the opening payday)",
+           page.evaluate("() => document.getElementById('starts_on').value === ''"),
+           "a date is prefilled")
 
     # --- does not repeat: the dependent rows hidden, nothing posted ------
     posted = _posted(page)
@@ -160,12 +173,30 @@ def _drive_add_form(page, profile_id: int) -> None:
            str(posted))
     _check("A: the placement posts nothing beside no unit (disabled, not merely hidden)",
            posted["recurrence_placement"] == [], str(posted))
-    _check("A: nothing posts under starts_on", posted["starts_on"] == [], str(posted))
+    _check("A: nothing posts under the span keys while 'Does not repeat'",
+           posted["starts_on"] == [] and posted["recurrence_end_mode"] == []
+           and posted["end_date"] == [] and posted["max_occurrences"] == [],
+           str(posted))
+    _check("A: the span rows are hidden while 'Does not repeat'",
+           not _visible(page, "recurrence-fields"), "the container is visible")
 
     # --- paychecks: interval + ceiling shown, one inert placement -------
     page.locator("#recurrence_unit").select_option(units["paychecks"])
     _settle(page)
     posted = _posted(page)
+    _check("A: paychecks shows the span rows; the blank start posts empty, the bound posts never",
+           _visible(page, "recurrence-fields") and posted["starts_on"] == [""]
+           and posted["recurrence_end_mode"] == ["never"]
+           and posted["end_date"] == [] and posted["max_occurrences"] == [],
+           str(posted))
+    page.locator("#recurrence_end_mode").select_option("on_date")
+    _settle(page)
+    posted = _posted(page)
+    _check("A: choosing 'on a date' reveals the date box alone and posts it (empty until typed)",
+           _visible(page, "field-end-date") and posted["end_date"] == [""]
+           and posted["max_occurrences"] == [], str(posted))
+    page.locator("#recurrence_end_mode").select_option("never")
+    _settle(page)
     _check("A: paychecks shows the interval row, posting 1",
            _visible(page, "field-interval") and posted["interval_n"] == ["1"],
            str(posted))
@@ -233,15 +264,18 @@ def _drive_add_form(page, profile_id: int) -> None:
 
 
 def _rows(page) -> list[dict[str, str]]:
-    """Return every deduction row's id, its Frequency cell and its four prefill attributes."""
+    """Return every line row's id, its Frequency cell and its prefill attributes, span included."""
     return page.evaluate(
         """() => Array.from(document.querySelectorAll('[data-line-edit]')).map(b => ({
             id: b.dataset.lineEdit,
             name: b.dataset.lineName,
             unit: b.dataset.lineUnitId,
+            unit_id: b.dataset.lineUnitId,
             interval: b.dataset.lineInterval,
             placement: b.dataset.linePlacementId,
             ceiling: b.dataset.lineMaxPerMonth,
+            starts_on: b.dataset.lineStartsOn,
+            end_mode: b.dataset.lineEndMode,
             phrase: document.querySelector('[data-line-cadence="' + b.dataset.lineEdit + '"]')
                     .textContent.trim(),
         }))"""
@@ -274,7 +308,12 @@ def _drive_edit_prefill(page, row: dict[str, str], label: str) -> None:
         _check(f"{label}: a line with no rule posts no interval and no ceiling",
                posted["interval_n"] == [] and posted["max_per_month"] == [],
                str(posted))
-    _check(f"{label}: nothing posts under starts_on", posted["starts_on"] == [], str(posted))
+    _check(f"{label}: the prefill posts the row's start (blank for a line with no rule)",
+           posted["starts_on"] == ([row["starts_on"]] if row["unit_id"] else []),
+           str(posted))
+    _check(f"{label}: the prefill posts the row's bound mode",
+           posted["recurrence_end_mode"] == ([row["end_mode"]] if row["unit_id"] else []),
+           str(posted))
     _check(f"{label}: the submit button reads Update",
            "Update" in page.inner_text("#line-submit-btn"), page.inner_text("#line-submit-btn"))
 

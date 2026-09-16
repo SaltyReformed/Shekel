@@ -25,7 +25,7 @@ from app.schemas.validation._helpers import (
     _RAISE_YEAR_RANGE,
     _normalize_empty_inputs,
 )
-from app.schemas.validation._recurrence import RecurrenceCadenceFieldsMixin
+from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 from app.services.salary_raises import (
     RAISE_END_MODES,
     EndYearError,
@@ -339,7 +339,7 @@ class RaiseUpdateSchema(RaiseCreateSchema):
     version_id = RowId(validate=validate.Range(min=1))
 
 
-class PaycheckLineCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
+class PaycheckLineCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     """Validates POST data for adding a payroll line to a salary profile.
 
     **A line of any of the four kinds since plan step salary:R18-b** (ruling
@@ -350,23 +350,28 @@ class PaycheckLineCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
     until then.
 
     **The line's CADENCE arrives through the shared recurrence controls since
-    plan step salary:R15-c** (ruling **R-SAL31**): the four fields
-    :class:`~app.schemas.validation._recurrence.RecurrenceCadenceFieldsMixin`
-    declares -- ``recurrence_unit``, ``interval_n``, ``recurrence_placement``,
-    ``max_per_month`` -- and its two cross-field rules, exactly as the two
-    template forms submit them, replacing the 26 / 24 / 12 ``select`` the
-    column plan step R15-b dropped stood behind.  The mixin's other five
-    (``starts_on``, ``nominal_day``, the closing bound's three) are NOT
-    declared here, and their absence is the point: a payroll line's first
-    occurrence is DERIVED from the owner's schedule (rulings **R-SAL30**,
-    **R-SAL36**; ``app.routes.salary.items`` writes it into the payload
-    before the recurrence seam reads it), it carries no due day and no
-    closing bound, so a crafted POST stating any of them meets
-    ``BaseSchema``'s ``unknown = EXCLUDE`` rather than a field the door would
-    honour.  An empty unit (the form's "Does not repeat") arrives as a present
-    ``None`` -- every paycheck, ruling **R-SAL3** -- and an ABSENT unit is a
-    submission that said nothing about the cadence, which the update route
-    reads as "leave the stored rule alone".
+    plan step salary:R15-c** (ruling **R-SAL31**): ``recurrence_unit``,
+    ``interval_n``, ``recurrence_placement``, ``max_per_month`` and their
+    cross-field rules, exactly as the two template forms submit them,
+    replacing the 26 / 24 / 12 ``select`` the column plan step R15-b dropped
+    stood behind.  **And its SPAN, since plan step salary:R18-c** (ruling
+    **R-SAL38** (2), amending R-SAL30 and R-SAL31): the whole
+    :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`
+    -- ``starts_on`` with its ``nominal_day``, and the closing bound's three
+    controls composed into one :class:`~app.services.recurrence.EndBound`
+    -- because a line that began mid-employment or ended (the developer's
+    `$100` allowance ran 2026-03-26 to 2026-06-30) is otherwise
+    unrepresentable.  Two things differ from a template's form.  A BLANK
+    start is legal and means the opening payday (R-SAL30's default survives
+    as the default; :attr:`recurrence_start_is_required` is off, and
+    ``app.routes.salary.items`` derives the unit's zero at the opening,
+    ruling **R-SAL36**, before the recurrence seam reads the payload).  And
+    ``due_day_of_month`` is still not declared: a payroll line has no
+    servicer's due day, so a crafted POST stating one meets ``BaseSchema``'s
+    ``unknown = EXCLUDE``.  An empty unit (the form's "Does not repeat")
+    arrives as a present ``None`` -- every paycheck, ruling **R-SAL3** -- and
+    an ABSENT unit is a submission that said nothing about the cadence, which
+    the update route reads as "leave the stored rule alone".
 
     The ``amount`` field carries dual semantics keyed off
     ``calc_method_id``:
@@ -385,6 +390,11 @@ class PaycheckLineCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
     additionally rejects implausibly large percent inputs (a 500%
     deduction is a typo, not a deduction) per F-012 / C-24.
     """
+
+    #: A blank "Starts on" is the opening payday (ruling R-SAL38 (2), keeping
+    #: R-SAL30's default as the default), so a chosen cadence with no start
+    #: beside it is not refused here: the route derives the start.
+    recurrence_start_is_required = False
 
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
