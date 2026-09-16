@@ -47,6 +47,10 @@ from app.models.account_opening import (
     AccountOpening,
     AccountOpeningImmutableError,
 )
+from app.models.anchor_release import (
+    AnchorRelease,
+    AnchorReleaseImmutableError,
+)
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.recurrence_anchors import (
@@ -139,6 +143,8 @@ __all__ = [
     "AccountAnchorHistoryImmutableError",
     "AccountOpening",
     "AccountOpeningImmutableError",
+    "AnchorRelease",
+    "AnchorReleaseImmutableError",
     "Category",
     "RecurrenceRule",
     "RecurrenceWeekdayAnchor",

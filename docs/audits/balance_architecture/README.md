@@ -346,15 +346,22 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   the level relation (**R-IS**), split 2026-09-03 by ruling **R-JN**: as written it claimed *a level
   never moves a balance* eight ranks before `X-f3c-5` stops an assertion resetting a plain account.
   It ticks with its second leaf; it subsumed `bank_import:X-gh` and took `X-f6g`'s coverage pass.
-  * [ ] **X-bj-1** `feat(cash): one level relation` -- the first half (**R-JN**). The owner's true-ups
-    and the bank's statement closings become ONE evidence-ranked relation of `(account, day, amount,
-    source, evidence)` -- `StatementBalanceEvidenceEnum` and `weaker_of` already rank this -- a release
-    becomes an APPENDED superseding row (**R-HY**, **R-IC**), and the existing reset READS the relation
-    until `X-f3c-5` deletes it, so one observation has one home through the interval. **It defines
-    COVERAGE once**: a level row carries its source's span and a day is covered when a span reaches it,
-    the pass `bank_import:X-f6g` owed; **N-343** is answered by choosing within the RUN, and
-    **N-434**'s column half lands here (its parser half with `X-f6b`). The OPENING stays a separate
-    constitutive fact (**R-GX**). A migration.
+  * [ ] **X-bj-1** the DECOMPOSED parent of the level relation (**R-BAL55**): 1a built it, 1b
+    chooses within the run; ticks with 1b.
+    * [x] **X-bj-1a** `1d1f7ce8` -- ONE level relation: `budget.account_anchor_history` holds the
+      owner's true-ups and the bank's placements (**R-BAL47**..**R-BAL52**), a release is an appended
+      `budget.anchor_releases` row, coverage stays the statement's (**R-BAL53**), the within-file
+      bound is a two-attachment trigger (**R-BAL54**), the two gates narrowed (**R-BAL56**,
+      **R-BAL57**); closed **BAL-485**. Record in `archive/x_bj_1a_as_built_2026-09-16.md`.
+    * [ ] **X-bj-1b** `feat(cash): the bank walk anchors within the run` -- **N-343**. `usable_anchor`
+      still chooses ONE anchor per account by evidence, so a stronger anchor in an older,
+      disconnected run leaves recent days unpriced (reproduced: a `file_chain` anchor at 2026-01-31
+      left 2026-08-21 answering nothing). `fold_bank_balances` chooses PER RUN among standing bank
+      levels the run reaches (`reaches_end_of`), strongest evidence then the latest day; every other
+      level in the run is a CHECKPOINT `walked - observed` on `BankBalances`; `BankAgreement.anchor`
+      becomes per-run anchors plus checkpoints and `statement_agreement.html` lists them. No schema
+      change; it CAN price a day unpriced today, so it is graded on its own before/after dump with
+      `tests/manual/verify_level_relation.py` and every moved day explained.
   * [ ] **X-bj-2** `feat(cash): a level is an observation, never a reset` -- the second half, riding
     **X-f3c-5** (**R-JN**): once the flip stops an assertion resetting a plain account, a level moves no
     balance and yields `discrepancy = observed - computed`, zero being healthy. It closes **N-314**: the
@@ -1011,6 +1018,9 @@ section 4, under their unchanged ids.*
 * [ ] **X-ck** `fix(seam): the delete dialog counts purchases; a movement's name is written once` --
   closes **BAL-504**, **BAL-505**: the popover counts `txn.entries` where it means purchases, and
   `_record_onto` rewrites the movement's name on every re-record where R-BAL39 says once.
+* [ ] **X-cl** `chore(tests): delete the dead reconcile-rules harness` -- closes **BAL-510**:
+  `tests/manual/measure_entry_reconcile_rules.py` reads and writes two deleted columns, so it
+  cannot run against any current schema; a proof instrument that cannot compile claims nothing.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43

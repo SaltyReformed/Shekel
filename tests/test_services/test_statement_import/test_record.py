@@ -45,6 +45,7 @@ from app.models.transaction import Transaction
 from app.services import account_service
 from app.models.statement_import import BankStatementLine
 from app.services.statement_import import record_statement
+from app.services.statement_import._balance import bank_levels
 from app.models.ref import AccountType
 
 from tests._test_helpers import create_settled_cash_transaction
@@ -175,13 +176,15 @@ class TestItRecordsWhatTheBankSaid:
     def test_a_chained_file_is_PROVED_by_itself_and_the_ROW_says_so(
         self, app, db, seed_user,
     ):
-        """The stored columns, not just the value the door returned.
+        """The stored LEVEL, not just the value the door returned.
 
         **The row itself had no assertion for an ANCHORED import**, so forcing
-        ``balance_effective_on`` to ``period_end`` or the evidence to a
-        constant left the whole suite green -- the column this step exists to
-        add could have stored the wrong thing forever.  Found by adversarial
-        review 2026-08-23.
+        the placed day to ``period_end`` or the evidence to a constant left
+        the whole suite green -- the column this step exists to add could
+        have stored the wrong thing forever.  Found by adversarial review
+        2026-08-23.  Since plan step ``balance:X-bj-1`` the placement is a
+        row in the level relation naming the import, its amount the claim,
+        so that is what is read.
 
         The fixture chains from `$100.00` through -25.00, +1500.00 and -40.81,
         so it closes at `$1,534.19` on 03-04 and its header states exactly
@@ -191,12 +194,16 @@ class TestItRecordsWhatTheBankSaid:
 
         row = db.session.query(StatementImport).one()
         assert row.stated_balance == Decimal("1534.19")
-        assert row.balance_effective_on == date(2026, 3, 4)
+        [(level, release)] = bank_levels(seed_user["account"].id)
+        assert level.statement_import_id == row.id
+        assert level.anchor_balance == Decimal("1534.19")
+        assert level.observed_on == date(2026, 3, 4)
         assert ref_cache.statement_balance_evidence_member(
-            row.balance_evidence_id
+            level.evidence_id
         ) is StatementBalanceEvidenceEnum.FILE_CHAIN
+        assert release is None
         # The receipt and the row say ONE thing.
-        assert outcome.balance.effective_on == row.balance_effective_on
+        assert outcome.balance.effective_on == level.observed_on
         assert outcome.balance.evidence is StatementBalanceEvidenceEnum.FILE_CHAIN
 
     def test_the_stored_day_is_NOT_the_day_the_header_names(
@@ -226,7 +233,9 @@ class TestItRecordsWhatTheBankSaid:
         row = db.session.query(StatementImport).one()
         assert row.period_end == date(2026, 3, 4)
         assert row.stated_balance_on == date(2026, 3, 9)
-        assert row.balance_effective_on == date(2026, 3, 3)
+        [(level, _release)] = bank_levels(seed_user["account"].id)
+        assert level.statement_import_id == row.id
+        assert level.observed_on == date(2026, 3, 3)
 
     def test_a_header_the_files_lines_CANNOT_REACH_records_no_anchor(
         self, app, db, seed_user,
@@ -270,8 +279,14 @@ class TestItRecordsWhatTheBankSaid:
         )
         assert row.stated_balance == Decimal("2501.31")
         assert row.stated_balance_on == date(2026, 8, 16)
-        assert row.balance_effective_on is None
-        assert row.balance_evidence_id is None
+        # The claim is recorded and NO level names the import.
+        assert [
+            level.statement_import_id
+            for level, _release in bank_levels(seed_user["account"].id)
+        ] == [
+            one.id for one in db.session.query(StatementImport)
+            .filter(StatementImport.file_name != "range.csv")
+        ]
 
     def test_a_chained_file_CONTRADICTING_itself_is_REFUSED(
         self, app, db, seed_user,
@@ -301,11 +316,14 @@ class TestItRecordsWhatTheBankSaid:
         """
         _record(seed_user, _file())
         first = db.session.query(StatementImport).one()
-        assert first.balance_effective_on == date(2026, 3, 4)
+        [(level, release)] = bank_levels(seed_user["account"].id)
+        assert level.statement_import_id == first.id
+        assert level.observed_on == date(2026, 3, 4)
+        assert release is None
 
         # A later export the bank has INSERTED a line into, on a day the first
         # anchor already covers.
-        _record(
+        later = _record(
             seed_user,
             build.build(build.chained(
                 "100.00",
@@ -317,9 +335,19 @@ class TestItRecordsWhatTheBankSaid:
             file_name="inserted.csv",
         )
 
-        db.session.refresh(first)
-        assert first.balance_effective_on is None
-        assert first.balance_evidence_id is None
+        # The first level STANDS no more: an appended release names the
+        # import that undercut it and the day whose lines changed, and the
+        # level row itself is untouched (plan step ``balance:X-bj-1``).
+        placements = {
+            level.statement_import_id: (level, release)
+            for level, release in bank_levels(seed_user["account"].id)
+        }
+        level, release = placements[first.id]
+        assert level.observed_on == date(2026, 3, 4)
+        assert release is not None
+        assert release.released_by_import_id == later.import_id
+        assert release.lines_changed_from == date(2026, 3, 3)
+        assert placements[later.import_id][1] is None
 
     def test_the_outcome_COUNTS_the_placements_it_released(
         self, app, db, seed_user,

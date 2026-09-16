@@ -496,6 +496,41 @@ def _expected_append_only_triggers() -> int:
     return tables * kinds
 
 
+def _level_trigger_check() -> tuple[str, int]:
+    """Return the SQL that counts the level-within-file triggers, and the count.
+
+    One attachment per entry in ``app.level_infrastructure.LEVEL_TRIGGERS``
+    (plan step ``balance:X-bj-1``).  BOTH halves come from that one constant
+    -- the names the query looks for and the number it must find -- so the
+    check cannot count a trigger the module renamed, nor accept a template
+    missing one.
+
+    Returns:
+        ``(sql, expected)``.
+
+    Raises:
+        BuildError: When the constant cannot be read.
+    """
+    if str(_REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT))
+    try:
+        triggers = importlib.import_module(
+            "app.level_infrastructure",
+        ).LEVEL_TRIGGERS
+    except (ImportError, AttributeError) as exc:
+        raise BuildError(
+            f"cannot read app.level_infrastructure.LEVEL_TRIGGERS ({exc}); "
+            "the verification would otherwise compare against a number "
+            "nobody owns"
+        ) from exc
+    names = ", ".join(f"'{name}'" for name, _table in triggers)
+    return (
+        "SELECT count(*) FROM pg_trigger "
+        f"WHERE tgname IN ({names}) AND NOT tgisinternal",
+        len(triggers),
+    )
+
+
 def _import_constant(module: str, name: str, *, length: bool = False) -> int:
     """Read one integer expectation out of the application package.
 
@@ -668,6 +703,7 @@ def _verify_image(tag: str) -> None:
                 "WHERE tgname LIKE 'ck\\_append\\_only%' AND NOT tgisinternal",
                 _expected_append_only_triggers(),
             ),
+            ("level-within-file triggers", *_level_trigger_check()),
         ):
             answer = ask(_TEMPLATE_DATABASE, sql)
             if answer != str(expected):
