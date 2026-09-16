@@ -385,19 +385,14 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     to **R-BAL26**): every plan item has exactly one definition, so a one-off is a rule-less
     definition plus its placed rows; argument: `../../design/from_scratch_architecture.md` section 10.
     * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
-      "no cadence" sites and the account-delete refusal read it; the transaction twin
-      `propagate_to_unruled_definition`. Two rulings at the cut: a row-less rule-less definition is
-      DISPOSED of with its account and a definition's live row is the account's history wherever it
-      sits (**R-BAL27**); the `is_override` flip's MOVE half keys on `recurs`, its typed-figure
-      half waits for 7b's restate (**R-BAL28**). `_leftover_due_date`'s rule-less arm deleted.
+      "no cadence" sites and the account-delete refusal read it; **R-BAL27** and **R-BAL28** ruled
+      at the cut. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
     * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
       parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticks with 7b-3.
-      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off(spec, period, *, scenario_id,
-        due_date=None)`, `spec` an `OneOffToPlace` of what the definition says (**R-BAL30**); both
-        grid create doors and `mint_uncategorized` on it, `category_id` nullable (migration
-        `9c1e4b7a2d3f`); a definition goes with its last row unless a merchant rule names it;
-        *Does not repeat* gone (**R-BAL32**).
+      * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
+        (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
+        nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
       * [ ] **X-bi-7b-2** the popover's flag edits on the DEFINITION; **R-BAL29**'s in-place
         restate; a moved one-off re-placed (**R-BAL33**); the grid grouping by `(category_id, name)`
         (**R-BAL34**); the update schema's flag fields and **BAL-484**'s writer go.
@@ -568,11 +563,9 @@ in SILENCE where a refused DELETE is loud.
   loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
   those three unblock.
   * [x] **X-au-g-1** `af61263d` -- a loan's price reads its TERMS. **N-266**(a) MISDIAGNOSED, not falsified. `archive/eight_shipped_steps_2026-09-01.md`.
-  * [x] **X-au-g-2a -- rule 4's producer moves below the amount model.** `b16908f7`. The
-    tier move `row_valuation.py` has always said this arc owes: `_basis` / `_pricing` become
-    `cash_ledger._loan_installment` / `._loan_pricing`, so the arrow runs one way.
-    **A LATER step must obey:** the loan READING tier may now import the amount model, which
-    is what `X-au-g-2c` needs.  Byte-identical, AST-verified; opened **N-416**.
+  * [x] **X-au-g-2a** `b16908f7` -- rule 4's producer moved below the amount model (`_basis` /
+    `_pricing` -> `cash_ledger._loan_installment` / `._loan_pricing`), so the loan READING tier
+    may import it; byte-identical, AST-verified; opened **N-416**. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
   * [x] **X-au-g-2b** `6cd0ad44` -- a loan payment resolves on its OWN due date (**R-IJ**) and `cash_ledger` makes no clock call at all. Closed **N-40**, **N-410**; **N-409** stands, re-owned. Record in `archive/six_shipped_x_au_g_2c_leaves_2026-09-02.md`.
   * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
     the declaration, and the escrow rule. It ticks with the last of its three leaves.
