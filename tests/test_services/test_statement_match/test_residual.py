@@ -52,6 +52,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import statement_match
 from app.services.statement_match import RowKind
+from app.services.pay_calendar import calendar_for
 from app.services.statement_match._candidates import purchase_candidate
 from app.services.statement_match._landing import (
     DifferenceLanding,
@@ -1772,7 +1773,9 @@ class TestCorrectingAPurchaseOntoTheBanksFigure:
             )
             db.session.flush()
 
-            row = purchase_candidate(purchase)
+            row = purchase_candidate(
+                purchase, calendar_for(seed_user["user"].id),
+            )
             assert row.cash_amount == Decimal("-60.00")
 
             # The bank took 60.06, not 60.00.
@@ -1796,7 +1799,9 @@ class TestCorrectingAPurchaseOntoTheBanksFigure:
             )
             db.session.flush()
 
-            row = purchase_candidate(refund)
+            row = purchase_candidate(
+                refund, calendar_for(seed_user["user"].id),
+            )
             assert row.cash_amount == Decimal("28.29")
 
             assert corrected_figure(row, Decimal("30.00")) == Decimal("-30.00")

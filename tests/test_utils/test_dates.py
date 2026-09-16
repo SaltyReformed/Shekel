@@ -17,6 +17,7 @@ from datetime import date, datetime, time, timezone
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
     add_months,
+    day_label,
     display_today,
     has_settled_by,
     months_between,
@@ -424,3 +425,29 @@ class TestPayPeriodLabel:
         assert pay_period_label(
             date(2026, 12, 26), date(2027, 1, 8),
         ) == "12/26/26 - 01/08/27"
+
+
+class TestDayLabel:
+    """The narrow register's ONE-DAY sibling (``"07/13"``), plan step ``bank_import:X-gz``.
+
+    Stated once so the Reconcile MATCH pane can print a purchase day beside
+    the paycheck label in one register; :func:`pay_period_label`'s
+    non-straddling branch composes it, so the two cannot drift apart on the
+    zero-padding or the separator.
+    """
+
+    def test_it_is_zero_padded_month_and_day_and_no_year(self):
+        """``07/13``, the grid's own spelling of a purchase day."""
+        assert day_label(date(2026, 7, 13)) == "07/13"
+
+    def test_the_first_of_january_pads_both_halves(self):
+        """The non-vacuity control for the padding: ``01/01``, not ``1/1``."""
+        assert day_label(date(2027, 1, 1)) == "01/01"
+
+    def test_the_paycheck_label_is_two_of_these_joined(self):
+        """One rule under both: the period label IS two day labels."""
+        first, last = date(2026, 7, 16), date(2026, 7, 29)
+
+        assert pay_period_label(first, last) == (
+            f"{day_label(first)} - {day_label(last)}"
+        )

@@ -28,6 +28,10 @@ RANGE rather than a figure: rendering this pane's own candidate-row loop body
 sentence varies.  So 67 unexplained rows on ONE card is roughly **40 KB**,
 against the 143,298 bytes **R-KA** rejected for every card's period rows -- and
 paid only on a request that exists because the owner asked for that card.
+*Plan step ``bank_import:X-gz`` put the row's labelled dates and a gap
+sentence under its name, re-measured 2026-09-16 on the macro alone: 529 bytes
+to 739 for the same 30-character unbadged row, so the 67-row figure is nearer
+**50 KB** now and the argument against R-KA's 143,298 stands unchanged.*
 
 *A first draft of this paragraph quoted one figure and then "reconciled" it
 against R-KA's by dividing 143,298 by that render's 311 row renders.  That
@@ -102,11 +106,13 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._dating import row_days
 from ._panel import MatchCandidates
 from ._preview import preview_hand_build
 from ._submission import MatchSubmission, as_reviewed
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from ._dating import RowDays
     from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
     from ._preview import HandTotals
     from ._reads import CardSubject, ReviewSet
@@ -206,6 +212,25 @@ class OpenedMatch:
             them.
         """
         return frozenset(self.submitted.subjects)
+
+    def days_of(self, row: "CandidateRow") -> "RowDays":
+        """Return what the pane prints about WHEN for *row*, against this line.
+
+        Plan step ``bank_import:X-gz``, ruling **R-BI9**.  A METHOD the
+        template calls per row rather than a field beside :attr:`rows`,
+        because the rows arrive on two values -- the proposal's tuple and
+        :attr:`rows` -- and one accessor over both is what keeps the two
+        lists printing one thing.  It decides nothing: the sentences are
+        :func:`~._dating.row_days`', asked against the one line this pane is
+        about.
+
+        Args:
+            row: A row this pane renders, from either list.
+
+        Returns:
+            Its :class:`~._dating.RowDays`.
+        """
+        return row_days(row, self.line)
 
     @property
     def consent(self) -> "ReviewedDifference | None":
