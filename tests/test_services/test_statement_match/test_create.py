@@ -57,6 +57,7 @@ from tests._test_helpers import (
     eras_of,
     last_covered_day,
     open_books_before_the_first_assertion,
+    resolved_amount,
 )
 
 from ._builders import (
@@ -390,7 +391,17 @@ class TestTheNewEnvelopeArm:
             envelope = db.session.get(Transaction, recorded.transaction_id)
             assert envelope.tracks_purchases
             assert envelope.name == "Lowe's"
-            assert envelope.estimated_amount == Decimal("0.00")
+            # A placed row of a rule-less DEFINITION since leaf 7b-3 of
+            # balance:X-bi-7b (ruling R-BAL24): it states no figure of its
+            # own and is priced by the definition's one version, $0.00 --
+            # nothing budgeted it (``_container._NO_BUDGET``).  It carried
+            # OWN $0.00 as a link-less row until then.
+            assert envelope.is_placed is True
+            assert envelope.template.is_envelope is True
+            assert envelope.template.recurs is False
+            assert envelope.estimated_amount is None
+            assert resolved_amount(envelope) == Decimal("0.00")
+            assert recorded.template_id == envelope.template_id
             assert recorded.envelope_created is True
             assert [entry.id for entry in envelope.entries] == [
                 recorded.entry_id,

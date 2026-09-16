@@ -35,8 +35,10 @@ from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import AmountUnresolvable, ValidationError
 from app.extensions import db
+from app.models.merchant_rule import MerchantRule
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
     entry_service,
@@ -73,6 +75,7 @@ from ._builders import (
     a_bank_line,
     a_later_period,
     a_purchase,
+    a_rule,
     a_scope,
     a_submission,
     a_transaction,
@@ -206,6 +209,52 @@ class TestTheCreateArmHasAnInverse:
         db.session.flush()
 
         assert db.session.get(Transaction, envelope_id) is None
+
+    def test_the_undo_puts_the_merchants_answer_back_before_the_definition_goes(
+        self, app, db, seed_user,
+    ):
+        """Leaf 7b-3 of ``balance:X-bi-7b``: the flip has an inverse too.
+
+        The merchant's NEW-ENVELOPE answer came true at the act, so the rule
+        was rewritten to TEMPLATE naming the definition it minted (N-328's
+        ruling).  Left so, the undo met the transaction delete's own
+        refusal -- a merchant rule names the last row's definition -- on the
+        register's "DESTROYS 2 rows" promise (found by both of 7b-3's
+        adversarial reviews).  The rule is put back to the answer the owner
+        stated, from the definition's own name and category, and the
+        definition goes with its row.
+        """
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date + timedelta(days=5),
+            description="POINT OF SALE DEBIT L340 WAL-MART", merchant="Walmart",
+        )
+        category = seed_user["categories"]["Groceries"]
+        a_rule(
+            seed_user, "Walmart", envelope_name="Walmart",
+            category_id=category.id,
+        )
+        db.session.flush()
+        created = _record(
+            seed_user, line, new_envelope=_a_new_envelope(seed_user),
+        )
+        db.session.flush()
+        stored = db.session.query(MerchantRule).one()
+        assert stored.template_id == created.template_id, (
+            "the act must really have rewritten the answer, or the undo "
+            "below restores nothing and proves nothing"
+        )
+
+        released = _release(seed_user, created.match_id)
+        db.session.flush()
+
+        assert released.removed_rows == 2
+        assert db.session.get(Transaction, created.transaction_id) is None
+        assert db.session.get(TransactionTemplate, created.template_id) is None
+        stored = db.session.query(MerchantRule).one()
+        assert stored.template_id is None
+        assert stored.envelope_name == "Walmart"
+        assert stored.category_id == category.id
 
     def test_undo_then_RE_RECORD_does_not_double_book(
         self, app, db, seed_user,
@@ -354,7 +403,7 @@ class TestWhatTheUndoLEAVESStanding:
         first = _record(
             seed_user, first_line, minted=minted, new_envelope=answer,
         )
-        minted.remember(answer, first)
+        minted.remember(PurchaseCreation(line_id=first_line.id, new_envelope=answer), first)
         second = _record(
             seed_user, second_line, minted=minted, new_envelope=answer,
         )
@@ -587,15 +636,17 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         to end rather than reasoned about -- the `lessons.md` entry is *an
         ONLY-way argument is one writer from wrong*.
 
-        The path, all of it through controls the owner has: the container is an
-        ad-hoc envelope, so its full-edit popover renders *Track individual
-        purchases*, and ``is_envelope`` is NOT in ``_LOCKED_EDIT_FIELDS`` --
-        unticking it on a settled row is admitted deliberately, because it
-        gives the row its own amount back.  ``settles_from_entries`` then goes
-        False, ruling **R-FF**'s guard stops biting, and a typed Actual records
-        a ``corrected`` basis.  Editing the PARENT does not bump the ENTRY's
-        ``version_id``, so the edited-row refusal above does not fire first and
-        this arm is the one reached.
+        The path, all of it through controls the owner has: the container is a
+        one-off envelope (a placed row of a rule-less definition since plan
+        step balance:X-bi-7b), so its full-edit popover renders *Track
+        individual purchases* and lands it on the DEFINITION, and
+        ``is_envelope`` is NOT in ``_LOCKED_EDIT_FIELDS`` -- unticking it on a
+        settled row is admitted deliberately, because it gives the row its
+        own amount back.  ``settles_from_entries`` then goes False, ruling
+        **R-FF**'s guard stops biting, and a typed Actual records a
+        ``corrected`` basis.  Editing the PARENT does not bump the ENTRY's
+        ``version_id``, so the edited-row refusal above does not fire first
+        and this arm is the one reached.
         """
         line = _a_swipe(seed_user)
         created = _record(
@@ -606,7 +657,10 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         transaction_service.settle_transaction(envelope)
         db.session.flush()
 
-        envelope.is_envelope = False
+        # The flag lives on the DEFINITION since the container is a placed
+        # row of one (balance:X-bi-7b: leaf 7b-1 minted it, leaf 7b-2 landed
+        # the popover's control there), which is the act the card performs.
+        envelope.template.is_envelope = False
         db.session.flush()
         transaction_service.apply_requested_status(
             envelope, envelope.status_id, submitted=Decimal("999.99"),

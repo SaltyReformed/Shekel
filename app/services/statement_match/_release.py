@@ -115,6 +115,7 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._naming import unname_the_disposed_definition
 from ._offers import RowKind
 
 _logger = logging.getLogger(__name__)
@@ -714,10 +715,10 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     sequence itself until plan step ``bank_import:X-gb``**, saying it "takes
     the transaction delete sequence WHOLE" beside the delete route that spelled
     the same four steps -- and each step's ORDER is a money rule, so two copies
-    was two places for that order to drift.  Both created kinds are always
-    ad-hoc (a residual names no template, and a created envelope is built
-    without one), so the verb's soft arm is unreachable from here and its hard
-    delete is what runs.
+    was two places for that order to drift.  Neither created kind RECURS (a
+    residual names no template; a created envelope is a rule-less definition's
+    placed row since leaf 7b-3 of ``balance:X-bi-7b``), so the verb's hard
+    delete runs, disposing of the definition with its LAST row (step 5).
 
     **Its match WITHDRAWAL is provably a no-op on this path, which is why
     calling the shared verb is safe here.**  A subject belongs to at most one
@@ -763,16 +764,17 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
             has already been asked (:func:`planned_removals` reads the same
             state) -- reachable only if the row moved between the two.  The
             transaction verb's own refusals cannot fire: an act creates
-            neither a transfer shadow nor a CC payback, and the third (a
-            merchant rule naming the last row's definition, plan step
-            ``balance:X-bi-7b``) needs an OFFERABLE definition, which a
-            bank-minted one never is (``is_envelope`` False).  Since that step
-            a bank-minted row is a one-off -- a rule-less definition plus its
-            row -- and the verb disposes of the definition with the row.
+            neither a transfer shadow nor a CC payback, and the third -- a
+            merchant rule naming the last row's definition -- is answered
+            BEFORE the verb by
+            :func:`~._naming.unname_the_disposed_definition` (leaf 7b-3; a
+            first build called this arm unreachable and the undo met it on the
+            register's own "DESTROYS 2 rows" promise, found by both reviews).
     """
     if row.kind is RowKind.PURCHASE:
         entry_service.delete_entry(row.row_id, owner_id)
         return
+    unname_the_disposed_definition(row.subject)
     transaction_service.delete_transaction(row.subject, owner_id)
 
 

@@ -35,7 +35,12 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service
 from app.models.statement_line_skip import StatementLineSkip
-from app.services.statement_match import REGISTER_LIMIT, Tab, skip_line
+from app.services.statement_match import (
+    REGISTER_LIMIT,
+    Tab,
+    place_token,
+    skip_line,
+)
 # Pylint: ``shekel-private-module-import`` -- a route test naming the CARD
 # KIND a tab holds reaches the service's own value rather than restating its
 # three names here, which is the convention this module's siblings keep.
@@ -50,6 +55,8 @@ from tests.test_routes._statement_forms import (
 from tests._test_helpers import open_owner_calendar
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    a_later_period,
+    a_one_off_envelope,
     an_account_whose_books_hide_a_line,
     a_rule,
     a_transaction,
@@ -844,6 +851,59 @@ class TestOKThenApplyIsWhatMovesMoney:
         assert db.session.query(StatementMatch).count() == 0
         assert "without choosing what to do with them" in body
         assert str(line.id) in body
+
+
+class TestARuleNamingAOneOffEnvelopePlacesItsRowFromThisPage:
+    """Leaf 7b-3 of balance:X-bi-7b (ruling R-BAL24): the PLACE option, end to end.
+
+    A standing TEMPLATE answer names a one-off envelope's DEFINITION, and the
+    line falls in a paycheck holding no row of it.  The card offers ONE
+    option for that -- the placement's own token -- and OK then Apply places
+    the definition's row there and records the purchase into it.  Kept in
+    its own class: ``bank_import:X-gz`` lands its cases in this module too.
+    """
+
+    def test_the_card_offers_the_place_option_and_apply_places_the_row(
+        self, auth_client, db, seed_user,
+    ):
+        """Rendered selected, posted as rendered, placed by the door."""
+        existing = a_one_off_envelope(seed_user, name="Amazon")
+        definition_id = existing.template_id
+        later = a_later_period(seed_user)
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-22.10",
+            posted_on=later.start_date + timedelta(days=2),
+            description="POINT OF SALE DEBIT L340 (Amazon)", merchant="Amazon",
+        )
+        db.session.commit()
+        a_rule(seed_user, "Amazon", template_id=definition_id)
+        db.session.commit()
+
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
+        token = place_token(definition_id)
+        assert (f"destination-{line.id}", token) in fields, (
+            "the card did not render the PLACE option selected for this line"
+        )
+        assert "placed in this paycheck" in page
+
+        response = _post(
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
+        )
+
+        assert response.status_code == 200
+        rows = (
+            db.session.query(Transaction)
+            .filter_by(template_id=definition_id, is_deleted=False)
+            .order_by(Transaction.id).all()
+        )
+        assert [row.id for row in rows][0] == existing.id and len(rows) == 2
+        placed = rows[1]
+        assert placed.pay_period_id == later.id
+        entry = db.session.query(TransactionEntry).one()
+        assert entry.transaction_id == placed.id
+        assert entry.amount == Decimal("22.10")
 
 
 class TestTheMatchPanePricesWhatIsTicked:

@@ -34,6 +34,7 @@ from ._creations import (
     NewEnvelope,
     PurchaseCreation,
     PurchaseDestination,
+    place_token,
 )
 from ._rules import StandingRule, RuleAnswer, RuleView
 
@@ -41,22 +42,32 @@ from ._rules import StandingRule, RuleAnswer, RuleView
 class PlacementKind(enum.Enum):
     """What a rule comes to for ONE creatable line.
 
-    Three, because a rule that cannot be applied HERE is a different thing to
+    Four, because a rule that cannot be applied HERE is a different thing to
     say than one that names a row:
 
     * ``RECORD_IN`` -- an existing budget line in this line's own pay period;
+    * ``PLACE`` -- a row of a RULE-LESS definition the line's recording would
+      PLACE in its own pay period, where that paycheck holds none (plan step
+      ``balance:X-bi-7b`` leaf 7b-3, ruling **R-BAL24**): a TEMPLATE answer
+      naming a definition that generates nothing -- a grid one-off's, or the
+      one a NEW-ENVELOPE answer minted the first time it fired -- reaches
+      every later paycheck this way, one placed row per paycheck through
+      ``one_off.place_row_of``.  Before this kind existed such an answer
+      resolved UNRESOLVED everywhere but the one paycheck holding a row
+      (``from_scratch_architecture.md`` 10.6-D's regression);
     * ``CREATE_NEW`` -- an envelope this line's recording would create, and
-      only where this period holds NONE of that name (finding **N-327**,
-      developer ruling 2026-08-20).  It used to mint unconditionally, so a
-      ``Lowe's -> a new "Home Improvement"`` answer applied to the developer's
-      own statement made **4 envelopes across 3 pay periods** in one press, two
-      of them in the SAME period, with the next statement adding more beside
-      them.  No figure was wrong -- each envelope closes at its own purchases
-      -- and what fragmented was the BUDGET.
-      **It is still a SUGGESTION and never a substitution**: the degraded
-      placement is PRINTED beside the line's own destination select, which
-      still opens on *leave this line alone*, so the owner sees which envelope
-      it would reuse and may pick another;
+      only where this period holds NO placed envelope of that name and
+      category (finding **N-327**, developer ruling 2026-08-20): a rule-less
+      definition minted through ``one_off.place_one_off`` with its first
+      row, after which the merchant's answer NAMES that definition and every
+      later line takes ``PLACE`` (finding **N-328**).  Within one press the
+      lines of one answer converge on the definition the first of them
+      minted (:class:`~._container.MintedEnvelopes`: a ``Lowe's -> a new
+      "Home Improvement"`` answer applied to the developer's own statement
+      once made **4 envelopes across 3 pay periods** in one press).  **It is
+      still a SUGGESTION and never a substitution**: the placement is
+      PRINTED beside the line's own destination select, which still opens on
+      *leave this line alone*, so the owner may pick another;
     * ``UNRESOLVED`` -- a rule exists and does not reach this line, with the
       reason it does not.  **Reported rather than substituted for**: the
       obvious substitution, falling back to a new envelope when the named
@@ -74,6 +85,7 @@ class PlacementKind(enum.Enum):
     """
 
     RECORD_IN = "record_in"
+    PLACE = "place"
     CREATE_NEW = "create_new"
     UNRESOLVED = "unresolved"
 
@@ -85,12 +97,25 @@ class PlacementKind(enum.Enum):
 
 
 @dataclass(frozen=True)
+class PlacedDefinition:
+    """The rule-less definition a PLACE placement would place a row of.
+
+    Attributes:
+        template_id: The definition (``transaction_templates.id``).
+        name: What to call it on the card.
+    """
+
+    template_id: int
+    name: str
+
+
+@dataclass(frozen=True)
 class Placement:
     """What the owner's rule comes to for one creatable line.
 
     Attributes:
         merchant: The line's merchant, which is the rule's key.
-        kind: Which of the three (:class:`PlacementKind`).
+        kind: Which of the four (:class:`PlacementKind`).
         destination: The budget line to file into, for
             :attr:`PlacementKind.RECORD_IN`.  A
             :class:`~._creations.PurchaseDestination` drawn from the pass's own
@@ -99,14 +124,22 @@ class Placement:
             cannot be handed a row the screen may not offer.
         new_envelope: The envelope to create, for
             :attr:`PlacementKind.CREATE_NEW`.
+        placed: The rule-less definition to place a row of, for
+            :attr:`PlacementKind.PLACE`, as ``(template_id, name)`` -- the
+            rule's own id, which the view has already proved is offerable on
+            this account, and what to call it on the card.  One value rather
+            than two fields because the two are one fact, and because the
+            class sits at pylint's attribute bound.
         joins_new: Whether an EARLIER line in this same pass already creates
-            that envelope, so this one would join it rather than make a second
-            (finding **N-327**).  It stays a ``CREATE_NEW`` because the select
-            value is unchanged -- one press mints one envelope per answer per
-            period (:class:`~._create.MintedEnvelopes`) -- and what this flag
-            buys is that the SCREEN says so before the press rather than after
-            it.  Set by :func:`~._leftovers._creatable_lines`, which is the only
-            reader that sees more than one line at a time.
+            that envelope -- or, for a ``PLACE``, already places that
+            definition's row in this paycheck -- so this one would join it
+            rather than make a second (finding **N-327**).  It stays a
+            ``CREATE_NEW`` / ``PLACE`` because the select value is unchanged
+            -- one press mints one definition per answer and places one row
+            of it per period (:class:`~._container.MintedEnvelopes`) -- and
+            what this flag buys is that the SCREEN says so before the press
+            rather than after it.  Set by :func:`~._leftovers._marked_joining`,
+            which is the only reader that sees more than one line at a time.
         unresolved_reason: One sentence saying why the rule does not reach
             this line, for :attr:`PlacementKind.UNRESOLVED`.
     """
@@ -115,6 +148,7 @@ class Placement:
     kind: PlacementKind
     destination: "PurchaseDestination | None" = None
     new_envelope: "NewEnvelope | None" = None
+    placed: "PlacedDefinition | None" = None
     joins_new: bool = False
     unresolved_reason: "str | None" = None
 
@@ -127,6 +161,22 @@ class Placement:
     def creates(self) -> bool:
         """Return whether this places the line in an envelope it would make."""
         return self.kind is PlacementKind.CREATE_NEW
+
+    @property
+    def places(self) -> bool:
+        """Return whether this places the line in a row of a definition it would place."""
+        return self.kind is PlacementKind.PLACE
+
+    @property
+    def names_a_home(self) -> bool:
+        """Return whether this names somewhere to file the line at all.
+
+        The three kinds that do, asked in ONE place: the card, the sweep and
+        the sentence each used to spell ``records_in or creates`` for
+        themselves, and a fourth kind is exactly the edit that spelling would
+        miss.
+        """
+        return self.records_in or self.creates or self.places
 
     @property
     def sweep_class(self) -> "str | None":
@@ -154,7 +204,9 @@ class Placement:
         ``review_class`` is: a template restating the partition is a second
         place for it to be wrong.
         """
-        if self.kind is PlacementKind.CREATE_NEW:
+        if self.kind in (PlacementKind.CREATE_NEW, PlacementKind.PLACE):
+            # A placed row is a budget line the account did not have in that
+            # paycheck, exactly as a minted envelope is.
             return "creates"
         if self.kind is not PlacementKind.RECORD_IN:
             return None
@@ -174,6 +226,8 @@ class Placement:
             return str(self.destination.transaction_id)
         if self.kind is PlacementKind.CREATE_NEW:
             return NEW_ENVELOPE
+        if self.kind is PlacementKind.PLACE:
+            return place_token(self.placed.template_id)
         return None
 
     def creation_for(self, line_id: int) -> "PurchaseCreation | None":
@@ -218,13 +272,18 @@ class Placement:
             return PurchaseCreation(
                 line_id=line_id, new_envelope=self.new_envelope,
             )
+        if self.kind is PlacementKind.PLACE:
+            return PurchaseCreation(
+                line_id=line_id, template_id=self.placed.template_id,
+            )
         return None
 
 
 def _template_placement(
     rule: StandingRule,
     offered: "list[PurchaseDestination]",
-    template_names: "dict[int, str]",
+    view: RuleView,
+    period_id: "int | None",
 ) -> Placement:
     """Resolve the TEMPLATE answer against one line's own period.
 
@@ -232,14 +291,27 @@ def _template_placement(
     assuming it did would file money in a row the owner did not pick.**
     Measured on a 2026-08-18 production clone: template 22
     (``Kayla's Spending Money``) generated TWO rows in pay period 3, ids 2388
-    and 2389.  So the three cases are all real and all reported:
+    and 2389.  So the cases are all real and all reported:
 
     * exactly one offerable row -- the placement;
-    * none -- the template made no row here, or the one it made cannot take a
-      purchase (closed at a stored figure, already matched, cancelled).
-      Measured: template 5 (``Gas``) is offerable in 9 of the 11 periods the
-      developer's creatable lines fall in, and template 38 (``Groceries``) in
-      10;
+    * none offerable, the definition is RULE-LESS and the paycheck holds NO
+      row of it at all -- a row of it is PLACED here
+      (:attr:`PlacementKind.PLACE`, ruling **R-BAL24**): such a definition
+      generates nothing, so where a paycheck holds none of its rows the
+      answer is to place one, which is what a bank-born envelope's identity
+      across paychecks means.  **No row at all, not no offerable row**
+      (:attr:`~._rules.RuleView.placed_periods`; found by 7b-3's adversarial
+      reviews): a cancelled, credited, match-claimed or fixed-figure-closed
+      row is still the paycheck's one row of the definition, and placing a
+      second beside it met the occurrence index as a bare ``IntegrityError``
+      that failed the whole press.  A definition with a rule takes the next
+      arm instead: its rows are the ENGINE's, and placing one beside them
+      would be a second writer of what its cadence says;
+    * none offerable otherwise -- the template made no row here, or the one
+      it made cannot take a purchase (closed at a stored figure, already
+      matched, cancelled).  Measured: template 5 (``Gas``) is offerable in 9
+      of the 11 periods the developer's creatable lines fall in, and
+      template 38 (``Groceries``) in 10;
     * more than one -- which of them the owner meant is a guess, and this
       module does not make guesses.
 
@@ -250,7 +322,11 @@ def _template_placement(
             construction rather than because two arguments agreed.
         offered: The destinations open to THIS line -- already narrowed to its
             own pay period and to what no match has claimed.
-        template_names: What to call each template, for the sentence.
+        view: What the owner has said and what it can resolve against:
+            ``template_names`` for the sentence, ``placeable_templates`` and
+            ``placed_periods`` for whether a row may be placed here.
+        period_id: The line's own paycheck, or ``None`` where it has none
+            (a day before the books opened), which places nothing.
 
     Returns:
         The :class:`Placement`.
@@ -260,11 +336,21 @@ def _template_placement(
         destination for destination in offered
         if destination.template_id == rule.template_id
     ]
-    named = template_names.get(rule.template_id)
+    named = view.template_names.get(rule.template_id)
     if len(matches) == 1:
         return Placement(
             merchant=merchant, kind=PlacementKind.RECORD_IN,
             destination=matches[0],
+        )
+    if (
+        not matches
+        and period_id is not None
+        and rule.template_id in view.placeable_templates
+        and period_id not in view.placed_periods.get(rule.template_id, ())
+    ):
+        return Placement(
+            merchant=merchant, kind=PlacementKind.PLACE,
+            placed=PlacedDefinition(template_id=rule.template_id, name=named),
         )
     if not matches:
         return Placement(
@@ -293,26 +379,43 @@ def _new_envelope_placement(
 ) -> Placement:
     """Resolve the NEW-ENVELOPE answer against one line's own period.
 
-    **An answer naming an envelope by name is answered by an envelope of that
-    name where one is already here** (finding **N-327**, developer ruling
-    2026-08-20).  Creating unconditionally made a rule fragment its own
-    budget line: measured on the developer's own statement, a ``Lowe's`` answer
-    places 4 lines over 3 pay periods, so ONE press minted 4 envelopes -- and
-    the next statement minted more beside them, because an ad-hoc row carries
-    no identity across periods for anything to converge on.
+    **A NEW-ENVELOPE answer fires ONCE across statements**: its first line
+    either converges on a same-named placed envelope already in the line's
+    period or mints a rule-less definition through
+    ``one_off.place_one_off``, and either way the answer becomes TEMPLATE
+    naming that definition (finding **N-328**, ruling **R-BAL24**, leaf 7b-3
+    of ``balance:X-bi-7b``; :func:`~._naming.name_the_filed_definition`),
+    so from the NEXT request every line of that merchant resolves through
+    :func:`_template_placement` and PLACES a row of the definition where its
+    paycheck holds none.  Within the press that fired it the read model
+    still says NEW-ENVELOPE, and the later lines of the same answer are
+    converged on that definition by :class:`~._container.MintedEnvelopes`
+    instead.  What this arm decides is the first firing.
 
-    **Reusing is not the substitution this module refuses elsewhere.**  The
-    substitution `_template_placement` declines is *falling back to a
-    DIFFERENT KIND of destination when the named one is missing*, which files
-    money somewhere the owner never named.  Here the owner named a name, and
-    this is the row that has it.  It is still only a suggestion: the placement
-    prints beside the line's own select, which opens on *leave this line
-    alone*.
+    **An answer naming an envelope by name is answered by a PLACED envelope
+    of that name and category where one is already here** (finding
+    **N-327**, developer ruling 2026-08-20): an envelope the owner made at
+    the grid under that name carries a rule-less definition, and minting a
+    second beside it would be the fragmentation N-327 measured -- a ``Lowe's``
+    answer once made 4 envelopes across 3 pay periods in one press.  It is
+    still only a suggestion: the placement prints beside the line's own
+    select, which opens on *leave this line alone*.  **Two of them is a
+    guess, so it is reported instead**, the rule `_template_placement`
+    applies to a template that generated two rows in one period.
 
-    **Two of them is a guess, so it is reported instead** -- the same rule, and
-    the same sentence shape, `_template_placement` applies to a template that
-    generated two rows in one period.  It is reachable on data this defect
-    already produced, which is exactly why it may not be papered over now.
+    **A RECURRING definition's row is NOT converged on**: naming a template
+    is a DIFFERENT answer with its own resolution beside this one, and an
+    owner who means the recurring envelope has that answer available and did
+    not pick it.  **A LEGACY link-less row IS** (until the family's cutover
+    mints it a definition; 33 of the developer's 256 offerable destinations
+    on 2026-08-30): it has no definition for the answer to name, so the
+    flip does not happen and the name compare lasts exactly until the
+    cutover -- but a definition minted beside it would be N-327's
+    fragmentation for every one of those rows.  So the convergence key is
+    still "no cadence made it" (``PurchaseDestination.names_no_cadence``),
+    and the FLIP is keyed on ``is_placed``
+    (:func:`~._naming.name_the_filed_definition`); at the cutover the two
+    coincide and this paragraph retires.
 
     Args:
         rule: The stated answer, whose ``answer`` is ``NEW_ENVELOPE``.  It
@@ -342,23 +445,11 @@ def _new_envelope_placement(
     # have filed spending into a same-named envelope under a category the owner
     # did not pick.  The label is not compared either: it appends the
     # pay-period span for a reader.
-    # **A row a RECURRING definition generated is excluded**, because naming a
-    # template is a DIFFERENT answer with its own resolution beside this one
-    # (:func:`_template_placement`, including its "this period holds two of
-    # them" report).  An owner who means the recurring envelope has that answer
-    # available and did not pick it; converging onto it here would make the two
-    # answers indistinguishable in effect.  **Keyed on ``recurs`` since plan
-    # step ``balance:X-bi-7b``**: a one-off envelope carries a rule-less
-    # definition from that step, and it is exactly the row this answer creates
-    # -- excluding it on the link would mint a second envelope beside it in
-    # the same period, which is finding **N-327**'s fragmentation back.  The
-    # family's third leaf (``X-f6c``) converges on the definition instead of
-    # the name, and this key goes with it.
     named = [
         destination for destination in offered
         if destination.name == rule.envelope_name
         and destination.category_id == rule.category_id
-        and not destination.recurs
+        and destination.names_no_cadence
     ]
     if len(named) == 1:
         return Placement(
@@ -386,6 +477,8 @@ def placements_for(
     merchant_id: "int | None",
     view: RuleView,
     offered: "list[PurchaseDestination]",
+    *,
+    period_id: "int | None" = None,
 ) -> "Placement | None":
     """Return what the owner's rule comes to for ONE creatable line.
 
@@ -399,6 +492,11 @@ def placements_for(
         view: What the owner has said and what it can resolve against
             (:class:`RuleView`).
         offered: The destinations open to this line, in its own pay period.
+        period_id: The line's own paycheck (``budget.pay_periods.id``), which
+            the PLACE arm needs to ask whether the definition already holds a
+            row there; ``None`` for a line before the books opened, which no
+            arm places into.  Keyword-only and defaulted for the callers that
+            resolve against *offered* alone.
 
     Returns:
         The :class:`Placement`, or ``None`` when nothing is placed -- which is
@@ -425,7 +523,7 @@ def placements_for(
     if rule is None:
         return None
     if rule.answer is RuleAnswer.TEMPLATE:
-        return _template_placement(rule, offered, view.template_names)
+        return _template_placement(rule, offered, view, period_id)
     if rule.answer is RuleAnswer.NEW_ENVELOPE:
         return _new_envelope_placement(rule, offered, view)
     return None
