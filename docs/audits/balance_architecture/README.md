@@ -409,12 +409,16 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
-  * [ ] **X-bi-3** `settle_from_entries` becomes the ONLY settle path, its MANUAL branch writing one
-    covering movement THROUGH THE SERVICE DOOR, as **R-HJ** requires of any act that writes money
-    rows; the movement carries its OWN figure's provenance, the column **R-BAL35** left this step
-    to state with its writer (`settled_basis_id` has no home once `X-bi-4` derives `settled_amount`).
-    **MOVES MONEY.** The 165 settled rows holding no entries include 14 with no settle day and 38
-    transfer shadows under the four Transfer Invariants: 52 questions a human answers at a door.
+  * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
+    the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
+    * [ ] **X-bi-3a** the figure-source catalogue (`resolved` / `typed` / `observed`) and the ONE
+      settle-owned writer, EXPENSE parents only; balance-neutral by **R-FM**'s identity, graded so.
+    * [ ] **X-bi-3b** the INCOME arm: three readers derive a movement's direction from its parent's
+      type (**R-BAL35**; a covered paycheck read `-figure`), then income parents are covered.
+    * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
+      per shadow until `X-bi-6` re-parents them onto `budget.transfers`.
+    * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
+      scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
     is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
