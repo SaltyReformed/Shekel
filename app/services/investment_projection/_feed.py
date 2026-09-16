@@ -105,7 +105,7 @@ class AccountPayrollFeed:
     Attributes:
         employee: ``period -> Decimal`` -- what this account received from
             payroll on that period's paycheck: the sum of every
-            :class:`~app.services.paycheck_calculator.DeductionLine` naming
+            :class:`~app.services.paycheck_calculator.PricedLine` naming
             this account across every profile that funds it, pre- and
             post-tax alike, ``$0.00`` included where a cadence skipped the
             deduction.  ``None`` when no active deduction on an active

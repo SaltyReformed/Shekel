@@ -335,6 +335,24 @@ def paycheck_line_kind_id(member):
     return cache().enum_ids[PaycheckLineKindEnum][member]
 
 
+def paycheck_line_kind_member(kind_id):
+    """Return the PaycheckLineKindEnum member a stored ``paycheck_line_kind_id`` names.
+
+    :func:`paycheck_line_kind_id`'s inverse (plan step salary:R18-b): the
+    salary page and the cockpit read a stored line's kind back to word it and
+    to tell the deduction side from the earning side, and the schema refuses
+    a target account on an earning kind -- IDs for logic, strings for display.
+
+    Args:
+        kind_id: The ``ref.paycheck_line_kinds`` primary key.
+
+    Returns:
+        The member, or ``None`` for an id the cache does not hold.
+    """
+    require_init()
+    return cache().enum_members[PaycheckLineKindEnum].get(kind_id)
+
+
 def calc_method_id(member):
     """Return the integer primary key for a CalcMethodEnum member."""
     require_init()

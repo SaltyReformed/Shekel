@@ -110,13 +110,16 @@ class TransactionEntry(
                            **R-BAL39**, :class:`app.enums.MovementFigureSourceEnum`.
 
     **A row of this table is a MOVEMENT, and since plan step X-bi-3a a settle
-    writes one for a bill too** (ruling **R-BAL39**): the COVERING MOVEMENT,
-    the payment row that records a bill's money the way a purchase records an
-    envelope's.  It is an ordinary row here -- its ``amount`` is the figure the
-    settle booked, its ``purchased_on`` the settle day (the only day a bill's
-    payment has, so ``ck_transaction_entries_settled_not_before_purchase``
-    holds as equality), its ``description`` the plan's name as it read at the
-    settle, and its day pair and statement link the row's own assertion.  The
+    writes one for a bill too -- and since X-bi-3b for a paycheck** (ruling
+    **R-BAL39**): the COVERING MOVEMENT, the payment row that records a bill's
+    or a paycheck's money the way a purchase records an envelope's, in the
+    parent's direction (``cash_ledger.movement_cash_leg``, ruling
+    **R-BAL35**).  It is an ordinary row here -- its ``amount`` is the figure
+    the settle booked, its ``purchased_on`` the settle day (the only day a
+    bill's payment has, so
+    ``ck_transaction_entries_settled_not_before_purchase`` holds as
+    equality), its ``description`` the plan's name as it read at the settle,
+    and its day pair and statement link the row's own assertion.  The
     status seam is its ONE writer (``status_seam._covering``), and
     ``covers_settlement`` is how the seam finds its own mirror again: a
     settled row may legitimately hold BOTH -- *Track individual purchases*

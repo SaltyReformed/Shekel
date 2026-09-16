@@ -59,7 +59,7 @@ from app.services.recorded_contributions import (
 from tests._test_helpers import (
     an_entered_day,
     basis_for,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     pricing_over,
     settlement_columns,
     shadow_amount,
@@ -623,7 +623,7 @@ class TestLoadPayrollFeeds:
             db.session.flush()
             # The 24-per-year shape (plan step salary:R15-b): every paycheck,
             # at most 2 a month.
-            make_deduction_cadence_rule(db.session, twice_monthly, 24)
+            make_line_cadence_rule(db.session, twice_monthly, 24)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             feed = load_payroll_feeds(
@@ -705,7 +705,7 @@ class TestLoadPayrollFeeds:
             )
             db.session.add(ruled)
             db.session.flush()
-            make_deduction_cadence_rule(db.session, ruled, 24)
+            make_line_cadence_rule(db.session, ruled, 24)
             db.session.commit()
             calendar = calendar_for(ids["user_id"])
             pricing = pricing_over(calendar)
@@ -829,6 +829,48 @@ class TestLoadPayrollFeeds:
             assert feeds[ids["acct_a_id"]].gross_at(first) == expected
             assert feeds[ids["acct_b_id"]].funds_employer is False
             assert feeds[ids["acct_b_id"]].gross_at(first) is None
+
+    def test_the_employer_basis_is_base_pay_not_the_gross_a_taxable_earning_joins(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+    ):
+        """Beside a $45 taxable earning the funding profile's basis stays $3,846.15, not $3,891.15.
+
+        Ruling **R-SAL38** (3), plan step salary:R18-b: a percentage figure
+        in payroll is a percentage of BASE PAY, and the employer-match
+        resolver reads that base.  Until R18-b ``gross_biweekly`` WAS the
+        base, so no case here could tell the two apart; this one seeds a
+        taxable earning line on the funding profile so they differ by exactly
+        the line, and asserts the feed reads the base.
+        """
+        with app.app_context():
+            ids = _seed_deductions_fixture(app, db, seed_user, seed_second_user)
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=ids["user_id"], name="Active")
+                .one()
+            )
+            db.session.add(PaycheckLine(
+                salary_profile_id=profile.id, name="Phone Allowance",
+                amount=Decimal("45"),
+                calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
+                paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                    PaycheckLineKindEnum.TAXABLE_EARNING,
+                ),
+                is_active=True,
+            ))
+            named = self._params_for(ids["acct_a_id"], profile.id)
+            db.session.commit()
+
+            calendar = calendar_for(ids["user_id"])
+            feeds = load_payroll_feeds(
+                pricing_over(calendar), [ids["acct_a_id"]], {ids["acct_a_id"]: named},
+            )
+            first = calendar.saved()[0]
+            priced = pricing_over(calendar).for_profile(profile).at(first)
+            # The line is on the paycheck: gross carries it, base does not.
+            assert priced.earnings.base_biweekly == Decimal("3846.15")
+            assert priced.earnings.gross_biweekly == Decimal("3891.15")
+            assert feeds[ids["acct_a_id"]].gross_at(first) == Decimal("3846.15")
 
     def test_an_ARCHIVED_funding_profile_models_no_employer_money(
         self, app, db, seed_user, seed_second_user, seed_periods,

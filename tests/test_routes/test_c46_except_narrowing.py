@@ -288,7 +288,7 @@ class TestSalaryNarrowCatch:
     def test_add_deduction_data_error_handled(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``DataError`` (non-Integrity) on ``add_deduction`` commit triggers narrow catch."""
+        """``DataError`` (non-Integrity) on ``add_line`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
             pre_tax = db.session.query(PaycheckLineKind).filter_by(
@@ -302,7 +302,7 @@ class TestSalaryNarrowCatch:
                 db.session, "commit", side_effect=_make_data_error(),
             ):
                 resp = auth_client.post(
-                    f"/salary/{profile.id}/deductions",
+                    f"/salary/{profile.id}/lines",
                     data={
                         "name": "401k",
                         "paycheck_line_kind_id": pre_tax.id,
@@ -325,7 +325,7 @@ class TestSalaryNarrowCatch:
     def test_delete_deduction_data_error_handled(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``DataError`` on ``delete_deduction`` commit triggers narrow catch."""
+        """``DataError`` on ``delete_line`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
             pre_tax = db.session.query(PaycheckLineKind).filter_by(
@@ -350,7 +350,7 @@ class TestSalaryNarrowCatch:
                 db.session, "commit", side_effect=_make_data_error(),
             ):
                 resp = auth_client.post(
-                    f"/salary/deductions/{ded_id}/delete",
+                    f"/salary/lines/{ded_id}/delete",
                     follow_redirects=False,
                 )
 
@@ -365,7 +365,7 @@ class TestSalaryNarrowCatch:
     def test_update_deduction_data_error_handled(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``DataError`` (non-Integrity) on ``update_deduction`` commit triggers narrow catch."""
+        """``DataError`` (non-Integrity) on ``update_line`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
             pre_tax = db.session.query(PaycheckLineKind).filter_by(
@@ -391,7 +391,7 @@ class TestSalaryNarrowCatch:
                 db.session, "commit", side_effect=_make_data_error(),
             ):
                 resp = auth_client.post(
-                    f"/salary/deductions/{ded_id}/edit",
+                    f"/salary/lines/{ded_id}/edit",
                     data={
                         "name": "401k",
                         "paycheck_line_kind_id": pre_tax.id,

@@ -414,8 +414,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-3a** `65045062` -- the figure-source catalogue and the ONE settle-owned writer,
       expense parents (**R-BAL39**); the purchase bucket in the ledger report (**BAL-502**, closed
       here); four review findings fixed with firing controls; 47 rule-5 test edits ruled 2026-09-15.
-    * [ ] **X-bi-3b** the INCOME arm: three readers derive a movement's direction from its parent's
-      type (**R-BAL35**; a covered paycheck read `-figure`), then income parents are covered.
+    * [x] **X-bi-3b** `56a8d6d7` -- ONE producer of a movement's figure in its parent's direction
+      (`movement_cash_leg`, six `-amount` spellings gone; `posted_purchase_effect` signed by type);
+      income parents covered, a settled paycheck reading `+figure`; four review findings fixed.
     * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
       per shadow until `X-bi-6` re-parents them onto `budget.transfers`.
     * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ

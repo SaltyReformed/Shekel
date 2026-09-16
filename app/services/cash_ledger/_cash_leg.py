@@ -18,6 +18,19 @@ The sign follows the transaction TYPE, never the account class, so the leg is
 correct whether the cash account is an asset (Checking) or a liability (a direct
 charge on a Credit Card account).
 
+**A MOVEMENT's leg is signed by the same rule, and since plan step
+``balance:X-bi-3b`` it is stated here ONCE** (:func:`movement_cash_leg`).  A
+purchase recorded against an envelope, and the covering movement a settle
+writes for a bill or a paycheck, moves its whole figure through the parent's
+account in the parent's direction -- ruling **R-BAL35**: a movement's
+category, type and scenario are its plan row's, read through
+``transaction_id`` and never copied, so its direction is read the same way.
+Six readers spelled *a purchase is money leaving* for themselves before this
+step (the walk's fact producer, the ledger writer's target, the seam's family
+valuation, the statement matcher's offer, its accepted register and its undo
+dialog), every one of them correct for a purchase and every one of them
+``-figure`` for a covered paycheck, which is wrong by twice the figure.
+
 **The two subtracted terms are why the family exists at all.**  A card purchase
 leaves later through its own CC Payback sibling, and a purchase carrying a
 recorded bank posting day is already a cash movement of its own on its own day
@@ -288,5 +301,85 @@ def cash_leg_of(txn, gross: Decimal) -> Decimal:
     """
     if not is_balance_contributing(txn):
         return Decimal("0.00")
-    net = gross - off_statement_sum(txn)
-    return net if txn.is_income else -net
+    return _signed_by_type(txn, gross - off_statement_sum(txn))
+
+
+def movement_cash_leg(txn: Transaction, entry) -> Decimal:
+    """Return the signed cash ONE movement moves through *txn*'s account.
+
+    The movement's twin of :func:`settled_cash_leg` (plan step
+    ``balance:X-bi-3b``, ruling **R-BAL35**): a purchase against an envelope
+    or the covering movement a settle wrote moves its whole stored figure in
+    its PARENT's direction -- ``+`` under an income row, ``-`` under an
+    expense -- through the ONE sign rule the parent's own leg reads.  A
+    purchase has no type of its own, exactly as it has no category of its
+    own: both are the plan row's.
+
+    **TOTAL over the two facts that make a movement move nothing here**, so
+    a caller that forgets to pre-filter still reads the right figure:
+
+    * a CARD purchase leaves through its own CC Payback sibling and never
+      touches this account (:func:`credit_entry_sum` is the term that keeps
+      it out of the parent's leg for the same reason);
+    * a movement under a NON-CONTRIBUTING parent -- soft-deleted, Credit or
+      Cancelled -- moves nothing, the family's zero :func:`settled_cash_leg`
+      states for the parent (ruling **R-FM**).
+
+    It does NOT read ``settled_on``: whether a movement has POSTED is a
+    question about the event stream and the ledger (``_events.
+    _posted_purchase_facts``, ``_posting_purchases.purchase_posts``), while
+    the statement matcher prices an UNPOSTED purchase at what the bank would
+    show for it.  The one figure both want is this.
+
+    Args:
+        txn: The movement's parent row, contributing or not.
+        entry: One of its ``budget.transaction_entries`` rows.
+
+    Returns:
+        The signed ``Decimal``: positive INTO the account, ``0.00`` for a card
+        purchase or a movement under a non-contributing parent.  A stored
+        REFUND (a negative purchase, ruling **bank_import:R-II**) passes
+        through as money coming back, because this is arithmetic and not a
+        case analysis.
+    """
+    if entry.is_credit or not is_balance_contributing(txn):
+        return Decimal("0.00")
+    return _signed_by_type(txn, entry.amount)
+
+
+def movement_figure_for(txn: Transaction, cash: Decimal) -> Decimal:
+    """Return the figure a movement under *txn* must STORE to move *cash*.
+
+    The inverse of :func:`movement_cash_leg`'s signed arm, for the two doors
+    that write a movement's figure FROM a bank line's cash rather than read
+    the cash from a figure: the statement matcher minting a purchase from a
+    line (``_create._born_purchase``) and re-pricing one to a line
+    (``_landing.corrected_figure``).  Both spelled ``-cash`` for themselves
+    until plan step ``balance:X-bi-3b`` -- the expense arm of the rule, and
+    a second spelling of it even while every purchase they could reach sat
+    under an expense row.  The sign rule is an involution, so this IS
+    :func:`_signed_by_type` and the inverse costs no second expression.
+
+    Args:
+        txn: The parent the movement records money for.
+        cash: The signed cash the bank states, positive INTO the account.
+
+    Returns:
+        The stored figure: ``-cash`` under an expense (an outflow of
+        ``-28.29`` is a purchase of ``28.29``, an inflow a REFUND of
+        ``-28.29`` by the same expression, ruling **bank_import:R-II**),
+        ``+cash`` under an income row.
+    """
+    return _signed_by_type(txn, cash)
+
+
+def _signed_by_type(txn: Transaction, magnitude: Decimal) -> Decimal:
+    """Return *magnitude* signed by *txn*'s TYPE: ``+`` income, ``-`` expense.
+
+    The one expression of the direction rule, private so its three readers
+    -- a row's leg (:func:`cash_leg_of`), a movement's
+    (:func:`movement_cash_leg`) and the movement's figure from its cash
+    (:func:`movement_figure_for`, the same involution read the other way)
+    -- are the whole surface.
+    """
+    return magnitude if txn.is_income else -magnitude

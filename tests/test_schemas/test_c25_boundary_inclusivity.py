@@ -25,7 +25,7 @@ import pytest
 from marshmallow import ValidationError
 
 from app.schemas.validation import (
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     LoanParamsCreateSchema,
     SavingsGoalCreateSchema,
     SavingsGoalUpdateSchema,
@@ -189,7 +189,7 @@ class TestLoanParamsOriginalPrincipal:
 
 
 class TestPaycheckLineAnnualCap:
-    """Boundary inclusivity tests for ``DeductionCreateSchema.annual_cap``."""
+    """Boundary inclusivity tests for ``PaycheckLineCreateSchema.annual_cap``."""
 
     def _payload(self, annual_cap=None):
         """Return a complete create payload.
@@ -218,12 +218,12 @@ class TestPaycheckLineAnnualCap:
         violates it but a NULL is a legal "no cap" sentinel.
         """
         with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load(self._payload("0"))
+            PaycheckLineCreateSchema().load(self._payload("0"))
         assert "annual_cap" in exc.value.messages
 
     def test_strictly_positive_annual_cap_accepted(self):
         """A strictly positive cap loads as Decimal."""
-        data = DeductionCreateSchema().load(
+        data = PaycheckLineCreateSchema().load(
             self._payload("23000.00"),
         )
         assert data["annual_cap"] == Decimal("23000.00")
@@ -234,5 +234,5 @@ class TestPaycheckLineAnnualCap:
         The route layer treats absent annual_cap as "no cap"; the
         schema does not synthesise a default sentinel.
         """
-        data = DeductionCreateSchema().load(self._payload())
+        data = PaycheckLineCreateSchema().load(self._payload())
         assert "annual_cap" not in data

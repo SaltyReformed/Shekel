@@ -13,6 +13,13 @@ compared whole, not by the names it lists), that a row survives the round
 trip unchanged, that the audit trigger fires on the renamed table under
 its new name and only its new name, and that the downgrade REFUSES a kind
 name the old column cannot hold.
+
+**Leaf R18-b (``6c15d2a97b78``) sits above this revision** and seeds the two
+earning kinds, whose names the pre-rename column cannot hold; so the round
+trip here runs R18-b's own ``downgrade()`` first and its ``upgrade()`` last
+(Alembic's newest-first order, the stacked shape of
+:func:`~tests._test_helpers.rewind_pay_schedule_rhythm`), and the refusal
+case needs no seeded row of its own: R18-b's rows ARE the refusal.
 """
 from __future__ import annotations
 
@@ -35,6 +42,14 @@ from tests._test_helpers import (
 #: This revision, loaded so its own callables (and its own rename tables)
 #: are what this file drives and reads.
 _M_R18A = load_migration_module("0a4d2c3e89f8_a_paycheck_is_a_list_of_lines.py")
+#: The revision above it, whose two earning-kind rows must go before this
+#: one's downgrade can narrow the name column, and come back after.
+_M_R18B = load_migration_module("6c15d2a97b78_a_paycheck_has_earning_lines.py")
+
+#: The four kinds head carries (ruling R-SAL38), in the enum's waterfall order.
+_HEAD_KINDS = {
+    "taxable_earning", "pre_tax_deduction", "post_tax_deduction", "after_tax_earning",
+}
 
 _LINES = ("salary", "paycheck_lines")
 _OLD_LINES = ("salary", "paycheck_deductions")
@@ -215,9 +230,7 @@ class TestHeadCarriesTheNewNamesOnly:
             assert "paycheck_line_kinds_id_seq" in _sequences(db.session, "ref")
             assert "deduction_timings_id_seq" not in _sequences(db.session, "ref")
             assert _triggers(db.session, *_LINES) == {"audit_paycheck_lines"}
-            assert _kind_names(db.session, *_KINDS) == {
-                "pre_tax_deduction", "post_tax_deduction",
-            }
+            assert _kind_names(db.session, *_KINDS) == _HEAD_KINDS
 
     def test_the_audit_trigger_fires_once_under_its_new_name(self, app, db, seed_user):
         """A write to the renamed table logs ONE row naming ``paycheck_lines``.
@@ -254,6 +267,10 @@ class TestTheRoundTrip:
             line_id = _seed_line(seed_user, "Vision", "12.06")
             before = _snapshot(db.session)
 
+            _run(_M_R18B.downgrade, db.session)
+            assert _kind_names(db.session, *_KINDS) == {
+                "pre_tax_deduction", "post_tax_deduction",
+            }
             _run(_M_R18A.downgrade, db.session)
 
             assert _table_exists(db.session, *_OLD_LINES)
@@ -285,6 +302,7 @@ class TestTheRoundTrip:
             ), {"id": line_id}).scalar() == Decimal("12.0600")
 
             _run(_M_R18A.upgrade, db.session)
+            _run(_M_R18B.upgrade, db.session)
 
             assert _snapshot(db.session) == before
             db.session.expire_all()
@@ -299,15 +317,13 @@ class TestTheRoundTrip:
 
         The migration's own claim about itself: the narrowing cast refuses
         rather than truncating, so a tree that seeded the earning kinds
-        cannot be downgraded past them silently.  The refusal is
+        cannot be downgraded past them silently -- and head IS such a tree,
+        so this downgrade is run with R18-b's rows in place.  The refusal is
         PostgreSQL's ``StringDataRightTruncation``, surfaced as a
         :class:`~sqlalchemy.exc.DataError`.
         """
         with app.app_context():
-            db.session.execute(text(
-                "INSERT INTO ref.paycheck_line_kinds (name) VALUES ('taxable_earning')"
-            ))
-            db.session.commit()
+            assert _kind_names(db.session, *_KINDS) == _HEAD_KINDS
 
             with pytest.raises(DataError) as excinfo:
                 _run(_M_R18A.downgrade, db.session)
@@ -321,6 +337,4 @@ class TestTheRoundTrip:
             # rolled back with the cast that failed.
             assert _table_exists(db.session, *_LINES)
             assert not _table_exists(db.session, *_OLD_LINES)
-            assert _kind_names(db.session, *_KINDS) == {
-                "pre_tax_deduction", "post_tax_deduction", "taxable_earning",
-            }
+            assert _kind_names(db.session, *_KINDS) == _HEAD_KINDS

@@ -70,6 +70,7 @@ from ._builders import (
     an_import,
 )
 from tests._test_helpers import (
+    family_journal_filter,
     last_covered_day,
     resolved_amount,
 )
@@ -597,13 +598,16 @@ class TestTheLedgerBooksItToUncategorized:
         )
 
         row = _minted(seed_user)[0]
+        # The row's FAMILY (plan step X-bi-3b): the minted paycheck settles
+        # covered, its money posted under its movement, so the read widens
+        # to the family and the figures stand.
         legs = (
             db.session.query(
                 LedgerAccount.is_fallback, db.func.sum(Posting.amount),
             )
             .join(Posting, Posting.ledger_account_id == LedgerAccount.id)
             .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
-            .filter(JournalEntry.transaction_id == row.id)
+            .filter(family_journal_filter(row))
             .group_by(LedgerAccount.is_fallback)
             .all()
         )
