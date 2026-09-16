@@ -32,7 +32,9 @@ _entry_aware_amount``), the posting writer posts it (``posting_service.
 sync_transaction_postings`` walks ``txn.entries``), and the statement matcher
 drops a zero-effect row from its offer (``_candidates.transaction_candidate``)
 and offers the movement instead.  None of those readers branches on the row's
-kind, which is why this leaf changes no reader.
+kind; the one place a kind branch stands is the POSTING doors, which return
+for a transfer shadow's entries, and that branch is ruling **R-BAL45**'s
+interval rather than a reader deciding for itself (below).
 
 **A revert DELETES the covering movement, and the row's retained record is
 what carries the figure across.**  Leaving the settled band releases the
@@ -63,14 +65,43 @@ as its mirror.  So the seam marks what it writes, finds it by the mark, the
 entry doors refuse to touch a marked row, and a partial unique index holds
 the count at one per row.
 
-**The 3c gate, stated so that leaf deletes its arm.**  This module covers
-every parent that is not a transfer shadow.  ``X-bi-3a`` covered EXPENSE
-parents; ``X-bi-3b`` covered INCOME parents once a movement's direction was
-its parent's everywhere it is read (``cash_ledger.movement_cash_leg``, ruling
-**R-BAL35**) -- until then six readers spelled *a purchase is money leaving*
-and a covered paycheck read ``-figure``.  A transfer shadow waits for
-``X-bi-3c``, which writes both legs through ``transfer_service`` under
-Transfer Invariant 4.
+**Every settled row is covered, whatever its kind, and the kinds arrived one
+leaf at a time.**  ``X-bi-3a`` covered EXPENSE parents; ``X-bi-3b`` covered
+INCOME parents once a movement's direction was its parent's everywhere it is
+read (``cash_ledger.movement_cash_leg``, ruling **R-BAL35**) -- until then
+six readers spelled *a purchase is money leaving* and a covered paycheck read
+``-figure``; ``X-bi-3c`` covered the two shadows of a TRANSFER.  A shadow is
+reached here through ``transfer_service`` alone
+(``_status.apply_status_to_all_three`` hands the seam one ``Settlement`` for
+the pair, one call per leg), which is Transfer Invariant 4 kept without a
+second writer: the transfer settle and the transaction settle call the ONE
+writer, and it is this module.  Each leg's movement moves in its own leg's
+direction -- the expense shadow's ``-figure`` off the from-account, the
+income shadow's ``+figure`` into the to-account -- through the same producer
+a bill's and a paycheck's read.
+
+**A transfer's movements POST nowhere until the ledger takes its ruled
+shape** (ruling **R-BAL45**, developer 2026-09-16).  The posted ledger books
+a settled transfer as ONE journal entry ``{from -figure, to +figure}`` off the
+income shadow's record (``posting_service.sync_transfer_postings``), and every
+purchase-posting door returns for a shadow's entries; so through the interval
+the walk reads a covered leg as ``0 + movement`` and the ledger as the row's
+record, and the two agree because this module mirrors one record into both
+homes (the same interval ruling **R-BAL40** accepts for a bill).  The ruled
+endpoint is two entries per transfer, one per movement on its own bank day,
+each against a transfers-in-transit clearing account -- which needs per-leg
+settle days and so waits for ``X-bi-6``, the step that deletes the shadow
+mirror and Transfer Invariant 3's one-day-per-pair clause with it.  Posting a
+shadow's movement through the purchase source was rejected there: that
+source's counter leg is the parent's CATEGORY account, and a transfer between
+two of the owner's accounts is neither income nor expense.
+
+**A movement moves with its parent** (ruling **R-BAL46**).  The one parent
+whose account can change is a shadow re-pointed by
+``transfer_service._endpoints._apply_endpoint_move``; the co-located key
+``fk_transaction_entries_parent_account`` cascades the move (migration
+``c4e8a2d7f1b3``) and the applier assigns the movements' account as well, so
+the session agrees with the database.  Nothing here reads the account.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 mutates in place and never commits; the release arm's posting reversal
@@ -125,16 +156,6 @@ def _source_of(row: Transaction, settlement: Settlement) -> MovementFigureSource
     if settlement.basis is SettlementBasisEnum.DERIVED:
         return MovementFigureSourceEnum.RESOLVED
     return figure_source_of(recorded_settle_day(row))
-
-
-def _is_covered_kind(row: Transaction) -> bool:
-    """Return whether the seam writes a covering movement for *row*.
-
-    The 3c gate from the module docstring: any row that is not a transfer
-    shadow.  It read ``and row.is_expense`` until plan step ``X-bi-3b``
-    deleted the income half; ``X-bi-3c`` deletes the rest.
-    """
-    return row.transfer_id is None
 
 
 def covering_clause():
@@ -365,19 +386,27 @@ def _release(row: Transaction) -> None:
 def record_clearing(row: Transaction, anchor_id: int) -> None:
     """Record WHICH statement showed *row*'s money, on the row and its mirror.
 
-    The transaction twin of ``transfer_service._settle.record_clearing``, and
-    the ONE writer of a transaction's ``reconciled_by_id`` outside the seam's
-    own release arms (plan step **X-bi-3a**, ruling **R-FL**).  The reconcile
-    panel records the link AFTER the settle verb returns -- the verb is shared
-    with the grid's Mark Paid, which no statement has shown -- and the settle
-    has by then mirrored the row's money onto its covering movement, whose
-    fact is the one the fold and ``StatementCoverage`` read.  A link written
-    on the row alone would leave that fact unlinked and the panel's own
-    clearing rule inert for every bill it ticks (found by
-    ``test_cash_walk``'s governing-assertion case, 2026-09-16).
+    The ONE writer of a transaction's ``reconciled_by_id`` outside the seam's
+    own release arms (plan step **X-bi-3a**, ruling **R-FL**), for a plain
+    row and for a transfer shadow alike: the reconcile panel's transaction
+    arm calls it directly, and its transfer arm through
+    ``transfer_service.record_clearing``, the shadow's door under Transfer
+    Invariant 4, which delegates here since plan step **X-bi-3c** (a shadow
+    carries a covering movement from that step, so the door's own one-column
+    write would have left the leg's fact unlinked).  The reconcile panel
+    records the link AFTER the settle verb returns -- the verb is shared with
+    the grid's Mark Paid, which no statement has shown -- and the settle has
+    by then mirrored the row's money onto its covering movement, whose fact
+    is the one the fold and ``StatementCoverage`` read.  A link written on
+    the row alone would leave that fact unlinked and the panel's own clearing
+    rule inert for every bill it ticks (found by ``test_cash_walk``'s
+    governing-assertion case, 2026-09-16).
 
     Args:
-        row: The settled transaction the statement showed.
+        row: The settled transaction the statement showed -- a plain row, or
+            the one LEG of a transfer on the account whose statement was read
+            (clearing is per leg; ``transfer_service.record_clearing`` says
+            why the sibling takes none).
         anchor_id: The ``account_anchor_history`` row that was being read.
     """
     row.reconciled_by_id = anchor_id
@@ -417,8 +446,6 @@ def sync_covering_movement(
         now_settled: Whether it is in the band after.
         settlement: The record the seam was handed for this act, or ``None``.
     """
-    if not _is_covered_kind(row):
-        return
     if was_settled and not now_settled:
         _release(row)
         return

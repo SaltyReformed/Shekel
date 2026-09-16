@@ -446,8 +446,9 @@ def _apply_creations(tally, batch: ReviewedBatch, scope: ReviewScope, minted, an
         tally: The running receipt.
         batch: What the owner ticked.
         scope: The pass's derived offer set.
-        minted: The per-request envelope registry, so a sweep mints one
-            envelope per answer per pay period rather than one per line.
+        minted: The per-request registry, so a sweep mints one definition
+            per answer and places one row of it per pay period rather than
+            one per line (:class:`~._container.MintedEnvelopes`).
         answers: What the owner has said about this account's merchants, read
             ONCE for the whole door.
     """
@@ -472,8 +473,11 @@ def _apply_creations(tally, batch: ReviewedBatch, scope: ReviewScope, minted, an
         # a registry written one line above that refusal hands the NEXT line an
         # id the rollback has already taken.  Measured -- the sweep died on
         # ``NoneType`` -- which is why the remembering lives out here.
-        if recorded.envelope_created:
-            minted.remember(creation.new_envelope, recorded)
+        # EVERY recorded purchase, not only one that created its envelope:
+        # a first firing that converged on a placed envelope of its name has
+        # a definition the rest of the press must learn (``remember``'s
+        # docstring carries what the ``envelope_created`` gate cost).
+        minted.remember(creation, recorded)
         # **Counted by DIRECTION, off the field the door stated** (ruling
         # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  One
         # count reported both, and the receipt's caption for it -- *recorded as

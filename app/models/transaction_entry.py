@@ -94,9 +94,10 @@ class TransactionEntry(
                              this entry (SET NULL on payback deletion).
         covers_settlement -- Whether this movement IS its parent's settlement
                            record: the covering movement the status seam
-                           writes when a bill (or an envelope closed empty)
-                           settles on the MANUAL branch, as against a purchase
-                           a person or the bank recorded.  Set by the seam
+                           writes when a bill, a paycheck, a transfer leg or
+                           an envelope closed empty settles on the MANUAL
+                           branch, as against a purchase a person or the bank
+                           recorded.  Set by the seam
                            alone; the entry doors refuse to edit or delete one
                            (``entry_service._reject_settlement_record``); at
                            most one per row
@@ -110,9 +111,10 @@ class TransactionEntry(
                            **R-BAL39**, :class:`app.enums.MovementFigureSourceEnum`.
 
     **A row of this table is a MOVEMENT, and since plan step X-bi-3a a settle
-    writes one for a bill too -- and since X-bi-3b for a paycheck** (ruling
-    **R-BAL39**): the COVERING MOVEMENT, the payment row that records a bill's
-    or a paycheck's money the way a purchase records an envelope's, in the
+    writes one for a bill too -- since X-bi-3b for a paycheck, and since
+    X-bi-3c for each leg of a transfer** (ruling **R-BAL39**): the COVERING
+    MOVEMENT, the payment row that records a bill's, a paycheck's or a
+    transfer leg's money the way a purchase records an envelope's, in the
     parent's direction (``cash_ledger.movement_cash_leg``, ruling
     **R-BAL35**).  It is an ordinary row here -- its ``amount`` is the figure
     the settle booked, its ``purchased_on`` the settle day (the only day a
@@ -126,11 +128,14 @@ class TransactionEntry(
     unticked on a settled envelope and a figure typed over it leaves a
     stored-figure row holding real purchases -- so which entry is the record
     is a stored fact of the movement, never a derivation over the row.
-    Every reader of this table -- the fold, the projection, the posting
-    writer, the statement matcher -- is kind-blind and sums by ruling
-    **R-FM**'s identity, so a covered bill's own leg nets to zero and the
-    movement carries the money.  ``balance:X-bi-5`` dissolves the bill /
-    envelope distinction and the flag with it.
+    Every reader of this table -- the fold, the projection, the statement
+    matcher -- is kind-blind and sums by ruling **R-FM**'s identity, so a
+    covered bill's own leg nets to zero and the movement carries the money;
+    the posting writer alone branches, returning for a transfer shadow's
+    entries, because a shadow's movement posts nowhere until the ledger takes
+    its ruled shape (ruling **R-BAL45**, plan step **X-bi-6**).
+    ``balance:X-bi-5`` dissolves the bill / envelope distinction and the flag
+    with it.
 
     **The stored ``is_cleared`` boolean this replaced is DELETED** (ruling
     R-DH (d), migration ``d7c1f4a9e603``).  It was written as a side effect of
@@ -210,11 +215,26 @@ class TransactionEntry(
         # key is about the PARENT'S EXISTENCE and this one is about AGREEMENT,
         # and two keys over the same column cascading differently would make a
         # delete's outcome depend on which PostgreSQL evaluated.
+        #
+        # ``ON UPDATE CASCADE`` since plan step **X-bi-3c** (ruling
+        # **R-BAL46**, migration ``c4e8a2d7f1b3``): the one parent whose
+        # account can move is a transfer shadow (``transfer_service.
+        # _endpoints._apply_endpoint_move``), and since that step a settled
+        # shadow carries a covering movement -- so the database moves the
+        # movement with its parent, and no writer can move a parent without
+        # its movements.  The applier assigns the movements' account too, for
+        # the session's sake alone: the ORM never learns what a cascade wrote.
+        # The trade: the NO ACTION rule refused ANY parent-account move that
+        # left an entry behind, an envelope's purchases included; no writer
+        # makes that move (the maintain pass retains such a row), the shadow
+        # is the cascade's one beneficiary, and ``X-bi-6`` restores NO ACTION
+        # with the shadow rows it deletes.
         db.ForeignKeyConstraint(
             ["transaction_id", "account_id"],
             ["budget.transactions.id", "budget.transactions.account_id"],
             name="fk_transaction_entries_parent_account",
             ondelete="CASCADE",
+            onupdate="CASCADE",
         ),
         # WHICH STATEMENT showed this purchase, as a COMPOSITE key over the
         # account (ruling **R-FL**).  The transaction twin of

@@ -114,11 +114,13 @@ def unruled_live_rows(template) -> list[Transaction]:
     ``_recurrence_common.classify_maintain_work`` uses to decide which rows a
     recurring definition's regeneration may rewrite.  A settled row is
     immutable history and an overridden one is a deliberate per-instance
-    change; neither follows the definition, here or there.  A placed row
-    carries no flag once the popover restates its price in place
+    change; neither follows the definition, here or there.  A one-off's
+    ONLY row carries no flag once the popover restates its price in place
     (**R-BAL29**; a row the interim between leaves 7b-1 and 7b-2 detached
-    is re-attached by its next typed figure, **R-BAL37**), so for a one-off
-    this selects its every live row.
+    is re-attached by its next typed figure, **R-BAL37**), so it is always
+    selected; a row of a MANY-row definition the owner re-priced is the
+    owner's (**R-BAL43**) and is skipped like any overridden row, so a
+    later category edit on the definition does not reach it.
 
     Args:
         template: The rule-less

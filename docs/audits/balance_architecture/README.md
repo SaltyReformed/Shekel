@@ -387,18 +387,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
       "no cadence" sites and the account-delete refusal read it; **R-BAL27** and **R-BAL28** ruled
       at the cut. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
-      parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
-      (**R-BAL24**); ticks with 7b-3.
+    * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
+      DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
+      (**R-BAL24**); ticked with 7b-3.
       * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
         (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
         nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
       * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
         R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
         restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
-      * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
-        TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
-        `X-f6c`'s shape.
+      * [x] **X-bi-7b-3** `321bf2e4` -- `_create_envelope` on the producer; a NEW-ENVELOPE answer mints
+        once and names the definition; a TEMPLATE answer PLACES a rule-less definition's row
+        (`PlacementKind.PLACE`); `MintedEnvelopes` keyed on the definition; **R-BAL43**, **R-BAL44**.
     * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
       construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
       AST walk over their keywords, so no total is stated here).
@@ -417,8 +417,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-3b** `56a8d6d7` -- ONE producer of a movement's figure in its parent's direction
       (`movement_cash_leg`, six `-amount` spellings gone; `posted_purchase_effect` signed by type);
       income parents covered, a settled paycheck reading `+figure`; four review findings fixed.
-    * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
-      per shadow until `X-bi-6` re-parents them onto `budget.transfers`.
+    * [x] **X-bi-3c** `68401855` -- both transfer legs covered through the seam (**R-BAL41**); the
+      ledger's endpoint ruled C (**R-BAL45**), 3c its first leaf; an endpoint move carries the
+      movements (**R-BAL46**, migration `c4e8a2d7f1b3`); the lock predicate total; six rows born.
     * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
       scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
@@ -438,7 +439,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     `status_id` (`_restore.py:144-221`) -- and the fence is **38 sites, not 20**: 20 Python branches
   in 12 modules, 7 Jinja in 3 templates, 4 inverted guards, 7 query exclusions. **The pair-drift
     repairer is `transfer_service._restore`, NOT `posting_service`**, which only skips and warns --
-  deleting the latter removes a skip arm and leaves the repairer standing. **Still after X-bi-4:
+  deleting the latter removes a skip arm and leaves the repairer standing. It also restores `NO ACTION` on
+  `fk_transaction_entries_parent_account`'s update rule (**BAL-506**): the shadow was the cascade's one
+  beneficiary. Closes **BAL-503**, **BAL-506**. **Still after X-bi-4:
     INVARIANT 5 IS WHY THE MIRROR EXISTS.** Closes **BAL-475**.
 * [ ] **X-ci** transfers take the one-definition shape their data holds (X-bi-7's 10.3): the ad-hoc
   door closes, the discardable count and detaching move are fixed. Closes **BAL-492**, **BAL-493**.
@@ -1055,6 +1058,9 @@ section 4, under their unchanged ids.*
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
+* [ ] **X-ck** `fix(seam): the delete dialog counts purchases; a movement's name is written once` --
+  closes **BAL-504**, **BAL-505**: the popover counts `txn.entries` where it means purchases, and
+  `_record_onto` rewrites the movement's name on every re-record where R-BAL39 says once.
 * [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
   **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
 * [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.

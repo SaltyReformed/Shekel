@@ -466,8 +466,11 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
 
     **The transfer arm's position is FREE and is fixed anyway.**  Its scope is
     the complement of the transaction arm's and disjoint from the purchase
-    arm's parents -- a shadow can hold no entries -- so no ordering between it
-    and either of them can change an outcome.  It runs last because a sequence
+    arm's parents -- a shadow can hold no purchase, and its one possible entry
+    (the seam's covering movement, plan step ``balance:X-bi-3c``) always
+    carries a posting day, so the purchase arm's ``settled_on IS NULL`` scope
+    never reaches one -- so no ordering between it and either of them can
+    change an outcome.  It runs last because a sequence
     with one hard rule in it should not also have an unstated arbitrary part:
     the order is written down here so a reader learns which half is which.
 

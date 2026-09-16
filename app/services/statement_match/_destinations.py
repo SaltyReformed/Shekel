@@ -8,8 +8,9 @@ answers *what has this account recorded that a statement could be showing*
 (:func:`~._candidates.candidates_for`), and this answers *what budget line
 could a statement line BECOME a purchase against*
 (:func:`destinations_for`), which is ruling **R-FS**'s third shape.  Nothing
-changed on the way across except the one field the step added
-(``PurchaseDestination.recurs``).
+changed on the way across except one field the step's first leaf added
+(``PurchaseDestination.recurs``) and its third leaf re-keyed
+(``is_placed``, ruling **R-BAL24**).
 
 **One scope, shared by the screen that offers and the door that writes**: a
 row this does not return cannot be reached by crafting a request, and a row
@@ -190,12 +191,14 @@ def destinations_for(
             period=spans[txn.pay_period_id],
             is_settled=txn.status.is_settled,
             # The row's identity ACROSS periods, which is what a merchant
-            # rule names (plan step X-f6a-3d) -- and whether a CADENCE stands
-            # behind it, which is what tells a recurring envelope from a
-            # one-off's (plan step balance:X-bi-7b).  The rule rides on the
-            # template's joined load above, so this costs no query per row.
+            # rule names (plan step X-f6a-3d) -- for a placed row of a
+            # rule-less definition as much as for a generated one since leaf
+            # 7b-3 of balance:X-bi-7b (ruling R-BAL24) -- and whether it IS
+            # such a placed row, which a new-envelope answer's first firing
+            # converges on by name.  The rule rides on the template's joined
+            # load above, so this costs no query per row.
             template_id=txn.template_id,
-            recurs=txn.recurs,
+            is_placed=txn.is_placed,
         )
         for txn in rows
         if txn.tracks_purchases

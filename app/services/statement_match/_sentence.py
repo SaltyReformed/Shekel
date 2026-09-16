@@ -221,8 +221,10 @@ def for_placement(placement: Placement) -> "tuple[Span, ...]":
 
     Args:
         placement: The :class:`~._placement.Placement`, which must name a
-            destination -- ``records_in`` or ``creates``.  An UNRESOLVED
-            placement names none and its card takes :func:`choose` instead.
+            destination -- ``names_a_home``: it records in a row, creates an
+            envelope, or places a row of a one-off envelope's definition.
+            An UNRESOLVED placement names none and its card takes
+            :func:`choose` instead.
 
     Returns:
         The spans.
@@ -258,6 +260,23 @@ def for_placement(placement: Placement) -> "tuple[Span, ...]":
             spans.append(
                 Span.words("joining the one this pass creates", Ink.MUTED),
             )
+        return tuple(spans)
+    if placement.places:
+        # A row of the definition, placed in this line's own paycheck (leaf
+        # 7b-3 of balance:X-bi-7b): the definition's name is what the owner
+        # knows it by, and the paycheck is the line's own, which the card
+        # already shows beside the line.  A later line in the same paycheck
+        # JOINS that row, said here as the create arm says it.
+        spans = [
+            Span.words(Verb.ADD.word, Ink.VERB),
+            Span.words("to", Ink.PLAIN),
+            Span.words(placement.placed.name, Ink.STRONG),
+        ]
+        spans.append(
+            Span.words("joining the one this pass places", Ink.MUTED)
+            if placement.joins_new
+            else Span.words("placed in this paycheck", Ink.MUTED),
+        )
         return tuple(spans)
     raise ValueError(
         f"A placement of kind {placement.kind.value!r} names no destination, "
