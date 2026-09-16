@@ -94,6 +94,11 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
 )
+from app.services.status_seam._covering import (
+    covered_cash_leg,
+    covering_clause,
+    covering_movements,
+)
 from app.services.status_seam._seam import (
     apply_status_change,
     settle_day_for_status,
@@ -104,6 +109,9 @@ __all__ = [
     "Settlement",
     "StatusBearingRow",
     "apply_status_change",
+    "covered_cash_leg",
+    "covering_clause",
+    "covering_movements",
     "figure_for_status",
     "correction_record",
     "honoured_correction",

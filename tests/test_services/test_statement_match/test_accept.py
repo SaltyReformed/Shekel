@@ -41,6 +41,7 @@ from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
 from tests._test_helpers import (
+    family_journal_filter,
     an_entered_day,
     create_settled_cash_transaction,
 )
@@ -113,7 +114,7 @@ def _posted_cash_by_day(db, txn, account):
             LedgerAccount.id == Posting.ledger_account_id,
         )
         .filter(
-            JournalEntry.transaction_id == txn.id,
+            family_journal_filter(txn),
             LedgerAccount.account_id == account.id,
         )
         .group_by(JournalEntry.entry_date)

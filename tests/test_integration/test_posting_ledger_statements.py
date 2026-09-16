@@ -82,6 +82,7 @@ from app.services.pay_calendar import calendar_for
 import pytest
 
 from tests._test_helpers import (
+    family_journal_filter,
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
@@ -1108,7 +1109,7 @@ class TestRevertAndResidueDropped:
             .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
             .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
             .filter(
-                JournalEntry.transaction_id == txn.id,
+                family_journal_filter(txn),
                 LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                     LedgerAccountClassEnum.EXPENSE,
                 ),

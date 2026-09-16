@@ -55,6 +55,7 @@ from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    figure_source_columns,
     append_balance_assertion,
     default_settle_day,
     last_covered_day,
@@ -321,6 +322,7 @@ class TestDailySeriesEdges:
                 due_date=date(2026, 4, 5),
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("300.00"),

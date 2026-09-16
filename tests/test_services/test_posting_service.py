@@ -94,6 +94,7 @@ from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     add_txn,
     an_entered_day,
     create_account_of_type,
@@ -211,6 +212,7 @@ def _add_txn_entry(seed_user, txn, amount, *, is_credit):
     ``effective - Sigma(credit)`` formula, so this sets it directly.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

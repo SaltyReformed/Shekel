@@ -25,7 +25,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum
+from app.enums import MovementFigureSourceEnum, RoleEnum, SettledDayBasisEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
@@ -66,6 +66,40 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS = frozenset({
     "amount", "description", "purchased_on", "settle_day", "is_credit",
 })
+
+
+def figure_source_of(settle_day) -> MovementFigureSourceEnum:
+    """Return WHO WROTE a purchase's figure, given the day written with it.
+
+    **The ONE statement of the purchase doors' source rule** (plan step
+    **X-bi-3a**, ruling **R-BAL39**), asked by both doors so they cannot come
+    to disagree.  A purchase reaches this package from two writers: a person
+    typing one (the entry form, the PATCH) and the bank's own line (a purchase
+    born from a statement line, or one a line was matched to).  The bank's
+    writer is the only one that states an ``observed`` day, and it states the
+    figure in the same act -- a match asserts that the line and the purchase
+    are one movement at one figure -- so the day's basis is the exact
+    discriminator, and no third writer exists here: the settle's ``resolved``
+    figures are written by the status seam, never through these doors.
+
+    It is the same predicate the migration ``b5c7e9a1d2f4`` backfilled by,
+    stated in Python for the go-forward writers.
+
+    Args:
+        settle_day: The :class:`~app.services.settle_day.SettleDay` the
+            purchase is being written with, or ``None`` for a purchase that
+            carries no posting day.
+
+    Returns:
+        ``OBSERVED`` when the bank stated the day (and so the figure), else
+        ``TYPED``.
+    """
+    if (
+        settle_day is not None
+        and settle_day.basis is SettledDayBasisEnum.OBSERVED
+    ):
+        return MovementFigureSourceEnum.OBSERVED
+    return MovementFigureSourceEnum.TYPED
 
 
 
@@ -371,6 +405,13 @@ def create_entry(
         description=details.description,
         purchased_on=details.purchased_on,
         is_credit=details.is_credit,
+        # WHO WROTE the figure, stated by the door that wrote it (plan step
+        # **X-bi-3a**): the bank's when the day it arrives with is the bank's,
+        # a person's otherwise.  NOT NULL and no default on the column, so a
+        # writer that says nothing is refused at flush rather than guessed for.
+        figure_source_id=ref_cache.movement_figure_source_id(
+            figure_source_of(details.settle_day),
+        ),
     )
     # The posting day and the basis that says how it is known, written as
     # ONE pair (plan step **X-az**).  Assigned through the shared writer
@@ -565,6 +606,28 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
             record_settle_day(entry, value)
             continue
         setattr(entry, field, value)
+    # **WHO WROTE the figure moves only when the figure is written** (plan step
+    # **X-bi-3a**, ruling **R-BAL39**).  This door has two callers that write
+    # an amount: the bank's mover (``statement_match._moving``), which always
+    # sends the line's ``observed`` day beside any figure it reprices, and the
+    # human PATCH, whose day -- when it sends one -- is ``entered``.  So a
+    # submission carrying an ``observed`` day is the bank stating the figure
+    # (a confirmation RAISES a typed figure to observed, as it raises an
+    # ``asserted`` day), and any other submission that sets ``amount`` is a
+    # person stating it.  A day-only edit on the owner's word leaves the source
+    # alone: the figure was not written, so nothing about who wrote it changed.
+    if (
+        "settle_day" in valid_updates
+        and figure_source_of(valid_updates["settle_day"])
+        is MovementFigureSourceEnum.OBSERVED
+    ):
+        entry.figure_source_id = ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.OBSERVED,
+        )
+    elif "amount" in valid_updates:
+        entry.figure_source_id = ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.TYPED,
+        )
     # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
     # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
     # seen to show this purchase ON that day; a user moving the day is

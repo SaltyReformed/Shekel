@@ -60,6 +60,7 @@ from app.services import (
 from app.services.entry_service import EntryDetails
 from app.services.posting_reads import _ledger_account_for
 from tests._test_helpers import (
+    figure_source_columns,
     add_txn,
     an_entered_day,
     create_envelope_txn,
@@ -184,6 +185,7 @@ def _add_purchase(seed_user, txn, amount, *, is_credit=False):
     the entry-mutation hook call ``entry_service`` explicitly instead.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

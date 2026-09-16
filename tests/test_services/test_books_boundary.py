@@ -57,6 +57,7 @@ from app.services.pay_calendar import calendar_for
 from app.services.reconcile_service import Statement, record_settled_days
 from app.services.settle_day import SettleDay, record_settle_day
 from tests._test_helpers import (
+    figure_source_columns,
     account_never_asserted,
     match_two_lines,
     append_only_guard_lifted,
@@ -254,6 +255,7 @@ class TestTheOneOrmWriter:
                 settled_on=_books_open_on(account) + _ONE_DAY, name="parent",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,
@@ -356,6 +358,7 @@ class TestTheBulkWriterAsksForItself:
                 settled_on=opened_on + timedelta(days=5), name="envelope",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,
@@ -859,6 +862,7 @@ class TestTheGoverningRowIsWhatIsGraded:
                 settled_on=opened_on + timedelta(days=5), name="envelope",
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
                 user_id=seed_user["user"].id,

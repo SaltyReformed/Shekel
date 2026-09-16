@@ -52,6 +52,7 @@ from app.services.anchor_service import (
 from app.services.balance_at import BalanceContext, cash_balance_at
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     create_settled_cash_transaction,
     current_pay_period,
     freeze_today,
@@ -130,6 +131,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
     txn = generate_row_of(template, period)
 
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

@@ -65,6 +65,7 @@ from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
@@ -660,6 +661,7 @@ class TestWalkAccountLedger:
                 seed_user, _db.session, period, "Groceries", Decimal("500.00"),
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("40.00"),

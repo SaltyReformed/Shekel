@@ -45,6 +45,8 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     amount_basis_for,
     an_entered_day,
     generate_row_of,
@@ -71,6 +73,7 @@ def _make_entry(txn_id, user_id, amount, description, *,
     setup focused on the helper's contract.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn_id,
         # The parent's account, resolved from the id this helper takes: an
         # entry's account IS its parent's, and the schema refuses any other
@@ -1769,7 +1772,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             # door leaves it green (measured by a neutral review, 2026-08-18).
             # The net per day is what separates "re-booked" from "booked twice".
             assert net_posted_by_day(
-                JournalEntry.transaction_id == txn.id,
+                family_journal_filter(txn),
             ) == {day: Decimal("87.10")}
 
     def test_a_REVERT_carrying_a_figure_is_refused_and_changes_nothing(

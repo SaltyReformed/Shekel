@@ -24,6 +24,7 @@ from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    figure_source_columns,
     an_entered_day,
     freeze_today,
     generate_row_of,
@@ -58,6 +59,7 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
     issues when combined with auth_client HTTP requests.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn_id,
         # The parent's account, resolved here rather than taken as an argument:
         # this helper's whole point is that a caller passes IDS, and an entry's

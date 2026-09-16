@@ -128,6 +128,8 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     add_txn,
     create_account_of_type,
     create_envelope_txn,
@@ -1041,6 +1043,7 @@ class TestEverySettledTransactionPosts:
                 settled_amount="75.00",
             )
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
@@ -1369,7 +1372,7 @@ def _period_ledger_nets(transaction_id, pay_period_id):
         )
         .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
         .filter(
-            JournalEntry.transaction_id == transaction_id,
+            family_journal_filter(transaction_id),
             JournalEntry.pay_period_id == pay_period_id,
         )
         .group_by(Posting.ledger_account_id)
@@ -1386,7 +1389,7 @@ def _entry_ids_in_period(transaction_id, pay_period_id):
         entry_id for (entry_id,) in (
             _db.session.query(JournalEntry.id)
             .filter(
-                JournalEntry.transaction_id == transaction_id,
+                family_journal_filter(transaction_id),
                 JournalEntry.pay_period_id == pay_period_id,
             )
             .all()
@@ -1512,6 +1515,7 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
             )
             txn.category_id = seed_user["categories"]["Groceries"].id
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user_id,
                 amount=Decimal("40.00"),

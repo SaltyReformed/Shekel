@@ -58,7 +58,12 @@ from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, transaction_service, transfer_service
+from app.services import (
+    cash_ledger,
+    status_seam,
+    transaction_service,
+    transfer_service,
+)
 from app.services.settle_day import recorded_settle_day
 from app.utils.balance_predicates import balance_contributing_clause
 
@@ -295,7 +300,16 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     )
     try:
         if txn.status.is_settled:
-            return cash_ledger.settled_cash_leg(txn)
+            # **A settled row is worth its FAMILY** (plan step **X-bi-3a**,
+            # ruling **R-BAL39**): the settle mirrors the figure as a covering
+            # movement, so the row's own leg reads zero and the money sits one
+            # row down.  The bank sees one line for the pair, and the row is
+            # the subject the owner matches it to; its mirror is kept out of
+            # the purchase candidates by ``status_seam.covering_clause``.
+            return (
+                cash_ledger.settled_cash_leg(txn)
+                + status_seam.covered_cash_leg(txn)
+            )
         return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
@@ -752,6 +766,12 @@ def _purchase_candidates(
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
+            # NOT the row's own payment record (plan step **X-bi-3a**): a
+            # covering movement is the settle's mirror of its parent's figure,
+            # and the parent is what this screen offers for it -- priced at
+            # the family by :func:`_price`.  Offering both would put one bank
+            # line against two rows.
+            ~status_seam.covering_clause(),
         )
         .all()
     )

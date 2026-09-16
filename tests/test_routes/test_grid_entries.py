@@ -27,6 +27,7 @@ from app.services.pay_calendar import FiledRow, calendar_for
 from app.services import transaction_service
 
 from tests._test_helpers import (
+    figure_source_columns,
     an_entered_day,
     current_pay_period,
     generate_row_of,
@@ -161,6 +162,7 @@ def _add_entry(txn, seed_user, amount, is_credit=False,
         The flushed :class:`TransactionEntry`.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,

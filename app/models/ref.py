@@ -830,6 +830,39 @@ class SettledDayBasis(db.Model):
         return f"<SettledDayBasis {self.name}>"
 
 
+class MovementFigureSource(db.Model):
+    """WHO WROTE a movement's figure (plan step **X-bi-3a**, ruling **R-BAL39**).
+
+    The catalogue behind ``budget.transaction_entries.figure_source_id`` --
+    ``resolved`` (the settle priced it from the plan), ``typed`` (a person
+    stated it) or ``observed`` (the bank's line stated it).  It is the twin of
+    :class:`SettledDayBasis` for the FIGURE beside the day, and it lives on
+    the one table that holds movements: a purchase against an envelope has
+    always been one, and since X-bi-3a a settle writes one for a bill too --
+    the covering movement that records the bill's money the way a purchase
+    records an envelope's.  A transaction's own figure keeps
+    :class:`SettlementBasis` until ``balance:X-bi-4`` makes it derivable.
+
+    :class:`app.enums.MovementFigureSourceEnum` carries the argument: why the
+    partition is over the SOURCE, why a reader needs it, and why it is not a
+    reuse of the transaction's catalogue.
+
+    Application code resolves these via ``ref_cache.movement_figure_source_id``
+    and compares against the integer ID -- never the string ``name`` -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "movement_figure_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<MovementFigureSource {self.name}>"
+
+
 class StatementBalanceEvidence(db.Model):
     """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
 

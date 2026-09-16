@@ -26,6 +26,7 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
     open_owner_calendar,
@@ -426,6 +427,7 @@ class TestEntryIntegration:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
@@ -453,6 +455,7 @@ class TestEntryIntegration:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
@@ -600,11 +603,13 @@ class TestMarkDoneIntegration:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
@@ -638,6 +643,7 @@ class TestEntryDataInHTML:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("200.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
@@ -704,6 +710,7 @@ class TestEntryDataInHTML:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("120.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
@@ -740,6 +747,7 @@ class TestEntryDataInHTML:
         )
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
             amount=Decimal("55.50"), description="Kroger",
             purchased_on=date(2026, 1, 5),

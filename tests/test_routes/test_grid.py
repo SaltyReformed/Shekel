@@ -45,6 +45,8 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -1068,6 +1070,7 @@ class TestTransactionCRUD:
             state_own_amount(txn, Decimal("100.00"))
             txn.is_envelope = True
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id,
                 account_id=txn.account_id,
                 user_id=seed_user["user"].id,
@@ -5224,6 +5227,7 @@ class TestGridPeriodSubtotalCanonical:
                 Decimal("100.00"),
             ):
                 entry = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
@@ -5368,6 +5372,7 @@ class TestGridPeriodSubtotalCanonical:
             )
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
@@ -6081,10 +6086,11 @@ class TestSettleDayLifecycle:
             db.session.commit()
 
             def _ledger_days():
+                # The row's family, as ``_ledger_days_for`` reads it.
                 return sorted(
                     entry.entry_date
                     for entry in db.session.query(JournalEntry)
-                    .filter(JournalEntry.transaction_id == txn.id)
+                    .filter(family_journal_filter(txn))
                     .all()
                 )
 
@@ -6165,10 +6171,11 @@ class TestSettleDayLifecycle:
             db.session.commit()
 
             def _ledger_days():
+                # The row's family, as ``_ledger_days_for`` reads it.
                 return sorted(
                     entry.entry_date
                     for entry in db.session.query(JournalEntry)
-                    .filter(JournalEntry.transaction_id == txn.id)
+                    .filter(family_journal_filter(txn))
                     .all()
                 )
 
@@ -6202,10 +6209,13 @@ class TestSettleDayLifecycle:
         """
         from app.models.journal_entry import JournalEntry
 
+        # The row's FAMILY (plan step X-bi-3a): a settled bill's money is
+        # posted under its covering movement, so the ledger half reads the
+        # row and its mirror together -- every day asserted below is unchanged.
         return sorted(
             entry.entry_date
             for entry in db.session.query(JournalEntry)
-            .filter(JournalEntry.transaction_id == txn_id)
+            .filter(family_journal_filter(txn_id))
             .all()
         )
 
@@ -6296,7 +6306,7 @@ class TestSettleDayLifecycle:
         """
         from app.models.journal_entry import JournalEntry
 
-        return net_posted_by_day(JournalEntry.transaction_id == txn_id)
+        return net_posted_by_day(family_journal_filter(txn_id))
 
     def test_reverting_to_projected_ignores_the_submitted_settle_day(
         self, app, auth_client, seed_user, seed_periods_today

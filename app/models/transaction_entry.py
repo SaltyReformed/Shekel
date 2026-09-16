@@ -92,6 +92,25 @@ class TransactionEntry(
                            :class:`app.enums.SettledDayBasisEnum`.
         credit_payback_id -- FK to the CC Payback transaction created for
                              this entry (SET NULL on payback deletion).
+        figure_source_id -- WHO WROTE ``amount``: the settle priced it from the
+                           plan (``resolved``), a person stated it (``typed``)
+                           or the bank's own line stated it (``observed``).
+                           NOT NULL, no default: both writers of a movement
+                           state it.  Plan step **X-bi-3a**, ruling
+                           **R-BAL39**, :class:`app.enums.MovementFigureSourceEnum`.
+
+    **A row of this table is a MOVEMENT, and since plan step X-bi-3a a settle
+    writes one for a bill too** (ruling **R-BAL39**): the COVERING MOVEMENT,
+    the payment row that records a bill's money the way a purchase records an
+    envelope's.  It is an ordinary row here -- its ``amount`` is the figure the
+    settle booked, its ``purchased_on`` the settle day (the only day a bill's
+    payment has, so ``ck_transaction_entries_settled_not_before_purchase``
+    holds as equality), its ``description`` the plan's name as it read at the
+    settle, and its day pair and statement link the row's own assertion.  The
+    status seam is its ONE writer (``status_seam._covering``); every reader of
+    this table -- the fold, the projection, the posting writer, the statement
+    matcher -- is kind-blind and sums by ruling **R-FM**'s identity, so a
+    covered bill's own leg nets to zero and the movement carries the money.
 
     **The stored ``is_cleared`` boolean this replaced is DELETED** (ruling
     R-DH (d), migration ``d7c1f4a9e603``).  It was written as a side effect of
@@ -277,6 +296,25 @@ class TransactionEntry(
     credit_payback_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
+    )
+    # WHO WROTE ``amount`` (plan step **X-bi-3a**, ruling **R-BAL39**).
+    # RESTRICT rather than SET NULL: a vanishing catalogue row would leave a
+    # figure with no source, which the NOT NULL exists to forbid.  No default,
+    # server-side or ORM-side: the two writers of a movement (the purchase
+    # doors and the status seam) each state it, and a default would answer for
+    # a writer that forgot -- the stored guess ruling **R-IY** deletes.  No
+    # index: nothing queries it, and ``user_id``'s comment on
+    # :class:`~app.models.transaction.Transaction` states the predicate for the
+    # first reader that does.  Resolved through
+    # ``ref_cache.movement_figure_source_id``.
+    figure_source_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.movement_figure_sources.id",
+            name="fk_transaction_entries_figure_source_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

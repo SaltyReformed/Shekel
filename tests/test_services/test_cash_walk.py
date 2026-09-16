@@ -44,6 +44,7 @@ from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError, ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
+    figure_source_columns,
     open_books_before_the_first_assertion,
     account_never_asserted,
     add_txn,
@@ -641,6 +642,7 @@ class TestSourceFactValuation:
             (Decimal("80.00"), True, date(2026, 1, 6)),
         ):
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=amount,
@@ -820,6 +822,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
             settled_on=date(2026, 2, 1), name="deleted envelope",
         )
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
@@ -1612,6 +1615,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
             Decimal("500.00"),
         )
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("100.00"),

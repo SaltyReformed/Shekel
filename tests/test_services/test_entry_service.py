@@ -31,6 +31,7 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     account_never_asserted,
@@ -58,6 +59,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     the full create_entry validation chain.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=transaction.id, account_id=transaction.account_id,
         user_id=user.id,
         amount=Decimal(amount),
@@ -2511,6 +2513,7 @@ class TestASettledRowMayStillGAINAPurchase:
 
             # PAST the door on purpose -- see the docstring.
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("600.00"), description="BJs",
@@ -2570,6 +2573,7 @@ class TestASettledRowMayStillGAINAPurchase:
             # What the refusal prevents, built past the door: the closed row's
             # OWN leg moves, on its own settle day.
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id, amount=Decimal("30.00"),
                 description="Food Lion", purchased_on=display_today(),
