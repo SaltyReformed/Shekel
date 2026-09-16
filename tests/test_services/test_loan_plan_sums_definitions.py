@@ -40,7 +40,6 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     balance_at,
     loan_loaders,
-    loan_recurrence_sync,
     pay_period_write,
     template_amount_service,
     transfer_recurrence,
@@ -59,6 +58,7 @@ from app.services.generation_schedule import GenerationSchedule
 from app.services.recurrence import compute_due_date
 from app.services.settle_day import SettleDay
 from tests._test_helpers import (
+    bind_rule_to_loan,
     create_loan_account,
     create_settled_transfer,
     create_transfer,
@@ -121,7 +121,7 @@ def _definition(seed_user, loan, base, *, name, cadence=None, bind=True):
     if cadence is None:
         rule = make_cadence_rule(template, MONTHLY, fires_on_day=1)
         if bind:
-            loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
+            bind_rule_to_loan(rule, loan.id)
     else:
         make_cadence_rule(template, cadence, fires_on_day=1)
     db.session.flush()

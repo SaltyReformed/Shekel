@@ -9,8 +9,14 @@ has to break before it can stop storing the recurrence's closing bound.
 
 Three properties are pinned here:
 
-* :func:`~app.services.recurring_transfer_query.standing_payment` reads what the
-  definition says, and tells "no definition" from "a definition saying zero";
+* the loan's STANDING payment is its oldest active definition
+  (:func:`~app.services.recurring_transfer_query.active_recurring_transfer_template`)
+  and what that definition says is read off ITS settings row
+  (:func:`~app.services.recurring_transfer_query.loan_payment_config`), so
+  "no definition" is told from "a definition saying zero" -- the bundled
+  ``standing_payment`` / ``StandingPayment`` these graded until plan step
+  R7d-g-3 went with the last figure read off the picked definition (ruling
+  **R-R83**; plan ledger row **D49**);
 * the ESTIMATED tier prices an occurrence through the amount model's own arm
   (:func:`~app.services.cash_ledger.definition_cash`, plan step R16-b-2, which
   deleted the ``standing_installment_cash`` copy this module used to grade;
@@ -32,7 +38,7 @@ from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.services import (
-    balance_at, loan_loaders, loan_recurrence_sync, pay_period_write,
+    balance_at, loan_loaders, pay_period_write,
     template_amount_service,
 )
 from app.services import transfer_recurrence
@@ -43,13 +49,13 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.recurring_transfer_query import (
-    StandingPayment,
     active_recurring_transfer_template,
     active_recurring_transfer_templates,
-    standing_payment,
+    loan_payment_config,
 )
 from app.services.template_amount_service import owns_its_amount
 from tests._test_helpers import (
+    bind_rule_to_loan,
     record_paydays_across_a_hole,
     rhythm_of,
     add_escrow_line,
@@ -131,7 +137,7 @@ def _recurring_payment(seed_user, loan, base, *, derive=None, extra=None,
             effective_on=_ORIGINATION if effective_on is None else effective_on,
         )
     rule = make_cadence_rule(template, MONTHLY, fires_on_day=1)
-    loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
+    bind_rule_to_loan(rule, loan.id)
     db.session.flush()
     return template
 
@@ -150,7 +156,15 @@ def _contractual_pi(account):
 
 
 class TestStandingPayment:
-    """What :func:`standing_payment` reads off a loan's own definition."""
+    """The standing identity and what its settings row says, read apart.
+
+    Until plan step R7d-g-3 these graded ``standing_payment``, which bundled
+    the oldest definition with ITS ``extra_principal`` for the balance seam's
+    resolver to thread.  The seam threads nothing now (ruling **R-R88**, which re-ruled R-R83's seam clause
+    there); the identity survives for the opening-bound sync alone
+    and the settings row is read per definition, and each of the three facts
+    is pinned on the producer that still answers it.
+    """
 
     def test_a_loan_with_no_recurring_payment_has_no_standing_payment(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -163,7 +177,9 @@ class TestStandingPayment:
         """
         account, _ = _loan(seed_user)
 
-        assert standing_payment(account.id, seed_user["user"].id) is None
+        assert active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        ) is None
 
     def test_it_reads_the_stated_base_when_there_is_no_settings_row(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -178,11 +194,12 @@ class TestStandingPayment:
             seed_user, account, Decimal("1910.95"), stated=True,
         )
 
-        standing = standing_payment(account.id, seed_user["user"].id)
-
-        assert standing == StandingPayment(
-            template=template, extra_principal=Decimal("0.00"),
+        standing = active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
         )
+
+        assert standing is template
+        assert loan_payment_config(standing) == (False, Decimal("0.00"))
         # The PRICE is not on the value: the tier resolves it per occurrence
         # through the amount model (``cash_ledger.definition_cash``).
 
@@ -196,12 +213,14 @@ class TestStandingPayment:
             derive=True, extra=Decimal("250.00"),
         )
 
-        standing = standing_payment(account.id, seed_user["user"].id)
+        standing = active_recurring_transfer_template(
+            account.id, seed_user["user"].id,
+        )
 
-        assert standing.extra_principal == Decimal("250.00")
-        # The MODE is read off the template rather than copied onto the value,
+        assert loan_payment_config(standing) == (True, Decimal("250.00"))
+        # The MODE is read off the template rather than copied onto a value,
         # so a template switched between modes cannot leave a stale flag behind.
-        assert owns_its_amount(standing.template) is False
+        assert owns_its_amount(standing) is False
 
 
 class TestEveryDefinitionIntoAnAccount:

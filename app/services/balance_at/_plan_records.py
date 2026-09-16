@@ -20,6 +20,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.services.loan_ledger import AccrualCharge
+from app.services.rate_period_engine import RatePeriod
 
 _ONE_DAY = timedelta(days=1)
 
@@ -91,10 +92,19 @@ class LoanForwardPlan:
             a configured loan.
         charges: One :class:`AccrualCharge` per accrual period those payments
             occupy, ascending by ``on_date``.
+        periods: The loan's rate periods the charges were built from
+            (:func:`~app.services.loan_resolver.resolve_periods`), so a payment
+            NO charge stands over -- one dated after the loan's latest
+            assertion and before the first installment after it, which pays
+            what stands (ruling R-C's early extra) -- still reads the period
+            that governs it (:func:`~app.services.rate_period_engine.period_for_date`)
+            when a surface asks for its rate.  Empty for an account that is
+            not a configured loan.
     """
 
     payments: list[PlannedPayment]
     charges: list[AccrualCharge]
+    periods: list[RatePeriod]
 
 
 __all__ = ["LoanForwardPlan", "PlannedPayment"]

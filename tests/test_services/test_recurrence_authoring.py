@@ -45,7 +45,7 @@ from app.enums import (
 from app.extensions import db as _db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import FilingStatus
-from app.services import loan_recurrence_sync, pay_period_admin
+from app.services import pay_period_admin
 from app.services.pay_calendar import calendar_for
 from tests.oracles.recurrence_baseline import (
     BASELINE_CADENCES,
@@ -77,6 +77,7 @@ from app.services.recurrence import (
 # assertion pass while looking at a different function than the one under test.
 from app.services.recurrence import _authoring
 from tests._test_helpers import (
+    bind_rule_to_loan,
     rhythm_of,
     bare_expense_template,
     create_loan_account,
@@ -912,13 +913,13 @@ class TestLoanPaymentTransferWriter:
             calendar_for(seed_user["user"].id),
             bare_expense_template(db.session, seed_user),
         )
-        loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
+        bind_rule_to_loan(rule, loan.id)
         db.session.flush()
         assert resolved_for(rule).starts_on == date(2023, 7, 1)
 
         params = loan.loan_params
         params.payment_day = 20
-        loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
+        bind_rule_to_loan(rule, loan.id)
         db.session.flush()
 
         assert scheduling_day_of_month(rule) == 20

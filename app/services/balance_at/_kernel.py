@@ -73,9 +73,10 @@ class DebtSchedule:
     different places and drift.
 
     Attributes:
-        schedule: The loan's :class:`AmortizationRow` list (today-forward:
-            confirmed-history rows plus committed forward rows).  May be empty
-            for a fully-resolved / paid-off loan.
+        schedule: The loan's :class:`AmortizationRow` list (the
+            confirmed-history rows plus the CONTRACT's forward rows; its
+            readers take a date off it, never a balance).  May be empty for a
+            fully-resolved / paid-off loan.
         projection_seed: The balance the forward projection STARTS from -- the
             balance in effect before the first unconfirmed row.  See
             :func:`_projection_seed`.  It is NOT "what is owed now": for an
@@ -234,7 +235,7 @@ def debt_schedule_rows(
 
     Returns:
         ``{account_id: [AmortizationRow, ...]}`` -- the loan's schedule
-        (confirmed history plus committed forward rows).  A loan the context
+        (confirmed history plus the contract's forward rows).  A loan the context
         cannot resolve (no ``LoanParams``) is absent, matching
         :func:`generate_debt_schedules`.
     """

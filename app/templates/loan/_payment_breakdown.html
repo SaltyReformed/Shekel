@@ -1,18 +1,19 @@
 {% from "_money_macros.html" import money %}
-{# Payment allocation breakdown: the P/I/E split as a stacked composition
-   bar.  Composition, not progress -- segments ride the shared D12 accent
+{# Payment allocation breakdown: the P/I/E split of the next accrual
+   period's planned payments (the balance seam's fold, summed over the
+   first period whose charge the plan pays, plan step R7d-g-3) as a
+   stacked composition bar.  Composition, not progress -- segments ride the shared D12 accent
    ramp (.alloc-bar shell + ramp stops in components.css, the cockpit
    allocation-bar convention) with 2px surface gaps, and the legend below
    names, values, and percents every segment so color is never the only
-   signal (polish audit P-DT2). #}
+   signal (polish audit P-DT2).  A "Confirmed" badge used to mark the row
+   the composer's schedule walk chose when every row was confirmed; the plan
+   holds forward payments only, so the badge went with the walk. #}
 {% if payment_breakdown %}
 <div class="card mb-4">
   <div class="card-header">
     <h6 class="mb-0">
       <i class="bi bi-pie-chart"></i> Payment allocation
-      {% if payment_breakdown.is_confirmed %}
-      <span class="badge-done ms-1">Confirmed</span>
-      {% endif %}
     </h6>
   </div>
   <div class="card-body">
@@ -65,6 +66,15 @@
       </li>
       {% endif %}
     </ul>
+    {% if payment_breakdown.shortfall > 0 %}
+    <div class="mt-2 small loan-neg">
+      <i class="bi bi-exclamation-triangle"></i>
+      This month's payments fall
+      <span class="font-mono">{{ money(payment_breakdown.shortfall) }}</span>
+      short of the interest and escrow charged since the last recorded
+      payment, so the balance grows by that much.
+    </div>
+    {% endif %}
     {% if payment_breakdown.next_year_escrow %}
     <div class="mt-2 small text-muted">
       <i class="bi bi-graph-up-arrow"></i>

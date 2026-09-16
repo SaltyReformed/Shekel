@@ -41,6 +41,7 @@ from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.recurrence_engine import definition_recurs
 from app.services.pay_calendar import FiledRow, PayCalendar
 from app.utils.digit_strings import parse_row_id
 
@@ -527,11 +528,14 @@ def regenerate_or_conflict_chooser(
     R2e-3 retired the pattern, so such a template is rule-less and this gate
     covers it.
 
-    **The chooser additionally requires that the template STILL recurs.**  It
-    asks one question -- "should your hand-edited instances move to the new
-    amount?" -- and that question presumes future instances will be
-    regenerated AT that amount.  On a cleared recurrence none will be, so the
-    prompt would offer an amount decision about rows that are being deleted:
+    **The chooser additionally requires that the template STILL recurs**
+    (:func:`~app.services.recurrence_engine.definition_recurs`, the engine's
+    own predicate, so an ARCHIVED template reads as not recurring here exactly
+    as its plan resolves to nothing -- plan step R7d-g-3).  It asks one
+    question -- "should your hand-edited instances move to the new amount?"
+    -- and that question presumes future instances will be regenerated AT
+    that amount.  On a cleared recurrence none will be, so the prompt would
+    offer an amount decision about rows that are being deleted:
     measured before this guard, a clear-plus-amount edit rendered "Your other
     upcoming instances move to $99.99" over five rows the same request then
     removed.  Without the prompt the edit takes the keep-silently branch, so
@@ -602,7 +606,7 @@ def regenerate_or_conflict_chooser(
             # were hand-edited" over no instances.
             (conflict.overridden or conflict.deleted)
             and amount_drives_instances
-            and template.recurrence_rule is not None
+            and definition_recurs(template)
             and template.default_amount != before.amount
         ):
             chooser = render_recurrence_conflict_chooser(

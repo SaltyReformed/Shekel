@@ -134,7 +134,7 @@ from app.services.obligations_aggregator import (
     monthly_or_none,
     template_rule,
 )
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import DerivedPeriod, PayCadence
 from app.services.recurrence import (
     RecurrenceDescription,
     RecurrenceResolutionError,
@@ -325,23 +325,29 @@ def _share_pct(
     )
 
 
-def _next_occurrence(
+def next_placement(
     rule: RecurrenceRule, reading: RuleReading, as_of: date,
-) -> date | None:
-    """Engine-backed date of the next occurrence on or after ``as_of``.
+) -> tuple[DerivedPeriod, date] | None:
+    """Engine-backed NEXT placement on or after ``as_of``: its paycheck and due date.
+
+    **Public since plan step R7d-g-3**: the loan dashboard's payment card
+    prices each definition's next payment through the amount model
+    (``cash_ledger.definition_cash``), which needs the paycheck the row would
+    live in beside the date it would carry -- the same two facts this walk
+    yields for the Recurring surface's "next" column, stated once.
 
     Reads the placements
     :func:`~app.services.recurring_definition.read_definition` already
     produced for this row -- the same walk that generates the grid instances --
     and ``compute_due_date`` gives the due date the generated instance would
-    carry.  Returns the first such due date on or after ``as_of`` (the current
-    period can match with a due date already past, so the search advances to
-    the next matching period), or ``None`` when no matching period has a due
-    date on or after ``as_of`` -- an expired rule whose remaining candidate
-    periods are all in the past.  Otherwise this tracks the engine exactly: if
-    the engine would still generate a future instance (e.g. an expired rule
-    whose final period straddles ``as_of``), that instance's date is reported,
-    matching the grid cell it points at.
+    carry.  Returns the first such placement whose due date is on or after
+    ``as_of`` (the current period can match with a due date already past, so
+    the search advances to the next matching period), or ``None`` when no
+    matching period has a due date on or after ``as_of`` -- an expired rule
+    whose remaining candidate periods are all in the past.  Otherwise this
+    tracks the engine exactly: if the engine would still generate a future
+    instance (e.g. an expired rule whose final period straddles ``as_of``),
+    that instance is reported, matching the grid cell it points at.
 
     **``as_of`` is this surface's own display boundary, not the rule's** -- the
     rule's opening bound is its anchor, and putting a caller's window inside the
@@ -360,15 +366,25 @@ def _next_occurrence(
         as_of: The surface's display boundary -- the read pass's ``as_of``.
 
     Returns:
-        The next occurrence's due date, or ``None``.
+        ``(period, due)`` for the next occurrence on or after *as_of* -- the
+        paycheck it is placed in and the due date its row carries -- or
+        ``None`` when the reading places nothing there.
     """
     for period in placed_periods(
         reading.placements, ending_on_or_after=as_of,
     ):
         due = compute_due_date(rule, period)
         if due >= as_of:
-            return due
+            return period, due
     return None
+
+
+def _next_occurrence(
+    rule: RecurrenceRule, reading: RuleReading, as_of: date,
+) -> date | None:
+    """The date half of :func:`next_placement`, for the Recurring surface's column."""
+    placed = next_placement(rule, reading, as_of)
+    return None if placed is None else placed[1]
 
 
 @dataclass(frozen=True)
@@ -425,18 +441,22 @@ class _PreparedRow:
             )
 
 
-def _described(
+def described(
     rule: RecurrenceRule | None, resolved: ResolvedRecurrence | None,
 ) -> RecurrenceDescription | None:
     """Turn a resolved recurrence into a row's description, or ``None``.
 
-    **The ONE place this surface words a cadence.**  Both row kinds reach it:
-    the active sections from the reading they already hold, the Archived
-    drawer from a meaning-only resolve -- both through the composed door, so
-    the drawer and the list beside it narrow a loan payment the same way.
-    Written once because the two differ in how they OBTAIN the resolved value
-    and not at all in what they do with it -- and a display contract expressed
-    twice is one a later change updates once.
+    **The ONE place a management surface words a cadence.**  Both row kinds
+    of the Recurring surface reach it: the active sections from the reading
+    they already hold, the Archived drawer from a meaning-only resolve -- both
+    through the composed door, so the drawer and the list beside it narrow a
+    loan payment the same way.  Written once because the two differ in how
+    they OBTAIN the resolved value and not at all in what they do with it --
+    and a display contract expressed twice is one a later change updates
+    once.  **Public since plan step R7d-g-3**: the loan dashboard's payment
+    card words each recurring transfer into the loan through it too, so a
+    definition reads the same on the loan page as on the Recurring surface
+    (design principle 7), and the refusal below has one home.
 
     **``None`` out means "does not repeat" and nothing else**, which is why
     the RULE is the discriminator rather than the resolved value.  They are
@@ -586,7 +606,7 @@ def _build_section(
         RecurringRow(
             template=item.template,
             equivalent=_unit_pair(item.monthly_full, pay_cadence),
-            recurrence=_described(item.rule, item.resolved),
+            recurrence=described(item.rule, item.resolved),
             next_date=(
                 None if item.reading is None
                 else _next_occurrence(item.rule, item.reading, ctx.as_of)
@@ -751,11 +771,11 @@ def build_archived_rows(
     rows = []
     for template in templates:
         # The RULE stays the discriminator for "does not repeat"
-        # (:func:`_described`); the door answers ``None`` for that state too,
+        # (:func:`described`); the door answers ``None`` for that state too,
         # but also for an owner with no pay periods, which must raise.
         rule = template_rule(template)
         rows.append(ArchivedRow(
             template=template,
-            recurrence=_described(rule, resolved_definition(template, ctx)),
+            recurrence=described(rule, resolved_definition(template, ctx)),
         ))
     return tuple(rows)

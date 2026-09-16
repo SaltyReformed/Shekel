@@ -13,6 +13,9 @@ work by grep alone.
 specified against the reset semantics R-EB deletes at the cutover, and `CC3b` derives a settle from
 `paid_at`, which `X-f1b` deleted. **When this arc may start is `steps.md`'s answer**, and the reason
 is `../audits/balance_architecture/README.md` Section 5.0 block 4.
+**Since 2026-09-15 that gate is re-derived PER LEAF** (`credit_card:R-CC13`, `rulings.md`): the card
+arc is outcome O2 of the order `steps.md` states, and the lane that opens it traces each leaf's real
+wait before building.
 
 **This arc's findings live in `ledger.md`, its steps are indexed in `steps.md`, its rules are
 `conventions.md` and what "done" means is `verification.md`** -- the shared registries for every

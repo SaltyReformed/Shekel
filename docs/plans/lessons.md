@@ -285,3 +285,11 @@ rationale, where a reader meets it at the moment it fires.
   paydays coalesced onto one cash day, a projected paycheck vanished, the ordinal ran one high. The
   ruling's remedy was built on the premise, so a door would have been offered from a page no owner
   reaches (**R-PC77**). Measure the sentence a ruling's remedy hangs on before ruling it.
+- **A two-client test can run BOTH clients as the first user, and every assertion still passes.**
+  The `db` fixture holds one app context for the whole test and Flask-Login caches `current_user` on
+  `g` per app context, so the first client to log in is the identity every later client's request
+  takes (`recurrence:R7d-g-3`'s review, 2026-09-14: the second client's first request on user A's
+  account answered 200; the non-owner's POST wrote the owner's extra principal). No existing IDOR
+  control was wrong, because each requests as the first login or plants the other user's row -- but
+  the fixture's own "the two clients are different users" check passes with B running as A. A
+  control over WHO acted needs a positive arm that the actor changed (`balance:BAL-495`).

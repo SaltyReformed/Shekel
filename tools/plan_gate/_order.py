@@ -9,9 +9,13 @@ column is a CONSTRAINT, and on this corpus it under-determines the answer by a
 wide margin -- 38 open steps are legal to start at once, so a topological sort
 answers "any of these 38" and never "this one next".  A reader asking what to
 do next got a graph and a paragraph explaining that the table was an index
-rather than an order.  **The sequence is therefore a DECISION**, taken from each
-arc's own stated sequencing and written into the ``order`` column, and these
-arms are what keep that written decision honest against the graph it must obey.
+rather than an order.  **The sequence is therefore a DECISION** -- the OUTCOME
+TIERS the preamble states since 2026-09-15 and, within a tier, each arc's own
+stated sequencing -- written into the ``order`` column, and these arms are what
+keep that written decision honest against the graph it must obey.  The PATH
+tier is the one part of the decision that is DERIVED (the transitive closure of
+the ruled scopes' waits), so :func:`tier_violations` reconciles it the way
+:func:`starts_violations` reconciles the ``starts`` column.
 
 It is a SEPARATE module rather than more of ``_registry.py`` because that module
 reached its 1000-line ceiling when these arms were added, and this project's own
@@ -26,6 +30,7 @@ from __future__ import annotations
 import re
 
 import _registry as registry
+import _tables as tables
 from _classes import decomposition_leaf_keys
 
 #: A ``starts`` cell's DERIVED head, reconciled by :func:`starts_violations`
@@ -56,6 +61,14 @@ _RULE = "conventions.md rule 14"
 #: claimed" and passes.
 READY_COUNT_RX = re.compile(
     r"(?P<ready>\d+) of these steps are legal to start right now",
+)
+
+#: The HORIZON: the first upkeep row, stated as a step KEY and never as a count
+#: (developer, 2026-09-15).  Anchored on the live wording for the reason
+#: :data:`READY_COUNT_RX` is -- a pattern matching nothing would read as "no
+#: horizon is claimed" and pass.
+HORIZON_RX = re.compile(
+    r"\*\*The horizon opens at `(?P<key>[a-z_]+:[A-Za-z0-9-]+)`\.\*\*",
 )
 
 
@@ -482,4 +495,143 @@ def row_order_violations() -> list[str]:
                 f"Shipped, so that every row of the order is workable "
                 f"({_RULE})",
             )
+    return problems
+
+
+def outcome_scopes() -> list[tuple[str, list[str]]]:
+    """Return ``(outcome, scope keys)`` per row of ``steps.md``'s OUTCOMES table.
+
+    The scope cell carries the ``aliases`` / ``blocked by`` grammar -- a
+    ``/``-separated list of ``arc:id`` keys -- and is read by the same
+    function, because a third spelling of "a list of step keys" is the
+    denormalization these registries exist to remove.
+
+    Returns:
+        The rows in document order, which is the developer's priority order.
+
+    Raises:
+        AssertionError: When the table is missing -- a missing table is not an
+            empty one (:func:`_tables.rows_under`).
+    """
+    text = registry.STEPS.read_text()
+    return [
+        (row[0], tables.key_list(row[1]))
+        for row in tables.rows_under(text, tables.OUTCOMES_HEADER)
+    ]
+
+
+def horizon_key() -> str | None:
+    """Return the step key the preamble names as the horizon, or ``None``."""
+    match = HORIZON_RX.search(registry.STEPS.read_text())
+    return match.group("key") if match else None
+
+
+def path_keys() -> set[str]:
+    """Return the PATH tier: every open ranked step an outcome waits on.
+
+    The transitive closure of the scopes' ``starts`` waits.  A CONTAINER named
+    as a wait resolves to its open leaves through the one derivation
+    :func:`_classes.decomposition_leaf_keys` -- the same resolution
+    :func:`rank_map` applies -- and a SHIPPED wait contributes nothing, so the
+    set shrinks as the chain ships and never has to be edited by hand.  The
+    scope steps themselves are members when they are open and ranked, and an
+    identity class enters WHOLE (rule 11): a scope or a wait naming one of
+    ``C2`` / ``X-l`` / ``R-F12`` brings the other two, which share its rank.
+
+    Returns:
+        The keys of the open, ranked, non-container steps on the path.
+    """
+    rows = registry.step_rows()
+    steps = {row.key: row for row in rows}
+    seen: set[str] = set()
+    stack = [key for _, scope in outcome_scopes() for key in scope]
+    while stack:
+        key = stack.pop()
+        row = steps.get(key)
+        if row is None or row.shipped or key in seen:
+            continue
+        seen.add(key)
+        if row.is_container:
+            stack.extend(_leaf_keys(row, rows))
+        stack.extend(row.alias_keys())
+        stack.extend(row.blocked_keys())
+    return {key for key in seen if steps[key].rank is not None}
+
+
+def tier_violations() -> list[str]:
+    """Rule 14's tier arm: the PATH is the leading block and the horizon is a live key.
+
+    The 2026-09-15 tiers store two derived facts in the preamble -- "the path
+    tier is the table's leading block" and "the horizon opens at this row" --
+    and this project's own rule on a stored derived value is that it is legal
+    only beside a reconciler.  **Measured before the arm existed**: the first
+    draft of the re-cut ranked ``credit_card:CC5a`` and ``CC5b`` inside the
+    leading block before the developer had ruled them into an outcome, so the
+    graph did not place them there, and every other arm was green.
+
+    Four arms:
+
+    1. every scope key names a real step (an outcome scoped on a renamed or
+       missing id is an outcome the closure cannot reach), and an outcome
+       whose every scope step has SHIPPED is DELIVERED and its row leaves the
+       table -- a delivered outcome reads as live priority otherwise;
+    2. the horizon names an OPEN, RANKED step that is NOT on the path -- a
+       shipped horizon, a container horizon or a path horizon each make the
+       boundary say nothing;
+    3. every path row is ranked no later than every non-path ranked row, so
+       the path is the table's LEADING BLOCK.  ``<=`` rather than ``<`` because
+       an identity class shares one rank (rule 11).
+
+    Returns:
+        One message per violation, each citing the rule.
+    """
+    rows = registry.step_rows()
+    steps = {row.key: row for row in rows}
+    problems: list[str] = []
+    for outcome, scope in outcome_scopes():
+        for key in scope:
+            if key not in steps:
+                problems.append(
+                    f"outcome {outcome!r} is scoped on {key}, which names no "
+                    f"step; the path cannot be derived from it ({_RULE})",
+                )
+        if scope and all(key in steps and steps[key].shipped for key in scope):
+            problems.append(
+                f"outcome {outcome!r} is DELIVERED: every step in its scope has "
+                f"shipped, so its row leaves the outcomes table ({_RULE})",
+            )
+    path = path_keys()
+    horizon = horizon_key()
+    if horizon is None:
+        problems.append(
+            "steps.md states no horizon.  conventions.md rule 14 requires the "
+            f"sentence '**The horizon opens at `arc:id`.**' ({_RULE})",
+        )
+    else:
+        row = steps.get(horizon)
+        if row is None or row.shipped or row.rank is None:
+            problems.append(
+                f"the horizon opens at {horizon}, which is not an open ranked "
+                f"step; the reward/upkeep boundary then names no row ({_RULE})",
+            )
+        elif horizon in path:
+            problems.append(
+                f"the horizon opens at {horizon}, which is ON the path; the "
+                f"boundary must sit below every path row ({_RULE})",
+            )
+    ranks = rank_map()
+    outside = [
+        ranks[row.key] for row in rows
+        if row.rank is not None and row.key not in path
+    ]
+    if outside:
+        first_outside = min(outside)
+        for key in sorted(path, key=ranks.__getitem__):
+            if ranks[key] > first_outside:
+                problems.append(
+                    f"{key} is on the path (an outcome waits on it) but is "
+                    f"ranked #{ranks[key]}, behind a row no outcome waits on at "
+                    f"#{first_outside}; the path is the table's leading block "
+                    f"({_RULE})",
+                )
     return problems

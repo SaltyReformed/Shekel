@@ -927,7 +927,9 @@ class TestAModeFlipRewritesNoRow:
             stamps = {leg.id: (leg.amount_source_id, leg.updated_at)
                       for leg in before}
 
-            resp = auth_client.post(f"/accounts/{loan_id}/loan/track-payment")
+            resp = auth_client.post(
+                f"/accounts/{loan_id}/loan/payments/{xfer.template.id}/track",
+            )
             assert resp.status_code in (200, 302), resp.data
 
             db.session.expire_all()

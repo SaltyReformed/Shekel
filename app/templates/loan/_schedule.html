@@ -1,8 +1,9 @@
 {% from "_money_macros.html" import money %}
 {# Full month-by-month amortization schedule table.
-   Renders the committed schedule (with real payment data and ARM rate
-   changes when available).  Included in the Amortization Schedule tab
-   pane only when amortization_schedule is non-empty.
+   Renders the confirmed history and the balance seam's forward plan, one
+   row per accrual period the plan pays into (with real payment data and
+   ARM rate changes when available).  Included in the Amortization
+   Schedule tab pane only when amortization_schedule is non-empty.
 
    The Payment column shows P&I + that row's own escrow (the user's total
    monthly obligation for that installment).  The Escrow column is shown when
@@ -16,7 +17,7 @@
   <div class="card-header">
     <h6 class="mb-0">
       <i class="bi bi-table"></i> Month-by-Month Schedule
-      <span class="badge bg-secondary ms-1">{{ amortization_schedule|length }} months</span>
+      <span class="badge bg-secondary ms-1">{{ amortization_schedule|length }} rows</span>
     </h6>
   </div>
   <div class="card-body p-0">

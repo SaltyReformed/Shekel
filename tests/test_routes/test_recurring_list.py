@@ -24,9 +24,9 @@ from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
-from app.services.loan_recurrence_sync import bind_rule_to_loan
 from app.utils.dates import month_name
 from tests._test_helpers import (
+    bind_rule_to_loan,
     create_loan_account,
     insert_trueup_event,
     loan_params_for,

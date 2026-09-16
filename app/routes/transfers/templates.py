@@ -94,9 +94,19 @@ logger = logging.getLogger(__name__)
 # is a dated SERIES as well as a column, and
 # ``template_amount_service.set_amount`` is the one door that moves both
 # together.  A setattr here would move one without the other.
+#
+# ``is_active`` is deliberately absent since plan step R7d-g-3 (plan ledger
+# row **REC-525**), for the reason the transaction twin
+# (``routes/templates/crud.py``) has always stated: the flag is owned by the
+# dedicated archive / unarchive routes, which pair the flip with the
+# projected-row cleanup this route does not perform and, since plan step
+# R7d-g-2, with the promotion of the loan's next standing payment (ruling
+# **R-R85**).  No update schema declares it (``BaseSchema`` drops unknown
+# keys), so the entry was dead -- and allowlisting it invited a future
+# schema field to archive a template through this door with neither.
 _TEMPLATE_UPDATE_FIELDS = {
     "name", "from_account_id", "to_account_id",
-    "category_id", "is_active", "sort_order",
+    "category_id", "sort_order",
 }
 
 # Where this kind's amount-history withdrawal reports back to; the act itself is

@@ -273,3 +273,105 @@ carries a revert-proof regression lock.
    plus `TestDisplayToday` unit tests. Adjacent DRY win the review surfaced: `_loan_inputs`
    extracted and the two remaining inline `LoanInputs` constructions in `calculators.py` migrated
    onto it.
+
+## Recurring payments card as-built (2026-09-14, plan step recurrence:R7d-g-3)
+
+The payment controls became PER DEFINITION (ruling `recurrence:R-R83`; plan ledger row D49). The
+page-top "No recurring payment set up" prompt alert, the page-top underpayment-drift alert and the
+left-stack "Extra principal" card were three homes for one subject and the latter two wrote
+whichever definition `active_recurring_transfer_template` picked (the oldest). They are ONE card
+now, "Recurring payments", in the left stack where the Extra principal card sat, in the escrow
+card's row idiom (`app/static/css/loan.css`, `.loan-payment*`, tokens only):
+
+- **One strip per recurring transfer INTO the loan**, oldest first: its name linking to its edit
+  form; its cadence in the Recurring surface's own words (`recurring_view.described`, made public
+  for this, so a definition reads the same on both pages); a mode chip ("Tracks the loan" in the
+  done tint, "Fixed amount" as the neutral type tag); its per-payment figure right-aligned tabular
+  (`base + extra`, the split shown beneath when an extra rides); an extra-principal input posting to
+  `POST /accounts/<id>/loan/payments/<template_id>/settings`; and, on a fixed definition only, a
+  "Track the loan" button posting to `.../payments/<template_id>/track`.
+- **A fixed definition SHORT of the contract** carries its shortfall sentence on its own strip
+  (warning token + icon, never color alone) under the warning tint, and its Track button is the
+  warning button. The drift is measured per definition (`_payment_drift`, pure over the two
+  figures), so a `$50` sweep beside the real payment is the strip that warns, not the page.
+- **The empty state** is the old prompt, inside the card: the create form with the source picker,
+  the optional extra and the first-payment date from `loan_cadence_start`.
+- **Both settings doors take the template id** and admit it only through
+  `_require_loan_payment_definition` (owned, paying into THIS loan, active, ruled) -- 404 otherwise.
+- **Each strip's figure is its NEXT payment, priced by the amount model** (`definition_cash` over
+  the definition's next placement, with the due date beside it), so it is what the row will carry;
+  the drift compares the same priced base. A definition with no upcoming placement says "No upcoming
+  payment".
+- **One tracker per loan** (developer, 2026-09-14): while a definition tracks the loan no other
+  strip offers Track (a short fixed strip names the tracker in its shortfall sentence), and the
+  track door refuses a second with a flash naming it.
+
+Verified: both themes shot through `tests/manual/shoot.py` on the test client's render of a
+two-definition loan (a fixed `$50` sweep created before a tracking payment carrying a `$125` extra)
+and of a loan with no definition; no inline style or script; every figure computed in
+`routes/loan/dashboard.py::_payment_strips`.
+
+## One forward walk as-built (2026-09-14, plan step recurrence:R7d-g-3, ruling R-R88)
+
+Every projected figure on the page is the balance seam's plan fold now, the walk the "Projected
+payoff" chip already read (ruling `recurrence:R-R88`, which re-ruled R-R83's seam clause): the
+resolver's composer keeps the ledger-derived confirmed history and the CONTRACT's forward, and
+composes no plan. Its committed and accelerated slices were a second forward walk that priced the
+months no generated row covered from the contract plus ONE picked definition's extra and, since
+amount rule 4 put a definition's extra inside its projected row's cash, paid a standing extra twice
+on every row-covered month (measured 2026-09-14: `$626.46` arrived and the month paid `$676.46`).
+
+- **The band chart** draws the seam's `positions` on the contractual monthly grid, extended from the
+  contract's last installment month by month to the fold's derived payoff (`band_chart_dates`, pure
+  over the pass's payoff figure and the plan's installments): a grid date at or before today reads
+  the LEDGER (the solid segment; `current_index` is the count of those dates, whether or not
+  anything was paid), one after it the plan. The "committed" line of the locked anatomy IS this
+  line; there is no contractual-versus-committed switch left. The lever's green preview
+  (`accelerated_overlay`) is `loan_what_if_owed_at_dates` on the same grid -- `None` on the ledger's
+  points -- so the two are one walk apart by exactly the extra, and the deferred follow-up 2 above
+  is structural rather than a longest-series choice. A retired loan's grid ends with its history.
+
+- **The pay-off-sooner lever** splits the plan twice (`loan_installments`, as it stands and with the
+  extra on top) and reads each trajectory's payoff off the split (`balance_at.installments_payoff`,
+  the one rule the chip's fold applies) and its interest summed (`_plan_trajectory`); "months saved"
+  and "interest saved" are the calendar months and the interest between the two payoffs, `--` when
+  either never clears the loan (a difference against a trajectory summed to the plan's horizon is
+  not a saving), and "current plan vs. original" compares the plan's payoff with the contract's last
+  installment when the loan has a plan of its own (a definition or a payment row) and the contract
+  still has one. A retired loan gets "This loan is paid off" from both modes.
+
+- **This month's allocation bar** reads the fold's splits of the next ACCRUAL PERIOD the plan pays a
+  charge in, summed (`_next_period_payments` over `planned_periods`, the schedule page's own
+  grouping, so a month is spelled once): a tracking payment and a fixed sweep due the same period
+  are one period's payment; an installment due today and unpaid is this period's; a catch-up that
+  clears no charge (an occurrence due before today that no row answers, paid tomorrow under R-R64's
+  clamp against a charge the ledger's own payment already met, or an extra before the first
+  installment) precedes it and is not the coming month's. A loan behind on its payments meets
+  several periods' interest at its next payment and the fold's principal is NEGATIVE; the bar floors
+  the principal segment at zero, shows the cash that went to interest, and SAYS the shortfall
+  beneath rather than drawing a negative segment.
+
+- **The amortization schedule** lists the confirmed history followed by the plan ONE ROW PER ACCRUAL
+  PERIOD through the payoff (`planned_schedule_rows` over `planned_periods`, keyed on the charge
+  standing over each payment -- `PlannedInstallment.charge_date`): its payments summed, dated by the
+  period's first payment and numbered by the period's own installment (`payment_number` of the
+  charge date; `0` for a payment before the loan's first installment), the P&I it paid split the way
+  a confirmed row is (what it paid above the period's contractual P&I is the Extra column; a refund
+  past the payoff is in neither), its escrow the charges the fold impounded, its rate the period's
+  (`PlannedInstallment.period`, the calendar's period for a payment no charge stands over, so an
+  ARM's rate column never reads `None`). A catch-up for an overdue installment is that installment's
+  period; a period can hold a confirmed row and a planned one. An installment due before today that
+  no payment answers is NOT in the plan (ruling D1 / finding B-9), so the `#` column honestly skips
+  it, and the missed principal rides the balance to the contract's end, where the post-contractual
+  extension clears it: the table runs past the term's last row until the balance reaches `$0.00`. A
+  retired loan lists no planned row.
+
+Verified: both themes shot through `tests/manual/shoot.py` on the same fixtures as the card above
+plus the schedule page and the lever's partial. The route-level locks in
+`tests/test_routes/test_loan.py` (`TestBandChartLongestBaseline`, `TestDashboardChartComposer`,
+`TestAmortizationSchedule`, `TestOneWalkEdges`) pin hand-derived figures and the shapes the
+adversarial review traced (an ARM paying before its first charge, a retired loan, an installment due
+today, a plan that never clears, a loan behind); the seam parity oracles in
+`tests/test_services/test_loan_payoff_date_oracle.py` and
+`tests/test_integration/test_loan_unified_figures.py` grade the fold against `project_forward` run
+directly (`tests/_test_helpers.contract_forward_references`), an independent walk.

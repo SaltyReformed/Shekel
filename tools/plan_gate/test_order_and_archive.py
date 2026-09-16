@@ -771,3 +771,152 @@ class TestTheOrderTableIsSorted:
             "balance:X-f4" in p and "INSIDE the order table" in p
             for p in problems
         ), problems
+
+
+class TestThePathIsTheLeadingBlockAndTheHorizonIsAKey:
+    """conventions.md rule 14's tier arm (developer, 2026-09-15).
+
+    Two derived facts live in ``steps.md``'s preamble -- the PATH tier is the
+    table's leading block, and the horizon opens at a named row -- and each
+    is legal only beside a reconciler.  The first draft of the re-cut that
+    introduced them ranked ``credit_card:CC5a`` and ``CC5b`` inside the
+    leading block before any ruling placed them in an outcome, with every
+    other arm green; these controls are what would have caught it.
+    """
+
+    def test_the_live_path_is_the_leading_block(self):
+        """The arm is silent on the corpus as committed."""
+        assert not order.tier_violations()
+
+    def test_the_live_corpus_has_outcomes_a_path_and_a_horizon_to_grade(self):
+        """A silent arm over an empty subject measures nothing."""
+        scopes = order.outcome_scopes()
+        assert scopes and all(keys for _, keys in scopes), scopes
+        assert order.HORIZON_RX.search(registry.STEPS.read_text())
+        ranked = {row.key for row in registry.step_rows() if row.rank is not None}
+        path = order.path_keys()
+        assert path and path < ranked, (len(path), len(ranked))
+
+    def test_a_container_wait_resolves_to_its_open_leaves(self):
+        """A path row waiting on a CONTAINER puts the container's open leaves on the path.
+
+        The direction that matters: a closure that stopped at the container
+        key would leave its leaves outside the leading block and the arm
+        would then demand they move BELOW the rows that wait on them.
+        """
+        rows = registry.step_rows()
+        steps = {row.key: row for row in rows}
+        path = order.path_keys()
+        resolved = 0
+        for key in path:
+            for wait in steps[key].blocked_keys():
+                parent = steps.get(wait)
+                if parent is None or not parent.is_container:
+                    continue
+                leaves = [
+                    leaf for leaf in decomposition_leaf_keys(parent, rows)
+                    if not steps[leaf].shipped and steps[leaf].rank is not None
+                ]
+                assert leaves and set(leaves) <= path, (key, wait, leaves)
+                resolved += 1
+        assert resolved, "no path row waits on a container; the control has no subject"
+
+    def test_the_control_fires_when_a_path_row_is_ranked_behind_a_non_path_row(self, stage):
+        """A path row pushed past the end of the table breaks the leading block."""
+        ranks = order.rank_map()
+        first = min(order.path_keys(), key=ranks.__getitem__)
+        arc, ident = first.split(":")
+        line = row_of("steps", f"| {arc} | {ident} |")
+        stage("steps", line, with_cell(line, 4, f"#{max(ranks.values()) + 1}"))
+        problems = order.tier_violations()
+        assert any(p.startswith(f"{first} is on the path") for p in problems), problems
+
+    def test_the_control_fires_when_the_horizon_names_a_path_row(self, stage):
+        """A horizon on the path is a boundary above rows that must precede it."""
+        live = order.horizon_key()
+        on_path = order.outcome_scopes()[0][1][0]
+        assert on_path in order.path_keys(), on_path
+        stage("steps", f"opens at `{live}`.**", f"opens at `{on_path}`.**")
+        problems = order.tier_violations()
+        assert any("is ON the path" in p and on_path in p for p in problems), problems
+
+    def test_the_control_fires_when_the_horizon_names_a_shipped_row(self, stage):
+        """A shipped horizon names no row a reader can pick up."""
+        live = order.horizon_key()
+        shipped = next(row.key for row in registry.step_rows() if row.shipped)
+        stage("steps", f"opens at `{live}`.**", f"opens at `{shipped}`.**")
+        problems = order.tier_violations()
+        assert any("not an open ranked step" in p and shipped in p for p in problems), problems
+
+    def test_the_control_fires_when_the_horizon_sentence_is_missing(self, stage):
+        """No horizon means no boundary, and the arm says so rather than passing."""
+        live = order.horizon_key()
+        stage("steps", f"**The horizon opens at `{live}`.**", "**The horizon is wherever.**")
+        assert order.horizon_key() is None
+        problems = order.tier_violations()
+        assert any("states no horizon" in p for p in problems), problems
+
+    def test_the_control_fires_when_a_scope_key_names_no_step(self, stage):
+        """An outcome scoped on a missing id is one the closure cannot reach."""
+        outcome, keys = order.outcome_scopes()[0]
+        cell = " / ".join(keys)
+        broken = cell.replace(keys[0], keys[0] + "-gone", 1)
+        stage("steps", f"| {outcome} | {cell} |", f"| {outcome} | {broken} |")
+        problems = order.tier_violations()
+        assert any(
+            p.startswith(f"outcome {outcome!r} is scoped on {keys[0]}-gone") for p in problems
+        ), problems
+
+    def test_a_missing_outcomes_table_is_an_error_not_an_empty_path(self, stage):
+        """Renaming the header must not read as 'no outcomes, nothing on the path'."""
+        stage("steps", "| outcome | scope |", "| outcomes | scope |")
+        with pytest.raises(AssertionError):
+            order.outcome_scopes()
+
+    def test_the_control_fires_when_a_scope_only_row_leaves_the_leading_block(self, stage):
+        """A scope step nothing else waits on is on the path by being a scope.
+
+        The first leading-block control moves the path's first row, which is
+        a closure member several rows wait on; a closure that dropped the
+        scope steps themselves would still fire there.  This one moves a
+        scope key NO row waits on, which only the scope membership can name.
+        """
+        rows = registry.step_rows()
+        waited_on = {key for row in rows for key in row.blocked_keys()}
+        lonely = next(
+            key for _, scope in order.outcome_scopes() for key in scope
+            if key not in waited_on
+        )
+        arc, ident = lonely.split(":")
+        line = row_of("steps", f"| {arc} | {ident} |")
+        stage("steps", line, with_cell(line, 4, f"#{max(order.rank_map().values()) + 1}"))
+        problems = order.tier_violations()
+        assert any(p.startswith(f"{lonely} is on the path") for p in problems), problems
+
+    def test_an_identity_class_enters_the_path_whole(self, stage):
+        """A path row's alias sibling is on the path too, whichever name a wait uses.
+
+        No open ranked row carries an alias today, so the class is staged:
+        the first row OUTSIDE the path is written into a path row's ``also``
+        cell, and the closure must then hold it.
+        """
+        ranks = order.rank_map()
+        path = order.path_keys()
+        outside = min(
+            (row.key for row in registry.step_rows()
+             if row.rank is not None and row.key not in path),
+            key=ranks.__getitem__,
+        )
+        head = min(path, key=ranks.__getitem__)
+        arc, ident = head.split(":")
+        line = row_of("steps", f"| {arc} | {ident} |")
+        stage("steps", line, with_cell(line, 2, outside))
+        assert outside in order.path_keys(), outside
+
+    def test_the_control_fires_when_an_outcome_is_delivered(self, stage):
+        """An outcome whose whole scope has shipped is priority the table still states."""
+        outcome, keys = order.outcome_scopes()[0]
+        shipped = next(row.key for row in registry.step_rows() if row.shipped)
+        stage("steps", f"| {outcome} | {' / '.join(keys)} |", f"| {outcome} | {shipped} |")
+        problems = order.tier_violations()
+        assert any(p.startswith(f"outcome {outcome!r} is DELIVERED") for p in problems), problems

@@ -32,7 +32,6 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     cash_ledger,
     loan_ledger,
-    loan_posting_service,
     transfer_recurrence,
 )
 from app.services import escrow_calculator
@@ -642,17 +641,22 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert settled_contribution(replayed) == Decimal("1499.10")
 
 
-def test_loan_standing_extra_reads_the_recurring_payment_setting(
+def test_a_definitions_standing_extra_is_read_off_its_own_settings_row(
     app, db, seed_user, seed_periods,
 ):
-    """loan_standing_extra returns the active recurring payment's extra (else 0).
+    """A recurring payment's extra is ITS settings row's, 0.00 without one.
 
-    The single loan-level figure the payoff projection threads (step 5): 0.00
-    before an extra is set, the settings value after, and 0.00 for an account
-    with no recurring payment (the checking source).
+    Read per DEFINITION through ``loan_payment_config`` (plan step R7d-g-3):
+    0.00 before an extra is set, the settings value after, and 0.00 for a
+    definition with no settings row at all.  The loan-level reader this
+    graded, ``loan_standing_extra``, went at that step with the payoff
+    composer's ``extra_principal`` it fed (ruling **R-R88**, which re-ruled R-R83's seam clause
+    there): the extra rides inside each generated row's cash (amount rule 4),
+    and no loan-level figure threads it any more.
     """
+    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
     from app.services.recurring_transfer_query import (  # pylint: disable=import-outside-toplevel
-        loan_standing_extra,
+        loan_payment_config,
     )
 
     with app.app_context():
@@ -660,18 +664,24 @@ def test_loan_standing_extra_reads_the_recurring_payment_setting(
             _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
         )
         db.session.commit()
-        user_id = seed_user["user"].id
 
-        assert loan_standing_extra(loan.id, user_id) == Decimal("0.00")
+        assert loan_payment_config(template) == (True, Decimal("0.00"))
 
         template.settings.extra_principal = Decimal("250.00")
         db.session.commit()
-        assert loan_standing_extra(loan.id, user_id) == Decimal("250.00")
+        assert loan_payment_config(template) == (True, Decimal("250.00"))
 
-        # An account with no recurring payment into it resolves to 0.00.
-        assert loan_standing_extra(
-            seed_user["account"].id, user_id,
-        ) == Decimal("0.00")
+        # A definition with no settings row: not a loan payment, no extra.
+        plain = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=loan.id,
+            name="No settings row",
+            default_amount=Decimal("10.00"),
+        )
+        db.session.add(plain)
+        db.session.flush()
+        assert loan_payment_config(plain) == (False, Decimal("0.00"))
 
 
 # ── Overpayment (step 5): the standing extra rides both modes' cash ──────────

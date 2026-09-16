@@ -22,7 +22,8 @@ consequences, both measured:
 * **A row could be broken and stay broken.**  ``bank_import:R-FW`` carried an
   unescaped ``|`` inside a backticked string, so it read as FOUR cells in a
   three-column table: markdown truncated the rule at the pipe and
-  :func:`_tables.rows_under` would have dropped the row entirely.  Nothing
+  :func:`_tables.rows_under` would have dropped the row entirely (since
+  2026-09-14 it REFUSES such a row by file and line instead).  Nothing
   reported it because nothing read the table.  Repaired by the lift that
   created this file.
 
