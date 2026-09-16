@@ -29,6 +29,7 @@ from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import figure_source_columns
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -58,6 +59,7 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
 def _add_entry(txn, seed_user, amount, description, purchased_on=None):
     """Attach a debit entry to a transaction directly via ORM."""
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(str(amount)),

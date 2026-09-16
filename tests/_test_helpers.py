@@ -3607,6 +3607,7 @@ def create_settled_cash_transaction(
     from app.models.transaction import Transaction
     from app.services import posting_service, status_seam
     from app.services.settle_day import SettleDay, record_settle_day
+    from app.services.status_seam._covering import sync_covering_movement
 
     account = seed_user["account"] if account is None else account
     scenario = seed_user["scenario"] if scenario is None else scenario
@@ -3652,9 +3653,24 @@ def create_settled_cash_transaction(
         # one and left the other would build a row the app cannot write.  The
         # seam above already stamped ``entered``; re-stating it keeps the pair
         # written in one act whichever day wins.
+        #
+        # **Pinned AROUND the seam on purpose, and the seam's mirror is then
+        # asked to follow** (plan step **X-bi-3a**).  The seam refuses a day
+        # that has not happened (ruling R-EJ), and the anchor-reconciliation
+        # suites build their civil-day partitions on a server-now origin with
+        # events a day or three after it -- so the pin stays a bare one, as it
+        # always was.  What may NOT stay bare is the row's covering movement:
+        # the seam wrote it dated with its own stamp, and a row moved to
+        # another day while its movement kept today's is a state no door can
+        # produce (the ledger partitioned one spend on two sides of an anchor,
+        # measured on five cases 2026-09-15).  So the pin is followed by the
+        # seam's own mirror -- one rule, not a fixture's restatement of it.
         record_settle_day(
             txn,
             SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED),
+        )
+        sync_covering_movement(
+            txn, was_settled=True, now_settled=True, settlement=None,
         )
     posting_service.sync_transaction_postings(txn, settled=True)
     return txn
@@ -3863,6 +3879,7 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         description=description,
         purchased_on=purchased_on,
         **settle_day_columns(settled_on),
+        **figure_source_columns(),
         is_credit=is_credit,
     ))
     db_session.flush()
@@ -4318,6 +4335,134 @@ def settle_day_columns(settled_on, basis=None):
         "settled_on": settled_on,
         "settled_day_basis_id": ref_cache.settled_day_basis_id(member),
     }
+
+
+def figure_source_columns(member=None):
+    """Return the FIGURE-SOURCE column a bare-built purchase owes.
+
+    The figure's twin of :func:`settle_day_columns` (plan step **X-bi-3a**,
+    ruling **R-BAL39**): ``transaction_entries.figure_source_id`` is NOT NULL
+    with no default, because both of the app's writers of a movement state who
+    wrote its figure and a stored guess is the shape ruling R-IY deletes.  A
+    bare ``TransactionEntry(...)`` that says nothing is therefore an
+    ``IntegrityError`` at flush rather than a row, and every bare builder goes
+    through this rather than spelling the id.
+
+    **The default is ``typed``**, which is what a bare-built purchase MEANS:
+    nobody imported a statement line and no settle resolved it, so a person
+    stated the figure -- exactly what the entry form records.  A suite grading
+    the source itself passes ``MovementFigureSourceEnum.OBSERVED`` or
+    ``.RESOLVED`` explicitly, because there the source is the subject.
+
+    Args:
+        member: The :class:`~app.enums.MovementFigureSourceEnum` member, or
+            ``None`` for the ``typed`` default.
+
+    Returns:
+        ``{"figure_source_id": ...}``, ready to splat into the constructor.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import MovementFigureSourceEnum
+
+    chosen = MovementFigureSourceEnum.TYPED if member is None else member
+    return {"figure_source_id": ref_cache.movement_figure_source_id(chosen)}
+
+
+def family_journal_filter(txn):
+    """Return the SQL clause selecting the journal entries of *txn*'s FAMILY.
+
+    **A settled bill's money is posted under its covering movement since plan
+    step X-bi-3a** (ruling **R-BAL39**): the status seam mirrors the
+    settlement as one ``transaction_entries`` row, the bill's own leg reads
+    zero, and the posting writer files the money under
+    ``journal_entries.transaction_entry_id`` (the purchase source) rather than
+    under ``transaction_id``.  A suite that reads "the row's postings" by
+    ``JournalEntry.transaction_id`` alone therefore reads an empty ledger for
+    a covered bill.  This is the ONE spelling of the family read, so the 38
+    cases the developer confirmed on 2026-09-15 widen their subject the same
+    way and no figure moves: the row's entries, plus its covering movements'.
+
+    The movements are read through ``status_seam.covering_movements``, which
+    answers only while the row stands settled -- after a revert the mirror
+    is deleted and its postings, reversed first, carry no link -- so a
+    reverted row's family is the row alone, exactly as before.
+
+    Args:
+        txn: The :class:`~app.models.transaction.Transaction`, or its id.
+
+    Returns:
+        A SQLAlchemy boolean clause over ``JournalEntry``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry
+    from app.models.transaction import Transaction
+    from app.services.status_seam import covering_movements
+
+    row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
+    if row is None:
+        # A hard-deleted row: its postings were reversed and SET-NULLed before
+        # it went, and so were its movement's (they cascade with it), so the
+        # family is whatever still names the id -- nothing, which is the claim
+        # such a case makes.
+        return JournalEntry.transaction_id == txn
+    movement_ids = [movement.id for movement in covering_movements(row)]
+    own = JournalEntry.transaction_id == row.id
+    if not movement_ids:
+        return own
+    return db.or_(own, JournalEntry.transaction_entry_id.in_(movement_ids))
+
+
+def purchases_of(txn):
+    """Return *txn*'s entries that are PURCHASES: its rows less the seam's mirror.
+
+    Plan step **X-bi-3a**: a settled bill or an envelope closed empty holds
+    one covering movement, written by the status seam and never by a person,
+    so "this row took no purchase" is graded over the entries that are not
+    that mirror (``status_seam.covering_movements``).  A refused purchase
+    still leaves the row with exactly the movement it had.
+
+    Args:
+        txn: The :class:`~app.models.transaction.Transaction`, or its id.
+
+    Returns:
+        The purchases, in ``entries`` order.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.transaction import Transaction
+    from app.services.status_seam import covering_movements
+
+    row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
+    covering = covering_movements(row)
+    return [entry for entry in row.entries if entry not in covering]
+
+
+def family_cash_leg(txn):
+    """Return what *txn*'s FAMILY books: its own leg plus its covering movements'.
+
+    The reader's twin of :func:`family_journal_filter` for the fold's own
+    valuation (plan step **X-bi-3a**): ``cash_ledger.settled_cash_leg``
+    answers zero for a covered bill, and the app's one family valuation,
+    ``status_seam.settled_family_leg``, adds the movement back -- asked
+    here through that producer so a case that asserts "what this settled
+    row is worth" grades the same rule the matcher and the undo dialog read.
+
+    Args:
+        txn: The settled :class:`~app.models.transaction.Transaction`.
+
+    Returns:
+        The signed ``Decimal`` the family books.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.services.status_seam import settled_family_leg
+
+    return settled_family_leg(txn)
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments

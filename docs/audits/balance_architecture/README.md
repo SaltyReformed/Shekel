@@ -411,8 +411,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
     the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
-    * [ ] **X-bi-3a** the figure-source catalogue (`resolved` / `typed` / `observed`) and the ONE
-      settle-owned writer, EXPENSE parents only; balance-neutral by **R-FM**'s identity, graded so.
+    * [x] **X-bi-3a** `65045062` -- the figure-source catalogue and the ONE settle-owned writer,
+      expense parents (**R-BAL39**); the purchase bucket in the ledger report (**BAL-502**, closed
+      here); four review findings fixed with firing controls; 47 rule-5 test edits ruled 2026-09-15.
     * [ ] **X-bi-3b** the INCOME arm: three readers derive a movement's direction from its parent's
       type (**R-BAL35**; a covered paycheck read `-figure`), then income parents are covered.
     * [ ] **X-bi-3c** both legs of a transfer through `transfer_service` (Invariant 4), one movement
@@ -1258,7 +1259,7 @@ section 4, under their unchanged ids.*
   **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
   2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
   of its claims was false. Canonical:
-  (census 27 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
+  (census 28 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
   **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
   caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
   candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`

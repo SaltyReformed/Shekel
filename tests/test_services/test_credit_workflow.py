@@ -20,6 +20,7 @@ from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
     rhythm_of,
@@ -312,6 +313,7 @@ class TestCreditWorkflow:
             txn = self._create_expense(seed_user, seed_periods)
             txn.is_envelope = True
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("40.00"),

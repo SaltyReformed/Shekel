@@ -121,7 +121,12 @@ class Transaction(
       and no settle path writes it;
     * **WHAT MOVED** is what the bank actually took, and how that figure is
       known.  It comes into existence at a settle and is a fact about the ROW
-      from then on;
+      from then on.  **Since plan step X-bi-3a it has a second home** (ruling
+      **R-BAL39**): the settle mirrors it as a COVERING MOVEMENT on
+      ``budget.transaction_entries``, the payment row that records a bill's
+      money the way a purchase records an envelope's; the columns here are
+      the stale cache ``balance:X-bi-4`` deletes, and the status seam keeps
+      the two in step until then;
     * the **ASSERTION** is "this money moved, on this day, that is what kind of
       day it is, and that statement showed it".  A revert withdraws all of it.
       ``settled_day_basis_id`` joined it at plan step **X-az**: the day and the

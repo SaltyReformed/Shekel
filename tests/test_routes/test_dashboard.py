@@ -39,6 +39,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
+    figure_source_columns,
     last_covered_day,
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
@@ -202,6 +203,7 @@ class TestDashboardPulseRendering:
             )
             envelope = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
@@ -306,6 +308,7 @@ class TestDashboardPulseRendering:
             )
             tracked = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=tracked.id, account_id=tracked.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),

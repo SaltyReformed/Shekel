@@ -24,6 +24,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     an_asserted_day,
@@ -80,6 +81,7 @@ def _add_entry(txn, user, amount, description,
     """
     uid = user["user"].id if isinstance(user, dict) else user.id
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=uid,
         amount=Decimal(str(amount)),
@@ -1520,6 +1522,7 @@ class TestTheSettledOnEditPath:
         with app.app_context():
             other = _create_other_user_txn()
             other_entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=other["transaction"].id,
                 account_id=other["transaction"].account_id,
                 user_id=other["user"].id,

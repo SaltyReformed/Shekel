@@ -52,7 +52,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import figure_source_columns, generate_row_of, make_expense_template
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -155,6 +155,7 @@ def _make_envelope_template_and_txn(seed_user, period):
 def _make_entry(txn_id, user_id):
     """Insert a TransactionEntry on the given transaction."""
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn_id,
         # The parent's account, resolved from the id this helper takes: an
         # entry's account IS its parent's, and the schema refuses any other

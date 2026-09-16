@@ -42,6 +42,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 
 from tests._test_helpers import (
+    figure_source_columns,
     current_pay_period,
     generate_row_of,
     make_expense_template,
@@ -116,6 +117,7 @@ def _add_entry(
 ):
     """Add a purchase entry to a transaction (dated inside the period)."""
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,

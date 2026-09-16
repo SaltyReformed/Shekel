@@ -735,6 +735,7 @@ from app.services import (
 from app.services.auth_service import hash_password
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    figure_source_columns,
     rhythm_of,
     mint_fixture_era,
     bind_db_clock_rewriter,
@@ -2376,6 +2377,7 @@ def seed_cross_page_account(app, db, seed_user):
         # the resolver's anchor-period balance by construction.
         for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=amount,
