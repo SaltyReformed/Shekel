@@ -16,6 +16,7 @@ test_idempotency.py.  Focuses on:
     period) so cell == subtotal == balance.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -26,6 +27,7 @@ from app.enums import (
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -53,6 +55,7 @@ from app.services.cash_ledger import (
     contribution_of,
     resolve_transaction_amount,
 )
+from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     figure_source_columns,
@@ -128,6 +131,162 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     db.session.add(txn)
     db.session.flush()
     return txn
+
+
+def _place_kindle(seed_user, period, *, due_date=None, amount="162.25"):
+    """Place Kayla's Kindle in *period* through the one producer (plan step X-bi-7b).
+
+    A one-off is a rule-less definition plus its placed row (ruling
+    **R-BAL20**); the app has exactly one way to make one, so these cases
+    take it rather than hand-building the shape.
+
+    Args:
+        seed_user: The seed_user fixture dict.
+        period: The ORM ``PayPeriod`` to place the row in.
+        due_date: The owner's stated day, or ``None`` for the paycheck's
+            start (ruling **R-BAL22**).
+        amount: The definition's one price.
+
+    Returns:
+        The placed, committed :class:`Transaction`.
+    """
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name="Kayla's Kindle",
+            amount=Decimal(amount),
+            category_id=seed_user["categories"]["Groceries"].id,
+        ),
+        derived_span(period),
+        scenario_id=seed_user["scenario"].id,
+        due_date=due_date,
+    )
+    db.session.commit()
+    return row
+
+
+class TestAPeriodMoveRePlacesAOneOff:
+    """Ruling **R-BAL33** at carry-forward's move-whole arm (plan step X-bi-7b).
+
+    A one-off is due on its PLACED paycheck's start unless the owner stated a
+    day (R-BAL22), so the default follows the placement: a placed row carried
+    forward takes the target's start, an owner-stated day -- any date other
+    than the source paycheck's start, read by position -- stays, and
+    ``occurs_on`` follows the date either way (R-BAL25).  Found by leaf
+    7b-1's adversarial review: a one-off rolled to the next paycheck read
+    OVERDUE on the dashboard pulse and late in ``payment_timeliness`` where
+    the undated row it replaced sat on the *anytime this period* shelf.
+    """
+
+    def test_a_default_dated_one_off_takes_the_target_paychecks_start(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The Kindle walk: born 09-04, carried to 09-18, due 09-18.
+
+        And the balance is IDENTICAL under either date -- a one-off's series
+        is flat (R-BAL21) and ``attribution_day`` budgets the row to its
+        paycheck -- so the target period's balance moves by the row's
+        figure and nothing else, exactly as the date it left behind gave.
+        """
+        with app.app_context():
+            row = _place_kindle(seed_user, seed_periods[0])
+            source_start = derived_span(seed_periods[0]).start_date
+            target_start = derived_span(seed_periods[1]).start_date
+            assert row.due_date == source_start
+            assert row.occurs_on == source_start
+            account = seed_user["account"]
+            before = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+            )
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(row)
+            assert count == 1
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.template_id is not None
+            assert row.is_override is False
+            assert row.due_date == target_start
+            assert row.occurs_on == target_start
+            assert resolve_transaction_amount(
+                row, amount_basis_for(row),
+            ) == Decimal("162.25")
+            after = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+            )
+            # The row left period 0 and landed in period 1: the running
+            # balance at period 0's end recovers the $162.25 and period 1's
+            # end is where it was, because the row's whole figure is
+            # budgeted to whichever paycheck holds it, on any day inside.
+            assert after[seed_periods[0].id] - before[seed_periods[0].id] == Decimal("162.25")
+            assert after[seed_periods[1].id] == before[seed_periods[1].id]
+
+    def test_an_owner_dated_one_off_keeps_its_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE CONTROL: a date other than the source's start is the owner's."""
+        with app.app_context():
+            source_start = derived_span(seed_periods[0]).start_date
+            stated = source_start + timedelta(days=6)
+            row = _place_kindle(seed_user, seed_periods[0], due_date=stated)
+            assert row.due_date == stated
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(row)
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.due_date == stated
+            assert row.occurs_on == stated
+            assert row.is_override is False
+
+    def test_a_legacy_link_less_row_is_not_re_dated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE CONTROL: the re-placing is a PLACED row's; a link-less row keeps its branch.
+
+        A legacy one-off (``template_id IS NULL`` until the family's cutover
+        dates and links it) dated at its paycheck's start is moved and left
+        dated as it was -- its date is its own optional note, and the
+        cutover is what brings it under R-BAL22.
+        """
+        with app.app_context():
+            source_start = derived_span(seed_periods[0]).start_date
+            legacy = _create_transaction(seed_user, seed_periods, name="Legacy")
+            legacy.due_date = source_start
+            db.session.commit()
+            assert legacy.template_id is None
+            assert legacy.is_placed is False
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(legacy)
+            assert legacy.pay_period_id == seed_periods[1].id
+            assert legacy.due_date == source_start
+            assert legacy.occurs_on is None
+            assert legacy.is_override is False
 
 
 class TestCarryForwardUnpaid:
@@ -586,14 +745,20 @@ class TestCarryForwardStatusRecheck:
     ):
         """A row of a definition with NO rule moves as an ad-hoc row does.
 
-        Plan step balance:X-bi-7a (ruling **R-BAL20**): the two bulk UPDATEs
+        Plan step balance:X-bi-7a (ruling **R-BAL20**): the bulk UPDATEs
         split on ``Transaction.recurs``, not on the link.  A cleared cadence
         leaves its rows template-linked, and until this step the discrete
         branch flagged them ``is_override`` on the move -- a flag whose only
         effect on a rule-less definition's row is to hide it from
         ``propagate_to_unruled_definition`` for good (the twin's defect
         **BAL-493**).  The recurring sibling above keeps its flip; this row
-        keeps its link, its date and ``is_override = False``.
+        keeps its link and ``is_override = False``.
+
+        **Its DATE moves with it since plan step balance:X-bi-7b** (ruling
+        **R-BAL33**): the engine dated this row from its paycheck's start (a
+        cadence naming no day of the month), which reads as the R-BAL22
+        default, so the move re-places it on the target's start.  This case
+        asserted ``due_date == generated_due`` until then.
         """
         with app.app_context():
             template = _create_template(
@@ -602,7 +767,7 @@ class TestCarryForwardStatusRecheck:
             txn = generate_row_of(template, seed_periods[0])
             template.recurrence_rule = None
             db.session.commit()
-            generated_due = txn.due_date
+            assert txn.due_date == derived_span(seed_periods[0]).start_date
             assert txn.is_override is False
             assert txn.recurs is False
 
@@ -618,7 +783,8 @@ class TestCarryForwardStatusRecheck:
             assert txn.pay_period_id == seed_periods[1].id
             assert txn.template_id == template.id
             assert txn.is_override is False
-            assert txn.due_date == generated_due
+            assert txn.due_date == derived_span(seed_periods[1]).start_date
+            assert txn.occurs_on == txn.due_date
 
     def test_version_id_bumped_by_bulk_update(
         self, app, db, seed_user, seed_periods,
@@ -3657,7 +3823,7 @@ class TestACarriedForwardLeftoverRowIsDated:
             assert fresh.due_date.day == 15
             assert fresh.due_date != derived_span(target_period).start_date
 
-    def test_a_rule_less_definitions_envelope_moves_whole_and_keeps_its_date(
+    def test_a_rule_less_definitions_envelope_moves_whole_and_is_re_placed(
         self, app, db, seed_user, seed_periods,
     ):
         """A CLEARED cadence's envelope row is a one-off: it MOVES, whole.
@@ -3672,18 +3838,23 @@ class TestACarriedForwardLeftoverRowIsDated:
         leftover, giving a definition that places ONE row two.  The envelope
         branch is gated on ``Transaction.recurs`` now, so the row falls
         through to the discrete bucket like an ad-hoc envelope: it is
-        RELOCATED with its purchases, keeps the date it was generated with,
-        is not settled, and -- unlike a recurring definition's row -- is NOT
-        flagged ``is_override``, because no pass would ever write over it and
-        the flag would only stop its definition speaking to it.  That arm of
-        ``_leftover_due_date`` is deleted as unreachable.
+        RELOCATED with its purchases, is not settled, and -- unlike a
+        recurring definition's row -- is NOT flagged ``is_override``, because
+        no pass would ever write over it and the flag would only stop its
+        definition speaking to it.  That arm of ``_leftover_due_date`` is
+        deleted as unreachable.
+
+        **And it is RE-PLACED since plan step balance:X-bi-7b** (ruling
+        **R-BAL33**): dated from its paycheck's start, it takes the target's
+        start with the move, where this case asserted it *keeps the date it
+        was generated with* until then.
         """
         with app.app_context():
             template = _create_envelope_template(
                 seed_user, name="Father's Day",
             )
             source = generate_row_of(template, seed_periods[0])
-            generated_due = source.due_date
+            assert source.due_date == derived_span(seed_periods[0]).start_date
             template.recurrence_rule = None
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
@@ -3710,7 +3881,8 @@ class TestACarriedForwardLeftoverRowIsDated:
             moved = rows[0]
             assert moved.pay_period_id == seed_periods[1].id
             assert moved.is_override is False
-            assert moved.due_date == generated_due
+            assert moved.due_date == derived_span(seed_periods[1]).start_date
+            assert moved.occurs_on == moved.due_date
             assert moved.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
             # Its purchase travelled with it, and it is still the definition's
             # to price: no figure of its own, no settlement.

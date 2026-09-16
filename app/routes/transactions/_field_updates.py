@@ -5,17 +5,36 @@ re-key of the override flip pushed that module to ``max-module-lines``; the
 cut is the one X-au-j made for :mod:`._gates`, one step later in the same
 handler: the gates run BEFORE this step, and what follows it
 (``apply_requested_status``, the posting reconcile, the commit) stays with the
-handler.  A pure move: :data:`_SEAM_OWNED_FIELDS` and
-:func:`_apply_field_updates` are the text that left, and
-:func:`_apply_regular_update` calls the second exactly as before.
+handler.
+
+**Since plan step ``balance:X-bi-7b`` (leaf 7b-2) this step forks on the
+row's SHAPE.**  A one-off is a rule-less definition plus its placed row
+(ruling **R-BAL20**), and the grid popover is its whole lifecycle
+(**R-BAL23**): the name, category and flags it posts are the DEFINITION's
+and land there through the one act the template edit form calls
+(:mod:`app.services.definition_edit`, ruling **R-BAL36**); a typed figure
+corrects the definition's price IN PLACE and never detaches the row
+(**R-BAL29**, **R-BAL37**); a period move RE-PLACES the row on the target
+paycheck's start unless the owner had stated a day (**R-BAL33**); and a
+moved due date carries ``occurs_on`` with it (**R-BAL25**).  A RECURRING
+definition's row keeps every act it had: a typed figure or a period move
+detaches it (OWN, ``is_override``), because that is a statement about one
+occurrence among many.  A link-less row -- a legacy one-off until the
+family's cutover, a CC payback -- keeps its own branch, frozen.
 
 Boundary discipline: this writes the loaded row from the request's
 already-schema-loaded ``data``; it issues no query of its own beyond the
-lazy loads the row's accessors make, and it does not commit.
+lazy loads the row's accessors make and the definition edit's own, and it
+does not commit.
 """
 
-from app.services import transaction_service
+from app.services import definition_edit, transaction_service
 from app.services.amount_ownership import state_own_amount
+from app.services.one_off import (
+    due_date_after_move,
+    restate_price,
+    state_due_date,
+)
 
 from app.routes.transactions._helpers import _error_transaction_response
 
@@ -49,65 +68,163 @@ _SEAM_OWNED_FIELDS = frozenset(
     {"status_id", "settled_on", "settled_amount", "estimated_amount"}
 )
 
+#: The PATCH fields that are a placed row's DEFINITION's (ruling **R-BAL23**):
+#: what the item is called, what it is, and its two flags.  Taken out of the
+#: payload before the row loop for such a row and landed on the definition
+#: through :func:`definition_edit.apply_fields`, so the row's copies of the
+#: first two are written by the propagation that brings every row of the
+#: definition into line, and the flags -- which the row reads off its
+#: definition -- are written nowhere on the row at all.  DERIVED from
+#: :data:`definition_edit.EDITABLE_FIELDS` rather than spelled beside it, so
+#: a field this door pops is one that act ``apply_fields`` writes: the two it
+#: leaves out are the account and the type, which the popover does not
+#: offer.
+_ITEM_FIELDS = definition_edit.EDITABLE_FIELDS - {
+    "account_id", "transaction_type_id",
+}
 
-def _apply_field_updates(txn, data, *, amount_authored, period_changed):
+
+def _re_files_the_row(txn, data) -> bool:
+    """Whether this PATCH moves a placed row to ANOTHER grid row.
+
+    The budget grid groups a rule-less definition's rows by
+    ``(category_id, name)`` (ruling **R-BAL34**), so a placed row renamed or
+    re-categorised at the popover leaves the row it was drawn in -- which an
+    in-place cell swap cannot express, exactly as a period move cannot.  The
+    handler asks this BEFORE :func:`_apply_field_updates` lands the new
+    values, and triggers ``gridRefresh`` when it answers ``True``.  Compared
+    against the ROW's current values because those are the grid's key.
+
+    Args:
+        txn: The row being edited.
+        data: The schema-loaded PATCH payload, before the field write.
+
+    Returns:
+        ``True`` for a placed row whose submitted name or category differs
+        from what the grid currently files it under; ``False`` for every
+        other row, whose grid row a PATCH does not move.
+    """
+    if not txn.is_placed:
+        return False
+    return (
+        ("name" in data and data["name"] != txn.name)
+        or ("category_id" in data and data["category_id"] != txn.category_id)
+    )
+
+
+def _apply_field_updates(
+    txn, data, *, amount_authored, period_changed, target_period,
+):
     """Write the submitted fields onto *txn*, refusing what may not be written.
 
     The FIELD half of :func:`_apply_regular_update`, extracted so the handler
-    keeps one exit per concern rather than growing a branch per rule.  FOUR
-    acts, and the order is load-bearing.  **This enumeration said "three" and
-    listed three until plan step X-au-j**, by which time the body already
-    performed four: an adversarial review found the count stale in the one
-    helper whose whole discipline is that its order matters.  The one it had
-    never named is marked NEW below.
+    keeps one exit per concern rather than growing a branch per rule.  SEVEN
+    acts, numbered 0 to 6, and the order is load-bearing.  **This enumeration
+    once said "three" and listed three while the body performed four** (found
+    by X-au-j's adversarial review, in the one helper whose whole discipline
+    is that its order matters), so every act is numbered below; leaf 7b-2 of
+    ``X-bi-7b`` added the pop in act 0 and acts 2 and 4, each marked NEW.
 
-    1. the ``setattr`` loop.  ``status_id`` and ``settled_on`` are BOTH excluded
-       and routed through the status verb instead: a bare ``setattr`` would
-       assign the column but skip the transition check, the settle-day
-       stamp/clear, and the status-relationship expire that
-       ``status_seam.apply_status_change`` owns -- and for ``settled_on`` it
-       would make this loop a SECOND writer of a column the seam is the single
-       door to (finding **N-185**, the re-run of N-183 on the transaction side).
-    2. ``is_override``, which sits with the field writes and ABOVE both the
-       refusal below and the status work.  **It had TWO reasons and has ONE
-       since plan step X-au-d.**  The retired one: a settle asked the
-       projection for a fresher amount and SKIPPED a row the user had
-       overridden (a read-time repair plan step X-au-d deleted), so setting
-       the flag afterwards would have let a salary row's recompute overwrite the
-       estimate the same form just submitted -- there is no recompute and no
-       cache left, because act 2b below makes a typed figure the row's OWN and
-       the amount model reads ownership rather than this flag (finding
-       **N-262**).  The one that stands: act 3 FLUSHES (see below), so a flag
-       written after it is written after the UPDATE it belongs in -- which for
-       a period move leaves the row inside the generation index's partial
-       predicate (``is_override = FALSE``) while its period is already the new
-       one.
-       **Plan step R17 narrowed what that can collide with but did not remove
-       it**: the dated index is keyed
-       ``(template, scenario, occurs_on)``, and a move does not touch
-       ``occurs_on``, so a DATED row no longer collides with whatever the
-       engine put in the target period.  An UNDATED template-linked row
-       (``occurs_on IS NULL``) is still keyed on its paycheck by
-       ``idx_transactions_template_scenario_undated``, so for that row the
-       ordering is exactly as load-bearing as it was -- and since plan step
-       balance:X-bi-7a the flip is made only where the definition RECURS,
-       so such a row of a rule-less definition is not taken out of that
-       index at all (the shape ``carry_forward_service._execute`` states,
-       with its measurement; ``recurrence:R19-b`` deletes it).
-    2b. **(shipped at X-au-c2b, restated at X-au-k)** a typed figure is stated
-       through ``amount_ownership.state_own_amount``: a hand-priced row OWNS
-       its figure, so storing it RELEASES the relation that priced it.  This
-       was two acts -- the loop wrote the column and this cleared the source --
-       and their pairing was a convention the loop could break.  It is one act
-       over one attribute now, so the release cannot be forgotten and the loop
-       cannot reach the column at all (the field is in
-       ``_SEAM_OWNED_FIELDS``).
-    3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
+    0. **The reads the later acts need, made BEFORE the loop.**  ``recurs``
+       and ``is_placed`` may lazy-load the template, and a load after the
+       loop autoflushes the moved period with the flag still False (act 5);
+       the source paycheck's start is read off ``txn.pay_period`` while the
+       foreign key still names it (the same column
+       ``render_transaction_cell`` reads for the due caption, so the
+       response's own load serves it from the identity map).  NEW: for a
+       placed row the ITEM fields (:data:`_ITEM_FIELDS`) are taken out of
+       ``data`` here, so the row loop never writes a definition's field
+       onto the row and the handler's posting pre-filter never sees a
+       ``category_id`` the propagation has already reconciled.
+    1. the ``setattr`` loop over the ROW's fields.  ``status_id`` and
+       ``settled_on`` are BOTH excluded and routed through the status verb
+       instead: a bare ``setattr`` would assign the column but skip the
+       transition check, the settle-day stamp/clear, and the
+       status-relationship expire that ``status_seam.apply_status_change``
+       owns -- and for ``settled_on`` it would make this loop a SECOND writer
+       of a column the seam is the single door to (finding **N-185**, the
+       re-run of N-183 on the transaction side).  A placed row's ``due_date``
+       is excluded too: act 2 writes it.
+    2. **NEW -- a placed row's DATE, through the one writer**
+       (``one_off.state_due_date``, ruling **R-BAL25**: the row answers its
+       own due date, so ``occurs_on`` moves with it).  The date is the
+       owner's typed one, else the row's; a period move then RE-PLACES it
+       (``one_off.due_date_after_move``, **R-BAL33**): the target
+       paycheck's start unless the date was not the source paycheck's start,
+       an owner-stated day read by position.  Before act 3 and act 4 because
+       both read the row's date -- the restate corrects the version it
+       reads, and the propagation re-declares the row at it.
+    3. the FIGURE.  A RECURRING row's typed figure makes the row its OWN
+       through ``amount_ownership.state_own_amount`` (shipped at X-au-c2b,
+       restated at X-au-k): a hand-priced row OWNS its figure, so storing it
+       RELEASES the relation that priced it, one act over one attribute.
+       **A PLACED row's typed figure is the DEFINITION's** (rulings
+       **R-BAL21** / **R-BAL29**): ``one_off.restate_price`` corrects the
+       version the row's due date reads, in place, and declares the row
+       priced by it with no flag -- which is also what re-attaches a row the
+       interim between leaves 7b-1 and 7b-2 left OWN (**R-BAL37**).  A
+       link-less row keeps the OWN write it always had.  **BEFORE act 4**,
+       and an adversarial review is why: the propagation there selects rows
+       that are not overridden, so a residue row re-attached here is reached
+       by it in the same request (its category follows), where the other
+       order left the row on its old category until the next edit; and the
+       definition's amount and fields then flush together, so its
+       optimistic-lock counter bumps once per edit rather than twice -- the
+       same reason the template edit form states the amount BEFORE
+       ``apply_fields``.
+    4. **NEW -- the DEFINITION's fields** (:mod:`app.services.definition_edit`,
+       rulings **R-BAL23** / **R-BAL36**): the item fields taken out at act 0
+       are applied to ``txn.template`` -- a changed name reaches every row of
+       the definition through the bulk rename -- and the rows it holds are
+       brought into line, the row's own category and TEMPLATE ownership
+       included, with their postings reconciled.  The flags need no
+       propagation: the row reads them off its definition.  A row the
+       interim detached (``is_override``) and NOT re-priced in this request
+       is skipped by that propagation, as any overridden row is (its category
+       waits for its next typed figure, or the cutover).  **Here, BEFORE the
+       status arm, because the flags govern the settle**: a save that unticks
+       *Track individual purchases* beside Status = Paid settles the row on
+       its own figure (act 6's own sentence), which needs the definition's
+       flag written first.  The price of that order is a crafted single PATCH
+       that REVERTS a settled placed row and re-categorises it in one request
+       (the card disables the category select on a locked row, so no form
+       posts that pair): the propagation runs while the row is still settled
+       and skips it, so the definition takes the category and the row keeps
+       the old one until its next category edit reaches it.  Found by
+       adversarial review and left, because the other order breaks the
+       reachable save.
+    5. ``is_override``, which sits with the field writes and ABOVE both the
+       refusal below and the status work: act 6 FLUSHES, so a flag written
+       after it is written after the UPDATE it belongs in -- which for a
+       period move leaves the row inside the generation index's partial
+       predicate (``is_override = FALSE``) while its period is already the
+       new one.  **Plan step R17 narrowed what that can collide with but
+       did not remove it**: the dated index is keyed
+       ``(template, scenario, occurs_on)`` and a move of a RECURRING row
+       does not touch ``occurs_on``, so a DATED row no longer collides with
+       whatever the engine put in the target period; an UNDATED
+       template-linked row is still keyed on its paycheck by
+       ``idx_transactions_template_scenario_undated``, so there the ordering
+       is exactly as load-bearing as it was.  (For a PLACED row act 4 has
+       already flushed, and correctly: such a row takes no flag.)  **The
+       flag says ONE thing since plan step X-au-h: this row is the OWNER's,
+       not the rule's** -- and since this leaf it is made ONLY where the
+       definition RECURS, for a typed figure or a period move alike
+       (**R-BAL28**'s stated end): a rule-less definition runs no pass to
+       keep off the row, its typed figure lives on the definition now, and a
+       flag there would only hide the row from the propagation of act 4 and
+       from a rule added later (**R-BAL25**).  Both acts were presence tests
+       before -- the amount's is finding **N-248**, and the period's had the
+       identical shape, because the popover renders a period dropdown on
+       every row and posts it whether or not it was touched;
+       ``period_changed`` is computed by the caller BEFORE the loop rewrites
+       ``pay_period_id``.
+    6. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
        reads the RESULTING row: unchecking "Track individual purchases" in the
-       same save legitimately gives the row its own amount back.  **It reads a
-       LAZY relationship and therefore autoflushes**, which is why this whole
-       helper is called from inside the caller's exception net rather than
-       above it.
+       same save legitimately gives the row its own amount back.  **It reads
+       a LAZY relationship and therefore autoflushes**, which is why this
+       whole helper is called from inside the caller's exception net rather
+       than above it.
 
     **The refusal is ruling R-FF's**, the same sentence the reconcile panel
     already obeys ("a tick is correctable exactly when the settle verb takes its
@@ -127,71 +244,76 @@ def _apply_field_updates(txn, data, *, amount_authored, period_changed):
     Args:
         txn: The Transaction being edited.
         data: The schema-loaded PATCH payload, with the rendered-figure
-            companion already removed by the caller.
+            companion already removed by the caller.  A placed row's item
+            fields are REMOVED from it here (act 0).
         amount_authored: Whether a HUMAN typed the ``estimated_amount`` this
-            payload carries (ruling **R-JR**).  Decides both whether the row
-            takes ownership of the figure and whether it stops being the rule's.
+            payload carries (ruling **R-JR**).  Decides whether the row takes
+            ownership of the figure (a recurring or link-less row) or its
+            definition is restated (a placed row).
         period_changed: Whether this payload MOVES the row to another period.
             Passed in because the caller computes it before the loop below
             rewrites ``pay_period_id``, at which point it can no longer be
             asked.
+        target_period: The paycheck the row moves to, as the owner's
+            calendar derived it for the FK probe, or ``None`` when the
+            payload names none.  Never ``None`` when *period_changed*.
 
     Returns:
         A designed 400 response tuple, or ``None`` when every field was
         written.
     """
-    # Read BEFORE the loop: ``recurs`` may lazy-load the template, and a load
-    # after it autoflushes the moved period with the flag still False (act 3).
-    #
-    # **INTERIM, stated** (plan step balance:X-bi-7b, leaf 7b-1): a one-off's
-    # ``name`` and ``category_id`` are its DEFINITION's (ruling R-BAL23), and
-    # this loop still lands them on the ROW alone for such a row, so a crafted
-    # PATCH (no form posts either field) renames the row and not its
-    # definition until leaf 7b-2 routes them there -- the popover shows the
-    # row, the merchant-rule picker (``offerable_templates``) the definition.
+    # Act 0.
     recurs = txn.recurs
+    placed = txn.is_placed
+    source_start = (
+        txn.pay_period.start_date if placed and period_changed else None
+    )
+    item = (
+        {field: data.pop(field) for field in _ITEM_FIELDS if field in data}
+        if placed else {}
+    )
+
+    # Act 1.
     for field, value in data.items():
-        if field in _SEAM_OWNED_FIELDS:
+        if field in _SEAM_OWNED_FIELDS or (placed and field == "due_date"):
             continue
         setattr(txn, field, value)
 
-    if amount_authored:
-        # A typed figure makes the row's amount its OWN, and storing it IS
-        # releasing the relation that priced it (plan step X-au-k) -- the amount
-        # model's own dispatch asserts exactly that: "a row a human RE-PRICED
-        # owns its figure because the write door CLEARS its source".  The value
-        # is never ``None`` here: ``estimated_amount`` is not ``allow_none`` on
-        # any of the three transaction schemas, so ``_normalize_empty_inputs``
-        # DROPS an empty box rather than loading it as an explicit nothing.
-        #
-        # **Gated on AUTHORSHIP rather than on the field's PRESENCE since plan
-        # step X-au-h** (ruling **R-JR**).  The popover renders this box on
-        # every correctable row and an HTML form posts every input it renders,
-        # so presence was true of a notes-only save -- which took ownership of
-        # a figure nobody chose and left the row no longer tracking its
-        # definition.  Finding **N-248**.
-        state_own_amount(txn, data["estimated_amount"])
+    # Act 2.
+    if placed:
+        due = data.get("due_date", txn.due_date)
+        if period_changed:
+            due = due_date_after_move(
+                due, source_start=source_start, target=target_period,
+            )
+        if due != txn.due_date:
+            state_due_date(txn, due)
 
-    # **The flag says ONE thing since plan step X-au-h: this row is the OWNER's,
-    # not the rule's.**  Both acts that make it so are stated here, and BOTH
-    # were presence tests before -- the amount's is finding **N-248** above, and
-    # the period's had the identical shape, because the popover renders a
-    # period dropdown on every row and posts it whether or not it was touched.
-    # ``period_changed`` is computed by the caller BEFORE the loop above
-    # rewrites ``pay_period_id``, which is why it is passed in rather than
-    # asked here.
-    # **A MOVE flips only when the definition RECURS** (balance:X-bi-7a,
-    # developer 2026-09-13): a rule-less definition runs no pass to keep off
-    # the row; the flag would hide it from ``propagate_to_unruled_definition``
-    # (the twin's defect **BAL-493**) and from a rule added later (R-BAL25).
-    # A TYPED FIGURE flips on every linked row until ``X-bi-7b``'s second
-    # leaf (7b-2) builds R-BAL21's restate: it lands OWN today, and the flag
-    # is what keeps a definition edit from silently discarding it.  The first
-    # leaf mints one-offs as rule-less definitions, so this interim now
-    # reaches a row the grid itself created.
-    if txn.template_id and (amount_authored or (period_changed and recurs)):
+    # Act 3.  The value is never ``None`` here: ``estimated_amount`` is not
+    # ``allow_none`` on any of the transaction schemas, so
+    # ``_normalize_empty_inputs`` DROPS an empty box rather than loading it
+    # as an explicit nothing.  **Gated on AUTHORSHIP rather than on the
+    # field's PRESENCE since plan step X-au-h** (ruling **R-JR**): the
+    # popover renders this box on every correctable row and an HTML form
+    # posts every input it renders, so presence was true of a notes-only
+    # save -- which took ownership of a figure nobody chose (finding
+    # **N-248**).
+    if amount_authored:
+        if placed:
+            restate_price(txn, data["estimated_amount"])
+        else:
+            state_own_amount(txn, data["estimated_amount"])
+
+    # Act 4.
+    if item:
+        definition_edit.apply_fields(txn.template, item)
+        definition_edit.propagate_to_unruled_rows(txn.template)
+
+    # Act 5.
+    if recurs and (amount_authored or period_changed):
         txn.is_override = True
 
+    # Act 6.
     if (
         data.get("settled_amount") is not None
         and transaction_service.settles_from_entries(txn)

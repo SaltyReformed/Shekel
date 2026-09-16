@@ -431,15 +431,18 @@ class Transaction(
     # rows hold ``true`` -- so a reader keyed on this cell sees 3 visible
     # rows where there are 232.
     #
-    # Unlike its twin, no plan step names this cell for deletion: the
-    # movement unification (``X-bi``) retires the ENVELOPE concept, while "may
-    # the companion see this ad-hoc item" outlives it.  So the dead half on a
-    # generated row keeps a writer (the setter below, reached by a crafted
-    # PATCH) with nothing bounding it, which is finding **BAL-484**.  The seal
-    # keeps that half unreadable in the application -- Python, Jinja and the
-    # ORM -- and that is the whole of its reach: SQL naming the column as a
-    # STRING (a migration, a ``psql`` session, ``text()``) can still read it,
-    # and no ruling forbids that reader.
+    # Its deletion is the one-definition family's cutover (``X-bi-7d``,
+    # ruling **R-BAL20**: both dead cells go with the row's flags).  The dead
+    # half on a generated row kept a WRITER -- the setter below, reached by a
+    # crafted PATCH -- with nothing bounding it, which was finding
+    # **BAL-484**; since plan step ``balance:X-bi-7b`` the PATCH door loads a
+    # schema that declares no flag for a recurring definition's row, so that
+    # writer is gone and the setter is reached only by the doors that state
+    # a link-less row's OWN setting.  The seal keeps the dead half unreadable
+    # in the application -- Python, Jinja and the ORM -- and that is the
+    # whole of its reach: SQL naming the column as a STRING (a migration, a
+    # ``psql`` session, ``text()``) can still read it, and no ruling forbids
+    # that reader.
     __companion_visible = db.Column(
         "companion_visible", db.Boolean, nullable=False, default=False,
         server_default="false",
@@ -693,6 +696,32 @@ class Transaction(
         return self.template.recurs
 
     @DerivedFlag
+    def is_placed(self):
+        """True when this row was PLACED by a rule-less definition.
+
+        **The ONE accessor for "is this a one-off's row"** (plan step
+        ``balance:X-bi-7b``, ruling **R-BAL20**): a definition with no
+        recurrence rule PLACES its rows -- a grid one-off's one, a bank-born
+        envelope's one per paycheck (**R-BAL24**) -- where a definition with
+        a rule GENERATES them, and a link-less row (a transfer shadow, a CC
+        payback, a legacy ad-hoc row until the family's cutover) names no
+        definition at all.  Five doors fork on exactly this: the popover
+        edits such a row's name, category, flags and price on its
+        DEFINITION (**R-BAL23**) and restates its price in place
+        (**R-BAL29**); a period move re-places it (**R-BAL33**), at both
+        doors that move a row; its due date may move but not clear; its
+        delete disposes of the definition it was the last row of
+        (**R-BAL27**, ``definition_delete.is_last_row_of_its_definition``).
+        Each spelled ``template_id is not None and not recurs`` for itself
+        before this name existed; the popover template reads it too.
+
+        Reads :attr:`recurs`, so a link-less row costs no load and the rule
+        rides on the template's own joined load.  A :class:`DerivedFlag` for
+        the reason its neighbours are: the answer lives on the rule's table.
+        """
+        return self.template_id is not None and not self.recurs
+
+    @DerivedFlag
     def tracks_purchases(self):
         """True if individual purchase entries apply to this transaction.
 
@@ -739,10 +768,13 @@ class Transaction(
         """Record the row's OWN purchase-tracking setting.
 
         Lands on the sealed cell for any row.  On a template-generated row
-        the write is inert -- nothing reads the cell there -- and the
-        popover renders no control for it, so only a crafted PATCH reaches
-        this arm; a refusal was considered and left for ``X-bi-5``, which
-        deletes the cell (developer, 2026-09-11).
+        the write is inert -- nothing reads the cell there -- and no door
+        reaches this arm for such a row since plan step ``balance:X-bi-7b``
+        (the PATCH schema a recurring row loads declares no flag; a placed
+        row's flag lands on its definition).  A refusal was considered and
+        left for the family's cutover, which deletes the cell (developer,
+        2026-09-11; the deletion moved from ``X-bi-5`` to ``X-bi-7d`` under
+        ruling R-BAL20).
 
         Args:
             value: The setting, coerced by the column type.
@@ -793,13 +825,11 @@ class Transaction(
         """Record the row's OWN companion-visibility setting.
 
         Lands on the sealed cell for any row.  On a template-generated row
-        the write is inert -- nothing reads the cell there -- and the
-        popover renders no control for it, so only a crafted PATCH reaches
-        this arm.  :attr:`is_envelope` accepts the same inert write, and
-        its refusal was left for ``X-bi-5`` because that step deletes the
-        cell; no step deletes THIS cell, so here the unrefused write has no
-        bound, which is what finding **BAL-484** records (see the column
-        comment).
+        the write is inert -- nothing reads the cell there -- and no door
+        reaches this arm for such a row since plan step ``balance:X-bi-7b``,
+        which deleted the writer finding **BAL-484** recorded (see the
+        column comment); the cell itself goes at the family's cutover with
+        its twin.
 
         Args:
             value: The setting, coerced by the column type.

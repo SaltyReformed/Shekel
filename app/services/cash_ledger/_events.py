@@ -9,10 +9,13 @@ that stream.  Two kinds of fact enter it, and nothing else:
   origination row ``account_service.create_account`` appends); every later row is
   a TRUE-UP.
 * an **ACTUAL** -- a SETTLED balance-contributing transaction row: the record
-  that cash really moved.  Transfer effects arrive here automatically, because a
-  transfer's legs ARE ``Transaction`` rows (``transfer_id IS NOT NULL``) --
-  Transfer Invariant 5, the same reason the projection engine never queries
-  ``Transfer`` directly.
+  that cash really moved.  A SETTLED transfer's effect arrives here as its
+  shadow row (``transfer_id IS NOT NULL``), because that row is where plan
+  step X-au-c3 recorded what moved -- the RECORD half of Transfer Invariant 5
+  as restated at plan step X-bi-6a (ruling R-BAL13), which plan step X-bi-4
+  moves onto movements.  A still-PROJECTED transfer's legs are no longer rows
+  this leaf reads at all: they are derived from the parent
+  (:mod:`app.services.transfer_legs`) by the plan half below.
 
 **PLANNED (still-Projected) rows are deliberately NOT here** (ruling R-G).  A
 plan cannot have already happened, so a projected row's effective date is
@@ -774,7 +777,11 @@ def settled_cash_facts(
     its ``selectinload(entries)`` are stated once for the two halves of the
     event stream rather than copied per half.  One gate for both halves is what makes the
     SETTLED and PLANNED tiers a partition of the contributing set rather than
-    two filters that could disagree about which rows exist at all.
+    two filters that could disagree about which rows exist at all.  *Since plan
+    step X-bi-6a the plan twin's ROW half also excludes transfer shadows and
+    its leg half derives them from the parents, so the partition of the
+    contributing set is: settled rows here, the account's own projected rows
+    and its projected transfer legs there.*
 
     This half supplies the SETTLED narrowing, in SQL rather than as a Python
     post-filter, and the difference is real work: the contributing gate alone

@@ -393,9 +393,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
         (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
         nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-      * [ ] **X-bi-7b-2** the popover's flag edits on the DEFINITION; **R-BAL29**'s in-place
-        restate; a moved one-off re-placed (**R-BAL33**); the grid grouping by `(category_id, name)`
-        (**R-BAL34**); the update schema's flag fields and **BAL-484**'s writer go.
+      * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
+        R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
+        restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
       * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
         TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
         `X-f6c`'s shape.
@@ -406,7 +406,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
       RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
-      gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
+      gone; the residue rows re-attached (**R-BAL37**); graded by EQUALITY across the cutover. Closes **BAL-484**.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
@@ -427,17 +427,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-bi-5** delete the DEFINITION's `is_envelope` (the row's cell is `X-bi-7d`'s),
     `tracks_purchases`'s branch sites and the template sites, which is the fence this family makes
     structurally unnecessary rather than merely unused.
-  * [ ] **X-bi-6a** re-point every PROJECTED-shadow READER (**R-BAL13**). **The PRODUCER is
-    `X-au-f-2`'s, not this step's** -- `16f83aa0` already states that leaf's two producers take a
-    shadow
-  while **R-BAL10** puts the answer on the PARENT, so a second one here was `R-IZ`'s own failure
-    mode. What remains is the READ side, and it is FOUR sites rather than the one the first draft
-  named: `cash_ledger._facts.planned_cash_rows` is KIND-BLIND on `transfer_id` and carries the
-    general case for every account (via `_cash_fold._cash_plan`, reduced at
-  `_cash_periods.sum_projected`); `_plan.py`'s PLANNED tier is only the LOAN forward plan;
-    `_asset_contributions.py:198` and `projection_inputs.shadow_contributions` are the rest. Built
-    to the
-  one-reader scope, the next step drops projected transfers out of every account's cash fold.
+  * [x] **X-bi-6a** `323400d9` -- every PROJECTED-shadow READER re-pointed onto the parent's derived
+    legs (**R-BAL13**, ruled **R-BAL38**, the status drift disclosed and pinned under **R-BAL42**;
+    five readers, `$0.00` measured). Record: `archive/x_bi_6a_as_built_2026-09-15.md`.
   * [ ] **X-bi-6** delete the transfer shadow `Transaction` ROWS (**R-BAL13**, superseding this
     step's stored-column scope under **R-JA**). Its two columns are two of the **FIVE** clauses
   `restore_transfer` keeps by hand -- `pay_period_id`, `category_id`, `due_date`, `is_override`,

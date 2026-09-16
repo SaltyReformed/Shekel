@@ -9431,7 +9431,7 @@ def unseeded_replay_balance(loan_id, scenario_id, as_of):
 
     params = loan_loaders.load_loan_params(loan_id)
     installments = loan_ledger.payment_installments(
-        loan_id, scenario_id, params.payment_day, options=(),
+        loan_id, scenario_id, params.payment_day, options=(), leg_options=(),
     )
     return round_money(
         _replay_from_anchor(

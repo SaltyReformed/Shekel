@@ -352,17 +352,21 @@ class TestEntryIntegration:
         self, app, db, auth_client, seed_user, seed_periods_today,
         seed_companion,
     ):
-        """The owner sets a generated row's own ``companion_visible``; nothing changes.
+        """The owner PATCHes a generated row's ``companion_visible``; nothing changes.
 
         The popover renders no visibility control for a template-generated
-        row, so only a crafted PATCH reaches its cell -- and the write lands
-        (the inert write plan step ``balance:X-bi-1`` left unrefused).  The
-        row's template is hidden, so the row stays off the companion page
-        and its entries door stays 404: both surfaces decide by the one
-        accessor, ``visible_to_companion``, and the dead cell they no longer
-        have a public name to read says nothing (plan step ``X-bi-1b``,
-        finding **BAL-482**).  Through the application's own doors, end to
-        end, which is what the model-level seal tests cannot see.
+        row, so only a crafted PATCH reaches for its cell -- **and since plan
+        step ``balance:X-bi-7b`` the write does NOT land**: the schema the
+        door loads for a recurring definition's row declares no flag, so the
+        field is dropped before any code could reach the setter (finding
+        **BAL-484**'s writer, deleted under ruling R-BAL20; this case
+        asserted ``cell is True`` while the inert write plan step X-bi-1
+        left unrefused still landed).  The row's template is hidden, so the
+        row stays off the companion page and its entries door stays 404:
+        both surfaces decide by the one accessor, ``visible_to_companion``
+        (plan step ``X-bi-1b``, finding **BAL-482**).  Through the
+        application's own doors, end to end, which is what the model-level
+        seal tests cannot see.
         """
         template = _make_template(
             seed_user, companion_visible=False, track=True, name="Hidden",
@@ -383,13 +387,14 @@ class TestEntryIntegration:
         })
         assert resp.status_code == 200
         db.session.expire_all()
-        # The cell took the write: the row would be shown by a reader of it.
+        # The cell did NOT take the write: even a raw-SQL reader of it sees
+        # what it held.
         cell = db.session.execute(
             Transaction.__table__.select()
             .with_only_columns(Transaction.__table__.c.companion_visible)
             .where(Transaction.__table__.c.id == txn_id)
         ).scalar_one()
-        assert cell is True
+        assert cell is False
         assert db.session.get(Transaction, txn_id).visible_to_companion is False
 
         # The owner's request above cached the owner on ``g._login_user``,

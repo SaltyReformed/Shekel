@@ -169,7 +169,15 @@ def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, 
 
 
 def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
-    """Create a PROJECTED loan-payment transfer and pin its due date."""
+    """Create a PROJECTED loan-payment transfer with its due date, through the door.
+
+    The due date is stated on the ``TransferSpec`` so the parent carries it and
+    the door mirrors it onto both shadows (Transfer Invariant 3).  *It was
+    written onto the income SHADOW alone until plan step balance:X-bi-6a*, a
+    write past Invariant 4 that left the parent undated; the PLANNED tier reads
+    a projected payment off its PARENT now (ruling R-BAL13), so a date the
+    parent never carried is a date the plan never sees.
+    """
     transfer = transfer_service.create_transfer(
         transfer_service.TransferSpec(
             user_id=seed_user["user"].id,
@@ -181,12 +189,11 @@ def _project_loan_payment(seed_user, db, loan, period, amount, due_date):
             status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             category_id=None,
             name="Loan Payment",
+            due_date=due_date,
         ),
     )
-    shadow = loan_income_shadow(db.session, transfer.id, loan.id)
-    shadow.due_date = due_date
     db.session.commit()
-    return shadow
+    return loan_income_shadow(db.session, transfer.id, loan.id)
 
 
 def test_a_derived_projected_shadow_is_priced_by_the_plan_tier(

@@ -70,6 +70,7 @@ from datetime import date
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentDates
 from app.services.loan_loaders import income_shadows, loan_payment_due_date
+from app.services.transfer_legs import PlannedTransferLeg
 
 from ._visible import payment_visible_on
 
@@ -103,11 +104,17 @@ class PaymentInstallment:
     :func:`~app.services.amortization_engine.slotted_dates` to the feed.
 
     Attributes:
-        income_shadow: The loan-side income shadow this installment was read
-            off.  Carried so a caller that ALSO needs the row -- pricing it, or
-            keying a map by its id -- takes it from here rather than issuing a
-            second query, the same reason
+        source: What this installment was read off: the loan-side income
+            SHADOW row for a payment that has settled, or the
+            :class:`~app.services.transfer_legs.PlannedTransferLeg` of its
+            parent transfer for one still projected (plan step
+            **balance:X-bi-6a**, ruling **R-BAL13** -- a projected payment is
+            not a row of its own).  Carried so a caller that ALSO needs the
+            source -- pricing it, or keying a map by its id -- takes it from
+            here rather than issuing a second query, the same reason
             :class:`~app.services.loan_ledger.LoanPaymentSplit` carries one.
+            Which of the two it is says which relation the payment came from,
+            and therefore whether it has happened, exactly as ``dates`` does.
         dates: The payment's
             :class:`~app.services.amortization_engine.PaymentDates` -- its
             funding period, the installment it satisfies, and the day its cash
@@ -116,12 +123,13 @@ class PaymentInstallment:
             the query rather than of a second reading of the status column.
     """
 
-    income_shadow: Transaction
+    source: Transaction | PlannedTransferLeg
     dates: PaymentDates
 
 
 def payment_installments(
-    account_id: int, scenario_id: int, payment_day: int, *, options: tuple,
+    account_id: int, scenario_id: int, payment_day: int, *,
+    options: tuple, leg_options: tuple,
 ) -> list[PaymentInstallment]:
     """Return a loan's payments as their DATES alone, in payment order.
 
@@ -160,24 +168,39 @@ def payment_installments(
     has a collision at all (0 on 58 shadows, 2026-09-09), so nothing moves
     today.*
 
+    **The tie-break is the PARENT transfer's id since plan step
+    balance:X-bi-6a**, because the two halves no longer share a row id space:
+    a settled payment is a shadow row and a projected one is a leg of its
+    parent, and ``(pay_period.start_date, id)`` over both would compare a
+    transaction id with a transfer id.  What both halves DO carry is the
+    parent -- a settled shadow's ``transfer_id``, a leg's ``transfer.id`` --
+    and the transfer service writes a parent before its shadows, so the
+    parent's id orders payments exactly as the shadow's id did.  One key over
+    two relations rather than a rule for which half goes first.
+
     Args:
         account_id: The loan account whose payments to read.
         scenario_id: The budget scenario to scope to.
         payment_day: The loan's contractual day-of-month due day
             (:attr:`app.models.loan_params.LoanParams.payment_day`), used only to
-            reconstruct the due date of a shadow that stores none.
+            reconstruct the due date of a payment that stores none.
         options: The loader options for every relationship the CALLER will
-            traverse on the rows this hands back (see
+            traverse on the SETTLED rows this hands back (see
             :func:`app.services.loan_loaders.query_shadow_income`).  ``()`` for a
             caller that reads only the dates -- the schedule replay's reference
-            -- and ``pricing_load_options()`` for one that goes on to price them,
-            which is what ``get_payment_history`` does.  THIS function's own
-            reads need only the pay period, and the producer loads that itself.
+            -- and, since the settled half is valued from its RECORD, ``()``
+            for ``get_payment_history`` too: nothing on that valuation's path
+            walks a relationship.  THIS function's own reads need only the
+            pay period, and the producer loads that itself.
+        leg_options: The same statement for the PROJECTED legs' parents,
+            rooted at :class:`~app.models.transfer.Transfer`: ``()`` for the
+            dates alone, ``transfer_pricing_load_options()`` for a caller that
+            prices them, which is what ``get_payment_history`` does.
 
     Returns:
-        Every non-excluded income shadow on the account as a
+        Every non-excluded income payment on the account as a
         :class:`PaymentInstallment`, ascending by ``(pay_period.start_date,
-        id)``; ``[]`` when the loan has no payment history.
+        parent transfer id)``; ``[]`` when the loan has no payment history.
 
     Raises:
         UndatedSettleError: When a shadow in a settled status carries no
@@ -192,20 +215,25 @@ def payment_installments(
             reader and the tracking-start guard, so a broken status seed is loud
             on every loan surface rather than on one.
     """
-    shadows = income_shadows(account_id, scenario_id, options=options)
-    dated: list[tuple[Transaction, date | None]] = [
-        (shadow, payment_visible_on(shadow)) for shadow in shadows.settled
+    shadows = income_shadows(
+        account_id, scenario_id, options=options, leg_options=leg_options,
+    )
+    # The merge key is the PARENT's id, which both halves carry (see the
+    # docstring); each half arrives in its own order and is re-keyed here.
+    dated: list[tuple[Transaction | PlannedTransferLeg, date | None, int]] = [
+        (shadow, payment_visible_on(shadow), shadow.transfer_id)
+        for shadow in shadows.settled
     ]
-    dated += [(shadow, None) for shadow in shadows.projected]
-    dated.sort(key=lambda pair: (pair[0].pay_period.start_date, pair[0].id))
+    dated += [(leg, None, leg.transfer.id) for leg in shadows.projected]
+    dated.sort(key=lambda entry: (entry[0].pay_period.start_date, entry[2]))
     return [
         PaymentInstallment(
-            income_shadow=shadow,
+            source=source,
             dates=PaymentDates(
-                period_start=shadow.pay_period.start_date,
-                due_date=loan_payment_due_date(shadow, payment_day),
+                period_start=source.pay_period.start_date,
+                due_date=loan_payment_due_date(source, payment_day),
                 settled_on=settled_on,
             ),
         )
-        for shadow, settled_on in dated
+        for source, settled_on, _parent_id in dated
     ]

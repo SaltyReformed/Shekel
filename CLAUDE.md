@@ -249,14 +249,24 @@ A task is NOT complete until ALL of these are true:
 2. Shadow transactions are never orphaned and never created without their sibling.
 3. Shadow amounts, statuses, and periods always equal the parent transfer's.
 4. No code path directly mutates a shadow. All mutations go through the transfer service.
-5. Balance calculator queries ONLY budget.transactions for money. NEVER also query budget.transfers
-   for a figure. Since `recurrence:R16-b-2` (**R-R66**) the forward loan plan reads budget.transfers
-   for OCCURRENCE IDENTITY alone -- which occurrences a definition's rows already answer, in any
-   state -- and no amount off any of them.
+5. A transfer's PLAN half is derived from budget.transfers and its RECORD half is read from
+   budget.transactions (**R-BAL13**, ruled **R-BAL38** at `balance:X-bi-6a`). Every still-PROJECTED
+   leg a balance folds is one side of the parent transfer -- the from-side an expense, the to-side
+   an income, each worth `resolve_transfer_amount` on the parent -- and no balance reader reads a
+   projected shadow row. A SETTLED leg is its shadow row's record until `balance:X-bi-4` re-points
+   the fold onto movements; no amount is read off budget.transfers for a row that has settled. Since
+   `recurrence:R16-b-2` (**R-R66**) the forward loan plan also reads budget.transfers for OCCURRENCE
+   IDENTITY -- which occurrences a definition's rows already answer, in any state. A PROJECTED
+   shadow cannot be counted beside its leg (the plan excludes it by the same `transfer_id` test that
+   identifies it); a SETTLED shadow under a still-Projected parent -- a status drift, which
+   invariants 3 and 4 forbid and no door writes -- is counted by BOTH halves until `X-bi-4` re-keys
+   the record half, and the reverse drift by neither. Pinned in
+   `tests/test_services/test_transfer_legs.py`; the structural end is `X-bi-4` + `X-bi-6`, status in
+   ONE row.
 
 **Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
-and invariant 5 is why the mirror exists at all. Which clauses are already structural and which
-steps delete the rest is the balance arc's plan of record --
+and invariant 5's record half is why the mirror still exists at all. Which clauses are already
+structural and which steps delete the rest is the balance arc's plan of record --
 `docs/audits/balance_architecture/README.md` (the X-au-m and X-bi-6 specifications). Until that work
 ships, the invariants are enforced exactly as written above, and the step that deletes a home owes
 this section its rewrite.

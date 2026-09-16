@@ -26,6 +26,7 @@ from app.routes._render_helpers import (
 )
 from app.schemas.validation import (
     MarkDoneSchema,
+    TransactionItemUpdateSchema,
     TransactionUpdateSchema,
     TransactionCreateSchema,
     InlineTransactionCreateSchema,
@@ -92,6 +93,7 @@ logger = logging.getLogger(__name__)
 
 # Marshmallow schema instances.
 _update_schema = TransactionUpdateSchema()
+_item_update_schema = TransactionItemUpdateSchema()
 _create_schema = TransactionCreateSchema()
 _inline_create_schema = InlineTransactionCreateSchema()
 
@@ -487,6 +489,28 @@ def _finalised_edit_response(txn, data):
     return _error_transaction_response(txn.id, message)
 
 
+def _update_schema_for(txn):
+    """Return the PATCH schema *txn*'s shape loads (plan step ``balance:X-bi-7b``).
+
+    A row whose tracking / visibility flags are editable at the popover
+    loads :class:`~app.schemas.validation.TransactionItemUpdateSchema` --
+    a placed row (a rule-less definition's; the flags land on the
+    definition, ruling **R-BAL23**) and, until the family's cutover, a
+    link-less row (a legacy one-off's own cells; a shadow's and a payback's
+    as they always were).  A RECURRING definition's row loads the row schema
+    alone, which declares no flag: the flag a crafted PATCH used to land on
+    such a row's dead cell (finding **BAL-484**) is dropped by
+    ``Meta.unknown = EXCLUDE`` before any code could write it.
+
+    Args:
+        txn: The row being edited.
+
+    Returns:
+        The schema instance to validate and load ``request.form`` with.
+    """
+    return _update_schema if txn.recurs else _item_update_schema
+
+
 def _get_owned_transaction(txn_id):
     """Fetch a transaction and verify it belongs to the current user.
 
@@ -653,21 +677,33 @@ def _verify_owned_fks_in_update(data):
     not exist or belongs to another user (security response rule:
     "404 for both not found and not yours").
 
+    **It hands the TARGET paycheck back since plan step ``balance:X-bi-7b``**
+    rather than discarding it: a period move re-places a one-off on that
+    paycheck's start (ruling **R-BAL33**), and the calendar has already
+    answered which paycheck that is.  Deriving it again at the field write
+    would be the second derivation of one owner's calendar in one request
+    that ledger row **P68** measured and C2-f3c closed.
+
     Args:
         data: The schema-loaded PATCH payload.  ``pay_period_id``
             and ``category_id`` are the only user-scoped FK keys
             inspected; absent keys are skipped.
 
     Returns:
-        ``None`` on success.  On failure, a Flask response tuple
-        ``(body, 404)`` the caller returns directly to HTMX.
+        ``(target_period, None)`` on success -- the submitted paycheck as
+        the owner's calendar derived it, or ``None`` when the payload names
+        none.  On failure, ``(None, (body, 404))``, a Flask response tuple
+        the caller returns directly to HTMX.
     """
+    target_period = None
     if "pay_period_id" in data:
-        _, error = _resolve_owned_period(data["pay_period_id"])
+        target_period, error = _resolve_owned_period(data["pay_period_id"])
         if error is not None:
-            return error
+            return None, error
     specs = []
     if "category_id" in data:
         specs.append((Category, data["category_id"], "Category not found"))
     _, error = _resolve_owned_fks(specs)
-    return error
+    if error is not None:
+        return None, error
+    return target_period, None
