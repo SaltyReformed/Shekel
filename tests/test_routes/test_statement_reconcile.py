@@ -25,7 +25,7 @@ from decimal import Decimal
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.models.account import Account
 from app.models.category import Category
 from app.models.merchant_rule import MerchantRule
@@ -33,7 +33,8 @@ from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
-from app.services import auth_service, entry_service
+from app.services import auth_service, entry_service, transaction_service
+from app.services.settle_day import SettleDay
 from app.models.statement_line_skip import StatementLineSkip
 from app.services.statement_match import (
     REGISTER_LIMIT,
@@ -52,7 +53,7 @@ from tests.test_routes._statement_forms import (
     reconcile_form_fields,
     reconcile_offerable,
 )
-from tests._test_helpers import open_owner_calendar
+from tests._test_helpers import open_owner_calendar, payback_row_of
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_later_period,
@@ -1162,12 +1163,16 @@ class TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn:
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
-        db.session.flush()
-        payback = a_transaction(
-            seed_user, name="CC Payback: Groceries", amount="60.00",
-            template=False, status=StatusEnum.DONE, settled_on=bank_day,
+        a_later_period(seed_user)
+        # The payback through its own producer (plan step balance:X-bi-7c),
+        # then settled on the bank's day as the owner would settle it.
+        payback = payback_row_of(
+            db.session, seed_user, envelope, Decimal("60.00"), bank_day,
         )
-        payback.credit_payback_for_id = envelope.id
+        transaction_service.settle_transaction(
+            payback,
+            settle_day=SettleDay(day=bank_day, basis=SettledDayBasisEnum.ENTERED),
+        )
         db.session.commit()
 
         pane = auth_client.post(

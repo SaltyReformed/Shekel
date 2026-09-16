@@ -3554,7 +3554,7 @@ def create_settled_transfer(
     return transfer
 
 
-def create_settled_cash_transaction(
+def create_settled_cash_transaction(  # pylint: disable=too-many-arguments
     seed_user, db_session, period, amount,
     *, account=None, scenario=None, is_income=False,
     category=None, settled_amount=None, name="Cash Txn",
@@ -3563,21 +3563,15 @@ def create_settled_cash_transaction(
     """Create an ordinary (non-transfer) transaction and settle it go-forward.
 
     The cash analog of :func:`create_settled_transfer` for the Build-Order
-    Step 3 posting-ledger oracle: it builds a Projected transaction, then settles
-    it through the two REAL go-forward production primitives -- the status seam
-    (``status_seam.apply_status_change``) and the posting builder
-    (``posting_service.sync_transaction_postings``) -- in the same order the
-    mark-done route applies them (seam, then the optional manual ``actual_amount``,
-    then the reconcile as the last step).  So the returned transaction is genuinely
-    settled (``status.is_settled``, ``settled_on`` stamped) AND its confirmed cash
-    effect is posted to the double-entry ledger, exactly as production produces it
-    when a user marks a transaction Paid / Received.
-
-    Income settles to Received and expenses to Paid (Done) -- the same split the
-    mark-done route applies (``mutations.py``).  A plain transaction carries no
-    entries, so its effect is ``effective_amount`` (``actual`` over ``estimated``);
-    callers needing the envelope debit-only effect attach credit entries
-    separately (the backfill / lifecycle suites cover that path).
+    Step 3 posting-ledger oracle: a ONE-OFF placed through
+    :func:`one_off_row_of` (plan step balance:X-bi-7c; it built a link-less
+    row owning its figure until then, the shape the cutover deletes), then
+    settled through :func:`settle_cash_row` -- the two REAL go-forward
+    production primitives, the status seam and the posting builder, in the
+    order the mark-done route applies them.  So the returned transaction is
+    genuinely settled (``status.is_settled``, ``settled_on`` stamped) AND its
+    confirmed cash effect is posted to the double-entry ledger, exactly as
+    production produces it when a user marks a transaction Paid / Received.
 
     Flushes via the builder; the caller commits.
 
@@ -3587,8 +3581,8 @@ def create_settled_cash_transaction(
         db_session: The test ``db.session``.
         period: The :class:`~app.models.pay_period.PayPeriod` to place the
             transaction in.
-        amount: The estimated amount (Decimal) -- the confirmed effect when no
-            ``actual_amount`` is given.
+        amount: The definition's price (Decimal) -- the confirmed effect when
+            no *settled_amount* is given.
         account: The :class:`~app.models.account.Account` the cash leg lands on;
             defaults to ``seed_user["account"]`` (the Checking account).
         scenario: The :class:`~app.models.scenario.Scenario` to place the
@@ -3598,53 +3592,72 @@ def create_settled_cash_transaction(
             leg positive); otherwise an Expense settling to Paid (cash leg
             negative).
         category: The :class:`~app.models.category.Category` the counter leg
-            books into, or ``None`` for the per-(owner, class) Uncategorized
-            fallback.
-        actual_amount: The settled actual amount (Decimal) when it diverges from
-            the estimate, or ``None`` (effective == estimated == amount).
-        name: The transaction display name (becomes the journal entry
-            description).
-        settled_on: The settle DAY.  Defaults to the seam-derived
-            ``display_today()`` (the realistic ``mark_done`` value); pass an
-            explicit ``date`` to pin the attribution day for a past-balance
-            read.  Pinned BEFORE the ledger emission -- mirroring
-            :func:`create_settled_transfer`'s ``settled_on`` -- so the posted
-            ``entry_date`` and the Step-5 walk's attribution day agree, exactly
-            as production produces them.  There is no "settle with no day"
-            option: that state is the broken invariant
-            ``balance_predicates.settled_day`` refuses.
+            files under, or ``None``.
+        settled_amount: The figure the owner typed at the settle, or ``None``
+            for the row's own (see :func:`settle_cash_row`).
+        name: The transaction name.
+        settled_on: See :func:`settle_cash_row`.
 
     Returns:
-        The settled (Paid / Received) :class:`~app.models.transaction.Transaction`,
-        with its go-forward postings flushed.
+        The settled :class:`~app.models.transaction.Transaction`, flushed.
     """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
+    # pylint: disable=import-outside-toplevel  -- the module convention.
     from app import ref_cache
-    from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
-    from app.models.transaction import Transaction
-    from app.services import posting_service, status_seam
-    from app.services.settle_day import SettleDay, record_settle_day
-    from app.services.status_seam._covering import sync_covering_movement
+    from app.enums import TxnTypeEnum
 
     account = seed_user["account"] if account is None else account
     scenario = seed_user["scenario"] if scenario is None else scenario
     type_id = ref_cache.txn_type_id(
         TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE
     )
-    txn = Transaction(
-        account_id=account.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=name,
-        category_id=None if category is None else category.id,
-        transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(amount),
+    return settle_cash_row(
+        one_off_row_of(
+            period, name=name, amount=amount,
+            user_id=period.user_id, account_id=account.id,
+            scenario_id=scenario.id, transaction_type_id=type_id,
+            category_id=None if category is None else category.id,
+        ),
+        is_income=is_income, settled_amount=settled_amount,
+        settled_on=settled_on,
     )
-    db_session.add(txn)
-    db_session.flush()
+
+
+def settle_cash_row(
+    txn, *, is_income=False, settled_amount=None, settled_on=_UNSET_SETTLED_ON,
+):
+    """Settle the Projected row *txn* go-forward and post its cash effect.
+
+    The settle half of :func:`create_settled_cash_transaction`, its own
+    function since plan step balance:X-bi-7c so a case whose subject is the
+    LEGACY link-less shape settles :func:`legacy_link_less_row_of`'s row
+    through the same two primitives without re-spelling either (ruling
+    **R-BAL59**).  Income settles to Received and expenses to Paid (Done) --
+    the same split the mark-done route applies (``mutations.py``).  A plain
+    transaction carries no entries, so its effect is its resolved figure;
+    callers needing the envelope debit-only effect attach credit entries
+    separately (the backfill / lifecycle suites cover that path).
+
+    Args:
+        txn: The Projected :class:`~app.models.transaction.Transaction`,
+            flushed.
+        is_income: When True the row settles to Received, else to Paid.
+        settled_amount: The figure the owner typed, or ``None`` for the
+            row's own -- which :func:`settlement_if_settling` records as the
+            panel's prefill coming back untouched (``derived``).
+        settled_on: The civil day the money moved.  Omit it for the seam's
+            own stamp; pass a day to pin the cash somewhere specific, through
+            the app's own pair writer and the seam's mirror (see the comment).
+            Passing ``None`` explicitly leaves the seam's stamp too.
+
+    Returns:
+        *txn*, settled and posted, flushed.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from app import ref_cache
+    from app.enums import SettledDayBasisEnum, StatusEnum
+    from app.services import posting_service, status_seam
+    from app.services.settle_day import SettleDay, record_settle_day
+    from app.services.status_seam._covering import sync_covering_movement
 
     # Settle through the real go-forward path: the seam flips the status and
     # stamps settled_on, the optional manual actual is applied AFTER (as the route
@@ -3901,6 +3914,48 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         is_credit=is_credit,
     ))
     db_session.flush()
+
+
+def payback_row_of(db_session, seed_user, envelope, amount, purchased_on):
+    """Return the CC PAYBACK the app mints for a credit purchase under *envelope*.
+
+    **The suite's builder for a payback row, on the app's own producer**
+    (plan step ``balance:X-bi-7c``, ruling **R-BAL59**).  A payback
+    is not a one-off: it carries ``credit_payback_for_id`` as its ONE
+    pricing link (``ck_transactions_one_pricing_link``) and is priced by
+    the row it repays, and the application has exactly one constructor for
+    it -- ``entry_credit_workflow.sync_entry_payback``, run after every
+    entry mutation, which places it in the paycheck AFTER the envelope's.
+    Four cases built a row through a one-off builder and then set the link
+    on it, which the CHECK refuses once that row carries a definition; this
+    records the credit purchase through :func:`add_entry` and lets the
+    producer answer.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (the owner).
+        envelope: The purchase-tracking
+            :class:`~app.models.transaction.Transaction` the card was used
+            for; flushed, in a paycheck that has a NEXT one.
+        amount: The credit purchase's figure (:class:`~decimal.Decimal`),
+            which is what the payback repays.
+        purchased_on: The day of the purchase; never after the owner's
+            today (ruling R-M).
+
+    Returns:
+        The Projected payback :class:`~app.models.transaction.Transaction`,
+        flushed, in the paycheck after *envelope*'s.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from app.services.entry_credit_workflow import sync_entry_payback
+
+    add_entry(
+        db_session, seed_user, envelope, amount, purchased_on, is_credit=True,
+        description="card purchase",
+    )
+    payback = sync_entry_payback(envelope.id, seed_user["user"].id)
+    assert payback is not None and payback.credit_payback_for_id == envelope.id
+    return payback
 
 
 def mark_purchase_settled(db_session, account, entry, settled_on=None):
@@ -4572,17 +4627,21 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     if category_key and category_key in seed_user["categories"]:
         cat_id = seed_user["categories"][category_key].id
 
-    txn = Transaction(
-        account_id=account.id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario.id,
+    # The row is the PRODUCER's (plan step balance:X-bi-7c): a rule-less
+    # definition priced at *amount* plus its placed row, dated on the
+    # paycheck's start unless *due_date* says otherwise, exactly what the grid
+    # writes for a one-off -- where this built a link-less row owning its
+    # figure, the shape the cutover (X-bi-7d) deletes.  What stays BARE is the
+    # state laid on top: the status, the soft-delete flag and the settle
+    # columns, which is this builder's purpose (see above).
+    txn = one_off_row_of(
+        period, name=name, amount=amount,
+        user_id=period.user_id, account_id=account.id,
+        scenario_id=scenario.id, transaction_type_id=type_id,
+        category_id=cat_id, due_date=due_date,
+    )
+    bare_state = dict(
         status_id=status_id,
-        name=name,
-        category_id=cat_id,
-        transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        due_date=due_date,
         is_deleted=is_deleted,
         # The settle DAY and the basis that says how it is known, as one pair
         # (plan step **X-az**).  ``entered`` is what a bare-built settled row
@@ -4598,7 +4657,8 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         # settles a row and then reverts it, as the app does.)
         **settlement_columns(settled_on, amount, settled_amount),
     )
-    db_session.add(txn)
+    for column, value in bare_state.items():
+        setattr(txn, column, value)
     db_session.flush()
     return txn
 
@@ -4690,6 +4750,191 @@ def generate_row_of(template, period):
     # pylint: disable=import-outside-toplevel
     from app.services import recurrence_engine
     return _the_one_row_the_engine_writes(recurrence_engine, template, period)
+
+
+def one_off_row_of(  # pylint: disable=too-many-arguments
+    period, *, name, amount, user_id, account_id, scenario_id,
+    transaction_type_id, category_id=None, is_envelope=False,
+    companion_visible=False, due_date=None,
+):
+    """Place the ONE row of a new one-off in *period* through the producer.
+
+    **The suite's one builder for a ONE-OFF's row** (plan step
+    balance:X-bi-7c), the twin of :func:`generate_row_of` for the other
+    shape a plan item's row can take.  A one-off is a RULE-LESS DEFINITION
+    plus its placed row (ruling **R-BAL20**; plan step ``balance:X-bi-7b``),
+    and the application has exactly one constructor for it:
+    :func:`app.services.one_off.place_one_off`, which mints the definition,
+    opens its one-version price series dated on the row's due date
+    (**R-BAL21**) and places the row through
+    :func:`~app.services.one_off.place_row_of` -- both grid create doors,
+    ``mint_uncategorized`` and bank import's envelope mint call it.  This
+    helper does not restate any of that; it CALLS it, with the paycheck
+    resolved through the OWNER's real calendar (``pay_calendar.calendar_for
+    (user_id).period_by_id``, the read :func:`derived_span` makes for a
+    period's own owner), and hands back what the producer wrote.  So a fixture built here cannot
+    disagree with the app about what a one-off IS, and a column the
+    producer derives tomorrow lands on every fixture the day it lands on
+    ``unruled_row_fields``.
+
+    **What the hand-built rows were.**  A link-less ``Transaction(...)`` --
+    ``template_id`` NULL, OWNING its figure, its flags in its own sealed
+    cells, undated in most cases -- is the shape the cutover
+    (``balance:X-bi-7d``) deletes: it mints every such production row a
+    definition, dates the undated on their paycheck's start and declares
+    each ``TEMPLATE``-priced.  A control that hand-builds that shape grades
+    a row the application stopped making at ``X-bi-7b-1`` and will not hold
+    at all after 7d; every one of those sites moves onto this builder so the
+    cutover's CHECK (``ck_transactions_one_pricing_link`` at ``= 1``) binds
+    on rows the app's own door wrote.  Until 7d, the sites whose SUBJECT is
+    the legacy shape itself -- the accessors' ``template_id is None``
+    branch, the frozen flag cells -- keep building it by hand and say so.
+
+    Two consequences follow from getting the producer's row, each the point
+    rather than a cost, exactly as for :func:`generate_row_of`:
+
+    * **It is DERIVED.**  It stores no figure; its definition's one version
+      answers for it on its own due date (amount rule 3), so *amount* here
+      is what that version says.  A reader that asks the raw
+      ``estimated_amount`` column gets ``None``, as it does on production
+      for every row the grid has made since 7b-1.  A fixture wanting the
+      OWNER's figure on the row takes ownership as the re-price door does
+      (:func:`repriced_by_the_owner`); one wanting the definition's price
+      corrected restates it (``one_off.restate_price``).
+    * **It is DATED, and answers that day** (``due_date`` and ``occurs_on``,
+      rulings **R-BAL22** / **R-BAL25**): the paycheck's start unless
+      *due_date* says otherwise, so ``idx_transactions_template_scenario_
+      occurrence`` holds over it.  A fixture that wants a row on the
+      "anytime this period" shelf wants a shape 7d deletes.
+
+    The row is placed PROJECTED, which is the only state the producer
+    writes.  A fixture wanting a SETTLED row settles this one as the app
+    does (``status_seam.apply_status_change``; :func:`add_txn` lays a bare
+    settled state on for the suites that need a row the posting writer has
+    never seen), and one wanting it soft-deleted or annotated sets
+    ``is_deleted`` / ``notes`` on the returned row: those are the row's own
+    columns, not the definition's.
+
+    Args:
+        period: The :class:`~app.models.pay_period.PayPeriod` row the one-off
+            is placed in.  Must be one of the owner's saved periods.
+        name: What the plan item is called (the definition's name, which the
+            row reads).
+        amount: What it is planned to cost, as a :class:`~decimal.Decimal`
+            or anything ``Decimal(str(...))`` reads; ``0.00`` is legal.
+        user_id: The owner.
+        account_id: The account the money moves through.
+        scenario_id: The scenario the row is placed in.
+        transaction_type_id: Expense or income (``ref_cache.txn_type_id``).
+        category_id: What the money is, or ``None`` (the bank's
+            uncategorised row; every grid door requires one).
+        is_envelope: Whether the definition's rows take purchase entries.
+        companion_visible: Whether a companion may see its rows.
+        due_date: The day it falls, or ``None`` for the paycheck's start.
+
+    Returns:
+        The placed :class:`~app.models.transaction.Transaction`, flushed,
+        with ``row.template`` its rule-less definition.
+
+    Raises:
+        AssertionError: *period* is not in *user_id*'s calendar -- another
+            owner's paycheck, or one never flushed -- refused BEFORE the
+            definition or the row is written, one tier above the composite
+            key ``fk_transactions_owner_period`` that would refuse the row's
+            INSERT after the definition had already been minted.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from app.services.one_off import OneOffToPlace, place_one_off
+    from app.services.pay_calendar import calendar_for
+
+    placed_in = calendar_for(user_id).period_by_id(period.id)
+    assert placed_in is not None, (
+        f"pay period {period.id} is not in user {user_id}'s calendar -- it "
+        f"was never flushed, or it belongs to someone else"
+    )
+    return place_one_off(
+        OneOffToPlace(
+            user_id=user_id,
+            account_id=account_id,
+            transaction_type_id=transaction_type_id,
+            name=name,
+            amount=Decimal(str(amount)),
+            category_id=category_id,
+            is_envelope=is_envelope,
+            companion_visible=companion_visible,
+        ),
+        placed_in,
+        scenario_id=scenario_id,
+        due_date=due_date,
+    )
+
+
+def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
+    period, *, name, amount, user_id, account_id, scenario_id,
+    transaction_type_id, category_id=None, is_envelope=False, due_date=None,
+):
+    """Hand-build the LEGACY link-less row -- the ONE home of a shape 7d deletes.
+
+    **Transitional, and named so.**  A row with no ``template_id``, OWNING
+    its figure, its flags in its own sealed cells and undated unless a day
+    is given, is what every one-off was before plan step ``balance:X-bi-7b``
+    and what production still holds until the cutover (``X-bi-7d``: 34
+    such rows on the 2026-09-12 restore) mints each a definition, dates it
+    and declares it ``TEMPLATE``-priced.  Until then the accessors keep a
+    ``template_id is None`` branch, the flag cells are frozen, and a test
+    whose SUBJECT is that branch or that shape needs a row in it -- which
+    :func:`one_off_row_of` (the producer's row) cannot be.  This helper is
+    the one NAMED home of that shape (plan step ``balance:X-bi-7c``, ruling
+    **R-BAL59**): the hand-built ``Transaction(`` sites 7c-2..n move onto the
+    producer or onto this, and once they have the cutover deletes ONE builder
+    and the cases that call it, rather than hunting the shape across the
+    suite.  ``tests/manual/census_hand_built_rows.py`` counts what is left.
+
+    A fixture that does NOT mean the legacy shape -- one that wants "a row on
+    this paycheck" -- is :func:`one_off_row_of`'s.  Projected, flushed; a
+    caller wanting it settled settles it (``create_settled_cash_transaction``
+    takes the row), deleted or annotated sets the column.
+
+    Args:
+        period: The :class:`~app.models.pay_period.PayPeriod` row it is
+            filed under.
+        name: The row's name.
+        amount: Its OWN figure, as a :class:`~decimal.Decimal` or anything
+            ``Decimal(str(...))`` reads.
+        user_id: The owner.
+        account_id: The account the money moves through.
+        scenario_id: The scenario the row is in.
+        transaction_type_id: Expense or income (``ref_cache.txn_type_id``).
+        category_id: What the money is, or ``None``.
+        is_envelope: The row's OWN purchase-tracking cell.
+        due_date: The day it falls, or ``None`` for undated.
+
+    Returns:
+        The hand-built :class:`~app.models.transaction.Transaction`, flushed.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.extensions import db
+    from app.models.transaction import Transaction
+
+    row = Transaction(
+        template_id=None,
+        user_id=user_id,
+        pay_period_id=period.id,
+        scenario_id=scenario_id,
+        account_id=account_id,
+        name=name,
+        category_id=category_id,
+        transaction_type_id=transaction_type_id,
+        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
+        is_envelope=is_envelope,
+        due_date=due_date,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
 
 
 def generate_transfer_of(template, period):

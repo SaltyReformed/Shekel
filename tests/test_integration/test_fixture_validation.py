@@ -6,13 +6,13 @@ independent data. Catches fixture bugs before they cascade into
 20+ failures in WU-4 and WU-5.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import RecurrenceWindowError
 from app.models.account import Account
 from app.models.category import Category
@@ -31,6 +31,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_expense_template,
     make_transfer_template,
+    one_off_row_of,
 )
 from tests.conftest import SEED_USER_BOOTSTRAP_START
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -548,6 +549,105 @@ class TestGenerateRowOf:
             assert db.session.query(Transaction).filter_by(
                 template_id=template.id,
             ).count() == 1
+
+
+class TestOneOffRowOf:
+    """The suite's one builder for a ONE-OFF's row (plan step X-bi-7c).
+
+    It hands back what ``one_off.place_one_off`` wrote, so these grade that
+    the row has the producer's shape -- a rule-less definition of its own,
+    derived, dated on the paycheck's start, answering that day -- that it is
+    priced by its definition, that a stated day is the row's, and that the
+    builder's one refusal fires: another owner's paycheck, before any write.
+    """
+
+    def test_the_row_is_the_producers(self, app, db, seed_user, seed_periods):
+        """A rule-less definition, TEMPLATE-priced, dated, answering its day."""
+        with app.app_context():
+            row = one_off_row_of(
+                seed_periods[1], name="Kayla's Kindle", amount="162.25",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
+            assert row.id is not None
+            assert row.is_placed is True and row.recurs is False
+            assert row.template.recurrence_rule is None
+            assert row.template.name == "Kayla's Kindle"
+            assert row.name == "Kayla's Kindle"
+            assert row.category_id == seed_user["categories"]["Groceries"].id
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.scenario_id == seed_user["scenario"].id
+            assert row.due_date == seed_periods[1].start_date
+            assert row.occurs_on == row.due_date
+            assert row.is_override is False
+            assert row.is_deleted is False
+            assert row.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert row.amount_ownership.figure is None
+            assert row.amount_ownership.source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+
+    def test_the_row_is_worth_what_it_was_placed_at(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The figure a fixture expects is the definition's one version."""
+        with app.app_context():
+            row = one_off_row_of(
+                seed_periods[0], name="Deposit", amount=Decimal("1234.56"),
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+            )
+            assert row.category_id is None
+            assert cash_ledger.resolve_transaction_amount(
+                row,
+                cash_ledger.derived_amount_basis(
+                    seed_user["user"].id, seed_user["scenario"].id,
+                ),
+            ) == Decimal("1234.56")
+
+    def test_a_stated_day_is_the_rows_and_the_flags_are_the_definitions(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """R-BAL22's owner-stated day; R-BAL36's flags on the definition."""
+        with app.app_context():
+            stated = seed_periods[0].start_date + timedelta(days=6)
+            row = one_off_row_of(
+                seed_periods[0], name="Camping", amount="200.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                is_envelope=True, companion_visible=True, due_date=stated,
+            )
+            assert row.due_date == stated and row.occurs_on == stated
+            assert row.template.is_envelope is True
+            assert row.tracks_purchases is True
+            assert row.template.companion_visible is True
+            assert row.visible_to_companion is True
+
+    def test_another_owners_paycheck_is_refused_before_any_write(
+        self, app, db, seed_user, seed_periods, seed_second_periods,
+    ):
+        """A period outside the owner's calendar never reaches the producer."""
+        with app.app_context():
+            before = db.session.query(TransactionTemplate).count()
+            with pytest.raises(AssertionError, match="not in user"):
+                one_off_row_of(
+                    seed_second_periods[0], name="Foreign", amount="1.00",
+                    user_id=seed_user["user"].id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.EXPENSE,
+                    ),
+                )
+            assert db.session.query(TransactionTemplate).count() == before
 
 
 class TestGenerateTransferOf:

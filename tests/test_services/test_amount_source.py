@@ -85,6 +85,9 @@ from tests._test_helpers import (
     create_savings_account,
     create_transfer,
     current_pay_period,
+    legacy_link_less_row_of,
+    one_off_row_of,
+    payback_row_of,
     generate_row_of,
     generate_transfer_of,
     loan_params_for,
@@ -557,9 +560,29 @@ class TestWhichRulePricesARow:
     """The classification, and the order two of its arms depend on."""
 
     def test_a_row_with_no_links_owns_its_amount(self, app, db, seed_user, seed_periods):
-        """An ad-hoc row states its own figure: nothing else can."""
-        txn = add_txn(db.session, seed_user, seed_periods[0], "Haircut", "35.00")
+        """A LEGACY link-less row states its own figure: nothing else can.
+
+        The shape every one-off had before plan step ``balance:X-bi-7b`` and
+        production holds until the cutover (``X-bi-7d``), built on its one
+        transitional home (plan step ``balance:X-bi-7c``, ruling **R-BAL59**);
+        a one-off placed today is TEMPLATE-priced, the case
+        below.  7d retires this case with the shape.
+        """
+        txn = legacy_link_less_row_of(
+            seed_periods[0], name="Haircut", amount="35.00",
+            user_id=seed_user["user"].id, account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        )
         assert amount_rule(txn) is AmountRule.OWN
+
+    def test_a_one_off_placed_today_is_priced_by_its_definition(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An ordinary row since ``balance:X-bi-7b``: a rule-less definition prices it."""
+        txn = add_txn(db.session, seed_user, seed_periods[0], "Haircut", "35.00")
+        assert txn.recurs is False and txn.is_placed is True
+        assert amount_rule(txn) is AmountRule.TEMPLATE
 
     def test_a_cc_payback_owns_its_amount(self, app, db, seed_user, seed_periods):
         """A payback carries NEITHER link, so today's rules can only call it OWN.
@@ -570,15 +593,19 @@ class TestWhichRulePricesARow:
         is an explicit column and why finding **N-243** stays open.  21 such rows
         on the production clone, all classified here.
         """
-        source = add_txn(
-            db.session, seed_user, seed_periods[0], "Groceries", "500.00",
+        source = one_off_row_of(
+            seed_periods[0], name="Groceries", amount="500.00",
+            user_id=seed_user["user"].id, account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=seed_user["categories"]["Groceries"].id,
+            is_envelope=True,
         )
-        payback = add_txn(
-            db.session, seed_user, seed_periods[1], "CC Payback: Groceries",
-            "123.18",
+        payback = payback_row_of(
+            db.session, seed_user, source, Decimal("123.18"),
+            seed_periods[0].start_date,
         )
-        payback.credit_payback_for_id = source.id
-        db.session.flush()
+        assert payback.pay_period_id == seed_periods[1].id
         assert amount_rule(payback) is AmountRule.OWN
 
     def test_a_template_row_is_priced_by_its_definition(
@@ -1779,12 +1806,16 @@ class TestTheBasisIsOneDerivationPerReadPass:
     Each is a QUERY-COUNT assertion, because that is the only thing that can
     tell a memo from a re-derivation: both answer the same figure, which is
     exactly why the duplication went unnoticed long enough to be filed twice.
+    The one exception is the no-derivation case below, which reads the two
+    memos directly since plan step balance:X-bi-7c (an ordinary row prices
+    through its definition now, so "no statement at all" stopped being the
+    fact) and bounds the row's own reads beside it.
     """
 
-    def test_no_paycheck_and_no_loan_payment_means_no_query_at_all(
+    def test_no_paycheck_and_no_loan_payment_means_neither_derivation_resolves(
         self, app, db, seed_user, seed_periods,
     ):
-        """A row set with neither kind resolves nothing and asks nothing.
+        """A row set with neither kind resolves neither derivation.
 
         The "fast no-op when there are no candidates" property the row-set
         producers had, KEPT rather than traded away for the sharing: both
@@ -1811,20 +1842,42 @@ class TestTheBasisIsOneDerivationPerReadPass:
         user_id = seed_user["user"].id
         scenario_id = seed_user["scenario"].id
 
+        built = {}
+
         def _price():
-            return amounts_by_id([row], derived_amount_basis(user_id, scenario_id))
+            built["basis"] = derived_amount_basis(user_id, scenario_id)
+            return amounts_by_id([row], built["basis"])
 
         _answer, statements = capture_sql_statements(_price)
 
-        assert _answer == {row.id: Decimal("35.00")}, (
-            "an ordinary expense row OWNS its figure, so rule 1 answers it "
-            f"from the row itself and no derivation is touched: {_answer}"
+        assert _answer == {row.id: Decimal("35.00")}
+        # **Graded on the two derivations' own memos since plan step
+        # balance:X-bi-7c** (ruling **R-BAL59**, the rule-5 batch).  The three
+        # statements are finding **BAL-511** (owner X-bi-7d).
+        # An ordinary expense row is a ONE-OFF -- a rule-less definition's
+        # placed row, TEMPLATE-priced (rule 3) -- so pricing it reads the row's
+        # OWN relations: its definition, that definition's price series, and
+        # the one salary-profile row rule 2's refinement asks about (measured
+        # 2026-09-16: three statements per row loaded bare).  This asserted
+        # ``statements == []`` while the row OWNED its figure and rule 1
+        # answered from the row alone; what the control has always been about
+        # is the two DERIVATIONS of the basis, and neither may have resolved.
+        # The memos are read directly because a statement's text cannot tell
+        # the refinement's one-profile read from the projection's.
+        basis = built["basis"]
+        touched = [text for text, _params in statements]
+        assert basis.salary._profiles is None, (  # pylint: disable=protected-access -- the derivation's memo IS the fact
+            "pricing an ordinary expense row must not resolve the paycheck "
+            f"derivation; got {touched}"
         )
-        assert statements == [], (
-            "building a basis and pricing an ordinary expense row must "
-            "resolve neither derivation; got "
-            f"{[text for text, _params in statements]}"
+        assert not basis.loans._loans, (  # pylint: disable=protected-access -- likewise
+            "pricing an ordinary expense row must not resolve the loan "
+            f"derivation; got {touched}"
         )
+        # The row's own reads, BOUNDED so growth is seen: the definition, its
+        # one salary-profile check, its version series -- finding BAL-511's
+        # three, per definition.  A fourth here is a new per-row read.
+        assert len(statements) <= 3, touched
 
     def test_the_salary_projection_runs_ONCE_however_many_row_sets_ask(
         self, app, db, seed_user, seed_periods,

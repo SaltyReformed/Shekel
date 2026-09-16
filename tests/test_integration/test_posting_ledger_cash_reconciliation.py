@@ -135,6 +135,8 @@ from tests._test_helpers import (
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
+    legacy_link_less_row_of,
+    settle_cash_row,
     create_settled_transfer,
     linked_ledger_account,
     settle_day_columns,
@@ -905,6 +907,13 @@ class TestPerCounterAccountReconciliation:
         by a transaction; this raw-SQL delete reproduces the DB-level SET NULL
         directly to lock the defensive linkage reconciliation -- see the
         ``ledger_account.py`` "Reconciliation of orphans" note.)
+
+        **On the LEGACY link-less row, until the cutover** (plan step
+        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
+        definition references the category, ``transaction_templates.
+        category_id`` is RESTRICT, and the delete this case reproduces cannot
+        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
+        or retires this case with it.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -921,9 +930,14 @@ class TestPerCounterAccountReconciliation:
             # snapshot can be checked against it (not a bare string literal).
             hobbies_display_name = hobbies.display_name
 
-            txn = create_settled_cash_transaction(
-                seed_user, db.session, period, Decimal("50.00"),
-                category=hobbies,
+            txn = settle_cash_row(
+                legacy_link_less_row_of(
+                    period, name="Cash Txn", amount="50.00",
+                    user_id=user_id, account_id=seed_user["account"].id,
+                    scenario_id=scenario_id,
+                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                    category_id=hobbies_id,
+                ),
             )
             db.session.commit()
             txn_id = txn.id
@@ -1319,8 +1333,11 @@ class TestRevertAndMoveReconciles:
         class): a Paid $50 expense in period P is reverted to Projected AND
         moved to a future period F in ONE PATCH (the finalised lock lifts on
         the revert), then re-settled.  The handler applies the new
-        ``pay_period_id`` BEFORE the end-of-handler reconcile, so a reversal
-        stamped with the row's current period would land in F -- leaving P's
+        ``pay_period_id`` BEFORE the end-of-handler reconcile (since ruling
+        **R-BAL58** the revert's own reconcile runs first and the handler
+        reconciles again after the move; this case holds under both), so a
+        reversal stamped with the row's current period would land in F --
+        leaving P's
         entry and its reversal straddling two periods, where truncating F
         CASCADE-deletes half the pair and permanently strands the other
         (``transaction_id`` SET NULL, unhealable).  Under the R2 attribution

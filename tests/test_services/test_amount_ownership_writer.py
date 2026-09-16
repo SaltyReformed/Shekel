@@ -31,8 +31,25 @@ from app import ref_cache
 from tests._test_helpers import (
     add_txn,
     generate_transfer_of,
+    repriced_by_the_owner,
     transfer_repriced_by_the_owner,
 )
+
+
+def _an_own_row(seed_user, seed_periods):
+    """Return a transaction that OWNS `$60.00`, the way the re-price door makes one.
+
+    ``add_txn`` places a ONE-OFF since plan step balance:X-bi-7c -- a rule-less
+    definition's row, TEMPLATE-priced with ``estimated_amount`` already
+    ``None`` -- so a case about the seam's OWN -> DERIVED direction starting
+    from it graded an identity act (found by 7c-1's adversarial review).  The
+    owner's re-price (:func:`repriced_by_the_owner`, the edit door's two acts)
+    is what makes a row own its figure today.
+    """
+    return repriced_by_the_owner(
+        add_txn(db.session, seed_user, seed_periods[0], "Gas", "60.00"),
+        "60.00",
+    )
 
 
 class TestEveryOwnedTableMapsThePairAsOneAttribute:
@@ -149,11 +166,13 @@ class TestTheTwoActs:
         exists to keep satisfiable.
         """
         with app.app_context():
-            txn = add_txn(
-                db.session, seed_user, seed_periods[0], "Gas", "60.00",
-            )
+            txn = _an_own_row(seed_user, seed_periods)
             db.session.flush()
 
+            assert txn.estimated_amount == Decimal("60.00"), (
+                "the row must OWN a figure first, or the emptying below is "
+                "an identity act graded by nothing"
+            )
             declare_derived(txn, AmountSourceEnum.TEMPLATE)
             db.session.flush()
 
@@ -172,9 +191,7 @@ class TestTheTwoActs:
         authors a figure (ruling **R-IO**).
         """
         with app.app_context():
-            txn = add_txn(
-                db.session, seed_user, seed_periods[0], "Gas", "60.00",
-            )
+            txn = _an_own_row(seed_user, seed_periods)
             declare_derived(txn, AmountSourceEnum.TEMPLATE)
             db.session.flush()
 
@@ -231,9 +248,7 @@ class TestTheTwoActs:
         asserted is that the pair does not move.
         """
         with app.app_context():
-            txn = add_txn(
-                db.session, seed_user, seed_periods[0], "Gas", "60.00",
-            )
+            txn = _an_own_row(seed_user, seed_periods)
             db.session.flush()
 
             declare_derived(txn, AmountSourceEnum.TEMPLATE)
@@ -263,9 +278,7 @@ class TestTheTwoActs:
         assume the opposite from the idempotence above.
         """
         with app.app_context():
-            txn = add_txn(
-                db.session, seed_user, seed_periods[0], "Gas", "60.00",
-            )
+            txn = _an_own_row(seed_user, seed_periods)
             db.session.flush()
 
             declare_derived(txn, AmountSourceEnum.TEMPLATE)

@@ -33,7 +33,6 @@ from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import derived_amount_basis
@@ -58,10 +57,10 @@ from tests._test_helpers import (
     generate_row_of,
     last_covered_day,
     make_every_period_rule,
+    one_off_row_of,
     settle_day_columns,
     state_template_price,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def a_transaction(
@@ -169,20 +168,20 @@ def a_transaction(
         for column, value in settlement.items():
             setattr(txn, column, value)
     else:
-        txn = Transaction(
-            template_id=None,
-            user_id=seed_user["user"].id,
-            pay_period_id=(period or seed_user["bootstrap_period"]).id,
+        # A ONE-OFF through the producer (plan step balance:X-bi-7c): a
+        # rule-less definition plus its placed row, priced at *amount* and
+        # dated on the paycheck's start, with the settlement laid on bare as
+        # for the engine's row above.  This built a link-less row owning its
+        # figure until that step -- the shape the cutover (X-bi-7d) deletes.
+        txn = one_off_row_of(
+            period or seed_user["bootstrap_period"], name=name, amount=amount,
+            user_id=seed_user["user"].id, account_id=account_id,
             scenario_id=seed_user["scenario"].id,
-            account_id=account_id,
-            name=name,
-            category_id=category_id,
-            transaction_type_id=type_id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            transaction_type_id=type_id, category_id=category_id,
             is_envelope=is_envelope,
-            **settlement,
         )
-        db.session.add(txn)
+        for column, value in settlement.items():
+            setattr(txn, column, value)
     db.session.flush()
     return txn
 

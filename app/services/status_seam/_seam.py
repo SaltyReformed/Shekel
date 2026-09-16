@@ -308,10 +308,12 @@ def apply_status_change(
          before it renders.
 
     It deliberately does NOT post to the ledger and does NOT flush or commit:
-    ledger emission is reconciled once at the END of each handler, after every
+    ledger emission is reconciled at the END of each handler, after every
     effect field is applied, never at the status flip (Build-Order Step 3,
-    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses);
-    the caller owns the session boundary.
+    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses;
+    the PATCH handler's UNLOCK order, ruling **R-BAL58**, runs the status verb
+    before its field writes and reconciles again after them); the caller owns
+    the session boundary.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
