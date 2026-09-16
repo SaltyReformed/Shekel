@@ -21,7 +21,6 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.category import Category
 from app.models.ref import (
     CalcMethod,
-    PaycheckLineKind,
     FilingStatus,
     RaiseType,
 )
@@ -50,7 +49,7 @@ from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _PROFILE_UPDATE_FIELDS,
     _create_schema,
-    _deduction_cadence_context,
+    _line_cadence_context,
     _get_investment_accounts,
     _regenerate_salary_transactions,
     _update_schema,
@@ -92,7 +91,7 @@ def _paychecks_per_year() -> "int | None":
     fact both of those read, asked directly, and answered rather than raised.
     *Since plan step salary:R15-b the same page DOES derive the owner's
     calendar whenever a deduction line carries a cadence rule
-    (``_helpers._deduction_cadence_phrases``: a rule is described against
+    (``_helpers._line_cadence_phrases``: a rule is described against
     it, and a rule is authored against one, so that derivation cannot meet
     the refusal); this read stays on the soft door because the page must
     still render for the owner with no schedule and no rules.*
@@ -116,7 +115,6 @@ def new_profile():
         profile=None,
         filing_statuses=filing_statuses,
         raise_types=[],
-        paycheck_line_kinds=[],
         calc_methods=[],
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
@@ -376,7 +374,6 @@ def edit_profile(profile_id):
 
     filing_statuses = db.session.query(FilingStatus).all()
     raise_types = db.session.query(RaiseType).all()
-    paycheck_line_kinds = db.session.query(PaycheckLineKind).all()
     calc_methods = db.session.query(CalcMethod).all()
     investment_accounts = _get_investment_accounts(current_user.id)
 
@@ -395,13 +392,12 @@ def edit_profile(profile_id):
         profile=profile,
         filing_statuses=filing_statuses,
         raise_types=raise_types,
-        paycheck_line_kinds=paycheck_line_kinds,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         inactive_profiles=inactive_profiles,
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
-        **_deduction_cadence_context(profile),
+        **_line_cadence_context(profile),
     )
 
 

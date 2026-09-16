@@ -60,7 +60,7 @@ def _base_cockpit_context():
         "raise_event": "",
         "chips": None,
         "composition": None,
-        "deduction_rows": [],
+        "line_rows": [],
         "prev_period_id": None,
         "next_period_id": None,
         "raises": [],
@@ -156,7 +156,7 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
 
     Returns:
         A dict with ``profile``, ``focused_period``, ``is_third_paycheck``,
-        ``raise_event``, ``composition``, ``deduction_rows``,
+        ``raise_event``, ``composition``, ``line_rows``,
         ``prev_period_id``, and ``next_period_id``.  ``raise_event`` is the
         run-start-collapsed banner value: the focused period's raw event
         only when that period STARTS a raise run, else ``""`` -- so the
@@ -186,7 +186,7 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
         "composition": salary_cockpit_service.build_composition(
             breakdown, calibration_active,
         ),
-        "deduction_rows": salary_cockpit_service.build_deduction_rows(breakdown),
+        "line_rows": salary_cockpit_service.build_line_rows(breakdown),
         "prev_period_id": prev_id,
         "next_period_id": next_id,
     }

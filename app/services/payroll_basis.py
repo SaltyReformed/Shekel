@@ -273,11 +273,15 @@ class PayrollBasis:
             cadences[deduction] = walks.setdefault(resolved, _WalkedCadence(resolved))
         return cadences
 
-    def deduction_applies_on(self, deduction, payday: date) -> bool:
-        """Whether *deduction* is taken on the paycheck of *payday*.
+    def line_applies_on(self, line, payday: date) -> bool:
+        """Whether *line* is taken on the paycheck of *payday*.
+
+        ``deduction_applies_on`` until plan step salary:R18-b, when the
+        earning kinds began asking it too (ruling **R-SAL38**); a line of any
+        kind is placed by its rule the same way.
 
         Args:
-            deduction: One of this profile's deductions.
+            line: One of this profile's payroll lines.
             payday: The day the paycheck arrives -- a payday on this calendar,
                 saved or projected.
 
@@ -285,7 +289,7 @@ class PayrollBasis:
             ``True`` when the line has no rule (every paycheck) or when its
             rule's walk placed an occurrence on this paycheck.
         """
-        cadence = self._line_cadences[deduction]
+        cadence = self._line_cadences[line]
         return cadence is None or cadence.admits(self.calendar, payday)
 
     def annual_salary_on(self, payday: date) -> Decimal:

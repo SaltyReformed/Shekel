@@ -520,7 +520,7 @@ class TestSalaryAccessControl:
         with app.app_context():
             target_id = seed_full_user_data["salary_profile"].id
             response = second_auth_client.post(
-                f"/salary/{target_id}/deductions",
+                f"/salary/{target_id}/lines",
                 data={
                     "name": "BLOCKED_TEST",
                     "amount": "100",
@@ -529,7 +529,7 @@ class TestSalaryAccessControl:
                 },
             )
             _assert_not_found(
-                response, "POST /salary/<id>/deductions",
+                response, "POST /salary/<id>/lines",
             )
 
     def test_breakdown_blocked(

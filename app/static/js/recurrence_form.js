@@ -34,12 +34,12 @@
  * (plan ledger row D32).
  *
  * **Plan step salary:R15-c gave the controls a THIRD form, and made this file
- * re-runnable for it.**  The paycheck-deduction form on the salary edit page
+ * re-runnable for it.**  The payroll-line form on the salary edit page
  * places recurrence_cadence_controls alone -- no #recurrence-fields (a payroll
  * line's first occurrence is derived, ruling R-SAL30), no due day, no end
  * bound, no preview -- so every element beyond the four cadence controls is
  * optional here, the container included.  And that form lives INSIDE the
- * #deductions-section fragment that htmx swaps wholesale after every add, edit
+ * #lines-section fragment that htmx swaps wholesale after every add, edit
  * and delete: the elements this closure bound at load are replaced, and a
  * script that ran once would leave the new form's interval box hidden and
  * disabled -- the next add would post no interval and be refused.  So the
@@ -517,7 +517,7 @@ function initRecurrenceForm() {
       // the no-cadence branch, so the stray key was absorbed one layer down by
       // a guard written for something else.  Closed at plan step R7c-c.
       placementSelect.disabled = true;
-      // Absent on the deduction form, which places no calendar detail row
+      // Absent on the payroll-line form, which places no calendar detail row
       // for the container to wrap (plan step salary:R15-c).
       if (container) container.classList.add('d-none');
       syncEndBound(false);
@@ -756,7 +756,7 @@ function initRecurrenceForm() {
 initRecurrenceForm();
 
 // Re-link after an htmx swap that brought a fresh set of controls (plan step
-// salary:R15-c: the deductions section is re-rendered whole after every
+// salary:R15-c: the payroll-lines section is re-rendered whole after every
 // add / edit / delete, form included).  event.target is the settled NEW node
 // -- app.js records why detail.target is the wrong one to read after an
 // outerHTML swap -- and a swap carrying no unit select (a grid cell, a

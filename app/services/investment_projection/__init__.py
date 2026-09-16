@@ -55,7 +55,7 @@ figure substitutes for the other), blind to a deduction's inflation escalation
 ``AdaptedDeduction`` could not even carry), and it spelled the calendar-year
 cap twice more beside the engine's -- ``_annual_cap_averaged`` evenly and
 ``_period_capped_total`` front-loaded.  All four spellings are deleted here.
-The engine's :class:`~app.services.paycheck_calculator.DeductionLine` already
+The engine's :class:`~app.services.paycheck_calculator.PricedLine` already
 carries ``target_account_id``, so what one account's payroll puts in on one
 payday is a fold of the breakdown the engine computes for it, and the
 :class:`AccountPayrollFeed` the loader hands over is that fold -- asked per

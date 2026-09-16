@@ -16,9 +16,11 @@ profile's projection (ledger row **N-443**), the door every page prices
 through -- over :meth:`app.services.pay_calendar.PayCalendar.saved`, so what
 is compared is what the app shows and not a re-statement of it.  Every field
 of every :class:`~app.services.paycheck_calculator.PaycheckBreakdown` is
-written: the period identity, the four earnings figures, the four withholding
-lines, and each deduction line's name, amount and target account, in the
-engine's own order.
+written: the period identity, the earnings figures (base pay, gross,
+taxable income, net -- ``base_biweekly`` and the two earning-line lists since
+plan step salary:R18-b, so a run on a tree before that leaf lacks those keys
+and the diff is read for FIGURES), the four withholding lines, and each
+line's name, amount and target account, in the engine's own order.
 
 **It is READ-ONLY**: nothing is assigned, nothing is committed, and the
 session is rolled back on the way out.
@@ -62,9 +64,12 @@ def _breakdown(breakdown) -> dict:
         "is_third_paycheck": breakdown.period.is_third_paycheck,
         "raise_event": breakdown.period.raise_event,
         "annual_salary": str(breakdown.earnings.annual_salary),
+        "base_biweekly": str(breakdown.earnings.base_biweekly),
         "gross_biweekly": str(breakdown.earnings.gross_biweekly),
         "taxable_income": str(breakdown.earnings.taxable_income),
         "net_pay": str(breakdown.earnings.net_pay),
+        "taxable_lines": [_line(line) for line in breakdown.earnings.taxable],
+        "after_tax_lines": [_line(line) for line in breakdown.earnings.after_tax],
         "federal": str(breakdown.taxes.federal),
         "state": str(breakdown.taxes.state),
         "social_security": str(breakdown.taxes.social_security),

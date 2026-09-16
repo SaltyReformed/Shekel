@@ -62,7 +62,7 @@ class PaycheckLine(
     against and that could not say what a weekly-paid owner's benefit premium
     does.  The engine asks the rule's own occurrence walk whether a payday is
     an admitted paycheck
-    (:meth:`~app.services.payroll_basis.PayrollBasis.deduction_applies_on`).
+    (:meth:`~app.services.payroll_basis.PayrollBasis.line_applies_on`).
     """
 
     __tablename__ = "paycheck_lines"

@@ -82,7 +82,7 @@ from tests._test_helpers import (
     bare_expense_template,
     create_loan_account,
     create_savings_account,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_expense_template,
     make_salary_profile,
     make_transfer_template,
@@ -471,7 +471,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         )
         db.session.add(deduction)
         db.session.flush()
-        make_deduction_cadence_rule(db.session, deduction, 24)
+        make_line_cadence_rule(db.session, deduction, 24)
 
         arms = ("transaction_template_id", "transfer_template_id", "paycheck_line_id")
         for owner, filled in (

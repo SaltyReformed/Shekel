@@ -1,12 +1,15 @@
 """
 Shekel Budget App -- Paycheck engine: the four WITHHOLDING lines.
 
-The per-paycheck wage figures both tax paths read (:class:`_WageBasis`) and
-the two paths themselves: :func:`_calibrated_tax_lines`, effective rates from
+The per-paycheck wage figures both tax paths read (:class:`_WageBasis`), the
+two paths themselves -- :func:`_calibrated_tax_lines`, effective rates from
 one real pay stub, and :func:`_bracket_tax_lines`, IRS Pub 15-T federal
 withholding (:func:`_bracket_federal`) plus the annualised state tax
-(:func:`_bracket_state`) plus FICA.  Which path a paycheck takes is
-:func:`~._pricing.calculate_paycheck`'s decision; both enforce the Social
+(:func:`_bracket_state`) plus FICA -- and :func:`_tax_lines`, which picks
+the path: the calibrated one when the profile carries an ACTIVE calibration,
+the bracket one otherwise (moved here from
+:func:`~._pricing.calculate_paycheck` at plan step salary:R18-b, when that
+function's earning steps crowded it).  Both paths enforce the Social
 Security wage-base cap from the same year-to-date cumulative
 (CRIT-03 / F-037), which is why the cumulative arrives on the value rather
 than being computed inside either path.
@@ -38,6 +41,30 @@ class _WageBasis:
     gross_biweekly: Decimal
     taxable_biweekly: Decimal
     cumulative_wages: Decimal
+
+
+def _tax_lines(basis, wages, total_pre_tax, tax_configs, calibration):
+    """Compute the four withholding lines by whichever path the profile takes.
+
+    Args:
+        basis: The :class:`~app.services.payroll_basis.PayrollBasis`, read by
+            the bracket path for the W-4 inputs and the annualising count.
+        wages: The per-paycheck :class:`_WageBasis`.
+        total_pre_tax: The paycheck's pre-tax deduction total, which the
+            bracket federal computation annualises.
+        tax_configs: dict with bracket_set, state_config, fica_config.
+        calibration: The profile's ``CalibrationOverride`` or ``None``; the
+            calibrated path is taken when it is present and ``is_active``.
+
+    Returns:
+        TaxLines from :func:`_calibrated_tax_lines` or
+        :func:`_bracket_tax_lines`.
+    """
+    if calibration is not None and getattr(calibration, "is_active", False):
+        return _calibrated_tax_lines(
+            wages, calibration, tax_configs.get("fica_config"),
+        )
+    return _bracket_tax_lines(basis, wages, total_pre_tax, tax_configs)
 
 
 def _calibrated_tax_lines(wages, calibration, fica_config):

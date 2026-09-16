@@ -99,6 +99,10 @@ from app.routes._redirect_target import RedirectTarget
 #:   whose one authored refusal names a ceiling beside a monthly or yearly
 #:   schedule; the gate below is what put it here in the same commit as the
 #:   message, rather than a review late.
+#: * ``target_account_id`` -- the payroll-line form's one side-specific
+#:   refusal (plan step salary:R18-b): a target account on an EARNING kind,
+#:   which funds nothing.  Listed in the same commit as the sentence, so it
+#:   is heard rather than the generic prompt.
 ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "is_envelope",
     "recurrence_unit",
@@ -110,6 +114,7 @@ ACTIONABLE_FLASH_FIELDS: tuple[str, ...] = (
     "recurrence_end_mode",
     "end_date",
     "max_occurrences",
+    "target_account_id",
 )
 
 GENERIC_VALIDATION_FLASH: str = (
