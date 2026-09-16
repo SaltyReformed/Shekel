@@ -276,11 +276,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 # above; there is no import order that resolves ``app`` before it runs.
 # pylint: disable=wrong-import-position
 from app import create_app, ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum, RaiseTypeEnum
+from app.enums import CalcMethodEnum, PaycheckLineKindEnum, RaiseTypeEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.account import Account
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.template_amount_version import TemplateAmountVersion
@@ -767,7 +767,7 @@ def _apply_salary_deduction(_records):
 
     Takes the records it does not read, so every perturbation applies through
     ONE signature.  The line is appended to the loaded relationship
-    ``profile.deductions``, which is what ``_calculate_deductions`` iterates, so
+    ``profile.lines``, which is what ``_calculate_deductions`` iterates, so
     it is visible to the derivation without ever being flushed.
 
     Returns:
@@ -775,10 +775,10 @@ def _apply_salary_deduction(_records):
     """
     profiles = db.session.query(SalaryProfile).all()
     for profile in profiles:
-        profile.deductions.append(PaycheckDeduction(
+        profile.lines.append(PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=ref_cache.deduction_timing_id(
-                DeductionTimingEnum.POST_TAX,
+            paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                PaycheckLineKindEnum.POST_TAX_DEDUCTION,
             ),
             calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
             name="X-bl-1 invariance control (never flushed)",

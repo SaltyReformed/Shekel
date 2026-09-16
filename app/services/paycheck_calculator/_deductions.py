@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import CalcMethodEnum, PaycheckLineKindEnum
 from app.services.pay_calendar import DerivedPeriod, paydays_in_year_before
 from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
 from app.utils.deduction_cap import cap_period_amount
@@ -78,10 +78,10 @@ def _compute_deductions(ctx):
     """
     return DeductionBreakdown(
         pre_tax=_calculate_deductions(
-            ctx, ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+            ctx, ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
         ),
         post_tax=_calculate_deductions(
-            ctx, ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
+            ctx, ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
         ),
     )
 
@@ -92,7 +92,7 @@ def _calculate_deductions(ctx, timing_id):
     Args:
         ctx: The per-paycheck :class:`_DeductionContext` (basis, period,
             gross_biweekly).
-        timing_id: Integer ID of the DeductionTiming to filter on.
+        timing_id: Integer ID of the PaycheckLineKind to filter on.
 
     Handles:
     - the line's cadence: taken on the paydays its recurrence rule admits,
@@ -106,14 +106,14 @@ def _calculate_deductions(ctx, timing_id):
     """
     deductions = []
     profile = ctx.basis.profile
-    if not profile.deductions:
+    if not profile.lines:
         return deductions
 
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-    for ded in profile.deductions:
+    for ded in profile.lines:
         if not ded.is_active:
             continue
-        if ded.deduction_timing_id != timing_id:
+        if ded.paycheck_line_kind_id != timing_id:
             continue
         if not ctx.basis.deduction_applies_on(ded, ctx.period.start_date):
             continue

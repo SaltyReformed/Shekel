@@ -845,7 +845,7 @@ was the hardcoded `26` this table used to name.
 
 ---
 
-### 3.5 `models/paycheck_deduction.py` (PaycheckBreakdown dataclass) -- Priority P2 ✅
+### 3.5 `models/paycheck_line.py` (PaycheckBreakdown dataclass) -- Priority P2 ✅
 
 | Status | Test                                     |
 | ------ | ---------------------------------------- |

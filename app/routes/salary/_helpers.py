@@ -22,7 +22,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.account import Account
 from app.models.ref import (
     CalcMethod,
-    DeductionTiming,
+    PaycheckLineKind,
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
@@ -63,7 +63,7 @@ _RAISE_UPDATE_FIELDS = {
 # deduction's cadence is a recurrence rule on the row, authored through the
 # recurrence seam (R15-c's form), never a column written by name.
 _DEDUCTION_UPDATE_FIELDS = {
-    "name", "deduction_timing_id", "calc_method_id", "amount",
+    "name", "paycheck_line_kind_id", "calc_method_id", "amount",
     "annual_cap", "inflation_enabled",
     "inflation_rate", "inflation_effective_month", "target_account_id",
 }
@@ -72,11 +72,11 @@ _DEDUCTION_UPDATE_FIELDS = {
 # raise / deduction double-submit fixes (F-051 + F-052 / C-23).
 # Each literal mirrors the model declaration in
 # ``app/models/salary_raise.py`` and
-# ``app/models/paycheck_deduction.py`` and the migration revision
+# ``app/models/paycheck_line.py`` and the migration revision
 # ``a3b9c2d40e15``; renaming a constraint requires a coordinated
 # edit across all three sites.
 _SALARY_RAISES_UNIQUE_CONSTRAINT = "uq_salary_raises_profile_type_year_month"
-_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT = "uq_paycheck_deductions_profile_name"
+_PAYCHECK_LINES_UNIQUE_CONSTRAINT = "uq_paycheck_lines_profile_name"
 
 _create_schema = SalaryProfileCreateSchema()
 _update_schema = SalaryProfileUpdateSchema()
@@ -313,10 +313,10 @@ def _deduction_cadence_phrases(profile) -> dict[int, str]:
     """
     calendar = (
         calendar_for(profile.user_id)
-        if any(d.recurrence_rule is not None for d in profile.deductions)
+        if any(d.recurrence_rule is not None for d in profile.lines)
         else None
     )
-    return deduction_cadence.cadence_phrases(profile.deductions, calendar)
+    return deduction_cadence.cadence_phrases(profile.lines, calendar)
 
 
 def _deduction_cadence_context(profile) -> dict:
@@ -353,7 +353,7 @@ def _deduction_cadence_context(profile) -> dict:
         "recurrence_picker": picker_model(),
         "selected_cadences": {
             deduction.id: edit_form_cadence(deduction)
-            for deduction in profile.deductions
+            for deduction in profile.lines
         },
     }
 
@@ -361,13 +361,13 @@ def _deduction_cadence_context(profile) -> dict:
 def _render_deductions_partial(profile):
     """Return the deductions table partial for HTMX updates."""
     db.session.refresh(profile)
-    deduction_timings = db.session.query(DeductionTiming).all()
+    paycheck_line_kinds = db.session.query(PaycheckLineKind).all()
     calc_methods = db.session.query(CalcMethod).all()
     investment_accounts = _get_investment_accounts(profile.user_id)
     return render_template(
         "salary/_deductions_section.html",
         profile=profile,
-        deduction_timings=deduction_timings,
+        paycheck_line_kinds=paycheck_line_kinds,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         **_deduction_cadence_context(profile),

@@ -112,14 +112,22 @@ class AcctTypeEnum(enum.Enum):
     PROPERTY = "Property"
 
 
-class DeductionTimingEnum(enum.Enum):
-    """Deduction timing values.
+class PaycheckLineKindEnum(enum.Enum):
+    """The KIND of a payroll line: its position in the paycheck's waterfall.
 
-    Values match ``ref.deduction_timings.name`` in the database.
+    Values match ``ref.paycheck_line_kinds.name`` in the database.  Since
+    plan step **salary:R18-a** (ruling **R-SAL38**) a paycheck is base pay
+    plus a list of LINES, and a line's kind is where it sits between base
+    pay and net pay; the two kinds here are the deduction side, and the
+    earning side (``taxable_earning`` joining gross, ``after_tax_earning``
+    joining net) lands with the engine arms that price it at R18-b.  Until
+    R18-a this was ``DeductionTimingEnum`` over ``ref.deduction_timings``
+    (``pre_tax`` / ``post_tax``), a name that could hold nothing but a
+    deduction.
     """
 
-    PRE_TAX = "pre_tax"
-    POST_TAX = "post_tax"
+    PRE_TAX_DEDUCTION = "pre_tax_deduction"
+    POST_TAX_DEDUCTION = "post_tax_deduction"
 
 
 class CalcMethodEnum(enum.Enum):

@@ -141,7 +141,7 @@ class ProfilePaychecks:
     **This value's OWN database work is all at construction; the PROFILE's
     need not be, and an adversarial review of plan step salary:S3-d corrected
     a sentence here that claimed otherwise.**
-    ``SalaryProfile.raises`` and ``.deductions`` are ``lazy="select"``.  The
+    ``SalaryProfile.raises`` and ``.lines`` are ``lazy="select"``.  The
     deductions are read by
     :func:`~app.services.paycheck_calculator.calculate_paycheck` on the FIRST
     paycheck priced; the raises are read one call earlier since plan step

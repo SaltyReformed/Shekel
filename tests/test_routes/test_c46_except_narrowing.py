@@ -38,9 +38,9 @@ from sqlalchemy.exc import DataError
 from app.extensions import db
 from app.models.calibration_override import CalibrationOverride
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus, RaiseType,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus, RaiseType,
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
@@ -291,8 +291,8 @@ class TestSalaryNarrowCatch:
         """``DataError`` (non-Integrity) on ``add_deduction`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(
-                name="pre_tax",
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(
+                name="pre_tax_deduction",
             ).one()
             flat_method = db.session.query(CalcMethod).filter_by(
                 name="flat",
@@ -305,7 +305,7 @@ class TestSalaryNarrowCatch:
                     f"/salary/{profile.id}/deductions",
                     data={
                         "name": "401k",
-                        "deduction_timing_id": pre_tax.id,
+                        "paycheck_line_kind_id": pre_tax.id,
                         "calc_method_id": flat_method.id,
                         "amount": "200.00",
                     },
@@ -317,7 +317,7 @@ class TestSalaryNarrowCatch:
 
             # Rollback verified: no deduction persisted.
             db.session.expire_all()
-            persisted = db.session.query(PaycheckDeduction).filter_by(
+            persisted = db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=profile.id,
             ).all()
             assert persisted == []
@@ -328,16 +328,16 @@ class TestSalaryNarrowCatch:
         """``DataError`` on ``delete_deduction`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(
-                name="pre_tax",
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(
+                name="pre_tax_deduction",
             ).one()
             flat_method = db.session.query(CalcMethod).filter_by(
                 name="flat",
             ).one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.0000"),
@@ -359,7 +359,7 @@ class TestSalaryNarrowCatch:
 
             # Rollback verified: deduction still present.
             db.session.expire_all()
-            still_there = db.session.get(PaycheckDeduction, ded_id)
+            still_there = db.session.get(PaycheckLine, ded_id)
             assert still_there is not None
 
     def test_update_deduction_data_error_handled(
@@ -368,16 +368,16 @@ class TestSalaryNarrowCatch:
         """``DataError`` (non-Integrity) on ``update_deduction`` commit triggers narrow catch."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(
-                name="pre_tax",
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(
+                name="pre_tax_deduction",
             ).one()
             flat_method = db.session.query(CalcMethod).filter_by(
                 name="flat",
             ).one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.0000"),
@@ -394,7 +394,7 @@ class TestSalaryNarrowCatch:
                     f"/salary/deductions/{ded_id}/edit",
                     data={
                         "name": "401k",
-                        "deduction_timing_id": pre_tax.id,
+                        "paycheck_line_kind_id": pre_tax.id,
                         "calc_method_id": flat_method.id,
                         "amount": "500.00",
                     },
@@ -406,7 +406,7 @@ class TestSalaryNarrowCatch:
 
             # Rollback verified: amount unchanged.
             db.session.expire_all()
-            refreshed = db.session.get(PaycheckDeduction, ded_id)
+            refreshed = db.session.get(PaycheckLine, ded_id)
             assert refreshed.amount == original_amount
 
     def test_calibrate_confirm_data_error_handled(

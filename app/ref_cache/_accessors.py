@@ -27,7 +27,7 @@ from app.enums import (
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
@@ -329,10 +329,10 @@ def acct_type_max_term(type_id):
     return meta.get("max_term_months")
 
 
-def deduction_timing_id(member):
-    """Return the integer primary key for a DeductionTimingEnum member."""
+def paycheck_line_kind_id(member):
+    """Return the integer primary key for a PaycheckLineKindEnum member."""
     require_init()
-    return cache().enum_ids[DeductionTimingEnum][member]
+    return cache().enum_ids[PaycheckLineKindEnum][member]
 
 
 def calc_method_id(member):

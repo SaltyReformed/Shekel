@@ -329,17 +329,24 @@ class FilingStatus(db.Model):
         return f"<FilingStatus {self.name}>"
 
 
-class DeductionTiming(db.Model):
-    """Deduction timing reference: 'pre_tax', 'post_tax' (Phase 2)."""
+class PaycheckLineKind(db.Model):
+    """A payroll line's KIND: its position in the paycheck's waterfall.
 
-    __tablename__ = "deduction_timings"
+    ``pre_tax_deduction`` and ``post_tax_deduction`` since plan step
+    salary:R18-a (ruling R-SAL38), which renamed ``ref.deduction_timings``
+    (``pre_tax`` / ``post_tax``, Phase 2) because the table it keys,
+    ``salary.paycheck_lines``, holds the earning side too from R18-b.  The
+    vocabulary is :class:`~app.enums.PaycheckLineKindEnum`.
+    """
+
+    __tablename__ = "paycheck_line_kinds"
     __table_args__ = {"schema": "ref"}
 
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(10), unique=True, nullable=False)
+    name = db.Column(db.String(25), unique=True, nullable=False)
 
     def __repr__(self):
-        return f"<DeductionTiming {self.name}>"
+        return f"<PaycheckLineKind {self.name}>"
 
 
 class CalcMethod(db.Model):

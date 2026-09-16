@@ -148,7 +148,7 @@ def cadence_phrase(deduction, calendar: PayCalendar | None) -> str:
     """The phrase the salary page shows for how often *deduction* is taken.
 
     Args:
-        deduction: A :class:`~app.models.paycheck_deduction.PaycheckDeduction`
+        deduction: A :class:`~app.models.paycheck_line.PaycheckLine`
             (or anything carrying ``recurrence_rule``).
         calendar: The owner's pay calendar, which a rule is resolved against;
             ``None`` when the caller has none, which is only ever the case

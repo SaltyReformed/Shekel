@@ -11,8 +11,8 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import CalcMethod, DeductionTiming
+from app.models.paycheck_line import PaycheckLine
+from app.models.ref import CalcMethod, PaycheckLineKind
 from app.services import deduction_cadence
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import RecurrenceResolutionError
@@ -27,9 +27,9 @@ def _line(seed_user, name="Health"):
     """A flat pre-tax line on its own profile (named after the line), flushed."""
     profile = make_salary_profile(seed_user, db.session, name=f"{name} Job")
     db.session.flush()
-    line = PaycheckDeduction(
+    line = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=db.session.query(DeductionTiming).filter_by(name="pre_tax").one().id,
+        paycheck_line_kind_id=db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one().id,
         calc_method_id=db.session.query(CalcMethod).filter_by(name="flat").one().id,
         name=name, amount=Decimal("100.00"),
     )

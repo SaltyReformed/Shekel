@@ -50,9 +50,9 @@ from app.models.account import Account
 from app.models.calibration_override import CalibrationOverride
 from app.models.interest_params import InterestParams
 from app.models.loan_features import RateHistory
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming,
+    AccountType, CalcMethod, PaycheckLineKind,
     FilingStatus, RaiseType, TaxType,
 )
 from app.models.salary_profile import SalaryProfile
@@ -88,8 +88,8 @@ CK_INVEST_CAP = "ck_investment_params_valid_employer_match_cap"
 CK_RATE_HISTORY = "ck_rate_history_valid_interest_rate"
 CK_USER_SWR = "ck_user_settings_valid_safe_withdrawal"
 CK_USER_TAX_RATE = "ck_user_settings_valid_estimated_tax_rate"
-CK_DEDUCTION_INFL_RATE = "ck_paycheck_deductions_valid_inflation_rate"
-CK_DEDUCTION_INFL_MONTH = "ck_paycheck_deductions_valid_inflation_month"
+CK_DEDUCTION_INFL_RATE = "ck_paycheck_lines_valid_inflation_rate"
+CK_DEDUCTION_INFL_MONTH = "ck_paycheck_lines_valid_inflation_month"
 CK_RAISE_YEAR = "ck_salary_raises_valid_effective_year"
 CK_STATE_TAX_DEDUCTION = "ck_state_tax_configs_nonneg_standard_deduction"
 CK_STATE_TAX_YEAR = "ck_state_tax_configs_valid_tax_year"
@@ -204,8 +204,8 @@ class TestDeductionSchemaBounds:
         """Build a baseline deduction payload with valid FK ids."""
         with app.app_context():
             timing_id = (
-                db.session.query(DeductionTiming)
-                .filter_by(name="pre_tax").one().id
+                db.session.query(PaycheckLineKind)
+                .filter_by(name="pre_tax_deduction").one().id
             )
             flat_id = (
                 db.session.query(CalcMethod)
@@ -213,7 +213,7 @@ class TestDeductionSchemaBounds:
             )
         base = {
             "name": "401k",
-            "deduction_timing_id": str(timing_id),
+            "paycheck_line_kind_id": str(timing_id),
             "calc_method_id": str(flat_id),
             "amount": "500.00",
         }
@@ -876,8 +876,8 @@ class TestUserSettingsCheck:
             assert _constraint_name_from(info.value) == CK_USER_TAX_RATE
 
 
-class TestPaycheckDeductionCheck:
-    """``salary.paycheck_deductions`` CHECK constraints (F-077)."""
+class TestPaycheckLineCheck:
+    """``salary.paycheck_lines`` CHECK constraints (F-077)."""
 
     def _make_profile(self, seed_user):
         single_id = (
@@ -897,15 +897,15 @@ class TestPaycheckDeductionCheck:
 
     def _make_deduction_kwargs(self):
         timing_id = (
-            db.session.query(DeductionTiming)
-            .filter_by(name="pre_tax").one().id
+            db.session.query(PaycheckLineKind)
+            .filter_by(name="pre_tax_deduction").one().id
         )
         flat_id = (
             db.session.query(CalcMethod)
             .filter_by(name="flat").one().id
         )
         return {
-            "deduction_timing_id": timing_id,
+            "paycheck_line_kind_id": timing_id,
             "calc_method_id": flat_id,
         }
 
@@ -913,7 +913,7 @@ class TestPaycheckDeductionCheck:
         with app.app_context():
             profile = self._make_profile(seed_user)
             kwargs = self._make_deduction_kwargs()
-            ded = PaycheckDeduction(
+            ded = PaycheckLine(
                 salary_profile_id=profile.id,
                 name="401k",
                 amount=Decimal("500.00"),
@@ -924,7 +924,7 @@ class TestPaycheckDeductionCheck:
             with pytest.raises(IntegrityError) as info:
                 db.session.execute(
                     text(
-                        "UPDATE salary.paycheck_deductions "
+                        "UPDATE salary.paycheck_lines "
                         "SET inflation_rate = 1.5 WHERE id = :did"
                     ),
                     {"did": ded.id},
@@ -937,7 +937,7 @@ class TestPaycheckDeductionCheck:
         with app.app_context():
             profile = self._make_profile(seed_user)
             kwargs = self._make_deduction_kwargs()
-            ded = PaycheckDeduction(
+            ded = PaycheckLine(
                 salary_profile_id=profile.id,
                 name="HSA",
                 amount=Decimal("100.00"),
@@ -948,7 +948,7 @@ class TestPaycheckDeductionCheck:
             with pytest.raises(IntegrityError) as info:
                 db.session.execute(
                     text(
-                        "UPDATE salary.paycheck_deductions "
+                        "UPDATE salary.paycheck_lines "
                         "SET inflation_effective_month = 13 "
                         "WHERE id = :did"
                     ),

@@ -339,7 +339,7 @@ def _drive_write_pass(page, profile_id: int) -> None:
            and added["ceiling"] == "2", str(added))
     stored = _sql(
         "SELECT r.max_per_month, r.starts_on FROM budget.recurrence_rules r "
-        "JOIN salary.paycheck_deductions d ON d.id = r.paycheck_deduction_id "
+        "JOIN salary.paycheck_lines d ON d.id = r.paycheck_line_id "
         f"WHERE d.name = '{MARK}'",
     )
     _check("W: one rule with a ceiling of 2 was written for the line",
@@ -377,7 +377,7 @@ def _drive_write_pass(page, profile_id: int) -> None:
                str(rows[0]))
     stored = _sql(
         "SELECT r.max_per_month, r.starts_on FROM budget.recurrence_rules r "
-        "JOIN salary.paycheck_deductions d ON d.id = r.paycheck_deduction_id "
+        "JOIN salary.paycheck_lines d ON d.id = r.paycheck_line_id "
         f"WHERE d.name = '{MARK}'",
     )
     _check("W: the SAME rule row now starts on a 1st with no ceiling",
@@ -400,16 +400,16 @@ def _drive_write_pass(page, profile_id: int) -> None:
     _check("W: the delete took the rule with it",
            _sql(
                "SELECT count(*) FROM budget.recurrence_rules r "
-               "JOIN salary.paycheck_deductions d ON d.id = r.paycheck_deduction_id "
+               "JOIN salary.paycheck_lines d ON d.id = r.paycheck_line_id "
                f"WHERE d.name = '{MARK}'",
            ) == ["0"], "a rule survived")
 
 
 def _cleanup() -> None:
     """Remove every marked line an aborted run left behind (its rule cascades)."""
-    left = _sql(f"SELECT count(*) FROM salary.paycheck_deductions WHERE name = '{MARK}'")
+    left = _sql(f"SELECT count(*) FROM salary.paycheck_lines WHERE name = '{MARK}'")
     if left != ["0"]:
-        _sql(f"DELETE FROM salary.paycheck_deductions WHERE name = '{MARK}'")
+        _sql(f"DELETE FROM salary.paycheck_lines WHERE name = '{MARK}'")
         print(f"   cleanup: removed {left[0]} marked line(s)")
 
 

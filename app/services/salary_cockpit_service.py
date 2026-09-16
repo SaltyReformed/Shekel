@@ -20,7 +20,7 @@ calculator already computed onto each breakdown's
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.enums import DeductionTimingEnum
+from app.enums import PaycheckLineKindEnum
 from app.services.pay_calendar import DerivedPeriod
 from app.services.paycheck_calculator import PaycheckBreakdown
 from app.utils.money import HUNDRED, ZERO
@@ -418,7 +418,7 @@ def build_deduction_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]
 
     Returns:
         A list of dicts, one per line item, each with ``name`` (str),
-        ``amount`` (Decimal), ``timing`` (the DeductionTiming enum value,
+        ``amount`` (Decimal), ``timing`` (the PaycheckLineKind enum value,
         display grouping only), and ``bar_pct`` (Decimal, one decimal).
         Empty when the period has no deduction lines.
     """
@@ -431,8 +431,8 @@ def build_deduction_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]
         breakdown.deductions.post_tax, key=lambda line: line.amount, reverse=True,
     )
     lines = (
-        [(line, DeductionTimingEnum.PRE_TAX.value) for line in pre_sorted]
-        + [(line, DeductionTimingEnum.POST_TAX.value) for line in post_sorted]
+        [(line, PaycheckLineKindEnum.PRE_TAX_DEDUCTION.value) for line in pre_sorted]
+        + [(line, PaycheckLineKindEnum.POST_TAX_DEDUCTION.value) for line in post_sorted]
     )
     if not lines:
         return []

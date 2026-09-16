@@ -107,7 +107,11 @@ _REF_TABLE_SEEDS = (
         "single", "married_jointly", "married_separately",
         "head_of_household",
     ]),
-    ("DeductionTiming", ["pre_tax", "post_tax"]),
+    # ``PaycheckLineKind`` -- where a payroll line sits in the paycheck's
+    # waterfall (plan step salary:R18-a, ruling R-SAL38).  ``ref.deduction_
+    # timings`` (``pre_tax`` / ``post_tax``) until then; the migration renames
+    # the table and the two rows, and this reseed finds them present.
+    ("PaycheckLineKind", ["pre_tax_deduction", "post_tax_deduction"]),
     ("CalcMethod", ["flat", "percentage"]),
     ("TaxType", ["flat", "none", "bracket"]),
     ("RaiseType", ["merit", "cola", "custom"]),

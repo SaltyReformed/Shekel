@@ -2282,6 +2282,11 @@ _C17A_REVISION_FILE = "6fc77e86d76f_a_pay_schedule_is_a_sequence_of_eras.py"
 #: ``budget.pay_eras.kind_id`` and ``ref.pay_cadence_kinds`` back -- the
 #: objects ``C17-a``'s downgrade drops, so it runs FIRST in the rewind.
 _C17D2_REVISION_FILE = "3ec5291ca4e2_a_pay_eras_kind_is_which_columns_it_carries.py"
+#: Plan step ``salary:R18-a``'s revision, the RENAME of ``salary.paycheck_
+#: deductions`` to ``salary.paycheck_lines`` (with ``ref.deduction_timings``
+#: to ``ref.paycheck_line_kinds`` and the owning arm's column); its
+#: ``downgrade()`` is the one statement that puts the old names back.
+_R18A_REVISION_FILE = "0a4d2c3e89f8_a_paycheck_is_a_list_of_lines.py"
 
 
 def restore_pay_schedule_rhythm_columns(db_session):
@@ -2386,6 +2391,52 @@ def _pay_schedule_carries_a_cadence(db_session):
         " WHERE table_schema = 'budget' AND table_name = 'pay_schedule' "
         "   AND column_name = 'cadence_days'"
     )).scalar())
+
+
+def rewind_paycheck_lines_rename(db_session):
+    """Run plan step ``salary:R18-a``'s own ``downgrade()``: the old table names back.
+
+    **For a test whose subject is an EARLIER revision's shipped SQL**, which
+    names ``salary.paycheck_deductions``, ``ref.deduction_timings`` or
+    ``budget.recurrence_rules.paycheck_deduction_id`` -- ``salary:R15-b``'s
+    cadence migration, the C-42 index repair, ``salary:R14-a``'s funding
+    backfill.  Head renamed all three (ruling **R-SAL38**), so those callables
+    meet ``UndefinedTable`` where they used to find the schema they expected:
+    :func:`rewind_pay_schedule_rhythm`'s shape, Alembic's newest-first order.
+
+    What it leaves is head's schema with the three names restored -- every
+    constraint, index, sequence and trigger under its old name, the two ref
+    rows named ``pre_tax`` / ``post_tax`` -- and NOT any particular revision.
+    The ORM models on this tree map the NEW names, so an ORM read of a line
+    between this and :func:`replay_paycheck_lines_rename` finds no table;
+    seed through the ORM first, rewind, drive the old statement in SQL, and
+    replay before reading a line back through the model.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that holds the
+            tables' locks (see :func:`run_migration_callable`).
+    """
+    run_migration_callable(
+        load_migration_module(_R18A_REVISION_FILE).downgrade, db_session,
+    )
+
+
+def replay_paycheck_lines_rename(db_session):
+    """Run plan step ``salary:R18-a``'s own ``upgrade()`` after a rewind.
+
+    :func:`rewind_paycheck_lines_rename`'s inverse: the head names back, so a
+    test that drove an older revision's statement can read the result through
+    the ORM models this tree maps.  Not needed for isolation -- the ``db``
+    fixture re-clones the per-worker database for every test -- only for a
+    case that reads lines back after the older statement ran.
+
+    Args:
+        db_session: The test ``db.session``, in the scope that holds the
+            tables' locks.
+    """
+    run_migration_callable(
+        load_migration_module(_R18A_REVISION_FILE).upgrade, db_session,
+    )
 
 
 def restore_pay_period_derived_columns(db_session):
@@ -6031,7 +6082,7 @@ def make_deduction_cadence_rule(db_session, deduction, per_year):  # pylint: dis
     Args:
         db_session: The test session; unused for the reason
             :func:`make_every_period_rule` gives.
-        deduction: A flushed ``PaycheckDeduction`` on a profile whose owner
+        deduction: A flushed ``PaycheckLine`` on a profile whose owner
             has pay periods.  Mutated: its ``recurrence_rule`` is set.
         per_year: ``24`` -- every paycheck, at most 2 a month, from the
             owner's opening payday -- or ``12`` -- monthly, on the first

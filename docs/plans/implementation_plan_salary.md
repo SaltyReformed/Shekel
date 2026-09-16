@@ -218,21 +218,21 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
       PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
       file. `$0.00`.
-- [ ] **R18 -- a paycheck's EARNINGS side gets LINES, as its deductions side already has** (finding
-      **D59**). `paycheck_calculator.Earnings` is four scalars and `net_pay` only ever SUBTRACTS, so
-      there is no way to add a dollar to a paycheck that is not an annual-salary raise; a negative
-      deduction is refused by `ck_paycheck_deductions_positive_amount`.
-      **Measured on the developer's own data 2026-09-01**: his Health Insurance Allowance is paid on
-      24 of 26 paychecks and his Phone Allowance on the first payday of each month -- exactly the
-      two cadences the deduction side implements, on the wrong side of the paycheck -- so both were
-      modelled as income templates, one of which would have generated a `$100.00` row the employer
-      does not pay and the other of which misfiled 2 rows of 6. Earnings lines take the same cadence
-      rule R15 gives deductions. **What it deletes**: one deposit becomes one app row, so the exact
-      tier explains the developer's payroll deposits with no group and no residue -- the population
-      `bank_import:X-gj-3a` was built for -- and it does NOT delete `DifferenceLanding`, which a
-      genuine multi-row deposit still needs. **Its own ruling first**: whether an allowance is
-      taxable, and what becomes of the two live income templates and their rows. **MOVES MONEY** (it
-      changes `net_pay`); migration; own review.
+- [ ] **R18 -- a paycheck is BASE PAY plus a LIST OF LINES** (finding **D59**; ruling **R-SAL38**,
+      six forks, 2026-09-15): the DECOMPOSED parent, R-SAL35's shape, four leaves. A line's kind is
+      its position in the waterfall (taxable earning, pre-tax deduction, post-tax deduction,
+      after-tax earning); a percentage line is a percentage of BASE PAY, never of gross (worked:
+      base `$3,631.74`, +`$45` taxable phone allowance, 6% of base `$217.90` against `$220.60` of
+      gross). One deposit becomes one app row, the population `bank_import:X-gj-3a` was built for.
+  - [x] **R18-a** `ef0dc831` -- the storage rename (`paycheck_lines`, `paycheck_line_kinds`;
+        migration `0a4d2c3e89f8`), byte-identical over the 64 saved paychecks; `$0.00`.
+  - [ ] **R18-b** the two earning kinds seeded with the engine arms (gross = base + taxable
+        earnings, FICA's cumulative replaying admitted taxable lines, net += after-tax earnings),
+        the form's kind control, the cockpit group; re-words the three labels R18-a changed.
+  - [ ] **R18-c** every line's start and optional end on its own rule (R-SAL30 / R-SAL31 amended);
+        `$0.00`.
+  - [ ] **R18-d** the OPERATOR runbook: Josh ends the Phone template as of August 2026 and enters
+        the `$45.00` taxable line, monthly first paycheck, start 2026-09-01. **MOVES MONEY**.
 - [x] **C12** `945651c2` -- one current-paycheck producer (the DECOMPOSED parent, split 2026-09-12
       at the money line, **R-SAL28**, once **R-SAL25**-**R-SAL27** ruled the design asked for from
       scratch; findings **P62**, **P63**, **P64**'s engine half). Both leaves shipped; the container

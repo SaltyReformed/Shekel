@@ -12,7 +12,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
 from app.services import pay_period_write
@@ -25,7 +25,7 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus,
     RaiseType, TransactionType,
 )
 from app import ref_cache
@@ -1348,14 +1348,14 @@ class TestDeductions:
         """POST /salary/<id>/deductions adds a deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                 },
@@ -1369,12 +1369,12 @@ class TestDeductions:
         """POST /salary/deductions/<id>/delete removes a deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Health Insurance",
                 amount=Decimal("150.00"),
@@ -1402,11 +1402,11 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Health Insurance",
                 amount=Decimal("150.00"),
@@ -1416,7 +1416,7 @@ class TestDeductions:
             rule = make_deduction_cadence_rule(db.session, deduction, 24)
             db.session.commit()
             rule_id, ded_id = rule.id, deduction.id
-            assert db.session.get(RecurrenceRule, rule_id).paycheck_deduction_id == ded_id
+            assert db.session.get(RecurrenceRule, rule_id).paycheck_line_id == ded_id
 
             response = auth_client.post(
                 f"/salary/deductions/{ded_id}/delete", follow_redirects=True,
@@ -1424,7 +1424,7 @@ class TestDeductions:
 
             assert response.status_code == 200
             db.session.expire_all()
-            assert db.session.get(PaycheckDeduction, ded_id) is None
+            assert db.session.get(PaycheckLine, ded_id) is None
             assert db.session.get(RecurrenceRule, rule_id) is None, (
                 "the deduction's rule survived its owner"
             )
@@ -1438,11 +1438,11 @@ class TestDeductions:
 
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Transit",
                 amount=Decimal("50.00"),
@@ -1454,7 +1454,7 @@ class TestDeductions:
             rule_id, ded_id = rule.id, deduction.id
 
             db.session.execute(
-                text("DELETE FROM salary.paycheck_deductions WHERE id = :id"), {"id": ded_id},
+                text("DELETE FROM salary.paycheck_lines WHERE id = :id"), {"id": ded_id},
             )
             db.session.commit()
             db.session.expire_all()
@@ -1480,12 +1480,12 @@ class TestDeductions:
         """POST /salary/deductions/<id>/delete for another user's deduction returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=other["profile"].id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.00"),
@@ -1506,14 +1506,14 @@ class TestDeductions:
         """POST /salary/<id>/deductions with HX-Request returns a partial."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            post_tax = db.session.query(DeductionTiming).filter_by(name="post_tax").one()
+            post_tax = db.session.query(PaycheckLineKind).filter_by(name="post_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "Roth IRA",
-                    "deduction_timing_id": post_tax.id,
+                    "paycheck_line_kind_id": post_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "300.00",
                 },
@@ -1535,12 +1535,12 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.00"),
@@ -1553,7 +1553,7 @@ class TestDeductions:
                 f"/salary/deductions/{deduction.id}/edit",
                 data={
                     "name": "401k Updated",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "350.00",
                     **_cadence_payload(
@@ -1591,12 +1591,12 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k Linked",
                 amount=Decimal("200.00"),
@@ -1610,7 +1610,7 @@ class TestDeductions:
                 f"/salary/deductions/{deduction.id}/edit",
                 data={
                     "name": "401k Linked",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": "",
@@ -1637,7 +1637,7 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             victim_account_id = seed_second_user["account"].id
 
@@ -1645,7 +1645,7 @@ class TestDeductions:
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "Forged Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(victim_account_id),
@@ -1653,7 +1653,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 404
-            assert db.session.query(PaycheckDeduction).filter_by(
+            assert db.session.query(PaycheckLine).filter_by(
                 name="Forged Feed",
             ).one_or_none() is None
 
@@ -1670,14 +1670,14 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "Own Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(seed_user["account"].id),
@@ -1686,7 +1686,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
-            saved = db.session.query(PaycheckDeduction).filter_by(
+            saved = db.session.query(PaycheckLine).filter_by(
                 name="Own Feed",
             ).one()
             assert saved.target_account_id == seed_user["account"].id
@@ -1704,13 +1704,13 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             own_account_id = seed_user["account"].id
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Retirement Feed",
                 amount=Decimal("200.00"),
@@ -1723,7 +1723,7 @@ class TestDeductions:
                 f"/salary/deductions/{deduction.id}/edit",
                 data={
                     "name": "Retirement Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(seed_second_user["account"].id),
@@ -1740,12 +1740,12 @@ class TestDeductions:
         """Editing a percentage deduction correctly converts input to decimal."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=pct_method.id,
                 name="401k Pct",
                 amount=Decimal("0.06"),
@@ -1757,7 +1757,7 @@ class TestDeductions:
                 f"/salary/deductions/{deduction.id}/edit",
                 data={
                     "name": "401k Pct",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": pct_method.id,
                     "amount": "8",
                 },
@@ -1777,12 +1777,12 @@ class TestDeductions:
         """POST /salary/deductions/<id>/edit on another user's deduction is rejected."""
         with app.app_context():
             other = _create_other_user_profile()
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            other_ded = PaycheckDeduction(
+            other_ded = PaycheckLine(
                 salary_profile_id=other["profile"].id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.00"),
@@ -1795,7 +1795,7 @@ class TestDeductions:
                 f"/salary/deductions/{other_ded.id}/edit",
                 data={
                     "name": "Hacked",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "9999.00",
                 },
@@ -1805,7 +1805,7 @@ class TestDeductions:
             assert response.status_code == 404
 
             db.session.expire_all()
-            after = db.session.get(PaycheckDeduction, other_ded.id)
+            after = db.session.get(PaycheckLine, other_ded.id)
             assert after.amount == orig_amount, (
                 "IDOR attack modified another user's deduction!"
             )
@@ -1819,14 +1819,14 @@ class TestDeductions:
         """Percentage input (6) is converted to decimal (0.06) for storage."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
 
             auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "401k Match",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": pct_method.id,
                     "amount": "6",
                 },
@@ -1834,7 +1834,7 @@ class TestDeductions:
             )
 
             ded = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="401k Match")
                 .one()
             )
@@ -1851,14 +1851,14 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "HSA",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "100.00",
                     "inflation_enabled": "on",
@@ -1868,7 +1868,7 @@ class TestDeductions:
             )
 
             ded = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="HSA")
                 .one()
             )
@@ -1942,11 +1942,11 @@ def _authored_columns(rule):
 
 def _a_line(profile, name, per_year=26):
     """A flat pre-tax line on *profile*, with the migrated rule for a 24 / 12."""
-    pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+    pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-    deduction = PaycheckDeduction(
+    deduction = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=pre_tax.id,
+        paycheck_line_kind_id=pre_tax.id,
         calc_method_id=flat_method.id,
         name=name,
         amount=Decimal("100.00"),
@@ -1967,12 +1967,12 @@ def _line_form(name, amount="100.00", **cadence):
     ``TestDeductionCadenceForm.test_the_payload_is_what_the_form_renders``
     pins this helper's keys to the rendered form in both directions.
     """
-    pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+    pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
     return {
         "version_id": "",
         "name": name,
-        "deduction_timing_id": str(pre_tax.id),
+        "paycheck_line_kind_id": str(pre_tax.id),
         "target_account_id": "",
         "calc_method_id": str(flat_method.id),
         "amount": amount,
@@ -2075,7 +2075,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Authored").one()
             )
             assert authored.recurrence_rule is not None
@@ -2116,7 +2116,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Authored").one()
             )
             assert _authored_columns(authored.recurrence_rule) == (
@@ -2151,7 +2151,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Dues").one()
             )
             rule = authored.recurrence_rule
@@ -2183,12 +2183,12 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Every").one()
             )
             assert added.recurrence_rule is None
             assert db.session.query(RecurrenceRule).filter_by(
-                paycheck_deduction_id=added.id,
+                paycheck_line_id=added.id,
             ).count() == 0
 
     def test_add_every_paycheck_with_no_ceiling_is_no_rule(
@@ -2210,7 +2210,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Every").one()
             )
             assert added.recurrence_rule is None
@@ -2233,7 +2233,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Alternate").one()
             )
             assert added.recurrence_rule is not None
@@ -2267,7 +2267,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == (
                 _authored_columns(twelve.recurrence_rule)
@@ -2294,7 +2294,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == (
                 _authored_columns(twenty_four.recurrence_rule)
@@ -2319,7 +2319,7 @@ class TestDeductionCadenceForm:
             assert response.status_code == 200
             db.session.expire_all()
             assert db.session.get(RecurrenceRule, rule_id) is None
-            assert db.session.get(PaycheckDeduction, line.id).recurrence_rule is None
+            assert db.session.get(PaycheckLine, line.id).recurrence_rule is None
 
     def test_edit_to_every_paycheck_with_no_ceiling_deletes_the_rule(
         self, app, auth_client, seed_user, seed_periods,
@@ -2342,7 +2342,7 @@ class TestDeductionCadenceForm:
             )
             db.session.expire_all()
             assert db.session.get(RecurrenceRule, rule_id) is None
-            assert db.session.get(PaycheckDeduction, line.id).recurrence_rule is None
+            assert db.session.get(PaycheckLine, line.id).recurrence_rule is None
 
     def test_edit_with_the_ceiling_key_absent_keeps_the_stored_ceiling(
         self, app, auth_client, seed_user, seed_periods,
@@ -2383,20 +2383,20 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             before = _authored_columns(line.recurrence_rule)
             rule_id = line.recurrence_rule.id
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             auth_client.post(
                 f"/salary/deductions/{line.id}/edit",
                 data={
                     "name": "Health",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "125.00",
                 },
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.amount == Decimal("125.00")
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == before
@@ -2461,7 +2461,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Crafted").one()
             )
             rule = added.recurrence_rule
@@ -2490,7 +2490,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             assert b"Say how often this repeats." in response.data
-            assert db.session.query(PaycheckDeduction).filter_by(
+            assert db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=profile.id, name="Half",
             ).count() == 0
 
@@ -2517,7 +2517,7 @@ class TestDeductionCadenceForm:
             assert b"a per-month limit has nothing to limit" in response.data
             db.session.expire_all()
             assert _authored_columns(
-                db.session.get(PaycheckDeduction, line.id).recurrence_rule,
+                db.session.get(PaycheckLine, line.id).recurrence_rule,
             ) == before
 
     def test_a_line_added_by_the_form_regenerates_the_profiles_paychecks(
@@ -2530,7 +2530,7 @@ class TestDeductionCadenceForm:
         amount, re-stated to the CURRENT paycheck's net (today is frozen at
         2026-03-20 in this module; the paycheck of Mar 13) -- is what grades
         it: a regeneration that ran before the rule existed, or that priced
-        a ``profile.deductions`` collection the new line never joined, would
+        a ``profile.lines`` collection the new line never joined, would
         have stated the net WITHOUT the line.  The second is the shape this
         test measured on the first cut: pricing the paycheck BEFORE the add
         loads the collection into the session the request shares, and a
@@ -2598,7 +2598,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             line = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Dues").one()
             )
             rule = line.recurrence_rule
@@ -2630,7 +2630,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.amount == Decimal("120.00")
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == before
@@ -2664,11 +2664,11 @@ class TestDeductionFrequencyDisplay:
     @staticmethod
     def _seed(profile, name, per_year):
         """A flat pre-tax line, with the migrated rule for a 24 / 12."""
-        pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
         flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=pre_tax.id,
+            paycheck_line_kind_id=pre_tax.id,
             calc_method_id=flat_method.id,
             name=name,
             amount=Decimal("100.00"),
@@ -2804,13 +2804,13 @@ class TestDeductionFrequencyDisplay:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             response = auth_client.post(
                 f"/salary/{profile.id}/deductions",
                 data={
                     "name": "401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     **_cadence_payload(
@@ -2823,7 +2823,7 @@ class TestDeductionFrequencyDisplay:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="401k").one()
             )
             assert added.recurrence_rule is not None
@@ -2846,13 +2846,13 @@ class TestDeductionFrequencyDisplay:
         with app.app_context():
             profile = _create_profile(seed_user)
             ded_id = self._seed(profile, "Health Insurance", 24)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             response = auth_client.post(
                 f"/salary/deductions/{ded_id}/edit",
                 data={
                     "name": "Health Insurance",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "175.00",
                 },
@@ -2863,7 +2863,7 @@ class TestDeductionFrequencyDisplay:
                 "Every paycheck (at most 2 a month)"
             )
             db.session.expire_all()
-            assert db.session.get(PaycheckDeduction, ded_id).amount == Decimal("175.00")
+            assert db.session.get(PaycheckLine, ded_id).amount == Decimal("175.00")
 
 
 # ── Breakdown & Projection ────────────────────────────────────────
@@ -3365,14 +3365,14 @@ class TestSalaryNegativePaths:
         """POST /salary/<id>/deductions for another user's profile is blocked."""
         with app.app_context():
             other_profile = _create_second_user_salary_profile(second_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             resp = auth_client.post(
                 f"/salary/{other_profile.id}/deductions",
                 data={
                     "name": "Sneaky 401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                 },
@@ -3382,7 +3382,7 @@ class TestSalaryNegativePaths:
             assert resp.status_code == 404
 
             # Verify no deduction was created for the other user's profile.
-            ded_count = db.session.query(PaycheckDeduction).filter_by(
+            ded_count = db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=other_profile.id,
             ).count()
             assert ded_count == 0
@@ -3424,12 +3424,12 @@ class TestSalaryNegativePaths:
         """POST /salary/deductions/<id>/delete for another user's deduction is blocked."""
         with app.app_context():
             other_profile = _create_second_user_salary_profile(second_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=other_profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.0000"),
@@ -3447,7 +3447,7 @@ class TestSalaryNegativePaths:
 
             # Verify deduction still exists in DB.
             db.session.expire_all()
-            refreshed = db.session.get(PaycheckDeduction, ded_id)
+            refreshed = db.session.get(PaycheckLine, ded_id)
             assert refreshed is not None
 
     def test_view_other_users_breakdown_idor(
@@ -4446,15 +4446,15 @@ class TestCalibrationServerDerivedSnapshot:
             # Pre-tax deduction added AFTER calibration would shift the
             # taxable divisor from 2884.62 to 2684.62 if the snapshot
             # were re-derived; the snapshot must not move.
-            pre_tax = db.session.query(DeductionTiming).filter_by(
-                name="pre_tax"
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(
+                name="pre_tax_deduction"
             ).one()
             flat_method = db.session.query(CalcMethod).filter_by(
                 name="flat"
             ).one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.00"),

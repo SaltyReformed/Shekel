@@ -725,7 +725,7 @@ def _clear_recurrence_rule(template: Any) -> None:
 
     Args:
         template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
-            step salary:R15-c) ``PaycheckDeduction`` whose recurrence is being
+            step salary:R15-c) ``PaycheckLine`` whose recurrence is being
             cleared.  Mutated in place; a no-op when it names no rule.
     """
     if template.recurrence_rule is None:
@@ -814,7 +814,7 @@ def resolve_recurrence_rule_for_update(
 
     Args:
         template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
-            step salary:R15-c) ``PaycheckDeduction`` being updated -- the
+            step salary:R15-c) ``PaycheckLine`` being updated -- the
             :data:`~app.services.recurrence.RecurrenceOwner` union.
             Accessed for ``recurrence_rule`` (which a fresh rule is authored
             onto, and which is cleared when none was selected) and

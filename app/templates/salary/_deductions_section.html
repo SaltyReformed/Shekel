@@ -10,7 +10,7 @@
     </button>
   </div>
   <div class="card-body">
-    {% if profile.deductions %}
+    {% if profile.lines %}
     <div class="table-responsive">
     <table class="table table-hover table-sm table-token mb-0">
       <thead>
@@ -26,7 +26,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for d in profile.deductions %}
+        {% for d in profile.lines %}
         <tr>
           <td>{{ d.name }}</td>
           <td>
@@ -35,8 +35,8 @@
                bars -- and post-tax the neutral variant; the label, not
                the color, carries the meaning.  ID comparison, never the
                ref name string. #}
-            <span class="flag-chip {{ '' if d.deduction_timing_id == TIMING_PRE_TAX else 'flag-chip--neutral' }}">
-              {{ d.deduction_timing.name|replace('_', '-') }}
+            <span class="flag-chip {{ '' if d.paycheck_line_kind_id == LINE_KIND_PRE_TAX_DEDUCTION else 'flag-chip--neutral' }}">
+              {{ d.paycheck_line_kind.name|replace('_', '-') }}
             </span>
           </td>
           <td>{{ d.calc_method.name|title if d.calc_method else '--' }}</td>
@@ -74,7 +74,7 @@
             <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
                     data-ded-edit="{{ d.id }}"
                     data-ded-name="{{ d.name }}"
-                    data-ded-timing-id="{{ d.deduction_timing_id }}"
+                    data-ded-kind-id="{{ d.paycheck_line_kind_id }}"
                     data-ded-method-id="{{ d.calc_method_id }}"
                     data-ded-amount="{{ '%.2f'|format((d.amount|to_percent)) if d.calc_method_id == CALC_PERCENTAGE else '%.2f'|format(d.amount) }}"
                     data-ded-unit-id="{{ cadence.unit_id if cadence else '' }}"
@@ -136,8 +136,8 @@
           </div>
           <div class="col-md-6">
             <label class="form-label">Timing</label>
-            <select name="deduction_timing_id" class="form-select form-select-sm" required>
-              {% for dt in deduction_timings %}
+            <select name="paycheck_line_kind_id" class="form-select form-select-sm" required>
+              {% for dt in paycheck_line_kinds %}
               <option value="{{ dt.id }}">{{ dt.name|replace('_', '-')|title }}</option>
               {% endfor %}
             </select>

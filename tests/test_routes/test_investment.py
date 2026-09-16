@@ -11,11 +11,11 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import (
     CalcMethodEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
 )
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import (
@@ -1241,10 +1241,10 @@ def _create_salary_profile(db_session, user_id, scenario_id, funds=None):
 def _create_deduction(db_session, profile_id, account_id, amount="500.00"):
     """Create a flat-dollar deduction targeting the investment account."""
     flat_id = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
-    timing_id = ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
-    ded = PaycheckDeduction(
+    timing_id = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
+    ded = PaycheckLine(
         salary_profile_id=profile_id,
-        deduction_timing_id=timing_id,
+        paycheck_line_kind_id=timing_id,
         calc_method_id=flat_id,
         name="401k Contribution",
         amount=Decimal(amount),
@@ -1362,7 +1362,7 @@ class TestTheFundingJobIsNamedOrTheMoneyIsNotMODELLED:
         foreign id in the submission is an IDOR -- and the read it would feed
         prices this owner's employer contribution off another owner's salary
         and raise history.  The mirror-image door
-        (``paycheck_deductions.target_account_id``) was closed at
+        (``paycheck_lines.target_account_id``) was closed at
         ``salary:R14-a`` as ledger row **N-534**; this is the same guard on
         the same rule, and both call ``auth_helpers.require_owned_fk``.
         """
