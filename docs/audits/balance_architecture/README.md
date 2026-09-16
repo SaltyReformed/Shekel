@@ -393,9 +393,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
         (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
         nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-      * [ ] **X-bi-7b-2** the popover's flag edits on the DEFINITION; **R-BAL29**'s in-place
-        restate; a moved one-off re-placed (**R-BAL33**); the grid grouping by `(category_id, name)`
-        (**R-BAL34**); the update schema's flag fields and **BAL-484**'s writer go.
+      * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
+        R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
+        restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
       * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
         TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
         `X-f6c`'s shape.
@@ -406,7 +406,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
       RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
-      gone. Graded by the six-cell grid diff (10.4, trace 5). Closes **BAL-484**.
+      gone; the residue rows re-attached (**R-BAL37**); graded by EQUALITY across the cutover. Closes **BAL-484**.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
