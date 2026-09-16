@@ -82,7 +82,7 @@ class AccountPayrollFeed:
     .for_profile`, inside the loader, with each type's name resolved from
     its FK through the ref cache (plan step salary:S3-f-1), so the walk reads
     no raise relationship at all; a deduction's method and timing are read
-    as the ``calc_method_id`` / ``deduction_timing_id`` columns -- so a
+    as the ``calc_method_id`` / ``paycheck_line_kind_id`` columns -- so a
     resolver fired mid-walk in a pure module issues no query.  Counted at the
     cursor rather than assumed, by ``test_projection_inputs
     .TestLoadPayrollFeeds.test_a_resolver_fired_past_the_loader_issues_NO_query``

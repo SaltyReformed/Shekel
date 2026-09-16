@@ -116,7 +116,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     # ── salary schema ────────────────────────────────────────────────
     ("salary", "calibration_overrides"),
     ("salary", "fica_configs"),
-    ("salary", "paycheck_deductions"),
+    ("salary", "paycheck_lines"),
     ("salary", "pension_profiles"),
     ("salary", "salary_profiles"),
     ("salary", "salary_raises"),

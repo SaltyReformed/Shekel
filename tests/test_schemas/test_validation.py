@@ -957,7 +957,7 @@ class TestDeductionCreateSchema:
         """Valid deduction data loads with defaults."""
         data = DeductionCreateSchema().load({
             "name": "401k",
-            "deduction_timing_id": "1",
+            "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
             "amount": "250.0000",
         })
@@ -972,7 +972,7 @@ class TestDeductionCreateSchema:
         """
         data = DeductionCreateSchema().load({
             "name": "401k",
-            "deduction_timing_id": "1",
+            "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
             "amount": "250.0000",
             "deductions_per_year": "24",
@@ -984,7 +984,7 @@ class TestDeductionCreateSchema:
         """Missing name raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
             DeductionCreateSchema().load({
-                "deduction_timing_id": "1",
+                "paycheck_line_kind_id": "1",
                 "calc_method_id": "1",
                 "amount": "100.0000",
             })

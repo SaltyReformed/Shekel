@@ -17,10 +17,10 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    CalcMethod, DeductionTiming, FilingStatus, RaiseType,
+    CalcMethod, PaycheckLineKind, FilingStatus, RaiseType,
     Status, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
@@ -207,7 +207,7 @@ class TestDeductionDoubleSubmit:
     Before C-23, a double-submit on the deduction form created two
     rows with the same name and amount and the paycheck calculator
     subtracted the deduction twice.  After C-23, the unique
-    constraint ``uq_paycheck_deductions_profile_name`` rejects the
+    constraint ``uq_paycheck_lines_profile_name`` rejects the
     second INSERT and the route surfaces idempotent success.
     """
 
@@ -215,12 +215,12 @@ class TestDeductionDoubleSubmit:
         """POST /salary/<id>/deductions twice creates exactly one deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             data = {
                 "name": "401k",
-                "deduction_timing_id": pre_tax.id,
+                "paycheck_line_kind_id": pre_tax.id,
                 "calc_method_id": flat_method.id,
                 "amount": "250.0000",
             }
@@ -242,7 +242,7 @@ class TestDeductionDoubleSubmit:
 
             # Verify exactly one deduction with this name exists.
             db.session.expire_all()
-            count = db.session.query(PaycheckDeduction).filter_by(
+            count = db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=profile.id,
                 name="401k",
             ).count()

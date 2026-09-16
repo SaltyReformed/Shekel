@@ -44,7 +44,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.services.account_projection import (
@@ -96,7 +96,7 @@ def load_active_salary_profiles(
         db.session.query(SalaryProfile)
         .options(
             subqueryload(SalaryProfile.raises),
-            subqueryload(SalaryProfile.deductions),
+            subqueryload(SalaryProfile.lines),
         )
         .filter(
             SalaryProfile.user_id == user_id,
@@ -137,7 +137,7 @@ def load_active_accounts_with_types(user_id: int) -> list[Account]:
 
 def load_active_deductions_for_account(
     user_id: int, account_id: int,
-) -> list[PaycheckDeduction]:
+) -> list[PaycheckLine]:
     """Return active paycheck deductions targeting a single account.
 
     The single-account variant of :func:`load_active_deductions_for_accounts`
@@ -154,14 +154,14 @@ def load_active_deductions_for_account(
             deductions target.
 
     Returns:
-        A list of :class:`PaycheckDeduction` rows (possibly empty).
+        A list of :class:`PaycheckLine` rows (possibly empty).
     """
     return _active_deductions_query(user_id, [account_id]).all()
 
 
 def load_active_deductions_for_accounts(
     user_id: int, account_ids: list[int],
-) -> dict[int, list[PaycheckDeduction]]:
+) -> dict[int, list[PaycheckLine]]:
     """Return active paycheck deductions keyed by target account id.
 
     Batch variant used by the savings / retirement / year-end services
@@ -181,12 +181,12 @@ def load_active_deductions_for_accounts(
 
     Returns:
         Dict mapping ``target_account_id`` -> list of
-        :class:`PaycheckDeduction`.  Accounts with no deductions are
+        :class:`PaycheckLine`.  Accounts with no deductions are
         absent from the dict; callers should use ``dict.get(id, [])``.
     """
     if not account_ids:
         return {}
-    grouped: dict[int, list[PaycheckDeduction]] = {}
+    grouped: dict[int, list[PaycheckLine]] = {}
     for ded in _active_deductions_query(user_id, account_ids).all():
         grouped.setdefault(ded.target_account_id, []).append(ded)
     return grouped
@@ -198,8 +198,8 @@ def _active_deductions_query(user_id: int, account_ids: list[int]):
     Owns the filter shape duplicated three times pre-Commit-18:
     ``SalaryProfile.user_id == user_id``,
     ``SalaryProfile.is_active.is_(True)``,
-    ``PaycheckDeduction.target_account_id.in_(...)``, and
-    ``PaycheckDeduction.is_active.is_(True)``.  ``.in_(...)`` works
+    ``PaycheckLine.target_account_id.in_(...)``, and
+    ``PaycheckLine.is_active.is_(True)``.  ``.in_(...)`` works
     for both single-id and multi-id call sites, so both public
     loaders route through this builder.
 
@@ -212,13 +212,13 @@ def _active_deductions_query(user_id: int, account_ids: list[int]):
         vs ``.scalar()`` etc.
     """
     return (
-        db.session.query(PaycheckDeduction)
+        db.session.query(PaycheckLine)
         .join(SalaryProfile)
         .filter(
             SalaryProfile.user_id == user_id,
             SalaryProfile.is_active.is_(True),
-            PaycheckDeduction.target_account_id.in_(account_ids),
-            PaycheckDeduction.is_active.is_(True),
+            PaycheckLine.target_account_id.in_(account_ids),
+            PaycheckLine.is_active.is_(True),
         )
     )
 
@@ -446,7 +446,7 @@ class PayrollWiring:
 
     Attributes:
         account_ids: The accounts a feed is built for, in the order asked.
-        deductions_by_account: ``{account_id: [PaycheckDeduction]}`` -- each
+        deductions_by_account: ``{account_id: [PaycheckLine]}`` -- each
             account's active deductions, from
             :func:`load_active_deductions_for_accounts`; an account with none
             is absent.
@@ -458,7 +458,7 @@ class PayrollWiring:
     """
 
     account_ids: "tuple[int, ...]"
-    deductions_by_account: "dict[int, list[PaycheckDeduction]]"
+    deductions_by_account: "dict[int, list[PaycheckLine]]"
     profiles: "dict[int, SalaryProfile]"
     params_by_account: "dict[int, InvestmentParams]"
 
@@ -796,7 +796,7 @@ def _load_funding_profiles(
         db.session.query(SalaryProfile)
         .options(
             subqueryload(SalaryProfile.raises),
-            subqueryload(SalaryProfile.deductions),
+            subqueryload(SalaryProfile.lines),
         )
         .filter(
             SalaryProfile.id.in_(profile_ids),
@@ -810,7 +810,7 @@ def _load_funding_profiles(
 
 def _employee_resolver(
     account_id: int,
-    deductions: list[PaycheckDeduction],
+    deductions: list[PaycheckLine],
     pricers: dict[int, ProfilePaychecks],
 ) -> Callable[[DerivedPeriod], Decimal] | None:
     """Build ONE account's ``period -> employee amount`` resolver, or ``None``.

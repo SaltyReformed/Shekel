@@ -953,11 +953,11 @@ class TestDataConsistency:
         """DC-09 flags a deduction targeting another user's account."""
         from app.models.ref import (  # pylint: disable=import-outside-toplevel
             CalcMethod,
-            DeductionTiming,
+            PaycheckLineKind,
             FilingStatus,
         )
         from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
-        from app.models.paycheck_deduction import PaycheckDeduction  # pylint: disable=import-outside-toplevel
+        from app.models.paycheck_line import PaycheckLine  # pylint: disable=import-outside-toplevel
         from app.models.user import UserSettings  # pylint: disable=import-outside-toplevel
         from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
@@ -1007,11 +1007,11 @@ class TestDataConsistency:
         db.session.add(profile)
         db.session.flush()
 
-        timing = db.session.query(DeductionTiming).first()
+        timing = db.session.query(PaycheckLineKind).first()
         method = db.session.query(CalcMethod).filter_by(name="flat").one()
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=timing.id,
+            paycheck_line_kind_id=timing.id,
             calc_method_id=method.id,
             name="Cross-user deduction",
             amount=Decimal("100.00"),

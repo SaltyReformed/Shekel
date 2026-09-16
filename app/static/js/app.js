@@ -535,8 +535,8 @@ function _populateDeductionForm(editBtn) {
     var name = form.querySelector('[name=name]');
     if (name) name.value = editBtn.dataset.dedName;
 
-    var timing = form.querySelector('[name=deduction_timing_id]');
-    if (timing) timing.value = editBtn.dataset.dedTimingId;
+    var timing = form.querySelector('[name=paycheck_line_kind_id]');
+    if (timing) timing.value = editBtn.dataset.dedKindId;
 
     var method = form.querySelector('[name=calc_method_id]');
     if (method) {

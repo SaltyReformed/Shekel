@@ -435,9 +435,9 @@ class TestBuildDeductionRows:
         breakdown = _scenario()[2][1]
         rows = svc.build_deduction_rows(breakdown)
         assert rows == [
-            {"name": "401k", "amount": Decimal("200"), "timing": "pre_tax",
+            {"name": "401k", "amount": Decimal("200"), "timing": "pre_tax_deduction",
              "bar_pct": Decimal("100.0")},
-            {"name": "Roth", "amount": Decimal("100"), "timing": "post_tax",
+            {"name": "Roth", "amount": Decimal("100"), "timing": "post_tax_deduction",
              "bar_pct": Decimal("50.0")},
         ]
 
@@ -463,12 +463,12 @@ class TestBuildDeductionRows:
         )[1]
         rows = svc.build_deduction_rows(breakdown)
         assert [(r["name"], r["amount"], r["timing"], r["bar_pct"]) for r in rows] == [
-            ("Health", Decimal("200"), "pre_tax", Decimal("100.0")),
-            ("FSA", Decimal("50"), "pre_tax", Decimal("25.0")),
-            ("Dental", Decimal("30"), "pre_tax", Decimal("15.0")),
-            ("Vision", Decimal("10"), "pre_tax", Decimal("5.0")),
-            ("Life", Decimal("150"), "post_tax", Decimal("75.0")),
-            ("Roth", Decimal("100"), "post_tax", Decimal("50.0")),
+            ("Health", Decimal("200"), "pre_tax_deduction", Decimal("100.0")),
+            ("FSA", Decimal("50"), "pre_tax_deduction", Decimal("25.0")),
+            ("Dental", Decimal("30"), "pre_tax_deduction", Decimal("15.0")),
+            ("Vision", Decimal("10"), "pre_tax_deduction", Decimal("5.0")),
+            ("Life", Decimal("150"), "post_tax_deduction", Decimal("75.0")),
+            ("Roth", Decimal("100"), "post_tax_deduction", Decimal("50.0")),
         ]
 
     def test_equal_amounts_keep_stable_calculator_order(self):

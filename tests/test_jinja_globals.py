@@ -15,7 +15,7 @@ import re
 
 from app import ref_cache
 from app.enums import (
-    BusinessDayShiftEnum, CalcMethodEnum, DeductionTimingEnum, GoalModeEnum,
+    BusinessDayShiftEnum, CalcMethodEnum, PaycheckLineKindEnum, GoalModeEnum,
     IncomeUnitEnum,
 )
 from app.jinja_globals import _REF_ID_GLOBALS, register_ref_id_globals
@@ -67,11 +67,11 @@ def test_register_ref_id_globals_populates_previously_missing_entries(app):
     with app.app_context():
         register_ref_id_globals(app)
 
-        assert app.jinja_env.globals["TIMING_PRE_TAX"] == (
-            ref_cache.deduction_timing_id(DeductionTimingEnum.PRE_TAX)
+        assert app.jinja_env.globals["LINE_KIND_PRE_TAX_DEDUCTION"] == (
+            ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
         )
-        assert app.jinja_env.globals["TIMING_POST_TAX"] == (
-            ref_cache.deduction_timing_id(DeductionTimingEnum.POST_TAX)
+        assert app.jinja_env.globals["LINE_KIND_POST_TAX_DEDUCTION"] == (
+            ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION)
         )
         assert app.jinja_env.globals["CALC_PERCENTAGE"] == (
             ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)

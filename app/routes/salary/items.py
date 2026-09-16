@@ -33,7 +33,7 @@ from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.account import Account
 from app import ref_cache
 from app.enums import CalcMethodEnum
@@ -62,7 +62,7 @@ from app.services.recurrence import author_rule
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _DEDUCTION_UPDATE_FIELDS,
-    _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT,
+    _PAYCHECK_LINES_UNIQUE_CONSTRAINT,
     _RAISE_UPDATE_FIELDS,
     _SALARY_RAISES_UNIQUE_CONSTRAINT,
     _deduction_schema,
@@ -455,7 +455,7 @@ def add_deduction(profile_id):
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     # Through the RELATIONSHIP, not the FK column (plan step salary:R15-c):
-    # the regeneration below prices ``profile.deductions``, and a line added
+    # the regeneration below prices ``profile.lines``, and a line added
     # by id joins that collection only if nothing has loaded it yet in this
     # session, while a line added through the relationship joins it either
     # way.  The write door's owner check reads ``deduction.user_id`` through
@@ -463,7 +463,7 @@ def add_deduction(profile_id):
     # this leaf's regeneration test, which prices the paycheck BEFORE the
     # add in the session the request shares: by id, the regeneration
     # re-stated the net WITHOUT the line.
-    deduction = PaycheckDeduction(salary_profile=profile, **data)
+    deduction = PaycheckLine(salary_profile=profile, **data)
     db.session.add(deduction)
 
     # Capture the requester id on the clean session up front; the failure
@@ -483,7 +483,7 @@ def add_deduction(profile_id):
         db.session.commit()
     except IntegrityError as exc:
         # Duplicate-deduction double-submit (F-052 / C-23): the
-        # composite unique ``uq_paycheck_deductions_profile_name``
+        # composite unique ``uq_paycheck_lines_profile_name``
         # rejects the second INSERT when the user clicks Save
         # twice in a row, the browser retries on a flaky network,
         # or a deactivated deduction with the same name still
@@ -492,7 +492,7 @@ def add_deduction(profile_id):
         # the deduction they intended to create regardless of
         # which request reached the database first.
         db.session.rollback()
-        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+        if not is_unique_violation(exc, _PAYCHECK_LINES_UNIQUE_CONSTRAINT):
             logger.exception(
                 "user_id=%d failed to add deduction to profile %d "
                 "(unexpected IntegrityError)",
@@ -545,7 +545,7 @@ def delete_deduction(ded_id):
     canonical :func:`regenerate_commit_or_report` guard.
     """
     deduction = get_owned_via_parent(
-        PaycheckDeduction, ded_id, "salary_profile",
+        PaycheckLine, ded_id, "salary_profile",
     )
     if deduction is None:
         abort(404)
@@ -613,7 +613,7 @@ def update_deduction(ded_id):
     does it (see :func:`add_deduction` for the create half).
     """
     deduction = get_owned_via_parent(
-        PaycheckDeduction, ded_id, "salary_profile",
+        PaycheckLine, ded_id, "salary_profile",
     )
     if deduction is None:
         abort(404)
@@ -718,7 +718,7 @@ def update_deduction(ded_id):
         # Any other IntegrityError falls through to error_ctx.
         on_integrity=UniqueViolationContext(
             logger=logger,
-            constraint=_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT,
+            constraint=_PAYCHECK_LINES_UNIQUE_CONSTRAINT,
             log_message=(
                 "Duplicate-name conflict on update_deduction id=%d "
                 "(another deduction with this name exists on the profile)"

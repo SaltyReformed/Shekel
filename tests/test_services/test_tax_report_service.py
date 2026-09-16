@@ -31,8 +31,8 @@ from decimal import Decimal
 from app.enums import AcctTypeEnum
 from app.extensions import db as _db
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
+from app.models.paycheck_line import PaycheckLine
+from app.models.ref import CalcMethod, PaycheckLineKind, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import balance_at, paycheck_calculator
@@ -128,12 +128,12 @@ def _make_full_year_periods(user, count=26, start=date(2026, 1, 2)):
 def _add_pretax_deduction(profile, amount, name="401k"):
     """Add a flat pre-tax deduction taken every period (26/year)."""
     pre_tax = (
-        _db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        _db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     )
     flat = _db.session.query(CalcMethod).filter_by(name="flat").one()
-    ded = PaycheckDeduction(
+    ded = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=pre_tax.id,
+        paycheck_line_kind_id=pre_tax.id,
         calc_method_id=flat.id,
         name=name,
         amount=Decimal(amount),

@@ -33,9 +33,13 @@ from sqlalchemy import text
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import (
+    load_migration_module,
+    replay_paycheck_lines_rename,
+    rewind_paycheck_lines_rename,
+)
 
 _MIGRATION = load_migration_module(
     "e7c4b9a2f350_an_employer_contribution_names_the_profile.py"
@@ -68,13 +72,35 @@ def _none_type_id() -> int:
     )).scalar()
 
 
+def _as_the_migration_saw_it() -> None:
+    """Put the schema under plan step ``salary:R18-a``'s downgrade, for the migration's SQL.
+
+    The backfill and the reconstructed pre-fix predicate both read
+    ``salary.paycheck_deductions``, which head renamed to
+    ``salary.paycheck_lines`` (ruling **R-SAL38**); the rewind restores the
+    name the statements were written against
+    (:func:`~tests._test_helpers.rewind_paycheck_lines_rename`, the stacked
+    newest-first shape).  Called AFTER a case has seeded its rows through the
+    models this tree maps; :func:`_run_backfill` replays the rename before a
+    case reads its result back through them.
+    """
+    rewind_paycheck_lines_rename(db.session)
+
+
 def _run_backfill() -> None:
-    """Execute the migration's own backfill against the test session."""
+    """Execute the migration's own backfill against the test session.
+
+    Ends by replaying the R18-a rename (:func:`_as_the_migration_saw_it`'s
+    inverse), so the ``refresh`` each case makes afterwards -- an ORM load
+    through the head models, whose joined recurrence rule maps the renamed
+    arm -- finds the schema those models map.
+    """
     db.session.execute(
         text(_MIGRATION._BACKFILL),  # pylint: disable=protected-access
         {"none_id": _none_type_id()},
     )
     db.session.flush()
+    replay_paycheck_lines_rename(db.session)
 
 
 def _profile(user_id: int, scenario_id: int, name: str, *, is_active: bool):
@@ -103,14 +129,14 @@ def _profile(user_id: int, scenario_id: int, name: str, *, is_active: bool):
 def _deduction_naming(profile, account_id: int, name: str):
     """Create an ACTIVE deduction on *profile* that funds *account_id*."""
     timing_id = db.session.execute(text(
-        "SELECT id FROM ref.deduction_timings WHERE name = 'pre_tax'"
+        "SELECT id FROM ref.paycheck_line_kinds WHERE name = 'pre_tax_deduction'"
     )).scalar()
     method_id = db.session.execute(text(
         "SELECT id FROM ref.calc_methods WHERE name = 'flat'"
     )).scalar()
-    deduction = PaycheckDeduction(
+    deduction = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=timing_id,
+        paycheck_line_kind_id=timing_id,
         calc_method_id=method_id,
         name=name,
         amount=Decimal("100.00"),
@@ -192,20 +218,25 @@ class TestTheBackfillPicksTheRightProfile:
                 user_id, scenario_id, flat_id,
             )
             _deduction_naming(archived, account.id, "Stale 401k Feed")
+            # Ids BEFORE the rewind: the rewind's commit expires every loaded
+            # row, and a profile reloads through the head models' joined
+            # recurrence rule, which maps the column the rewind renamed.
+            account_id, archived_id, active_id = account.id, archived.id, active.id
+            _as_the_migration_saw_it()
 
             # What the BROKEN backfill would have written, on this same state.
             pre_fix = db.session.execute(
-                _PRE_FIX_STEP_1, {"account_id": account.id},
+                _PRE_FIX_STEP_1, {"account_id": account_id},
             ).one()
             assert pre_fix.naming_profiles == 1
-            assert pre_fix.would_write == archived.id, (
+            assert pre_fix.would_write == archived_id, (
                 "the pre-fix predicate must reproduce the defect here, or this "
                 "test is not the firing control it claims to be"
             )
 
             _run_backfill()
             db.session.refresh(params)
-            assert params.salary_profile_id == active.id
+            assert params.salary_profile_id == active_id
 
     def test_another_owners_deduction_is_ignored_entirely(
         self, app, seed_user, seed_second_user, employer_type_ids,
@@ -215,7 +246,7 @@ class TestTheBackfillPicksTheRightProfile:
         The FIRING CONTROL for the second defect, and the pairing that gets
         past an ``account_id``-only filter: the deduction row is real, active
         and names this account, and only its profile's OWNER says it does not
-        belong here.  ``paycheck_deductions.target_account_id`` has no
+        belong here.  ``paycheck_lines.target_account_id`` has no
         ownership validation at its write door (ledger row **N-534**, closed in
         this same step), so the state is reachable through the app.
 
@@ -244,11 +275,13 @@ class TestTheBackfillPicksTheRightProfile:
                 user_id, scenario_id, flat_id,
             )
             _deduction_naming(stranger, account.id, "Forged Feed")
+            account_id, stranger_id = account.id, stranger.id
+            _as_the_migration_saw_it()
 
             pre_fix = db.session.execute(
-                _PRE_FIX_STEP_1, {"account_id": account.id},
+                _PRE_FIX_STEP_1, {"account_id": account_id},
             ).one()
-            assert pre_fix.would_write == stranger.id, (
+            assert pre_fix.would_write == stranger_id, (
                 "the pre-fix predicate must reproduce the cross-owner write "
                 "here, or this test is not the firing control it claims to be"
             )
@@ -299,6 +332,7 @@ class TestTheBackfillPicksTheRightProfile:
                 user_id, scenario_id, flat_id,
             )
             _deduction_naming(funder, account.id, "401k Feed")
+            _as_the_migration_saw_it()
 
             _run_backfill()
             db.session.refresh(params)
@@ -323,6 +357,7 @@ class TestTheBackfillPicksTheRightProfile:
             _account, params = _investment_account(
                 user_id, scenario_id, none_id,
             )
+            _as_the_migration_saw_it()
 
             _run_backfill()
             db.session.refresh(params)

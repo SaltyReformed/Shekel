@@ -365,7 +365,7 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
 
       - ``CalcMethodEnum.FLAT`` -- the user enters a per-paycheck
         dollar amount (e.g. "500.00") that is persisted as-is in
-        ``salary.paycheck_deductions.amount`` (``Numeric(12, 4)``).
+        ``salary.paycheck_lines.amount`` (``Numeric(12, 4)``).
       - ``CalcMethodEnum.PERCENTAGE`` -- the user enters a percent
         of gross pay (e.g. "6" for 6%); the route divides by 100
         before persistence so the storage value is the decimal
@@ -383,7 +383,7 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    deduction_timing_id = RowId(required=True)
+    paycheck_line_kind_id = RowId(required=True)
     calc_method_id = RowId(required=True)
     # F-012 / C-24: Added explicit positive Range to backstop the DB
     # CHECK (``amount > 0``).  Column is ``Numeric(12, 4)``; min

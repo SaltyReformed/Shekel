@@ -30,7 +30,7 @@ from app.enums import EmployerContributionTypeEnum
 from app.extensions import db as _db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
 from app.services.pay_rhythm import FixedDays
@@ -123,10 +123,10 @@ def _investment_account_with_an_active_deduction(db, seed_user, name):
     )
     db.session.add(profile)
     db.session.flush()
-    db.session.add(PaycheckDeduction(
+    db.session.add(PaycheckLine(
         salary_profile_id=profile.id, name=name,
         amount=Decimal("100.00"), calc_method_id=1,
-        deduction_timing_id=1, is_active=True,
+        paycheck_line_kind_id=1, is_active=True,
         target_account_id=account.id,
     ))
     return account

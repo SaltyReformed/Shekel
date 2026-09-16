@@ -661,7 +661,7 @@ def check_data_consistency(session):
         """
         SELECT pd.id, pd.name AS deduction_name,
                sp.user_id AS profile_user, a.user_id AS account_user
-        FROM salary.paycheck_deductions pd
+        FROM salary.paycheck_lines pd
         JOIN salary.salary_profiles sp ON pd.salary_profile_id = sp.id
         JOIN budget.accounts a ON pd.target_account_id = a.id
         WHERE pd.target_account_id IS NOT NULL

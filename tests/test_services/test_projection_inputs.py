@@ -26,12 +26,12 @@ from sqlalchemy import event
 from app import ref_cache
 from app.enums import (
     CalcMethodEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     RaiseTypeEnum,
 )
 from app.extensions import db
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.services.investment_projection import (
@@ -250,8 +250,8 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
 
     retire_type_id = ref_cache.acct_type_id(AcctTypeEnum.K401)
     flat_id = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
-    timing_id = ref_cache.deduction_timing_id(
-        DeductionTimingEnum.PRE_TAX,
+    timing_id = ref_cache.paycheck_line_kind_id(
+        PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
     )
     filing_status_id = (
         db.session.query(FilingStatus).filter_by(name="single").one().id
@@ -291,32 +291,32 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
     db.session.add_all([active_profile, inactive_profile, other_profile])
     db.session.flush()
 
-    active_a = PaycheckDeduction(
+    active_a = PaycheckLine(
         salary_profile_id=active_profile.id, target_account_id=acct_a.id,
         name="A", amount=Decimal("500"), calc_method_id=flat_id,
-        deduction_timing_id=timing_id, is_active=True,
+        paycheck_line_kind_id=timing_id, is_active=True,
     )
-    active_b = PaycheckDeduction(
+    active_b = PaycheckLine(
         salary_profile_id=active_profile.id, target_account_id=acct_b.id,
         name="B", amount=Decimal("250"), calc_method_id=flat_id,
-        deduction_timing_id=timing_id, is_active=True,
+        paycheck_line_kind_id=timing_id, is_active=True,
     )
-    inactive_dedn = PaycheckDeduction(
+    inactive_dedn = PaycheckLine(
         salary_profile_id=active_profile.id, target_account_id=acct_a.id,
         name="A-inactive", amount=Decimal("999"), calc_method_id=flat_id,
-        deduction_timing_id=timing_id, is_active=False,
+        paycheck_line_kind_id=timing_id, is_active=False,
     )
-    inactive_profile_dedn = PaycheckDeduction(
+    inactive_profile_dedn = PaycheckLine(
         salary_profile_id=inactive_profile.id,
         target_account_id=acct_a.id, name="A-inactive-profile",
         amount=Decimal("888"), calc_method_id=flat_id,
-        deduction_timing_id=timing_id, is_active=True,
+        paycheck_line_kind_id=timing_id, is_active=True,
     )
-    other_user_dedn = PaycheckDeduction(
+    other_user_dedn = PaycheckLine(
         salary_profile_id=other_profile.id,
         target_account_id=other_acct.id, name="Other",
         amount=Decimal("777"), calc_method_id=flat_id,
-        deduction_timing_id=timing_id, is_active=True,
+        paycheck_line_kind_id=timing_id, is_active=True,
     )
     db.session.add_all([
         active_a, active_b, inactive_dedn,
@@ -520,13 +520,13 @@ class TestLoadPayrollFeeds:
                 .filter_by(user_id=ids["user_id"], name="Active")
                 .one()
             )
-            db.session.add(PaycheckDeduction(
+            db.session.add(PaycheckLine(
                 salary_profile_id=profile.id,
                 target_account_id=ids["acct_a_id"],
                 name="A-second", amount=Decimal("250"),
                 calc_method_id=_flat_id(),
-                deduction_timing_id=ref_cache.deduction_timing_id(
-                    DeductionTimingEnum.PRE_TAX,
+                paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                    PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
                 ),
                 is_active=True,
             ))
@@ -607,13 +607,13 @@ class TestLoadPayrollFeeds:
                 .filter_by(user_id=ids["user_id"], name="Active")
                 .one()
             )
-            twice_monthly = PaycheckDeduction(
+            twice_monthly = PaycheckLine(
                 salary_profile_id=profile.id,
                 target_account_id=ids["acct_b_id"],
                 name="B-twice-monthly", amount=Decimal("100"),
                 calc_method_id=_flat_id(),
-                deduction_timing_id=ref_cache.deduction_timing_id(
-                    DeductionTimingEnum.PRE_TAX,
+                paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                    PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
                 ),
                 is_active=True,
             )
@@ -691,13 +691,13 @@ class TestLoadPayrollFeeds:
             # engine reads it through the rule's owner and the owner's
             # profile, so the walk must be query-free on THAT path too -- an
             # adversarial review found the fixture blind to it.
-            ruled = PaycheckDeduction(
+            ruled = PaycheckLine(
                 salary_profile_id=profile.id,
                 target_account_id=ids["acct_a_id"],
                 name="A-twice-monthly", amount=Decimal("40"),
                 calc_method_id=_flat_id(),
-                deduction_timing_id=ref_cache.deduction_timing_id(
-                    DeductionTimingEnum.PRE_TAX,
+                paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+                    PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
                 ),
                 is_active=True,
             )
