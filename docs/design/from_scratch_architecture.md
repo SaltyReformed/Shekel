@@ -254,8 +254,11 @@ and `is_envelope` stops being a concept.
 `budget.transaction_entries` is already most of a movement row: `transaction_id` (the plan item it
 satisfies), `account_id` (held to the parent's by `fk_transaction_entries_parent_account`),
 `amount`, `description`, `purchased_on` (when it happened), `settled_on` (when the money moved),
-`user_id`, an optimistic lock and timestamps. What it lacks against `budget.transactions` is a
-category, a type, `reconciled_by_id`, and the settle-day basis pair.
+`user_id`, an optimistic lock and timestamps. *What it lacks against `budget.transactions` is a
+category, a type, `reconciled_by_id`, and the settle-day basis pair* -- MEASURED FALSE on two of the
+four at `balance:X-bi-2` (ruling **R-BAL35**, 2026-09-15): `reconciled_by_id` and the settle-day
+basis pair (`settled_on` + `settled_day_basis_id`) were both on the entry when this sentence was
+written, and the other two are its plan row's, read through `transaction_id` rather than copied.
 
 What this buys, structurally rather than aesthetically:
 
@@ -466,8 +469,30 @@ defect this arc exists to remove, shipped on purpose.
    error unwritable in the application (Python, Jinja, the ORM); raw SQL naming the column is what
    remains until leaf 5 deletes it. SHIPPED `18f9efac`, sealing the cell rather than pinning the
    move.
-2. **Entries gain the full movement column set, `scenario_id` included**, backfilled from their
-   parent. Additive; downgrade is a column drop.
+2. ~~**Entries gain the full movement column set, `scenario_id` included**, backfilled from their
+   parent. Additive; downgrade is a column drop.~~ **DISSOLVED** as `balance:X-bi-2` by ruling
+   **R-BAL35** (2026-09-15): a backfilled copy is the cache **R-IY** deletes, the shape leaf 1 was
+   re-specified over, and since **R-BAL20** every entry has a plan row one hop away. The column a
+   movement genuinely lacks -- its own figure's provenance -- is leaf 3's, stated with its writer.
+   **What was measured for the ruling, 2026-09-15.** The real column diff, from the mappers, is 20
+   columns on `budget.transactions` only (not 21) and 6 on the entry only, 9 shared; the sentence
+   named three real ones. Both live writers of a parent's scope would have staled a copy silently:
+   the popover PATCH re-categorises a row (`TransactionUpdateSchema.category_id`) and the recurrence
+   engine rewrites a definition's `category_id` and `transaction_type_id` onto its existing rows on
+   every regenerate (`recurrence_engine._amounts.DerivedRowFields`); `scenario_id` and the type have
+   no application writer after creation and one scenario exists per user (no clone door), so that
+   divergence was `psql`-only. On the dev snapshot (rows to 2026-09-06): 100 entries under 34
+   parents, all expense and non-transfer (`create_entry` refuses both), one scenario, 0 orphans, 55
+   of 100 authored by a user other than the owner -- the entry's `user_id` is the AUTHOR, so a
+   composite key over it can never hold. The option grid put to the developer: (1) plain backfilled
+   copies, as written -- R-IY's rejected shape; (2) co-located keys, `scenario_id` and
+   `transaction_type_id` each held by `(transaction_id, col) -> transactions(id, col)` with
+   `ON UPDATE CASCADE` over a `UNIQUE (id, col)` superkey, `account_id`'s own pattern on this table,
+   with `category_id` derived because a nullable column (7b-1) cannot be held by a key -- correct
+   only if an entry must stand without its parent, a need 7b-1 deleted; (3) derive all three through
+   the parent, as `_posted_purchase_facts` already does. Worked on row 2282 (Groceries, Paid, three
+   posted purchases summing `$499.82`): re-categorising the envelope to Household leaves (1)'s three
+   copies saying Groceries while the grid says Household, and (2) and (3) agree. Ruled: (3).
 3. **`settle_from_entries` becomes the ONLY settle path.** The MANUAL branch writes a single
    covering movement **through the service door**, which is what satisfies `R-HJ`, for the 205
    purchase-tracked rows holding no entries and the untracked ones. The fold still reads
