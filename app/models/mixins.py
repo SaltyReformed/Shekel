@@ -180,7 +180,7 @@ class SalaryProfileScopedMixin:
                                CASCADE``.  Deleting the profile cascades
                                to the raise / deduction / calibration row.
 
-    Applied to ``salary_raise``, ``paycheck_deduction``, and
+    Applied to ``salary_raise``, ``paycheck_line``, and
     ``calibration_override``, whose ``salary_profile_id`` blocks are
     byte-identical and form a duplicate-code clique.  EXCLUDES
     ``pension_profile``, whose FK is ``ON DELETE SET NULL`` and

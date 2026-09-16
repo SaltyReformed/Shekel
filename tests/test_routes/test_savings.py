@@ -24,9 +24,9 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType, CalcMethod, DeductionTiming, FilingStatus
+from app.models.ref import AccountType, CalcMethod, PaycheckLineKind, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
@@ -229,7 +229,7 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     """Create a 401k with employer flat 5% and employee deduction.
 
     Returns:
-        (Account, InvestmentParams, SalaryProfile, PaycheckDeduction)
+        (Account, InvestmentParams, SalaryProfile, PaycheckLine)
     """
     acct_type = db.session.query(AccountType).filter_by(name="401(k)").one()
     acct = account_service.create_account(
@@ -266,11 +266,11 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     db.session.add(profile)
     db.session.flush()
 
-    pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").first()
+    pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").first()
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").first()
-    deduction = PaycheckDeduction(
+    deduction = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=pre_tax.id,
+        paycheck_line_kind_id=pre_tax.id,
         calc_method_id=flat_method.id,
         name="401k Contribution",
         amount=Decimal("500.0000"),

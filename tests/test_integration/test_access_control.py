@@ -524,7 +524,7 @@ class TestSalaryAccessControl:
                 data={
                     "name": "BLOCKED_TEST",
                     "amount": "100",
-                    "deduction_timing_id": "1",
+                    "paycheck_line_kind_id": "1",
                     "calc_method_id": "1",
                 },
             )

@@ -232,7 +232,7 @@ class PayrollBasis:
 
         The paycheck engine's one read of a deduction's FREQUENCY (plan step
         salary:R15-b, rulings **R-SAL3** and **R-SAL29**): a line's
-        :attr:`~app.models.paycheck_deduction.PaycheckDeduction
+        :attr:`~app.models.paycheck_line.PaycheckLine
         .recurrence_rule` is read through :func:`~app.services.recurrence
         .recurrence_spec`, resolved against THIS calendar, and its
         occurrences placed on saved and projected paychecks alike through
@@ -261,7 +261,7 @@ class PayrollBasis:
         """
         walks: dict[ResolvedRecurrence, _WalkedCadence] = {}
         cadences: dict[Any, _WalkedCadence | None] = {}
-        for deduction in self.profile.deductions:
+        for deduction in self.profile.lines:
             # ``getattr`` for the reason the engine reads ``annual_cap`` and
             # ``target_account_id`` that way: a deduction-like duck type (a
             # test fake) may omit the optional attribute.

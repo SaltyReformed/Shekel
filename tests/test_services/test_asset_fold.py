@@ -43,12 +43,12 @@ import pytest
 
 from app.extensions import db
 from app.models.interest_params import InterestParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app import ref_cache
 from app.enums import (
     CalcMethodEnum,
     CompoundingFrequencyEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
 )
 from app.services.balance_at import (
     _asset_contributions,
@@ -242,14 +242,14 @@ def _salaried_deduction(seed_user, account, amount):
         seed_user, db.session, annual_salary=Decimal("94425.24"),
     )
     db.session.flush()
-    deduction = PaycheckDeduction(
+    deduction = PaycheckLine(
         salary_profile_id=profile.id,
         target_account_id=account.id,
         name="401k deferral",
         amount=Decimal(amount),
         calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
-        deduction_timing_id=ref_cache.deduction_timing_id(
-            DeductionTimingEnum.PRE_TAX,
+        paycheck_line_kind_id=ref_cache.paycheck_line_kind_id(
+            PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
         ),
         is_active=True,
     )

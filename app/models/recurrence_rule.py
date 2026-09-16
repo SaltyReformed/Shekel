@@ -122,7 +122,7 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
         db.CheckConstraint(
             "(transaction_template_id IS NOT NULL)::int"
             " + (transfer_template_id IS NOT NULL)::int"
-            " + (paycheck_deduction_id IS NOT NULL)::int = 1",
+            " + (paycheck_line_id IS NOT NULL)::int = 1",
             name="ck_recurrence_rules_one_owner",
         ),
         # 1:1, per arm, and this is what the runtime census plan step R-F6
@@ -151,10 +151,10 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             postgresql_where=db.text("transfer_template_id IS NOT NULL"),
         ),
         db.Index(
-            "uq_recurrence_rules_paycheck_deduction_id",
-            "paycheck_deduction_id",
+            "uq_recurrence_rules_paycheck_line_id",
+            "paycheck_line_id",
             unique=True,
-            postgresql_where=db.text("paycheck_deduction_id IS NOT NULL"),
+            postgresql_where=db.text("paycheck_line_id IS NOT NULL"),
         ),
         db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
         # The per-month ceiling's floor (plan step salary:R15-a).  NULL is the
@@ -324,11 +324,11 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     # line, "monthly, on the first paycheck on or after the 1st" for the 12
     # -- and NO rule is R-SAL3's NULL, every paycheck.  Same disposal as the
     # other two arms: the database cascades the rule with its deduction.
-    paycheck_deduction_id = db.Column(
+    paycheck_line_id = db.Column(
         db.Integer,
         db.ForeignKey(
-            "salary.paycheck_deductions.id", ondelete="CASCADE",
-            name="fk_recurrence_rules_paycheck_deduction_id",
+            "salary.paycheck_lines.id", ondelete="CASCADE",
+            name="fk_recurrence_rules_paycheck_line_id",
         ),
         nullable=True,
     )
@@ -530,8 +530,8 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
     transfer_template = db.relationship(
         "TransferTemplate", back_populates="recurrence_rule",
     )
-    paycheck_deduction = db.relationship(
-        "PaycheckDeduction", back_populates="recurrence_rule",
+    paycheck_line = db.relationship(
+        "PaycheckLine", back_populates="recurrence_rule",
     )
 
     @property
@@ -571,8 +571,8 @@ class RecurrenceRule(CreatedAtMixin, db.Model):
             owner = self.transfer_template
         if owner is None:
             # The deduction arm (plan step salary:R15-b) reaches the owner
-            # through its profile: ``PaycheckDeduction.user_id`` is that read.
-            owner = self.paycheck_deduction
+            # through its profile: ``PaycheckLine.user_id`` is that read.
+            owner = self.paycheck_line
         if owner is None:
             raise ValueError(
                 "this RecurrenceRule has no owning definition, so it has no "

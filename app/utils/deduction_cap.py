@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Per-deduction annual-cap clamp (salary domain)
 
-A payroll deduction may carry an ``annual_cap`` (``PaycheckDeduction.annual_cap``):
+A payroll deduction may carry an ``annual_cap`` (``PaycheckLine.annual_cap``):
 a user-set dollar ceiling on how much of that deduction is taken across a single
 calendar year.  Once the year-to-date total reaches the cap, the deduction stops
 for the remainder of the year and resumes the following January.

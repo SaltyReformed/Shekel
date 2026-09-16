@@ -12,7 +12,7 @@ from app.models.ref import (
     AmountSource,
     BusinessDayShift,
     CalcMethod,
-    DeductionTiming,
+    PaycheckLineKind,
     FilingStatus,
     GoalMode,
     IncomeUnit,
@@ -86,7 +86,7 @@ from app.models.statement_line_skip import StatementLineSkip
 # Salary domain
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
@@ -109,7 +109,7 @@ __all__ = [
     "AmountSource",
     "BusinessDayShift",
     "CalcMethod",
-    "DeductionTiming",
+    "PaycheckLineKind",
     "FilingStatus",
     "GoalMode",
     "IncomeUnit",
@@ -173,7 +173,7 @@ __all__ = [
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",
-    "PaycheckDeduction",
+    "PaycheckLine",
     "PensionProfile",
     "CalibrationOverride",
     "YtdTaxCheckpoint",

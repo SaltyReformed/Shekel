@@ -21,7 +21,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.category import Category
 from app.models.ref import (
     CalcMethod,
-    DeductionTiming,
+    PaycheckLineKind,
     FilingStatus,
     RaiseType,
 )
@@ -116,7 +116,7 @@ def new_profile():
         profile=None,
         filing_statuses=filing_statuses,
         raise_types=[],
-        deduction_timings=[],
+        paycheck_line_kinds=[],
         calc_methods=[],
         paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
@@ -376,7 +376,7 @@ def edit_profile(profile_id):
 
     filing_statuses = db.session.query(FilingStatus).all()
     raise_types = db.session.query(RaiseType).all()
-    deduction_timings = db.session.query(DeductionTiming).all()
+    paycheck_line_kinds = db.session.query(PaycheckLineKind).all()
     calc_methods = db.session.query(CalcMethod).all()
     investment_accounts = _get_investment_accounts(current_user.id)
 
@@ -395,7 +395,7 @@ def edit_profile(profile_id):
         profile=profile,
         filing_statuses=filing_statuses,
         raise_types=raise_types,
-        deduction_timings=deduction_timings,
+        paycheck_line_kinds=paycheck_line_kinds,
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         inactive_profiles=inactive_profiles,

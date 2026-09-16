@@ -132,10 +132,10 @@ _AUTHORED_COLUMNS = (
 #: Listing them here rather than loosening an assertion is what keeps the gate
 #: strict: a further owning arm, or any other column added and forgotten,
 #: still fails the partition because it will not be on this list.  The THIRD
-#: arm, ``paycheck_deduction_id``, arrived at plan step salary:R15-b (ruling
+#: arm, ``paycheck_line_id``, arrived at plan step salary:R15-b (ruling
 #: R-SAL32) exactly that way -- this line was the census that named it.
 _OWNING_ARC_COLUMNS = frozenset({
-    "transaction_template_id", "transfer_template_id", "paycheck_deduction_id",
+    "transaction_template_id", "transfer_template_id", "paycheck_line_id",
 })
 
 #: Every column the write door DERIVES, from ``resolve`` and the owner's
@@ -452,8 +452,8 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
             db: The session fixture.
         """
         # pylint: disable=import-outside-toplevel
-        from app.models.paycheck_deduction import PaycheckDeduction
-        from app.models.ref import CalcMethod, DeductionTiming
+        from app.models.paycheck_line import PaycheckLine
+        from app.models.ref import CalcMethod, PaycheckLineKind
 
         user_id = seed_user["user"].id
         savings = create_savings_account(
@@ -463,9 +463,9 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         transfer = make_transfer_template(db.session, seed_user, savings)
         profile = make_salary_profile(seed_user, db.session)
         db.session.flush()
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=db.session.query(DeductionTiming).first().id,
+            paycheck_line_kind_id=db.session.query(PaycheckLineKind).first().id,
             calc_method_id=db.session.query(CalcMethod).first().id,
             name="Arc Health", amount=Decimal("100.00"),
         )
@@ -473,11 +473,11 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         db.session.flush()
         make_deduction_cadence_rule(db.session, deduction, 24)
 
-        arms = ("transaction_template_id", "transfer_template_id", "paycheck_deduction_id")
+        arms = ("transaction_template_id", "transfer_template_id", "paycheck_line_id")
         for owner, filled in (
             (expense, "transaction_template_id"),
             (transfer, "transfer_template_id"),
-            (deduction, "paycheck_deduction_id"),
+            (deduction, "paycheck_line_id"),
         ):
             rule = owner.recurrence_rule
             assert rule is not None, (

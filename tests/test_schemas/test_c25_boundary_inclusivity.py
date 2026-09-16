@@ -177,7 +177,7 @@ class TestLoanParamsOriginalPrincipal:
 
 
 # ---------------------------------------------------------------------------
-# F-135 -- paycheck_deductions.annual_cap
+# F-135 -- paycheck_lines.annual_cap
 # ---------------------------------------------------------------------------
 #
 # DB CHECK: ``annual_cap IS NULL OR annual_cap > 0``.
@@ -188,7 +188,7 @@ class TestLoanParamsOriginalPrincipal:
 # fields.
 
 
-class TestPaycheckDeductionAnnualCap:
+class TestPaycheckLineAnnualCap:
     """Boundary inclusivity tests for ``DeductionCreateSchema.annual_cap``."""
 
     def _payload(self, annual_cap=None):
@@ -197,7 +197,7 @@ class TestPaycheckDeductionAnnualCap:
         Builds a flat-dollar Roth-style deduction so the
         ``calc_method PERCENTAGE`` cross-field rule does not fire and
         narrow the amount bound; the test focuses on annual_cap.
-        ``calc_method_id``/``deduction_timing_id`` use placeholder
+        ``calc_method_id``/``paycheck_line_kind_id`` use placeholder
         FK-eligible values -- the schema does not validate FK
         existence at load time, so any positive integer is accepted.
         """
@@ -205,7 +205,7 @@ class TestPaycheckDeductionAnnualCap:
             "name": "Roth IRA",
             "amount": "500.0000",
             "calc_method_id": "999",
-            "deduction_timing_id": "999",
+            "paycheck_line_kind_id": "999",
         }
         if annual_cap is not None:
             payload["annual_cap"] = annual_cap
