@@ -186,6 +186,16 @@ what it leaves a LATER step is on that step's own entry.
       REPRODUCED first (the door applied, the receipt offered nothing). Graded by
       `test_offered_rules.py` (BI-495 class + the real door behind every case) and `test_batch.py`
       (only the create arm names a merchant).
+- [ ] **X-gz** `feat(import): the match pane shows the dates a human verifies by` -- **BI-498**,
+      **R-BI9** (outcome O0, minted 2026-09-15 when the first production matching session stopped at
+      22 of 172 lines). Each candidate row carries its BUDGETED placement (pay-period start or
+      range) and, for an envelope entry, its `purchased_on`; every date is labelled by kind and the
+      gap to the bank line's own date is printed; the `settled_on` stamp (`.rec-row-day`, 0.75rem
+      muted) goes. Door: `_statement_reconcile_match.html`, `CandidateRow` (`_offers.py`, which
+      already carries `expected_window`), the preview producer, `accounts.css`.
+- [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
+      ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
+      nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
 - [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
       database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
       A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
