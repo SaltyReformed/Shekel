@@ -210,6 +210,20 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # function it generalises: it answers what ONE ROW moves, never what an
     # account HOLDS.
     "cash_leg_of",
+    # The MOVEMENT's twin of ``settled_cash_leg`` (plan step X-bi-3b,
+    # ruling **R-BAL35**): what ONE purchase or covering movement moves
+    # through its parent's account, its whole figure in the PARENT's
+    # direction, total over the card partition and the contributing gate.
+    # Six readers spelled ``-amount`` for themselves before it (the walk's
+    # fact producer, the ledger writer's target, the seam's family valuation,
+    # the matcher's offer, register and undo).  Non-producing for the family's
+    # reason: it answers what one MOVEMENT moves, never what an account HOLDS.
+    "movement_cash_leg",
+    # Its inverse (the sign rule is an involution): the figure a movement
+    # must STORE to move a bank line's cash, for the matcher's two writing
+    # doors.  A component of one movement's figure is even further from a
+    # balance per account than the leg it inverts.
+    "movement_figure_for",
     # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
     # at a date.  A peer reduction over the same rows a balance folds, not a
     # step toward one.  ``sum_projected`` is the shared engine BOTH cash

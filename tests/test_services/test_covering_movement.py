@@ -33,8 +33,11 @@ The shapes under test, and the real act each stands for:
 * **the mirror never lowers evidence**: an identity re-submit leaves a
   movement's bank-observed day and link standing; a settle-day correction
   moves the movement's day with the row's;
-* **the 3b / 3c gates**: an income parent and a transfer shadow hold no
-  movement yet, stated so those leaves have an arm to delete;
+* **the income arm** (plan step X-bi-3b): a paycheck is covered in its own
+  direction -- the fact, the ledger and the family all read ``+figure`` --
+  which is the control the plan names for that leaf;
+* **the 3c gate**: a transfer shadow holds no movement yet, stated so that
+  leaf has an arm to delete;
 * **the purchase doors' source rule**: a hand-typed purchase is ``typed``, a
   bank-born one ``observed``, a human amount edit ``typed``, a bank
   confirmation ``observed``, a day-only edit unchanged.
@@ -49,7 +52,9 @@ import sqlalchemy.exc
 
 from app import ref_cache
 from app.enums import (
+    LedgerAccountClassEnum,
     MovementFigureSourceEnum,
+    PostingKindEnum,
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
@@ -59,6 +64,8 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.amount_ownership import AmountOwnership
+from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam, transaction_service
@@ -562,21 +569,128 @@ class TestTheMirrorNeverLowersEvidence:
             assert same.reconciled_by_id is None
 
 
-class TestTheGatesHoldForTheLeavesToCome:
-    """3b and 3c: an income parent and a transfer shadow hold no movement."""
+def _paycheck(seed_user, period, amount="2572.78"):
+    """One engine-generated income row of a fresh definition."""
+    template = make_income_template(
+        db.session, seed_user, amount=amount, name="Paycheck",
+    )
+    return generate_row_of(template, period)
 
-    def test_an_income_row_settles_with_no_movement(
+
+class TestAPaycheckIsCoveredInItsOwnDirection:
+    """Plan step X-bi-3b: the INCOME arm, and the control that names it.
+
+    A settled paycheck is covered exactly as a bill is, and every reader of
+    its movement reads ``+figure``: the walk's fact (``is_income`` and the
+    delta both the parent's), the posted ledger's cash net, the ledger legs'
+    kind and class, and the family valuation.  The plan's own control is the
+    ``+figure`` assertion below: with the seam's income half deleted and the
+    direction still spelled ``-amount`` anywhere, the fold reads
+    ``-2572.78`` for a ``$2,572.78`` paycheck -- wrong by twice the figure.
+    """
+
+    def test_a_paycheck_settles_with_a_movement_reading_PLUS_figure(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
-            template = make_income_template(
-                db.session, seed_user, amount="2572.78", name="Paycheck",
-            )
-            txn = generate_row_of(template, seed_periods[0])
+            txn = _paycheck(seed_user, seed_periods[0])
             _settle(txn)
             db.session.flush()
             assert txn.status.is_settled
-            assert list(txn.entries) == []
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("2572.78")
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.RESOLVED,
+            )
+            # The parent's own leg nets to zero and the movement carries the
+            # money IN: the fact says income, and says +figure.
+            assert settled_cash_leg(txn) == Decimal("0")
+            facts = [
+                fact for fact in settled_cash_facts(txn.account_id, txn.scenario_id)
+                if fact.entry_id == movement.id
+            ]
+            assert len(facts) == 1
+            assert facts[0].is_income is True
+            assert facts[0].delta == Decimal("2572.78")
+            assert status_seam.settled_family_leg(txn) == Decimal("2572.78")
+
+    def test_the_folds_per_day_sums_are_identical_with_and_without(
+        self, app, seed_user, seed_periods,
+    ):
+        """Ruling R-FM's identity holds for income exactly as for a bill."""
+        with app.app_context():
+            txn = _paycheck(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            account_id, scenario_id = txn.account_id, txn.scenario_id
+            with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
+            assert with_movement[txn.settled_on] == Decimal("2572.78")
+            movement = _only_movement(txn)
+            txn.entries.remove(movement)
+            db.session.flush()
+            db.session.expire(txn)
+            assert settled_cash_leg(txn) == Decimal("2572.78")
+            assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_movement
+
+    def test_the_posted_ledger_books_the_family_as_INCOME(
+        self, app, seed_user, seed_periods,
+    ):
+        """The cash net rises by the figure; the movement's legs are income.
+
+        The counter leg lands in an INCOME-class category account and both
+        legs carry the ``income`` kind -- the parent's, read through the one
+        mapping the transaction writer uses (``_posting_write.ledger_class_of``
+        / ``posting_kind_of``).  Measured as a DELTA: the fixture's own
+        opening correction already sits on the cash ledger.
+        """
+        with app.app_context():
+            txn = _paycheck(seed_user, seed_periods[0])
+            cash = linked_ledger_account(db.session, txn.account_id)
+            before = ledger_net(db.session, cash.id, txn.scenario_id)
+            _settle(txn)
+            db.session.flush()
+            after = ledger_net(db.session, cash.id, txn.scenario_id)
+            assert after - before == Decimal("2572.78")
+            movement = _only_movement(txn)
+            legs = (
+                db.session.query(Posting, LedgerAccount)
+                .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
+                .join(LedgerAccount, LedgerAccount.id == Posting.ledger_account_id)
+                .filter(JournalEntry.transaction_entry_id == movement.id)
+                .all()
+            )
+            assert {leg.ledger_account_id: leg.amount for leg, _ in legs} == {
+                cash.id: Decimal("2572.78"),
+                next(
+                    account.id for _, account in legs if account.id != cash.id
+                ): Decimal("-2572.78"),
+            }
+            income_kind = ref_cache.posting_kind_id(PostingKindEnum.INCOME)
+            assert {leg.posting_kind_id for leg, _ in legs} == {income_kind}
+            counter = next(account for _, account in legs if account.id != cash.id)
+            assert counter.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.INCOME,
+            )
+
+    def test_a_revert_withdraws_it_and_the_ledger_moves_back(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _paycheck(seed_user, seed_periods[0])
+            cash = linked_ledger_account(db.session, txn.account_id)
+            before = ledger_net(db.session, cash.id, txn.scenario_id)
+            _settle(txn)
+            db.session.flush()
+            movement_id = _only_movement(txn).id
+            _revert(txn)
+            db.session.flush()
+            assert covering_movements(txn) == []
+            assert db.session.get(TransactionEntry, movement_id) is None
+            assert ledger_net(db.session, cash.id, txn.scenario_id) == before
+
+
+class TestTheGateHoldsForTheLeafToCome:
+    """3c: a transfer shadow holds no movement."""
 
     def test_a_transfer_settles_with_no_movement_on_either_leg(
         self, app, seed_user, seed_periods,

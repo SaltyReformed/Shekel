@@ -62,13 +62,17 @@ from app.services import (
     pay_period_write,
     posting_service,
     status_seam,
+    transaction_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    add_entry,
     figure_source_columns,
+    generate_row_of,
+    make_expense_template,
     record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
@@ -522,29 +526,49 @@ class TestWalkAccountLedger:
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            # An INCOME row, since plan step X-bi-3a: a settled EXPENSE's money
-            # is posted under its covering movement and the row's own leg is
-            # zero, so the transaction arm never meets it through the postings
-            # and there is nothing to refuse there -- the movement's own day
-            # is what the walk's purchase arm refuses instead
-            # (``test_a_posted_movement_with_no_day_is_REFUSED_by_this_walk``
-            # below).  Income keeps posting under ``transaction_id`` until
-            # ``X-bi-3b``, which re-decides this pin with the arm it moves.
-            txn = create_settled_cash_transaction(
-                seed_user, _db.session, seed_user["bootstrap_period"],
-                Decimal("200.00"), account=account, is_income=True,
-                settled_on=seed_user["bootstrap_period"].start_date,
+            # An envelope closed on the PURCHASES basis with a purchase still
+            # unposted, since plan step X-bi-3b: every stored-figure settle --
+            # a bill's since X-bi-3a, a paycheck's since 3b -- posts its money
+            # under its covering movement and the row's own leg is zero, so
+            # the transaction arm never meets one through the postings and
+            # there is nothing to refuse there (the movement's own day is
+            # what the walk's purchase arm refuses instead,
+            # ``test_a_posted_movement_with_no_day_is_REFUSED_by_this_walk``
+            # below).  A purchases-basis close stores no figure: its posted
+            # purchases carry their own legs and the UNPOSTED remainder is
+            # the row's leg, posted under ``transaction_id`` -- the one shape
+            # whose money still reaches this arm.
+            txn = generate_row_of(
+                make_expense_template(
+                    _db.session, seed_user, amount="200.00", name="Groceries",
+                    category_key="Groceries", is_envelope=True, account=account,
+                ),
+                seed_user["bootstrap_period"],
+            )
+            add_entry(
+                _db.session, seed_user, txn, Decimal("200.00"),
+                seed_user["bootstrap_period"].start_date,
+            )
+            transaction_service.settle_transaction(
+                txn,
+                settle_day=an_entered_day(
+                    seed_user["bootstrap_period"].start_date,
+                ),
             )
             _db.session.commit()
+            # The fixture's premise, measured: the row's OWN leg carries the
+            # unposted remainder, so a journal entry names ``transaction_id``.
+            assert _db.session.query(JournalEntry).filter(
+                JournalEntry.transaction_id == txn.id,
+            ).count() == 1, "the fixture's money must post under the row"
             # Break the row AFTER its postings exist, which is the only way to
             # reach this walk with one: a bulk update bypasses the ORM, exactly
-            # as the real hazard does.
-            # The whole RECORD goes with the day, because
-            # ``ck_transactions_settle_day_needs_a_record`` refuses a day that
-            # names no figure (plan step X-au-c3).  The break under test is
-            # still the missing DAY on a settled STATUS, which no constraint
-            # can state -- the predicate is ``ref.statuses.is_settled`` and a
-            # CHECK cannot join.
+            # as the real hazard does.  The break under test is the missing
+            # DAY on a settled STATUS, which no constraint can state -- the
+            # predicate is ``ref.statuses.is_settled`` and a CHECK cannot
+            # join.  The purchases RECORD stays: ``ck_transactions_settle_day_
+            # needs_a_record`` is an implication, so a retained record with
+            # no day is admissible (plan step X-au-c3).
             _db.session.query(Transaction).filter(
                 Transaction.id == txn.id,
             ).update(
@@ -555,8 +579,6 @@ class TestWalkAccountLedger:
                     # BICONDITIONAL: a basis left behind with no day is as
                     # unstorable as a day with no basis (plan step X-az).
                     "settled_day_basis_id": None,
-                    "settled_amount": None,
-                    "settled_basis_id": None,
                 },
                 synchronize_session=False,
             )

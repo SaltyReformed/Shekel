@@ -80,6 +80,7 @@ from app.models.statement_import import BankStatementLine
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service
+from app.services.cash_ledger import movement_figure_for
 from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
@@ -329,15 +330,18 @@ def _born_purchase(
         transaction_id=envelope.id,
         user_id=scope.owner_id,
         details=entry_service.EntryDetails(
-            # **The line's own figure, NEGATED.**  The bank states an outflow
-            # as negative and a purchase records what it cost, so the flip is
-            # the whole conversion -- and it is TOTAL over both directions
-            # without a branch, which is why ruling **bank_import:R-II** needed
-            # no new arithmetic here: an inflow of ``+28.29`` becomes a refund
+            # **The line's own figure, in the ENVELOPE's direction**
+            # (``cash_ledger.movement_figure_for``, plan step X-bi-3b): the
+            # bank states an outflow as negative and a purchase under an
+            # expense records what it cost, so the conversion is the sign
+            # rule read the other way -- TOTAL over both directions without
+            # a branch, which is why ruling **bank_import:R-II** needed no
+            # new arithmetic here: an inflow of ``+28.29`` becomes a refund
             # of ``-28.29`` by the same expression.  Plan step
             # ``bank_import:X-gj-2b-2`` is what lets a refund reach this line,
-            # and it needed nothing added here to file one.
-            amount=-Decimal(str(line.amount)),
+            # and it needed nothing added here to file one.  It was spelled
+            # ``-line.amount`` here, the expense arm alone, until X-bi-3b.
+            amount=movement_figure_for(envelope, Decimal(str(line.amount))),
             # What the BANK NAMES the merchant, not the whole line
             # (:func:`~._offers.merchant_label`).  The app's own purchases are
             # named "Walmart" and "Food Lion", and a purchase called

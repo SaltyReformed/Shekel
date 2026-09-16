@@ -732,7 +732,13 @@ def _rows_on(
     (:attr:`~app.services.cash_ledger.CashSourceFact.entry_id`), which is why
     the match state is asked of the entry when there is one and of the
     transaction otherwise -- the same two-subject split
-    ``statement_match_members`` stores.
+    ``statement_match_members`` stores.  **A COVERING MOVEMENT is the
+    exception, and it is asked of its PARENT** (plan steps X-bi-3a / 3b,
+    ruling **R-BAL39**): a settled bill's or paycheck's money walks as its
+    movement's fact while the ROW is what the matcher offers and a match
+    names (the mirror is kept out of the purchase candidates), so asking the
+    entry's claim read every matched bill as unexplained on this screen
+    (adversarial review of X-bi-3b, 2026-09-16).
     """
     facts = [
         fact
@@ -751,7 +757,7 @@ def _rows_on(
     ]
     if not facts:
         return []
-    names = _row_names(facts)
+    names, covering = _row_names(facts)
     claimed_txns, claimed_entries = _claimed_app_rows(account.id)
     return sorted(
         (
@@ -759,7 +765,7 @@ def _rows_on(
                 fact.delta,
                 names.get((fact.transaction_id, fact.entry_id), "(unnamed)"),
                 fact.entry_id in claimed_entries
-                if fact.entry_id is not None
+                if fact.entry_id is not None and fact.entry_id not in covering
                 else fact.transaction_id in claimed_txns,
             )
             for fact in facts
@@ -769,17 +775,23 @@ def _rows_on(
     )
 
 
-def _row_names(facts: list) -> "dict[tuple[int, int | None], str]":
-    """Return a display name for each fact's source row.
+def _row_names(
+    facts: list,
+) -> "tuple[dict[tuple[int, int | None], str], set[int]]":
+    """Return a display name for each fact's source row, and the mirrors.
 
     Args:
         facts: :class:`~app.services.cash_ledger.CashSourceFact` values.
 
     Returns:
-        ``{(transaction_id, entry_id): name}``.  Two queries at most, and none
-        for a day with nothing on it.
+        ``({(transaction_id, entry_id): name}, covering)`` -- the names, and
+        the ids of the entry facts that are a row's COVERING MOVEMENT, whose
+        match state :func:`_rows_on` asks of the parent.  Read in the same
+        query as the entry's name, so a day costs two queries at most and
+        none when nothing is on it.
     """
     names: "dict[tuple[int, int | None], str]" = {}
+    covering: set[int] = set()
     txn_ids = {f.transaction_id for f in facts if f.entry_id is None}
     entry_ids = {f.entry_id for f in facts if f.entry_id is not None}
     if txn_ids:
@@ -788,13 +800,16 @@ def _row_names(facts: list) -> "dict[tuple[int, int | None], str]":
         ).filter(Transaction.id.in_(txn_ids)):
             names[(txn_id, None)] = name
     if entry_ids:
-        for entry_id, txn_id, description in db.session.query(
+        for entry_id, txn_id, description, covers in db.session.query(
             TransactionEntry.id,
             TransactionEntry.transaction_id,
             TransactionEntry.description,
+            TransactionEntry.covers_settlement,
         ).filter(TransactionEntry.id.in_(entry_ids)):
             names[(txn_id, entry_id)] = description
-    return names
+            if covers:
+                covering.add(entry_id)
+    return names, covering
 
 
 def _claimed_app_rows(account_id: int) -> "tuple[set, set]":

@@ -805,8 +805,9 @@ class MovementFigureSourceEnum(enum.Enum):
 
     A movement is a ``budget.transaction_entries`` row: a purchase recorded
     against an envelope, or -- since X-bi-3a -- the COVERING MOVEMENT a settle
-    writes for a bill, the payment row that records a bill's money the way a
-    purchase already records an envelope's.  Three writers put a figure on one,
+    writes for a bill (and since X-bi-3b for a paycheck), the payment row that
+    records the parent's money the way a purchase already records an
+    envelope's.  Three writers put a figure on one,
     and this catalogue says which, partitioned by the SOURCE of the figure --
     the argument :class:`SettledDayBasisEnum` makes for the DAY one column
     over, applied to the amount beside it:

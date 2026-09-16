@@ -91,6 +91,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from sqlalchemy.orm import contains_eager
+
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.account_opening import AccountOpening
@@ -104,7 +106,7 @@ from app.utils.balance_predicates import (
 from app.utils.dates import utc_instant
 
 from ._amounts import ReconciledThrough
-from ._cash_leg import settled_cash_leg
+from ._cash_leg import movement_cash_leg, settled_cash_leg
 from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
 
@@ -304,8 +306,12 @@ class CashSourceFact:
     ``settled_contribution - Sigma(credit entries) - Sigma(posted purchases)`` the
     posting writer books -- so for an ORDINARY transaction the walk and the
     posted ledger value one row identically by construction, not by two rules
-    that happen to agree.  A purchase's is its own amount, negated: a purchase
-    is always an expense, and its whole amount leaves the account.
+    that happen to agree.  A movement's is the SHARED
+    :func:`app.services.cash_ledger.movement_cash_leg` -- its whole amount, in
+    its PARENT's direction (plan step X-bi-3b, ruling **R-BAL35**): a purchase
+    against an envelope leaves the account, and the covering movement a settle
+    writes for a paycheck arrives, because the movement has no type of its own
+    and reads the plan row's.
 
     **It carries TWO clocks, and the second one is not decoration** (plan step
     X-c1).  :attr:`settled_on` is the CASH clock -- the day the money moved,
@@ -378,7 +384,9 @@ class CashSourceFact:
         is_income: Whether the source row is an INCOME transaction (its
             ``transaction_type_id``), so a budget-clock reduction can split the
             income and expense legs by type rather than by the sign of
-            :attr:`delta`.
+            :attr:`delta`.  A MOVEMENT carries its PARENT's (plan step
+            X-bi-3b): it spends or receives in the parent's column, so the
+            regrouping files it under the parent's leg.
         settled_on: The civil day this row's cash MOVED -- the one date the
             assertion partition compares against, the fold samples on, and the
             period index buckets by.  **Read from the stored
@@ -405,8 +413,13 @@ class CashSourceFact:
             (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
             income, negative for an expense, and ``0.00`` for a row whose entries
             are entirely credit-card purchases or entirely already posted.  For
-            a PURCHASE it is ``-amount``: a purchase is always an expense and
-            its whole amount leaves the account.
+            a MOVEMENT it is
+            :func:`app.services.cash_ledger.movement_cash_leg`: its whole
+            amount, signed by its PARENT's type -- ``-amount`` for a purchase
+            against an envelope or a bill's covering movement, ``+amount`` for
+            a paycheck's (plan step X-bi-3b).  It read ``-amount`` for every
+            movement until that step, which is why an income parent could not
+            be covered before it.
 
     **There is no instant on this record, and its absence is the ruling** (R-DH).
     It carried ``occurred_at`` -- ``paid_at`` normalized to UTC -- until
@@ -668,14 +681,18 @@ def coverage_for(account_id: int) -> StatementCoverage:
 def _posted_purchase_facts(
     account_id: int, scenario_id: int,
 ) -> list[CashSourceFact]:
-    """Return an account's POSTED purchases as dated facts -- ruling **R-FM**.
+    """Return an account's POSTED movements as dated facts -- ruling **R-FM**.
 
     The second kind of ACTUAL event (plan step X-f3b): a purchase recorded
     against an envelope whose bank posting day the owner has recorded is cash
     that left the account on that day, whatever its envelope has or has not
     done.  Until this step a purchase was never a cash movement -- it only shrank
     its envelope's reservation, and the money left the book when the WHOLE
-    envelope closed, which is finding **N-274**.
+    envelope closed, which is finding **N-274**.  Since plan step X-bi-3a the
+    same fact is how a settled bill's money is recorded (its COVERING
+    movement, ``status_seam``), and since X-bi-3b a settled paycheck's: each
+    movement is valued by :func:`~._cash_leg.movement_cash_leg`, its whole
+    figure in its PARENT's direction, and files under the parent's type.
 
     Three narrowings, each load-bearing:
 
@@ -704,19 +721,18 @@ def _posted_purchase_facts(
         scenario_id: The budget scenario the parent rows live in.
 
     Returns:
-        One :class:`CashSourceFact` per posted debit purchase, unordered (the
+        One :class:`CashSourceFact` per posted debit movement, unordered (the
         caller sorts the merged set).
     """
+    # The movement WITH its parent, in one statement: the parent is what a
+    # movement's direction, budget column and type are read from (ruling
+    # R-BAL35), and ``contains_eager`` makes the join that already scopes the
+    # query also populate ``entry.transaction``, so no row costs a second
+    # SELECT.  A parent the settled half loaded is the same object here.
     rows = (
-        db.session.query(
-            TransactionEntry.id,
-            TransactionEntry.amount,
-            TransactionEntry.settled_on,
-            TransactionEntry.reconciled_by_id,
-            Transaction.id,
-            Transaction.pay_period_id,
-        )
+        db.session.query(TransactionEntry)
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .options(contains_eager(TransactionEntry.transaction))
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
@@ -728,18 +744,15 @@ def _posted_purchase_facts(
     )
     return [
         CashSourceFact(
-            transaction_id=transaction_id,
-            entry_id=entry_id,
-            pay_period_id=pay_period_id,
-            is_income=False,
-            settled_on=settled_on,
-            reconciled_by_id=reconciled_by_id,
-            delta=-Decimal(str(amount)),
+            transaction_id=entry.transaction_id,
+            entry_id=entry.id,
+            pay_period_id=entry.transaction.pay_period_id,
+            is_income=entry.transaction.is_income,
+            settled_on=entry.settled_on,
+            reconciled_by_id=entry.reconciled_by_id,
+            delta=movement_cash_leg(entry.transaction, entry),
         )
-        for (
-            entry_id, amount, settled_on, reconciled_by_id,
-            transaction_id, pay_period_id,
-        ) in rows
+        for entry in rows
     ]
 
 
