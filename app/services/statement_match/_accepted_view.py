@@ -40,8 +40,7 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
-from app.services import status_seam
-from app.utils.balance_predicates import is_balance_contributing
+from app.services import cash_ledger, status_seam
 from app.utils.log_events import (
     ERROR,
     EVT_STATEMENT_MATCH_LINELESS,
@@ -571,14 +570,12 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
     # magnitude alone reported a match as still explaining money that had
     # stopped being on this statement.  Found by adversarial financial review
     # 2026-08-17.
-    explains_cash = (
-        is_balance_contributing(row.transaction) and not row.is_credit
-    )
     return AcceptedRow(
         label=row.description, settled_on=row.settled_on,
-        cash_amount=(
-            -Decimal(str(row.amount)) if explains_cash else Decimal("0.00")
-        ),
+        # The ONE valuation of a movement (plan step X-bi-3b): its figure in
+        # its parent's direction, ``0.00`` for a card purchase or one under a
+        # non-contributing parent -- the three clauses this spelled inline.
+        cash_amount=cash_ledger.movement_cash_leg(row.transaction, row),
         agrees=row.settled_on == posts_on,
     )
 

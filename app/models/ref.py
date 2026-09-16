@@ -845,9 +845,9 @@ class MovementFigureSource(db.Model):
     stated it) or ``observed`` (the bank's line stated it).  It is the twin of
     :class:`SettledDayBasis` for the FIGURE beside the day, and it lives on
     the one table that holds movements: a purchase against an envelope has
-    always been one, and since X-bi-3a a settle writes one for a bill too --
-    the covering movement that records the bill's money the way a purchase
-    records an envelope's.  A transaction's own figure keeps
+    always been one, and since X-bi-3a a settle writes one for a bill too
+    (since X-bi-3b for a paycheck) -- the covering movement that records the
+    parent's money the way a purchase records an envelope's.  A transaction's own figure keeps
     :class:`SettlementBasis` until ``balance:X-bi-4`` makes it derivable.
 
     :class:`app.enums.MovementFigureSourceEnum` carries the argument: why the

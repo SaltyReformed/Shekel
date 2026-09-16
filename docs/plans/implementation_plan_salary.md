@@ -218,6 +218,10 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [ ] **S7 -- `projection_inputs.py` splits by shape** (finding **SAL-555**: 994 of 1000 lines). A
       PURE move graded by AST (**R-PC74**'s shape), its own step because no live step edits the
       file. `$0.00`.
+- [ ] **S8 -- the retirement gap reads the priced paycheck** (finding **SAL-561**):
+      `compute_gap_net_biweekly` and the take-home-rate chip scale BASE by a net-over-gross ratio
+      that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`
+      until an earning line exists; its own step because R18's leaves were ruled.
 - [ ] **R18 -- a paycheck is BASE PAY plus a LIST OF LINES** (finding **D59**; ruling **R-SAL38**,
       six forks, 2026-09-15): the DECOMPOSED parent, R-SAL35's shape, four leaves. A line's kind is
       its position in the waterfall (taxable earning, pre-tax deduction, post-tax deduction,
@@ -226,9 +230,9 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       gross). One deposit becomes one app row, the population `bank_import:X-gj-3a` was built for.
   - [x] **R18-a** `ef0dc831` -- the storage rename (`paycheck_lines`, `paycheck_line_kinds`;
         migration `0a4d2c3e89f8`), byte-identical over the 64 saved paychecks; `$0.00`.
-  - [ ] **R18-b** the two earning kinds seeded with the engine arms (gross = base + taxable
-        earnings, FICA's cumulative replaying admitted taxable lines, net += after-tax earnings),
-        the form's kind control, the cockpit group; re-words the three labels R18-a changed.
+  - [x] **R18-b** `ad9fed61` -- the two earning kinds (migration `6c15d2a97b78`), the engine's one
+        line pass (`priced_gross`; a percentage line is % of BASE), the line door, the cockpit
+        groups; byte-identical over the 64 saved paychecks; opened **SAL-561**.
   - [ ] **R18-c** every line's start and optional end on its own rule (R-SAL30 / R-SAL31 amended);
         `$0.00`.
   - [ ] **R18-d** the OPERATOR runbook: Josh ends the Phone template as of August 2026 and enters

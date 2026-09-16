@@ -63,13 +63,14 @@ as its mirror.  So the seam marks what it writes, finds it by the mark, the
 entry doors refuse to touch a marked row, and a partial unique index holds
 the count at one per row.
 
-**The 3b / 3c gate, stated so each leaf deletes its arm.**  This leaf covers
-EXPENSE parents that are not transfer shadows.  An INCOME parent waits for
-``X-bi-3b``: three readers hardcode a purchase's direction as an expense
-(``_posted_purchase_facts``, ``_posting_purchases.emit_purchase_deltas``,
-``posting_reads.settled_transaction_effect``), so a covered paycheck would read
-``-figure`` today.  A transfer shadow waits for ``X-bi-3c``, which writes both
-legs through ``transfer_service`` under Transfer Invariant 4.
+**The 3c gate, stated so that leaf deletes its arm.**  This module covers
+every parent that is not a transfer shadow.  ``X-bi-3a`` covered EXPENSE
+parents; ``X-bi-3b`` covered INCOME parents once a movement's direction was
+its parent's everywhere it is read (``cash_ledger.movement_cash_leg``, ruling
+**R-BAL35**) -- until then six readers spelled *a purchase is money leaving*
+and a covered paycheck read ``-figure``.  A transfer shadow waits for
+``X-bi-3c``, which writes both legs through ``transfer_service`` under
+Transfer Invariant 4.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 mutates in place and never commits; the release arm's posting reversal
@@ -93,14 +94,13 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
-from app.services.cash_ledger import settled_cash_leg
+from app.services.cash_ledger import movement_cash_leg, settled_cash_leg
 from app.services.settle_day import (
     figure_source_of,
     record_settle_day,
     recorded_settle_day,
 )
 from app.services.status_seam._record import Settlement
-from app.utils.balance_predicates import is_balance_contributing
 
 #: The settlement bases whose record a covering movement mirrors.  A
 #: ``purchases`` settlement stores no figure because the row's own purchases ARE
@@ -128,12 +128,13 @@ def _source_of(row: Transaction, settlement: Settlement) -> MovementFigureSource
 
 
 def _is_covered_kind(row: Transaction) -> bool:
-    """Return whether this leaf writes a covering movement for *row*.
+    """Return whether the seam writes a covering movement for *row*.
 
-    The 3b / 3c gate from the module docstring: an expense that is not a
-    transfer shadow.  Each of those leaves deletes its half of this predicate.
+    The 3c gate from the module docstring: any row that is not a transfer
+    shadow.  It read ``and row.is_expense`` until plan step ``X-bi-3b``
+    deleted the income half; ``X-bi-3c`` deletes the rest.
     """
-    return row.transfer_id is None and row.is_expense
+    return row.transfer_id is None
 
 
 def covering_clause():
@@ -181,22 +182,24 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     one thing, and the seam's mirror carries the bank's day down to the
     movement.
 
-    Each posted covering movement is worth what
-    ``cash_ledger._events._posted_purchase_facts`` books for it -- its amount
-    as money LEAVING the account, because this leaf covers EXPENSE parents
-    only.  **That is the direction rule spelled a second time, and leaf
-    ``X-bi-3b`` is what deletes one spelling**: it makes the fact producer
-    derive a movement's direction from its parent's type (ruling **R-BAL35**)
-    and this reads it from there.  Stated rather than hidden, because a second
-    spelling that agrees today is still two spellings (rule 14).
+    Each posted covering movement is worth
+    :func:`app.services.cash_ledger.movement_cash_leg` -- the ONE valuation
+    of a movement, its whole figure in its PARENT's direction (plan step
+    ``X-bi-3b``, ruling **R-BAL35**), which is what the fact producer and the
+    ledger writer book for it.  This read ``-movement.amount`` for itself
+    until that step, a second spelling stated rather than hidden because a
+    spelling that agrees today is still two spellings (rule 14); one producer
+    is what deleted it.
 
     **TOTAL over the parent's contributing gate, as every reader of a
     purchase is** (ruling **R-FM**): a soft-deleted or Credit / Cancelled
     parent's purchases post nothing and fold to nothing
     (``_posted_purchase_facts``, ``purchase_posts``), so its covering
-    movement is worth nothing here too.  The first cut summed the movement
-    regardless and the accepted register read a soft-deleted bill as still
-    holding (``test_withdrawal``'s soft-delete case, 2026-09-16).
+    movement is worth nothing here too -- the producer's own gate, and this
+    module's ``is_balance_contributing`` guard went with the spelling.  The
+    first cut summed the movement regardless and the accepted register read a
+    soft-deleted bill as still holding (``test_withdrawal``'s soft-delete
+    case, 2026-09-16).
 
     Args:
         row: The transaction, with ``entries`` loaded or loadable.
@@ -205,11 +208,9 @@ def covered_cash_leg(row: Transaction) -> Decimal:
         The signed sum, ``Decimal("0")`` when nothing is covered, posted or
         contributing.
     """
-    if not is_balance_contributing(row):
-        return Decimal("0")
     return sum(
         (
-            -movement.amount
+            movement_cash_leg(row, movement)
             for movement in covering_movements(row)
             if movement.settled_on is not None
         ),

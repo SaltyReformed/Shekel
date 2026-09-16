@@ -352,20 +352,31 @@ def posted_purchase_effect(account_id: int, scenario_id: int) -> Decimal:
     double-count it.
 
     Over the account's non-deleted, balance-contributing, NON-transfer
-    transactions in *scenario_id* that are NOT settled: sum ``-amount`` over
-    their debit entries carrying a ``settled_on``.  **SIGNED, and the claim
-    that it is always negative or zero left at plan step
-    ``bank_import:X-gj-2b-3``**: that held only while
+    transactions in *scenario_id* that are NOT settled: sum each debit entry
+    carrying a ``settled_on``, signed by its PARENT's type -- ``+amount``
+    under an income row, ``-amount`` under an expense -- the same ``CASE``
+    :func:`settled_transaction_effect` signs a row's own figure with.  **A
+    movement's direction is its parent's** (plan step ``balance:X-bi-3b``,
+    ruling **R-BAL35**), and this term states the whole rule even though the
+    income arm meets no row today: ``entry_service.create_entry`` refuses a
+    purchase on an income parent, and a paycheck's covering movement lives
+    only while the paycheck is SETTLED, when it is inside the term above.  It
+    read ``-amount`` unconditionally until that step, which was a rule minus
+    a case.
+
+    **SIGNED, and the claim that it is always negative or zero left at plan
+    step ``bank_import:X-gj-2b-3``**: that held only while
     ``ck_transaction_entries_positive_amount`` said ``amount > 0``, and ruling
     **bank_import:R-II** made a merchant credit a NEGATIVE purchase -- whose
     posted cash leg is POSITIVE, because the money arrived.  The expression
-    needed nothing: negating the amount is what converts a purchase into its
-    cash effect, and it is total over both directions.
+    needed nothing: the sign rule is arithmetic over the figure, total over
+    both directions.
 
-    **The three narrowings are the write side's, restated in SQL rather than
-    shared with it** -- the same deliberate independence
+    **The three narrowings and the sign are the write side's, restated in SQL
+    rather than shared with it** -- the same deliberate independence
     :func:`settled_transaction_effect` keeps.  An oracle that imported
-    ``posting_service._purchase_posts`` could not grade it.
+    ``posting_service._purchase_posts`` or ``cash_ledger.movement_cash_leg``
+    could not grade them.
 
     Args:
         account_id: The real account whose posted purchases to sum.
@@ -382,11 +393,17 @@ def posted_purchase_effect(account_id: int, scenario_id: int) -> Decimal:
             "posted_purchase_effect requires a scenario_id (transactions "
             "are scenario-scoped); got None."
         )
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    signed_effect = case(
+        (
+            Transaction.transaction_type_id == income_type_id,
+            TransactionEntry.amount,
+        ),
+        else_=-TransactionEntry.amount,
+    )
     return (
         db.session.query(
-            db.func.coalesce(
-                db.func.sum(-TransactionEntry.amount), Decimal("0")
-            )
+            db.func.coalesce(db.func.sum(signed_effect), Decimal("0"))
         )
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .filter(

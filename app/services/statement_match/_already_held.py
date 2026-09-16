@@ -83,8 +83,10 @@ class ArrivalsAlreadyHeld:
     NAME IS A DEBT plan step ``bank_import:X-gj-2b-3`` OWNS.**  The filter is
     ``cash_amount > 0`` over :attr:`~._reads.ReviewSet.unmatched_rows`, which
     holds PURCHASE rows beside transaction rows -- and
-    :func:`~._candidates.purchase_candidate` sets ``cash_amount`` to
-    ``-entry.amount``, so a stored REFUND is a positive-cash row here.  That is
+    :func:`~._candidates.purchase_candidate` sets ``cash_amount`` to the
+    stored figure in the parent's direction
+    (:func:`~app.services.cash_ledger.movement_cash_leg`), so a stored REFUND
+    under an expense row is a positive-cash row here.  That is
     the right SET: the question is *could this money already be in the books*,
     and a refund the books already hold is money that already arrived.  It is
     the wrong WORD, and the NAME is what plan step ``bank_import:X-gj-2b-3``

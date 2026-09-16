@@ -588,8 +588,9 @@ def apply_status_change(
         # way a purchase records an envelope's, and leaving the band releases
         # it.  Written LAST so every value it mirrors -- the day pair, the
         # link, the figure and its basis -- is the row's final one for this
-        # act.  The rule, the lifecycle and the 3b / 3c gate are
-        # :mod:`app.services.status_seam._covering`'s.
+        # act.  The rule, the lifecycle and the 3c gate are
+        # :mod:`app.services.status_seam._covering`'s (the income half of
+        # the gate went at plan step X-bi-3b).
         sync_covering_movement(
             row,
             was_settled=was_settled,

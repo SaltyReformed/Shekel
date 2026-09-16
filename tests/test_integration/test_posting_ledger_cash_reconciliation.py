@@ -345,15 +345,28 @@ def _independent_posted_purchase_effect(
     exactly what the parent's own leg and its purchases' legs add up to, so
     counting one here would double it.
 
-    Restated in SQL rather than shared with ``posting_service._purchase_posts``,
-    for the reason every helper in this file is: an oracle that imported the
-    rule it grades could not grade it.
+    Signed by the PARENT's type, as :func:`_independent_cash_txn_effect`
+    signs a row's own figure (plan step X-bi-3b, ruling **R-BAL35**: a
+    movement's direction is its parent's).  No purchase can sit under an
+    unsettled income parent today, so the income arm meets nothing; it is
+    stated so this oracle grades the whole rule and not the rule minus a
+    case.
+
+    Restated in SQL rather than shared with ``posting_service._purchase_posts``
+    or ``cash_ledger.movement_cash_leg``, for the reason every helper in this
+    file is: an oracle that imported the rule it grades could not grade it.
     """
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    signed = case(
+        (
+            Transaction.transaction_type_id == income_type_id,
+            TransactionEntry.amount,
+        ),
+        else_=-TransactionEntry.amount,
+    )
     return (
         _db.session.query(
-            _db.func.coalesce(
-                _db.func.sum(-TransactionEntry.amount), Decimal("0")
-            )
+            _db.func.coalesce(_db.func.sum(signed), Decimal("0"))
         )
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .filter(

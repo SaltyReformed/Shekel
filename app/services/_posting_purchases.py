@@ -34,12 +34,7 @@ assigned ids; the caller owns the transaction boundary.
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import (
-    LedgerAccountClassEnum,
-    PostingKindEnum,
-    PostingSourceEnum,
-)
+from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
@@ -47,9 +42,10 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import ledger_account_service
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    emit_source_deltas,
-    source_entry_builder,
+    emit_typed_source_deltas,
+    ledger_class_of,
 )
+from app.services.cash_ledger import movement_cash_leg
 from app.services.posting_reads import _ledger_account_for
 from app.utils.balance_predicates import is_balance_contributing
 
@@ -120,31 +116,40 @@ def purchase_posts(txn: Transaction, entry) -> bool:
     )
 
 
-def _purchase_target(entry, txn: Transaction, owner_id: int) -> dict[int, Decimal]:
-    """Return the debit-positive ledger target for a POSTED purchase.
+def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
+    """Return the debit-positive ledger target for a POSTED movement.
 
-    The purchase analog of :func:`_settled_target`:
-    ``{cash_ledger_id: -amount, category_ledger_id: +amount}``, summing to zero
-    by construction.  There is no sign branch and no credit term.
+    The movement analog of :func:`_settled_target`, and since plan step
+    ``balance:X-bi-3b`` the SAME shape: ``{cash_ledger_id: leg,
+    category_ledger_id: -leg}``, summing to zero by construction, where
+    ``leg`` is :func:`app.services.cash_ledger.movement_cash_leg` -- the
+    movement's whole figure in its PARENT's direction (ruling **R-BAL35**).
+    A purchase against an envelope books ``{cash: -amount, category:
+    +amount}`` exactly as it did; a paycheck's covering movement books
+    ``{cash: +amount, category: -amount}`` into an INCOME-class counter
+    account.  The direction was spelled here as ``-amount`` until that step,
+    so an income parent could not be covered before it.
 
-    **The absence of a sign branch is what makes a REFUND work, and it was not
-    designed for one** (ruling **bank_import:R-II**).  A purchase's whole amount
-    leaves the account, so the expression was written for an expense -- and
-    because it is arithmetic rather than a case analysis, a NEGATIVE purchase
-    passes through it correctly: at ``-28.29`` it emits
-    ``{cash: +28.29, category: -28.29}``, money coming back and a
-    contra-expense, which is exactly what a merchant credit is.  Measured
-    end-to-end on a production clone before the constraint moved, against a
-    ``+28.29`` control that produced the mirror image.
+    **There is no sign branch HERE, and that is what makes a REFUND work**
+    (ruling **bank_import:R-II**).  The rule is arithmetic rather than a case
+    analysis over the figure, so a NEGATIVE purchase passes through it
+    correctly: at ``-28.29`` under an expense it emits ``{cash: +28.29,
+    category: -28.29}``, money coming back and a contra-expense, which is
+    exactly what a merchant credit is.  Measured end-to-end on a production
+    clone before the constraint moved, against a ``+28.29`` control that
+    produced the mirror image.
 
-    **The counter leg is the ENVELOPE's own category** (ruling **R-FM**,
-    developer 2026-08-15).  A purchase carries no category of its own, and the
-    expense it records is its parent's: booking it there recognises the expense
-    in the right category on the day it happens, and the parent's close then
-    books only the remainder to the SAME account, so the two always sum to the
-    row's whole debit total.  Rejected: booking it to Uncategorized until the
-    close, which shows an open envelope's real spend as uncategorised on the
-    income statement and makes every close write a reclassification pair.
+    **The counter leg is the PARENT's own category, in the parent's class**
+    (ruling **R-FM**, developer 2026-08-15; the class since X-bi-3b by
+    :func:`~app.services._posting_write.ledger_class_of`, the mapping
+    ``_settled_target`` reads).  A movement carries no category of its own,
+    and the money it records is its parent's: booking it there recognises the
+    expense or income in the right category on the day it happens, and the
+    parent's close then books only the remainder to the SAME account, so the
+    two always sum to the row's whole figure.  Rejected: booking it to
+    Uncategorized until the close, which shows an open envelope's real spend
+    as uncategorised on the income statement and makes every close write a
+    reclassification pair.
 
     A re-category of the parent is therefore a re-category of its purchases, and
     it reconciles by the same mechanism the parent's own leg uses: the sync
@@ -159,29 +164,29 @@ def _purchase_target(entry, txn: Transaction, owner_id: int) -> dict[int, Decima
         txn: Its parent transaction, taken as an ARGUMENT rather than through
             ``entry.transaction`` so the caller that already holds it -- every
             caller does -- pays no lazy load, and so the category booked here is
-            provably the one the parent's own leg books.
-        owner_id: The owning user's id (``txn.user_id``, and
-            ``txn.pay_period.user_id`` until plan step
-            ``pay_calendar:C13-b``), the category account's owner.
+            provably the one the parent's own leg books.  Its ``user_id`` is
+            the category account's owner, the ONE home ``pay_calendar:C13-b``
+            gave a row's owner (``_settled_target`` says why it is read here
+            and not passed).
 
     Returns:
-        ``{cash_ledger_id: -amount, category_ledger_id: +amount}``.
+        ``{cash_ledger_id: leg, category_ledger_id: -leg}``.
 
     Raises:
         PostingError: If the purchase's account has no linked ledger account.
         ValueError: Propagated from the resolver if the parent's non-NULL
-            ``category_id`` names no category owned by ``owner_id``.
+            ``category_id`` names no category owned by ``txn.user_id``.
     """
     cash_ledger = _ledger_account_for(entry.account_id)
     category_ledger = ledger_account_service.get_or_create_category_ledger_account(
-        owner_id, txn.category_id, LedgerAccountClassEnum.EXPENSE,
+        txn.user_id, txn.category_id, ledger_class_of(txn),
     )
-    amount = Decimal(str(entry.amount))
-    return {cash_ledger.id: -amount, category_ledger.id: amount}
+    leg = movement_cash_leg(txn, entry)
+    return {cash_ledger.id: leg, category_ledger.id: -leg}
 
 
 def emit_purchase_deltas(
-    entry, txn: Transaction, *, posted: bool, owner_id: int,
+    entry, txn: Transaction, *, posted: bool,
 ) -> "list[JournalEntry]":
     """Emit the delta entries for ONE purchase's own cash leg -- ruling **R-FM**.
 
@@ -205,7 +210,6 @@ def emit_purchase_deltas(
         posted: Whether the ledger should hold a cash leg for it
             (:func:`purchase_posts`; ``False`` also means "reverse it", which
             is what the teardown doors pass).
-        owner_id: ``txn.user_id``.
 
     Returns:
         The emitted delta entries; ``[]`` when the ledger is already at target.
@@ -213,20 +217,15 @@ def emit_purchase_deltas(
     targets: "dict[tuple[int, date], dict[int, Decimal]]" = {}
     if posted:
         targets[(txn.pay_period_id, entry.settled_on)] = _purchase_target(
-            entry, txn, owner_id,
+            entry, txn,
         )
-    return emit_source_deltas(
+    # The PARENT types the legs (plan step X-bi-3b): ``expense`` under an
+    # envelope or a bill, ``income`` under a paycheck.
+    return emit_typed_source_deltas(
+        txn,
         targets=targets,
-        source_filter=JournalEntry.transaction_entry_id == entry.id,
-        kind_id=ref_cache.posting_kind_id(PostingKindEnum.EXPENSE),
-        build_entry=source_entry_builder(
-            user_id=owner_id,
-            scenario_id=txn.scenario_id,
-            source_kind_id=ref_cache.posting_source_id(
-                PostingSourceEnum.PURCHASE
-            ),
-            description=entry.description[:_MAX_DESCRIPTION_LENGTH],
-            transaction_entry_id=entry.id,
-        ),
+        source=PostingSourceEnum.PURCHASE,
+        description=entry.description[:_MAX_DESCRIPTION_LENGTH],
         log_label=f"purchase {entry.id} (posted={posted})",
+        transaction_entry_id=entry.id,
     )
