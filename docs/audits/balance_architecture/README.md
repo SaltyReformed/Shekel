@@ -387,18 +387,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7a** `eecef63d` -- `recurs` on the definition and the row (`DerivedFlag`); the seven
       "no cadence" sites and the account-delete refusal read it; **R-BAL27** and **R-BAL28** ruled
       at the cut. Record in `archive/shipped_entries_condensed_2026-09-15.md`.
-    * [ ] **X-bi-7b** ONE producer for a one-off and every link-less writer on it -- the DECOMPOSED
-      parent, three leaves 2026-09-13 (**R-BAL31**), `bank_import:X-f6c` one step with it
-      (**R-BAL24**); ticks with 7b-3.
+    * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
+      DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
+      (**R-BAL24**); ticked with 7b-3.
       * [x] **X-bi-7b-1** `7a2fe751` -- `one_off.place_one_off`, the ONE producer of a one-off
         (**R-BAL30**); both grid create doors and `mint_uncategorized` on it, `category_id`
         nullable (`9c1e4b7a2d3f`; **R-BAL32**). Record in `archive/shipped_entries_condensed_2026-09-15.md`.
       * [x] **X-bi-7b-2** `e27e5134` -- the popover's item on the DEFINITION (**R-BAL36**),
         R-BAL29's restate + **R-BAL37**'s re-attach, R-BAL33 at both doors, R-BAL34 measured on the
         restore (the six cells are this leaf's); the schema's flag fields and BAL-484's writer gone.
-      * [ ] **X-bi-7b-3** `_create_envelope` on the producer; a NEW-ENVELOPE answer flips to
-        TEMPLATE naming the minted definition; `MintedEnvelopes` keyed on the definition --
-        `X-f6c`'s shape.
+      * [x] **X-bi-7b-3** `321bf2e4` -- `_create_envelope` on the producer; a NEW-ENVELOPE answer mints
+        once and names the definition; a TEMPLATE answer PLACES a rule-less definition's row
+        (`PlacementKind.PLACE`); `MintedEnvelopes` keyed on the definition; **R-BAL43**, **R-BAL44**.
     * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer; every link-less `Transaction(`
       construction moved onto it (the marker is its `steps.md` row; which calls name no link is an
       AST walk over their keywords, so no total is stated here).
