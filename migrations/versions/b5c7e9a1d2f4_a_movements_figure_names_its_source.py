@@ -83,7 +83,7 @@ schema had no way to hold and no reader for -- stated rather than hidden, and
 it is not money.
 
 Revision ID: b5c7e9a1d2f4
-Revises: 9c1e4b7a2d3f
+Revises: 0a4d2c3e89f8
 Create Date: 2026-09-15
 """
 from alembic import op
@@ -92,7 +92,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "b5c7e9a1d2f4"
-down_revision = "9c1e4b7a2d3f"
+down_revision = "0a4d2c3e89f8"
 branch_labels = None
 depends_on = None
 
