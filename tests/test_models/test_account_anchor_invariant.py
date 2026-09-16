@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -334,9 +335,19 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 #: because those run against the real database.
 _PRODUCTION_TREES = ("app", "scripts")
 
-#: The one module and function permitted to write an ``AccountAnchorHistory``
-#: row, as ``(path relative to the repository root, enclosing def)``.
-_SOLE_WRITER = ("app/services/anchor_service.py", "stage_anchor_true_up")
+#: The modules and functions permitted to write an ``AccountAnchorHistory``
+#: row, as ``(path relative to the repository root, enclosing def)`` -- ONE
+#: per kind of row the level relation holds (plan step ``balance:X-bj-1``,
+#: rulings **R-IS** / **R-JN**).  The owner's declaration is
+#: ``stage_anchor_true_up`` (ruling **R-ES**: the owner's write lock, the
+#: R-EQ did-this-change compare and the shared log line are properties of
+#: that door); the bank's placement is ``record_statement``, which solves the
+#: day from the file's lines and writes the level naming the import, keyed to
+#: the file's own claim.  A third writer is what this gate exists to catch.
+_WRITERS = frozenset({
+    ("app/services/anchor_service.py", "stage_anchor_true_up"),
+    ("app/services/statement_import/_record.py", "record_statement"),
+})
 
 _MODEL = "AccountAnchorHistory"
 _TABLE = "account_anchor_history"
@@ -344,9 +355,17 @@ _TABLE = "account_anchor_history"
 #: SQLAlchemy helpers that write rows without constructing the ORM object.
 _BULK_WRITERS = frozenset({"bulk_insert_mappings", "bulk_save_objects"})
 
-#: SQL verbs that MUTATE.  A literal naming the table under one of these is a
-#: write the ORM census cannot see.
-_SQL_WRITE_VERBS = ("insert into", "update ", "delete from")
+#: SQL verbs that MUTATE, each ADJACENT to the table's name: a literal is a
+#: write when a verb governs this table, not when a string that mentions the
+#: table somewhere also mentions a verb somewhere else.  The distinction was
+#: measured at plan step ``balance:X-bj-1``: the append-only trigger's body
+#: names the table in a ``SELECT ... WHERE id = OLD.anchor_id`` and says
+#: "UPDATE rejected" in a message, and the any-verb-anywhere form reported
+#: that SELECT as a writer -- the exact false positive the census's own
+#: docstring says a SELECT must not be.
+_SQL_WRITE_PATTERN = re.compile(
+    r"(insert\s+into|update|delete\s+from)\s+(budget\.)?" + _TABLE + r"\b",
+)
 
 
 def _enclosing_defs(tree) -> dict[int, str]:
@@ -506,10 +525,7 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
                 and isinstance(node.value, str)
                 and id(node) not in docstrings
             ):
-                lowered = node.value.lower()
-                hit = _TABLE in lowered and any(
-                    verb in lowered for verb in _SQL_WRITE_VERBS
-                )
+                hit = _SQL_WRITE_PATTERN.search(node.value.lower()) is not None
             if hit:
                 found.append((
                     label(path), owner.get(id(node), "<module>"), node.lineno,
@@ -526,14 +542,20 @@ class TestTheAssertionTableHasOneWriter:
     write lock, no ruling R-EQ did-this-change compare and no shared log line.
     Nothing in the code said so -- the two constructions simply looked alike --
     and this is what says it.
+
+    **Since plan step ``balance:X-bj-1`` the table is the LEVEL RELATION and
+    holds TWO kinds of row, so the census names two writers, one per kind**
+    (:data:`_WRITERS`): the owner's door and the import door.  The gate's
+    claim is unchanged in what matters -- every writer is NAMED, with the
+    reason it may write -- and a third one still fails it by name.
     """
 
     def test_exactly_one_place_writes_an_assertion(self):
-        """One function in ``app/`` + ``scripts/`` writes the assertion table.
+        """One function per ROW KIND in ``app/`` + ``scripts/`` writes the table.
 
-        Fails the moment a second writer appears, naming it and its line, which
-        is the failure mode the ruling exists to prevent rather than a count for
-        its own sake.
+        Fails the moment an unnamed writer appears, naming it and its line,
+        which is the failure mode the ruling exists to prevent rather than a
+        count for its own sake.
         """
         writers_found: list[tuple[str, str, int]] = []
         for tree in _PRODUCTION_TREES:
@@ -544,10 +566,10 @@ class TestTheAssertionTableHasOneWriter:
             "(an assertion has to be written somewhere)"
         )
         writers = {(path, func) for path, func, _line in writers_found}
-        assert writers == {_SOLE_WRITER}, (
-            "budget.account_anchor_history must have exactly one writer "
-            f"({_SOLE_WRITER[0]}::{_SOLE_WRITER[1]}, ruling R-ES).  Found: "
-            + ", ".join(
+        assert writers == _WRITERS, (
+            "budget.account_anchor_history has exactly two writers, one per "
+            f"kind of level ({sorted(_WRITERS)}; rulings R-ES and R-IS).  "
+            "Found: " + ", ".join(
                 f"{path}:{line} in {func}()"
                 for path, func, line in writers_found
             )

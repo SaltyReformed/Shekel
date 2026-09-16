@@ -100,6 +100,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.balance_predicates import (
     balance_contributing_clause,
+    owner_declared_clause,
     settled_day,
     settled_status_ids,
 )
@@ -607,7 +608,16 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     """
     rows = (
         db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account_id)
+        .filter(
+            AccountAnchorHistory.account_id == account_id,
+            # THE RESET reads the owner's levels and nothing else, until the
+            # flip (plan step ``balance:X-bj-1``, ruling **R-JN**): a bank
+            # statement's placement sits in the same relation since that
+            # step and is an observation that moves no balance (ruling
+            # **R-IS**), so replaying it here would move money at a step
+            # that moves none.  One spelling, deleted with the reset.
+            owner_declared_clause(),
+        )
         .order_by(
             AccountAnchorHistory.observed_on,
             AccountAnchorHistory.created_at,

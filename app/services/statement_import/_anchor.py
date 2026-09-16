@@ -48,6 +48,19 @@ Releasing rather than re-solving is deliberate: the next import re-establishes
 an anchor from evidence that is present, where a re-solve would be the app
 inferring its way around facts that moved underneath it.
 
+**A placed anchor is a LEVEL, and a release is an APPENDED withdrawal** (plan
+step ``balance:X-bj-1``, rulings **R-IS** and **R-JN**).  The solved day and
+its evidence were two columns on ``budget.statement_imports`` until that step,
+nulled by UPDATE to release; they are a row in the level relation
+(:class:`~app.models.account.AccountAnchorHistory`, ``statement_import_id``
+set, its amount locked to the file's own claim by key) beside the owner's
+true-ups, and a release is an :class:`~app.models.anchor_release.AnchorRelease`
+naming the level and the import whose lines undercut it.  A level STANDS when
+no release names it; :func:`~._balance.bank_levels` is the one read of that,
+and :func:`~._balance.standing_bank_levels` its narrowing.  What this bought: the badge on
+the statements page can name a release's cause (finding **BAL-485**), and the
+relation is append-only at the database tier as its siblings are.
+
 **Deriving a balance from a recorded anchor is :mod:`._balance`'s**, not this
 module's, and the split is the walk/fold one the cash side already pays for: a
 FOLD is a balance, a walk is a fact.  This module decides which DAY a claimed
@@ -64,30 +77,63 @@ recorded-history half of one subject is not a different subject.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.enums import StatementBalanceEvidenceEnum
 from app.exceptions import StatementBalanceUnexplained
 from app.extensions import db
-from app.models.statement_import import StatementImport
+from app.models.account import AccountAnchorHistory
+from app.models.anchor_release import AnchorRelease
 
-from ._balance import fold_bank_balances
+from ._balance import fold_bank_balances, standing_bank_levels
 from ._integrity import opening_balance
+
+
+@dataclass(frozen=True)
+class PlacementRelease:
+    """Why a placed figure no longer stands, as the statements page shows it.
+
+    A reading of one :class:`~app.models.anchor_release.AnchorRelease` (plan
+    step ``balance:X-bj-1``, finding **BAL-485**): the badge that read *not
+    placed* for a figure the app itself had withdrawn could not name the
+    cause, because the release was an UPDATE that kept nothing.  It is a row
+    now, and this is what the page reads off it.
+
+    Attributes:
+        placed_on: The day the figure HAD been placed on -- the withdrawn
+            level's own ``observed_on``, which the level relation keeps
+            because a release edits nothing.
+        by_file_name: The file of the import whose fresh lines undercut the
+            level, or ``None`` when that import no longer exists -- a delete
+            released this level, or the releasing import was itself deleted
+            since.  Those are the only two events that leave the cause
+            unnamed, so ``None`` is a fact and not a gap.
+        lines_changed_from: The earliest day whose recorded lines changed;
+            what the badge names when the import cannot be.
+        released_at: When the release was recorded.
+    """
+
+    placed_on: date
+    by_file_name: "str | None"
+    lines_changed_from: date
+    released_at: datetime
 
 
 @dataclass(frozen=True)
 class ImportedBalance:
     """A file's balance CLAIM and what the import made of it, as one value.
 
-    **Four of its five fields are the four columns, and their nullability is
-    the three CHECK constraints** -- ``ck_statement_imports_stated_balance_
-    paired``, ``ck_statement_imports_balance_evidence_paired`` and
-    ``ck_statement_imports_anchor_needs_a_claim``.  One value rather than four
-    parameters threaded through the door, its receipt and the page, because
-    every one of those surfaces needs the same facts together and a reader that
-    had to test them separately would be re-deriving what the schema already
-    states.
+    **Two of its fields are the claim's own columns, two are the level row's,
+    and their nullability is the schema's** (plan step ``balance:X-bj-1``):
+    ``ck_statement_imports_stated_balance_paired`` holds the claim together,
+    and a placed figure is a :class:`~app.models.account.AccountAnchorHistory`
+    row whose ``observed_on`` and ``evidence_id`` are both NOT NULL, so
+    :attr:`effective_on` and :attr:`evidence` are ``None`` together exactly
+    when no level stands.  One value rather than four parameters threaded
+    through the door, its receipt and the page, because every one of those
+    surfaces needs the same facts together and a reader that had to test them
+    separately would be re-deriving what the schema already states.
 
     **The fifth, :attr:`day_is_solved`, is stored NOWHERE and that is a stated
     limit rather than an oversight** (plan step ``bank_import:X-gc``).  It
@@ -112,6 +158,13 @@ class ImportedBalance:
             :class:`~app.enums.StatementBalanceEvidenceEnum` member -- the
             WEAKEST link in the chain behind it.  ``None`` exactly when
             :attr:`effective_on` is.
+        release: Why a once-placed figure no longer stands
+            (:class:`PlacementRelease`), or ``None``.  Set only by the
+            statements page's read model (:func:`~._reads.import_history`),
+            which is the one surface that shows a figure after the act; the
+            receipt reads an import whose level has just been written and
+            can carry no release.  ``None`` with :attr:`effective_on` ``None``
+            means the figure was never placed.
         day_is_solved: Whether :attr:`effective_on` was WORKED OUT from a
             balance the app already held, rather than assumed.  ``False`` for
             an unplaced figure and for the third arm of :func:`resolve_anchor`,
@@ -136,13 +189,16 @@ class ImportedBalance:
     effective_on: date | None
     evidence: StatementBalanceEvidenceEnum | None
     day_is_solved: bool = False
+    release: PlacementRelease | None = None
 
     @property
     def is_anchored(self) -> bool:
         """Return whether this import placed its own figure on a day.
 
-        ONE field is tested rather than two, which the pairing CHECK makes
-        exact rather than economical.
+        ONE field is tested rather than two, which the level row's NOT NULL
+        shape makes exact rather than economical: a placed figure is a row
+        whose day and evidence are both present, so ``effective_on`` and
+        ``evidence`` are ``None`` together or not at all.
         """
         return self.effective_on is not None
 
@@ -343,40 +399,11 @@ def recorded_opening_before(
     )
 
 
-def anchored_imports(account_id: int) -> "list[StatementImport]":
-    """Return every import of *account_id* whose stated balance is PLACED.
-
-    ONE fetch that :func:`resting_on` then partitions, and the two are split
-    so that a reader which needs the answer for twenty imports at once -- the
-    statements page's delete confirmation
-    (:func:`~._reads.import_history`) -- pays one query rather than twenty,
-    while still reaching the ONE predicate the release door acts on.
-
-    Args:
-        account_id: The account whose imports to read.
-
-    Returns:
-        The :class:`~app.models.statement_import.StatementImport` rows with a
-        ``balance_effective_on``, ascending by id.  ORM rows rather than
-        columns because :func:`release_anchors_from` writes to them, and a
-        counter reading the same rows counts the objects the writer changes.
-    """
-    return (
-        db.session.query(StatementImport)
-        .filter(
-            StatementImport.account_id == account_id,
-            StatementImport.balance_effective_on.isnot(None),
-        )
-        .order_by(StatementImport.id)
-        .all()
-    )
-
-
 def resting_on(
-    anchored: "list[StatementImport]", day: date,
+    standing: "list[AccountAnchorHistory]", day: date,
     except_import_id: "int | None" = None,
-) -> "list[StatementImport]":
-    """Return which of *anchored* rest on lines at or after *day*.
+) -> "list[AccountAnchorHistory]":
+    """Return which of *standing* rest on lines at or after *day*.
 
     **THE predicate, stated once** (plan step ``bank_import:X-gr``, finding
     **BI-490**, rule 14).  A placement is a conclusion drawn from the lines at
@@ -390,42 +417,50 @@ def resting_on(
     spelling of the same question.
 
     Args:
-        anchored: :func:`anchored_imports`' rows.
+        standing: :func:`~._balance.standing_bank_levels`' rows.
         day: The earliest day whose lines changed.
-        except_import_id: An import to leave alone -- the one whose write this
-            is -- or ``None``.
+        except_import_id: An import whose own level is left alone -- the one
+            whose write this is -- or ``None``.
 
     Returns:
-        The members of *anchored* the change undercuts, in *anchored*'s order.
+        The members of *standing* the change undercuts, in *standing*'s order.
     """
     return [
-        row for row in anchored
-        if row.balance_effective_on >= day and row.id != except_import_id
+        level for level in standing
+        if level.observed_on >= day
+        and level.statement_import_id != except_import_id
     ]
 
 
-def release_anchors_from(
-    account_id: int, day: date, except_import_id: "int | None" = None,
-) -> int:
-    """Release every anchor a line change on or after *day* has undercut.
+def release_anchors_from(account_id: int, day: date, import_id: int) -> int:
+    """Withdraw every standing anchor a line change on or after *day* undercut.
 
     **An anchor is a conclusion drawn from the lines recorded at or before its
     own day, so a write that changes those lines takes the conclusion with
     it.**  Both doors that change them call this:
     :func:`~._record.record_statement` with the earliest day it freshly
     recorded, and :func:`~._undo.delete_import` with the earliest day whose
-    lines it is removing.  Which rows go is :func:`resting_on`'s answer over
-    :func:`anchored_imports`; this function only writes.
+    lines it is about to remove.  Which levels go is :func:`resting_on`'s
+    answer over :func:`~._balance.standing_bank_levels`; this function only
+    writes.
+
+    **It writes a release row per level and edits nothing** (plan step
+    ``balance:X-bj-1``): the level relation is append-only at the database
+    tier, and a withdrawal that stays beside the level it withdrew is what
+    lets the statements page say WHY a figure is no longer placed.
 
     Args:
         account_id: The account whose anchors to examine.
         day: The earliest day whose lines changed.
-        except_import_id: An import to leave alone -- the one whose write this
-            is.  **A parameter rather than a re-statement afterwards**: the
-            recording import solved its own anchor against its own COMPLETE
-            line list, so those lines never undercut it, and expressing that as
-            an exclusion says so once where restoring the row after a blanket
-            release would say it twice and could drift.
+        import_id: The import whose lines changed -- the cause the release
+            records, and the import whose OWN level is never released by its
+            own lines.  ONE parameter for both roles because they are one
+            import at both doors: the recording import solved its level
+            against its own complete line list, so those lines never undercut
+            it; the delete door names the DOOMED import here before deleting
+            it, so the cause reaches ``system.audit_log`` before the key's
+            ``SET NULL`` takes it off the row, and that import's own level is
+            about to cascade rather than be withdrawn.
 
     Returns:
         How many anchors were released.
@@ -446,10 +481,14 @@ def release_anchors_from(
     next import re-establishes an anchor from evidence that is actually
     present, and until then the account honestly holds none.
     """
-    released = resting_on(anchored_imports(account_id), day, except_import_id)
-    for row in released:
-        row.balance_effective_on = None
-        row.balance_evidence_id = None
+    released = resting_on(standing_bank_levels(account_id), day, import_id)
+    for level in released:
+        db.session.add(AnchorRelease(
+            account_id=account_id,
+            anchor_id=level.id,
+            released_by_import_id=import_id,
+            lines_changed_from=day,
+        ))
     return len(released)
 
 

@@ -1,11 +1,14 @@
 """Shekel Budget App -- the ORM half of an append-only table's refusal.
 
-**Three account tables record FACTS that are never edited**, each for the same
+**Four account tables record FACTS that are never edited**, each for the same
 reason: a row states what was true at a moment, and saying something else means
 saying it again rather than rewriting what was said.
 
-* :class:`~app.models.account.AccountAnchorHistory` -- what a bank showed on a
-  day (ruling **R-DH**);
+* :class:`~app.models.account.AccountAnchorHistory` -- what a bank, or the
+  owner, observed an account to hold at the close of a day (rulings **R-DH**,
+  **R-IS**);
+* :class:`~app.models.anchor_release.AnchorRelease` -- the withdrawal of one
+  bank level and its cause (plan step ``balance:X-bj-1``);
 * :class:`~app.models.account_opening.AccountOpening` -- what an account held
   before its records begin (ruling **R-GX**, latest restatement governs);
 * :class:`~app.models.loan_anchor_event.LoanAnchorEvent` -- a loan's owed
@@ -58,10 +61,12 @@ def install_append_only_guards(model, error: type[AppendOnlyViolation]) -> None:
     offending session rolls back cleanly and the traceback names the call site
     rather than a flush deep inside a commit.
 
-    **The DELETE guard does not interfere with disposing of an ACCOUNT.**  All
-    three tables carry :class:`~app.models.mixins.AccountScopedMixin`'s
-    ``ON DELETE CASCADE`` foreign key, and a cascade is executed by PostgreSQL
-    without loading a row into the session, so no listener fires.  What the
+    **The DELETE guard does not interfere with disposing of an ACCOUNT, an
+    IMPORT or a LEVEL.**  All four tables carry
+    :class:`~app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``
+    foreign key, a bank level cascades with its import and a release with its
+    level, and a cascade is executed by PostgreSQL without loading a row into
+    the session, so no listener fires.  What the
     ORM must NOT do is delete those rows itself on the way to deleting the
     account: :class:`~app.models.account.Account` therefore declares
     ``anchor_history`` with ``passive_deletes=True``, which is what leaves the

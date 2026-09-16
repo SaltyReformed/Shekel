@@ -55,6 +55,7 @@ from app.utils.amount_relationships import (
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
+    owner_declared_clause,
 )
 
 from ._amounts import ReconciledThrough
@@ -125,6 +126,15 @@ def _governing_row(
     implementation: two queries that "agree by reading" is the defect this
     package's own history is made of.
 
+    **Over the OWNER's levels only, until the flip** (plan step
+    ``balance:X-bj-1``, ruling **R-JN**).  The level relation holds the bank's
+    statement placements too since that step, and what this answers is
+    "which assertion RESETS the fold" -- the grid header, the reconcile panel
+    and the write door's did-this-change compare all mean that -- so it
+    composes :func:`~app.utils.balance_predicates.owner_declared_clause`,
+    the one spelling of that narrowing, which ``X-f3c-5`` deletes with the
+    reset.
+
     Args:
         account_id: The account whose assertions to search.
         on_or_before: The civil day to answer as of, or ``None`` for the
@@ -136,6 +146,7 @@ def _governing_row(
     """
     query = db.session.query(AccountAnchorHistory).filter(
         AccountAnchorHistory.account_id == account_id,
+        owner_declared_clause(),
     )
     if on_or_before is not None:
         query = query.filter(AccountAnchorHistory.observed_on <= on_or_before)
@@ -362,7 +373,13 @@ def reconciled_through(account_id: int) -> ReconciledThrough:
     """
     return ReconciledThrough(
         db.session.query(db.func.max(AccountAnchorHistory.observed_on))
-        .filter(AccountAnchorHistory.account_id == account_id)
+        .filter(
+            AccountAnchorHistory.account_id == account_id,
+            # The owner's declarations bound clearing, not the bank's
+            # placements: the same interim narrowing ``_governing_row``
+            # composes, for the same reason (plan step ``balance:X-bj-1``).
+            owner_declared_clause(),
+        )
         .scalar()
     )
 

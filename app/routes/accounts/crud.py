@@ -655,8 +655,9 @@ def hard_delete_account(account_id):
           that could name one cascade with the ACCOUNT already
           (``fk_merchant_rules_owner``).
       CASCADE-FK dependents (LoanParams, InterestParams,
-      InvestmentParams, AccountAnchorHistory, SavingsGoal, LoanFeatures)
-      are auto-deleted by PostgreSQL when the account row is removed.
+      InvestmentParams, AccountAnchorHistory, AnchorRelease, SavingsGoal,
+      LoanFeatures) are auto-deleted by PostgreSQL when the account row is
+      removed.
     """
     account = get_or_404(Account, account_id)
     if account is None:
