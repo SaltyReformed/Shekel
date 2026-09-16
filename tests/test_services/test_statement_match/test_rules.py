@@ -106,14 +106,18 @@ _MERCHANT = 4001
 
 
 def _view(*rules, templates=None, categories=frozenset(), stale=None,
-          stale_categories=None):
+          stale_categories=None, placeable=frozenset(), placed=None):
     """Return the rule view these resolvers read, built by hand.
 
     Built here rather than through :meth:`RuleView.build` because these cases
-    grade the RESOLVER: stating the three inputs literally is what lets a case
-    pin one of them (an archived category, a template with no row) without
+    grade the RESOLVER: stating the inputs literally is what lets a case pin
+    one of them (an archived category, a template with no row) without
     arranging the database into that shape first.  The reads themselves are
-    graded by the cases that go through ``review_set``.
+    graded by the cases that go through ``review_set``.  *placeable* and
+    *placed* are the PLACE arm's two reads (leaf 7b-3 of ``balance:X-bi-7b``),
+    empty unless a case states them: no definition is placeable, so a
+    TEMPLATE answer with no row in the paycheck stays UNRESOLVED here, as it
+    did before that leaf.
     """
     return RuleView(
         rules={rule.merchant_id: rule for rule in rules},
@@ -121,6 +125,8 @@ def _view(*rules, templates=None, categories=frozenset(), stale=None,
         active_categories=categories,
         stale_templates=stale or {},
         stale_categories=stale_categories or {},
+        placeable_templates=placeable,
+        placed_periods=placed or {},
     )
 
 
@@ -141,9 +147,9 @@ def _destination(txn, *, is_settled=False):
         ],
         is_settled=is_settled,
         template_id=txn.template_id,
-        # Whether a cadence stands behind it, as ``destinations_for`` reads it
-        # (plan step balance:X-bi-7b).
-        recurs=txn.recurs,
+        # Whether it is a rule-less definition's row, as ``destinations_for``
+        # reads it (plan step balance:X-bi-7b, leaf 7b-3).
+        is_placed=txn.is_placed,
     )
 
 
@@ -1798,13 +1804,20 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
     reuse and may pick another -- including "a new envelope" again.
     """
 
-    def test_an_envelope_of_that_name_HERE_is_recorded_into(
+    def test_a_LEGACY_link_less_envelope_of_that_name_HERE_is_recorded_into(
         self, app, db, seed_user,
     ):
-        """FIRING CONTROL: this is the cross-STATEMENT half of the convergence.
+        """FIRING CONTROL: the cross-STATEMENT half of the convergence, on a legacy row.
 
-        The envelope a previous statement created is offered to this line, so
-        the answer resolves to it instead of minting a second one beside it.
+        The envelope a previous statement created before plan step
+        balance:X-bi-7b carries no definition, and until the family's cutover
+        mints it one it is what the answer's first firing converges on
+        (``PurchaseDestination.names_no_cadence``) -- a first build of leaf
+        7b-3 keyed the convergence on ``is_placed`` and minted a second
+        "Home Improvement" beside every legacy one (found by 7b-3's
+        adversarial review; finding N-327's fragmentation back).  What such a
+        row does NOT do is take the rule's NAME: the flip is keyed on
+        ``is_placed``, graded in ``test_placing.py``.
         """
         category = seed_user["categories"]["Groceries"]
         existing = a_transaction(
@@ -1827,15 +1840,16 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
     def test_a_ONE_OFF_envelope_of_that_name_HERE_is_recorded_into(
         self, app, db, seed_user,
     ):
-        """FIRING CONTROL for plan step balance:X-bi-7b's re-key.
+        """FIRING CONTROL: the cross-STATEMENT half of the convergence.
 
         An envelope the owner made at the grid carries a rule-less DEFINITION
-        since that step, so the old exclusion -- ``template_id is None`` --
-        would have skipped it and minted a second "Home Improvement" beside it
-        in the same period: finding N-327's fragmentation back.  The exclusion
-        is keyed on ``recurs`` now, read off the REAL destinations scan here
-        (``a_scope``), so this fires if the scan stops setting ``recurs`` or
-        the placement reverts to the link.
+        (plan step balance:X-bi-7b), and a new-envelope answer's first firing
+        converges on it rather than minting a second "Home Improvement"
+        beside it in the same period -- finding N-327's fragmentation --
+        after which the answer names that definition (leaf 7b-3, ruling
+        R-BAL24).  Keyed on ``is_placed``, read off the REAL destinations scan
+        here (``a_scope``), so this fires if the scan stops setting it or the
+        placement reverts to the link or to ``recurs``.
         """
         category = seed_user["categories"]["Groceries"]
         existing = a_one_off_envelope(
@@ -1894,13 +1908,11 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         is why it may not be papered over by picking the first.
         """
         category = seed_user["categories"]["Groceries"]
-        one = a_transaction(
-            seed_user, name="Home Improvement", is_envelope=True,
-            template=False,
+        one = a_one_off_envelope(
+            seed_user, name="Home Improvement", category=category,
         )
-        two = a_transaction(
-            seed_user, name="Home Improvement", amount="1.00",
-            is_envelope=True, template=False,
+        two = a_one_off_envelope(
+            seed_user, name="Home Improvement", category=category,
         )
         rule = StandingRule(
             merchant_id=_MERCHANT, merchant="Lowe's", answer=RuleAnswer.NEW_ENVELOPE,
@@ -1989,9 +2001,8 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         nothing while every test above still passed if they compared labels.
         """
         category = seed_user["categories"]["Groceries"]
-        existing = a_transaction(
-            seed_user, name="Home Improvement", is_envelope=True,
-            template=False,
+        existing = a_one_off_envelope(
+            seed_user, name="Home Improvement", category=category,
         )
         offered = _destination(existing)
         assert offered.label != offered.name
@@ -2076,10 +2087,17 @@ class TestTheScreenSaysWhichLineCREATESTheEnvelope:
         ]
         assert joining == [False, True]
 
-    def test_lines_in_DIFFERENT_periods_each_create_their_own(
+    def test_lines_in_DIFFERENT_periods_join_one_definition(
         self, app, db, seed_user,
     ):
-        """The key carries the period, so neither joins the other."""
+        """The key is the ANSWER: the second line joins the definition the first mints.
+
+        **It asserted ``[False, False]`` until leaf 7b-3 of balance:X-bi-7b**
+        (ruling R-BAL24): the key carried the period, so a line in another
+        paycheck created its own envelope -- a second definition of one
+        answer.  One press mints ONE rule-less definition per answer now and
+        places a row of it per paycheck, so the later line joins.
+        """
         statement = an_import(seed_user)
         category = seed_user["categories"]["Groceries"]
         first_day = seed_user["bootstrap_period"].start_date
@@ -2100,7 +2118,7 @@ class TestTheScreenSaysWhichLineCREATESTheEnvelope:
             line.placement.joins_new for line in review.creatable
             if line.placement is not None and line.placement.creates
         ]
-        assert joining == [False, False]
+        assert joining == [False, True]
 
 
 class TestTheFiveAnswersRoundTrip:
@@ -2471,6 +2489,8 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             active_categories=frozenset(),
             stale_templates={},
             stale_categories={},
+            placeable_templates=frozenset(),
+            placed_periods={},
         )
 
         # THE SHARED ROW, because an answered merchant is where a stored
@@ -2510,6 +2530,8 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             active_categories=frozenset(),
             stale_templates={},
             stale_categories={},
+            placeable_templates=frozenset(),
+            placed_periods={},
         )
 
         row = merchant_summary(

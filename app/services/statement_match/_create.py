@@ -72,6 +72,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
@@ -96,6 +97,7 @@ from ._container import (
     reject_ambiguous_destination,
     reject_incomplete_new_envelope,
     resolve_destination,
+    ActReads,
 )
 from ._resolve import load_lines
 from ._candidates import (
@@ -111,8 +113,12 @@ from ._creations import (
 from ._offers import CandidateRow, RowKind, merchant_label
 from ._outcome import FiledMerchant
 from ._reads import as_bank_line
+from ._naming import name_the_filed_definition
 from ._rules import LinePipeline, is_inflow, pipeline_for
 from ._scope import ReviewScope, reject_impossible_days
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import PayCalendar
 
 _logger = logging.getLogger(__name__)
 
@@ -367,6 +373,7 @@ def _match_content(
     line: BankStatementLine,
     envelope: Transaction,
     created: bool,
+    calendar: "PayCalendar",
 ) -> MatchContent:
     """Return what this act ASSERTS and what it BROUGHT INTO EXISTENCE.
 
@@ -390,11 +397,15 @@ def _match_content(
         line: The bank line it explains.
         envelope: The budget line it went into.
         created: Whether THIS act made that budget line.
+        calendar: The pass's calendar, which the candidate's placement is
+            read from -- the constructor takes it since plan step
+            ``bank_import:X-gz``, and this door hands it the one the pass
+            holds rather than loading a second.
 
     Returns:
         The :class:`~._accept.MatchContent`.
     """
-    candidate = purchase_candidate(entry)
+    candidate = purchase_candidate(entry, calendar)
     return MatchContent(
         lines=[line], rows=[candidate],
         created=_made_by_this_act(candidate, envelope, created),
@@ -455,9 +466,10 @@ def create_purchase_from_line(
             ``merchant_rules`` and passing them separately let a caller supply
             them from two instants.
         minted: What this REQUEST has already created
-            (:class:`MintedEnvelopes`), so one press mints one envelope per
-            answer per pay period rather than one per line (finding
-            **N-327**).  **Required rather than defaulted for the same reason
+            (:class:`MintedEnvelopes`), so one press mints one definition
+            per answer and places one row of it per pay period rather than
+            one per line (finding **N-327**).  **Required rather than
+            defaulted for the same reason
             *scope* is**: a default would silently mean *converge with
             nothing*, and the caller that forgot it would mint the fragments
             this parameter exists to stop.
@@ -543,9 +555,13 @@ def create_purchase_from_line(
     # would raise the entry list's out-of-period warning
     # (``entry_service.entry_list_view``, which asks
     # ``DerivedPeriod.covers``) on a row this door had just built.
-    pay_period_id = scope.period_holding(made_on, "this purchase").period_id
+    period = scope.period_holding(made_on, "this purchase")
     envelope, created = resolve_destination(
-        creation, pay_period_id, scope, matched, minted,
+        creation, period,
+        ActReads(
+            scope=scope, matched=matched, minted=minted,
+            placeable=answers.view.placeable_templates,
+        ),
     )
 
     entry = _born_purchase(line, envelope, made_on, observed, scope)
@@ -561,7 +577,7 @@ def create_purchase_from_line(
     db.session.flush()
     accepted = record_match(
         scope,
-        _match_content(entry, line, envelope, created),
+        _match_content(entry, line, envelope, created, scope.calendar),
         matched,
         # **The PASS's own answer, threaded rather than decided here** (ruling
         # **R-GT**).  This door has two entrances since plan step
@@ -579,6 +595,13 @@ def create_purchase_from_line(
         match_id=accepted.match_id,
         envelope_label=envelope.name,
         envelope_created=created,
+        template_id=envelope.template_id,
+        # The merchant's NEW-ENVELOPE answer coming to NAME the definition
+        # filed into (leaf 7b-3 of balance:X-bi-7b): a rule write in this
+        # act's own transaction, ordered after the match only because the
+        # purchase and the match are what the rest of this constructor
+        # reads; nothing above reads the rule.
+        answer_named=name_the_filed_definition(line, envelope, answers),
         # **From the ROW, not from a second copy of the arithmetic.**
         # :func:`_born_purchase` computed the figure from the line and
         # ``create_entry`` stored it, so reading it back is the one place it is
@@ -587,7 +610,7 @@ def create_purchase_from_line(
         amount=entry.amount,
         posts_on=line.posted_on,
         made_on=made_on,
-        pay_period_id=pay_period_id,
+        pay_period_id=period.period_id,
         # **The DIRECTION, stated where the line is in hand** (ruling
         # **bank_import:R-II**, plan step ``bank_import:X-gj-2b-3``).  Asked
         # through :func:`~._rules.is_inflow`, this package's one statement of

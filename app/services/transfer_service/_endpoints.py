@@ -28,20 +28,24 @@ ledger afterwards; which two accounts the pair sits on, and what a move between
 them is refused for, is one question and it is this module's.
 
 Flask-isolated like the rest of the package: plain data and ORM rows in,
-mutations applied in place, no ``request`` / ``session`` imports, no flush, no
-commit -- the caller owns the session boundary.
+mutations applied in place, no ``request`` / ``session`` imports, no flush or
+commit of its own -- the caller owns the session boundary.  (Reading a settled
+leg's covering movements is a lazy load, which may autoflush pending writes;
+every refusal in the update runs before this module writes.)
 """
 
 from typing import NamedTuple
 
 from app.exceptions import ValidationError
 from app.models.account import Account
+from app.services.status_seam import covering_movements
 from app.services.transfer_service._create import shadow_names
 from app.services.transfer_service._loan_posting import (
     _reject_transfer_out_of_loan,
 )
 from app.services.transfer_service._ownership import _get_owned_account
 from app.services.transfer_service._validation import TransferRows
+from app.utils.balance_predicates import settled_status_ids
 
 
 class _Endpoints(NamedTuple):
@@ -237,6 +241,33 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     against the wrong loan.  Assigning the relationship writes both halves at
     once and leaves nothing to remember.
 
+    **A settled leg's covering movement moves with it** (plan step
+    **X-bi-3c**, ruling **R-BAL46**).  A movement's account IS its parent's --
+    ``fk_transaction_entries_parent_account`` keys the pair onto the parent's
+    ``(id, account_id)`` and, since migration ``c4e8a2d7f1b3``, CASCADES the
+    parent's UPDATE -- so the database moves the movement whether or not this
+    function does.  It is assigned here as well for the SESSION's sake: the
+    ORM never learns what a cascade wrote, and a loaded movement left saying
+    the old account would disagree with the row beneath it for the rest of
+    the request.  Assigning the id rather than a relationship, because the
+    entry declares none over ``account_id`` (the column is the co-located key
+    the composite FK holds, not a join path).  A movement carrying a clearing
+    link refuses the move at the database -- ``fk_transaction_entries_
+    reconciled_by`` names a statement of the account it was on -- exactly as
+    the shadow's own ``fk_transactions_reconciled_by`` refuses it today
+    (ledger row **BAL-503**), so the movement adds no failure its parent does
+    not have.
+
+    **Read for a SETTLED leg only.**  A movement exists while its parent is in
+    the settled band and is released the moment it leaves
+    (``status_seam._covering``), so an unsettled leg's ``entries`` hold none
+    and reading them would cost the recurrence engine's maintain pass two lazy
+    loads and an autoflush per transfer it re-points (62 on one live
+    template).  The gate loses nothing if the seam's lifecycle ever changes:
+    the DATABASE moves the movement whether this assignment runs or not, and
+    what the assignment protects is the session's view of a row this request
+    has loaded.
+
     Args:
         rows: The transfer and both shadows.
         endpoints: The resolved :class:`_Endpoints`; a no-op when its *vacated*
@@ -253,3 +284,12 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     rows.expense.name = expense_name
     rows.income.account = endpoints.to_account
     rows.income.name = income_name
+    settled_ids = settled_status_ids()
+    for shadow, account in (
+        (rows.expense, endpoints.from_account),
+        (rows.income, endpoints.to_account),
+    ):
+        if shadow.status_id not in settled_ids:
+            continue
+        for movement in covering_movements(shadow):
+            movement.account_id = account.id

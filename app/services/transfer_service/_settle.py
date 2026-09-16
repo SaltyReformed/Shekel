@@ -77,6 +77,7 @@ from app.services.cash_ledger import (
 )
 from app.services.row_valuation import fixed_contribution
 from app.services.settle_day import SettleDay
+from app.services import status_seam
 from app.services.status_seam import (
     Settlement,
     honoured_correction,
@@ -431,19 +432,30 @@ def settle(
 def record_clearing(shadow: Transaction, anchor_id: int) -> None:
     """Record WHICH statement showed one leg of a transfer (ruling **R-FL**).
 
-    **The one column of a shadow that is deliberately NOT mirrored**, and the
-    reason a shadow mutation lives here rather than at the reconcile panel that
-    calls it.  ``CLAUDE.md``'s transfer invariant 4 says no code path mutates a
-    shadow directly; invariant 3 says the amounts, statuses and periods of the
-    three rows always match.  Clearing is neither: a transfer LEAVES one bank
-    and ARRIVES at another, so the asserted account's statement showed its own
-    leg and the other account's statement is a document nobody read in that
-    act.  Mirroring it would record an observation nobody made, on an account
-    whose balance the user has not looked at.
+    **The one fact of a shadow that is deliberately NOT mirrored to its
+    sibling**, and the reason a shadow mutation lives here rather than at the
+    reconcile panel that calls it.  ``CLAUDE.md``'s transfer invariant 4 says
+    no code path mutates a shadow directly; invariant 3 says the amounts,
+    statuses and periods of the three rows always match.  Clearing is
+    neither: a transfer LEAVES one bank and ARRIVES at another, so the
+    asserted account's statement showed its own leg and the other account's
+    statement is a document nobody read in that act.  Mirroring it would
+    record an observation nobody made, on an account whose balance the user
+    has not looked at.
 
     So the fact is per-leg and the DOOR is still the transfer service -- which
     is what keeps invariant 4 true as written, and what gives the asymmetry one
     place to be explained rather than a comment at a caller.
+
+    **The write itself is the status seam's, since plan step X-bi-3c.**  A
+    settled leg carries a covering movement from that step, the payment row
+    whose fact the fold and ``StatementCoverage`` read (rulings **R-BAL39**,
+    **R-BAL41**), and the link must reach it or the panel's clearing rule is
+    inert for every transfer it ticks -- the gap ``status_seam.record_clearing``
+    closed for a bill at 3a.  That function is the ONE writer of a
+    transaction's link outside the seam's release arms and writes the row and
+    its mirror together; this door hands it the leg.  Spelling the two
+    assignments here instead would be a second writer of one fact.
 
     **It writes the link and nothing else.**  The settle itself -- the status,
     the pair's day, the loan freeze, the correction rule -- is
@@ -452,7 +464,9 @@ def record_clearing(shadow: Transaction, anchor_id: int) -> None:
     ``ck_transactions_cleared_needs_settle_day``, which pairs this column with
     the settle day the seam writes.
 
-    Flushes nothing and commits nothing -- the caller owns the session boundary.
+    Issues no flush and no commit of its own -- the caller owns the session
+    boundary; the seam's read of the leg's ``entries`` may autoflush pending
+    writes, as any lazy load does.
 
     Args:
         shadow: The leg on the account whose statement was read.  The caller
@@ -461,4 +475,4 @@ def record_clearing(shadow: Transaction, anchor_id: int) -> None:
             it is this owner's and on this account by construction.
         anchor_id: The ``budget.account_anchor_history`` row the statement is.
     """
-    shadow.reconciled_by_id = anchor_id
+    status_seam.record_clearing(shadow, anchor_id)

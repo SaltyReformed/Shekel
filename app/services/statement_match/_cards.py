@@ -622,9 +622,7 @@ def creatable_card(
         The :class:`LineCard`.
     """
     placement = creatable.placement
-    names_a_home = placement is not None and (
-        placement.records_in or placement.creates
-    )
+    names_a_home = placement is not None and placement.names_a_home
     return LineCard(
         line=creatable.line,
         section=Section.BY_RULE if names_a_home else Section.NOTHING,

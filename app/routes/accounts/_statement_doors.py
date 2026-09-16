@@ -60,6 +60,7 @@ from app.services.statement_match import (
     IncomeCreation,
     MatchSubmission,
     NewEnvelope,
+    PlaceIn,
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
@@ -526,21 +527,7 @@ def submitted_batch(submitted) -> ReviewedBatch:
         consent=Consent.TICKED,
         matches=tuple(submitted_match(item) for item in submitted["matches"]),
         creations=tuple(
-            PurchaseCreation(
-                line_id=item["line_id"],
-                transaction_id=(
-                    None if item["destination"] == NEW_ENVELOPE
-                    else item["destination"]
-                ),
-                new_envelope=(
-                    NewEnvelope(
-                        name=item["envelope_name"],
-                        category_id=item["category_id"],
-                    )
-                    if item["destination"] == NEW_ENVELOPE else None
-                ),
-            )
-            for item in submitted["creations"]
+            _purchase_creation(item) for item in submitted["creations"]
         ),
         # **Every kind of act a pass can carry** (ruling
         # **bank_import:R-GW**).  A construction naming two of three kinds
@@ -554,6 +541,38 @@ def submitted_batch(submitted) -> ReviewedBatch:
             for item in submitted["skips"]
         ),
     )
+
+
+def _purchase_creation(item: dict) -> PurchaseCreation:
+    """Return one ticked line's creation, its destination read into ONE arm.
+
+    The schema's :class:`~app.schemas.validation.statements.PurchaseDestination`
+    hands back one of three values -- an envelope's id, :data:`NEW_ENVELOPE`,
+    or a :class:`~app.services.statement_match.PlaceIn` naming a one-off
+    envelope's definition to place a row of (plan step ``balance:X-bi-7b``
+    leaf 7b-3) -- and each is exactly one of
+    :class:`~app.services.statement_match.PurchaseCreation`'s arms, so the
+    value is built here once rather than by three conditionals per field.
+
+    Args:
+        item: One loaded creation from the batch schema.
+
+    Returns:
+        The creation.
+    """
+    destination = item["destination"]
+    if destination == NEW_ENVELOPE:
+        return PurchaseCreation(
+            line_id=item["line_id"],
+            new_envelope=NewEnvelope(
+                name=item["envelope_name"], category_id=item["category_id"],
+            ),
+        )
+    if isinstance(destination, PlaceIn):
+        return PurchaseCreation(
+            line_id=item["line_id"], template_id=destination.template_id,
+        )
+    return PurchaseCreation(line_id=item["line_id"], transaction_id=destination)
 
 
 def outcome_counts(outcome) -> dict:

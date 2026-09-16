@@ -319,8 +319,10 @@ class MatchCandidates:
             for row in review.unmatched_rows:
                 window = row.expected_window
                 # **A row the app can date no way at all reaches no period.**
-                # It is unconstructible through either candidate arm -- both
-                # fill ``expected_on`` from a NOT NULL column -- and
+                # It is unconstructible through either candidate arm -- a
+                # purchase's day is a NOT NULL column and a transaction's
+                # constructor declines a row whose period the calendar lacks
+                # -- and
                 # :func:`~._pairing.within_window` refuses the same row for
                 # the same reason, so the two readers cannot disagree about
                 # what an undatable row is worth.  The SEARCH still reaches

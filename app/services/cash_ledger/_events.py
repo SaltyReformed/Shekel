@@ -334,17 +334,20 @@ class CashSourceFact:
 
     **The scope of that "by construction" is ordinary transactions, and stating
     the exception is part of the claim.**  A TRANSFER shadow is posted by
-    ``posting_service.sync_transfer_postings``, whose magnitude is
-    ``_settle_effective`` -- a ``COALESCE(actual_amount, estimated_amount)`` read
-    off the transfer's INCOME shadow, with no credit term and no call to this
+    ``posting_service.sync_transfer_postings`` as ONE entry for the pair, whose
+    magnitude is ``_settle_effective`` -- the income shadow's settlement RECORD
+    through ``posting_reads.settled_figure_clause`` -- with no call to this
     rule (``sync_transaction_postings`` returns ``[]`` for any row carrying a
-    ``transfer_id``).  The two agree today only because Transfer Invariant 3
-    mirrors ``actual_amount`` onto both shadows and ``entry_service`` refuses
-    entries on a shadow at all, so the credit term is always zero -- which is
-    exactly the "two rules that happen to agree" shape this module claims to have
-    ended, surviving on the rows that carry the largest cash movements.  Plan step
-    X-d must either unify the transfer path onto this rule or except it
-    explicitly; it is not left implicit.
+    ``transfer_id``).  Since plan step X-bi-3c a settled shadow carries a
+    covering movement, so the walk reads each leg as ``0 + movement`` while
+    the ledger reads the row's record: the two agree because the status seam
+    mirrors ONE record into both homes (the interval ruling **R-BAL40**
+    accepts for a bill, and rule 14's known instance), not because they share
+    a producer.  The ruled endpoint is one entry per movement on its own bank
+    day against a transfers-in-transit clearing account (ruling **R-BAL45**),
+    posted at ``X-bi-6`` when the shadow mirror and Transfer Invariant 3's
+    one-day-per-pair clause go; until then the exception is stated here rather
+    than left implicit.
 
     **Why it is not simply the row's own figure, measured.**  An envelope's
     CREDIT-card entries never leave checking: each is settled by its own CC

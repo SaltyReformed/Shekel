@@ -214,9 +214,12 @@ from ._creations import (
     CreatedPurchase,
     IncomeCreation,
     NewEnvelope,
+    PlaceIn,
     PurchaseCreation,
     PurchaseDestination,
     RecordedIncome,
+    parse_place_token,
+    place_token,
 )
 from ._destinations import destinations_for
 from ._income import record_income_from_line
@@ -354,6 +357,7 @@ __all__ = [
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
+    "PlaceIn",
     "Placement",
     "PlacementKind",
     "PlannedRemoval",
@@ -411,6 +415,8 @@ __all__ = [
     "create_purchase_from_line",
     "record_income_from_line",
     "destinations_for",
+    "parse_place_token",
+    "place_token",
     "file_new_swipes",
     "matched_subjects",
     "merchant_directory",

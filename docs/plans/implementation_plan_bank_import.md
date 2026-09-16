@@ -62,23 +62,10 @@ nothing and says so on its own first line. The code as committed is what those s
       **It is no longer the sequenced follow-on ruling R-EB made it** (developer, 2026-08-13): what
       the cash cutover needed was the CLEARING FACTS, not the import surface. When it ticks is
       `steps.md`'s to say and is not restated here (conventions rule 16).
-  - [ ] **X-f6c** `feat(import): a merchant answer names a template` -- a NEW-ENVELOPE answer
-        creates a recurring TEMPLATE once and names that template thereafter, so the container a
-        merchant rule files into carries an identity ACROSS pay periods instead of a NAME. Finding
-        **N-328**, ruled by the developer 2026-08-20 on the argument **R-GA** already makes: a
-        budget line either has a period-independent identity or it does not, so the answer set is
-        really {existing template, NEW template, never} and *a new envelope* is
-        *a new template, first time*. X-f6a-4's convergence made the fragmentation stop; it did not
-        give the row an identity, so the reuse it performs is a string compare on a name the owner
-        can rename. **Verified before the ruling rather than assumed**: a template carrying no
-        recurrence rule generates nothing (`recurrence_engine._generate.resolve_generation_plan`
-        returns `None` for a rule-less template), so this adds no unwanted future rows.
-        **It waits on `balance:X-au-e`** and the reason is a constraint rather than a preference: a
-        row that HAS a template has a derivation to read (`ck_transactions_amount_ownership`), and
-        X-au-e is the step that rebuilds what a templated row's amount is. Building against today's
-        shape would mean building it twice. **One step with `balance:X-bi-7b` since 2026-09-13**
-        (balance **R-BAL24**): that leaf's one-off producer is what mints the template, so this
-        entry is the bank_import half of one specification.
+  - [x] **X-f6c** `321bf2e4` -- one step with `balance:X-bi-7b` (**R-BAL24**), shipped at its leaf
+        `X-bi-7b-3`: a NEW-ENVELOPE merchant answer mints ONE rule-less definition the first time
+        and names it thereafter, so a merchant rule's container carries an identity across pay
+        periods instead of a name; closed **N-328** (**R-GA**'s argument, ruled 2026-08-20).
   - [ ] **X-f6g** `refactor(reconcile): a statement-covered account reconciles from statements` --
         the reconcile panel stops offering an account whose statements the owner imports
         (**R-GD(d)**). **Its specification pass FOLDED into `balance:X-bj-1` on 2026-09-03**
@@ -186,13 +173,12 @@ what it leaves a LATER step is on that step's own entry.
       REPRODUCED first (the door applied, the receipt offered nothing). Graded by
       `test_offered_rules.py` (BI-495 class + the real door behind every case) and `test_batch.py`
       (only the create arm names a merchant).
-- [ ] **X-gz** `feat(import): the match pane shows the dates a human verifies by` -- **BI-498**,
-      **R-BI9** (outcome O0, minted 2026-09-15 when the first production matching session stopped at
-      22 of 172 lines). Each candidate row carries its BUDGETED placement (pay-period start or
-      range) and, for an envelope entry, its `purchased_on`; every date is labelled by kind and the
-      gap to the bank line's own date is printed; the `settled_on` stamp (`.rec-row-day`, 0.75rem
-      muted) goes. Door: `_statement_reconcile_match.html`, `CandidateRow` (`_offers.py`, which
-      already carries `expected_window`), the preview producer, `accounts.css`.
+- [x] **X-gz** `08a66901` -- the match pane shows the dates a human verifies by (**R-BI9** and its
+      two sub-rulings; closed **BI-498**; outcome O0 delivered 2026-09-16): each candidate row
+      carries its BUDGETED placement and, for an envelope entry, its `purchased_on`, every date
+      labelled by kind in the paycheck register's MM/DD, the gap to the bank's date printed, the
+      settle day never shown (`.rec-row-day` now names the per-fact span, `accounts.css:1205-1211`);
+      `CandidateRow` carries `period` and `purchased_on`; `_dating.py` presents; `_caveat.py` split.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.

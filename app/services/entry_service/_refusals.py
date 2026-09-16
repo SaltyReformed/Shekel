@@ -49,7 +49,10 @@ from app.utils.dates import display_today
 #:   WARNING (:func:`._sums.entry_list_view`), the reconcile panel's sort and
 #:   its two OFFER predicates
 #:   (``reconcile_service._rows.lands_on_or_before``,
-#:   ``_purchases._outstanding_scope``), the matcher's ``expected_on``, three
+#:   ``_purchases._outstanding_scope``), the matcher's
+#:   ``CandidateRow.purchased_on`` (its ``expected_on`` derives from it, and
+#:   the Reconcile MATCH pane prints it as the *purchased* fact since plan
+#:   step ``bank_import:X-gz``), three
 #:   template fields.  **No valuation reads it.**  ``_outstanding_scope`` does
 #:   admit a SETTLED parent, so this day gates which purchases the reconcile
 #:   panel offers and a tick there writes ``settled_on`` -- admitted knowingly:

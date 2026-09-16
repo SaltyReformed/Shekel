@@ -503,12 +503,15 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
     A row with no entries answers True over an empty sequence, so a bill, a
     deposit and a TRANSFER SHADOW are unaffected: they carry a single amount,
     and :func:`lands_on_or_before` is the whole bound for them.  **A shadow
-    structurally cannot carry one** -- ``entry_service.create_entry`` refuses a
-    parent that is not ``tracks_purchases``, and a shadow has no template and a
-    False ``is_envelope`` -- which production confirms at 342 shadows and 0
-    entries against any of them.  It is asked of the transfer arm anyway, and
-    that is the point of a shared bound: an arm does not get to decide that
-    half of "could this statement settle this row" does not apply to it.
+    holds no PURCHASE** -- ``entry_service.create_entry`` refuses a parent
+    that is not ``tracks_purchases``, and a shadow has no template and a False
+    ``is_envelope`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
+    entry a shadow does hold since plan step ``balance:X-bi-3c`` is the status
+    seam's covering movement, written when the leg SETTLES and released when
+    it leaves the band, so no row this OUTSTANDING scope offers carries one.
+    It is asked of the transfer arm anyway, and that is the point of a shared
+    bound: an arm does not get to decide that half of "could this statement
+    settle this row" does not apply to it.
 
     **It takes the STATEMENT rather than a bare day**, which is the shape all
     three per-row predicates here share since plan step C4-a-2.  Two of them

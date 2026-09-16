@@ -180,8 +180,10 @@ def outstanding_transfers(
     being a choice made here.**  A tick is correctable exactly when the settle
     verb takes its MANUAL branch, and a transfer has no other branch to take: a
     shadow carries no template and a False ``is_envelope``, so it is never
-    purchase-tracked and there are no entries for a figure to be derived from
-    (measured on production: 342 shadows, 0 entries against any of them).  The
+    purchase-tracked and there are no purchases for a figure to be derived from
+    (measured on production 2026-09-15: 342 shadows, 0 entries; since plan step
+    ``balance:X-bi-3c`` a SETTLED shadow holds the seam's covering movement,
+    which is the settle's own record and never a purchase to derive from).  The
     box is PREFILLED with what the tick would book, so an untouched tick is an
     echo and writes nothing -- ``transfer_service.settle_transfer`` tells the
     two apart as it settles, and says which it was in its return value.
@@ -222,8 +224,10 @@ def outstanding_transfers(
             transaction_id=shadow.id,
             attributed_on=_rows.attributed_on(statement, shadow),
             amount=transfer_service.settle_amount(shadow, basis),
-            # Always the whole figure: a shadow can hold no entries, so there
-            # is no card half for the statement to disagree with (N-226).
+            # Always the whole figure: a shadow can hold no PURCHASE (its one
+            # possible entry is the seam's covering movement, and only once it
+            # has settled), so there is no card half for the statement to
+            # disagree with (N-226).
             cash_amount=None,
             is_correctable=True,
             is_income=shadow.is_income,

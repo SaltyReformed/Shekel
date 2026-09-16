@@ -23,6 +23,7 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.one_off import another_row_answers, due_date_for
 from app.services.pay_calendar import DerivedPeriod
 from app.utils.balance_predicates import is_projected_clause
 
@@ -192,25 +193,26 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     for txn in projected_txns:
         if txn.transfer_id is not None:
             shadow_txns.append(txn)
-        elif txn.recurs and txn.tracks_purchases:
+        elif txn.template_id is not None and txn.tracks_purchases:
             # Envelope ROLLOVER folds the unspent leftover into the
-            # definition's next-period canonical (created via
-            # recurrence_engine.generate_for_template) or, where the rule
-            # names no row there, a fresh row of the SAME definition.  An
-            # envelope row NO RULE generated -- ad-hoc, or a rule-less
-            # definition's -- has no next canonical and no rule to place a
-            # leftover row by, so it intentionally falls through to the
-            # discrete bucket and moves whole, carrying its entries.  **The
-            # gate is ``recurs`` since plan step balance:X-bi-7a** (ruling
-            # R-BAL20; ``from_scratch_architecture.md`` 10.4 trace 4): it
-            # read the LINK, so a definition whose cadence the owner cleared
-            # took the rollover and gained a second row answering no
-            # occurrence -- two rows on a definition that places one.  A bare
-            # ``txn.tracks_purchases`` would sweep every envelope in.  The
-            # envelope half reaches the one accessor rather than restating
-            # ``template.is_envelope`` beside it (plan step balance:X-bi-1,
-            # ruling R-IZ); ``recurs`` reads the key first, so a link-less
-            # row costs no load.
+            # definition's next-period row: a RECURRING definition's canonical
+            # (created via recurrence_engine.generate_for_template) or, where
+            # the rule names no row there, a fresh override row; a RULE-LESS
+            # definition's placed row there, or one PLACED for it through
+            # ``one_off.place_row_of`` (ruling **R-BAL44**, plan step
+            # balance:X-bi-7b leaf 7b-3).  Plan step X-bi-7a keyed this on
+            # ``recurs`` -- a rule-less envelope moved WHOLE -- because a
+            # second row of a rule-less definition contradicted R-BAL20's
+            # *one placed occurrence*; R-BAL24 amended that to *its placed
+            # rows*, one per paycheck, and a rule-less envelope carried whole
+            # into a paycheck already holding its sibling collided on the
+            # occurrence index (finding **BAL-496**).  So the rollover is
+            # every ENVELOPE OF A DEFINITION's, and only a LEGACY link-less
+            # envelope (until the family's cutover mints it one) still moves
+            # whole, carrying its entries.  The envelope half reaches the one
+            # accessor rather than restating ``template.is_envelope`` beside
+            # it (plan step balance:X-bi-1, ruling R-IZ); the link is read
+            # first, so a link-less row costs no load.
             envelope_txns.append(txn)
         else:
             discrete_txns.append(txn)
@@ -344,8 +346,10 @@ class _TargetKind(enum.Enum):
 
     TOP_UP = "top_up"        # exactly one mutable row exists -> bump it
     GENERATE = "generate"    # empty + active template -> engine creates canonical
-    CREATE = "create"        # no usable row -> create a fresh override row
+    CREATE = "create"        # no usable row -> a fresh override row (recurring)
+    #                          or a row placed for the definition (rule-less)
     AMBIGUOUS = "ambiguous"  # >1 mutable row, unresolvable -> refuse
+    CLOSED = "closed"        # a rule-less definition's one row here has closed
 
 
 @dataclass(frozen=True)
@@ -356,7 +360,10 @@ class _TargetResolution:
 
     Attributes:
         kind: One of the :class:`_TargetKind` outcomes.
-        row: The row to bump -- set only for ``TOP_UP``; ``None``
+        row: The row to bump for ``TOP_UP``; for ``CLOSED``, the target's
+            finalised row of the definition where that is the arm that
+            fired, and ``None`` where a row elsewhere answers the target's
+            start (the callers word the refusal by which); ``None``
             otherwise.
         base: The destination row's pre-bump amount -- what the existing row's
             amount RESOLVES to for ``TOP_UP`` (plan step X-au-c2b; it was that
@@ -397,7 +404,20 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
         which the caller then bumps.
       * ``CREATE`` -- otherwise (inactive template, only finalised rows,
         or only soft-deleted rows); the caller creates a fresh override
-        row carrying the leftover.
+        row carrying the leftover -- or, for a RULE-LESS definition, PLACES
+        a row of it in the target (ruling **R-BAL44**).
+      * ``CLOSED`` -- a RULE-LESS definition whose row in the target has
+        FINALISED, or a row of it -- the source itself, dated by its owner
+        into the target, or any sibling -- that already ANSWERS the
+        target's start (``one_off.another_row_answers``, the occurrence
+        index's own predicate; the second arm found by 7b-3's adversarial
+        review, which dated the source at the target's start and met the
+        index).  Such a definition places ONE row per paycheck, answering
+        the paycheck's start (rulings **R-BAL24** / **R-BAL25**), so a second
+        row there would answer an occurrence a row already does; the
+        leftover has nowhere to go and the caller refuses rather than guess.
+        A recurring definition in the same state takes ``CREATE`` because
+        its fresh row is an override answering no occurrence.
 
     Uses ``recurrence_engine.can_generate_in_period`` (a read-only
     predictor) rather than ``generate_for_template`` (which would create
@@ -441,10 +461,11 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
             base=resolve_transaction_amount(recipient, basis),
         )
     # ``source_txn.template`` is never ``None`` here: the context routes a row
-    # into ``envelope_txns`` only when it RECURS (plan step balance:X-bi-7a),
-    # and a row that recurs names a definition.  A ``template is not None``
-    # guard stood on both reads until then and was dead under the old link
-    # gate too (a linked row's template loads); it went with the re-key.
+    # into ``envelope_txns`` only when it names a DEFINITION (recurring or
+    # rule-less since ruling R-BAL44; recurring alone from plan step
+    # balance:X-bi-7a).  ``can_generate_in_period`` answers False for a
+    # rule-less definition (its plan resolves to nothing), so such a
+    # definition never takes GENERATE.
     if (not non_deleted
             and recurrence_engine.can_generate_in_period(
                 source_txn.template, target_period.period_id,
@@ -453,4 +474,11 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
         return _TargetResolution(
             _TargetKind.GENERATE, base=source_txn.template.default_amount,
         )
+    if not source_txn.recurs and non_deleted:
+        return _TargetResolution(_TargetKind.CLOSED, row=non_deleted[0])
+    if not source_txn.recurs and another_row_answers(
+        source_txn.template_id, basis.scenario_id,
+        due_date_for(None, target_period),
+    ):
+        return _TargetResolution(_TargetKind.CLOSED)
     return _TargetResolution(_TargetKind.CREATE, base=Decimal("0"))
