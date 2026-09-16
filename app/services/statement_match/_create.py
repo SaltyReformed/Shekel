@@ -72,6 +72,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
@@ -112,6 +113,9 @@ from ._outcome import FiledMerchant
 from ._reads import as_bank_line
 from ._rules import LinePipeline, is_inflow, pipeline_for
 from ._scope import ReviewScope, reject_impossible_days
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import PayCalendar
 
 _logger = logging.getLogger(__name__)
 
@@ -363,6 +367,7 @@ def _match_content(
     line: BankStatementLine,
     envelope: Transaction,
     created: bool,
+    calendar: "PayCalendar",
 ) -> MatchContent:
     """Return what this act ASSERTS and what it BROUGHT INTO EXISTENCE.
 
@@ -386,11 +391,15 @@ def _match_content(
         line: The bank line it explains.
         envelope: The budget line it went into.
         created: Whether THIS act made that budget line.
+        calendar: The pass's calendar, which the candidate's placement is
+            read from -- the constructor takes it since plan step
+            ``bank_import:X-gz``, and this door hands it the one the pass
+            holds rather than loading a second.
 
     Returns:
         The :class:`~._accept.MatchContent`.
     """
-    candidate = purchase_candidate(entry)
+    candidate = purchase_candidate(entry, calendar)
     return MatchContent(
         lines=[line], rows=[candidate],
         created=_made_by_this_act(candidate, envelope, created),
@@ -557,7 +566,7 @@ def create_purchase_from_line(
     db.session.flush()
     accepted = record_match(
         scope,
-        _match_content(entry, line, envelope, created),
+        _match_content(entry, line, envelope, created, scope.calendar),
         matched,
         # **The PASS's own answer, threaded rather than decided here** (ruling
         # **R-GT**).  This door has two entrances since plan step

@@ -38,6 +38,7 @@ from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
 )
+from app.services.pay_calendar import calendar_for
 from app.services.statement_match._candidates import purchase_candidate
 from app.models.amount_ownership import AmountOwnership
 
@@ -2206,7 +2207,9 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
 
             db.session.expire_all()
             saved = db.session.get(TransactionEntry, entry.id)
-            assert purchase_candidate(saved).expected_window == (
+            assert purchase_candidate(
+                saved, calendar_for(seed_user["user"].id),
+            ).expected_window == (
                 self._MADE_ON, self._ASSERTED_FOR,
             )
 

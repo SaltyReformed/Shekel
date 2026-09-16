@@ -25,7 +25,7 @@ from decimal import Decimal
 import pytest
 from werkzeug.datastructures import MultiDict
 
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.models.account import Account
 from app.models.category import Category
 from app.models.merchant_rule import MerchantRule
@@ -33,7 +33,7 @@ from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
-from app.services import auth_service, entry_service
+from app.services import auth_service, entry_service, pay_calendar
 from app.models.statement_line_skip import StatementLineSkip
 from app.services.statement_match import REGISTER_LIMIT, Tab, skip_line
 # Pylint: ``shekel-private-module-import`` -- a route test naming the CARD
@@ -51,6 +51,8 @@ from tests._test_helpers import open_owner_calendar
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     an_account_whose_books_hide_a_line,
+    a_later_period,
+    a_purchase,
     a_rule,
     a_transaction,
     an_envelope,
@@ -1038,7 +1040,7 @@ class TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn:
 
     A row whose figure is not its own -- a CC payback, or a container priced
     from the purchases inside it -- can never be a bank line by itself, so the
-    pane tags it and says why (:data:`~app.services.statement_match._offers
+    pane tags it and says why (:data:`~app.services.statement_match._caveat
     .NOT_SHOWN_ALONE`).  The row STAYS tickable, because ruling **R-GJ** leaves
     grouping it against the line that does carry its money as a parked card
     payment's one remaining arm.
@@ -4517,6 +4519,172 @@ class TestATickedRowStillOfferedIsRenderedWhateverListIsShowing:
             "or is rendered unticked -- either way a browser drops it from "
             "the act without saying so"
         )
+
+
+class TheMatchPaneShowsTheDatesAHumanVerifiesBy:
+    """Plan step ``bank_import:X-gz``, ruling **R-BI9**, finding **BI-498**.
+
+    A base rather than a test class: the two surfaces that render the pane --
+    the live fragment and the ``?open=`` page -- share the staging and the
+    assertions, and each subclass names its own render.  The staged case is
+    the finding's own: a `$47.61` fuel purchase made three days BEFORE the
+    paycheck its envelope is budgeted in opened, settled by a balance true-up
+    thirty-three days later, offered against a bank line posted the day after
+    it was made.  The pane labelled that row "2026-08-18" and the developer
+    stopped the first production matching session at 22 of 172 lines.
+    """
+
+    def _the_finding_s_case(self, seed_user, db):
+        """Stage entry 68 against line 303, on the seeded calendar.
+
+        Returns:
+            ``(line, purchase, later)`` -- the bank line, the purchase a tier
+            will propose for it, and the paycheck the purchase is budgeted in.
+        """
+        later = a_later_period(seed_user)
+        made_on = later.start_date - timedelta(days=3)
+        asserted_for = later.start_date + timedelta(days=33)
+        envelope = a_transaction(
+            seed_user, name="Gas", is_envelope=True, period=later,
+        )
+        purchase = a_purchase(
+            seed_user, envelope, amount="47.61", description="Bjs",
+            purchased_on=made_on, settled_on=asserted_for,
+            settle_day_basis=SettledDayBasisEnum.ASSERTED,
+        )
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-47.61",
+            posted_on=made_on + timedelta(days=1),
+            description="POINT OF SALE DEBIT L343 BJS FUEL #9151",
+        )
+        db.session.commit()
+        return line, purchase, later
+
+    def _render(self, auth_client, seed_user, line, query=None):
+        """Return the surface under test, with *line*'s pane in it."""
+        raise NotImplementedError
+
+    @staticmethod
+    def _labelled(label, text):
+        """Return the pattern one labelled date renders as."""
+        return rf'{label}\s*<span class="font-mono">{re.escape(text)}</span>'
+
+    def test_a_purchase_prints_its_day_its_paycheck_and_the_gap_and_not_the_stamp(
+        self, auth_client, db, seed_user,
+    ):
+        """The finding, end to end through the real door."""
+        line, purchase, later = self._the_finding_s_case(seed_user, db)
+        paycheck = pay_calendar.calendar_for(
+            seed_user["user"].id,
+        ).period_by_id(later.id).label
+        made = purchase.purchased_on.strftime("%m/%d")
+        stamp_iso = purchase.settled_on.isoformat()
+        stamp = purchase.settled_on.strftime("%m/%d")
+
+        pane = self._render(auth_client, seed_user, line)
+
+        assert re.search(self._labelled("purchased", made), pane), (
+            f"the pane does not print 'purchased {made}' for the fuel purchase"
+        )
+        assert re.search(self._labelled("budgeted", paycheck), pane), (
+            f"the pane does not print 'budgeted {paycheck}' for the fuel purchase"
+        )
+        assert "the bank posted it 1 day after the purchase" in pane
+        assert stamp_iso not in pane, (
+            f"the true-up stamp {stamp_iso} is still printed on the pane"
+        )
+        assert re.search(self._labelled(r"\w+", stamp), pane) is None, (
+            f"the true-up stamp {stamp} is printed as a labelled date"
+        )
+        assert "not recorded" not in pane
+
+    def test_a_bill_prints_its_paycheck_and_the_gap_and_no_purchase_day(
+        self, auth_client, db, seed_user,
+    ):
+        """An unsettled transaction: budgeted in a paycheck, made on no day."""
+        period = seed_user["bootstrap_period"]
+        a_transaction(seed_user, name="Electricity", amount="180.00")
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00",
+            posted_on=period.start_date + timedelta(days=5),
+        )
+        db.session.commit()
+        paycheck = pay_calendar.calendar_for(
+            seed_user["user"].id,
+        ).period_by_id(period.id).label
+
+        pane = self._render(auth_client, seed_user, line)
+
+        assert re.search(self._labelled("budgeted", paycheck), pane), (
+            f"the pane does not print 'budgeted {paycheck}' for the bill"
+        )
+        assert "the bank posted it inside that pay period" in pane
+        # A direct pattern: ``_labelled`` escapes its text, so a character
+        # class handed to it would be matched literally and never found.
+        assert re.search(r'purchased\s*<span class="font-mono">', pane) is None, (
+            "a bill has no purchase day, yet the pane prints one"
+        )
+        assert "not recorded" not in pane
+
+
+class TestTheLiveFragmentShowsTheDatesAHumanVerifiesBy(
+    TheMatchPaneShowsTheDatesAHumanVerifiesBy,
+):
+    """The scripted surface: ``POST .../line/<id>/match``."""
+
+    def _render(self, auth_client, seed_user, line, query=None):
+        data = {"csrf_token": "x"}
+        if query is not None:
+            data[f"q-{line.id}"] = query
+        return auth_client.post(
+            _match_url(seed_user["account"].id, line.id), data=data,
+        ).get_data(as_text=True)
+
+    def test_the_CANDIDATE_list_prints_the_same_labels_as_the_proposed_one(
+        self, auth_client, db, seed_user,
+    ):
+        """The copy a change forgets is the candidates' (the searched list).
+
+        A second purchase no tier proposes -- a different figure -- is a
+        CANDIDATE and renders through the same macro, so its dates are
+        labelled too.  Asserted on the candidate row's own control id, which
+        only the candidate list emits.  It is made on the bank's own day,
+        because the search reaches only rows the recorded statement could
+        have shown (``_reads._could_have_been_shown``) and the account holds
+        one recorded line.
+        """
+        line, _, later = self._the_finding_s_case(seed_user, db)
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True, period=later,
+        )
+        other = a_purchase(
+            seed_user, envelope, amount="31.07", description="Food Lion",
+            purchased_on=line.posted_on,
+        )
+        db.session.commit()
+        made = other.purchased_on.strftime("%m/%d")
+
+        pane = self._render(auth_client, seed_user, line, query="Food")
+
+        candidate = re.search(
+            rf'id="row-{line.id}-purchase-{other.id}"(.*?)</label>', pane, re.S,
+        )
+        assert candidate is not None, "the search did not offer Food Lion"
+        assert re.search(
+            self._labelled("purchased", made), candidate.group(1),
+        ), f"the candidate list does not print 'purchased {made}'"
+        assert "the bank posted it on the purchase day" in candidate.group(1)
+
+
+class TestTheScriptlessPageShowsTheDatesAHumanVerifiesBy(
+    TheMatchPaneShowsTheDatesAHumanVerifiesBy,
+):
+    """The ``?open=<line_id>`` render, which puts the pane in the document."""
+
+    def _render(self, auth_client, seed_user, line, query=None):
+        return _card_markup(_open(auth_client, seed_user, line.id), line.id)
 
 
 def _token_for(pane, line_id, label):

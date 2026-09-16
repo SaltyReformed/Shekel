@@ -1,5 +1,52 @@
 {% from "_money_macros.html" import money %}
 
+{% macro pick(opened, row, prefix) %}
+{#- ONE row the owner can tick, in EITHER list below.  ONE macro since plan
+    step bank_import:X-gz: the proposed rows and the candidate rows carried
+    the same markup twice, and the copy nobody remembered (the candidates')
+    is the one a change would have missed.
+
+    WHAT IT PRINTS ABOUT WHEN IS THE SERVICE'S (ruling R-BI9, finding
+    BI-498): `opened.days_of(row)` answers with each date LABELLED by its
+    kind -- purchased, budgeted -- and one sentence measuring the bank's
+    posted day from them.  Until that step this printed `row.settled_on`
+    bare, or "not recorded", and a balance true-up stamps the day the
+    balance was asserted for onto every purchase it settles, so 66 of the
+    developer's 110 purchases read "2026-08-18" whatever day they were
+    bought; he nearly refused a correct match and stopped the first
+    production matching session at 22 of 172 lines.  The settle day is not
+    a day this pane shows at all (developer, 2026-09-16): accepting writes
+    the bank's day over it, which the sentence above the rows already says.
+
+    Every branch here is on a fact the row STATES -- `not_shown_alone`,
+    the facts list -- and never on the kind of a date or the kind of a row,
+    which are the service's to decide. -#}
+{% set days = opened.days_of(row) %}
+<div class="rec-row-pick">
+  <input class="form-check-input" type="checkbox"
+         id="{{ prefix }}-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
+         name="rows-{{ opened.line.line_id }}" value="{{ row | reviewed_token }}"
+         {% if (row.kind, row.row_id) in opened.ticked %}checked{% endif %}>
+  <label class="rec-row-label"
+         for="{{ prefix }}-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
+    <span class="rec-row-name">{{ row.label }}</span>
+    {% set caveat = row.not_shown_alone %}
+    {% if caveat %}
+    <span class="badge text-bg-secondary fw-normal"
+          title="{{ caveat.sentence }}">{{ caveat.label }}</span>
+    {% endif %}
+    <span class="rec-row-days">
+      {% for fact in days.facts %}
+      <span class="rec-row-day">{{ fact.label }}
+        <span class="font-mono">{{ fact.text }}</span></span>
+      {% endfor %}
+      <span class="rec-row-gap">{{ days.gap }}</span>
+    </span>
+  </label>
+  <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
+</div>
+{%- endmacro %}
+
 {# THE MATCH TAB'S OWN BODY: the rows this line could be, and what the ticked
    ones come to.  Plan step bank_import:X-gj-1b, rulings R-HU and R-FN.
 
@@ -123,20 +170,7 @@
        form, changing the act without saying so. #}
     <div class="rec-rows rec-rows-proposed">
       {% for row in opened.proposal.rows %}
-      <div class="rec-row-pick">
-        <input class="form-check-input" type="checkbox"
-               id="proposed-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
-               name="rows-{{ opened.line.line_id }}" value="{{ row | reviewed_token }}"
-               {% if (row.kind, row.row_id) in opened.ticked %}checked{% endif %}>
-        <label class="rec-row-label"
-               for="proposed-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
-          <span class="rec-row-name">{{ row.label }}</span>
-          <span class="rec-row-day font-mono">
-            {% if row.settled_on %}{{ row.settled_on }}{% else %}not recorded{% endif %}
-          </span>
-        </label>
-        <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
-      </div>
+      {{ pick(opened, row, "proposed") }}
       {% endfor %}
     </div>
     {% endif %}
@@ -164,26 +198,7 @@
   {% if opened.rows %}
   <div class="rec-rows">
     {% for row in opened.rows %}
-    {% set token = row | reviewed_token %}
-    <div class="rec-row-pick">
-      <input class="form-check-input" type="checkbox"
-             id="row-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
-             name="rows-{{ opened.line.line_id }}" value="{{ token }}"
-             {% if (row.kind, row.row_id) in opened.ticked %}checked{% endif %}>
-      <label class="rec-row-label"
-             for="row-{{ opened.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
-        <span class="rec-row-name">{{ row.label }}</span>
-        {% set caveat = row.not_shown_alone %}
-        {% if caveat %}
-        <span class="badge text-bg-secondary fw-normal"
-              title="{{ caveat.sentence }}">{{ caveat.label }}</span>
-        {% endif %}
-        <span class="rec-row-day font-mono">
-          {% if row.settled_on %}{{ row.settled_on }}{% else %}not recorded{% endif %}
-        </span>
-      </label>
-      <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
-    </div>
+    {{ pick(opened, row, "row") }}
     {% endfor %}
   </div>
   {% elif opened.query %}

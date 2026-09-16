@@ -575,6 +575,35 @@ def month_name(value: int | None, abbr: bool = False) -> str:
     return names[index - 1]
 
 
+def day_label(value: date) -> str:
+    """Return one day's NARROW label (``"07/13"``), the register a paycheck is named in.
+
+    :func:`pay_period_label`'s one-ended sibling, stated here so a surface
+    printing a day BESIDE a paycheck label can speak the same register without
+    spelling it again.  Plan step ``bank_import:X-gz`` is the first caller: the
+    Reconcile MATCH pane prints a purchase's day beside the paycheck it is
+    budgeted in, and a pane reading ``07/13`` against ``07/16 - 07/29`` is one
+    register where ``2026-07-13`` against ``07/16 - 07/29`` would be two.
+    ``grid/_transaction_entries.html`` and ``accounts/_reconcile_panel.html``
+    (three sites) render the same ``%m/%d`` inline and could reach this
+    instead; collapsing them is a change to screens that step did not touch
+    (``CLAUDE.md`` rule 6), and ledger row **P47**'s census of range
+    spellings does not yet name a single-day site, so it is reported rather
+    than taken.
+
+    **No year, by the rule the paycheck label states one function down**: the
+    year is shown only where it disambiguates, and a single day beside its
+    paycheck is disambiguated by the paycheck.
+
+    Args:
+        value: Any date.
+
+    Returns:
+        ``MM/DD``, zero-padded.
+    """
+    return value.strftime("%m/%d")
+
+
 def pay_period_label(start_date: date, end_date: date) -> str:
     """Return a pay period's human label (``"02/21 - 03/06"``).
 
@@ -622,7 +651,7 @@ def pay_period_label(start_date: date, end_date: date) -> str:
             f"{start_date.strftime('%m/%d/%y')} - "
             f"{end_date.strftime('%m/%d/%y')}"
         )
-    return f"{start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')}"
+    return f"{day_label(start_date)} - {day_label(end_date)}"
 
 
 def pay_period_range_label(start_date: date, end_date: date) -> str:

@@ -30,10 +30,17 @@ import enum
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from app.enums import SettledDayBasisEnum
 
+from ._caveat import NOT_SHOWN_ALONE
 from ._sides import MatchSides
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    from app.services.pay_calendar import DerivedPeriod
+
+    from ._caveat import NotShownAlone
 
 
 class RowKind(enum.Enum):
@@ -55,88 +62,6 @@ class RowKind(enum.Enum):
 
 
 @dataclass(frozen=True)
-class NotShownAlone:
-    """Why a bank statement can never show one of the app's rows BY ITSELF.
-
-    **The panel that lists the rows a statement did not explain asserts an
-    INFERENCE, and for two row shapes that inference is false** (plan step
-    ``bank_import:X-gc``, ruling **R-GO**, the 2026-08-24 adversarial design
-    review).  Its
-    caption claims of every row that the owner's records say its money moved
-    and the statement never showed it moving, which only follows if that money
-    would have reached the bank as a line of its own.  A CC PAYBACK's does
-    not -- it leaves inside one lump
-    payment to the card, so the bank shows the payment and never the payback --
-    and an ENVELOPE whose figure is its purchases is the opposite shape with
-    the same consequence: the bank showed the purchases, not the container.
-    **The caption also named one DIRECTION until finding
-    bank_import:N-380** -- it said *a payment ... your bank did not make*,
-    which is a claim about an outflow, over a list that is 17 deposits in 49;
-    plan step ``bank_import:X-gf-3b-2`` took the direction out of the sentence
-    and left each row to state its own by its figure.
-
-    Measured on the developer's own dev database 2026-08-25: **18 of the
-    panel's 67 rows are CC Paybacks**, and the left-hand list beside them holds
-    **9 unexplained ``ACH DEBIT CAPITAL ONE ... PMT`` lines** those paybacks
-    are the counterpart of.
-
-    **So the rows are ANNOTATED and never withheld.**  That panel is also the
-    row-picker of the hand-build group form, and ruling **R-GJ** leaves the
-    group match as the only ACT a parked card-payment line has -- its other arm
-    is to PARK, which disposes of nothing -- so dropping the paybacks out of it
-    would close the one path the ruling kept open.  What was false was the
-    caption, not the membership.
-
-    Attributes:
-        label: The chip's own text, short enough to sit beside a row label.
-        sentence: The whole reason, carried as the chip's title.  It ends in
-            the ACT rather than in the diagnosis, which is
-            :attr:`~._bars.BarredLine.reason`'s shape one card over: a row the
-            owner cannot act on is a row they will read once.
-    """
-
-    label: str
-    sentence: str
-
-
-#: The one statement of it, because ONE property returns it and every surface
-#: subscripts that property.  It does not fork on WHICH of the two shapes a row
-#: is, and the measurement is why -- but the measurement is narrower than a
-#: first draft of this comment claimed, and the difference matters.
-#:
-#: **The ENVELOPE arm is unreachable through PRICING, not merely unexercised.**
-#: An envelope that derives its figure from entries values at
-#: ``gross - Sigma(card entries) - Sigma(posted purchases)``
-#: (:func:`~._candidates._price`), and
-#: :func:`~._candidates.transaction_candidate` drops a row worth nothing --
-#: measured 2026-08-25 on the developer's account, **63 of 63** such envelopes
-#: price to ``Decimal("0")`` and all 63 are dropped, so none can reach a panel.
-#: Every one of the 22 candidates stating no figure of its own is a CC payback.
-#: One sentence covering both therefore costs nothing today, and a fourteenth
-#: field on :class:`CandidateRow` to fork it would buy nothing.
-#:
-#: **What the panel DOES hold is a different envelope shape, and this
-#: deliberately does not claim it**: 7 envelope-tracked containers carrying
-#: ZERO entries (``Groceries`` `-163.95`, ``Gas`` `-40.00`, ``Mint Mobile`
-#: `-132.69`, ``Father's Day`` `-100.00` and three more).  Their figure IS
-#: their own -- there are no entries to derive it from, which is exactly what
-#: ``settles_from_entries``' second half exists to say -- and whether the bank
-#: showed such a row as ONE line or as several is a fact the app does not hold.
-#: ``Mint Mobile`` is plainly one.  Chipping them on ``tracks_purchases`` would
-#: withdraw the alarm from rows the bank may really have failed to show, which
-#: is the one direction this caveat may not fail in.
-NOT_SHOWN_ALONE = NotShownAlone(
-    label="not a line of its own",
-    sentence=(
-        "This row's figure is not its own to state -- it is the purchases "
-        "inside it, or the card spending it repays -- so your bank never "
-        "shows it as a line by itself.  Tick it here together with the line "
-        "that does carry its money, and match them."
-    ),
-)
-
-
-@dataclass(frozen=True)
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
@@ -151,7 +76,8 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     the figure and the revision together.  ``TransferSpec`` carries the same
     disable for the same reason.  Two fields were MERGED rather than disabled around:
     ``earliest_day`` and ``expected_on`` were one fact for the only kind that
-    has both.
+    has both -- and ``expected_on`` is a PROPERTY now, derived from the two
+    facts it was a copy of.
 
     Attributes:
         kind: Which table it came from.
@@ -196,30 +122,22 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             purchase inside it, which the accept door always refuses because
             the envelope's figure already covers its own purchases; without it
             the screen renders an Accept button that can never succeed.
-        expected_on: The FIRST day the app believes this row's money could
-            have moved -- its pay period's start for a transaction, the
-            purchase day for a purchase.  Three consumers, and for a PURCHASE
-            it is one fact doing all three jobs, which is why there is one
-            field rather than three:
-
-            * it makes "the bank never showed this" answerable for a row
-              carrying no settle day.  A projection dated eighteen months out
-              is not a payment the bank failed to make, and without it every
-              undated row on the account joined that list -- 712 of them on the
-              developer's own;
-            * on a PURCHASE it is also a FLOOR.  A purchase cannot reach the
-              bank before it was made, so ``update_entry`` refuses that write
-              (``_reject_settled_before_purchase``) and a proposal pairing one
-              with an earlier line is one the accept door always rejects --
-              measured at 23 such pairs on the developer's own clone;
-            * it opens :attr:`expected_window`, which is what BOUNDS a row the
-              app has never settled.
-        expected_through: The LAST such day -- the pay period's END for a
-            transaction, and the purchase day again for a purchase, whose
-            budget clock is a single day rather than a span.  **It is the half
-            that was missing, and its absence had no bound at all**: plan step
-            ``bank_import:X-f6a-3c``, finding **N-312**.  See
-            :attr:`expected_window`.
+        period: The paycheck this row is BUDGETED in, as the calendar derived
+            it -- a transaction's own, and for a purchase its envelope's.
+            **Carried for BOTH kinds since plan step ``bank_import:X-gz``**
+            (ruling **R-BI9**): the MATCH pane prints every row's budgeted
+            placement, and a purchase's was on no field at all -- the row
+            carried its purchase day under the name ``expected_on`` and its
+            envelope's period nowhere, though the constructor had it in hand.
+            ``None`` only for a purchase whose period the calendar does not
+            carry, which the offer set's own scope makes unreachable; a
+            transaction's constructor declines such a row instead.
+        purchased_on: The day a PURCHASE was made, which is its budget clock
+            (``transaction_entries.purchased_on``, NOT NULL, ruling **R-FW**);
+            ``None`` for a transaction, whose only budget clock is its period.
+            :attr:`expected_on` and :attr:`expected_through` are DERIVED from
+            these two rather than stored beside them, so the span the matcher
+            bounds by and the placement the pane prints are one fact.
         settle_day_basis: WHICH KIND of day :attr:`settled_on` is, read
             straight off ``settled_day_basis_id``
             (:class:`app.enums.SettledDayBasisEnum`): ``asserted`` is the
@@ -265,9 +183,48 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     version_id: int
     transfer_id: "int | None" = None
     parent_id: "int | None" = None
-    expected_on: "date | None" = None
-    expected_through: "date | None" = None
+    period: "DerivedPeriod | None" = None
+    purchased_on: "date | None" = None
     settle_day_basis: "SettledDayBasisEnum | None" = None
+
+    @property
+    def expected_on(self) -> "date | None":
+        """Return the FIRST day the app believes this row's money could have moved.
+
+        The purchase day for a purchase, the pay period's start for a
+        transaction.  Three consumers, and for a PURCHASE it is one fact doing
+        all three jobs: it makes "the bank never showed this" answerable for a
+        row carrying no settle day (a projection dated eighteen months out is
+        not a payment the bank failed to make -- 712 such rows on the
+        developer's own account); on a PURCHASE it is also a FLOOR, since
+        ``update_entry`` refuses a settle day before it
+        (``_reject_settled_before_purchase``, 23 such pairs measured); and it
+        opens :attr:`expected_window`, which is what BOUNDS a row the app has
+        never settled.
+
+        Returns:
+            The day, or ``None`` for a row the app cannot date at all.
+        """
+        if self.kind is RowKind.PURCHASE:
+            return self.purchased_on
+        return None if self.period is None else self.period.start_date
+
+    @property
+    def expected_through(self) -> "date | None":
+        """Return the LAST such day.
+
+        The pay period's END for a transaction, and the purchase day again for
+        a purchase, whose budget clock is a single day rather than a span.
+        **It is the half that was missing, and its absence had no bound at
+        all**: plan step ``bank_import:X-f6a-3c``, finding **N-312**.  See
+        :attr:`expected_window`.
+
+        Returns:
+            The day, or ``None`` exactly when :attr:`expected_on` is.
+        """
+        if self.kind is RowKind.PURCHASE:
+            return self.purchased_on
+        return None if self.period is None else self.period.end_date
 
     @property
     def expected_window(self) -> "tuple[date, date] | None":
@@ -388,24 +345,24 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         Returns:
             ``(first, last)``, or ``None`` for a row the app can date no way at
             all -- which the proposer reads as NOT OFFERABLE rather than as
-            unbounded (:func:`~._pairing.within_window`).  A row stating only
-            :attr:`expected_on` is read as a POINT rather than as unbounded for
-            the same reason, so a half-stated window is always TIGHTER than a
-            whole one and never looser: that is the direction a missing fact
-            has to fail in on a money path.
+            unbounded (:func:`~._pairing.within_window`).  *A row stating only
+            ``expected_on`` was read as a POINT until plan step
+            ``bank_import:X-gz``*; both ends are derived from one fact now, so
+            a half-stated window is unconstructible rather than tightened.
         """
+        first = self.expected_on
         if self.settled_on is not None:
             if (
                 self.kind is RowKind.PURCHASE
                 and self.settle_day_basis is SettledDayBasisEnum.ASSERTED
-                and self.expected_on is not None
-                and self.expected_on <= self.settled_on
+                and first is not None
+                and first <= self.settled_on
             ):
-                return (self.expected_on, self.settled_on)
+                return (first, self.settled_on)
             return (self.settled_on, self.settled_on)
-        if self.expected_on is None:
+        if first is None:
             return None
-        return (self.expected_on, self.expected_through or self.expected_on)
+        return (first, self.expected_through)
 
     @property
     def figure_is_correctable(self) -> bool:
