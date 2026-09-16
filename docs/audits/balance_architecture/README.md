@@ -388,7 +388,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         `generate_row_of`); the three bare builders on it; `legacy_link_less_row_of` the one
         transitional home; `payback_row_of`; the census instrument; the 16 failures the move
         surfaced classified in six classes and fixed; **R-BAL58** (the one app change), **R-BAL59**.
-      * [ ] **X-bi-7c-2** `tests/test_services/*`, `tests/test_utils`, `tests/test_ref_cache.py`.
+      * [x] **X-bi-7c-2** `1c1b2de8` -- 60 rows in 25 files (`test_services`, `test_utils`,
+        `test_ref_cache`) onto the builder by the committed mover; 7 failures classified, five
+        double-graded cases moved to the legacy home and named for 7d; the marker 287 -> 227.
       * [ ] **X-bi-7c-3** `tests/test_routes/*` except the grid pair.
       * [ ] **X-bi-7c-4** `tests/test_routes/test_grid.py` (72 + 7 splat) and `test_grid_regression.py`.
       * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
