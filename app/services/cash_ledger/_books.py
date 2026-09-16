@@ -85,6 +85,7 @@ from sqlalchemy import func, text
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.utils.balance_predicates import owner_declared_clause
 from app.opening_infrastructure import (
     MATCHED_LINE_DAYS_SQL, SETTLED_MOVEMENTS_SQL,
 )
@@ -517,7 +518,14 @@ def earliest_assertion_day(account_id: int) -> "date | None":
     """
     return db.session.query(
         func.min(AccountAnchorHistory.observed_on)
-    ).filter(AccountAnchorHistory.account_id == account_id).scalar()
+    ).filter(
+        AccountAnchorHistory.account_id == account_id,
+        # The first level the fold RESETS at is the owner's earliest; a bank
+        # placement resets nothing until the flip, so it bounds nothing here
+        # (plan step ``balance:X-bj-1``; the same interim narrowing every
+        # cash reader composes, deleted with the reset).
+        owner_declared_clause(),
+    ).scalar()
 
 
 def reject_books_open_after_an_assertion(account_id: int, day: date) -> None:

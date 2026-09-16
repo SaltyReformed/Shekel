@@ -143,13 +143,14 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
             result, positive INTO the account.  **A figure and not only a
             count**, because this is the one field on this receipt that says
             the act moved money at all.
-        anchors_released: Balance anchors this delete invalidated by removing
-            the lines they rested on.  Reported rather than silent because an
-            account that had a checked bank balance and now has none is a
-            change the owner should see stated, not discover later -- and
-            since plan step ``bank_import:X-gr`` (finding **BI-490**) the
-            confirmation previews it from the same predicate
-            (:func:`~._anchor.resting_on`).
+        anchors_released: OTHER imports' balance anchors this delete withdrew
+            by removing the lines they rested on -- this import's own level,
+            if it placed one, cascades with it and is not counted.  Reported
+            rather than silent because an account that had a checked bank
+            balance and now has none is a change the owner should see stated,
+            not discover later -- and since plan step ``bank_import:X-gr``
+            (finding **BI-490**) the confirmation previews it from the same
+            predicate (:func:`~._anchor.resting_on`).
         identity_forgotten: Whether the source-account pairing went too, which
             happens exactly when this was the account's LAST import from that
             source.
@@ -424,31 +425,42 @@ def delete_import(
         import_id, owner_id, account_id,
     )
 
-    # The lines go with the import at the database tier
-    # (``fk_bank_statement_lines_import_account``), which is also what makes
-    # the ordering above provable: with the matches gone, nothing names a line,
-    # and ``fk_statement_match_members_line_account`` would refuse this
-    # statement if anything did.
-    db.session.delete(statement_import)
-    db.session.flush()
-
-    # **Every anchor this delete undercut goes with the lines**, because an
-    # anchor is a conclusion drawn from lines at or before its own day and
-    # those lines have just gone.  Before this, a later overlapping import kept
-    # its span and its anchor while the evidence beneath it vanished, so the
+    # **Every anchor this delete undercuts is withdrawn BEFORE the rows go,
+    # naming this import as the cause**, because an anchor is a conclusion
+    # drawn from lines at or before its own day and those lines are about to
+    # go.  Before the release existed, a later overlapping import kept its
+    # span and its anchor while the evidence beneath it vanished, so the
     # coverage test reported "covered" over a `$150.00` hole -- reproduced
-    # through these very doors by an adversarial review, 2026-08-23.  Run
-    # AFTER the delete so the released set is measured against what survives,
-    # and naming this import's own exclusion anyway, so the call is the SAME
-    # expression the confirmation previewed with rather than its equivalent
-    # by ordering (plan step ``bank_import:X-gr``, finding **BI-490**).
+    # through these very doors by an adversarial review, 2026-08-23.  Since
+    # plan step ``balance:X-bj-1`` a release is an appended row naming the
+    # import whose lines changed (``budget.anchor_releases``); writing it
+    # while this import still exists puts the cause into ``system.audit_log``
+    # before the key's ``SET NULL`` takes it off the row, and the released
+    # set is the same either side of the delete because this import's own
+    # level is excluded by name -- the SAME expression the confirmation
+    # previewed with rather than its equivalent by ordering (plan step
+    # ``bank_import:X-gr``, finding **BI-490**).  That own level goes with
+    # the import by cascade, as a placement is the file's conclusion.
     anchors_released = (
         0 if owned is None
-        else release_anchors_from(
-            account_id, owned.earliest, except_import_id=import_id,
-        )
+        else release_anchors_from(account_id, owned.earliest, import_id)
     )
     db.session.flush()
+
+    # The lines go with the import at the database tier
+    # (``fk_bank_statement_lines_import_account``), and so does the level it
+    # placed (``fk_anchor_history_statement_import_account``), which is also
+    # what makes the ordering above provable: with the matches gone, nothing
+    # names a line, and ``fk_statement_match_members_line_account`` would
+    # refuse this statement if anything did.
+    db.session.delete(statement_import)
+    db.session.flush()
+    # The database just changed rows this session still holds: the cascade
+    # took this import's level, and ``SET NULL (released_by_import_id)`` took
+    # the cause off the releases written above.  Expire, so a reader in the
+    # same transaction sees the rows as they are rather than as they were
+    # staged.
+    db.session.expire_all()
 
     identity_forgotten = forget_identity_if_last(account_id, doomed.source_id)
     merchants_forgotten = _forget_merchants(account_id, orphaned)

@@ -158,6 +158,7 @@ from alembic.config import Config
 from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
+from app.level_infrastructure import apply_level_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -284,13 +285,22 @@ def _populate_template(app) -> None:
         )
         db.session.commit()
 
-        # The append-only refusal on the three account-history tables (plan
+        # The append-only refusal on the four account-history tables (plan
         # step X-f3c-2c): idempotent re-application, same
         # latest-definition-wins contract as the blocks above.  It matters
         # here for the reason the books boundary does -- this is a constraint
         # a FIXTURE can trip, and a suite that could not trip it would be
         # asserting against a database the app does not have.
         apply_append_only_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # A bank level lies inside its statement's file (plan step
+        # balance:X-bj-1): idempotent re-application, same contract as the
+        # blocks above, and a constraint a FIXTURE can trip for the same
+        # reason the two above are.
+        apply_level_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

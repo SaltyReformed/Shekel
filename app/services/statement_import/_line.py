@@ -120,8 +120,8 @@ class ParsedStatement:
             the export INSTANT, so on the developer's 2026-08-16 export it read
             ``$4,747.63`` -- 2026-08-13's closing -- over a file listing two
             2026-08-14 lines worth ``-$1,006.72``.  It is recorded verbatim and
-            never rewritten; what the import worked out about it stands beside
-            it in ``balance_effective_on``.
+            never rewritten; what the import worked out about it is a LEVEL
+            row naming the import (plan step ``balance:X-bj-1``).
         stated_balance_on: The civil day that header names.  ``None`` exactly
             when :attr:`stated_balance` is -- the two are one fact and a figure
             without its day asserts nothing.
