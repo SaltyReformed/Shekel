@@ -493,10 +493,12 @@ defect this arc exists to remove, shipped on purpose.
    the parent, as `_posted_purchase_facts` already does. Worked on row 2282 (Groceries, Paid, three
    posted purchases summing `$499.82`): re-categorising the envelope to Household leaves (1)'s three
    copies saying Groceries while the grid says Household, and (2) and (3) agree. Ruled: (3).
-3. **`settle_from_entries` becomes the ONLY settle path.** The MANUAL branch writes a single
-   covering movement **through the service door**, which is what satisfies `R-HJ`, for the 205
-   purchase-tracked rows holding no entries and the untracked ones. The fold still reads
-   transactions.
+3. **`settle_from_entries` becomes the ONLY settle path** -- RULED 2026-09-15 as four leaves
+   (**R-BAL39**, **R-BAL40**, **R-BAL41**; `HANDOFF-X-bi-3.md`): the settle writes the movement, the
+   existing rows are cut over by a fail-closed MIGRATION by a total rule, R-HJ scoped to repairs. As
+   first written: the MANUAL branch writes a single covering movement **through the service door**,
+   which is what satisfies `R-HJ`, for the 205 purchase-tracked rows holding no entries and the
+   untracked ones. The fold still reads transactions.
    **This is where the 14 dateless and 38 invariant-bound rows get answered by a human at a door**,
    not by a `WHERE` clause.
 4. **The fold re-points to movements in ONE commit, for every kind at once** -- because after leaf 3
