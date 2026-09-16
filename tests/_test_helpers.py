@@ -4396,10 +4396,10 @@ def family_cash_leg(txn):
 
     The reader's twin of :func:`family_journal_filter` for the fold's own
     valuation (plan step **X-bi-3a**): ``cash_ledger.settled_cash_leg``
-    answers zero for a covered bill, and ``status_seam.covered_cash_leg`` is
-    the money its movement carries -- the two halves of ruling **R-FM**'s
-    identity, summed once here so a case that asserts "what this settled row
-    is worth" keeps its figure.
+    answers zero for a covered bill, and the app's one family valuation,
+    ``status_seam.settled_family_leg``, adds the movement back -- asked
+    here through that producer so a case that asserts "what this settled
+    row is worth" grades the same rule the matcher and the undo dialog read.
 
     Args:
         txn: The settled :class:`~app.models.transaction.Transaction`.
@@ -4409,10 +4409,9 @@ def family_cash_leg(txn):
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
-    from app.services.cash_ledger import settled_cash_leg
-    from app.services.status_seam import covered_cash_leg
+    from app.services.status_seam import settled_family_leg
 
-    return settled_cash_leg(txn) + covered_cash_leg(txn)
+    return settled_family_leg(txn)
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments

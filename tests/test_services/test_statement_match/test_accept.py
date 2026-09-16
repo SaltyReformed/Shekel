@@ -1039,6 +1039,29 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
         assert len(groups) == 1
         assert groups[0].agrees is True
 
+    def test_an_EXPENSE_row_agrees_while_it_holds(self, app, db, seed_user):
+        """The same control on the kind plan step X-bi-3a covers.
+
+        A settled bill's own cash leg is ZERO since that leaf -- its covering
+        movement carries the money -- and the register read
+        ``settled_cash_leg`` alone, so every accepted bill match reported
+        itself as no longer holding, while the income control above stayed
+        green (adversarial review, 2026-09-16).  The register prices the
+        FAMILY now, as the offer and the post-apply check do.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-148.32", posted_on=bank_day,
+        )
+        bill = a_transaction(seed_user, name="Electric", amount="148.32")
+        _submit(seed_user, lines=[line], transactions=[bill])
+
+        groups = self._groups(seed_user)
+
+        assert len(groups) == 1
+        assert groups[0].agrees is True
+
     def test_a_hand_moved_day_stops_it_agreeing(self, app, db, seed_user):
         """The owner contradicted the bank, and the screen says so."""
         salary, _ = self._accepted_pair(db, seed_user)

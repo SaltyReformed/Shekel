@@ -399,8 +399,117 @@ class TestARevertDeletesAndAReSettleRebuilds:
             assert covering_movements(envelope) == []
 
 
+class TestAZeroSettlementWritesNoMovement:
+    """Zero movements is a legal count; a movement of nothing is not one."""
+
+    def test_a_bill_budgeted_at_zero_settles_with_no_movement(
+        self, app, seed_user, seed_periods,
+    ):
+        """The reachable case: Mark Paid on a `$0.00` bill.
+
+        ``ck_transaction_entries_positive_amount`` is ``<> 0``, so a mirror
+        written at zero was an IntegrityError where yesterday it was a 200
+        (adversarial review, 2026-09-16).  R-BAL40's cutover arm, applied to
+        the go-forward writer.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0], "0.00")
+            _settle(txn)
+            db.session.flush()
+            assert txn.status.is_settled
+            assert txn.settled_amount == Decimal("0.00")
+            assert covering_movements(txn) == []
+
+    def test_a_typed_zero_over_a_covered_bill_withdraws_the_movement(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            movement_id = _only_movement(txn).id
+            status_seam.apply_status_change(
+                txn, txn.status_id,
+                settlement=status_seam.Settlement.from_settle(
+                    Decimal("148.32"), Decimal("0.00"),
+                    status_seam.recorded_settlement(txn),
+                ),
+            )
+            db.session.flush()
+            assert covering_movements(txn) == []
+            assert db.session.get(TransactionEntry, movement_id) is None
+
+
+class TestTheSourceFollowsWhoStatedTheFigure:
+    """A corrected figure on a bank-observed day is the BANK's, not a person's."""
+
+    def test_a_bank_repriced_bill_is_observed(
+        self, app, seed_user, seed_periods,
+    ):
+        """The matcher's shape: the line's figure with the line's day.
+
+        The seam mapped ``corrected`` to ``typed`` regardless of the day, so
+        a bill the matcher repriced from a bank line carried a figure stamped
+        as a person's while the migration's backfill and the purchase doors
+        call the same fact ``observed`` (adversarial review, 2026-09-16).
+        One rule now: ``settle_day.figure_source_of``.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(
+                txn, submitted=Decimal("148.40"),
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40")
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            )
+
+
 class TestTheMirrorNeverLowersEvidence:
     """An identity re-submit leaves a bank-observed movement standing."""
+
+    def test_a_bank_confirmation_on_the_same_day_raises_the_movement_too(
+        self, app, seed_user, seed_periods,
+    ):
+        """Finding N-332's fix, carried down to the record.
+
+        The panel ticked the bill on an asserted day; a bank line then
+        confirms that very day and the row's basis rises to observed.  The
+        mirror rose with it only where the DAY moved, so the two homes
+        diverged on the reachable path (adversarial review, 2026-09-16).
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            day = seed_periods[0].start_date
+            _settle(txn, settle_day=SettleDay(day=day, basis=SettledDayBasisEnum.ASSERTED))
+            db.session.flush()
+            status_seam.record_clearing(txn, _latest_anchor(txn.account_id).id)
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.ASSERTED,
+            )
+            link_before = movement.reconciled_by_id
+            assert link_before is not None
+
+            status_seam.apply_status_change(
+                txn, txn.status_id,
+                settle_day=SettleDay(day=day, basis=SettledDayBasisEnum.OBSERVED),
+            )
+            db.session.flush()
+
+            same = _only_movement(txn)
+            assert same.settled_on == day
+            assert same.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            )
+            assert same.reconciled_by_id == link_before
 
     def test_an_identity_re_submit_keeps_the_movements_observed_day_and_link(
         self, app, seed_user, seed_periods,

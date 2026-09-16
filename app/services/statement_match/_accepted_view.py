@@ -40,7 +40,7 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
-from app.services import cash_ledger
+from app.services import status_seam
 from app.utils.balance_predicates import is_balance_contributing
 from app.utils.log_events import (
     ERROR,
@@ -543,7 +543,11 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
     """
     if isinstance(row, Transaction):
         try:
-            amount = cash_ledger.settled_cash_leg(row)
+            # The row's FAMILY (plan step **X-bi-3a**): a settled bill's own
+            # leg is zero and its covering movement carries the money, and
+            # this register compares the member against the bank's line --
+            # the same valuation the offer and the post-apply check use.
+            amount = status_seam.settled_family_leg(row)
         except AmountUnresolvable:
             # **A member the amount model cannot price stops the match holding
             # rather than stopping the page.**  This row is already a match

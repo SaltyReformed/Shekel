@@ -393,6 +393,14 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         )
         assert resolved_amount(row) == Decimal("0.06")
         assert row.status_id == ref_cache.status_id(StatusEnum.DONE)
+        # The undo dialog names the money the release would take out of the
+        # books -- the whole family's (plan step X-bi-3a): the minted row's
+        # own leg is zero and its covering movement carries the `$0.06`, and
+        # a dialog reading the row alone said the release moved no money
+        # (adversarial review, 2026-09-16).
+        group = accepted_acts(seed_user)[0]
+        assert group.removes.moves_money is True
+        assert group.removes.cash_amount == Decimal("-0.06")
 
     def test_it_is_named_for_the_banks_own_merchant(
         self, app, db, seed_user,

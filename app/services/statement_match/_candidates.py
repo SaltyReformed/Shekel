@@ -306,10 +306,7 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
             # row down.  The bank sees one line for the pair, and the row is
             # the subject the owner matches it to; its mirror is kept out of
             # the purchase candidates by ``status_seam.covering_clause``.
-            return (
-                cash_ledger.settled_cash_leg(txn)
-                + status_seam.covered_cash_leg(txn)
-            )
+            return status_seam.settled_family_leg(txn)
         return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
