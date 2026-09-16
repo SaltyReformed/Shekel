@@ -407,7 +407,38 @@ def _reject_unowned_references(
         _get_owned_category(updates["category_id"], user_id)
 
 
-def _bump_parent_version_if_a_leg_moved(rows: TransferRows) -> None:
+def _versions_of(rows: TransferRows) -> dict:
+    """Return each of the three rows' ``version_id`` as it stands now.
+
+    Taken by :func:`_apply_transfer_updates` the moment the rows are loaded,
+    so :func:`_bump_parent_version_if_a_leg_moved` can tell a row that was
+    UPDATED by an autoflush from one nothing touched: a flushed row is clean
+    again, but its counter has moved.  Keyed by the ROW OBJECT, not its
+    ``id``: the parent and the shadows live in two tables, so their ids can
+    coincide, while the objects are the same three for the whole act.
+    """
+    return {row: row.version_id for row in (rows.transfer, *rows.shadows)}
+
+
+def _moved_since(row, versions_before: dict) -> bool:
+    """Return whether *row* has changed since *versions_before* was taken.
+
+    TOTAL over flush state: a row is changed if it is DIRTY now
+    (``Session.is_modified``, a net change against its committed value, so an
+    echoed prefill counts for nothing) OR if a flush inside this act has
+    already written it, which its optimistic-lock counter records.  Either
+    half alone is one query from wrong; see
+    :func:`_bump_parent_version_if_a_leg_moved`.
+    """
+    return (
+        db.session.is_modified(row)
+        or row.version_id != versions_before[row]
+    )
+
+
+def _bump_parent_version_if_a_leg_moved(
+    rows: TransferRows, versions_before: dict,
+) -> None:
     """Move the PARENT's optimistic-lock counter when a shadow-only write lands.
 
     **A transfer and its two shadows are ONE thing, so the aggregate's version
@@ -431,6 +462,20 @@ def _bump_parent_version_if_a_leg_moved(rows: TransferRows) -> None:
     record to write" -- bumps nothing.  A version that moved when nothing did
     would turn every second tab into a spurious 409.
 
+    **"A leg moved" is asked of the counter as well as of the dirty state, and
+    the second half is what plan step X-bi-3c found missing** (measured
+    2026-09-16).  ``is_modified`` answers about the UNFLUSHED change only.  A
+    settled shadow carries a covering movement from that step, and the status
+    seam finds it through the shadow's ``entries`` relationship -- a lazy
+    load, which AUTOFLUSHES the shadow's own pending UPDATE before this
+    function runs.  The shadow was then clean, the parent's counter never
+    moved, and the two-tab lost update above was back, reported green by
+    every test that did not open two tabs.  The predicate this rested on was
+    one query from wrong from the day it was written; a row a flush has
+    already written has a counter that says so, and :func:`_moved_since`
+    reads both.  Eager-loading ``entries`` on the shadows would have made the
+    tests pass and left the predicate one query from wrong again.
+
     ``flag_modified`` is what forces the parent into the flush: the row has no
     field of its own to change, and an assignment of an unchanged value is
     dropped from the UPDATE (SQLAlchemy's ``_collect_update_commands`` skips a
@@ -444,11 +489,14 @@ def _bump_parent_version_if_a_leg_moved(rows: TransferRows) -> None:
 
     Args:
         rows: The transfer and both shadows, after every field write.
+        versions_before: The three rows' counters as :func:`_versions_of`
+            read them when the rows were loaded, before any write.
     """
-    if not any(db.session.is_modified(shadow) for shadow in rows.shadows):
+    if not any(_moved_since(shadow, versions_before) for shadow in rows.shadows):
         return
-    if db.session.is_modified(rows.transfer):
-        # The parent is already in the flush, so its counter moves anyway.
+    if _moved_since(rows.transfer, versions_before):
+        # The parent is already in the flush, or a flush has already moved its
+        # counter, so a stale pin is caught either way.
         return
     flag_modified(rows.transfer, "status_id")
 
@@ -481,6 +529,10 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
             calling :func:`update_transfer`.
     """
     rows = load_transfer_rows(transfer_id, user_id)
+    # Read at the load, before any write: the aggregate's lock below asks
+    # whether a leg moved, and a leg an autoflush has already written answers
+    # only through its counter (see ``_bump_parent_version_if_a_leg_moved``).
+    versions_before = _versions_of(rows)
 
     # The ENDPOINTS this update leaves the transfer with, resolved and refused
     # first because the guard below GRADES against the resulting destination:
@@ -627,7 +679,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
 
     _apply_remaining_fields(rows, remaining)
 
-    _bump_parent_version_if_a_leg_moved(rows)
+    _bump_parent_version_if_a_leg_moved(rows, versions_before)
 
     db.session.flush()
 

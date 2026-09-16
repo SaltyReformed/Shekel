@@ -1196,7 +1196,18 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 .rec-row-pick:hover { background: var(--shekel-row-hover); }
 .rec-row-label { margin: 0; cursor: pointer; }
 .rec-row-name { color: var(--shekel-text-primary); }
-.rec-row-day { color: var(--shekel-text-muted); margin-left: 0.35rem; font-size: 0.75rem; }
+
+/* The dates a reviewer verifies a row BY (plan step bank_import:X-gz,
+   ruling R-BI9): supporting DATA on its own line under the name, in secondary
+   ink at the row's own size -- the grid's `.cell-caption` rule.  It was one
+   0.75rem muted stamp beside the name, which the design language reserves
+   for de-emphasis and which the developer could not read (N-368 finding F2). */
+.rec-row-days {
+  display: block;
+  color: var(--shekel-text-secondary);
+}
+
+.rec-row-day { margin-right: 0.6rem; }
 
 .rec-row-figure {
   text-align: right;

@@ -18,6 +18,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.enums import SettledDayBasisEnum
+from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match import DAY_WINDOW
 from app.services.statement_match._offers import (
     BankLine,
@@ -58,6 +59,21 @@ _DAY = date(2026, 5, 1)
 _PERIOD = (date(2026, 5, 1), date(2026, 5, 14))
 
 
+def _period(first, last):
+    """Return the paycheck spanning *first* .. *last*, as a row carries it.
+
+    A :class:`~app.services.pay_calendar.DerivedPeriod` since plan step
+    ``bank_import:X-gz``, which put the whole period on the row so the MATCH
+    pane can name it; ``expected_on`` and ``expected_through`` are its two
+    ends, derived.  Identity and projection are immaterial to every case
+    here, so they are fixed.
+    """
+    return DerivedPeriod(
+        period_id=1, period_index=0, start_date=first, end_date=last,
+        end_is_projected=False,
+    )
+
+
 def _line(line_id, amount, posted_on=_DAY, description="ACH DEBIT",
           transaction_on=None):
     """Return one bank line.
@@ -89,7 +105,7 @@ def _row(row_id, amount, settled_on=_DAY, is_settled=True, label=None,
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"row {row_id}", cash_amount=Decimal(amount),
         settled_on=settled_on, is_settled=is_settled, states_own_figure=True,
-        expected_on=period[0], expected_through=period[1],
+        period=_period(*period),
     )
 
 
@@ -106,7 +122,7 @@ def _bill(row_id, amount, period=_PERIOD, label=None):
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"bill {row_id}", cash_amount=Decimal(amount),
         settled_on=None, is_settled=False, states_own_figure=True,
-        expected_on=period[0], expected_through=period[1],
+        period=_period(*period),
     )
 
 
@@ -136,7 +152,7 @@ class TestTheWindowAccessorItself:
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
-            parent_id=900, expected_on=_DAY, expected_through=_DAY,
+            parent_id=900, purchased_on=_DAY, period=_period(*_PERIOD),
         )
 
         assert purchase.expected_window == (_DAY, _DAY)
@@ -145,27 +161,35 @@ class TestTheWindowAccessorItself:
         """Both ends, because the period is the whole of what the app says."""
         assert _bill(1, "-25.00").expected_window == _PERIOD
 
-    def test_a_HALF_STATED_window_reads_as_a_POINT(self):
-        """Tighter, never looser -- the direction a missing fact must fail in.
+    def test_a_PURCHASE_window_is_its_day_and_NEVER_its_paycheck(self):
+        """The period a purchase carries is where it is BUDGETED, not when.
 
-        The alternative reading, "no end means no end", would make a row with
-        half a window WIDER than one with all of it.
+        Plan step ``bank_import:X-gz`` put the envelope's period on every
+        purchase so the MATCH pane can print it; the window still opens and
+        closes on the purchase day, because a purchase made three days before
+        its paycheck opened (entry 68 on the developer's own books, bought
+        07-13 and budgeted 07-16 .. 07-29) is dated by the day it was made.
+        *A HALF-STATED window stood here until that step* -- a row carrying
+        ``expected_on`` and no ``expected_through`` -- and read as a point;
+        both ends derive from one fact now, so the shape is unconstructible.
         """
-        half = CandidateRow(
+        early = CandidateRow(
             version_id=1,
-            kind=RowKind.TRANSACTION, row_id=1, label="Bill",
-            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
-            states_own_figure=True,
-            expected_on=_DAY,
+            kind=RowKind.PURCHASE, row_id=1, label="Gas: Bjs",
+            cash_amount=Decimal("-47.61"), settled_on=None, is_settled=False,
+            states_own_figure=True, parent_id=900,
+            purchased_on=date(2026, 7, 13),
+            period=_period(date(2026, 7, 16), date(2026, 7, 29)),
         )
 
-        assert half.expected_window == (_DAY, _DAY)
+        assert early.expected_window == (date(2026, 7, 13), date(2026, 7, 13))
 
     def test_a_row_with_NO_window_is_NOT_OFFERABLE(self):
         """The other reading of "no window" is finding N-312 itself.
 
-        Unconstructible through either candidate arm -- both fill
-        ``expected_on`` from a NOT NULL column -- and stated rather than left
+        Unconstructible through either candidate arm -- a purchase's day is a
+        NOT NULL column and a transaction's constructor declines a row whose
+        period the calendar lacks -- and stated rather than left
         to a default, because "no window means no bound" is the defect this
         step exists to remove.  It joins no group either, so the two passes
         cannot disagree about what an undatable row is worth.
@@ -324,7 +348,7 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
             kind=RowKind.PURCHASE, row_id=row_id, label="Kroger",
             cash_amount=Decimal(amount), settled_on=settled_on,
             is_settled=settled_on is not None, states_own_figure=True,
-            parent_id=900, expected_on=purchased_on,
+            parent_id=900, purchased_on=purchased_on,
         )
 
     def test_a_line_before_the_purchase_day_is_OFFERED_and_corrects_it(self):
@@ -412,8 +436,8 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
                 version_id=1,
                 kind=RowKind.TRANSACTION, row_id=10, label="Bill",
                 cash_amount=Decimal("-25.00"), settled_on=None,
-                is_settled=False,
-                states_own_figure=True, expected_on=date(2026, 5, 8),
+                is_settled=False, states_own_figure=True,
+                period=_period(date(2026, 5, 8), date(2026, 5, 8)),
             )],
         )
 
@@ -757,8 +781,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False, states_own_figure=True, parent_id=900,
-            expected_on=_DAY + timedelta(days=3),
-            expected_through=_DAY + timedelta(days=3),
+            purchased_on=_DAY + timedelta(days=3),
         )
         target = dated[0].cash_amount + unreachable.cash_amount
         line = _line(1, str(target), _DAY,
@@ -834,8 +857,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False,
-            states_own_figure=True, parent_id=900, expected_on=_DAY,
-            expected_through=_DAY,
+            states_own_figure=True, parent_id=900, purchased_on=_DAY,
         )
         target = dated[0].cash_amount + purchase.cash_amount
 
@@ -848,7 +870,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
             kind=RowKind.PURCHASE, row_id=601, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False, states_own_figure=True, parent_id=900,
-            expected_on=date(2026, 7, 1), expected_through=date(2026, 7, 1),
+            purchased_on=date(2026, 7, 1),
         )
         assert _offers(
             [_line(1, str(target), _DAY)], dated + [elsewhere],
@@ -938,7 +960,7 @@ class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
-            parent_id=900, expected_on=made_on,
+            parent_id=900, purchased_on=made_on,
         )
 
     def test_it_is_paired_with_the_line_it_is_LEGAL_against(self):
@@ -1001,7 +1023,7 @@ class TestAnUndatedPurchaseIsBoundedByTheDayItWasMADE:
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
-            parent_id=900, expected_on=made_on,
+            parent_id=900, purchased_on=made_on,
         )
 
     def test_a_line_two_months_from_the_purchase_is_not_offered(self):
@@ -1160,16 +1182,14 @@ class TestAnUnsettledBillIsBoundedByItsPayPeriod:
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
-            parent_id=900, expected_on=date(2026, 4, 21),
-            expected_through=date(2026, 4, 21),
+            parent_id=900, purchased_on=date(2026, 4, 21),
         )
         made_late = CandidateRow(
             version_id=1,
             kind=RowKind.PURCHASE, row_id=2, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
-            parent_id=900, expected_on=date(2026, 5, 7),
-            expected_through=date(2026, 5, 7),
+            parent_id=900, purchased_on=date(2026, 5, 7),
         )
 
         proposals = _offers(
@@ -1403,7 +1423,7 @@ def _ticked(row_id, amount, made_on, asserted_for, label=None):
         label=label or f"Groceries: purchase {row_id}",
         cash_amount=Decimal(amount), settled_on=asserted_for, is_settled=True,
         states_own_figure=True,
-        parent_id=900, expected_on=made_on, expected_through=made_on,
+        parent_id=900, purchased_on=made_on,
         settle_day_basis=SettledDayBasisEnum.ASSERTED,
     )
 

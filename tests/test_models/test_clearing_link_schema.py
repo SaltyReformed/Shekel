@@ -357,6 +357,50 @@ class TestAPurchasesAccountIsItsParents:
                 db.session.flush()
             db.session.rollback()
 
+    def test_a_parents_account_move_carries_its_purchases(
+        self, app, db, seed_full_user_data,
+    ):
+        """The key CASCADES a parent's account UPDATE onto its entries.
+
+        Plan step **X-bi-3c**, ruling **R-BAL46**, migration ``c4e8a2d7f1b3``:
+        the one parent whose account can move is a transfer shadow
+        (``transfer_service._endpoints._apply_endpoint_move``), and since that
+        step a settled shadow carries a covering movement.  Driven at the
+        database tier -- a raw UPDATE of the parent, the ORM told nothing --
+        so it grades the key and not the applier: against the DELETE-only key
+        this UPDATE is refused by name (measured on the tree without the
+        migration, five endpoint-move cases).
+
+        Kept beside the disagreement refusal above because the two are ONE
+        rule read in two directions: a disagreeing pair cannot be WRITTEN, and
+        a parent's move cannot LEAVE one behind.
+        """
+        with app.app_context():
+            parent = _make_transaction(seed_full_user_data)
+            db.session.add(parent)
+            db.session.flush()
+            entry = _make_entry(seed_full_user_data, parent)
+            db.session.add(entry)
+            db.session.flush()
+            savings_id = seed_full_user_data["savings_account"].id
+
+            db.session.execute(
+                sa.text(
+                    "UPDATE budget.transactions SET account_id = :account "
+                    "WHERE id = :id"
+                ),
+                {"account": savings_id, "id": parent.id},
+            )
+            moved = db.session.execute(
+                sa.text(
+                    "SELECT account_id FROM budget.transaction_entries "
+                    "WHERE id = :id"
+                ),
+                {"id": entry.id},
+            ).scalar_one()
+            assert moved == savings_id
+            db.session.rollback()
+
     def test_the_service_door_writes_the_parents_account(
         self, app, db, seed_user, seed_entry_template,
     ):

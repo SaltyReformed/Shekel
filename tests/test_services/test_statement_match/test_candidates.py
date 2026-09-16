@@ -337,6 +337,75 @@ class TestTheWindowEachRowCarries:
             assert row.expected_window == (made_on, made_on)
 
 
+class TestEveryRowCarriesThePaycheckItIsBUDGETEDIn:
+    """A candidate names the paycheck it is budgeted in, whichever table it is from.
+
+    Plan step ``bank_import:X-gz``, ruling **R-BI9**.  The MATCH pane prints
+    every row's budgeted placement, and a PURCHASE's was on no field: the row
+    carried its purchase day and nothing about its envelope's paycheck, so the
+    only day the pane could print for it was the settle stamp.  These grade
+    the PRODUCER -- a hand-built row cannot show a constructor that fills the
+    field from the wrong parent, or not at all.
+    """
+
+    def test_a_transaction_carries_its_OWN_period(self, app, seed_user):
+        """The same period its window is read from, whole."""
+        with app.app_context():
+            period = seed_user["bootstrap_period"]
+            txn = a_transaction(seed_user, name="Electricity")
+            db.session.commit()
+
+            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+
+            assert row is not None
+            assert row.period is not None
+            assert row.period.period_id == period.id
+            assert row.purchased_on is None
+            # The window is still the period's two ends, DERIVED from it.
+            assert row.expected_window == (
+                row.period.start_date, row.period.end_date,
+            )
+
+    def test_a_purchase_carries_its_ENVELOPE_s_period_and_its_own_day(
+        self, app, seed_user,
+    ):
+        """The worked case: bought BEFORE the paycheck it is budgeted in opened.
+
+        Entry 68 on the developer's own books -- ``Gas: Bjs``, `$47.61`,
+        purchased 2026-07-13, in the ``Gas`` envelope of the paycheck opening
+        2026-07-16 -- against the 2026-07-14 bank line.  The pane needs BOTH
+        facts, and they are two: the purchase day is the window and the
+        placement is the envelope's paycheck, which here starts three days
+        after the money was spent.
+        """
+        with app.app_context():
+            later = a_later_period(seed_user)
+            made_on = later.start_date - timedelta(days=3)
+            envelope = a_transaction(
+                seed_user, name="Gas", is_envelope=True, period=later,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="47.61", purchased_on=made_on,
+            )
+            db.session.commit()
+
+            row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
+
+            assert row is not None
+            assert row.purchased_on == made_on
+            assert row.period is not None
+            assert row.period.period_id == later.id, (
+                "the purchase's placement must be its ENVELOPE's paycheck, "
+                f"not {row.period.period_id} -- the pane would print the "
+                "wrong paycheck beside a correct purchase day"
+            )
+            assert row.period.start_date == later.start_date
+            # Its window is still the day it was MADE, not the paycheck: a
+            # purchase made three days before its paycheck opened is dated by
+            # the day it was made.
+            assert row.expected_window == (made_on, made_on)
+
+
 class TestAReconciledDayIsABoundAndNotAnObservation:
     """A row TICKED on the reconcile panel spans; one settled otherwise points.
 
@@ -555,8 +624,11 @@ class TestTheCalendarIsTheOwnershipSCOPE:
     ``_purchase_candidates``.  ``_transaction_candidates`` also holds a Python
     guard (``if period is None: return None``), so for that arm the filter is
     defence in depth; ``_purchase_candidates`` has none, because
-    ``purchase_candidate`` never sees the calendar, so there the filter is the
-    only thing keeping an undatable row out of a money-offering set.
+    ``purchase_candidate`` declines no row (it reads the calendar for the
+    envelope's period since plan step ``bank_import:X-gz``, and a purchase is
+    dated by its own day whether or not that lookup answers), so there the
+    filter is the only thing keeping an undatable row out of a money-offering
+    set.
 
     **The scope is a PERIOD SET, not an owner comparison**, and it has been
     since pay-calendar plan step C4-a-4.  A first version of this docstring
@@ -645,10 +717,12 @@ class TestTheCalendarIsTheOwnershipSCOPE:
         each filter deleted in turn):
 
         * ``_purchase_candidates``' filter -- **this case FAILS.**  That arm
-          has no guard behind it: ``purchase_candidate`` never sees the
-          calendar, so the filter is the only thing keeping an undatable
-          purchase out of a money-offering set.  This is the arm that was
-          uncovered.
+          has no guard behind it: ``purchase_candidate`` declines no row
+          (since plan step ``bank_import:X-gz`` it reads the calendar for
+          the envelope's period, but a purchase is dated by its own day and
+          the constructor stays total), so the filter is the only thing
+          keeping an undatable purchase out of a money-offering set.  This is
+          the arm that was uncovered.
         * ``_transaction_candidates``' filter -- this case still passes, and
           so does every other.  The guard at ``if period is None: return None``
           declines the row anyway, so that filter is defence in depth and
