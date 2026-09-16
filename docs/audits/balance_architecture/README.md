@@ -1054,6 +1054,9 @@ section 4, under their unchanged ids.*
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.
+* [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
+  A migration's writes and the login door's own write carry no user; the row names its origin
+  instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
 * [x] **X-bz** `8e5c3ea5` -- retired the one-time `occurs_on` backfill, its `entrypoint.sh` block and tests; `occurs_on IS NULL` meant two things and the filter fenced that conflation.
   **The sentinel is LEFT, and that is OPERATIONAL rather than historical**: a rollback restores the old image and the sentinel alone then stops the script.
 * [x] **X-ca** `e1cc26b6` -- moved `__table_args__` out to `_transaction_table_args.py`, 997 lines to 667, off the 1000 ceiling for `X-bv-2`'s constraint. **A COUNTING ORACLE IS NOT AN EQUIVALENCE ORACLE**: purity rests on an AST comparison run out of git, not on a census.
