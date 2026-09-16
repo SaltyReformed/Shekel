@@ -588,9 +588,16 @@ def sync_transaction_postings(
     # handlers act on the primary row; transfers go through transfer_service), so
     # this is defense-in-depth -- but a settled shadow that slipped through would
     # otherwise be given a second, transaction-sourced entry and double-counted
-    # against the transfer posting, so the guard stays.  A shadow also carries no
-    # entries (``entry_service`` refuses them), so the purchase arm below has
-    # nothing to do for one either.
+    # against the transfer posting, so the guard stays.  **It also holds the
+    # purchase arm off a shadow's COVERING MOVEMENT, and that is a ruling
+    # rather than a gap** (plan step ``balance:X-bi-3c``, ruling **R-BAL45**):
+    # a settled shadow carries one from that step, the transfer path books the
+    # pair whole off the shadow's record, and the movement posts nowhere until
+    # ``X-bi-6`` gives the ledger its ruled shape -- one entry per movement on
+    # its own bank day, against a transfers-in-transit clearing account.
+    # Posting it through the purchase source was rejected there: that source's
+    # counter leg is the parent's CATEGORY account, and a transfer between two
+    # of the owner's accounts is neither income nor expense.
     if txn.transfer_id is not None:
         return []
 
@@ -672,9 +679,15 @@ def sync_purchase_postings(entry) -> "list[JournalEntry]":
     txn = entry.transaction
     # The same guard the two transaction doors take, for the same reason and
     # over the same row set: a shadow's postings are Step 2's and link by
-    # ``transfer_id``.  ``entry_service.create_entry`` refuses a shadow outright,
-    # so this is defense-in-depth -- but three doors refusing three different row
-    # sets is how the fourth one is written wrongly.
+    # ``transfer_id``.  ``entry_service.create_entry`` refuses a PURCHASE on a
+    # shadow outright; the one entry a shadow does carry is the status seam's
+    # covering movement (plan step ``balance:X-bi-3c``), which posts nowhere
+    # through the interval by ruling **R-BAL45** (``sync_transaction_postings``
+    # carries the argument).  Three doors refusing three different row sets is
+    # how the fourth one is written wrongly, so the guard is spelled the same
+    # here -- though NOTHING in ``app/`` calls this door since the reconcile
+    # panel moved to the family reconcile at plan step X-au-c3 (measured
+    # 2026-09-16: zero callers), so the ruling does not rest on it.
     if txn.transfer_id is not None:
         return []
     entries = emit_purchase_deltas(
@@ -705,6 +718,9 @@ def reverse_purchase_postings_before_delete(entry) -> None:
             (``entry.id`` set) so the reversal can read its posted legs back.
     """
     txn = entry.transaction
+    # A shadow's covering movement never posted (ruling **R-BAL45**, plan step
+    # ``balance:X-bi-3c``), so its release -- a revert of the transfer, which
+    # deletes the movement through the seam -- has nothing to reverse here.
     if txn.transfer_id is not None:
         return
     entries = emit_purchase_deltas(entry, txn, posted=False)
@@ -754,7 +770,9 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
             ``transaction_id`` / ``transaction_entry_id`` and read the
             already-posted legs back.
     """
-    # A transfer shadow carries no transaction-sourced postings and no entries;
+    # A transfer shadow carries no transaction-sourced postings, and the one
+    # entry it can carry -- its covering movement, since plan step
+    # ``balance:X-bi-3c`` -- posted nothing to reverse (ruling **R-BAL45**);
     # the guard mirrors ``sync_transaction_postings``' so both doors refuse the
     # same row rather than one of them doing work for a row the other drops.
     # It said "rather than one of them reading ``pay_period`` for a row it will
