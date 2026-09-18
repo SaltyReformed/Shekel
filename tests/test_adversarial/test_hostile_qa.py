@@ -11,9 +11,11 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
+    constraint_name_from,
     default_settle_day,
     freeze_today,
     generate_row_of,
@@ -659,11 +661,18 @@ class TestReferentialIntegrity:
             # Transaction cascaded away.
             assert db.session.get(Transaction, txn_id) is None
 
-    def test_template_id_set_null_on_delete(self, app, auth_client, seed_user, seed_periods):
-        """DELETE template → linked transactions get template_id=NULL.
+    def test_a_definition_with_a_row_cannot_be_deleted(self, app, auth_client, seed_user, seed_periods):
+        """DELETE template under a row -> REFUSED; the row keeps its link.
 
-        Transaction.template_id has ondelete='SET NULL'.  Documents that
-        transactions survive template deletion but lose their link.
+        ``Transaction.template_id`` was ``ON DELETE SET NULL`` until the
+        one-definition cutover (plan step ``balance:X-bi-7d-2``, ruling
+        **R-BAL20**): a row survived its definition's deletion as a
+        zero-link row.  ``ck_transactions_one_pricing_link`` reads ``= 1``
+        and the key is ``RESTRICT`` now, so the same act is refused -- the
+        ORM's flush nulls the child's link first and the CHECK refuses
+        that, and a raw ``DELETE`` meets the key -- and the row keeps its
+        definition.  ``definition_delete`` removes a definition's rows
+        BEFORE the definition for exactly this reason.
         """
         with app.app_context():
             # A definition and its own row (the engine's, plan step
@@ -673,16 +682,19 @@ class TestReferentialIntegrity:
             )
             txn = generate_row_of(template, seed_periods[0])
             db.session.commit()
-            txn_id = txn.id
+            txn_id, template_id = txn.id, template.id
 
-            # Delete the template directly.
             db.session.delete(template)
-            db.session.commit()
+            with pytest.raises(IntegrityError) as exc:
+                db.session.commit()
+            assert constraint_name_from(exc.value) in {
+                "ck_transactions_one_pricing_link", "fk_transactions_template_id",
+            }
+            db.session.rollback()
 
-            # Transaction survives with NULL template_id.
             txn = db.session.get(Transaction, txn_id)
             assert txn is not None
-            assert txn.template_id is None
+            assert txn.template_id == template_id
 
 
 # ══════════════════════════════════════════════════════════════════════

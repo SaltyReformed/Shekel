@@ -802,7 +802,7 @@ Over the 951 live rows of `budget.transactions` on the restore:
 |---|---|---|
 | template-linked | 636 | 40 definitions, every one with a rule |
 | transfer shadows (`transfer_id`) | 252 | `X-bi-6` deletes them |
-| CC paybacks (`credit_payback_for_id`) | 29 | the card arc's `CC3b` / `CC3c` delete the payback; `X-au-i` is WITHDRAWN |
+| CC paybacks (`credit_payback_for_id`) | 29 | the card arc's `CC-7` (re-minted 2026-09-18; was `CC3b` / `CC3c`) deletes the payback; `X-au-i` is WITHDRAWN |
 | **link-less (the true one-offs)** | **34** | 0 soft-deleted; all baseline scenario; all OWN their figure |
 
 **The handoff's "~417 one-off rows (315 live)" is wrong, and so is the 315.** Both figures counted
@@ -1203,13 +1203,24 @@ first draft had them the other way round, which would have hand-built the shape 
    `one_off_row_of(...)` calls 7b's producer, as `X-cf-1`'s `generate_row_of`
    (`tests/_test_helpers.py:4162`) calls the engine. No app change.
 4. **`X-bi-7d` -- the cutover.** The migration of trace 8; the model setters and both columns go;
-   the accessors lose their branch; the CHECK reads `= 1` and both `SET NULL` link keys read
-   `RESTRICT` (a nulled link is a zero-link row); every minted row records its date in `occurs_on`
-   (`R-BAL25`); the label fallback at `grid_view_service:158` and `_stated_amount`'s
-   `template is None` refusal (`_definition_cash.py:143`) go with the `SET NULL` that made them
-   reachable. **Closes `BAL-484`** -- the cell is gone. Its grade is the stated six-cell grid DIFF
-   of trace 5 on the production restore, the row set otherwise byte-identical, beside every migrated
-   figure reproduced to the cent through amount rule 3.
+   the accessors' cell-reading arm goes (the link test stays, answering False for a shadow or a
+   payback); the CHECK reads `= 1` and both `SET NULL` link keys read `RESTRICT` (a nulled link is a
+   zero-link row); every minted row records its date in `occurs_on` (`R-BAL25`); `_stated_amount`'s
+   `template is None` refusal (`_definition_cash.py:159`) STAYS -- 7d-2's trace (2026-09-18) found
+   it shared with the transfer pricing arm, and `budget.transfers.transfer_template_id` is still
+   `SET NULL`, so its reason is restated to name the transfer key while the transaction arm's reach
+   to it ends with RESTRICT (the label fallback once named here beside it, `grid_view_service:158`,
+   is gone since 7b-2, `e27e5134`: `build_row_keys` has no label fallback). **Closes `BAL-484`** --
+   the cell is gone. Its grade is EQUALITY of the grid across the cutover on the production restore
+   (`R-BAL34` at 7b-2 separated the six cells the first draft graded as a DIFF), beside every
+   migrated figure reproduced to the cent through amount rule 3. **Split 2026-09-18** into
+   `X-bi-7d-1` (the suite's bare CHECK builders and the Core / raw-SQL writers 7c's constructor
+   census could not see take a pricing link; tests only) and `X-bi-7d-2` (the migration; MOVES
+   MONEY), because the fixtures must bind under `= 1` before the CHECK does.
+   **`BAL-511` is decided here**: 7d-2's harness counts the grid render's statements across the
+   cutover (lane 1's 2026-09-18 figure on the 12:34 restore: 23 before, 23 after, definitions 43 ->
+   77, so the "multiplied" claim does not hold on the grid) and the row closes or re-points on that
+   number at the tick.
 
 `R-BAL20` as first drafted said the family's FIRST leaf owns `BAL-484`. The finding is
 *a dead cell keeps a writer and no step deletes it*; the writer goes at 7b and the cell at 7d, so
@@ -1220,25 +1231,35 @@ blocked by `X-bv-2` and `X-cf`.
 
 ### 10.8 The migration's downgrade, exactly
 
-The upgrade's inverse folds a definition back onto its row: the row takes the definition's two flags
-into its restored cells and, under fork A, a figure as its own (OWN, `TEMPLATE` released) by
-`R-JC`'s two arms -- exact from `settled_amount` on the derived basis where the row settled that
-way, else the definition's scalar; the link is cleared; the definition and its series row are
-deleted. **Which definitions**: those with no rule and exactly one row -- soft-deleted rows counted,
-since a soft-deleted one-off is still the definition's (`occurs_on` is that row's date since fork E
-was re-ruled, so it is no part of the signature). **What it does NOT fold, stated**: a rule-less
-definition with ZERO rows (the "Does not repeat" form shape, which existed before this migration and
-is not its work); a rule-less definition holding several rows, which is a recurrence the owner
-CLEARED after it generated and a shape that existed before this migration; and a definition a
-standing merchant rule names (the rule would cascade away with it; such a definition is left linked,
-and the downgrade reports the count). **Where it is WRONG, stated**: a cleared-recurrence definition
-whose only surviving row is a carry-forward override (`_execute.py:665-683`, `occurs_on` NULL)
-matches the signature and would be folded as a one-off; and under fork D's from-scratch collapse a
-rule-less definition holds one row per paycheck and no one-row signature exists, so that ruling
-re-specifies this paragraph. The restore holds none of these shapes (40 of 40 definitions carry a
-rule), so on the data measured the downgrade is exact. The 26 dates the upgrade writes are NOT
-withdrawn on downgrade: a date is not a copy of anything, `X-bv-2`'s CHECK no longer binds on a
-link-less row, and withdrawing one would delete a fact the owner may since have corrected.
+**SUPERSEDED 2026-09-18 by `R-BAL67` (developer): the downgrade is SCHEMA-ONLY and folds nothing.**
+It re-adds both flag columns (`false`), restores the CHECK to `<= 1` and both link keys to
+`SET NULL`, and every row keeps its definition, its price and its date. The paragraph below was
+written 2026-09-12, before `X-bi-7b-1` deployed; since 2026-09-14 the app mints exactly the one-row
+rule-less shape for every new one-off (3 on the 2026-09-18 restore), so the fold's signature can no
+longer tell this migration's 34 from the owner's and would fold theirs too. The pre-7d app reads and
+writes the un-folded shape, so a rollback loses no behaviour and a re-upgrade mints 0. Kept as
+written for the reason section 9 gives.
+
+The upgrade's inverse, as first specified, folds a definition back onto its row: the row takes the
+definition's two flags into its restored cells and, under fork A, a figure as its own (OWN,
+`TEMPLATE` released) by `R-JC`'s two arms -- exact from `settled_amount` on the derived basis where
+the row settled that way, else the definition's scalar; the link is cleared; the definition and its
+series row are deleted. **Which definitions**: those with no rule and exactly one row --
+soft-deleted rows counted, since a soft-deleted one-off is still the definition's (`occurs_on` is
+that row's date since fork E was re-ruled, so it is no part of the signature).
+**What it does NOT fold, stated**: a rule-less definition with ZERO rows (the "Does not repeat" form
+shape, which existed before this migration and is not its work); a rule-less definition holding
+several rows, which is a recurrence the owner CLEARED after it generated and a shape that existed
+before this migration; and a definition a standing merchant rule names (the rule would cascade away
+with it; such a definition is left linked, and the downgrade reports the count).
+**Where it is WRONG, stated**: a cleared-recurrence definition whose only surviving row is a
+carry-forward override (`_execute.py:665-683`, `occurs_on` NULL) matches the signature and would be
+folded as a one-off; and under fork D's from-scratch collapse a rule-less definition holds one row
+per paycheck and no one-row signature exists, so that ruling re-specifies this paragraph. The
+restore holds none of these shapes (40 of 40 definitions carry a rule), so on the data measured the
+downgrade is exact. The 26 dates the upgrade writes are NOT withdrawn on downgrade: a date is not a
+copy of anything, `X-bv-2`'s CHECK no longer binds on a link-less row, and withdrawing one would
+delete a fact the owner may since have corrected.
 
 ### 10.9 What two adversarial passes over this section refuted, 2026-09-12
 

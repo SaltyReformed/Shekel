@@ -13,25 +13,28 @@ it is its own value rather than three more fields on
 documents its three money figures as all-or-nothing; what an import wrote is a
 fact about an act the owner performed, and it is present or absent on its own.
 
-**One row read and, when it finds one, one COUNT** -- two questions of two
-tables, and the second is not asked at all of an account nobody has imported
-into.  How many lines an import WROTE is its own stored column -- the same
-``recorded_count`` the statements page's *New* column prints, so the two
-surfaces cannot report one import two ways -- and how many of those lines a
-STANDING RULE filed is a fact about the acts that name them.  Counting the
-lines rather than the acts is what makes the sentence's halves comparable: a
-rule files one line per act today (:func:`~._filing.file_new_swipes` submits
-one :class:`~._creations.PurchaseCreation` per line), so the two agree on
-every input that exists, and counting lines stays true of a multi-line act
-that does not exist yet.
+**One row read and, when it finds one, two COUNTS** -- and neither is
+asked at all of an account nobody has imported into.  How many lines an
+import WROTE is DERIVED from the sightings since plan step
+``bank_import:X-f6b-1`` (ruling **R-IY**): the lines it was the FIRST to
+sight, read off the one aggregate the statements page's *New* column reads
+(:meth:`~app.models.statement_import.StatementLineSighting.counts_by_import`),
+so the two surfaces cannot report one import two ways.  How many of those
+lines a STANDING RULE filed is a fact about the acts that name them.
+Counting the lines rather than the acts is what makes the sentence's halves
+comparable: a rule files one line per act today
+(:func:`~._filing.file_new_swipes` submits one
+:class:`~._creations.PurchaseCreation` per line), so the two agree on every
+input that exists, and counting lines stays true of a multi-line act that
+does not exist yet.
 
 **The rule-filed count is EXACT rather than an approximation of one.**
 ``applied_by_rule`` is written only by a :attr:`~._batch.Consent.STANDING_RULE`
 pass, the only door that assembles one is :func:`~._filing.file_new_swipes`,
 and it reaches ``_fresh_line_ids(account_id, import_id)`` alone (ruling
-**bank_import:R-GI**) -- so a rule-filed act naming a line of import X was
-performed by import X's own filing run, and no second column has to record
-that.
+**bank_import:R-GI**) -- so a rule-filed act naming a line import X first
+sighted was performed by import X's own filing run, and no second column has
+to record that.
 
 Measured on a restored production clone 2026-08-30 (``shekel_xgj1b_m``, the
 developer's own account 1): three imports, the newest of them
@@ -62,7 +65,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.extensions import db
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.statement_match import StatementMatch, StatementMatchMember
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -81,16 +88,17 @@ class LastImport:
             The display timezone is the presentation layer's
             (``local_datetime``), which is the project's standing rule for
             every ``timestamptz`` it renders.
-        recorded_count: How many lines that import WROTE -- its own
-            ``recorded_count`` column, so this line and the statements page's
-            *New* column are one fact.  It is not the size of the file: a
-            re-import of an overlapping span records 0, which is what makes
-            idempotency visible rather than merely true.
+        recorded_count: How many lines that import was the FIRST to sight
+            -- derived from the sightings by the one aggregate the statements
+            page's *New* column reads, so this line and that column are one
+            fact.  It is not the size of the file: a re-import of an
+            overlapping span records 0, which is what makes idempotency
+            visible rather than merely true.
         filed_by_rules: How many of those lines a STANDING RULE filed by
             itself (**R-GH**, **R-GT**).  A SUBSET of *recorded_count* by
-            construction -- every line it counts carries that import's own
-            ``import_id`` -- so the sentence's two halves can be read against
-            each other.
+            construction -- every line it counts was first sighted by that
+            import -- so the sentence's two halves can be read against each
+            other.
     """
 
     at: "datetime"
@@ -113,7 +121,9 @@ def _filed_by_rules(owner_id: int, account_id: int, import_id: int) -> int:
     Args:
         owner_id: The user the route proved owns the account.
         account_id: The account, which bounds both the lines and the acts.
-        import_id: The import whose lines to count over.
+        import_id: The import whose first-sighted lines to count over
+            (:meth:`~app.models.statement_import.StatementLineSighting
+            .first_import_of_each_line`, the one spelling of *first*).
 
     Returns:
         The number of lines of that import which a rule-filed act names.
@@ -125,8 +135,10 @@ def _filed_by_rules(owner_id: int, account_id: int, import_id: int) -> int:
         match and this join can emit it at most once.  A de-duplication here
         would be a fence over a guarantee the database already holds.
     """
+    first = StatementLineSighting.first_import_of_each_line(account_id)
     return (
         db.session.query(db.func.count(BankStatementLine.id))
+        .join(first, first.c.line_id == BankStatementLine.id)
         .join(
             StatementMatchMember,
             db.and_(
@@ -144,7 +156,7 @@ def _filed_by_rules(owner_id: int, account_id: int, import_id: int) -> int:
         )
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.import_id == import_id,
+            first.c.import_id == import_id,
             StatementMatch.user_id == owner_id,
             StatementMatch.applied_by_rule.is_(True),
         )
@@ -171,37 +183,31 @@ def last_import(owner_id: int, account_id: int) -> "LastImport | None":
         imported into -- which is a real and ordinary state, and the state the
         hero already has its own arm for.
     """
-    # **Ordered by the instant AND then by id**, which is
-    # :func:`~app.services.statement_import.import_history`'s own key and is
-    # load-bearing rather than decorative: ``created_at`` defaults to
-    # ``now()``, which in PostgreSQL is the TRANSACTION's start time, so two
-    # imports written in one transaction carry the identical instant and the
-    # id is the only thing that orders them.
-    #
-    # **It is the SECOND spelling of that key and it cannot be hoisted**:
-    # ``statement_import`` imports THIS package (``_reads`` takes
-    # ``removals_by_match``, ``_undo`` takes ``release_match``), so an edge
-    # back would close a cycle -- the same wall :func:`~._filing
-    # .file_new_swipes` documents for the ``ImportOutcome`` it cannot take.
-    # No model in this app carries a query-ordering constant, so inventing a
-    # third home for one ``ORDER BY`` would be the speculative abstraction
-    # ``CLAUDE.md`` rule 13 forbids.  What keeps the two honest is that both
-    # say why the id is there.
+    # **Newest by the act order the MODEL states** (plan step
+    # ``bank_import:X-f6b-1``): this read and ``import_history`` spelled
+    # ``created_at DESC, id DESC`` separately until the sighting relation
+    # made a third and fourth reader of the same key, at which point one home
+    # stopped being the speculative abstraction rule 13 forbids and became
+    # rule 14.  It lives on the model because ``statement_import`` imports
+    # THIS package (``_reads`` takes ``removals_by_match``, ``_undo`` takes
+    # ``release_match``), so an edge back would close a cycle.
     found = (
-        db.session.query(
-            StatementImport.id,
-            StatementImport.created_at,
-            StatementImport.recorded_count,
-        )
+        db.session.query(StatementImport.id, StatementImport.created_at)
         .filter(StatementImport.account_id == account_id)
-        .order_by(StatementImport.created_at.desc(), StatementImport.id.desc())
+        .order_by(*(column.desc() for column in StatementImport.act_order()))
         .first()
     )
     if found is None:
         return None
-    import_id, created_at, recorded_count = found
+    import_id, created_at = found
+    # The newest import's own row of the ONE aggregate, or ``(0, 0)`` for an
+    # import that wrote no sighting at all.
+    counted = db.session.execute(
+        StatementLineSighting.counts_by_import(account_id)
+        .where(StatementLineSighting.import_id == import_id),
+    ).one_or_none()
     return LastImport(
         at=created_at,
-        recorded_count=recorded_count,
+        recorded_count=0 if counted is None else counted.first,
         filed_by_rules=_filed_by_rules(owner_id, account_id, import_id),
     )

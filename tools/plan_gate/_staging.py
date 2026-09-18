@@ -194,11 +194,12 @@ def a_prefix_trap() -> tuple[str, list[str]]:
     LEAF side**: :func:`_classes.is_leaf_ident`'s number boundary must NOT read
     the sharers as the shipped step's leaves (``C20`` had read as ``C2``'s).
 
-    TWO exclusions, both of which make the pair genuinely unrelated: a DECLARED
+    THREE exclusions, each of which makes the pair genuinely related or not a
+    trap: a letter-suffixed sharer (the follow-up spelling, ``X-f6b-1b``); a DECLARED
     parent, whose leaf-spelled sharers ARE its leaves; and a sharer spelled
     ``<id>-<suffix>``, which is rule 2's decomposition spelling and so is a
     real parent-leaf relation whether or not anyone declared it.  Without the
-    second, a future undeclared parent shipped ahead of an open leaf would be
+    third, a future undeclared parent shipped ahead of an open leaf would be
     graded here as the TRAP -- the exact inverse of the measurement this
     preserves, reading green.
 
@@ -221,6 +222,11 @@ def a_prefix_trap() -> tuple[str, list[str]]:
             and other.ident != row.ident
             and other.ident.startswith(row.ident)
             and not other.ident.startswith(f"{row.ident}-")
+            # a sharer that CONTINUES the trailing number is the trap; a letter
+            # suffix (``X-bi-1b``, ``X-f6b-1b``) is the follow-up spelling the
+            # leaf derivation reads as related, and it grabbed the specimen slot
+            # on 2026-09-18 when ``X-f6b-1`` shipped with ``X-f6b-1b`` open
+            and other.ident[len(row.ident):][:1].isdigit()
             and not other.shipped
         )
         if sharers:

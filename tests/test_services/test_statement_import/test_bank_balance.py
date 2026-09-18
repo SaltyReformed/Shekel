@@ -16,11 +16,15 @@ from datetime import date
 from decimal import Decimal
 
 from app.enums import StatementBalanceEvidenceEnum
-from app.models.statement_import import BankStatementLine
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementLineSighting,
+)
 from app.models.account import AccountAnchorHistory
 from app.services.statement_import import (
     RecordedRun,
     bank_balance_on,
+    covered_runs,
     fold_bank_balances,
     release_anchors_from,
 )
@@ -428,26 +432,24 @@ class TestADayTheLinesCannotREACHIsNotAnswered:
         ) == Decimal("1020.00")
 
 
-class TestASpanWhoseLinesAreGoneClaimsNoCoverage:
-    """A coverage claim an import can no longer vouch for."""
+class TestCoverageIsTheDeclaredWindowOfEveryImport:
+    """Ruling **R-BAL71** (amending **R-BAL53**), plan step ``bank_import:X-f6b-1``."""
 
-    def test_a_reimport_owning_no_lines_contributes_no_span(
+    def test_a_reimport_that_SIGHTED_the_lines_keeps_them_and_their_coverage(
         self, app, db, seed_user,
     ):
-        """Reproduced end to end by adversarial review 2026-08-24.
+        """The mutation control the sighting relation exists for.
 
-        A RE-IMPORT of an identical file records zero fresh lines and keeps the
-        full span -- the developer's own second import is that shape.  Deleting
-        the import that actually OWNED those lines then left the re-import's
-        span still claiming them, so the walk crossed unimported days and
-        reported a confident wrong balance.  It is not display-only: the same
-        walk feeds ``recorded_opening_before``, which the import door solves
-        each new file's effective day against.
-
-        Here the February lines belong to one import and a second import
-        declares the same span while owning none.  Only the owner's span
-        counts, so the day is answered while it exists and unanswerable when it
-        does not.
+        The defect an adversarial review reproduced on 2026-08-24 -- deleting
+        the import that owned a span's lines while a re-import kept the span
+        -- is closed at the root rather than fenced: under **R-BI10** the
+        re-import SIGHTED the lines, so the first import's deletion removes
+        nothing and the re-import's declared window vouches for days whose
+        lines are still there.  Under the old code the lines died with their
+        owner and coverage had to collapse; here the line stays and the day
+        stays priced at `$850.00`.  Restore an owns-a-line gate to
+        ``covered_runs`` and the FIRST assertion still holds; drop the
+        sighting and the SECOND fails -- that is why both are graded.
         """
         _seed_import(
             db, seed_user["account"], stated="1000.00",
@@ -460,24 +462,68 @@ class TestASpanWhoseLinesAreGoneClaimsNoCoverage:
             lines=[(date(2026, 2, 15), "-150.00")],
             period=(date(2026, 2, 1), date(2026, 2, 28)),
         )
-        _seed_import(
+        again = _seed_import(
             db, seed_user["account"], stated=None, file_name="feb-again.csv",
             lines=[], period=(date(2026, 2, 1), date(2026, 2, 28)),
         )
+        [line] = db.session.query(BankStatementLine).filter(
+            BankStatementLine.posted_on == date(2026, 2, 15),
+        ).all()
+        db.session.add(StatementLineSighting(
+            account_id=line.account_id, line_id=line.id, import_id=again.id,
+            description="X",
+        ))
+        db.session.flush()
         account_id = seed_user["account"].id
-
         assert bank_balance_on(
             account_id, date(2026, 2, 28),
         ) == Decimal("850.00")
 
-        db.session.query(BankStatementLine).filter(
-            BankStatementLine.import_id == february.id,
-        ).delete()
+        db.session.delete(february)
         db.session.flush()
+        db.session.expire_all()
 
-        # NOT 1000.00 -- the re-import's span no longer vouches for days whose
-        # lines have gone, so the walk refuses rather than crossing the hole.
-        assert bank_balance_on(account_id, date(2026, 2, 28)) is None
+        assert db.session.query(BankStatementLine).filter(
+            BankStatementLine.posted_on == date(2026, 2, 15),
+        ).count() == 1
+        assert covered_runs(account_id) == [
+            (date(2026, 1, 1), date(2026, 2, 28)),
+        ]
+        assert bank_balance_on(
+            account_id, date(2026, 2, 28),
+        ) == Decimal("850.00")
+
+    def test_an_import_that_sighted_NO_line_still_declares_its_window(
+        self, app, db, seed_user,
+    ):
+        """A zero-line window is an observation: nothing posted in it.
+
+        **This is the ruled consequence of deleting the owns-a-line gate**,
+        graded so the ruling is what the code does rather than what a
+        docstring says: a sync over a window the bank returned no line for
+        (ruling **R-BAL71**, "a zero-line sync with a balance is an
+        observation") covers the days it asked for, so a walk crosses them
+        as quiet days.  *Under **R-BAL53** as first written this import
+        contributed no span and the day below was unanswerable.*
+        """
+        _seed_import(
+            db, seed_user["account"], stated="1000.00",
+            effective_on=date(2026, 1, 31), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 1, 31), "10.00")],
+            period=(date(2026, 1, 1), date(2026, 1, 31)),
+        )
+        _seed_import(
+            db, seed_user["account"], stated=None, file_name="quiet-feb.csv",
+            lines=[], period=(date(2026, 2, 1), date(2026, 2, 28)),
+        )
+        account_id = seed_user["account"].id
+
+        assert covered_runs(account_id) == [
+            (date(2026, 1, 1), date(2026, 2, 28)),
+        ]
+        assert bank_balance_on(
+            account_id, date(2026, 2, 28),
+        ) == Decimal("1000.00")
 
 
 class TestTheWalkAnchorsPerRun:

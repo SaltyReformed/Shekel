@@ -210,7 +210,10 @@ def settled_figure(txn) -> "Decimal | None":
     if txn.settled_basis_id == ref_cache.settlement_basis_id(
         SettlementBasisEnum.PURCHASES,
     ):
-        return purchases_total(txn.entries)
+        # The PURCHASES, never the family (ruling R-BAL68); a ``purchases``
+        # record holds no covering movement, so the two agree today, and
+        # the reading says what the figure IS.
+        return purchases_total(txn.purchases)
     if txn.settled_amount is None:
         raise AmountUnresolvable(
             f"Transaction {txn.id} records a settlement whose basis stores its "

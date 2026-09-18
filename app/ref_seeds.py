@@ -24,7 +24,7 @@ row could be applied in two call sites but not the third.
 
 Each ``ACCT_TYPE_SEEDS`` entry: (name, category_name, has_parameters,
 has_amortization, has_interest, is_pretax, is_liquid, has_appreciation,
-icon_class, max_term_months)
+has_revolving_credit, icon_class, max_term_months)
 """
 
 from __future__ import annotations
@@ -49,29 +49,44 @@ if TYPE_CHECKING:
 # pylint: disable=line-too-long
 
 ACCT_TYPE_SEEDS = [
-    # name              category      params amort  interest pretax liquid appr   icon               max_term
-    ("Checking",        "Asset",      False, False, False, False, True,  False, "bi-wallet2",        None),
-    ("Savings",         "Asset",      False, False, False, False, True,  False, "bi-piggy-bank",     None),
-    ("HYSA",            "Asset",      True,  False, True,  False, True,  False, "bi-piggy-bank",     None),
-    ("Money Market",    "Asset",      True,  False, True,  False, True,  False, "bi-cash-stack",     None),
-    ("CD",              "Asset",      True,  False, True,  False, False, False, "bi-safe",           None),
-    ("HSA",             "Asset",      True,  False, True,  False, False, False, "bi-heart-pulse",    None),
-    ("Credit Card",     "Liability",  False, False, False, False, False, False, "bi-credit-card",    None),
-    ("Mortgage",        "Liability",  True,  True,  False, False, False, False, "bi-house",          600),
-    ("Auto Loan",       "Liability",  True,  True,  False, False, False, False, "bi-car-front",      120),
-    ("Student Loan",    "Liability",  True,  True,  False, False, False, False, "bi-mortarboard",    300),
-    ("Personal Loan",   "Liability",  True,  True,  False, False, False, False, "bi-cash-coin",      120),
-    ("HELOC",           "Liability",  True,  True,  False, False, False, False, "bi-bank",           360),
-    ("401(k)",          "Retirement", True,  False, False, True,  False, False, "bi-graph-up-arrow", None),
-    ("Roth 401(k)",     "Retirement", True,  False, False, False, False, False, "bi-graph-up-arrow", None),
-    ("Traditional IRA", "Retirement", True,  False, False, True,  False, False, "bi-graph-up-arrow", None),
-    ("Roth IRA",        "Retirement", True,  False, False, False, False, False, "bi-graph-up-arrow", None),
-    ("Brokerage",       "Investment", True,  False, False, False, False, False, "bi-bar-chart-line", None),
-    ("529 Plan",        "Investment", True,  False, False, False, False, False, "bi-mortarboard",    None),
-    ("Property",        "Asset",      True,  False, False, False, False, True,  "bi-houses",         None),
+    # name              category      params amort  interest pretax liquid appr   revolv icon               max_term
+    ("Checking",        "Asset",      False, False, False, False, True,  False, False, "bi-wallet2",        None),
+    ("Savings",         "Asset",      False, False, False, False, True,  False, False, "bi-piggy-bank",     None),
+    ("HYSA",            "Asset",      True,  False, True,  False, True,  False, False, "bi-piggy-bank",     None),
+    ("Money Market",    "Asset",      True,  False, True,  False, True,  False, False, "bi-cash-stack",     None),
+    ("CD",              "Asset",      True,  False, True,  False, False, False, False, "bi-safe",           None),
+    ("HSA",             "Asset",      True,  False, True,  False, False, False, False, "bi-heart-pulse",    None),
+    ("Credit Card",     "Liability",  False, False, False, False, False, False, True,  "bi-credit-card",    None),
+    ("Mortgage",        "Liability",  True,  True,  False, False, False, False, False, "bi-house",          600),
+    ("Auto Loan",       "Liability",  True,  True,  False, False, False, False, False, "bi-car-front",      120),
+    ("Student Loan",    "Liability",  True,  True,  False, False, False, False, False, "bi-mortarboard",    300),
+    ("Personal Loan",   "Liability",  True,  True,  False, False, False, False, False, "bi-cash-coin",      120),
+    ("HELOC",           "Liability",  True,  True,  False, False, False, False, False, "bi-bank",           360),
+    ("401(k)",          "Retirement", True,  False, False, True,  False, False, False, "bi-graph-up-arrow", None),
+    ("Roth 401(k)",     "Retirement", True,  False, False, False, False, False, False, "bi-graph-up-arrow", None),
+    ("Traditional IRA", "Retirement", True,  False, False, True,  False, False, False, "bi-graph-up-arrow", None),
+    ("Roth IRA",        "Retirement", True,  False, False, False, False, False, False, "bi-graph-up-arrow", None),
+    ("Brokerage",       "Investment", True,  False, False, False, False, False, False, "bi-bar-chart-line", None),
+    ("529 Plan",        "Investment", True,  False, False, False, False, False, False, "bi-mortarboard",    None),
+    ("Property",        "Asset",      True,  False, False, False, False, True,  False, "bi-houses",         None),
 ]
 # pylint: enable=line-too-long
 # fmt: on
+
+# The ``AccountType`` metadata columns each ``ACCT_TYPE_SEEDS`` row carries
+# after its (name, category_name) head, IN THE ROW'S ORDER -- the one place
+# that order is stated in code, read by ``_seed_account_types``.
+_ACCT_TYPE_METADATA_COLUMNS = (
+    "has_parameters",
+    "has_amortization",
+    "has_interest",
+    "is_pretax",
+    "is_liquid",
+    "has_appreciation",
+    "has_revolving_credit",
+    "icon_class",
+    "max_term_months",
+)
 
 
 # Per-table seed data for the non-AccountType ref tables.  Entries are
@@ -435,6 +450,25 @@ def _seed_account_types(
     ``AccountTypeCategory`` rows to already be flushed -- their PKs back
     the ``category_id`` FK.
 
+    The metadata columns are named ONCE, in :data:`_ACCT_TYPE_METADATA_COLUMNS`,
+    and zipped against each row's trailing fields, so the INSERT arm and the
+    refresh arm cannot disagree about which columns a seed row carries (they
+    were two hand-written lists of the same names until plan step
+    credit_card:CC-1 added ``has_revolving_credit``).  ``strict=True`` makes a
+    row with a missing or extra field fail here, loudly, rather than seed a
+    column with its neighbour's value.  ``category_id`` is written on INSERT
+    only: an existing row keeps its category, as it always has.
+
+    **The lookup is scoped to the BUILT-IN row** (``user_id IS NULL``), which
+    is what the partial index ``uq_account_types_seeded_name`` keys.  An owner
+    may name a custom type after a seed ("HYSA" is the model docstring's own
+    example), and until plan step credit_card:CC-1 this looked the row up by
+    name alone with no ORDER BY -- so a reseed could find the OWNER's row first
+    and overwrite its flags with the seed's.  With ``has_revolving_credit``
+    gating every card feature that would have made a user's "Credit Card" type
+    revolving at the next container start; the seed now writes only the row it
+    owns (the CC-1 adversarial review's finding 2).
+
     Args:
         session: SQLAlchemy session bound to the target database.
         ref_models: The ``app.models.ref`` module.
@@ -444,37 +478,24 @@ def _seed_account_types(
         c.name: c.id
         for c in session.query(ref_models.AccountTypeCategory).all()
     }
-    for (name, cat_name, has_params, has_amort,
-         has_int, is_pre, is_liq, has_appr, icon, max_term) in ACCT_TYPE_SEEDS:
+    for name, cat_name, *metadata in ACCT_TYPE_SEEDS:
+        values = dict(zip(_ACCT_TYPE_METADATA_COLUMNS, metadata, strict=True))
         existing = (
             session.query(ref_models.AccountType)
-            .filter_by(name=name)
-            .first()
+            .filter_by(name=name, user_id=None)
+            .one_or_none()
         )
         if existing is None:
             session.add(ref_models.AccountType(
                 name=name,
                 category_id=cat_lookup[cat_name],
-                has_parameters=has_params,
-                has_amortization=has_amort,
-                has_interest=has_int,
-                is_pretax=is_pre,
-                is_liquid=is_liq,
-                has_appreciation=has_appr,
-                icon_class=icon,
-                max_term_months=max_term,
+                **values,
             ))
             if verbose:
                 print(f"  + account_types: {name}")
         else:
-            existing.has_parameters = has_params
-            existing.has_amortization = has_amort
-            existing.has_interest = has_int
-            existing.is_pretax = is_pre
-            existing.is_liquid = is_liq
-            existing.has_appreciation = has_appr
-            existing.icon_class = icon
-            existing.max_term_months = max_term
+            for column, value in values.items():
+                setattr(existing, column, value)
 
 
 def _seed_other_ref_tables(

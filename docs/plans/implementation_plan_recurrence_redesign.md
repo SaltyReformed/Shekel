@@ -733,7 +733,10 @@ paying early saves nothing (`$8.88` over the Van's remaining life). A
 loan's convention becomes a deliberate act with evidence rather than a side effect. It retires
 `debt_strategy_service._accrue_interest`, which inline-copies the formula under a docstring claiming
 it matches the engine. Which convention each loan's NOTE states is an `operator` question the
-backfill does not guess.
+backfill does not guess. **The card's finance charge is priced by this same producer** under a
+`DAILY_ACTUAL_365` member this step GAINS (rule 14: one convention table; `credit_card:CC-3i`
+consumes it per constant-balance segment), and `credit_card:R-CC19` ranks that leaf AFTER this
+one -- no loan step is pulled forward for the card.
 
 - [ ] **R16-e -- walk 3 is DELETED** (ruling **R-R53**; finding **D60**).
       `rate_period_engine.replay_schedule` is the THIRD walk over a loan: it charges a month per

@@ -496,14 +496,20 @@ def _expected_append_only_triggers() -> int:
     return tables * kinds
 
 
-def _level_trigger_check() -> tuple[str, int]:
-    """Return the SQL that counts the level-within-file triggers, and the count.
+def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
+    """Return the SQL that counts one trigger family, and the count it must find.
 
-    One attachment per entry in ``app.level_infrastructure.LEVEL_TRIGGERS``
-    (plan step ``balance:X-bj-1``).  BOTH halves come from that one constant
-    -- the names the query looks for and the number it must find -- so the
-    check cannot count a trigger the module renamed, nor accept a template
-    missing one.
+    One attachment per entry in the named ``(trigger name, table)`` constant:
+    ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``)
+    and ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
+    ``bank_import:X-f6b-1``).  BOTH halves come from that one constant -- the
+    names the query looks for and the number it must find -- so the check
+    cannot count a trigger the module renamed, nor accept a template missing
+    one.
+
+    Args:
+        module: Dotted module path of the infrastructure module.
+        attribute: The constant's name on it.
 
     Returns:
         ``(sql, expected)``.
@@ -514,14 +520,11 @@ def _level_trigger_check() -> tuple[str, int]:
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
     try:
-        triggers = importlib.import_module(
-            "app.level_infrastructure",
-        ).LEVEL_TRIGGERS
+        triggers = getattr(importlib.import_module(module), attribute)
     except (ImportError, AttributeError) as exc:
         raise BuildError(
-            f"cannot read app.level_infrastructure.LEVEL_TRIGGERS ({exc}); "
-            "the verification would otherwise compare against a number "
-            "nobody owns"
+            f"cannot read {module}.{attribute} ({exc}); the verification "
+            "would otherwise compare against a number nobody owns"
         ) from exc
     names = ", ".join(f"'{name}'" for name, _table in triggers)
     return (
@@ -703,7 +706,18 @@ def _verify_image(tag: str) -> None:
                 "WHERE tgname LIKE 'ck\\_append\\_only%' AND NOT tgisinternal",
                 _expected_append_only_triggers(),
             ),
-            ("level-within-file triggers", *_level_trigger_check()),
+            (
+                "level-within-file triggers",
+                *_trigger_family_check(
+                    "app.level_infrastructure", "LEVEL_TRIGGERS",
+                ),
+            ),
+            (
+                "last-sighting triggers",
+                *_trigger_family_check(
+                    "app.sighting_infrastructure", "SIGHTING_TRIGGERS",
+                ),
+            ),
         ):
             answer = ask(_TEMPLATE_DATABASE, sql)
             if answer != str(expected):

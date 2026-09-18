@@ -35,7 +35,6 @@ Architecture:
 import logging
 from decimal import Decimal
 
-from app.enums import SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
@@ -46,6 +45,7 @@ from app.services.cash_ledger import (
 )
 from app.services.row_valuation import purchases_total
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
@@ -106,7 +106,11 @@ def fixed_settle_amount(txn: Transaction) -> "Decimal | None":
         The figure the row's own records answer, or ``None`` when they do not.
     """
     if settles_from_entries(txn):
-        return purchases_total(txn.entries)
+        # The PURCHASES, never the family (ruling R-BAL68): this prices the
+        # row BEFORE the seam runs, and a reverted manual close's kept
+        # movement is still on the row then -- the seam withdraws it when
+        # the ``purchases`` record lands.
+        return purchases_total(txn.purchases)
     return honoured_correction(txn)
 
 
@@ -227,9 +231,9 @@ def settle_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
 
 
 def _is_correction(
-    txn: Transaction, submitted: "Decimal | None", booked: Decimal,
+    txn: Transaction, submitted: "StatedFigure | None", booked: Decimal,
 ) -> bool:
-    """Return whether *submitted* is a HUMAN's figure this settle would BOOK.
+    """Return whether *submitted* is a STATED figure this settle would BOOK.
 
     **The verb's own act-1b decision, and it is finding N-231's fix.**  Three
     doors may hand a settle a figure and only some of them are corrections: a
@@ -270,8 +274,8 @@ def _is_correction(
 
     Args:
         txn: The row about to settle, still in its pre-settle status.
-        submitted: The figure a caller supplied, or ``None`` when nobody typed
-            one.
+        submitted: The figure a caller stated and who wrote it, or ``None``
+            when nobody stated one.
         booked: What this settle would book absent a correction, resolved once
             by :func:`settle_amount` and threaded here rather than re-derived.
 
@@ -282,14 +286,14 @@ def _is_correction(
     return (
         submitted is not None
         and not settles_from_entries(txn)
-        and submitted != booked
+        and submitted.amount != booked
     )
 
 
 def settle_transaction(
     txn: Transaction,
     *,
-    submitted: Decimal | None = None,
+    submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
@@ -322,9 +326,9 @@ def settle_transaction(
        that prices it -- so there is no cache to reconcile, no ordering between
        the refresh and the seam, and no way for the plan and the record to
        state one number twice.
-       **The ``and txn.entries`` half is load-bearing**, and production says
-       so: ``Kayla's Spending Money`` carries no entries at all, so settling it
-       from entries unconditionally would book ``$0.00`` against its
+       **The ``and txn.purchases`` half is load-bearing**, and production says
+       so: ``Kayla's Spending Money`` carries no purchases at all, so settling
+       it from purchases unconditionally would book ``$0.00`` against its
        ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
        decides money, three doors settle a row, and a door that picks its own
        figure is how one row comes to book two amounts depending on which
@@ -387,18 +391,24 @@ def settle_transaction(
             REFUSED here, because a transfer settles through
             ``transfer_service.update_transfer`` so both legs and the parent
             move together.
-        submitted: What the row actually cost, when the CALLER knows -- i.e. a
-            figure a human supplied.  ``None`` does NOT mean "keep the stored
-            amount": it means "nobody typed one", and the settle then RECORDS
-            what it resolved, on the ``derived`` basis.  Ruling **R-FB** is what
-            gives the parameter its real callers: a BILL's tick may correct its
-            amount, prefilled, and an envelope's close may not -- the envelope
-            branch ignores a submitted figure outright, and the full-edit door
-            refuses one on such a row rather than dropping it silently.
-            **It is named for what it IS rather than for a column** since plan
-            step X-au-c3: it was ``actual_amount``, and the column of that name
-            is gone -- a settled row records what moved in ``settled_amount``
-            beside a ``settled_basis_id`` that says whether this figure is why.
+        submitted: What the row actually cost and WHO SAID SO, when the CALLER
+            knows (:class:`~app.services.stated_figure.StatedFigure`; plan step
+            **X-bi-3e-1**, ruling **R-BAL61**): ``typed`` from the reconcile
+            panel's tick, the grid's Mark Paid and the popover (through
+            :func:`._door.apply_requested_status`), ``observed`` from the
+            statement matcher's transaction arm through the same door.
+            ``None`` does NOT mean "keep the stored amount": it means "nobody
+            stated one", and the settle then RECORDS what it resolved, on the
+            ``derived`` basis with the ``resolved`` source.  Ruling **R-FB** is
+            what gives the parameter its real callers: a BILL's tick may
+            correct its amount, prefilled, and an envelope's close may not --
+            the envelope branch ignores a stated figure outright, and the
+            full-edit door refuses one on such a row rather than dropping it
+            silently.  **It is named for what it IS rather than for a column**
+            since plan step X-au-c3: it was ``actual_amount``, and the column
+            of that name is gone -- a settled row records what moved in
+            ``settled_amount`` beside a ``settled_basis_id`` that says whether
+            this figure is why.
         settle_day: The civil day the money moved and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`), when the CALLER knows
             it -- the reconcile tick's statement date on the ``asserted``
@@ -491,15 +501,16 @@ def settle_transaction(
         # reconcile panel PREFILLS its amount box, so an untouched tick submits
         # the figure the row would have booked anyway.
         #
-        # **The panel is the ONLY caller that reaches it**, and saying so
-        # replaces a claim this comment used to make that plan step X-ap turned
-        # out NOT to be true.  It predicted the full-edit door would thread its
-        # submitted ``actual_amount`` into this parameter; X-ap instead lets the
-        # PATCH handler's own ``setattr`` loop write that column and calls this
-        # verb with no figure, because two writers of one column in one request
-        # is the shape this arc removes.  A justification naming a caller that
-        # does not exist is the defect ruling R-EC deleted a whole parameter
-        # for; it is corrected here rather than left to read as coverage.
+        # **Four doors reach it with a figure**, and naming them replaces a
+        # sentence this comment carried from plan step X-ap ("the panel is the
+        # ONLY caller") that stopped being true when the popover's figure was
+        # threaded through ``apply_requested_status`` (2026-08-17) and the
+        # matcher's transaction arm through the same door: the reconcile
+        # panel's tick, the grid's Mark Paid, the full-edit popover and the
+        # matcher.  Every one states who wrote the figure with it (plan step
+        # X-bi-3e-1).  A justification naming a caller that does not exist is
+        # the defect ruling R-EC deleted a whole parameter for; it is corrected
+        # here rather than left to read as coverage.
         #
         # ONE basis for the whole act (developer ruling, 2026-08-17): the
         # figure this settle books and the echo rule's comparison are two
@@ -574,7 +585,7 @@ def settle_from_entries(
     record that no money left the account while marking the row Paid.  The
     discriminator is therefore the CALLER's act, not the row, which is why the
     rule cannot live in a shared branch and why :func:`settle_transaction` gates
-    its entries branch on ``and txn.entries``.
+    its entries branch on ``and txn.purchases``.
 
     Production carries both signatures, which is how the difference was found:
     of 9 settled entry-less envelopes, 8 were booked at their estimate
@@ -590,9 +601,11 @@ def settle_from_entries(
         ``entry_service``'s re-derivation of a settled envelope's figure -- with
         one copy there is nothing for a reconciler to keep in step, and a
         purchase corrected later moves the close by exactly its own difference.
-        What the close BOOKS is still ``sum(e.amount for e in txn.entries)``,
-        which is ``Decimal("0")`` when ``txn.entries`` is empty -- see the
-        ruling above.
+        What the close BOOKS is still ``sum(e.amount for e in txn.purchases)``
+        -- the row's purchases, never the covering movement a revert kept
+        (ruling **R-BAL68**; the ``purchases`` record withdraws it) -- which is
+        ``Decimal("0")`` when the row holds no purchase -- see the ruling
+        above.
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
@@ -632,9 +645,9 @@ def settle_from_entries(
          other public settle surfaces rather than restated here -- this
          helper's own wording of the transfer rule was a SECOND spelling of
          it (finding **N-233**).
-      2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked,
-         either via its template's ``is_envelope`` flag or, for an ad-hoc
-         row, its own ``is_envelope`` column.  Envelope semantics are the
+      2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked
+         through its definition's ``is_envelope`` flag.  Envelope semantics
+         are the
          contract this helper relies on; calling on a non-tracked row is
          a programming error and surfaces as a ``ValidationError``.
       3. ``txn.status`` is mutable (``status.is_immutable`` is False).
@@ -669,16 +682,15 @@ def settle_from_entries(
     # therefore autoflush) to keep the failure path side-effect-free.
     # The shared pair reads two columns, so it belongs at the front.
     reject_unsettleable(txn)
-    # Resolved purchase-tracking check: covers template-generated rows
-    # (template.is_envelope) and ad-hoc rows (own is_envelope flag).  For
-    # an ad-hoc row tracks_purchases reads a column only -- no relationship
-    # access -- so the cheap-first / autoflush-safe ordering holds; for a
-    # template row it accesses the template exactly as the prior guard did.
+    # Resolved purchase-tracking check: the DEFINITION's ``is_envelope``
+    # (``tracks_purchases`` accesses the template exactly as the prior guard
+    # did; a link-less shadow or payback answers False off its own columns,
+    # so the cheap-first / autoflush-safe ordering holds for those).
     if not txn.tracks_purchases:
         raise ValidationError(
             f"Transaction {txn.id} is not envelope-tracked; "
             "settle_from_entries requires individual purchase tracking "
-            "(template.is_envelope, or is_envelope on an ad-hoc row).",
+            "(the definition's is_envelope).",
         )
     # Guard against settling an already-finalised row.  ``status`` may
     # be unloaded if the caller passed a detached or freshly-constructed
@@ -711,9 +723,7 @@ def settle_from_entries(
     # difference with no second write.
     apply_status_change(
         txn, new_status_id, settle_day=settle_day,
-        settlement=Settlement(
-            amount=None, basis=SettlementBasisEnum.PURCHASES,
-        ),
+        settlement=Settlement(amount=None, source=None),
     )
 
     log_event(
@@ -737,6 +747,6 @@ def settle_from_entries(
         # the row: a ``purchases`` settlement stores nothing to read.
         # ``purchases_total`` answers ``Decimal("0")`` for an empty entry list,
         # which is the carry-forward "no spend, full rollover" case.
-        settled_amount=str(purchases_total(txn.entries)),
+        settled_amount=str(purchases_total(txn.purchases)),
         settled_on=txn.settled_on.isoformat(),
     )

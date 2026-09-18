@@ -25,11 +25,20 @@ The shapes under test, and the real act each stands for:
   per-day sums and the posted ledger's cash net are identical with and
   without the movement, because the parent's leg nets to zero and the
   movement carries the money;
-* **the lifecycle mirrors the RECORD**: a revert deletes the movement (its
-  postings reversed) while the row retains what moved; a re-settle rebuilds
-  it from the retained record -- ``typed`` for a honoured correction,
-  ``resolved`` for a re-priced derivation; an envelope closed empty and later
-  given real purchases sums the purchases alone;
+* **the lifecycle mirrors the RECORD** (plan step X-bi-3e-2, ruling
+  **R-BAL61**): a revert UN-DATES the movement and keeps it -- its day pair
+  and link released with the row's, the door's family reconcile reversing
+  its legs -- while both homes retain what moved; a re-settle re-dates the
+  SAME row from the retained record -- ``typed`` for a honoured correction,
+  the new price for a re-priced derivation; an envelope closed empty,
+  reverted and later given real purchases sums the purchases alone, and the
+  ``purchases`` record withdraws the survivor;
+* **a kept movement is not a purchase** (ruling **R-BAL68**): every
+  purchase-meaning reader -- the fold's reservation, the reconcile panel's
+  offer and stamp, carry-forward's leftover, the grid's sums and list, the
+  dashboard's progress, the settle's own offer and booking, the statement
+  bound -- reads ``Transaction.purchases`` and sees nothing of a reverted
+  manual close; the family readers keep ``entries``;
 * **the mirror never lowers evidence**: an identity re-submit leaves a
   movement's bank-observed day and link standing; a settle-day correction
   moves the movement's day with the row's;
@@ -39,15 +48,17 @@ The shapes under test, and the real act each stands for:
 * **the transfer arm** (plan step X-bi-3c): both legs of a settled transfer
   are covered through ``transfer_service``, each in its own direction; the
   ledger books the pair whole and the movements nowhere (ruling **R-BAL45**),
-  the reconcile tick's link reaches the leg's movement, a revert withdraws
-  both, and an endpoint move carries them (ruling **R-BAL46**); a loan
-  payment's loan-side movement moves no loan figure;
+  the reconcile tick's link reaches the leg's movement, a revert un-dates
+  both, and an endpoint move carries them, settled or not (rulings
+  **R-BAL46**, **R-BAL72**); a loan payment's loan-side movement moves no
+  loan figure;
 * **the purchase doors' source rule**: a hand-typed purchase is ``typed``, a
   bank-born one ``observed``, a human amount edit ``typed``, a bank
   confirmation ``observed``, a day-only edit unchanged.
 """
 
 from collections import defaultdict
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -74,20 +85,37 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     balance_at,
+    carry_forward_service,
     cash_ledger,
     entry_service,
     posting_service,
+    reconcile_service,
     status_seam,
     transaction_service,
     transfer_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
-from app.services.cash_ledger._amounts import _entry_aware_amount
+from app.services.cash_ledger._amounts import (
+    _entry_aware_amount,
+    _entry_checking_impact,
+)
+from app.services.cash_ledger._amount_source import resolve_transaction_amount
+from app.services.dashboard_service._bills import _entry_progress_fields
+from app.services.dashboard_service._pulse import _row_still_due
 from app.services.entry_service import EntryDetails
-from app.services.settle_day import SettleDay
-from app.services.status_seam._covering import covering_movements
+from app.services.entry_service._sums import (
+    build_entry_lists_dict,
+    build_entry_sums_dict,
+)
+from app.services.pay_calendar import FiledRow, calendar_for
+from app.services.reconcile_service._rows import wholly_spent_by
+from app.services.settle_day import SettleDay, recorded_settle_day
+from app.services.transaction_service._row_rules import settles_from_entries
 from app.services.transaction_service._settle import settle_from_entries
 from tests._test_helpers import (
+    observed,
+    typed,
     create_loan_account,
     create_savings_account,
     create_settled_transfer,
@@ -99,6 +127,7 @@ from tests._test_helpers import (
     one_off_row_of,
     planted_basis,
     posted_loan_balance_at,
+    state_template_price,
 )
 
 
@@ -124,15 +153,22 @@ def _settle(txn, *, submitted=None, settle_day=None):
 
 
 def _revert(txn):
-    """Put *txn* back to Projected through the ONE status door."""
-    status_seam.apply_status_change(
+    """Put *txn* back to Projected through the door production reverts by.
+
+    ``transaction_service.apply_requested_status`` is what every revert of a
+    transaction reaches (the popover's PATCH and the cancel route; the
+    matcher never reverts) -- the seam plus the family reconcile that
+    reverses the survivor's legs.  The seam alone is driven where the claim
+    is the seam's (:class:`TestTheBareSeamUnDatesAndKeeps`).
+    """
+    transaction_service.apply_requested_status(
         txn, ref_cache.status_id(StatusEnum.PROJECTED),
     )
 
 
 def _only_movement(txn):
     """Return the row's one covering movement, asserting there is exactly one."""
-    movements = covering_movements(txn)
+    movements = txn.covering_movements
     assert len(movements) == 1, f"expected one covering movement, got {len(movements)}"
     return movements[0]
 
@@ -192,7 +228,7 @@ class TestASettleWritesTheMovementItRecords:
     ):
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
 
             movement = _only_movement(txn)
@@ -267,10 +303,19 @@ class TestTheMovementMovesNoBalance:
             assert after - before == Decimal("-148.32")
 
 
-class TestARevertDeletesAndAReSettleRebuilds:
-    """The movement mirrors the row's record: withdrawn with the band, rebuilt from it."""
+class TestARevertUnDatesAndAReSettleReDates:
+    """The movement mirrors the row's record: un-dated with the band, re-dated from it.
 
-    def test_a_revert_deletes_a_resolved_movement_and_reverses_its_legs(
+    Plan step **X-bi-3e-2**, ruling **R-BAL61**: a revert releases the row's
+    assertion and KEEPS what moved, and the movement -- the record's mirror
+    and the only home of who wrote the figure -- follows the record rather
+    than the band.  Every revert here goes through the door production uses
+    (``transaction_service.apply_requested_status``), which runs the family
+    reconcile after the seam; the seam's own half is graded alone in
+    :class:`TestTheBareSeamUnDatesAndKeeps`.
+    """
+
+    def test_a_revert_un_dates_a_resolved_movement_and_the_door_reverses_its_legs(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -279,58 +324,95 @@ class TestARevertDeletesAndAReSettleRebuilds:
             before = ledger_net(db.session, cash.id, txn.scenario_id)
             _settle(txn)
             db.session.flush()
-            movement_id = _only_movement(txn).id
+            movement = _only_movement(txn)
+            movement_id = movement.id
+            assert movement.reconciled_by_id is None
             assert ledger_net(db.session, cash.id, txn.scenario_id) - before == Decimal("-148.32")
 
             _revert(txn)
             db.session.flush()
 
-            assert covering_movements(txn) == []
-            assert db.session.get(TransactionEntry, movement_id) is None
-            # The movement's own legs were reversed BEFORE the row went; the
-            # parent's zero leg had nothing to reverse.  Net: back to before.
+            survivor = _only_movement(txn)
+            assert survivor.id == movement_id
+            assert db.session.get(TransactionEntry, movement_id) is survivor
+            assert survivor.settled_on is None
+            assert survivor.settled_day_basis_id is None
+            assert survivor.reconciled_by_id is None
+            assert survivor.amount == Decimal("148.32")
+            assert survivor.figure_source_id == _source(MovementFigureSourceEnum.RESOLVED)
+            assert txn.purchases == []
+            # The door's family reconcile reversed the un-dated movement's
+            # legs (it posts nothing without a day); the parent's zero leg had
+            # nothing to reverse.  Net: back to before.
             assert ledger_net(db.session, cash.id, txn.scenario_id) == before
 
-    def test_a_revert_deletes_a_typed_movement_and_the_row_retains_the_figure(
+    def test_a_revert_un_dates_a_typed_movement_and_both_homes_retain_the_figure(
         self, app, seed_user, seed_periods,
     ):
-        """The movement goes; what moved stays where X-au-c3 keeps it."""
+        """The movement stays; what moved stays where X-au-c3 keeps it, on both."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             movement_id = _only_movement(txn).id
 
             _revert(txn)
             db.session.flush()
 
-            assert covering_movements(txn) == []
-            assert db.session.get(TransactionEntry, movement_id) is None
+            survivor = _only_movement(txn)
+            assert survivor.id == movement_id
+            assert survivor.settled_on is None
+            assert survivor.amount == Decimal("150.00")
+            assert survivor.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
             assert txn.settled_amount == Decimal("150.00")
             assert txn.settled_basis_id == ref_cache.settlement_basis_id(
                 SettlementBasisEnum.CORRECTED,
             )
+            # The retained read takes the source off the survivor, not the mapping.
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("150.00")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+
+    def test_a_revert_releases_the_movements_clearing_link_with_the_rows(
+        self, app, seed_user, seed_periods,
+    ):
+        """A link says a statement showed money that moved; un-dated, it cannot stand."""
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            anchor = _latest_anchor(txn.account_id)
+            status_seam.record_clearing(txn, anchor.id)
+            db.session.flush()
+            assert _only_movement(txn).reconciled_by_id == anchor.id
+
+            _revert(txn)
+            db.session.flush()
+
+            assert txn.reconciled_by_id is None
+            assert _only_movement(txn).reconciled_by_id is None
 
     def test_a_reverted_bill_is_worth_its_estimate_as_before(
         self, app, seed_user, seed_periods,
     ):
-        """The projection reads the plan again: no movement, no reservation split."""
+        """The projection reads the plan again: the survivor is no purchase, no split."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             _revert(txn)
             db.session.flush()
             db.session.expire(txn)
+            assert len(txn.entries) == 1, "the survivor is on the row"
             assert _entry_aware_amount(txn, planted_basis(txn)) == Decimal("148.32")
 
-    def test_a_re_settle_rebuilds_a_typed_movement_from_the_retained_record(
+    def test_a_re_settle_re_dates_the_same_typed_movement_from_the_retained_record(
         self, app, seed_user, seed_periods,
     ):
-        """Revert, re-settle with nothing typed: the honoured figure, mirrored again."""
+        """Revert, re-settle with nothing typed: the honoured figure, on the same row."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             first_id = _only_movement(txn).id
             _revert(txn)
@@ -340,16 +422,19 @@ class TestARevertDeletesAndAReSettleRebuilds:
             db.session.flush()
 
             movement = _only_movement(txn)
-            assert movement.id != first_id
+            assert movement.id == first_id
             assert movement.amount == Decimal("150.00")
             assert movement.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
             assert movement.settled_on == txn.settled_on
             assert movement.settled_on is not None
+            assert movement.purchased_on == txn.settled_on
+            assert movement.settled_day_basis_id == txn.settled_day_basis_id
             assert booked_a_human_figure is False
 
-    def test_a_re_settle_after_a_resolved_revert_writes_a_fresh_movement(
+    def test_a_re_settle_after_a_resolved_revert_re_prices_the_same_movement(
         self, app, seed_user, seed_periods,
     ):
+        """The plan moved meanwhile: the survivor takes the new price, keeps its id."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
             _settle(txn)
@@ -357,20 +442,54 @@ class TestARevertDeletesAndAReSettleRebuilds:
             first_id = _only_movement(txn).id
             _revert(txn)
             db.session.flush()
+            # The definition is re-priced; a derived row is worth its plan.
+            state_template_price(txn.template, Decimal("160.00"))
+            db.session.flush()
 
             _settle(txn)
             db.session.flush()
 
             movement = _only_movement(txn)
-            assert movement.id != first_id
+            assert movement.id == first_id
+            assert movement.amount == Decimal("160.00")
+            assert txn.settled_amount == Decimal("160.00")
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.RESOLVED,
             )
+            assert movement.settled_on == txn.settled_on
+
+    def test_a_re_settle_on_a_later_day_moves_the_survivors_purchase_day(
+        self, app, seed_user, seed_periods,
+    ):
+        """A covering movement's purchase day IS its settle day (R-BAL39), re-dated too."""
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            first_day = seed_periods[0].start_date
+            _settle(txn, settle_day=SettleDay(
+                day=first_day, basis=SettledDayBasisEnum.ENTERED,
+            ))
+            db.session.flush()
+            assert _only_movement(txn).purchased_on == first_day
+            _revert(txn)
+            db.session.flush()
+            assert _only_movement(txn).purchased_on == first_day, (
+                "un-dated, the survivor keeps the day of the close it recorded"
+            )
+
+            later = first_day + timedelta(days=3)
+            _settle(txn, settle_day=SettleDay(
+                day=later, basis=SettledDayBasisEnum.ENTERED,
+            ))
+            db.session.flush()
+
+            movement = _only_movement(txn)
+            assert movement.purchased_on == later
+            assert movement.settled_on == later
 
     def test_an_envelope_closed_empty_then_given_purchases_sums_the_purchases(
         self, app, seed_user, seed_periods,
     ):
-        """The stale-close control the delete arm exists for."""
+        """The stale-close control: the survivor is no purchase, and the purchases record withdraws it."""
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             _settle(envelope)
@@ -383,16 +502,20 @@ class TestARevertDeletesAndAReSettleRebuilds:
 
             _revert(envelope)
             db.session.flush()
-            assert list(envelope.entries) == []
+            assert [entry.id for entry in envelope.entries] == [close.id]
+            assert envelope.purchases == []
+            assert settles_from_entries(envelope) is False
 
             entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("60.00"), description="Kroger",
+                    figure=typed(Decimal("60.00")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
             db.session.flush()
+            assert [entry.amount for entry in envelope.purchases] == [Decimal("60.00")]
+            assert settles_from_entries(envelope) is True
             _settle(envelope)
             db.session.flush()
 
@@ -400,7 +523,8 @@ class TestARevertDeletesAndAReSettleRebuilds:
                 SettlementBasisEnum.PURCHASES,
             )
             assert sum(e.amount for e in envelope.entries) == Decimal("60.00")
-            assert covering_movements(envelope) == []
+            assert envelope.covering_movements == []
+            assert db.session.get(TransactionEntry, close.id) is None
 
     def test_an_envelope_with_purchases_holds_no_covering_movement(
         self, app, seed_user, seed_periods,
@@ -410,7 +534,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
             entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("60.00"), description="Kroger",
+                    figure=typed(Decimal("60.00")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -418,7 +542,39 @@ class TestARevertDeletesAndAReSettleRebuilds:
             settle_from_entries(envelope)
             db.session.flush()
             assert len(envelope.entries) == 1
-            assert covering_movements(envelope) == []
+            assert envelope.covering_movements == []
+
+
+class TestTheBareSeamUnDatesAndKeeps:
+    """What the SEAM alone guarantees on a revert, apart from any door.
+
+    ``status_seam.apply_status_change`` un-dates the movement and keeps it;
+    the ledger is the door's (``_covering``'s module docstring), so this
+    class asserts nothing about postings -- ``test_integrity_check``'s DC-10
+    case is where the state a caller of the bare seam would leave is graded.
+    """
+
+    def test_the_seam_alone_un_dates_the_movement_and_keeps_it(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn, submitted=typed(Decimal("150.00")))
+            db.session.flush()
+            movement_id = _only_movement(txn).id
+
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.flush()
+
+            survivor = _only_movement(txn)
+            assert survivor.id == movement_id
+            assert survivor.settled_on is None
+            assert survivor.settled_day_basis_id is None
+            assert survivor.reconciled_by_id is None
+            assert survivor.amount == Decimal("150.00")
+            assert survivor.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
 
 
 class TestAZeroSettlementWritesNoMovement:
@@ -440,7 +596,7 @@ class TestAZeroSettlementWritesNoMovement:
             db.session.flush()
             assert txn.status.is_settled
             assert txn.settled_amount == Decimal("0.00")
-            assert covering_movements(txn) == []
+            assert txn.covering_movements == []
 
     def test_a_typed_zero_over_a_covered_bill_withdraws_the_movement(
         self, app, seed_user, seed_periods,
@@ -453,33 +609,39 @@ class TestAZeroSettlementWritesNoMovement:
             status_seam.apply_status_change(
                 txn, txn.status_id,
                 settlement=status_seam.Settlement.from_settle(
-                    Decimal("148.32"), Decimal("0.00"),
+                    Decimal("148.32"), typed(Decimal("0.00")),
                     status_seam.recorded_settlement(txn),
                 ),
             )
             db.session.flush()
-            assert covering_movements(txn) == []
+            assert txn.covering_movements == []
             assert db.session.get(TransactionEntry, movement_id) is None
 
 
 class TestTheSourceFollowsWhoStatedTheFigure:
-    """A corrected figure on a bank-observed day is the BANK's, not a person's."""
+    """A corrected figure is labelled by WHO STATED it, never by the day.
+
+    Ruling **R-BAL61** (plan step X-bi-3e-1): the seam used to infer the
+    writer from the day's basis beside the figure -- an ``observed`` day made
+    the figure the bank's -- and the premise was measured false on every row
+    kind.  The writer states it now, as one value with the figure
+    (:class:`~app.services.stated_figure.StatedFigure`, ruling **R-BAL69**).
+    """
 
     def test_a_bank_repriced_bill_is_observed(
         self, app, seed_user, seed_periods,
     ):
-        """The matcher's shape: the line's figure with the line's day.
+        """The matcher's shape: the line's figure, stated as the bank's.
 
         The seam mapped ``corrected`` to ``typed`` regardless of the day, so
         a bill the matcher repriced from a bank line carried a figure stamped
-        as a person's while the migration's backfill and the purchase doors
-        call the same fact ``observed`` (adversarial review, 2026-09-16).
-        One rule now: ``settle_day.figure_source_of``.
+        as a person's (adversarial review, 2026-09-16); then it inferred
+        ``observed`` from the day.  The matcher STATES it now.
         """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
             _settle(
-                txn, submitted=Decimal("148.40"),
+                txn, submitted=observed(Decimal("148.40")),
                 settle_day=SettleDay(
                     day=seed_periods[0].start_date,
                     basis=SettledDayBasisEnum.OBSERVED,
@@ -491,6 +653,78 @@ class TestTheSourceFollowsWhoStatedTheFigure:
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.OBSERVED,
             )
+
+    def test_a_figure_typed_over_a_bank_observed_day_is_typed(
+        self, app, seed_user, seed_periods,
+    ):
+        """BAL-508's class on a bill: the person's figure beside the bank's day.
+
+        The reconcile-then-correct shape ruling R-BAL61 measured (5 settled
+        rows on the 2026-09-18 restore): the matcher confirmed the DAY, and
+        a person later typed the figure through the popover.  The old
+        inference (``_source_of`` over the day's basis) labelled that figure
+        the bank's; delete this leaf's change and this fails.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(
+                txn,
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            db.session.flush()
+            assert _only_movement(txn).figure_source_id == _source(
+                MovementFigureSourceEnum.RESOLVED,
+            )
+            transaction_service.apply_requested_status(
+                txn, txn.status_id, submitted=typed(Decimal("148.40")),
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40")
+            assert movement.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            ), "the bank's day still stands; only the figure's writer changed"
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.TYPED,
+            )
+
+    def test_the_matchers_transaction_arm_reprice_is_observed(
+        self, app, seed_user, seed_periods,
+    ):
+        """Through the ONE door the matcher's transaction arm reaches.
+
+        ``statement_match._moving._apply_day`` re-prices a settled bill by an
+        identity transition through ``apply_requested_status`` with the
+        bank's figure stated ``observed``; the record it makes is the
+        bank's on the movement and ``corrected`` on the row.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            transaction_service.apply_requested_status(
+                txn, txn.status_id,
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+                submitted=observed(Decimal("148.40")),
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40")
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            )
+            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.OBSERVED
+            ), "the retained read takes the source off the movement"
 
 
 class TestTheMirrorNeverLowersEvidence:
@@ -687,7 +921,7 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
                 LedgerAccountClassEnum.INCOME,
             )
 
-    def test_a_revert_withdraws_it_and_the_ledger_moves_back(
+    def test_a_revert_un_dates_it_and_the_ledger_moves_back(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -697,10 +931,13 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             _settle(txn)
             db.session.flush()
             movement_id = _only_movement(txn).id
+            assert ledger_net(db.session, cash.id, txn.scenario_id) - before == Decimal("2572.78")
             _revert(txn)
             db.session.flush()
-            assert covering_movements(txn) == []
-            assert db.session.get(TransactionEntry, movement_id) is None
+            survivor = _only_movement(txn)
+            assert survivor.id == movement_id
+            assert survivor.settled_on is None
+            assert survivor.amount == Decimal("2572.78")
             assert ledger_net(db.session, cash.id, txn.scenario_id) == before
 
 
@@ -856,7 +1093,7 @@ class TestATransferIsCoveredOnBothLegs:
             assert posting_service.resync_all_cash_postings() == (0, 0)
             assert _movement_entries(movement_ids) == []
 
-    def test_a_revert_withdraws_both_movements_and_the_ledger_reverses_the_pair(
+    def test_a_revert_un_dates_both_movements_and_the_ledger_reverses_the_pair(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -880,11 +1117,13 @@ class TestATransferIsCoveredOnBothLegs:
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
             db.session.flush()
-            for leg in (expense, income):
+            for leg, movement_id in zip((expense, income), movement_ids):
                 assert not leg.status.is_settled
-                assert covering_movements(leg) == []
-            for movement_id in movement_ids:
-                assert db.session.get(TransactionEntry, movement_id) is None
+                survivor = _only_movement(leg)
+                assert survivor.id == movement_id
+                assert survivor.settled_on is None
+                assert survivor.reconciled_by_id is None
+                assert survivor.amount == Decimal("500.00")
             assert {
                 account_id: posting_service.account_posting_total(account_id, scenario_id)
                 for account_id in account_ids
@@ -983,6 +1222,34 @@ class TestATransfersMovementsFollowItsLifecycle:
                 assert _per_day(settled_cash_facts(leg.account_id, leg.scenario_id)) == {
                     leg.settled_on: figure,
                 }
+
+    def test_a_reverted_then_soft_deleted_then_restored_transfer_keeps_both_survivors(
+        self, app, seed_user, seed_periods,
+    ):
+        """The restore's identity pass moves nothing: same ids, un-dated, same labels."""
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            user_id = seed_user["user"].id
+            transfer_service.update_transfer(
+                xfer.id, user_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.flush()
+            movement_ids = {leg.id: _only_movement(leg).id for leg in (expense, income)}
+            transfer_service.delete_transfer(xfer.id, user_id, soft=True)
+            db.session.flush()
+            transfer_service.restore_transfer(xfer.id, user_id)
+            db.session.flush()
+            for leg in (expense, income):
+                assert not leg.status.is_settled
+                survivor = _only_movement(leg)
+                assert survivor.id == movement_ids[leg.id]
+                assert survivor.settled_on is None
+                assert survivor.reconciled_by_id is None
+                assert survivor.amount == Decimal("500.00")
+                assert survivor.figure_source_id == _source(
+                    MovementFigureSourceEnum.RESOLVED,
+                )
 
     def test_a_hard_deleted_transfer_takes_its_movements_with_it(
         self, app, seed_user, seed_periods,
@@ -1084,7 +1351,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="Kroger",
+                    figure=typed(Decimal("12.79")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -1093,12 +1360,13 @@ class TestThePurchaseDoorsStateTheSource:
     def test_a_purchase_born_from_a_bank_line_is_observed(
         self, app, seed_user, seed_periods,
     ):
+        """The born-purchase builder STATES the bank wrote it (R-BAL61)."""
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1116,7 +1384,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1126,19 +1394,27 @@ class TestThePurchaseDoorsStateTheSource:
             )
             db.session.flush()
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("12.97"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("12.97")),
             )
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
 
-    def test_a_bank_confirmation_raises_a_typed_figure_to_observed(
+    def test_a_bank_confirmation_of_the_day_alone_leaves_a_typed_figure_typed(
         self, app, seed_user, seed_periods,
     ):
+        """INVERTED at plan step X-bi-3e-1 (ruling R-BAL61).
+
+        This door RAISED a typed figure to ``observed`` whenever a submission
+        carried an ``observed`` day, figure written or not -- and every
+        bank-observed day ever written onto a settled row on production was
+        exactly this, a day-only confirmation.  A match that confirms the day
+        writes no figure, so nothing about who wrote it changed.
+        """
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="Kroger",
+                    figure=typed(Decimal("12.79")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -1150,6 +1426,70 @@ class TestThePurchaseDoorsStateTheSource:
                     basis=SettledDayBasisEnum.OBSERVED,
                 ),
             )
+            assert entry.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            ), "the day IS confirmed; the figure's writer is not the question"
+            assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
+
+    def test_a_figure_typed_over_a_standing_observed_day_is_typed(
+        self, app, seed_user, seed_periods,
+    ):
+        """BAL-508's class on a purchase, through the PATCH's own shape.
+
+        The entry PATCH re-submits the whole form, so a person re-pricing a
+        bank-confirmed purchase sends the recorded ``observed`` day back
+        unchanged beside the new figure (``submitted_settle_day``'s echo).
+        Under ``figure_source_of`` that echo made the person's figure the
+        bank's; the figure says ``typed`` itself now.
+        """
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry = entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
+                    purchased_on=seed_periods[0].start_date,
+                    settle_day=SettleDay(
+                        day=seed_periods[0].start_date,
+                        basis=SettledDayBasisEnum.OBSERVED,
+                    ),
+                ),
+            )
+            db.session.flush()
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id,
+                figure=typed(Decimal("13.00")),
+                settle_day=recorded_settle_day(entry),
+            )
+            assert entry.amount == Decimal("13.00")
+            assert entry.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            )
+            assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
+
+    def test_the_matchers_reprice_of_a_purchase_is_observed(
+        self, app, seed_user, seed_periods,
+    ):
+        """The matcher's purchase arm: the bank's figure, stated as such."""
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry = entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=typed(Decimal("12.79")), description="Kroger",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            db.session.flush()
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id,
+                figure=observed(Decimal("12.97")),
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            assert entry.amount == Decimal("12.97")
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.OBSERVED)
 
     def test_a_day_only_edit_on_the_owners_word_leaves_the_source_alone(
@@ -1160,7 +1500,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1177,6 +1517,263 @@ class TestThePurchaseDoorsStateTheSource:
                 ),
             )
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.OBSERVED)
+
+
+def _reverted_manual_close(seed_user, period, *, budget="100.00", close="120.00",
+                           settle_day=None):
+    """R-BAL68's worked row: a purchase-tracked envelope, no purchases, closed at
+    a typed figure and reverted -- so its kept movement is the only entry.
+
+    Returns ``(envelope, survivor)``.
+    """
+    envelope = _bill(seed_user, period, budget, is_envelope=True)
+    _settle(envelope, submitted=typed(Decimal(close)), settle_day=settle_day)
+    db.session.flush()
+    _revert(envelope)
+    db.session.flush()
+    survivor = _only_movement(envelope)
+    assert survivor.settled_on is None
+    assert survivor.amount == Decimal(close)
+    assert [entry.id for entry in envelope.entries] == [survivor.id], (
+        "the survivor is the row's only entry"
+    )
+    return envelope, survivor
+
+
+def _statement_on(seed_user, observed_on):
+    """The owner's Checking statement presented for *observed_on* (the
+    account's real assertion, the test's day -- ``test_reconcile_service``'s
+    own shape)."""
+    account_id = seed_user["account"].id
+    return reconcile_service.Statement(
+        calendar_for(seed_user["user"].id), account_id,
+        replace(cash_ledger.governing_anchor(account_id), observed_on=observed_on),
+    )
+
+
+class TestAKeptMovementIsNotAPurchase:
+    """Ruling **R-BAL68**: every purchase-meaning reader reads ``purchases``.
+
+    One control per reader class, each on the same worked row -- a `$100.00`
+    envelope with no purchases, closed at a typed `$120.00` and reverted, so
+    the movement the revert kept is its only entry -- and each a FIRING
+    control: the family reading is asserted beside the purchases reading, so
+    a reader that slid back onto ``entries`` fails by the worked figure
+    rather than passing over a row where the two agree.
+    """
+
+    def test_the_fold_holds_the_plan_not_the_withdrawn_close(
+        self, app, seed_user, seed_periods,
+    ):
+        """A reverted row is worth its PLAN (developer, 2026-08-17)."""
+        with app.app_context():
+            envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
+            basis = planted_basis(envelope)
+            assert _entry_aware_amount(envelope, basis) == Decimal("100.00")
+            # Over the family the survivor is an unposted debit and the floor
+            # holds the close back in place of the plan.
+            assert _entry_checking_impact(envelope.entries, Decimal("100.00")) == Decimal("120.00")
+
+    def test_the_reconcile_panel_neither_offers_nor_stamps_the_survivor(
+        self, app, seed_user, seed_periods,
+    ):
+        """The panel's purchase arm: no phantom `$120.00` offer, no forged tick."""
+        with app.app_context():
+            close_day = seed_periods[0].start_date + timedelta(days=2)
+            envelope, survivor = _reverted_manual_close(
+                seed_user, seed_periods[0],
+                settle_day=SettleDay(day=close_day, basis=SettledDayBasisEnum.ENTERED),
+            )
+            statement = _statement_on(seed_user, close_day + timedelta(days=3))
+            # Every other clause of the outstanding scope admits it.
+            assert survivor.settled_on is None
+            assert survivor.is_credit is False
+            assert survivor.purchased_on <= statement.observed_on
+            offered = {
+                group.transaction_id: group.purchases
+                for group in reconcile_service.outstanding_set(statement).groups
+            }
+            assert offered.get(envelope.id, ()) == (), (
+                "the reverted envelope is offered as a ROW at most, never its close"
+            )
+            assert reconcile_service.record_settled_days(statement, {survivor.id}) == 0
+            db.session.flush()
+            assert _only_movement(envelope).settled_on is None
+            assert _only_movement(envelope).reconciled_by_id is None
+
+    def test_the_statement_bound_ignores_the_survivors_day(
+        self, app, seed_user, seed_periods,
+    ):
+        """A withdrawn close dated after the statement is no reason to hold the row back."""
+        with app.app_context():
+            close_day = seed_periods[0].start_date + timedelta(days=5)
+            envelope, survivor = _reverted_manual_close(
+                seed_user, seed_periods[0],
+                settle_day=SettleDay(day=close_day, basis=SettledDayBasisEnum.ENTERED),
+            )
+            statement = _statement_on(seed_user, close_day - timedelta(days=3))
+            assert survivor.purchased_on > statement.observed_on, (
+                "over the family the bound would refuse the row"
+            )
+            assert wholly_spent_by(statement, envelope) is True
+
+    def test_carry_forward_rolls_the_whole_budget(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            plan = next(p for p in preview.plans if p.transaction.id == envelope.id)
+            assert plan.kind == carry_forward_service.PLAN_KIND_ENVELOPE
+            assert plan.entries_sum == Decimal("0.00")
+            assert plan.leftover == Decimal("100.00")
+
+    def test_carry_forward_executes_the_whole_budget_and_the_close_withdraws(
+        self, app, seed_user, seed_periods,
+    ):
+        """The execute arm reads the same purchases the preview did."""
+        with app.app_context():
+            envelope, survivor = _reverted_manual_close(seed_user, seed_periods[0])
+            target = generate_row_of(envelope.template, seed_periods[1])
+            db.session.flush()
+            basis = planted_basis(envelope, target)
+            assert resolve_transaction_amount(target, basis) == Decimal("100.00")
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.flush()
+
+            assert count == 1
+            assert resolve_transaction_amount(
+                target, planted_basis(envelope, target),
+            ) == Decimal("200.00"), "the whole `$100.00` rolled"
+            assert envelope.status.is_settled
+            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.PURCHASES,
+            )
+            assert envelope.covering_movements == []
+            assert db.session.get(TransactionEntry, survivor.id) is None
+
+    def test_the_dashboards_still_due_reads_the_whole_budget(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
+            assert _row_still_due(
+                envelope, Decimal("100.00"), Decimal("100.00"),
+            ) == Decimal("100.00")
+
+    def test_the_grids_sums_list_and_refresh_read_no_purchases(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
+            budgets = {envelope.id: Decimal("100.00")}
+            assert build_entry_sums_dict([envelope], budgets) == {}
+            periods = {
+                envelope.pay_period_id: calendar_for(
+                    seed_user["user"].id,
+                ).require_period(FiledRow.for_row(envelope)),
+            }
+            listed = build_entry_lists_dict([envelope], budgets, periods)
+            assert listed[envelope.id]["entries"] == []
+            assert entry_service.get_entries_for_transaction(
+                envelope.id, seed_user["user"].id,
+            ) == []
+
+    def test_the_dashboards_progress_reads_no_purchases(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
+            progress = _entry_progress_fields(envelope, Decimal("100.00"))
+            assert progress["is_tracked"] is True
+            assert progress["entry_count"] == 0
+            assert progress["entry_total"] is None
+
+    def test_a_re_settle_after_one_real_purchase_offers_and_books_the_purchase(
+        self, app, seed_user, seed_periods,
+    ):
+        """The offer equals the booking: `$30.00`, not `$150.00` and `$30.00`."""
+        with app.app_context():
+            envelope, survivor = _reverted_manual_close(seed_user, seed_periods[0])
+            entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=typed(Decimal("30.00")), description="Kroger",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            db.session.flush()
+            assert sum(e.amount for e in envelope.entries) == Decimal("150.00"), (
+                "the family still holds the withdrawn close"
+            )
+            basis = planted_basis(envelope)
+            assert transaction_service.settle_amount(envelope, basis) == Decimal("30.00")
+
+            _settle(envelope)
+            db.session.flush()
+
+            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.PURCHASES,
+            )
+            assert status_seam.settled_family_leg(envelope) == Decimal("-30.00")
+            assert envelope.covering_movements == []
+            assert db.session.get(TransactionEntry, survivor.id) is None
+
+    def test_a_settled_manual_close_envelope_lists_no_purchase(
+        self, app, seed_user, seed_periods,
+    ):
+        """The live class: 8 production envelopes (`$794.79`) read their own close as a purchase."""
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            _settle(envelope)
+            db.session.flush()
+            close = _only_movement(envelope)
+            assert close.amount == Decimal("100.00")
+            budgets = {envelope.id: Decimal("100.00")}
+            assert build_entry_sums_dict([envelope], budgets) == {}
+            assert _entry_progress_fields(envelope, Decimal("100.00"))["entry_count"] == 0
+            assert entry_service.get_entries_for_transaction(
+                envelope.id, seed_user["user"].id,
+            ) == []
+
+    def test_an_endpoint_move_carries_a_projected_shadows_survivor(
+        self, app, seed_user, seed_periods,
+    ):
+        """Ruling R-BAL72: the movement's account is assigned on every shadow."""
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            other = create_savings_account(
+                seed_user, db.session, "Other Savings", Decimal("0.00"),
+            )
+            xfer, expense, income = _settled_pair(
+                seed_user, seed_periods[0], to_account=savings,
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.flush()
+            survivor = _only_movement(income)
+            assert not income.status.is_settled
+            assert survivor.settled_on is None
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, to_account_id=other.id,
+            )
+            db.session.flush()
+            assert income.account_id == other.id
+            assert survivor.account_id == other.id, "in-session, before any expire"
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, survivor.id).account_id == other.id
+            assert _only_movement(expense).account_id == seed_user["account"].id
 
 
 class TestTheRecordIsMarkedAndTheSeamsAlone:
@@ -1258,19 +1855,19 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             purchase = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("57.96"), description="Walmart",
+                    figure=typed(Decimal("57.96")), description="Walmart",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
             db.session.flush()
             _settle(envelope)
             db.session.flush()
-            assert covering_movements(envelope) == []
+            assert envelope.covering_movements == []
             envelope.template.is_envelope = False
             db.session.flush()
             assert envelope.tracks_purchases is False
             transaction_service.apply_requested_status(
-                envelope, envelope.status_id, submitted=Decimal("999.99"),
+                envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
             )
             db.session.flush()
 
@@ -1309,3 +1906,149 @@ class TestTheCatalogueIsSeededAndResolvable:
                 db.session.flush()
             assert "figure_source_id" in str(exc.value)
             db.session.rollback()
+
+
+class TestTheRetainedReadTakesTheSourceOffTheMovement:
+    """``recorded_settlement`` reads WHO WROTE the figure off the covering
+    movement, and by ruling R-BAL70's mapping where none survives.
+
+    Plan step X-bi-3e-1 (rulings **R-BAL61**, **R-BAL70**): the row stores
+    no writer, so the retained record's source is the movement's; a record
+    with no movement -- a ``$0.00`` figure, or a row reverted on a tree that
+    deletes the movement -- reads ``derived`` as ``resolved`` and
+    ``corrected`` as ``typed``, the cutover's own classification.
+    """
+
+    def test_a_typed_correction_reads_typed_off_its_movement(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn, submitted=typed(Decimal("150.00")))
+            db.session.flush()
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("150.00")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+            assert retained.basis is SettlementBasisEnum.CORRECTED
+
+    def test_a_typed_zero_record_reads_typed_by_the_mapping(
+        self, app, seed_user, seed_periods,
+    ):
+        """A ``$0.00`` figure holds no movement, so the mapping answers.
+
+        ``ck_transaction_entries_positive_amount`` admits no movement of
+        nothing (``TestAZeroSettlementWritesNoMovement``), so the writer of a
+        ``$0.00`` correction is stored nowhere; ``corrected`` reads ``typed``.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            transaction_service.apply_requested_status(
+                txn, txn.status_id, submitted=typed(Decimal("0.00")),
+            )
+            db.session.flush()
+            assert txn.covering_movements == []
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("0.00")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+            assert retained.basis is SettlementBasisEnum.CORRECTED
+
+    def test_a_derived_zero_record_reads_resolved_by_the_mapping(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0], "0.00")
+            _settle(txn)
+            db.session.flush()
+            assert txn.covering_movements == []
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("0.00")
+            assert retained.source is MovementFigureSourceEnum.RESOLVED
+            assert retained.basis is SettlementBasisEnum.DERIVED
+
+    def test_a_purchases_record_reads_no_source(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=typed(Decimal("12.79")), description="Kroger",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            _settle(envelope)
+            db.session.flush()
+            retained = status_seam.recorded_settlement(envelope)
+            assert retained.amount is None
+            assert retained.source is None
+            assert retained.basis is SettlementBasisEnum.PURCHASES
+
+    def test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements(
+        self, app, seed_user, seed_periods,
+    ):
+        """The pair repair's read (``apply_status_to_all_three``) off a leg."""
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("480.00")),
+            )
+            db.session.flush()
+            for leg in (expense, income):
+                movement = _only_movement(leg)
+                assert movement.amount == Decimal("480.00")
+                assert movement.figure_source_id == _source(
+                    MovementFigureSourceEnum.TYPED,
+                )
+                retained = status_seam.recorded_settlement(leg)
+                assert retained.amount == Decimal("480.00")
+                assert retained.source is MovementFigureSourceEnum.TYPED
+
+
+class TestTheRetainedReadSurvivesARevert:
+    """The 3e-1 interval pin, INVERTED at leaf X-bi-3e-2 (ruling R-BAL61).
+
+    Through 3e-1 a revert deleted the covering movement and the retained
+    record read by ruling R-BAL70's mapping alone, so a figure the BANK
+    stated, reverted and re-settled, read ``typed``.  The movement now
+    survives a revert un-dated, and the retained read takes the source off
+    it: the bank's figure re-settles ``observed`` on the same row.
+    """
+
+    def test_a_reverted_bank_figure_re_settles_observed_off_the_surviving_movement(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(
+                txn, submitted=observed(Decimal("148.40")),
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            db.session.flush()
+            first = _only_movement(txn)
+            first_id = first.id
+            assert first.figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            )
+            _revert(txn)
+            db.session.flush()
+            survivor = _only_movement(txn)
+            assert survivor.id == first_id
+            assert survivor.settled_on is None
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("148.40")
+            assert retained.source is MovementFigureSourceEnum.OBSERVED
+            _settle(txn)
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.id == first_id
+            assert movement.amount == Decimal("148.40"), "the figure is honoured"
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            ), "who wrote a figure does not change because the row was reverted"
+            assert movement.settled_on == txn.settled_on

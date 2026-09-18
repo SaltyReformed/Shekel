@@ -295,22 +295,27 @@ transaction_table_args = (
         "(amount_source_id IS NULL) = (estimated_amount IS NOT NULL)",
         name="ck_transactions_amount_ownership",
     ),
-    # A row is priced through AT MOST ONE relation, so the source names an
-    # unambiguous one.  The balance README states this exclusivity as a
-    # CONVENTION with nothing enforcing it ("``template_id`` and
-    # ``transfer_id`` are mutually exclusive across every row -- by
-    # CONVENTION, with no constraint enforcing it"); ``credit_payback_for_id``
-    # is the third link and carries the same convention.  Measured before it
-    # was imposed: 0 of 997 rows on the 2026-08-12 production clone set two
-    # of the three (606 template, 342 transfer, 21 payback, 28 with none).
+    # A row is priced through EXACTLY ONE relation (plan step
+    # ``balance:X-bi-7d-2``, ruling **R-BAL20**: every plan item has exactly
+    # one definition).  It read ``<= 1`` from its imposition until the
+    # cutover: the balance README had stated the exclusivity as a CONVENTION
+    # with nothing enforcing it, and 28 of 997 rows on the 2026-08-12
+    # production clone held NO link -- the bare one-off, its own name, price
+    # and flags on the row.  The cutover minted each of those (34 by
+    # 2026-09-18) a rule-less definition, so the zero-link half is no longer
+    # a shape the application writes, and the constraint says so; a transfer
+    # shadow names its transfer and a CC payback its source.  ``= 1`` is also
+    # why both ``SET NULL`` link keys became ``RESTRICT``: a key that nulled
+    # a link would manufacture the row this refuses.
     #
     # It is the amount model's own precondition rather than tidiness: a
     # derived row's source names a relation, and a row holding two links has
-    # two candidate answers with only dispatch ORDER to separate them.
+    # two candidate answers with only dispatch ORDER to separate them, while a
+    # row holding none has no answer at all.
     db.CheckConstraint(
         "(template_id IS NOT NULL)::int "
         "+ (transfer_id IS NOT NULL)::int "
-        "+ (credit_payback_for_id IS NOT NULL)::int <= 1",
+        "+ (credit_payback_for_id IS NOT NULL)::int = 1",
         name="ck_transactions_one_pricing_link",
     ),
     # A ROW OF A DEFINITION IS DATED (plan step **X-bv-2**, rulings

@@ -8,16 +8,17 @@ access on visible transactions, and that the nav bar renders
 role-appropriate content.
 """
 
+from decimal import Decimal
+
 import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.ref import TransactionType
 from tests._test_helpers import (
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
     one_off_row_of,
+    payback_row_of,
 )
 
 
@@ -427,38 +428,6 @@ class TestMarkDoneCompanionAccess:
         done_id = ref_cache.status_id(StatusEnum.DONE)
         assert txn.status_id == done_id
 
-    def test_companion_blocked_from_templateless_transaction(
-        self, app, db, seed_user, seed_periods_today, seed_companion,
-    ):
-        """Companion gets 404 for a LEGACY link-less transaction (no template).
-
-        Transactions without a template (template_id is None) are
-        inaccessible to companions because
-        _get_accessible_transaction_for_status requires a template
-        with companion_visible=True -- the own-cell branch production holds
-        until the cutover (X-bi-7d), built on its one transitional home
-        (plan step balance:X-bi-7c, ruling R-BAL59); 7d retires it.  A
-        one-off placed today is the case below.
-        """
-        expense_type = (
-            db.session.query(TransactionType)
-            .filter_by(name="Expense").one()
-        )
-        category = list(seed_user["categories"].values())[0]
-
-        txn = legacy_link_less_row_of(
-            seed_periods_today[0], name="Ad-hoc expense", amount="100.00",
-            user_id=seed_periods_today[0].user_id,
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            transaction_type_id=expense_type.id, category_id=category.id,
-        )
-        db.session.commit()
-
-        comp = _login_companion(app)
-        resp = comp.post(f"/transactions/{txn.id}/mark-done")
-        assert resp.status_code == 404
-
     @pytest.mark.parametrize("shown", [False, True])
     def test_a_placed_one_off_is_the_companions_by_its_definitions_flag(
         self, app, db, seed_user, seed_periods_today, seed_companion, shown,
@@ -482,6 +451,42 @@ class TestMarkDoneCompanionAccess:
         comp = _login_companion(app)
         resp = comp.post(f"/transactions/{txn.id}/mark-done")
         assert resp.status_code == (200 if shown else 404)
+
+    def test_a_row_with_no_definition_is_never_the_companions(
+        self, app, db, seed_user, seed_periods_today, seed_companion,
+    ):
+        """Companion gets 404 for a CC payback, even under a SHOWN parent.
+
+        Ruling **R-BAL73**: a row that names no definition -- a transfer
+        shadow, a CC payback -- answers ``False`` to ``visible_to_companion``,
+        so ``get_accessible_transaction`` refuses it at the door.  The
+        non-trivial arm: the payback's PARENT envelope is companion-visible
+        (the companion may mark IT done), and the payback repaying it is
+        still not theirs -- nothing states it may be.  Until the family's
+        cutover (plan step ``balance:X-bi-7d-2``) a legacy link-less row was
+        this case's specimen, refused off its own cell.
+        """
+        envelope = one_off_row_of(
+            seed_periods_today[0], name="Card envelope", amount="100.00",
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=list(seed_user["categories"].values())[0].id,
+            is_envelope=True, companion_visible=True,
+        )
+        payback = payback_row_of(
+            db.session, seed_user, envelope, Decimal("40.00"),
+            seed_periods_today[0].start_date,
+        )
+        db.session.commit()
+        assert envelope.visible_to_companion is True
+        assert payback.visible_to_companion is False
+
+        comp = _login_companion(app)
+        assert comp.post(f"/transactions/{envelope.id}/mark-done").status_code == 200
+        resp = comp.post(f"/transactions/{payback.id}/mark-done")
+        assert resp.status_code == 404
 
 
 # ── Companion-guarded transaction routes ─────────────────────────────

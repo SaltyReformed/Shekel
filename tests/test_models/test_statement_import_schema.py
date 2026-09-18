@@ -16,12 +16,18 @@ The shapes under test, and what each would cost if writable:
 
 * **a duplicated line identity** -- the same bank line recorded twice, which is
   double-counted money the moment the next leaf matches it;
-* **two lines claiming one external id** -- a source's own id corroborates
-  identity, and two rows claiming it would make the corroboration meaningless;
-* **a line whose account disagrees with its import's** -- one bank's statement
-  filed under another account, the defect the composite key exists to prevent;
-* **the CHECKs** on counts and periods, each of which encodes a sentence the
-  door states in Python and the schema must state independently.
+* **a sighting whose account disagrees with its line's or its import's** --
+  one bank's statement filed under another account, the defect the two
+  composite keys exist to prevent (plan step ``bank_import:X-f6b-1``: a line
+  is held by the SIGHTINGS of the imports that showed it, and what a source
+  said about a line is the sighting's);
+* **a line no sighting holds** -- unrepresentable rather than merely
+  unlikely, because the last sighting takes its line with it;
+* **the CHECKs** on the declared window and the ordinal, each of which encodes
+  a sentence the door states in Python and the schema must state
+  independently.  *The two CHECKs on the stored counts went with the counts*
+  (ruling **R-IY**), and the external-id uniqueness went to the door
+  (``_record._refuse_moved_ids``, graded in ``test_record``).
 """
 
 from datetime import date
@@ -36,6 +42,7 @@ from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
     StatementImport,
+    StatementLineSighting,
 )
 from app.models.account import Account
 from app.models.ref import AccountType, StatementSource
@@ -87,10 +94,8 @@ def _an_import(db, seed_user, **overrides):
         ),
         "file_name": "statement.csv",
         "file_digest": "a" * 64,
-        "period_start": date(2026, 3, 1),
-        "period_end": date(2026, 3, 31),
-        "line_count": 2,
-        "recorded_count": 2,
+        "declared_start": date(2026, 3, 1),
+        "declared_end": date(2026, 3, 31),
     }
     fields.update(overrides)
     row = StatementImport(**fields)
@@ -100,18 +105,39 @@ def _an_import(db, seed_user, **overrides):
 
 
 def _a_line(db, statement, **overrides):
-    """Stage and return one recorded line under *statement*."""
+    """Stage and return one recorded line, sighted by *statement*."""
     fields = {
         "account_id": statement.account_id,
-        "import_id": statement.id,
         "posted_on": date(2026, 3, 2),
-        "transaction_on": date(2026, 3, 2),
         "amount": Decimal("-25.00"),
-        "description": "POINT OF SALE DEBIT L340 COFFEE",
         "sequence_in_group": 0,
     }
     fields.update(overrides)
     row = BankStatementLine(**fields)
+    db.session.add(row)
+    db.session.flush()
+    _a_sighting(db, statement, row)
+    return row
+
+
+def _line_exists(db, line_id):
+    """Return whether the DATABASE still holds *line_id* -- not the identity map."""
+    return bool(
+        db.session.query(BankStatementLine.id).filter_by(id=line_id).count()
+    )
+
+
+def _a_sighting(db, statement, line, **overrides):
+    """Stage and return *statement*'s sighting of *line*."""
+    fields = {
+        "account_id": line.account_id,
+        "line_id": line.id,
+        "import_id": statement.id,
+        "description": "POINT OF SALE DEBIT L340 COFFEE",
+        "transaction_on": date(2026, 3, 2),
+    }
+    fields.update(overrides)
+    row = StatementLineSighting(**fields)
     db.session.add(row)
     db.session.flush()
     return row
@@ -177,69 +203,117 @@ class TestALineIsUniqueByItsIdentity:
         assert db.session.query(BankStatementLine).count() == 2
 
 
-class TestAnExternalIdIsClaimedAtMostOnce:
-    """``uq_bank_statement_lines_external_id`` -- the partial unique index."""
+class TestASightingIsOnePerImportPerLine:
+    """``uq_statement_line_sightings_line_import``."""
 
-    def test_two_lines_claiming_one_external_id_are_refused(
+    def test_one_import_sighting_one_line_twice_is_refused(
         self, app, db, seed_user,
     ):
-        """An id that two rows can claim corroborates nothing."""
+        """A re-import records ONE sighting per line it shows."""
         statement = _an_import(db, seed_user)
-        _a_line(db, statement, external_id="FIT-1")
+        line = _a_line(db, statement)
 
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
-            _a_line(db, statement, posted_on=date(2026, 3, 9),
-                    external_id="FIT-1")
+            _a_sighting(db, statement, line)
 
-        assert "uq_bank_statement_lines_external_id" in str(caught.value)
+        assert "uq_statement_line_sightings_line_import" in str(caught.value)
 
-    def test_many_lines_with_NO_external_id_are_accepted(
+    def test_two_imports_sighting_one_line_are_accepted(
         self, app, db, seed_user,
     ):
-        """The index is PARTIAL, and every SECU CSV line is in this state.
+        """The relation's whole point: a line two imports showed, held by both."""
+        first = _an_import(db, seed_user)
+        line = _a_line(db, first)
+        again = _an_import(db, seed_user, file_digest="b" * 64)
 
-        A non-partial unique index would refuse the second line of every
-        import from a source that has no ids -- which is the source this leaf
-        actually ships.
-        """
+        _a_sighting(db, again, line, description="THE SAME LINE, REWORDED")
+
+        db.session.expire_all()
+        held = db.session.query(BankStatementLine).one()
+        assert {sighting.import_id for sighting in held.sightings} == {
+            first.id, again.id,
+        }
+
+
+class TestASightingsAccountIsItsLinesAndItsImports:
+    """The two composite keys -- agreement, not a copy."""
+
+    def test_an_account_disagreeing_with_the_lines_is_refused(
+        self, app, db, seed_user,
+    ):
+        """``fk_statement_line_sightings_line_account``."""
         statement = _an_import(db, seed_user)
-        _a_line(db, statement, posted_on=date(2026, 3, 2))
-        _a_line(db, statement, posted_on=date(2026, 3, 3))
+        line = _a_line(db, statement)
+        other = _another_account(db, seed_user)
+        elsewhere = _an_import(
+            db, seed_user, account_id=other.id, file_digest="b" * 64,
+        )
 
-        _a_line(db, statement, posted_on=date(2026, 3, 4))
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            # The import agrees with the stated account; the line does not.
+            _a_sighting(db, elsewhere, line, account_id=other.id)
 
-        assert db.session.query(BankStatementLine).count() == 3
+        assert "fk_statement_line_sightings_line_account" in str(caught.value)
 
-
-class TestALinesAccountIsItsImports:
-    """``fk_bank_statement_lines_import_account`` -- agreement, not a copy."""
-
-    def test_a_disagreeing_account_is_refused(
+    def test_an_account_disagreeing_with_the_imports_is_refused(
         self, app, db, seed_user,
     ):
-        """One bank's statement filed under another account.
+        """``fk_statement_line_sightings_import_account``."""
+        statement = _an_import(db, seed_user)
+        other = _another_account(db, seed_user)
+        elsewhere = _an_import(
+            db, seed_user, account_id=other.id, file_digest="b" * 64,
+        )
+        line = _a_line(db, elsewhere, account_id=other.id)
 
-        The composite key makes the disagreement unrepresentable rather than
-        merely untested -- the same construction
-        ``fk_transaction_entries_parent_account`` uses one table over.
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            # The line agrees with the stated account; the import does not.
+            _a_sighting(db, statement, line, account_id=other.id)
+
+        assert "fk_statement_line_sightings_import_account" in str(
+            caught.value,
+        )
+
+    def test_a_line_on_no_account_is_refused(self, app, db, seed_user):
+        """``bank_statement_lines_account_id_fkey`` -- the line's own key.
+
+        A line reached its account through its import's composite key while
+        an import owned it; held by sightings, it needs a key of its own, or
+        a row whose account is a bare integer could be written on no account
+        at all until its first sighting arrived.  The mixin's key, named as
+        every sibling per-account table's is (``statement_imports_account_id_
+        fkey``).
         """
         statement = _an_import(db, seed_user)
 
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
-            _a_line(db, statement, account_id=seed_user["account"].id + 999)
+            db.session.add(BankStatementLine(
+                account_id=seed_user["account"].id + 999,
+                posted_on=date(2026, 3, 2), amount=Decimal("-25.00"),
+                sequence_in_group=0,
+            ))
+            db.session.flush()
+        db.session.rollback()
+        assert "bank_statement_lines_account_id_fkey" in str(caught.value)
+        assert statement is not None
 
-        assert "fk_bank_statement_lines_import_account" in str(caught.value)
-
-    def test_deleting_the_account_takes_its_imports_and_lines(
+    def test_deleting_the_account_takes_its_imports_lines_and_sightings(
         self, app, db, seed_user,
     ):
-        """The CASCADE chain: accounts -> imports -> lines.
+        """The CASCADE chains: accounts -> imports -> sightings, and
+        accounts -> lines.
 
-        Without it, hard-deleting an account would be refused by a statement
-        line nobody could reach to remove.
+        Seeded with a line TWO imports sighted, because that is the shape
+        where the two chains meet: the sightings go by their import's key,
+        the line by its own, and ``budget.remove_line_left_unsighted`` fires
+        for every sighting the cascade removes and finds its line already
+        gone.  Without the chains, hard-deleting an account would be refused
+        by a statement line nobody could reach to remove.
         """
-        statement = _an_import(db, seed_user)
-        _a_line(db, statement)
+        first = _an_import(db, seed_user)
+        line = _a_line(db, first)
+        again = _an_import(db, seed_user, file_digest="b" * 64)
+        _a_sighting(db, again, line)
         db.session.flush()
 
         db.session.execute(
@@ -247,49 +321,126 @@ class TestALinesAccountIsItsImports:
             {"i": seed_user["account"].id},
         )
 
+        assert db.session.query(StatementLineSighting).count() == 0
         assert db.session.query(BankStatementLine).count() == 0
         assert db.session.query(StatementImport).count() == 0
+
+
+class TestALineGoesWithItsLastSighting:
+    """``budget.remove_line_left_unsighted`` -- ``AFTER DELETE`` on a sighting."""
+
+    def test_deleting_an_import_removes_only_the_lines_it_alone_sighted(
+        self, app, db, seed_user,
+    ):
+        """The mutation control for the whole relation.
+
+        Two lines: one the first import alone showed, one a re-import showed
+        too.  Deleting the first import takes the first line and leaves the
+        second standing with the re-import's sighting -- under the old
+        schema both went, because an import owned its lines.
+        """
+        first = _an_import(db, seed_user)
+        alone = _a_line(db, first, sequence_in_group=0)
+        shared = _a_line(db, first, sequence_in_group=1)
+        again = _an_import(db, seed_user, file_digest="b" * 64)
+        _a_sighting(db, again, shared)
+        db.session.flush()
+
+        alone_id, shared_id = alone.id, shared.id
+        db.session.execute(
+            sqlalchemy.text("DELETE FROM budget.statement_imports WHERE id = :i"),
+            {"i": first.id},
+        )
+        db.session.expunge_all()
+
+        assert _line_exists(db, alone_id) is False
+        survivor = db.session.get(BankStatementLine, shared_id)
+        assert survivor is not None
+        assert [sighting.import_id for sighting in survivor.sightings] == [
+            again.id,
+        ]
+
+    def test_deleting_a_sighting_directly_takes_a_line_left_with_none(
+        self, app, db, seed_user,
+    ):
+        """The rule fires whoever removed the sighting, not only the cascade."""
+        statement = _an_import(db, seed_user)
+        line_id = _a_line(db, statement).id
+        db.session.flush()
+
+        db.session.execute(
+            sqlalchemy.text(
+                "DELETE FROM budget.statement_line_sightings WHERE line_id = :l",
+            ),
+            {"l": line_id},
+        )
+        db.session.expunge_all()
+
+        assert _line_exists(db, line_id) is False
+
+    def test_a_line_an_accepted_match_names_refuses_to_go(
+        self, app, db, seed_user,
+    ):
+        """``fk_statement_match_members_line_account`` stands in the trigger's way.
+
+        The delete door releases such matches first
+        (``statement_import.delete_import``); a writer that does not is
+        refused by the key rather than stranding a match with no line.
+        """
+        statement = _an_import(db, seed_user)
+        line = _a_line(db, statement)
+        db.session.execute(sqlalchemy.text(
+            "WITH act AS ("
+            "  INSERT INTO budget.statement_matches "
+            "  (account_id, user_id, applied_by_rule) "
+            "  VALUES (:a, :u, false) RETURNING id) "
+            "INSERT INTO budget.statement_match_members "
+            "  (match_id, account_id, bank_statement_line_id) "
+            "SELECT id, :a, :l FROM act"
+        ), {"a": line.account_id, "u": seed_user["user"].id, "l": line.id})
+        db.session.flush()
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            db.session.execute(
+                sqlalchemy.text(
+                    "DELETE FROM budget.statement_imports WHERE id = :i",
+                ),
+                {"i": statement.id},
+            )
+
+        assert "fk_statement_match_members_line_account" in str(caught.value)
 
 
 class TestTheImportsOwnCheckConstraints:
     """Each encodes a sentence the door also states in Python."""
 
-    def test_a_period_ending_before_it_starts_is_refused(
+    def test_a_window_ending_before_it_starts_is_refused(
         self, app, db, seed_user,
     ):
-        """A span cannot run backwards."""
+        """A declared window cannot run backwards."""
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
             _an_import(
                 db, seed_user,
-                period_start=date(2026, 3, 31), period_end=date(2026, 3, 1),
+                declared_start=date(2026, 3, 31),
+                declared_end=date(2026, 3, 1),
             )
 
-        assert "ck_statement_imports_period_ordered" in str(caught.value)
+        assert "ck_statement_imports_declared_ordered" in str(caught.value)
 
-    def test_an_import_of_zero_lines_is_refused(self, app, db, seed_user):
-        """A parse that found nothing is not an import."""
-        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
-            _an_import(db, seed_user, line_count=0, recorded_count=0)
-
-        assert "ck_statement_imports_line_count_positive" in str(caught.value)
-
-    def test_recording_more_lines_than_the_file_held_is_refused(
+    def test_an_import_that_sighted_no_line_is_ACCEPTED(
         self, app, db, seed_user,
     ):
-        """Writing lines the file did not contain is the shape that would make
-        ``already_known`` negative."""
-        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
-            _an_import(db, seed_user, line_count=2, recorded_count=3)
+        """A zero-line window is an observation (ruling **R-BAL71**).
 
-        assert "ck_statement_imports_recorded_within_file" in str(caught.value)
-
-    def test_recording_FEWER_lines_than_the_file_held_is_accepted(
-        self, app, db, seed_user,
-    ):
-        """The overlap case, which is every import after the first."""
-        row = _an_import(db, seed_user, line_count=306, recorded_count=19)
+        *``ck_statement_imports_line_count_positive`` refused this until
+        plan step ``bank_import:X-f6b-1``*, when the count it read was
+        deleted as derivable: a sync over a window the bank returned no line
+        for still declares that window.
+        """
+        row = _an_import(db, seed_user)
 
         assert row.id is not None
+        assert db.session.query(StatementLineSighting).count() == 0
 
     def test_a_negative_sequence_is_refused(self, app, db, seed_user):
         """The ordinal counts from zero."""
@@ -299,7 +450,7 @@ class TestTheImportsOwnCheckConstraints:
             _a_line(db, statement, sequence_in_group=-1)
 
         assert "ck_bank_statement_lines_sequence_non_negative" in str(
-            caught.value
+            caught.value,
         )
 
 

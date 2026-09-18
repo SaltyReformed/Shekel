@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.enums import SettledDayBasisEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import (
@@ -40,6 +40,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 
 from ._offers import (
     CandidateRow,
@@ -63,7 +64,8 @@ def _apply_day(
       which refuses a future day and releases the row's clearing link -- and
       takes the bank's own transaction day in the SAME call where the app's
       recorded purchase day is refuted (ruling **R-FW**, see
-      :func:`~._offers.corrected_purchase_day`);
+      :func:`~._offers.corrected_purchase_day`), and the bank's own figure
+      where the difference is this row's;
     * a transfer SHADOW goes through ``transfer_service`` -- ``settle_transfer``
       when it is still Projected, ``update_transfer`` when only the day moves,
       because a settled transfer is an idempotent no-op for the first;
@@ -83,7 +85,12 @@ def _apply_day(
             call as the day** for the reason the purchase's two dates already do:
             each settle door validates the state it is asked to produce, so
             submitting the figure separately would offer it an intermediate
-            row the door would rightly refuse.
+            row the door would rightly refuse.  **This is the ONE door that
+            states a figure as the BANK's** (``observed``, plan step
+            X-bi-3e-1, ruling **R-BAL61**): every other writer of a stated
+            figure is a person's.  A match with no figure for a row confirms
+            its DAY alone, and a day-only confirmation leaves who wrote the
+            figure exactly where it was.
 
     Returns:
         ``"settled"`` when the row entered the settled band, ``"corrected"``
@@ -138,6 +145,12 @@ def _apply_day(
         return outcome
 
     settle_day = SettleDay(day=posts_on, basis=SettledDayBasisEnum.OBSERVED)
+    stated = (
+        None if figure is None
+        else StatedFigure(
+            amount=figure, source=MovementFigureSourceEnum.OBSERVED,
+        )
+    )
 
     if row.kind is RowKind.PURCHASE:
         # ONE call, both days, because ``update_entry`` checks the RESULTING
@@ -147,8 +160,8 @@ def _apply_day(
         moves = {"settle_day": settle_day}
         if purchase_day is not None:
             moves["purchased_on"] = purchase_day
-        if figure is not None:
-            moves["amount"] = figure
+        if stated is not None:
+            moves["figure"] = stated
         entry_service.update_entry(row.row_id, owner_id, **moves)
         return outcome
 
@@ -169,7 +182,7 @@ def _apply_day(
         else transaction_service.settled_status_id(txn)
     )
     transaction_service.apply_requested_status(
-        txn, target_status_id, settle_day=settle_day, submitted=figure,
+        txn, target_status_id, settle_day=settle_day, submitted=stated,
     )
     return outcome
 

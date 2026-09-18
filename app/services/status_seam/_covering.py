@@ -27,31 +27,42 @@ X-f3b): ``cash_ledger.settled_cash_leg`` books a settled row's figure MINUS its
 posted purchases, and ``cash_ledger._events._posted_purchase_facts`` books each
 posted purchase at its own day -- so a bill whose covering movement carries its
 whole figure has a leg of exactly zero and the movement carries the money on
-the same day.  The projection reads the same family (``_amounts.
-_entry_aware_amount``), the posting writer posts it (``posting_service.
-sync_transaction_postings`` walks ``txn.entries``), and the statement matcher
-drops a zero-effect row from its offer (``_candidates.transaction_candidate``)
-and offers the movement instead.  None of those readers branches on the row's
+the same day.  The fold's fact producer reads the same family
+(``_posted_purchase_facts``, every POSTED movement), the posting writer posts
+it (``posting_service.sync_transaction_postings`` walks ``txn.entries``), and
+the statement matcher drops a zero-effect row from its offer
+(``_candidates.transaction_candidate``) and offers the ROW priced at its
+family instead (``_candidates._price`` reads :func:`settled_family_leg`; the
+mirror itself is kept out of the purchase candidates by
+:func:`covering_clause`).  None of those readers branches on the row's
 kind; the one place a kind branch stands is the POSTING doors, which return
 for a transfer shadow's entries, and that branch is ruling **R-BAL45**'s
 interval rather than a reader deciding for itself (below).
 
-**A revert DELETES the covering movement, and the row's retained record is
-what carries the figure across.**  Leaving the settled band releases the
-row's assertion and keeps what moved (plan step X-au-c3: ``settled_amount``
-and ``settled_basis_id`` outlive a revert), and the next settle honours a
-retained ``corrected`` record or re-prices a ``derived`` one
-(``Settlement.from_settle``).  The movement is that record's mirror, so it is
-rebuilt from the record at the re-settle -- ``typed`` again for a honoured
-correction, ``resolved`` again for a re-priced derivation -- and nothing the
-row does not also hold is lost: a revert releases the row's own bank-observed
-day and link today, and the movement's go with it the same way.  Keeping a
-movement undated across the revert was considered and rejected: an envelope
-closed EMPTY at the door and then given real purchases would sum the stale
-close into them on its next settle (``settles_from_entries`` is
-``tracks_purchases and entries``), and a re-settle would have to tell the
-mirror from a purchase by a source both can share, since an empty envelope's
-manual-branch close may take a typed correction.
+**A revert UN-DATES the covering movement and KEEPS it** (ruling
+**R-BAL61**, plan step ``X-bi-3e-2``).  Leaving the settled band releases
+the row's assertion and keeps what moved (plan step X-au-c3:
+``settled_amount`` and ``settled_basis_id`` outlive a revert), and the next
+settle honours a retained ``corrected`` record or re-prices a ``derived``
+one (``Settlement.from_settle``).  The movement is that record's mirror and,
+since plan step ``X-bi-3e-1``, the record's only home for WHO WROTE the
+figure, which the row's columns never held -- so the mirror follows the
+record: its day pair and clearing link are released with the row's
+(``_follow_assertion``), its figure, source and row survive, and the re-settle
+re-dates the SAME row (``_cover`` through ``_mirror_assertion``; the id
+survives).  A revert deleted it through ``X-bi-3e-1``, and the retained read
+answered by R-BAL61's cutover mapping (``_record.recorded_settlement``,
+ruling **R-BAL70**) for every reverted row; that mapping now answers only a
+record no movement can carry.  What a kept, un-dated movement must NOT do is
+read as a purchase -- an envelope closed EMPTY at the door, reverted and
+then given real purchases would sum the stale close into them -- and ruling
+**R-BAL68** answers that where the readers are: every purchase-meaning
+reader asks :attr:`~app.models.transaction.Transaction.purchases`, the
+entries less the mark, and the family readers named above keep ``entries``.
+Two records still WITHDRAW the mirror outright (``_withdraw``): a ``$0.00``
+figure, which ``ck_transaction_entries_positive_amount`` lets no movement
+carry, and a ``purchases`` record, whose figure the row's own purchases
+state.
 
 **Which entry is the covering movement is a STORED fact of the movement**
 (``transaction_entries.covers_settlement``), never a derivation over the
@@ -104,9 +115,17 @@ whose account can change is a shadow re-pointed by
 the session agrees with the database.  Nothing here reads the account.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
-mutates in place and never commits; the release arm's posting reversal
+mutates in place and never commits; the withdraw arm's posting reversal
 FLUSHES, as every ledger write does, and the caller owns the session
-boundary.  Money is ``Decimal`` throughout, read off the
+boundary.  The ledger is otherwise the DOOR's: a revert un-dates the mirror
+here and the verb's family reconcile (``posting_service.
+sync_transaction_postings``, which walks ``txn.entries`` after the seam
+returns and posts nothing for an un-dated movement) reverses its legs, as it
+reverses the parent's own -- every production revert of a transaction reaches
+the seam through ``transaction_service.apply_requested_status``, and a
+transfer's shadows post nowhere (R-BAL45); ``scripts/integrity_check.py``'s
+DC-10 grades the state a caller of the bare seam would leave.  Money is
+``Decimal`` throughout, read off the
 :class:`~app.services.status_seam._record.Settlement` the seam was handed.
 """
 
@@ -116,77 +135,30 @@ from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
-from app.enums import (
-    MovementFigureSourceEnum,
-    SettledDayBasisEnum,
-    SettlementBasisEnum,
-)
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
 from app.services.cash_ledger import movement_cash_leg, settled_cash_leg
-from app.services.settle_day import (
-    figure_source_of,
-    record_settle_day,
-    recorded_settle_day,
-)
+from app.services.settle_day import record_settle_day, recorded_settle_day
 from app.services.status_seam._record import Settlement
-
-#: The settlement bases whose record a covering movement mirrors.  A
-#: ``purchases`` settlement stores no figure because the row's own purchases ARE
-#: the record, so there is nothing to cover.
-_COVERED_BASES = frozenset({
-    SettlementBasisEnum.DERIVED, SettlementBasisEnum.CORRECTED,
-})
-
-
-
-def _source_of(row: Transaction, settlement: Settlement) -> MovementFigureSourceEnum:
-    """Return WHO WROTE the figure a settle records.
-
-    A ``derived`` record is the settle's own resolution of the plan
-    (``resolved``); a ``corrected`` one was STATED, and who stated it is the
-    day's basis question ``settle_day.figure_source_of`` answers -- the bank,
-    when the statement matcher settled the row on an ``observed`` day with
-    the line's figure (``_moving``), else a person.  One rule with the
-    purchase doors and the migration's backfill, so the cutover
-    (``X-bi-3d``) classifies a row exactly as the seam would have.
-    """
-    if settlement.basis is SettlementBasisEnum.DERIVED:
-        return MovementFigureSourceEnum.RESOLVED
-    return figure_source_of(recorded_settle_day(row))
 
 
 def covering_clause():
     """Return the SQL form of *this purchase is a covering movement*.
 
-    :func:`covering_movements` asks the question of ONE loaded row; this asks
-    it of a query over ``TransactionEntry``, for a reader that must leave the
-    seam's mirrors OUT of a row set -- the statement matcher's purchase
-    candidates, which offer a person's purchases and never the row's own
-    payment record.
+    :attr:`~app.models.transaction.Transaction.covering_movements` asks the
+    question of ONE loaded row; this asks it of a query over
+    ``TransactionEntry``, for a reader that must leave the seam's mirrors OUT
+    of a row set -- the statement matcher's purchase candidates and the
+    reconcile panel's outstanding purchases, which offer a person's purchases
+    and never the row's own payment record.
 
     Returns:
         A SQLAlchemy boolean expression over ``TransactionEntry``.
     """
     return TransactionEntry.covers_settlement.is_(True)
-
-
-def covering_movements(row: Transaction) -> list[TransactionEntry]:
-    """Return the covering movements *row* holds -- the settle's, not a person's.
-
-    By the mark the seam left (module docstring); at most one, by the partial
-    unique index, and a list rather than an optional so a caller that walks
-    the family needs no branch.
-
-    Args:
-        row: The transaction, with ``entries`` loaded or loadable.
-
-    Returns:
-        The covering movements, in ``entries`` order; empty when none.
-    """
-    return [entry for entry in row.entries if entry.covers_settlement]
 
 
 def covered_cash_leg(row: Transaction) -> Decimal:
@@ -197,11 +169,15 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     covered, ``cash_ledger.settled_cash_leg`` answers zero for it and its
     movement carries the money; the statement matcher prices a row by what
     the bank would see for it (``_candidates._price``), which is the family:
-    the row's leg plus this.  The ROW stays the matcher's subject through the
-    interval -- its mirror is excluded from the purchase candidates by
-    :func:`covering_clause` -- so a bill is offered, matched and re-dated as
-    one thing, and the seam's mirror carries the bank's day down to the
-    movement.
+    the row's leg plus this.  The ROW stays the matcher's subject until plan
+    step ``X-bi-4`` re-points the fold onto movements -- its mirror is
+    excluded from the purchase candidates by :func:`covering_clause` -- so a
+    bill is offered, matched and re-dated as one thing, and the seam's mirror
+    carries the bank's day down to the movement.  An UN-DATED movement -- a
+    reverted row's, kept since plan step ``X-bi-3e-2`` -- is worth nothing
+    here, as it posts nothing (``purchase_posts``) and folds to nothing
+    (``_posted_purchase_facts``): the same three-way agreement, stated by
+    the day rather than by the row's status.
 
     Each posted covering movement is worth
     :func:`app.services.cash_ledger.movement_cash_leg` -- the ONE valuation
@@ -232,7 +208,7 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     return sum(
         (
             movement_cash_leg(row, movement)
-            for movement in covering_movements(row)
+            for movement in row.covering_movements
             if movement.settled_on is not None
         ),
         Decimal("0"),
@@ -314,10 +290,18 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
 def _record_onto(
     row: Transaction, movement: TransactionEntry, settlement: Settlement,
 ) -> None:
-    """Write what a settle RECORDS onto *movement*: figure, source, name, day."""
+    """Write what a settle RECORDS onto *movement*: figure, source, name, day.
+
+    The source is the record's own -- WHO WROTE the figure, stated by the
+    door that handed the verb a :class:`~app.services.stated_figure.
+    StatedFigure` or by the verb's own ``resolved`` arm (ruling **R-BAL61**,
+    plan step X-bi-3e-1).  It was inferred here from the day's basis beside
+    the figure until that step, and the premise was measured false: a figure
+    a person typed over a standing bank-observed day was labelled the bank's.
+    """
     movement.amount = settlement.amount
     movement.figure_source_id = ref_cache.movement_figure_source_id(
-        _source_of(row, settlement),
+        settlement.source,
     )
     # The plan's name as it reads at the settle -- the movement's OWN fact
     # (ruling R-BAL39): a bill's payment has no receipt text, and a later
@@ -336,11 +320,18 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     withdraws an existing mirror.  The same arm ruling **R-BAL40** gives the
     cutover.  Reachable: a bill budgeted at ``$0.00`` marked paid, or a typed
     ``$0.00`` on the panel or the popover (both schemas admit it).
+
+    **A re-settle re-dates the movement the revert kept** (plan step
+    ``X-bi-3e-2``): the survivor is found by its mark, the record is written
+    onto it -- a re-priced figure and its source over the old ones, the
+    plan's name as it reads now -- and ``_mirror_assertion`` dates it on the
+    row's new day.  The id survives, so a match or a log line that named it
+    still names it.
     """
     if not settlement.amount:
-        _release(row)
+        _withdraw(row)
         return
-    existing = covering_movements(row)
+    existing = row.covering_movements
     if existing:
         movement, *extra = existing
         if extra:
@@ -371,9 +362,18 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     db.session.add(movement)
 
 
-def _release(row: Transaction) -> None:
-    """Delete *row*'s covering movements: leaving the band withdraws them."""
-    for movement in covering_movements(row):
+def _withdraw(row: Transaction) -> None:
+    """Delete *row*'s covering movements: a record that carries nothing.
+
+    The two records that WITHDRAW a mirror rather than un-date it (module
+    docstring): a ``$0.00`` figure, which
+    ``ck_transaction_entries_positive_amount`` lets no movement carry, and a
+    ``purchases`` record, whose figure the row's own purchases already state
+    -- a mirror kept beside them would be a second statement of that money.
+    Leaving the band is NOT one of these; that arm keeps the movement
+    (``_follow_assertion``).
+    """
+    for movement in row.covering_movements:
         # Reverse FIRST: ``journal_entries.transaction_entry_id`` is SET NULL
         # on delete, so legs left behind could never be reversed.
         posting_service.reverse_purchase_postings_before_delete(movement)
@@ -381,6 +381,40 @@ def _release(row: Transaction) -> None:
         # ledger reconcile walks ``txn.entries`` after the seam returns, and
         # ``delete-orphan`` on the relationship is what issues the DELETE.
         row.entries.remove(movement)
+
+
+def _follow_assertion(row: Transaction) -> None:
+    """Bring *row*'s covering movements' day pair and link up to the row's.
+
+    The mirror follows the row's ASSERTION, through ``_mirror_assertion``'s
+    one rule per movement, and the act that arm answers is the row's:
+
+    * **a revert** (ruling **R-BAL61**, plan step ``X-bi-3e-2``): the seam
+      has already cleared the row's day pair and clearing link, and the
+      differing-day arm writes that release onto the movement --
+      ``record_settle_day(movement, None)`` clears the pair
+      (``ck_transaction_entries_settle_day_basis_pairing`` is a
+      biconditional) and the link goes with it
+      (``ck_transaction_entries_cleared_needs_settle_day``).  The figure,
+      its source and the row itself STAY: what moved is retained across a
+      revert exactly as the row's own ``settled_amount`` is (plan step
+      X-au-c3), and the next settle re-dates the same row (``_cover``);
+    * **a settle-day correction**: the movement takes the row's new pair;
+    * **an identity re-submit**, or a non-settled row that still carries a
+      kept movement (re-submitted, cancelled, reactivated): nothing moves.
+
+    The ledger is the door's.  An un-dated movement posts nothing
+    (``_posting_purchases.purchase_posts`` needs a day), so the family
+    reconcile every revert door runs after the seam reverses whatever the
+    movement had posted -- the same walk that reverses the parent's own leg,
+    one spelling rather than an explicit reversal here beside it.  The revert
+    arm deleted the row and reversed its legs itself through ``X-bi-3e-1``,
+    because ``journal_entries.transaction_entry_id`` is SET NULL on delete
+    and legs left behind a deleted row could never be reversed; a kept row
+    has no such hazard.
+    """
+    for movement in row.covering_movements:
+        _mirror_assertion(row, movement)
 
 
 def record_clearing(row: Transaction, anchor_id: int) -> None:
@@ -410,7 +444,7 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
         anchor_id: The ``account_anchor_history`` row that was being read.
     """
     row.reconciled_by_id = anchor_id
-    for movement in covering_movements(row):
+    for movement in row.covering_movements:
         movement.reconciled_by_id = anchor_id
 
 
@@ -425,19 +459,32 @@ def sync_covering_movement(
 
     Called by ``apply_status_change`` after it has written the row's status,
     settle-day pair, clearing link and settlement record, so every value
-    mirrored here is the row's FINAL one for this act.  Three cases, total over
+    mirrored here is the row's FINAL one for this act.  Two cases, total over
     what the seam can be asked to do:
 
-    * **leaving the settled band** -- delete the covering movement, whatever
-      *settlement* says; the row's retained record rebuilds it at the next
-      settle;
     * **in the band with a record** -- the row is settling or re-settling on a
       ``derived`` / ``corrected`` basis: ensure one covering movement carries
-      the record, or none for a ``$0.00`` figure.  A ``purchases`` record
-      covers nothing (the row's purchases are the record), and withdraws a
-      mirror it finds;
-    * **in the band with no record** -- an identity re-submit or a settle-day
-      correction: the movement's day pair and link follow the row's.
+      the record (``_cover``), or none for a ``$0.00`` figure.  A
+      ``purchases`` record covers nothing (the row's purchases are the
+      record), and withdraws a mirror it finds (``_withdraw``);
+    * **otherwise the mirror follows the row's assertion** -- a revert
+      (the row's pair and link were released, so the movement's are:
+      ``_follow_assertion``, plan step ``X-bi-3e-2``), an identity re-submit
+      or a settle-day correction.
+
+    **A row in the band neither before nor after this act is skipped**: its
+    assertion did not change, so a movement a revert kept has nothing to
+    follow (the days already agree at ``None`` and the link is already
+    ``None`` -- ``_mirror_assertion``'s equal-days arm would write nothing),
+    and reading it would cost a Projected TRANSFER's every popover Save two
+    lazy loads and a mid-update autoflush for a no-op (each shadow's
+    ``entries``; a transaction's door loads them for its reconcile anyway).
+    The seam refuses a record beside a non-settled status before it gets here
+    (``reject_settlement_without_settled_status``), so *settlement* is
+    ``None`` whenever *now_settled* is ``False``.  The status the row was
+    LEAVING was a third CASE through ``X-bi-3e-1`` (leaving the band deleted
+    the movement); it is a load gate now, and the act it gates is the same
+    "follow the row" a correction runs.
 
     Args:
         row: The transaction the seam just wrote.
@@ -446,21 +493,15 @@ def sync_covering_movement(
         now_settled: Whether it is in the band after.
         settlement: The record the seam was handed for this act, or ``None``.
     """
-    if was_settled and not now_settled:
-        _release(row)
+    if not was_settled and not now_settled:
         return
-    if not now_settled:
+    if now_settled and settlement is not None:
+        # A record that STATES a figure names who wrote it (``Settlement``
+        # refuses one without the other), and only such a record has anything
+        # to mirror: a ``purchases`` record has neither.
+        if settlement.source is not None:
+            _cover(row, settlement)
+        else:
+            _withdraw(row)
         return
-    if settlement is not None and settlement.basis in _COVERED_BASES:
-        _cover(row, settlement)
-        return
-    if settlement is not None:
-        # A ``purchases`` record: the row's own purchases ARE the record, so
-        # a mirror left from an earlier manual-branch close would be a second
-        # statement of money the purchases already carry.  Unreachable today
-        # (a revert deletes the mirror before purchases can be added), and
-        # stated rather than tolerated.
-        _release(row)
-        return
-    for movement in covering_movements(row):
-        _mirror_assertion(row, movement)
+    _follow_assertion(row)

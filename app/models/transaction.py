@@ -242,9 +242,24 @@ class Transaction(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    # THE ROW'S DEFINITION, and ``ON DELETE RESTRICT`` since plan step
+    # ``balance:X-bi-7d-2`` (ruling **R-BAL20**): every plan row names
+    # exactly one of its three links (``ck_transactions_one_pricing_link``
+    # reads ``= 1``), so a key that nulled this one would manufacture the
+    # zero-link row the cutover deleted.  A definition with rows is not
+    # deletable under it -- through the ORM the flush nulls the rows' links
+    # ahead of the parent delete and the CHECK refuses that statement; a raw
+    # ``DELETE`` meets this key -- so ``definition_delete`` removes the rows
+    # first.
+    # Named ``fk_transactions_template_id`` at the re-create (the key carried
+    # Postgres' default ``transactions_template_id_fkey`` until then).
     template_id = db.Column(
         db.Integer,
-        db.ForeignKey("budget.transaction_templates.id", ondelete="SET NULL"),
+        db.ForeignKey(
+            "budget.transaction_templates.id",
+            name="fk_transactions_template_id",
+            ondelete="RESTRICT",
+        ),
     )
     pay_period_id = db.Column(
         db.Integer,
@@ -374,80 +389,16 @@ class Transaction(
     amount_ownership = db.composite(
         from_columns, __estimated_amount, __amount_source_id,
     )
-    # WHETHER THIS ROW TAKES PURCHASE ENTRIES, on the row's OWN say-so -- and
-    # that is a fact only for an AD-HOC row (``template_id IS NULL``).  A
-    # template-generated row's answer is its DEFINITION's
-    # (``TransactionTemplate.is_envelope``): nothing writes this cell from the
-    # template and nothing may read it there, so on such a row it is DEAD.
-    # It stays because for an ad-hoc row it is CONSTITUTIVE -- an input
-    # nothing else can compute, ruling **R-IY**'s boundary -- and not a copy.
-    # Plan step ``balance:X-bi-5`` deletes the concept.
-    #
-    # **SEALED since plan step balance:X-bi-1** (ruling **R-JQ**; the seal
-    # over a pin, developer 2026-09-11), on the pattern ``__estimated_amount``
-    # set at X-au-k: the SQL name is unchanged and the column declaration
-    # identical (type, nullability, both defaults -- the autogenerate delta
-    # against ``origin/dev`` was empty; its POSITION in ``CREATE TABLE``
-    # moves, which is load-bearing nowhere here, see ``UserScopedMixin``),
-    # and the public name :attr:`is_envelope` is a PROPERTY whose read is
-    # :attr:`tracks_purchases` and whose write lands here.  So the dead cell
-    # has no public name to be read by.  ``txn.is_envelope`` on a
-    # template-generated row answers the TEMPLATE, in Python and in Jinja;
-    # ``Transaction.is_envelope`` is no column, so a query keyed on it does
-    # not build -- and neither does an ORM-enabled Core statement naming the
-    # attribute, ``insert(Transaction).values(is_envelope=...)``; a Core
-    # writer that must reach the cell says ``Transaction.__table__.c``.
-    # Keying on this cell read 4 envelopes where there are 238
-    # (``docs/design/from_scratch_architecture.md`` section 4.3, measured
-    # 2026-09-01 on a production restore) and a migration draft did exactly
-    # that.  What the seal cannot reach is SQL that names the column as a
-    # STRING -- a migration, a ``psql`` session, ``text()``, a string
-    # ``order_by`` -- which ruling **R-HJ** forbids and X-bi-5 makes
-    # unwritable.
-    #
-    # Double-underscored for the same reason its neighbours are: a guessed
-    # ``row._is_envelope`` binds a plain instance attribute that reaches no
-    # column, and the next read exposes the miss.
-    __is_envelope = db.Column(
-        "is_envelope", db.Boolean, nullable=False, default=False,
-        server_default="false",
-    )
-    # WHETHER A COMPANION OF THE OWNER MAY SEE THIS ROW, on the row's OWN
-    # say-so -- the twin of the cell above, dead on a template-generated row
-    # (its answer is ``TransactionTemplate.companion_visible``) and
-    # constitutive on an ad-hoc one, for the same reasons.
-    #
-    # **SEALED since plan step balance:X-bi-1b** (ruling **R-BAL19**; the
-    # public name :attr:`companion_visible` reads :attr:`visible_to_companion`
-    # and writes here; the column declaration is unchanged and no migration
-    # rides).  It could not take the seal beside ``is_envelope`` at X-bi-1
-    # because ``companion_service`` keyed SQL on it -- the accessor's rule
-    # spelled a second time, in another language, on the predicate that
-    # decides what a companion may see (finding **BAL-482**).  That query now
-    # loads the period's rows and asks each one, so the property is the ONE
-    # spelling and this cell has no public name to be keyed on.  Measured
-    # 2026-09-12 on a production restore, over the 951 live rows of the
-    # baseline scenario: all 636 generated rows hold ``false`` here, 229 of
-    # them under a definition that says ``true``, and 3 of the 315 ad-hoc
-    # rows hold ``true`` -- so a reader keyed on this cell sees 3 visible
-    # rows where there are 232.
-    #
-    # Its deletion is the one-definition family's cutover (``X-bi-7d``,
-    # ruling **R-BAL20**: both dead cells go with the row's flags).  The dead
-    # half on a generated row kept a WRITER -- the setter below, reached by a
-    # crafted PATCH -- with nothing bounding it, which was finding
-    # **BAL-484**; since plan step ``balance:X-bi-7b`` the PATCH door loads a
-    # schema that declares no flag for a recurring definition's row, so that
-    # writer is gone and the setter is reached only by the doors that state
-    # a link-less row's OWN setting.  The seal keeps the dead half unreadable
-    # in the application -- Python, Jinja and the ORM -- and that is the
-    # whole of its reach: SQL naming the column as a STRING (a migration, a
-    # ``psql`` session, ``text()``) can still read it, and no ruling forbids
-    # that reader.
-    __companion_visible = db.Column(
-        "companion_visible", db.Boolean, nullable=False, default=False,
-        server_default="false",
-    )
+    # **A ROW CARRIES NO FLAG** (plan step ``balance:X-bi-7d-2``, ruling
+    # **R-BAL20**).  ``is_envelope`` and ``companion_visible`` were cells here
+    # from 2026-06-03 (``aeb04f13caff``) until the cutover dropped them
+    # (``596408fab6f1``): constitutive on a bare row, dead on a generated one,
+    # sealed at X-bi-1 / X-bi-1b so the dead half could not be read.  Every
+    # plan row now names a definition, and the definition states both
+    # (:attr:`~app.models.transaction_template.TransactionTemplate.is_envelope`
+    # and ``companion_visible``); :attr:`tracks_purchases` and
+    # :attr:`visible_to_companion` read them there.  A transfer shadow and a
+    # CC payback name no definition and answer ``False`` (ruling **R-BAL73**).
     # is_override and is_deleted are provided by SoftDeleteOverridableMixin.
     transfer_id = db.Column(
         db.Integer,
@@ -460,24 +411,31 @@ class Transaction(
         # Earlier the self-referential FK carried the Alembic-default
         # ``transactions_credit_payback_for_id_fkey`` name; this
         # declaration keeps ``db.create_all()`` aligned with the
-        # post-C-42 migrated state.  SET NULL semantics preserved.
+        # post-C-42 migrated state.  ``ON DELETE RESTRICT`` since plan step
+        # ``balance:X-bi-7d-2``, for ``template_id``'s reason: under the
+        # ``= 1`` CHECK a nulled link is a zero-link row.  Deleting a Credit
+        # source without its payback is therefore REFUSED where ``SET NULL``
+        # left the payback a link-less orphan (finding **CC-352**; the card
+        # cutover, **R-CC17**, deletes every payback row).
         db.ForeignKey(
             "budget.transactions.id",
             name="fk_transactions_credit_payback_for",
-            ondelete="SET NULL",
+            ondelete="RESTRICT",
         ),
     )
     notes = db.Column(db.Text)
     # NULLABLE ONLY ON A ROW THAT NAMES NO DEFINITION.  A row that names a
-    # recurring definition always carries this date --
+    # definition -- recurring or rule-less -- always carries this date:
     # ``ck_transactions_template_row_needs_due_date`` in
     # :mod:`app.models._transaction_table_args` says so (plan step
     # **X-bv-2**), because amount rule 3 prices such a row from its
     # definition's series as of THIS day and an undated one cannot be priced
-    # at all.  No other rule reads a transaction's own date: a transfer shadow
-    # and a credit payback are priced through their parent, and an ad-hoc row
-    # owns its figure, so on those the field is the owner's optional note of
-    # when the bill falls and NULL means they gave none.
+    # at all; a one-off's row is due on its paycheck's start unless the owner
+    # states a day (ruling **R-BAL22**; the cutover at ``X-bi-7d-2`` dated
+    # every bare row so).  No other rule reads a transaction's own date: a
+    # transfer shadow and a credit payback are priced through their parent,
+    # so on those the field is the owner's optional note of when the bill
+    # falls and NULL means they gave none.
     due_date = db.Column(db.Date, nullable=True)
     # WHICH OCCURRENCE this row is -- the date the template's cadence named
     # when the recurrence engine wrote it (plan step **R17**, the first leaf of
@@ -605,6 +563,64 @@ class Transaction(
         order_by="TransactionEntry.purchased_on",
     )
 
+    @DerivedFlag
+    def purchases(self):
+        """Return the row's PURCHASES: its entries less the seam's covering mark.
+
+        **The ONE reading of "what did a person record against this row"**
+        (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  ``entries``
+        is the row's whole FAMILY of movements, and since plan step
+        ``X-bi-3a`` a settle writes one of them itself -- the covering
+        movement, the payment row that records a bill's, a paycheck's, a
+        transfer leg's or an empty envelope's money the way a purchase
+        records an envelope's (``status_seam._covering``).  Since ``X-bi-3e-2``
+        a revert KEEPS that movement, un-dated, so it sits in ``entries``
+        under a Projected row; every reader that means the purchases -- the
+        fold's reservation, the reconcile panel's offer, carry-forward's
+        leftover, the grid's sums and the settle's own booking -- reads THIS
+        and never the family.  Worked on a `$100.00` envelope reverted after
+        a typed `$120.00` close: over the family the projection would hold
+        `$120.00` where a reverted row is worth its PLAN, the panel would
+        offer a phantom `$120.00` purchase, carry-forward would roll
+        `$0.00` of the `$100.00`, and a re-settle after one real `$30.00`
+        purchase would offer `$150.00`; over the purchases each reads
+        `$100.00` / nothing / `$100.00` / `$30.00`.  Live before that step on
+        8 settled production envelopes (`$794.79`) whose purchase list showed
+        the movement as a purchase.
+
+        A derivation over the loaded collection, never a second relationship
+        on the same foreign key (a second write-capable path to one table was
+        rejected in the loop) -- so it costs no query where ``entries`` is
+        loaded, and ``status_seam.covering_clause()`` is its query-side twin
+        for a reader that filters in SQL.  A :class:`DerivedFlag` so the
+        class-level name refuses to key a query rather than silently
+        matching nothing.  Order is ``entries``' own: the day the purchase
+        was made.
+
+        Returns:
+            The purchases as a list, in ``entries`` order; empty when none.
+        """
+        return [entry for entry in self.entries if not entry.covers_settlement]
+
+    @DerivedFlag
+    def covering_movements(self):
+        """Return the row's covering movements: the seam's, not a person's.
+
+        :attr:`purchases`' complement, by the mark the seam leaves
+        (``transaction_entries.covers_settlement``); at most one, by the
+        partial unique index ``uq_transaction_entries_one_settlement_record``,
+        and a list rather than an optional so a caller that walks the family
+        needs no branch.  It lived in ``status_seam._record`` until plan step
+        ``balance:X-bi-3e-2`` moved both readings of the mark onto the model
+        (ruling **R-BAL68**), where every service and the model's own readers
+        reach it without an import.
+
+        Returns:
+            The covering movements as a list, in ``entries`` order; empty
+            when none.
+        """
+        return [entry for entry in self.entries if entry.covers_settlement]
+
     @hybrid_property
     def estimated_amount(self):
         """Return the figure this row states as its own, or ``None``.
@@ -677,12 +693,13 @@ class Transaction(
         instead -- soft-versus-hard delete, the due-date edit refusal,
         carry-forward's rollover gate and override flip, the override-on-move
         flip, the discardable count and the popover.  A row of a RULE-LESS
-        definition (a cleared cadence today; every one-off once the family's
-        cutover mints it a definition) answers ``False`` here while its link
-        is set, so those sites treat it as the one-off it is: it hard-deletes,
-        takes a due date, moves whole and is counted unrecoverable.  What the
-        link alone still tells apart is a transfer shadow or a CC payback,
-        which read ``transfer_id`` / ``credit_payback_for_id`` directly.
+        definition (a one-off's, since the family's cutover at leaf 7d-2
+        minted every bare row one; a cleared cadence's survivors) answers
+        ``False`` here while its link is set, so those sites treat it as the
+        one-off it is: it hard-deletes, takes a due date, moves whole and is
+        counted unrecoverable.  What the link alone still tells apart is a
+        transfer shadow or a CC payback, which read ``transfer_id`` /
+        ``credit_payback_for_id`` directly.
 
         Reads the template relationship only when ``template_id`` is set, so a
         link-less row costs no load; the rule rides on the template's own
@@ -704,9 +721,10 @@ class Transaction(
         ``balance:X-bi-7b``, ruling **R-BAL20**): a definition with no
         recurrence rule PLACES its rows -- a grid one-off's one, a bank-born
         envelope's one per paycheck (**R-BAL24**) -- where a definition with
-        a rule GENERATES them, and a link-less row (a transfer shadow, a CC
-        payback, a legacy ad-hoc row until the family's cutover) names no
-        definition at all.  Five doors fork on exactly this: the popover
+        a rule GENERATES them, and a link-less row (a transfer shadow or a
+        CC payback -- the only two shapes without a definition since the
+        family's cutover at leaf 7d-2) names no definition at all.  Five
+        doors fork on exactly this: the popover
         edits such a row's name, category, flags and price on its
         DEFINITION (**R-BAL23**) and restates its price in place
         (**R-BAL29**); a period move re-places it (**R-BAL33**), at both
@@ -729,12 +747,15 @@ class Transaction(
         **The ONE accessor** for the "is this an envelope / entry-capable
         row?" question across services, routes and templates (ruling
         **R-JQ**, plan step ``balance:X-bi-1``): it DERIVES and is never
-        stored.  Resolution rule: a template-generated transaction defers
-        to its template's ``is_envelope`` flag (the template owns the
-        setting for every instance it generates); an ad-hoc transaction
-        (no template) uses its own sealed cell.  Accesses the template
-        relationship only when ``template_id`` is set, so ad-hoc rows
-        never trigger a lazy load.
+        stored.  The answer is the DEFINITION's ``is_envelope`` -- the
+        definition owns the setting for every row it generates or places --
+        and a row that names no definition (a transfer shadow, a CC payback)
+        answers ``False`` (ruling **R-BAL73**): since plan step
+        ``balance:X-bi-7d-2`` those are the only two link-less shapes, no
+        cell of the row's own exists to ask, and ``False`` is what every
+        such row's cell held before the cutover dropped it (0 of 385 on the
+        2026-09-18 production restore).  Reads the template relationship
+        only when ``template_id`` is set, so a link-less row costs no load.
 
         A :class:`DerivedFlag` rather than a hybrid, on purpose: no query
         keys on this predicate and none is planned -- the settle path that
@@ -743,44 +764,8 @@ class Transaction(
         refuses to build.
         """
         if self.template_id is None:
-            return self.__is_envelope
+            return False
         return self.template.is_envelope
-
-    @DerivedFlag
-    def is_envelope(self):
-        """Return :attr:`tracks_purchases`; the public name of the sealed cell.
-
-        This name exists so the ad-hoc doors can STATE the row's own setting
-        -- ``Transaction(is_envelope=True)``, a ``setattr`` over the PATCH
-        payload's field name, the form's checkbox -- without learning the
-        private column.  Its READ is the one accessor, so a reader that
-        reaches for the column name gets the derivation: on a
-        template-generated row that is the template's answer, never the
-        dead cell.  See the column comment for why (plan step
-        ``balance:X-bi-1``).
-
-        Returns:
-            Whether this row takes purchase entries.
-        """
-        return self.tracks_purchases
-
-    @is_envelope.setter
-    def is_envelope(self, value):
-        """Record the row's OWN purchase-tracking setting.
-
-        Lands on the sealed cell for any row.  On a template-generated row
-        the write is inert -- nothing reads the cell there -- and no door
-        reaches this arm for such a row since plan step ``balance:X-bi-7b``
-        (the PATCH schema a recurring row loads declares no flag; a placed
-        row's flag lands on its definition).  A refusal was considered and
-        left for the family's cutover, which deletes the cell (developer,
-        2026-09-11; the deletion moved from ``X-bi-5`` to ``X-bi-7d`` under
-        ruling R-BAL20).
-
-        Args:
-            value: The setting, coerced by the column type.
-        """
-        self.__is_envelope = value
 
     @DerivedFlag
     def visible_to_companion(self):
@@ -788,11 +773,11 @@ class Transaction(
 
         **The ONE accessor** for the companion-visibility question, and
         :attr:`tracks_purchases`'s mirror in every respect since plan step
-        ``balance:X-bi-1b`` (ruling **R-BAL19**): a template-generated
-        transaction defers to its template's ``companion_visible`` flag; an
-        ad-hoc transaction uses its own sealed cell.  Accesses the template
-        relationship only when ``template_id`` is set, so ad-hoc rows never
-        trigger a lazy load.
+        ``balance:X-bi-1b`` (ruling **R-BAL19**): the answer is the
+        DEFINITION's ``companion_visible``, and a row that names no
+        definition (a transfer shadow, a CC payback) answers ``False``
+        (ruling **R-BAL73**, for the reason its twin states).  Reads the
+        template relationship only when ``template_id`` is set.
 
         It is a SECURITY predicate -- ``auth_helpers.get_accessible_transaction``
         and ``companion_service`` both decide what a companion may see by it
@@ -801,41 +786,8 @@ class Transaction(
         is why the class-level name refuses to key a query.
         """
         if self.template_id is None:
-            return self.__companion_visible
+            return False
         return self.template.companion_visible
-
-    @DerivedFlag
-    def companion_visible(self):
-        """Return :attr:`visible_to_companion`; the public name of the sealed cell.
-
-        :attr:`is_envelope`'s twin, for the same reason: the ad-hoc doors
-        STATE the row's own setting under the column's name --
-        ``Transaction(companion_visible=True)``, a ``setattr`` over the PATCH
-        payload's field name, the popover's checkbox -- and its READ is the
-        one accessor, so a reader that reaches for the column name gets the
-        template's answer on a generated row, never the dead cell.  See the
-        column comment (plan step ``balance:X-bi-1b``).
-
-        Returns:
-            Whether a companion of the owner may see this row.
-        """
-        return self.visible_to_companion
-
-    @companion_visible.setter
-    def companion_visible(self, value):
-        """Record the row's OWN companion-visibility setting.
-
-        Lands on the sealed cell for any row.  On a template-generated row
-        the write is inert -- nothing reads the cell there -- and no door
-        reaches this arm for such a row since plan step ``balance:X-bi-7b``,
-        which deleted the writer finding **BAL-484** recorded (see the
-        column comment); the cell itself goes at the family's cutover with
-        its twin.
-
-        Args:
-            value: The setting, coerced by the column type.
-        """
-        self.__companion_visible = value
 
     @property
     def days_until_due(self):

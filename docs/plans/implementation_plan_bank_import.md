@@ -73,16 +73,25 @@ nothing and says so on its own first line. The code as committed is what those s
         **N-343** went with it. What remains here is the panel change, reading that coverage; ranked
         below the card arc with the other enhancements (**R-JL**).
   - [ ] **X-f6b** `feat(import): the statement arrives without being fetched` -- the automated
-        SOURCE ADAPTER (**R-FP**), RE-SCOPED 2026-08-24: the daily fetch lands on standing rules
-        (**R-GH**), never a review queue, and its per-sync balance is the corroboration source the
-        evidence ladder lost when SECU dropped running balances (it carries **N-338**'s ruling
-        question too). The identity rule does not re-open (R-FU): a positional key serves a JSON
-        feed as it serves a CSV, and SimpleFIN's own id joins as corroboration. The scheduler
-        decision is ruled toward host cron through a CLI door, matching the no-scheduler,
-        no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
-        are already measured in R-FP's context) is worth minting once the card ledger exists
-        (`credit_card:CC1c`; `CC1a` and `CC1b` dissolved under `R-CC14`); no step for it exists yet,
-        deliberately.
+        SOURCE ADAPTER (**R-FP**), the DECOMPOSED parent of four leaves;
+        **DESIGN LOOP CLOSED 2026-09-18** (**R-BI10**..**R-BI14**, **R-BAL71**; the argument and
+        every option space are `HANDOFF-X-f6b.md` s.1 until the coordinator names the in-repo design
+        home). R-FU stands; N-372 and N-381 are -2's own design rounds first; the Capital One CSV
+        adapter stays the card's manual fallback.
+    - [x] **X-f6b-1** `d4eb2752` -- the sighting relation, coverage the declared window, the solve's
+          candidates the line days + the stated day (**R-BI10**, **R-BAL71**, **R-BAL74**); no
+          money. Closed **N-303**, **N-313**, **N-331**, **N-434**.
+    - [ ] **X-f6b-1b** `refactor(import): a line's merchant is a read over its sightings` -- the
+          sighting carries the merchant its word names, the line answers with the earliest surviving
+          sighting's that names one (one rule, SQL and Python), the stored key dropped by a
+          migration (**R-BI15**; before -2, so the adapter never writes one); no money. Closes
+          **BI-504**.
+    - [ ] **X-f6b-2** `feat(import): the SimpleFIN feed` -- `bank_feeds` under the renamed field key
+          (**R-BI12**, **BI-503**), the claim and mapping, one sync function (**R-BI13**), a match
+          carrying the reviewed day (**R-BI14**). Closes **N-338**, **BI-499**, **BI-503**.
+    - [ ] **X-f6b-3** `feat(import): the nightly door and the feed panel` -- `task.sh`,
+          `scripts/feed_sync.py`, the `deploy/systemd/` pair (**R-BI11**), the runbook's rows, the
+          statements page's feed panel. Closes **N-326**, **N-330**, **BI-502**.
 
 **The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
 
@@ -199,10 +208,11 @@ what it leaves a LATER step is on that step's own entry.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
-      **It waits on `credit_card:CC3c`** (developer ruling 2026-08-24): envelope filling is
-      two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
-      card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
-      payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
+      **It waits on `credit_card:CC-5`** (developer ruling 2026-08-24, on `CC3c`; re-pointed at the
+      2026-09-18 re-mint): envelope filling is two-source -- debit swipes from SECU lines, card
+      swipes from card-side charges -- and the card-tender entry shape the loop must design over is
+      the movement on the card CC-5 builds. Designing over the payback shape the card arc deletes is
+      the mistake that withdrew `balance:X-au-i`.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are

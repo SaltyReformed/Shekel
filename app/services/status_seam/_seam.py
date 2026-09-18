@@ -37,6 +37,7 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from app.services.state_machine import verify_transition
+from app.services.stated_figure import StatedFigure
 from app.services.status_seam._record import Settlement
 from app.services.status_seam._covering import sync_covering_movement
 from app.services.status_seam._refusals import (
@@ -203,9 +204,9 @@ def settle_day_for_status(
 def figure_for_status(
     row: StatusBearingRow,
     new_status_id: int,
-    submitted: Optional[Decimal],
+    submitted: Optional[StatedFigure],
     recorded: Optional[Decimal],
-) -> Optional[Decimal]:
+) -> Optional[StatedFigure]:
     """Return the figure a SUBMISSION means, or refuse a real conflict.
 
     **The figure's half of what :func:`settle_day_for_status` does for the day,
@@ -243,8 +244,11 @@ def figure_for_status(
         new_status_id: The ``ref.statuses.id`` the row is moving to -- the
             SUBMITTED status when the form carried one, else the row's own (an
             edit that changes only the figure is an identity transition).
-        submitted: The figure the form submitted, or ``None`` when it submitted
-            none.
+        submitted: The figure the form submitted and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`), or ``None``
+            when it submitted none.  Only the FIGURE is graded here; the
+            source rides through untouched, because an echo is decided by
+            the number and a refusal by the status.
         recorded: What the row RECORDS as having moved
             (:func:`app.services.row_valuation.recorded_figure`), which is what
             the box was prefilled from -- so equality here is exactly "the user
@@ -262,7 +266,7 @@ def figure_for_status(
     if submitted is None:
         return None
     if new_status_id not in settled_status_ids():
-        if submitted == recorded:
+        if submitted.amount == recorded:
             return None
         reject_figure_without_settled_status(row, new_status_id)
     return submitted
@@ -483,8 +487,9 @@ def apply_status_change(
         )
 
     verify_transition(row, new_status_id)
-    # Read BEFORE the assignment, for the covering movement below: leaving the
-    # settled band is a question about the status the row is LEAVING.
+    # Read BEFORE the assignment, for the covering movement below: whether
+    # this act moves the row's assertion at all is a question about the
+    # status the row is LEAVING as well as the one it enters.
     was_settled = row.status_id in settled_status_ids()
     row.status_id = new_status_id
 
@@ -587,10 +592,12 @@ def apply_status_change(
         # **The record's other home** (plan step **X-bi-3a**, ruling
         # **R-BAL39**): a settle on the manual branch is mirrored as ONE
         # covering movement, the payment row that records a bill's money the
-        # way a purchase records an envelope's, and leaving the band releases
-        # it.  Written LAST so every value it mirrors -- the day pair, the
-        # link, the figure and its basis -- is the row's final one for this
-        # act.  The rule and the lifecycle are
+        # way a purchase records an envelope's, and leaving the band un-dates
+        # it and keeps it (plan step X-bi-3e-2, ruling R-BAL61: the mirror
+        # follows the row's released assertion exactly as ``settled_amount``
+        # is retained above).  Written LAST so every value it mirrors -- the
+        # day pair, the link, the figure and its basis -- is the row's final
+        # one for this act.  The rule and the lifecycle are
         # :mod:`app.services.status_seam._covering`'s; it covers every kind
         # of row, a transfer shadow included since plan step X-bi-3c (the
         # kind gate went in three leaves: expense at 3a, income at 3b,

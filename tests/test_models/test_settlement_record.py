@@ -63,7 +63,12 @@ import sqlalchemy
 import sqlalchemy.exc
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum
+from app.enums import (
+    AmountSourceEnum,
+    MovementFigureSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+)
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import TransactionType
@@ -73,6 +78,7 @@ from app.services.posting_reads import settled_figure_clause
 from app.services.row_valuation import settled_figure
 from app.services.status_seam import Settlement, apply_status_change
 from tests._test_helpers import (
+    bare_expense_template,
     load_migration_module,
     settle_day_columns,
 )
@@ -103,18 +109,27 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
 
-    **BARE on purpose, and past the cutover.**  The subject here is a
-    CONSTRAINT of ``budget.transactions``, and a control that reached the
-    row through a door would grade the door; the shape 7d's pricing-link
-    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
-    builder (a pricing link on every row it stages) rather than any case
-    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    owner's** (plan step ``balance:X-bi-7d-1``).  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the row
+    through a door would grade the door -- so the row is still constructed by
+    hand.  What it stopped being is LINK-LESS: the family's cutover
+    (``X-bi-7d-2``) re-cuts ``ck_transactions_one_pricing_link`` to ``= 1``,
+    so every row staged here names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`) and carries the
+    paycheck's start as the day it is due and the occurrence it answers --
+    the shape ``one_off.place_row_of`` writes -- unless the case states
+    otherwise.  The link is never the subject.
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        db.session, seed_user, name="Settlement control definition",
+    )
     fields = {
         "user_id": seed_periods[0].user_id,
+        "template_id": definition.id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
@@ -123,6 +138,8 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
         "estimated_amount": Decimal("300.00"),
+        "due_date": seed_periods[0].start_date,
+        "occurs_on": seed_periods[0].start_date,
     }
     fields.update(overrides)
     # **The settle DAY carries its basis unless the caller states one** (plan
@@ -380,49 +397,76 @@ class TestPurchasesIffNoStoredFigure:
     invariant, and these are its negative controls.  A settle door builds a
     ``Settlement`` to hand the seam, so a malformed record cannot be constructed
     and therefore cannot be written.
+
+    **The record's stated field is the figure's SOURCE since plan step
+    X-bi-3e-1** (ruling **R-BAL69**), and the basis is derived from it; so the
+    rule reads *a figure names its writer, and a record with no figure names
+    none*.  The two refusals below are the two halves of that biconditional,
+    and the mapping test is what makes ``basis`` a stored answer's projection
+    rather than a second stated fact.
     """
 
-    def test_a_purchases_record_carrying_a_figure_is_refused(self, app):
-        """A stored copy of what a row's own children already say is refused.
+    def test_a_figure_stating_no_writer_is_refused(self, app):
+        """A figure with nobody said to have written it is refused.
 
         The writer this stands for is a settle that "helpfully" caches the entry
         sum on the parent -- which is exactly what ``settle_from_entries`` used
         to do, and what needed ``entry_service`` to re-derive the column on every
-        entry change afterwards.
+        entry change afterwards: a ``purchases`` record carrying a figure.
         """
         with app.app_context():
-            with pytest.raises(ValueError, match="stores no figure"):
-                Settlement(
-                    amount=Decimal("48.98"),
-                    basis=SettlementBasisEnum.PURCHASES,
-                )
+            with pytest.raises(ValueError, match="must say who wrote it"):
+                Settlement(amount=Decimal("48.98"), source=None)
 
-    def test_a_storing_basis_with_no_figure_is_refused(self, app):
-        """A record that says a figure is stored and stores none is refused.
+    def test_a_writer_with_no_figure_is_refused(self, app):
+        """A record naming a writer and storing no figure is refused.
 
         The mirror, and the state :func:`app.services.row_valuation.settled_figure`
         REFUSES to read: answering ``None`` there would send the caller to the
-        row's PLAN, which is the fallback this whole step removes.
+        row's PLAN, which is the fallback this whole step removes.  Every
+        source member is refused, the settle's own ``resolved`` included.
         """
         with app.app_context():
-            for basis in (
-                SettlementBasisEnum.DERIVED, SettlementBasisEnum.CORRECTED,
-            ):
-                with pytest.raises(ValueError, match="must state the figure"):
-                    Settlement(amount=None, basis=basis)
+            for source in MovementFigureSourceEnum:
+                with pytest.raises(ValueError, match="stores no figure"):
+                    Settlement(amount=None, source=source)
 
     def test_both_legitimate_shapes_construct(self, app):
         """The accepting cases, without which the two refusals prove nothing."""
         with app.app_context():
             stored = Settlement(
-                amount=Decimal("48.98"), basis=SettlementBasisEnum.DERIVED,
+                amount=Decimal("48.98"),
+                source=MovementFigureSourceEnum.RESOLVED,
             )
             assert stored.amount == Decimal("48.98")
 
-            from_entries = Settlement(
-                amount=None, basis=SettlementBasisEnum.PURCHASES,
-            )
+            from_entries = Settlement(amount=None, source=None)
             assert from_entries.amount is None
+
+    @pytest.mark.parametrize(
+        ("source", "basis"),
+        [
+            (None, SettlementBasisEnum.PURCHASES),
+            (MovementFigureSourceEnum.RESOLVED, SettlementBasisEnum.DERIVED),
+            (MovementFigureSourceEnum.TYPED, SettlementBasisEnum.CORRECTED),
+            (MovementFigureSourceEnum.OBSERVED, SettlementBasisEnum.CORRECTED),
+        ],
+    )
+    def test_the_basis_is_derived_from_the_source(self, app, source, basis):
+        """``basis`` is a function of ``source``, stated once (ruling R-BAL69).
+
+        The settle's own pricing is ``derived``; a figure a person or the
+        bank stated is ``corrected``; no figure is ``purchases``.  The row's
+        ``settled_basis_id`` is this answer's projection through the interval
+        ``X-bi-4`` closes, and it cannot disagree with the movement's
+        ``figure_source_id`` because one value carries both.
+        """
+        with app.app_context():
+            record = Settlement(
+                amount=None if source is None else Decimal("48.98"),
+                source=source,
+            )
+            assert record.basis is basis
 
     def test_the_reader_refuses_a_record_written_around_the_rule(
         self, app, db, seed_user, seed_periods,
@@ -507,7 +551,7 @@ class TestTheSeamRefusesAnUnrecordedSettle:
                     txn, ref_cache.status_id(StatusEnum.PROJECTED),
                     settlement=Settlement(
                         amount=Decimal("300.00"),
-                        basis=SettlementBasisEnum.DERIVED,
+                        source=MovementFigureSourceEnum.RESOLVED,
                     ),
                 )
             db.session.rollback()

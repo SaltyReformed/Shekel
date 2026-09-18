@@ -23,8 +23,9 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
     bare_expense_template,
+    create_savings_account,
+    create_transfer,
     generate_row_of,
-    legacy_link_less_row_of,
     make_every_period_rule,
     make_expense_template,
     one_off_row_of,
@@ -32,9 +33,9 @@ from tests._test_helpers import (
 
 
 def _row_fields(seed_user, period):
-    """The kwargs both row builders below share."""
+    """The kwargs the one-off builder below takes."""
     return {
-        "name": "Ad-hoc",
+        "name": "One-off",
         "amount": Decimal("100.00"),
         "user_id": period.user_id,
         "account_id": seed_user["account"].id,
@@ -51,15 +52,21 @@ def _placed(seed_user, period):
     return txn
 
 
-def _legacy(seed_user, period):
-    """Create and commit a LEGACY link-less (``template_id IS NULL``) row.
+def _shadow(seed_user, period):
+    """Create a transfer through the service and return one of its shadows.
 
-    The shape the cutover deletes, on its one transitional home (plan step
-    balance:X-bi-7c, ruling R-BAL59); 7d retires its case with it.
+    A shadow names its transfer and no definition -- one of the two
+    link-less shapes left since the family's cutover (plan step
+    balance:X-bi-7d-2).
     """
-    txn = legacy_link_less_row_of(period, **_row_fields(seed_user, period))
+    savings = create_savings_account(
+        seed_user, db.session, "Savings", Decimal("500.00"),
+    )
+    xfer = create_transfer(
+        seed_user, db.session, seed_user["account"], savings, period,
+    )
     db.session.commit()
-    return txn
+    return xfer.shadow_transactions[0]
 
 
 class TestTheDefinitionAnswers:
@@ -145,15 +152,16 @@ class TestTheRowDelegates:
     def test_a_link_less_row_does_not(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A LEGACY link-less row names no definition, so nothing it could recur by.
+        """A transfer shadow names no definition, so nothing it could recur by.
 
-        The ``template_id is None`` arm of the accessor -- the shape 7d
-        deletes; the live one-off arm is the rule-less definition's case
+        The ``template_id is None`` arm of the accessor, on the shape that
+        still reaches it since the cutover minted every legacy one-off a
+        definition; the live one-off arm is the rule-less definition's case
         above.
         """
         with app.app_context():
-            row = _legacy(seed_user, seed_periods_today[0])
-            assert row.template_id is None
+            row = _shadow(seed_user, seed_periods_today[0])
+            assert row.template_id is None and row.transfer_id is not None
             assert row.recurs is False
 
     def test_the_row_refuses_assignment(

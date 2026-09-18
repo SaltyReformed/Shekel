@@ -29,7 +29,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
-from app.models.ref import Status, TransactionType
+from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service, status_seam, transaction_service
@@ -45,12 +45,12 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from tests._test_helpers import (
+    typed,
     amount_basis_for,
     an_entered_day,
     family_journal_filter,
     figure_source_columns,
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     net_posted_by_day,
@@ -383,38 +383,6 @@ class TestSettleFromEntriesPreconditions:
             )
             assert reloaded.is_deleted is True
 
-    def test_rejects_template_less_transaction(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A LEGACY link-less transaction is not envelope-tracked.
-
-        Its ``tracks_purchases`` reads the row's own cell (the ``template_id
-        is None`` arm), which production holds until the cutover (X-bi-7d);
-        mark_done's manual-actual branch handles it.  Built on the shape's
-        one transitional home (plan step balance:X-bi-7c, ruling R-BAL59);
-        7d retires this case with the arm.  A one-off placed today reads its
-        definition's flag, which ``test_rejects_non_envelope_template``
-        grades on a definition.
-        """
-        with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="Expense").one()
-            )
-            txn = legacy_link_less_row_of(
-                seed_periods[0], name="Ad-hoc expense", amount="50.00",
-                user_id=seed_periods[0].user_id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=seed_user["categories"]["Groceries"].id,
-            )
-            db.session.flush()
-
-            with pytest.raises(ValidationError) as exc_info:
-                transaction_service.settle_from_entries(txn)
-            assert "envelope-tracked" in str(exc_info.value)
-
     def test_rejects_non_envelope_template(
         self, app, db, seed_user, seed_periods,
     ):
@@ -676,7 +644,7 @@ class TestSettleTransactionTheVerb:
             db.session.flush()
 
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("999.99"),
+                txn, submitted=typed(Decimal("999.99")),
             )
 
             assert settled_figure(txn) == Decimal("90.00")
@@ -698,7 +666,7 @@ class TestSettleTransactionTheVerb:
             db.session.flush()
 
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("250.00"),
+                txn, submitted=typed(Decimal("250.00")),
             )
 
             assert txn.settled_amount == Decimal("250.00")
@@ -936,7 +904,7 @@ class TestASettleBooksTheFreshestFigure:
             db.session.commit()
 
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("3912.44"),
+                txn, submitted=typed(Decimal("3912.44")),
             )
 
             assert txn.settled_amount == Decimal("3912.44")
@@ -1082,7 +1050,7 @@ class TestASettleBooksTheFreshestFigure:
             db.session.commit()
 
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("500.00"),
+                txn, submitted=typed(Decimal("500.00")),
             )
 
             # **The settle RECORDS what it booked, and says HOW that figure is
@@ -1346,7 +1314,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         with app.app_context():
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
-            self._settle(txn, submitted=Decimal("245.32"))
+            self._settle(txn, submitted=typed(Decimal("245.32")))
             db.session.flush()
             assert txn.settled_on is not None
             assert txn.settled_amount == Decimal("245.32")
@@ -1394,7 +1362,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         with app.app_context():
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
-            self._settle(txn, submitted=Decimal("245.32"))
+            self._settle(txn, submitted=typed(Decimal("245.32")))
             db.session.flush()
 
             self._revert(txn)
@@ -1427,7 +1395,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         with app.app_context():
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
-            self._settle(txn, submitted=Decimal("245.32"))
+            self._settle(txn, submitted=typed(Decimal("245.32")))
             db.session.flush()
             self._revert(txn)
             db.session.flush()
@@ -1532,7 +1500,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
         with app.app_context():
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
-            self._settle(txn, submitted=Decimal("245.32"))
+            self._settle(txn, submitted=typed(Decimal("245.32")))
             db.session.flush()
             self._revert(txn)
             status_seam.apply_status_change(
@@ -1654,7 +1622,7 @@ class TestTheRetainedMapAnswersOnlyWhereTheGapIsREAL:
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("245.32"),
+                txn, submitted=typed(Decimal("245.32")),
             )
             db.session.flush()
 
@@ -1752,7 +1720,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             day = txn.settled_on
 
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=Decimal("87.10"),
+                txn, txn.status_id, submitted=typed(Decimal("87.10")),
             )
 
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
@@ -1802,7 +1770,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             with pytest.raises(ValidationError) as exc:
                 transaction_service.apply_requested_status(
                     txn, ref_cache.status_id(StatusEnum.PROJECTED),
-                    submitted=Decimal("123.45"),
+                    submitted=typed(Decimal("123.45")),
                 )
 
             assert "has nothing to record" in str(exc.value)
@@ -1829,7 +1797,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             assert txn.settled_basis_id == derived
 
             transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=Decimal("100.00"),
+                txn, txn.status_id, submitted=typed(Decimal("100.00")),
             )
 
             assert txn.settled_basis_id == derived
@@ -1883,7 +1851,7 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
             db.session.flush()
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.DONE),
-                submitted=Decimal("245.32"),
+                submitted=typed(Decimal("245.32")),
             )
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),

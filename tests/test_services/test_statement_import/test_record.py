@@ -39,6 +39,7 @@ from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
     StatementImport,
+    StatementLineSighting,
 )
 from app.models.journal_entry import Posting
 from app.models.transaction import Transaction
@@ -80,6 +81,21 @@ def _file(entries=None, start="100.00", account_number=None):
         kwargs["account_number"] = account_number
     rows = build.chained(start, entries or _ENTRIES, **kwargs)
     return build.build(rows)
+
+
+def _counts(db, account_id):
+    """Return ``{import_id: (sighted, first)}`` -- the ONE derived count.
+
+    What ``statement_imports.line_count`` / ``recorded_count`` stored until
+    plan step ``bank_import:X-f6b-1``, read the way the imports table reads
+    it.
+    """
+    return {
+        import_id: (sighted, first)
+        for import_id, sighted, first in db.session.execute(
+            StatementLineSighting.counts_by_import(account_id),
+        )
+    }
 
 
 def _record(seed_user, payload, file_name="statement.csv", account=None):
@@ -167,10 +183,11 @@ class TestItRecordsWhatTheBankSaid:
 
         row = db.session.query(StatementImport).one()
         assert row.file_name == "march.csv"
-        assert row.line_count == 3
-        assert row.recorded_count == 3
-        assert row.period_start == date(2026, 3, 2)
-        assert row.period_end == date(2026, 3, 4)
+        # The counts are DERIVED from the sightings (ruling **R-IY**): three
+        # sighted, three of them first sighted by this import.
+        assert _counts(db, row.account_id) == {row.id: (3, 3)}
+        assert row.declared_start == date(2026, 3, 2)
+        assert row.declared_end == date(2026, 3, 4)
         assert row.user_id == seed_user["user"].id
 
     def test_a_chained_file_is_PROVED_by_itself_and_the_ROW_says_so(
@@ -231,7 +248,7 @@ class TestItRecordsWhatTheBankSaid:
         )
 
         row = db.session.query(StatementImport).one()
-        assert row.period_end == date(2026, 3, 4)
+        assert row.declared_end == date(2026, 3, 4)
         assert row.stated_balance_on == date(2026, 3, 9)
         [(level, _release)] = bank_levels(seed_user["account"].id)
         assert level.statement_import_id == row.id
@@ -436,13 +453,15 @@ class TestItRecordsWhatTheBankSaid:
     def test_every_line_belongs_to_its_import_and_its_account(
         self, app, db, seed_user,
     ):
-        """The composite key's two columns, as written."""
+        """The line's account, and ONE sighting per line naming the import."""
         _record(seed_user, _file())
 
         statement = db.session.query(StatementImport).one()
         for row in db.session.query(BankStatementLine).all():
-            assert row.import_id == statement.id
             assert row.account_id == seed_user["account"].id
+            [sighting] = row.sightings
+            assert sighting.import_id == statement.id
+            assert sighting.account_id == seed_user["account"].id
 
     def test_a_files_digest_is_the_digest_OF_THE_BYTES(
         self, app, db, seed_user,
@@ -623,14 +642,32 @@ class TestItIsIdempotent:
     def test_a_line_keeps_the_import_that_FIRST_recorded_it(
         self, app, db, seed_user,
     ):
-        """Provenance survives a re-import rather than being overwritten."""
-        first = _record(seed_user, _file())
-        _record(seed_user, _file(), file_name="again.csv")
+        """Provenance ACCUMULATES: the second import sights every line.
 
-        assert {
-            row.import_id
-            for row in db.session.query(BankStatementLine).all()
-        } == {first.import_id}
+        Under the sighting relation (plan step ``bank_import:X-f6b-1``) a
+        re-import records what it saw beside what the first import saw; which
+        import was FIRST is a derivation over the two, and it still names the
+        first.
+        """
+        first = _record(seed_user, _file())
+        second = _record(seed_user, _file(), file_name="again.csv")
+
+        for row in db.session.query(BankStatementLine).all():
+            assert {sighting.import_id for sighting in row.sightings} == {
+                first.import_id, second.import_id,
+            }
+        first_by = db.session.execute(
+            StatementLineSighting.first_import_of_each_line(
+                seed_user["account"].id,
+            ).select(),
+        ).all()
+        assert len(first_by) == 3
+        assert {import_id for _line, import_id in first_by} == {
+            first.import_id,
+        }
+        assert _counts(db, seed_user["account"].id) == {
+            first.import_id: (3, 3), second.import_id: (3, 0),
+        }
 
     def test_two_identical_charges_on_one_day_are_both_recorded(
         self, app, db, seed_user,
@@ -688,35 +725,77 @@ class TestItAbsorbsWhatALaterExportAdds:
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
         assert recorded.transaction_on == stated
-        # Stand in for a row an older adapter wrote, which knew no such day.
-        recorded.transaction_on = None
+        # Stand in for a SIGHTING an older adapter wrote, which knew no such
+        # day (plan step ``bank_import:X-f6b-1``: the day is the sighting's).
+        [older] = recorded.sightings
+        older.transaction_on = None
         db.session.flush()
+        db.session.expire_all()
+        assert db.session.query(BankStatementLine).one().transaction_on is None
 
         second = _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
 
         assert second.recorded_count == 0
+        db.session.expire_all()
         assert db.session.query(BankStatementLine).one().transaction_on == stated
 
     def test_a_DISAGREEING_transaction_day_is_left_alone(
         self, app, db, seed_user,
     ):
-        """Only NULL is filled -- a stated day is an observation, not a draft.
+        """Two sightings state two days, and the line reads the EARLIEST.
 
-        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
-        unconditional write and this fails.
+        A stated day is an observation, not a draft: the later sighting
+        overwrites nothing (it is its own row), and the day a match writes
+        onto a purchase is the earliest any source states -- money cannot be
+        spent after the earliest day a source says it was.  THE FIRING
+        CONTROL for ``BankStatementLine.transaction_on``'s ``min``: read the
+        LATEST sighting's day instead and this fails.
         """
         entries = [(date(2026, 3, 2), "-25.00",
                     "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
-        recorded.transaction_on = date(2026, 2, 27)
+        [older] = recorded.sightings
+        older.transaction_on = date(2026, 2, 27)
         db.session.flush()
 
         _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
+
+        db.session.expire_all()
+        line = db.session.query(BankStatementLine).one()
+        assert sorted(
+            sighting.transaction_on for sighting in line.sightings
+        ) == [date(2026, 2, 27), date(2026, 3, 1)]
+        assert line.transaction_on == date(2026, 2, 27)
+
+    def test_a_LATER_sighting_stating_an_EARLIER_day_moves_the_line(
+        self, app, db, seed_user,
+    ):
+        """The other direction of the same rule, so "earliest" is not "first".
+
+        A first sighting states 03-01; the re-import's sighting states
+        02-27.  Reading the FIRST sighting's day would leave 03-01; reading
+        the earliest across both gives 02-27.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+        db.session.expire_all()
+        line = db.session.query(BankStatementLine).one()
+        [later] = [
+            sighting for sighting in line.sightings
+            if sighting.import_id == second.import_id
+        ]
+        later.transaction_on = date(2026, 2, 27)
+        db.session.flush()
+        db.session.expire_all()
 
         assert db.session.query(
             BankStatementLine,
@@ -999,20 +1078,22 @@ class TestARefusedImportLeavesTheSessionUNTOUCHED:
     def test_it_absorbs_NOTHING_from_a_group_it_had_already_walked(
         self, app, db, seed_user,
     ):
-        """THE firing control for moving the absorb after the last refusal.
+        """THE firing control for every write sitting after the last refusal.
 
-        Restore the inline absorb inside ``_reconcile``'s ``pairing.held``
-        loop and this fails: the day is written, and only the route's rollback
-        takes it back.
+        Two writes remain for a held line (plan step ``bank_import:X-f6b-1``):
+        its sighting, and the merchant KEY filled where the line had none.
+        Move either into ``_reconcile``'s loop and this fails: the row is
+        written, and only the route's rollback takes it back.
         """
         _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
         recorded = db.session.query(BankStatementLine).order_by(
             BankStatementLine.posted_on,
         ).first()
-        assert recorded.transaction_on == date(2026, 3, 1)
-        # Stand in for a row an older adapter wrote, which knew no such day.
-        recorded.transaction_on = None
+        assert recorded.merchant_name is not None
+        # Stand in for a row an older adapter wrote, which named no merchant.
+        recorded.merchant_id = None
         db.session.flush()
+        sightings_before = db.session.query(StatementLineSighting).count()
 
         with pytest.raises(StatementBalanceUnexplained):
             _record(
@@ -1020,9 +1101,13 @@ class TestARefusedImportLeavesTheSessionUNTOUCHED:
                 file_name="refused.csv",
             )
 
+        db.session.expire_all()
         assert db.session.query(BankStatementLine).order_by(
             BankStatementLine.posted_on,
-        ).first().transaction_on is None
+        ).first().merchant_id is None
+        assert db.session.query(StatementLineSighting).count() == (
+            sightings_before
+        )
 
     def test_it_creates_NO_merchant_row(self, app, db, seed_user):
         """A refused file may not leave a merchant behind, and nothing sweeps one.

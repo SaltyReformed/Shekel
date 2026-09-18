@@ -54,10 +54,11 @@ from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.enums import SettledDayBasisEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import AnchorPoint
+from app.services.stated_figure import StatedFigure
 from app.services.pay_calendar import FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
@@ -291,8 +292,12 @@ class Arm:
             and a default would be a third place for that partition to be
             stated.
         settle: ``(row, submitted, statement) -> bool`` -- settles one row
-            through the arm's own service verb and returns whether a HUMAN's
-            figure was booked.  The bool is asked of the verb's own published
+            through the arm's own service verb, *submitted* being the panel's
+            figure and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`, always
+            ``typed``: the amount boxes are a person's word) or ``None``, and
+            returns whether a HUMAN's figure was booked.  The bool is asked of
+            the verb's own published
             predicate rather than read off the column afterwards, which is
             finding **N-231**: an envelope's close always writes
             ``actual_amount``, so a column reading counts machine writes as
@@ -471,7 +476,7 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
 
     **The second half of "a statement of this day could settle this row", and
     it is about the row's VALUE rather than its landing day.**  An envelope
-    settles at ``sum(entries)`` over EVERY entry it holds -- that IS its
+    settles at ``sum(purchases)`` over EVERY purchase it holds -- that IS its
     ``purchases``-basis settlement record, answered on read by
     ``row_valuation.settled_figure`` (plan step X-au-c3), where it used to be a
     figure a deleted hook wrote into ``actual_amount`` and re-derived after any
@@ -500,18 +505,23 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
     is already-spent money handed back to the projection, which is the class of
     defect this arc exists to remove.
 
-    A row with no entries answers True over an empty sequence, so a bill, a
+    A row with no purchases answers True over an empty sequence, so a bill, a
     deposit and a TRANSFER SHADOW are unaffected: they carry a single amount,
     and :func:`lands_on_or_before` is the whole bound for them.  **A shadow
     holds no PURCHASE** -- ``entry_service.create_entry`` refuses a parent
-    that is not ``tracks_purchases``, and a shadow has no template and a False
-    ``is_envelope`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
-    entry a shadow does hold since plan step ``balance:X-bi-3c`` is the status
-    seam's covering movement, written when the leg SETTLES and released when
-    it leaves the band, so no row this OUTSTANDING scope offers carries one.
-    It is asked of the transfer arm anyway, and that is the point of a shared
-    bound: an arm does not get to decide that half of "could this statement
-    settle this row" does not apply to it.
+    that is not ``tracks_purchases``, and a shadow has no template, so it
+    answers ``False`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
+    entry a shadow -- or a bill, or a paycheck -- does hold since plan step
+    ``balance:X-bi-3c`` is the status seam's covering movement, written when
+    the row SETTLES and, since plan step ``balance:X-bi-3e-2``, KEPT un-dated
+    when it leaves the band -- so a row this OUTSTANDING scope offers may
+    carry one, dated on the day of a close the owner has since withdrawn.
+    That is why the bound is over :attr:`~app.models.transaction.Transaction.
+    purchases` and not the family (ruling **R-BAL68**): a reverted row's
+    withdrawn close postdating the statement is no reason to hold the row
+    back.  It is asked of the transfer arm anyway, and that is the point of a
+    shared bound: an arm does not get to decide that half of "could this
+    statement settle this row" does not apply to it.
 
     **It takes the STATEMENT rather than a bare day**, which is the shape all
     three per-row predicates here share since plan step C4-a-2.  Two of them
@@ -525,10 +535,10 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
         txn: A row from the SQL superset, with ``entries`` loaded.
 
     Returns:
-        True when no entry against *txn* postdates the statement.
+        True when no purchase against *txn* postdates the statement.
     """
     return all(
-        entry.purchased_on <= statement.observed_on for entry in txn.entries
+        entry.purchased_on <= statement.observed_on for entry in txn.purchases
     )
 
 
@@ -684,7 +694,16 @@ def record_settled(
     rows = outstanding_rows(arm, statement, transaction_ids=transaction_ids)
     corrected = 0
     for row in rows:
-        if arm.settle(row, corrections.get(row.id), statement):
+        # A figure out of the panel's amount box is a PERSON's statement of
+        # what the bank took, and the writer says so ONCE here for both arms
+        # (plan step X-bi-3e-1, ruling R-BAL61): the verbs take the figure and
+        # its writer as one value, and the panel is never the bank.
+        amount = corrections.get(row.id)
+        submitted = (
+            None if amount is None
+            else StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
+        )
+        if arm.settle(row, submitted, statement):
             corrected += 1
 
     if rows:

@@ -19,6 +19,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import (
     fragment_amounts,
     render_transaction_cell,
@@ -455,10 +456,19 @@ def create_entry(txn_id):
     # **bank_import:R-IK**, 2026-09-01, plan
     # step ``bank_import:X-gj-2b-3``).  The form posts a MAGNITUDE and a
     # direction; ``purchase_amount`` is the one place the pair becomes a stored
-    # figure, so ``EntryDetails.amount`` stays the signed value the column
-    # holds and no caller of this value object had to change.
-    data["amount"] = entry_service.purchase_amount(
-        data["amount"], records_a_refund=data.pop("direction") == entry_service.REFUND,
+    # figure, the signed value the column holds.
+    #
+    # **The figure and WHO WROTE it travel as one value** (plan step
+    # X-bi-3e-1, ruling R-BAL61): this is the add-purchase form, so a PERSON
+    # wrote it, and the route says so with the figure rather than leaving the
+    # door to read it off a day.  The key is REPLACED, not overwritten, for
+    # the reason ``_pair_the_posting_day`` gives for the day: the service
+    # takes ``figure`` and would silently ignore an ``amount`` kwarg.
+    data["figure"] = typed_figure(
+        entry_service.purchase_amount(
+            data.pop("amount"),
+            records_a_refund=data.pop("direction") == entry_service.REFUND,
+        ),
     )
     try:
         entry_service.create_entry(
@@ -605,9 +615,14 @@ def _compose_the_amount(data: dict[str, Any]) -> "str | None":
             "and save it again."
         )
     if has_amount:
-        data["amount"] = entry_service.purchase_amount(
-            data["amount"],
-            records_a_refund=data.pop("direction") == entry_service.REFUND,
+        # A PERSON typed it -- this is the entry PATCH -- and the figure says
+        # so (plan step X-bi-3e-1, ruling R-BAL61); ``figure`` is the key the
+        # door reads, as ``settle_day`` is for the day.
+        data["figure"] = typed_figure(
+            entry_service.purchase_amount(
+                data.pop("amount"),
+                records_a_refund=data.pop("direction") == entry_service.REFUND,
+            ),
         )
     return None
 

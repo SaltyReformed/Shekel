@@ -39,6 +39,7 @@ from app.extensions import db as _db
 from app.models.account import Account
 from app.models.ref import AccountType, Status, TransactionType
 from app.services import account_service
+from tests._test_helpers import bare_expense_template
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +78,8 @@ _M_ACCOUNT_ID = _load_migration(
 
 
 def _make_transaction_with_null_account_id(
-    db,
     *,
+    template_id: int,
     pay_period_id: int,
     scenario_id: int,
     name: str,
@@ -105,23 +106,39 @@ def _make_transaction_with_null_account_id(
     unchecked -- a composite key is MATCH SIMPLE, so a NULL in any
     referencing column satisfies it -- which is what keeps this
     pre-C-40 shape constructible.
+
+    **It names a rule-less definition and is dated on its paycheck's start**
+    (plan step ``balance:X-bi-7d-1``): the family's cutover makes a link-less
+    row unstorable, and ``ck_transactions_one_pricing_link`` binds on this
+    row whatever the ``account_id`` column's nullability -- the fixture
+    relaxes NOT NULL alone.  The definition is the caller's
+    (:func:`~tests._test_helpers.bare_expense_template`), because one case
+    deletes the seeded account first and needs its definition on another.
+    The backfill under test reads ``pay_period_id`` and never the link.
+
+    Writes through the module's session (``_db``), the one every raw probe
+    in this file reads, so the helper carries only what varies per case.
     """
     projected = (
-        db.session.query(Status).filter_by(name="Projected").one()
+        _db.session.query(Status).filter_by(name="Projected").one()
     )
     expense = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
+        _db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    row = db.session.execute(_db.text(
+    row = _db.session.execute(_db.text(
         "INSERT INTO budget.transactions "
-        "(account_id, user_id, pay_period_id, scenario_id, status_id, name, "
-        " transaction_type_id, estimated_amount, version_id, "
-        " is_deleted, is_override) "
-        "VALUES (NULL, "
+        "(template_id, account_id, user_id, pay_period_id, scenario_id, "
+        " status_id, name, transaction_type_id, estimated_amount, due_date, "
+        " occurs_on, version_id, is_deleted, is_override) "
+        "VALUES (:tid, NULL, "
         "        (SELECT user_id FROM budget.pay_periods WHERE id = :pp), "
-        "        :pp, :sc, :st, :name, :tt, :amt, 1, FALSE, FALSE) "
+        "        :pp, :sc, :st, :name, :tt, :amt, "
+        "        (SELECT start_date FROM budget.pay_periods WHERE id = :pp), "
+        "        (SELECT start_date FROM budget.pay_periods WHERE id = :pp), "
+        "        1, FALSE, FALSE) "
         "RETURNING id"
     ), {
+        "tid": template_id,
         "pp": pay_period_id,
         "sc": scenario_id,
         "st": projected.id,
@@ -129,7 +146,7 @@ def _make_transaction_with_null_account_id(
         "tt": expense.id,
         "amt": str(estimated_amount),
     }).scalar()
-    db.session.flush()
+    _db.session.flush()
     return row
 
 
@@ -239,8 +256,9 @@ class TestBackfillResolution:
         seed_user["settings"].default_grid_account_id = savings.id
         db.session.flush()
 
+        definition = bare_expense_template(db.session, seed_user)
         txn_id = _make_transaction_with_null_account_id(
-            db,
+            template_id=definition.id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             name="Tier1 Default Grid",
@@ -271,8 +289,9 @@ class TestBackfillResolution:
             "grid account set; tier-2 fallback cannot be exercised."
         )
 
+        definition = bare_expense_template(db.session, seed_user)
         txn_id = _make_transaction_with_null_account_id(
-            db,
+            template_id=definition.id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             name="Tier2 Checking Fallback",
@@ -336,8 +355,13 @@ class TestBackfillResolution:
         ), {"uid": seed_user["user"].id}).scalar()
         assert no_checking == 0
 
+        # On the SAVINGS account: the seeded Checking was just deleted,
+        # and ``transaction_templates.account_id`` is RESTRICT.
+        definition = bare_expense_template(
+            db.session, seed_user, account=savings,
+        )
         txn_id = _make_transaction_with_null_account_id(
-            db,
+            template_id=definition.id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             name="Tier3 Any-Active Fallback",
@@ -380,8 +404,9 @@ class TestBackfillResolution:
         db.session.add(active_checking)
         db.session.flush()
 
+        definition = bare_expense_template(db.session, seed_user)
         txn_id = _make_transaction_with_null_account_id(
-            db,
+            template_id=definition.id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             name="Skip Inactive Checking",
@@ -408,19 +433,22 @@ class TestBackfillResolution:
         migration (or for staging rebuilds against a partially-
         backfilled snapshot).
         """
-        # Insert one row WITH account_id set and one WITHOUT.
+        # Insert one row WITH account_id set and one WITHOUT.  Both name a
+        # rule-less definition and are dated, for the helper's reason.
         db.session.execute(_db.text(
             "INSERT INTO budget.transactions "
-            "(account_id, user_id, pay_period_id, scenario_id, status_id, "
-            " name, transaction_type_id, estimated_amount, version_id, "
-            " is_deleted, is_override) "
-            "VALUES (:acc, :uid, :pp, :sc, :st, :name, :tt, :amt, 1, "
-            "        FALSE, FALSE) "
+            "(template_id, account_id, user_id, pay_period_id, scenario_id, "
+            " status_id, name, transaction_type_id, estimated_amount, "
+            " due_date, occurs_on, version_id, is_deleted, is_override) "
+            "VALUES (:tid, :acc, :uid, :pp, :sc, :st, :name, :tt, :amt, "
+            "        :due, :due, 1, FALSE, FALSE) "
             "RETURNING id"
         ), {
+            "tid": bare_expense_template(db.session, seed_user).id,
             "acc": seed_user["account"].id,
             "uid": seed_periods[0].user_id,
             "pp": seed_periods[0].id,
+            "due": seed_periods[0].start_date,
             "sc": seed_user["scenario"].id,
             "st": db.session.query(Status).filter_by(name="Projected").one().id,
             "name": "Already Populated",
@@ -481,8 +509,9 @@ class TestBackfillResolution:
         seed_user["account"].is_active = False
         db.session.flush()
 
+        definition = bare_expense_template(db.session, seed_user)
         txn_id = _make_transaction_with_null_account_id(
-            db,
+            template_id=definition.id,
             pay_period_id=seed_periods[0].id,
             scenario_id=seed_user["scenario"].id,
             name="Unresolvable",

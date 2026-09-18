@@ -363,15 +363,18 @@ class TestPostUpgradeDbShape:
           * fk_interest_params_account: CASCADE (interest params are
             owned by their account; deleting the account deletes the
             params).
-          * fk_transactions_credit_payback_for: SET NULL (a payback
-            transaction whose source is deleted should not itself be
-            cascaded away; it just loses the backlink).
-          * fk_scenarios_cloned_from: SET NULL (same logic; a clone
-            outlives its parent).
+          * fk_transactions_credit_payback_for: RESTRICT since plan step
+            ``balance:X-bi-7d-2`` (it was SET NULL through C-42's rename:
+            a payback whose source was deleted lost its backlink and
+            stood as a zero-link row; ``ck_transactions_one_pricing_link``
+            reads ``= 1`` now, so the source cannot go alone -- finding
+            **CC-352**'s disclosed window).
+          * fk_scenarios_cloned_from: SET NULL (a clone outlives its
+            parent).
         """
         expected = {
             ("budget", "fk_interest_params_account"): "ON DELETE CASCADE",
-            ("budget", "fk_transactions_credit_payback_for"): "ON DELETE SET NULL",
+            ("budget", "fk_transactions_credit_payback_for"): "ON DELETE RESTRICT",
             ("budget", "fk_scenarios_cloned_from"): "ON DELETE SET NULL",
         }
         with app.app_context():

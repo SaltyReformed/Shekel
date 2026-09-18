@@ -53,16 +53,21 @@ def template_has_paid_history(template_id: int) -> bool:
     ``routes/templates/crud.hard_delete_template``, whose bulk delete filters
     on ``Status.is_settled`` and NOT on ``is_deleted`` -- so a soft-deleted
     settled row was invisible to the gate AND excluded from the delete, and the
-    template went while the row stayed.  ``fk_transactions_template`` is ON
-    DELETE SET NULL, so what was left was a settled row carrying its money and
-    no link to the definition that made it.  Harmless while such a row OWNED
-    its figure; plan step **balance:X-au-e** declares every non-override
-    template row DERIVED, at which point the same survivor carries
+    template went while the row stayed.  The template key was ON DELETE SET
+    NULL then, so what was left was a settled row carrying its money and no
+    link to the definition that made it.  Harmless while such a row OWNED its
+    figure; plan step **balance:X-au-e** declares every non-override template
+    row DERIVED, at which point the same survivor carries
     ``amount_source_id = template`` with no template to read -- unpriceable by
     ``_stated_amount`` on any revert to Projected, and unrestorable by
     ``d7b2e6c1a483``'s downgrade, whose restore joins on the ``template_id``
     that is now NULL (ledger row **N-440**).  The two halves of the door now
-    ask the same question, so the state is refused rather than guarded.
+    ask the same question, so the state is refused rather than guarded -- and
+    since plan step **balance:X-bi-7d-2** the key is
+    ``fk_transactions_template_id`` ON DELETE RESTRICT, so the database
+    refuses it too: a definition whose row survived the filtered delete cannot
+    be deleted at all, and this gate is what turns that refusal into a
+    designed one.
 
     The refusal is not free and the developer took it deliberately: a template
     whose only settled rows were soft-deleted can no longer be permanently
@@ -197,10 +202,12 @@ def account_has_history(account_id: int) -> bool:
     nothing -- so the row that makes it define something has to be seen here
     even when it sits on another account, which a retained row does after its
     definition's account moved (``recurrence_engine`` keeps a row holding the
-    owner's records where it is).  ``transactions.template_id`` is
-    ``ON DELETE SET NULL`` until the family's cutover: deleting such a
-    definition under a live derived row would leave one with no definition
-    to price it, which ``cash_ledger`` refuses on every screen that loads it.
+    owner's records where it is).  ``transactions.template_id`` was
+    ``ON DELETE SET NULL`` until the family's cutover (``X-bi-7d-2``):
+    deleting such a definition under a live derived row left one with no
+    definition to price it, which ``cash_ledger`` refuses on every screen
+    that loads it; the key is ``RESTRICT`` now, so the database refuses the
+    delete and this count is what makes the refusal a designed one.
 
     Args:
         account_id: The Account.id to check.

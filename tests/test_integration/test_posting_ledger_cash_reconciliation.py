@@ -135,10 +135,10 @@ from tests._test_helpers import (
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
-    legacy_link_less_row_of,
     settle_cash_row,
     create_settled_transfer,
     linked_ledger_account,
+    one_off_row_of,
     settle_day_columns,
     settlement_if_settling,
 )
@@ -908,12 +908,15 @@ class TestPerCounterAccountReconciliation:
         directly to lock the defensive linkage reconciliation -- see the
         ``ledger_account.py`` "Reconciliation of orphans" note.)
 
-        **On the LEGACY link-less row, until the cutover** (plan step
-        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
-        definition references the category, ``transaction_templates.
-        category_id`` is RESTRICT, and the delete this case reproduces cannot
-        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
-        or retires this case with it.
+        **The one-off's DEFINITION is un-categorised first**, by the same
+        raw SQL: every plan row names a definition since the family's cutover
+        (plan step ``balance:X-bi-7d-2``), the definition references the
+        category and ``transaction_templates.category_id`` is RESTRICT, so
+        the delete below is refused while it does.  A category-less
+        definition is a state the schema admits (nullable since
+        ``9c1e4b7a2d3f``, ruling R-BAL24), and clearing it is what lets the
+        DB-level SET NULL this case locks fire on the two tables it names.
+        (A LEGACY link-less row needed no such step until that cutover.)
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -931,7 +934,7 @@ class TestPerCounterAccountReconciliation:
             hobbies_display_name = hobbies.display_name
 
             txn = settle_cash_row(
-                legacy_link_less_row_of(
+                one_off_row_of(
                     period, name="Cash Txn", amount="50.00",
                     user_id=user_id, account_id=seed_user["account"].id,
                     scenario_id=scenario_id,
@@ -941,6 +944,7 @@ class TestPerCounterAccountReconciliation:
             )
             db.session.commit()
             txn_id = txn.id
+            definition_id = txn.template_id
             orphan_id = _counter_ledger_id(
                 user_id, LedgerAccountClassEnum.EXPENSE, hobbies_id,
             )
@@ -950,6 +954,15 @@ class TestPerCounterAccountReconciliation:
 
             # Delete the budget category: the FK SET NULL turns its ledger
             # account into an orphan and clears the transaction's category_id.
+            # The definition's RESTRICT key would refuse the delete, so its
+            # own category is cleared first (the docstring says why).
+            db.session.execute(
+                _db.text(
+                    "UPDATE budget.transaction_templates SET category_id = NULL "
+                    "WHERE id = :d"
+                ),
+                {"d": definition_id},
+            )
             db.session.execute(
                 _db.text("DELETE FROM budget.categories WHERE id = :c"),
                 {"c": hobbies_id},
@@ -1453,6 +1466,14 @@ class TestRevertedTransactionReconcilesAtZero:
         $1000.00 opening, the reverted row is no longer ``is_settled`` so it
         drops from the source effect too, and two entries survive (the
         original is never edited).
+
+        **The pair's LINK assertion was re-expressed at plan step
+        ``balance:X-bi-3e-2``** under ruling **R-BAL61**'s clause "a revert
+        UN-DATES the covering movement and keeps it" and the ``X-bi-3e`` step
+        sentence that ruled it: the old assertion (``transaction_entry_id IS
+        NULL`` on both entries) pinned the SET NULL side effect of the
+        revert DELETING the movement, which is the behaviour that ruling
+        changed; the money assertions and the full sweep are unchanged.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1465,7 +1486,6 @@ class TestRevertedTransactionReconcilesAtZero:
                 category=seed_user["categories"]["Groceries"],
             )
             db.session.commit()
-            txn_id = txn.id
             groceries_counter = _counter_ledger_id(
                 user_id, LedgerAccountClassEnum.EXPENSE,
                 seed_user["categories"]["Groceries"].id,
@@ -1489,10 +1509,14 @@ class TestRevertedTransactionReconcilesAtZero:
                 groceries_counter, scenario_id,
             ) == Decimal("0.00")
             # Two entries survive (settle + reversal); neither was edited.
-            # They were the covering movement's (plan step X-bi-3a), and the
-            # revert deleted that mirror after reversing its legs, so the pair
-            # stands as unlinked PURCHASE-sourced history -- the reverse-
-            # before-delete discipline, seen from the ledger.
+            # They are the covering movement's (plan step X-bi-3a), and the
+            # revert KEEPS that mirror un-dated (plan step X-bi-3e-2, ruling
+            # R-BAL61) while the family reconcile reverses its legs -- so the
+            # pair stands as PURCHASE-sourced history still LINKED to the
+            # surviving movement, netting to zero.  (Through 3e-1 the revert
+            # deleted the mirror and the pair stood unlinked, SET NULL.)
+            (survivor,) = txn.covering_movements
+            assert survivor.settled_on is None
             assert (
                 _db.session.query(JournalEntry)
                 .filter(
@@ -1500,7 +1524,7 @@ class TestRevertedTransactionReconcilesAtZero:
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
                         PostingSourceEnum.PURCHASE,
                     ),
-                    JournalEntry.transaction_entry_id.is_(None),
+                    JournalEntry.transaction_entry_id == survivor.id,
                 )
                 .count()
             ) == 2

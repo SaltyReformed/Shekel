@@ -36,6 +36,7 @@ from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
     StatementImport,
+    StatementLineSighting,
 )
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
@@ -143,14 +144,16 @@ class TestItRemovesWhatThatImportRecorded:
         assert _rows(db, "budget.bank_statement_lines", "account_id",
                      seed_user["account"].id) == 0
 
-    def test_a_line_ANOTHER_import_recorded_stays(self, app, db, seed_user):
-        """A line names the import that FIRST recorded it, and only that one.
+    def test_a_line_ANOTHER_import_also_sighted_stays(
+        self, app, db, seed_user,
+    ):
+        """A line lives while any sighting does (ruling **R-BI10**).
 
-        MONEY-ADJACENT: re-importing an overlapping span records the ACT and no
-        duplicate lines, so the second import owns none of the first's.
-        Deleting the second must therefore take nothing at all -- if it took
-        the span it merely re-saw, an owner tidying up a redundant import would
-        silently destroy the record the first import holds.
+        MONEY-ADJACENT: re-importing an overlapping span records a SIGHTING
+        of every line and no duplicate line.  Deleting the second must take
+        no line -- if it took the lines it merely re-saw, an owner tidying up
+        a redundant import would silently destroy the record the first import
+        holds -- and it takes only the second's sightings.
         """
         first = _import(seed_user)
         second = _import(seed_user, file_name="again.csv")
@@ -161,6 +164,32 @@ class TestItRemovesWhatThatImportRecorded:
         assert removal.lines_removed == 0
         assert db.session.query(BankStatementLine).count() == 2
         assert db.session.query(StatementImport).one().id == first.import_id
+        assert db.session.query(StatementLineSighting).count() == 2
+
+    def test_deleting_the_FIRST_import_keeps_the_lines_a_re_import_sighted(
+        self, app, db, seed_user,
+    ):
+        """The other direction, which the old ownership got wrong.
+
+        *Until plan step ``bank_import:X-f6b-1`` the first import owned the
+        lines, so deleting it took every line the re-import had also shown
+        and left the re-import's span claiming days with no lines under it.*
+        Now the re-import vouches for them: the first import goes, its
+        sightings go, the lines and the re-import's sightings stay, and the
+        receipt says no line was removed.
+        """
+        first = _import(seed_user)
+        second = _import(seed_user, file_name="again.csv")
+
+        removal = _undo(seed_user, first.import_id)
+
+        assert removal.lines_removed == 0
+        assert db.session.query(BankStatementLine).count() == 2
+        assert db.session.query(StatementImport).one().id == second.import_id
+        assert {
+            sighting.import_id
+            for sighting in db.session.query(StatementLineSighting).all()
+        } == {second.import_id}
 
     def test_it_reports_the_span_and_the_file_it_removed(
         self, app, db, seed_user,
@@ -171,8 +200,8 @@ class TestItRemovesWhatThatImportRecorded:
         removal = _undo(seed_user, outcome.import_id)
 
         assert removal.file_name == "ytd.csv"
-        assert removal.period_start == date(2026, 3, 2)
-        assert removal.period_end == date(2026, 3, 4)
+        assert removal.declared_start == date(2026, 3, 2)
+        assert removal.declared_end == date(2026, 3, 4)
         assert removal.matches_released == 0
 
 
@@ -793,7 +822,7 @@ class TestTheAccountCanImportAgain:
         )
 
         assert repaired.recorded_count == 2
-        assert db.session.query(BankStatementLine).filter_by(
+        assert db.session.query(StatementLineSighting).filter_by(
             description="SOMETHING ELSE ENTIRELY",
         ).count() == 1
 

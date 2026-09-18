@@ -14,8 +14,23 @@ the stated figure is effective at day ``d`` exactly when::
 
     stated - sum(lines posted on or before d) == opening
 
-over the candidates ``{the day before the first line} + {every day the file
-covers}``, bounded above by the day the header itself names.
+over the candidates ``{the day before the declared window} + {every line
+day} + {the day the window ends, or the day the header names if earlier}``,
+bounded above by the day the header itself names.  **The line days and the
+stated day, NOT every day of the window** (ruling **R-BAL74**, amending
+**R-BAL71**'s candidate clause; developer 2026-09-18 on X-f6b-1's adversarial
+review): a feed sync that returned no line
+since the last one still places the bank's figure on the day the bank stated
+it, because that day is a candidate in its own right; a CSV, whose window is
+its own line extremes, keeps exactly the candidates it had.  The build's
+first cut took EVERY day of the window and named the LATEST satisfying one,
+which put a figure that lags its file onto the last QUIET day after the line
+it is the closing of -- and that is money, not naming: the cash walk treats
+an app row settled on or before a level's day as already inside the bank's
+figure, so on the developer's own 08-16 lag shape over a weekend a purchase
+settled on the Saturday was absorbed into Friday's closing and Monday's
+derived balance read `$25.00` high until the next assertion.  Found by
+adversarial review 2026-09-18.
 
 **A SOLVED day is only as good as the opening it was solved against**, which is
 why :class:`~app.enums.StatementBalanceEvidenceEnum` records the WEAKEST LINK
@@ -88,6 +103,9 @@ from app.models.anchor_release import AnchorRelease
 
 from ._balance import fold_bank_balances, standing_bank_levels
 from ._integrity import opening_balance
+from ._line import ParsedStatement
+
+_ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -139,7 +157,7 @@ class ImportedBalance:
     limit rather than an oversight** (plan step ``bank_import:X-gc``).  It
     records HOW this import reached its day, which only the resolve knows, and
     it is not derivable afterwards: an assumed day is
-    ``min(period_end, stated_balance_on)``, and a SOLVED day can land on that
+    ``min(declared_end, stated_balance_on)``, and a SOLVED day can land on that
     same value by coincidence, so a reader comparing the stored columns would
     call a proven placement a guess.  So the receipt -- which holds this value
     -- can say it and the imports TABLE, which reads stored rows, cannot.
@@ -266,52 +284,86 @@ def _cumulative_by_day(lines: list) -> "dict[date, Decimal]":
     return totals
 
 
-def solve_effective_day(
-    lines: list,
-    stated_balance: Decimal,
-    opening: Decimal,
-    not_after: date,
-) -> "date | None":
-    """Return the day *stated_balance* is the balance for, or ``None``.
+def _candidate_days(parsed: ParsedStatement) -> "list[date]":
+    """Return the days the stated figure may be placed on, ascending.
+
+    The day before the declared window (a figure that IS the opening states a
+    balance no line has moved), every day the file shows a line on, and the
+    last day the bank could be stating for -- the window's end, or the day
+    the header names where that is earlier -- so a sync over a quiet window
+    lands on the day the bank stated.  Deduplicated: for a CSV the window's
+    end IS its last line day.
+
+    **The stated day is a candidate only inside the window's own floor.**  A
+    header dated before the day before the window names a day the file
+    cannot vouch for, and ``budget.level_lies_within_file`` refuses a level
+    there -- so it is not offered, and such a file places nothing rather
+    than 500ing at the flush.  The pre-existing bound case
+    (``test_the_bound_also_covers_the_day_BEFORE_the_first_line``) fired on
+    a first cut that offered it.
 
     Args:
-        lines: :class:`~._line.StatementLine` values in chronological order.
-            Must be non-empty.
-        stated_balance: What the file claims the account held.
-        opening: The balance before the first line, known independently of
-            *stated_balance*.
-        not_after: The latest day a candidate may be -- the day the header
-            itself names.  **A bound rather than a filter applied afterwards**:
-            a bank cannot state a balance for a day it has not reached, and
-            ``ck_statement_imports_effective_day_within_file`` refuses such a
-            row, so an unbounded solve turned a describable file into a 500.
-            Found by two independent adversarial reviews, 2026-08-23.
+        parsed: The file, with its claim present.
 
     Returns:
-        The LATEST day at or before *not_after* satisfying
-        ``stated - sum(lines up to it) == opening``, or ``None`` when no
-        candidate day does.
-
-    **Two satisfying days are harmless and that is proven rather than
-    assumed.**  If ``d1 < d2`` both satisfy it then the lines in ``(d1, d2]``
-    sum to zero, so for any day ``D`` the balance derived from the anchor at
-    ``d1`` is ``stated + sum((d1, D])`` and the one derived from ``d2`` is
-    ``stated - (sum((d1, d2]) - sum((d1, D]))``, which is the same value.
-    Every balance the app later derives is therefore identical either way, and
-    taking the latest is a choice about which day to NAME rather than about
-    money.  Measured: 0 of the developer's 5 real exports admit two.
+        The candidates, ascending, each at most once.
     """
-    totals = _cumulative_by_day(lines)
-    before_first = lines[0].posted_on - timedelta(days=1)
-    # The day before the first line is a candidate in its own right: a file
-    # whose stated figure IS its opening states a balance no line has moved.
-    solved = (
-        before_first
-        if stated_balance == opening and before_first <= not_after
-        else None
-    )
-    for day in sorted(totals):
-        if day <= not_after and stated_balance - totals[day] == opening:
+    floor = parsed.declared_start - _ONE_DAY
+    days = {line.posted_on for line in parsed.lines}
+    days.add(floor)
+    stated_for = min(parsed.declared_end, parsed.stated_balance_on)
+    if stated_for >= floor:
+        days.add(stated_for)
+    return sorted(days)
+
+
+def solve_effective_day(
+    parsed: ParsedStatement, opening: Decimal,
+) -> "date | None":
+    """Return the day the file's stated balance is the balance for, or ``None``.
+
+    Args:
+        parsed: The file: its lines in chronological order, the window it
+            declares, and the claim its header makes.  The claim must be
+            present -- :func:`resolve_anchor` answers ``None`` for a file
+            stating none before reaching here.
+        opening: The balance before the window's first day, known
+            independently of the stated balance.
+
+    Returns:
+        The LATEST of :func:`_candidate_days`, at or before the day the
+        header names, satisfying ``stated - sum(lines up to it) == opening``;
+        or ``None`` when no candidate day does.
+
+    **The header's day is a BOUND rather than a filter applied afterwards**:
+    a bank cannot state a balance for a day it has not reached, and
+    ``budget.level_lies_within_file`` refuses such a row, so an unbounded
+    solve turned a describable file into a 500.  Found by two independent
+    adversarial reviews, 2026-08-23.
+
+    **Two satisfying days are harmless for the BANK's own walk and that is
+    proven rather than assumed.**  If ``d1 < d2`` both satisfy it then the
+    lines in ``(d1, d2]`` sum to zero, so for any day ``D`` the balance
+    derived from the anchor at ``d1`` is ``stated + sum((d1, D])`` and the
+    one derived from ``d2`` is ``stated - (sum((d1, d2]) - sum((d1, D]))``,
+    which is the same value.  Measured: 0 of the developer's 5 real exports
+    admit two.  **It is NOT harmless for the CASH walk**, which absorbs app
+    rows by their settle day, and that is why the candidates are the line
+    days and the stated day rather than every day of the window (ruling
+    **R-BAL74**; the module docstring): a quiet day is never named when a
+    line day solves.
+    """
+    totals = _cumulative_by_day(parsed.lines)
+    not_after = parsed.stated_balance_on
+    solved = None
+    running = Decimal("0.00")
+    for day in _candidate_days(parsed):
+        if day > not_after:
+            break
+        # A candidate with no line carries the total through the day before
+        # it: the day before the window, and a quiet stated day.
+        running = totals.get(day, running)
+        if parsed.stated_balance - running == opening:
             solved = day
     return solved
 
@@ -503,25 +555,22 @@ def release_anchors_from(account_id: int, day: date, import_id: int) -> int:
 
 
 def resolve_anchor(
-    lines: list,
-    stated_balance: "Decimal | None",
-    stated_balance_on: "date | None",
-    recorded: "KnownOpening | None",
+    parsed: ParsedStatement, recorded: "KnownOpening | None",
 ) -> "ImportedBalance | None":
     """Return what this file determines about its own stated balance.
 
     Args:
-        lines: :class:`~._line.StatementLine` values in chronological order.
-            Must be non-empty; the door refuses an empty file before here.
-        stated_balance: What the file's header claims, or ``None`` when it
-            states none.
-        stated_balance_on: The day that header names.  ``None`` exactly when
-            *stated_balance* is -- which the adapter holds and this refuses to
-            depend on, because a function whose whole job is to be total over
-            its inputs may not rest a guard on another module's invariant.
+        parsed: The file -- its lines in chronological order, the window it
+            declares and the claim its header makes, or none.  The two claim
+            fields are ``None`` together, which the adapter holds and this
+            refuses to depend on: a function whose whole job is to be total
+            over its inputs may not rest a guard on another module's
+            invariant.  The lines may be EMPTY (a feed sync over a quiet
+            window states a balance and no line); only the file-chain arm
+            reads a line, and an empty file carries no chain.
         recorded: What the account's already-recorded statements say it held
-            before this file's first line, with the strength of that claim, or
-            ``None`` when they do not say.
+            before the window's first day, with the strength of that claim,
+            or ``None`` when they do not say.
 
     Returns:
         The :class:`ImportedBalance`, or ``None`` when the file states no
@@ -544,18 +593,20 @@ def resolve_anchor(
     that failed to solve never tried the recorded opening, correctly, but the
     shape said otherwise.  Found by adversarial review 2026-08-23.
     """
-    if stated_balance is None or stated_balance_on is None:
+    if parsed.stated_balance is None or parsed.stated_balance_on is None:
         return None
-    claim = {"stated": stated_balance, "stated_on": stated_balance_on}
-    chain = opening_balance(lines)
+    claim = {
+        "stated": parsed.stated_balance, "stated_on": parsed.stated_balance_on,
+    }
+    chain = opening_balance(parsed.lines)
     if chain is not None:
         # The file states the opening itself, so it is answerable from the file
         # alone -- and a failure to solve is the file contradicting itself.
-        solved = solve_effective_day(
-            lines, stated_balance, chain, stated_balance_on,
-        )
+        solved = solve_effective_day(parsed, chain)
         if solved is None:
-            _refuse_self_contradiction(lines, stated_balance, chain)
+            _refuse_self_contradiction(
+                parsed.lines, parsed.stated_balance, chain,
+            )
         return ImportedBalance(
             **claim,
             effective_on=solved,
@@ -566,9 +617,7 @@ def resolve_anchor(
         # What the account already holds decides, and no failure to solve is
         # the file's fault: the movements explaining a date-range export's
         # header are simply not in it.
-        solved = solve_effective_day(
-            lines, stated_balance, recorded.amount, stated_balance_on,
-        )
+        solved = solve_effective_day(parsed, recorded.amount)
         return ImportedBalance(
             **claim,
             effective_on=solved,
@@ -576,9 +625,10 @@ def resolve_anchor(
             day_is_solved=solved is not None,
         )
     # Nothing constrains it, which is what a FIRST import is.  The figure is
-    # taken as the balance after the file's last line -- what the bank means
-    # when nothing is pending -- bounded by the day the header names, because
-    # a balance cannot be effective on a day the bank had not reached.
+    # taken as the balance at the end of the declared window -- what the bank
+    # means when nothing is pending; for a CSV that is its last line's day --
+    # bounded by the day the header names, because a balance cannot be
+    # effective on a day the bank had not reached.
     #
     # **This arm ASSUMES a day rather than solving one, and it says so**
     # (``day_is_solved=False``, the constructor's default made explicit here
@@ -587,7 +637,7 @@ def resolve_anchor(
     # ``uncorroborated`` for a day it PROVED against an unconfirmed opening.
     return ImportedBalance(
         **claim,
-        effective_on=min(lines[-1].posted_on, stated_balance_on),
+        effective_on=min(parsed.declared_end, parsed.stated_balance_on),
         evidence=StatementBalanceEvidenceEnum.UNCORROBORATED,
         day_is_solved=False,
     )

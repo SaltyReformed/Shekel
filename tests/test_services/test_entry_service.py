@@ -13,7 +13,7 @@ import pytest
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType
+from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
@@ -24,19 +24,20 @@ from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
 from app.services import (
-    account_service,
     cash_ledger,
     status_seam,
 )
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    typed,
     account_never_asserted,
     an_entered_day,
+    create_savings_account,
+    create_transfer,
     family_cash_leg,
     figure_source_columns,
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     purchases_of,
@@ -48,7 +49,6 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from tests._test_helpers import mark_purchase_settled
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                     description="Kroger",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -115,7 +115,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("75.00"),
+                    figure=typed(Decimal("75.00")),
                     description="Amazon order",
                     purchased_on=date(2026, 1, 6),
                     is_credit=True,
@@ -135,7 +135,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description="Test",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -160,139 +160,51 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
                 )
 
-    def test_create_entry_rejects_no_template(
+    def test_create_entry_rejects_a_transfer_shadow(
         self, app, db, seed_user, seed_periods,
     ):
-        """Reject an entry on a LEGACY link-less transaction (template_id=None).
+        """Reject an entry on a transfer's shadow: it tracks no purchases.
 
-        The ``template_id is None`` arm of ``Transaction.tracks_purchases``
-        reads the row's own cell; production holds that shape until the
-        cutover (X-bi-7d), so the row is built on its one transitional home
-        (plan step balance:X-bi-7c, ruling R-BAL59) and 7d retires this case
-        with the arm.  A one-off placed today reads its definition's flag,
-        which is the case above.
+        A shadow names its transfer and no definition, so
+        ``tracks_purchases`` answers ``False`` (ruling **R-BAL73**) and the
+        envelope guard refuses it before anything else is asked.  Until the
+        family's cutover (plan step ``balance:X-bi-7d-2``) this class held
+        two cases in its place: a LEGACY link-less row refused by the same
+        guard off its own cell, and a hand-built shadow carrying
+        ``is_envelope=True`` so the door's TRANSFER guard, one check later,
+        was the one to fire.  Neither shape can be stored now -- the cell is
+        gone and ``ck_transactions_one_pricing_link`` reads ``= 1`` -- so the
+        transfer guard in ``entry_service`` is unreachable by construction
+        (reported at 7d-2, not deleted there) and this case grades the
+        refusal a real shadow meets.
         """
         with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
             )
-            txn = legacy_link_less_row_of(
-                seed_periods[0], name="Ad-hoc expense", amount="100.00",
-                user_id=seed_periods[0].user_id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=seed_user["categories"]["Rent"].id,
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
             )
             db.session.flush()
+            shadow = next(
+                row for row in xfer.shadow_transactions
+                if row.account_id == seed_user["account"].id
+            )
+            assert shadow.tracks_purchases is False
 
             with pytest.raises(ValidationError, match="does not support"):
                 entry_service.create_entry(
-                    transaction_id=txn.id,
+                    transaction_id=shadow.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
-                        description="Test",
-                        purchased_on=date(2026, 1, 5),
-                    ),
-                )
-
-    def test_create_entry_rejects_transfer(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Reject entry on a transaction that is a transfer shadow.
-
-        **The row under test is an AD-HOC envelope row carrying a
-        ``transfer_id``, and it used to be a TEMPLATE-linked row given one.**
-        That earlier shape set ``template_id`` and ``transfer_id`` on one row,
-        which ``ck_transactions_one_pricing_link`` forbids as of plan step
-        X-au-c1 -- the balance README documented that exclusivity as a convention
-        and the amount model makes it structural (0 of 997 production rows held
-        two links).  The assertion is unchanged; only the shape reaching it is,
-        and it is now a shape the schema admits.
-
-        **What this test can and cannot claim, stated because the guard's
-        reachability is narrower than it looks.**  ``create_entry`` asks
-        ``tracks_purchases`` BEFORE it asks about ``transfer_id``, and a real
-        transfer shadow carries no template and its own ``is_envelope`` default
-        of False -- so a genuine shadow is refused by the ENVELOPE guard and
-        never reaches the transfer one.  This row is envelope-flagged so the
-        transfer guard is the one that fires, which is what the test is for; that
-        the guard is otherwise unreachable is reported rather than papered over.
-        """
-        with app.app_context():
-            from app.models.transfer import Transfer
-            from app.models.ref import AccountType
-
-            user_id = seed_user["user"].id
-            account_id = seed_user["account"].id
-            scenario_id = seed_user["scenario"].id
-            period_id = seed_periods[0].id
-
-            # Create a second account for the transfer (different accounts required).
-            checking_type = (
-                db.session.query(AccountType).filter_by(name="Checking").one()
-            )
-            second_account = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user_id,
-                    account_type_id=checking_type.id,
-                    name="Savings",
-                    anchor_balance=Decimal("500.00"),
-                ),
-            )
-            db.session.add(second_account)
-            db.session.flush()
-
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            transfer = Transfer(
-                user_id=user_id,
-                from_account_id=account_id,
-                to_account_id=second_account.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                pay_period_id=period_id,
-                scenario_id=scenario_id,
-                status_id=projected.id,
-                name="Test Transfer",
-            )
-            db.session.add(transfer)
-            db.session.flush()
-
-            # Ad-hoc (no template), so ``tracks_purchases`` reads the row's own
-            # ``is_envelope`` and the transfer guard is what refuses it.
-            txn = Transaction(
-                user_id=user_id,
-                pay_period_id=period_id,
-                scenario_id=scenario_id,
-                account_id=account_id,
-                status_id=projected.id,
-                name="Shadow with tracking on",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                is_envelope=True,
-                transfer_id=transfer.id,
-            )
-            db.session.add(txn)
-            db.session.flush()
-
-            with pytest.raises(ValidationError, match="transfer"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=user_id,
-                    details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -316,7 +228,7 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -336,7 +248,7 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=other_user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -352,7 +264,7 @@ class TestCreateEntry:
                     transaction_id=999999,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -379,7 +291,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -408,7 +320,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -448,7 +360,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("42.50"),
+                        figure=typed(Decimal("42.50")),
                         description="Late posting purchase",
                         purchased_on=date(2026, 1, 10),
                     ),
@@ -466,7 +378,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("0.01"),
+                    figure=typed(Decimal("0.01")),
                     description="Penny item",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -482,7 +394,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("9999999999.99"),
+                    figure=typed(Decimal("9999999999.99")),
                     description="Expensive item",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -499,7 +411,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description=desc,
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -525,7 +437,7 @@ class TestCompanionAccess:
                 transaction_id=txn.id,
                 user_id=companion.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("35.00"),
+                    figure=typed(Decimal("35.00")),
                     description="Companion purchase",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -565,7 +477,7 @@ class TestCompanionAccess:
                     transaction_id=txn.id,
                     user_id=companion.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Unauthorized",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -636,7 +548,7 @@ class TestUpdateEntry:
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
 
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("75.00"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("75.00")),
             )
 
             assert updated.amount == Decimal("75.00")
@@ -695,7 +607,7 @@ class TestUpdateEntry:
 
             updated = entry_service.update_entry(
                 entry.id, seed_user["user"].id,
-                amount=Decimal("99.99"),
+                figure=typed(Decimal("99.99")),
                 description="Updated",
                 is_credit=True,
             )
@@ -740,7 +652,7 @@ class TestUpdateEntry:
             with pytest.raises(NotFoundError):
                 entry_service.update_entry(
                     entry.id, seed_second_user["user"].id,
-                    amount=Decimal("99.00"),
+                    figure=typed(Decimal("99.00")),
                 )
 
     def test_update_entry_nonexistent(self, app, db, seed_user):
@@ -748,7 +660,7 @@ class TestUpdateEntry:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 entry_service.update_entry(
-                    999999, seed_user["user"].id, amount=Decimal("10.00"),
+                    999999, seed_user["user"].id, figure=typed(Decimal("10.00")),
                 )
 
 
@@ -786,7 +698,7 @@ class TestAFutureEntryDateIsRefused:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("150.00"),
+                        figure=typed(Decimal("150.00")),
                         description="Costco run I have not made",
                         purchased_on=tomorrow,
                     ),
@@ -819,7 +731,7 @@ class TestAFutureEntryDateIsRefused:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("42.87"),
+                    figure=typed(Decimal("42.87")),
                     description="Walmart",
                     purchased_on=today,
                 ),
@@ -843,7 +755,7 @@ class TestAFutureEntryDateIsRefused:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("101.06"),
+                    figure=typed(Decimal("101.06")),
                     description="Walmart, logged late",
                     purchased_on=long_ago,
                 ),
@@ -908,7 +820,7 @@ class TestAFutureEntryDateIsRefused:
             )
 
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("75.00"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("75.00")),
             )
 
             assert updated.amount == Decimal("75.00")
@@ -1700,7 +1612,7 @@ class TestNeitherHandDoorTakesATypedSign:
                     transaction_id=txn.id,
                     user_id=user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("0.00"),
+                        figure=typed(Decimal("0.00")),
                         description="Nothing",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -1710,7 +1622,7 @@ class TestNeitherHandDoorTakesATypedSign:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description="Real purchase",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -1719,7 +1631,7 @@ class TestNeitherHandDoorTakesATypedSign:
 
             with pytest.raises(ValidationError, match="cannot be zero"):
                 entry_service.update_entry(
-                    entry.id, user.id, amount=Decimal("0.00"),
+                    entry.id, user.id, figure=typed(Decimal("0.00")),
                 )
 
     def test_a_refund_round_trips_through_the_service_door(
@@ -1739,7 +1651,7 @@ class TestNeitherHandDoorTakesATypedSign:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("-28.29"),
+                    figure=typed(Decimal("-28.29")),
                     description="Amazon refund",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -2097,7 +2009,7 @@ class TestASettledRowsPurchasesAreClosed:
 
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
-                    entry.id, seed_user["user"].id, amount=Decimal("500.00"),
+                    entry.id, seed_user["user"].id, figure=typed(Decimal("500.00")),
                 )
 
             # No rollback: the guard runs BEFORE the setattr loop, so a refused
@@ -2166,7 +2078,7 @@ class TestASettledRowsPurchasesAreClosed:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Late purchase",
                         purchased_on=display_today(),
                     ),
@@ -2249,7 +2161,7 @@ class TestASettledRowsPurchasesAreClosed:
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id,
                     settle_day=an_entered_day(display_today()),
-                    amount=Decimal("500.00"),
+                    figure=typed(Decimal("500.00")),
                 )
 
             # The guard runs BEFORE the setattr loop, so nothing is staged.
@@ -2400,7 +2312,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                     settle_day=an_entered_day(display_today()),
@@ -2442,7 +2354,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                     settle_day=an_entered_day(display_today()),
@@ -2477,7 +2389,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("600.00"),
+                        figure=typed(Decimal("600.00")),
                         description="BJs",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today()),
@@ -2572,7 +2484,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                     ),
@@ -2627,7 +2539,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=posted - timedelta(days=2),
                     settle_day=an_entered_day(posted),
@@ -2650,7 +2562,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                 ),
@@ -2680,7 +2592,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today() - timedelta(days=1)),
@@ -2707,7 +2619,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today() + timedelta(days=1)),

@@ -26,6 +26,7 @@ from app.services import credit_workflow, entry_service, transaction_service
 from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
 from tests._test_helpers import (
+    typed,
     an_entered_day,
     figure_source_columns,
     generate_row_of,
@@ -395,7 +396,7 @@ class TestACardRefundNeverDestroysThePayback:
             transaction_id=txn.id,
             user_id=seed_user["user"].id,
             details=entry_service.EntryDetails(
-                amount=Decimal("100.00"),
+                figure=typed(Decimal("100.00")),
                 description="Card purchase",
                 purchased_on=date(2026, 1, 5),
                 is_credit=True,
@@ -431,7 +432,7 @@ class TestACardRefundNeverDestroysThePayback:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("-150.00"),
+                        figure=typed(Decimal("-150.00")),
                         description="Card refund",
                         purchased_on=date(2026, 1, 6),
                         is_credit=True,
@@ -485,7 +486,7 @@ class TestACardRefundNeverDestroysThePayback:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("-100.00"),
+                    figure=typed(Decimal("-100.00")),
                     description="Card refund",
                     purchased_on=date(2026, 1, 6),
                     is_credit=True,
@@ -1130,7 +1131,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Credit purchase",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1157,7 +1158,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Debit purchase",
                     purchased_on=date(2026, 1, 5),
                     is_credit=False,
@@ -1183,7 +1184,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Toggle test",
                     purchased_on=date(2026, 1, 5),
                     is_credit=False,
@@ -1212,7 +1213,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Toggle test",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1251,7 +1252,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="First",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1261,7 +1262,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                     description="Second",
                     purchased_on=date(2026, 1, 6),
                     is_credit=True,
@@ -1293,7 +1294,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Only",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1325,7 +1326,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Amount change",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1339,7 +1340,7 @@ class TestEntryServiceHooks:
             )
             assert payback.estimated_amount == Decimal("100.00")
 
-            entry_service.update_entry(entry.id, user.id, amount=Decimal("75.00"))
+            entry_service.update_entry(entry.id, user.id, figure=typed(Decimal("75.00")))
 
             db.session.expire(payback)
             assert payback.estimated_amount == Decimal("75.00")
@@ -1361,7 +1362,7 @@ class TestEntryServiceHooks:
                 transaction_id=txn.id,
                 user_id=companion.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Companion purchase",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1401,7 +1402,7 @@ class TestSessionState:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Session test",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1436,7 +1437,7 @@ class TestSessionState:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="First",
                     purchased_on=date(2026, 1, 5),
                     is_credit=True,
@@ -1446,7 +1447,7 @@ class TestSessionState:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                     description="Second",
                     purchased_on=date(2026, 1, 6),
                     is_credit=True,
@@ -1495,7 +1496,7 @@ class TestASettledPaybackCannotBeReDerived:
             entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"), description="Card buy",
+                    figure=typed(Decimal("100.00")), description="Card buy",
                     purchased_on=date(2026, 1, 5), is_credit=True,
                 ),
             )
@@ -1515,7 +1516,7 @@ class TestASettledPaybackCannotBeReDerived:
                 entry_service.create_entry(
                     transaction_id=txn.id, user_id=user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"), description="Later card buy",
+                        figure=typed(Decimal("50.00")), description="Later card buy",
                         purchased_on=date(2026, 1, 9), is_credit=True,
                     ),
                 )
@@ -1543,7 +1544,7 @@ class TestASettledPaybackCannotBeReDerived:
             entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"), description="Card buy",
+                    figure=typed(Decimal("100.00")), description="Card buy",
                     purchased_on=date(2026, 1, 5), is_credit=True,
                 ),
             )
@@ -1556,7 +1557,7 @@ class TestASettledPaybackCannotBeReDerived:
             entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("25.00"), description="Cash buy",
+                    figure=typed(Decimal("25.00")), description="Cash buy",
                     purchased_on=date(2026, 1, 9), is_credit=False,
                 ),
             )
@@ -1589,7 +1590,7 @@ class TestASettledPaybackCannotBeReDerived:
             entry = entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"), description="Card buy",
+                    figure=typed(Decimal("100.00")), description="Card buy",
                     purchased_on=date(2026, 1, 5), is_credit=True,
                 ),
             )
@@ -1649,14 +1650,14 @@ class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
         entry = entry_service.create_entry(
             transaction_id=txn.id, user_id=user.id,
             details=entry_service.EntryDetails(
-                amount=Decimal("150.00"), description="Card buy",
+                figure=typed(Decimal("150.00")), description="Card buy",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             ),
         )
         payback = sync_entry_payback(txn.id, user.id)
         db.session.flush()
         transaction_service.settle_transaction(
-            payback, submitted=Decimal("100.00"),
+            payback, submitted=typed(Decimal("100.00")),
         )
         db.session.flush()
         # The drift itself, asserted so the cases below cannot silently grade
@@ -1691,13 +1692,13 @@ class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
             debit = entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("25.00"), description="Cash buy",
+                    figure=typed(Decimal("25.00")), description="Cash buy",
                     purchased_on=date(2026, 1, 9), is_credit=False,
                 ),
             )
             # Drift, created after the settle exactly as production's was.
             entry_service.update_entry(
-                debit.id, user.id, amount=Decimal("30.00"),
+                debit.id, user.id, figure=typed(Decimal("30.00")),
             )
             db.session.flush()
 
@@ -1731,7 +1732,7 @@ class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
                 entry_service.create_entry(
                     transaction_id=txn.id, user_id=user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"), description="Second card buy",
+                        figure=typed(Decimal("50.00")), description="Second card buy",
                         purchased_on=date(2026, 1, 9), is_credit=True,
                     ),
                 )
@@ -1759,12 +1760,12 @@ class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
             debit = entry_service.create_entry(
                 transaction_id=txn.id, user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("25.00"), description="Cash buy",
+                    figure=typed(Decimal("25.00")), description="Cash buy",
                     purchased_on=date(2026, 1, 9), is_credit=False,
                 ),
             )
             entry_service.update_entry(
-                debit.id, user.id, amount=Decimal("40.00"),
+                debit.id, user.id, figure=typed(Decimal("40.00")),
             )
             db.session.flush()
 

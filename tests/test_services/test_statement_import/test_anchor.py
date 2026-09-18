@@ -34,9 +34,14 @@ from app import ref_cache
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.exceptions import StatementBalanceUnexplained
 from app.models.account import AccountAnchorHistory
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.services.statement_import import (
     KnownOpening,
+    ParsedStatement,
     StatementLine,
     recorded_opening_before,
     release_anchors_from,
@@ -58,6 +63,27 @@ from app.services.statement_import._balance import (
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _CORROBORATED = StatementBalanceEvidenceEnum.CORROBORATED
 _UNCORROBORATED = StatementBalanceEvidenceEnum.UNCORROBORATED
+
+
+def _parsed(lines, stated, stated_on, *, window=None):
+    """Return the file *lines* came from, declaring *window* or its extremes.
+
+    The shape :func:`solve_effective_day` and :func:`resolve_anchor` take
+    since plan step ``bank_import:X-f6b-1``: the claim and the declared
+    window ride with the lines.  A CSV declares its first..last line day, so
+    that is the default; a case about a QUIET day inside a declared window
+    states one wider than its lines.
+    """
+    days = [line.posted_on for line in lines]
+    start, end = window or (min(days), max(days))
+    return ParsedStatement(
+        external_account_id="X",
+        lines=lines,
+        declared_start=start,
+        declared_end=end,
+        stated_balance=stated,
+        stated_balance_on=stated_on,
+    )
 
 
 def _line(day, amount, running=None):
@@ -118,7 +144,8 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
         effective_on: The day it is placed at, or ``None`` for unanchored.
         evidence: The evidence member, required with *effective_on*.
         lines: ``(day, amount)`` pairs, chronological.
-        period: ``(start, end)``, defaulting to the lines' own extremes.
+        period: The declared window ``(start, end)``, defaulting to the
+            lines' own extremes -- what a CSV declares.
         file_name: Provenance, and the digest's seed.
 
     Returns:
@@ -135,10 +162,8 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
         ),
         file_name=file_name,
         file_digest=file_name.ljust(64, "0")[:64],
-        period_start=start,
-        period_end=end,
-        line_count=max(len(lines), 1),
-        recorded_count=len(lines),
+        declared_start=start,
+        declared_end=end,
         stated_balance=None if stated is None else Decimal(stated),
         stated_balance_on=None if stated is None else (effective_on or end),
     )
@@ -154,18 +179,18 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
         ))
         db.session.flush()
     for ordinal, (day, amount) in enumerate(lines):
-        db.session.add(BankStatementLine(
+        line = BankStatementLine(
             account_id=account.id,
-            import_id=row.id,
             posted_on=day,
-            transaction_on=None,
             amount=Decimal(amount),
-            description="X",
-            merchant=None,
-            source_category=None,
-            external_id=None,
+            merchant_id=None,
             sequence_in_group=ordinal,
-            running_balance=None,
+        )
+        db.session.add(line)
+        db.session.flush()
+        db.session.add(StatementLineSighting(
+            account_id=account.id, line_id=line.id, import_id=row.id,
+            description="X",
         ))
     db.session.flush()
     return row
@@ -198,8 +223,9 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
         lines = _plain(["100.00", "-40.00", "25.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1085.00"), Decimal("1000.00"), date(2026, 3, 9),
-        ) == date(2026, 3, 3)
+            _parsed(lines, Decimal("1085.00"), date(2026, 3, 9)),
+            Decimal("1000.00")) == date(2026, 3, 3,
+        )
 
     def test_a_figure_LAGGING_its_own_file_solves_at_the_EARLIER_day(self):
         """The 2026-08-16 shape, in miniature.
@@ -212,23 +238,26 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
         lines = _plain(["100.00", "-40.00", "25.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1060.00"), Decimal("1000.00"), date(2026, 3, 9),
-        ) == date(2026, 3, 2)
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 9)),
+            Decimal("1000.00")) == date(2026, 3, 2,
+        )
 
     def test_a_figure_equal_to_the_opening_solves_BEFORE_the_first_line(self):
         """The day before the first line is a candidate in its own right."""
         lines = _plain(["100.00", "-40.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1000.00"), Decimal("1000.00"), date(2026, 3, 9),
-        ) == date(2026, 2, 28)
+            _parsed(lines, Decimal("1000.00"), date(2026, 3, 9)),
+            Decimal("1000.00")) == date(2026, 2, 28,
+        )
 
     def test_a_figure_no_day_reaches_solves_NOWHERE(self):
         """The range-export shape: the answer is None, not a nearest day."""
         lines = _plain(["100.00", "-40.00", "25.00"])
 
         assert solve_effective_day(
-            lines, Decimal("2459.60"), Decimal("1000.00"), date(2026, 8, 23),
+            _parsed(lines, Decimal("2459.60"), date(2026, 8, 23)),
+            Decimal("1000.00"),
         ) is None
 
     def test_two_solving_days_take_the_LATER_one(self):
@@ -242,8 +271,9 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
         lines = _plain(["100.00", "-40.00", "40.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1100.00"), Decimal("1000.00"), date(2026, 3, 9),
-        ) == date(2026, 3, 3)
+            _parsed(lines, Decimal("1100.00"), date(2026, 3, 9)),
+            Decimal("1000.00")) == date(2026, 3, 3,
+        )
 
     def test_no_candidate_may_be_AFTER_the_day_the_header_names(self):
         """A bank cannot state a balance for a day it has not reached.
@@ -261,7 +291,8 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
         lines = _plain(["100.00", "-40.00", "25.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1085.00"), Decimal("1000.00"), date(2026, 3, 2),
+            _parsed(lines, Decimal("1085.00"), date(2026, 3, 2)),
+            Decimal("1000.00"),
         ) is None
 
     def test_the_bound_also_covers_the_day_BEFORE_the_first_line(self):
@@ -269,8 +300,77 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
         lines = _plain(["100.00"])
 
         assert solve_effective_day(
-            lines, Decimal("1000.00"), Decimal("1000.00"), date(2026, 2, 27),
+            _parsed(lines, Decimal("1000.00"), date(2026, 2, 27)),
+            Decimal("1000.00"),
         ) is None
+
+    def test_a_QUIET_day_after_the_solving_line_day_is_NOT_named(self):
+        """The line day, never the quiet day after it (ruling **R-BAL74**).
+
+        Lines 03-01 +100, 03-02 -40, 03-04 +25 with 03-03 quiet; 1060.00 is
+        03-02's closing and 03-03's too, because nothing moved.  The bank's
+        walk cannot tell the two apart; the CASH walk can, because it
+        absorbs an app row settled on 03-03 into a level dated 03-03 and not
+        into one dated 03-02.  The build's first cut named 03-03 -- every
+        window day was a candidate and the latest won -- and its docstring
+        said it could not happen.  THE FIRING CONTROL for the candidate set.
+        """
+        lines = [
+            _line(date(2026, 3, 1), "100.00"),
+            _line(date(2026, 3, 2), "-40.00"),
+            _line(date(2026, 3, 4), "25.00"),
+        ]
+
+        assert solve_effective_day(
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 9)),
+            Decimal("1000.00"),
+        ) == date(2026, 3, 2)
+
+    def test_a_window_WIDER_than_its_lines_lands_on_the_STATED_day(self):
+        """The sync case R-BAL71 was ruled for, with lines in the window (R-BAL74).
+
+        A window 03-01..03-10 holding one line on 03-02; the header states
+        1100.00 (the closing after it) as of 03-08.  The figure is the
+        balance at the end of 03-08 too, and 03-08 is the day the bank
+        stated it, so 03-08 is named -- not 03-02, and not 03-10, which the
+        bank had not reached.
+        """
+        lines = [_line(date(2026, 3, 2), "100.00")]
+
+        assert solve_effective_day(
+            _parsed(
+                lines, Decimal("1100.00"), date(2026, 3, 8),
+                window=(date(2026, 3, 1), date(2026, 3, 10)),
+            ),
+            Decimal("1000.00"),
+        ) == date(2026, 3, 8)
+
+    def test_a_window_with_NO_line_lands_on_the_stated_day_or_nowhere(self):
+        """A quiet sync: the figure IS the opening, or the file says nothing."""
+        placed = resolve_anchor(
+            ParsedStatement(
+                external_account_id="X", lines=[],
+                declared_start=date(2026, 3, 1), declared_end=date(2026, 3, 7),
+                stated_balance=Decimal("1000.00"),
+                stated_balance_on=date(2026, 3, 7),
+            ),
+            _known("1000.00", _CORROBORATED),
+        )
+        unplaced = resolve_anchor(
+            ParsedStatement(
+                external_account_id="X", lines=[],
+                declared_start=date(2026, 3, 1), declared_end=date(2026, 3, 7),
+                stated_balance=Decimal("1001.00"),
+                stated_balance_on=date(2026, 3, 7),
+            ),
+            _known("1000.00", _CORROBORATED),
+        )
+
+        assert placed.effective_on == date(2026, 3, 7)
+        assert placed.evidence is _CORROBORATED
+        assert placed.day_is_solved
+        assert unplaced.effective_on is None
+        assert not unplaced.is_anchored
 
 
 class TestTheEvidenceIsTheWeakestLinkInTheChain:
@@ -281,7 +381,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _chain("1000.00", ["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("1060.00"), date(2026, 3, 5), None,
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
+            None,
         )
 
         assert balance.evidence is _FILE_CHAIN
@@ -293,7 +394,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _plain(["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("1060.00"), date(2026, 3, 5),
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             _known("1000.00", _CORROBORATED),
         )
 
@@ -314,7 +415,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _plain(["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("1060.00"), date(2026, 3, 5),
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             _known("1000.00", _UNCORROBORATED),
         )
 
@@ -326,7 +427,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _plain(["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("9999.99"), date(2026, 3, 5), None,
+            _parsed(lines, Decimal("9999.99"), date(2026, 3, 5)),
+            None,
         )
 
         assert balance.evidence is _UNCORROBORATED
@@ -344,7 +446,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _plain(["100.00", "-40.00", "25.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("2000.00"), date(2026, 3, 1), None,
+            _parsed(lines, Decimal("2000.00"), date(2026, 3, 1)),
+            None,
         )
 
         assert balance.effective_on == date(2026, 3, 1)
@@ -359,7 +462,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         lines = _chain("1000.00", ["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("1060.00"), date(2026, 3, 5), _known("1100.00"),
+            _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
+            _known("1100.00"),
         )
 
         assert balance.evidence is _FILE_CHAIN
@@ -368,7 +472,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
     def test_a_file_stating_no_balance_determines_nothing(self):
         """No claim, so no anchor and no refusal."""
         assert resolve_anchor(
-            _plain(["100.00"]), None, None, _known("1000.00"),
+            _parsed(_plain(["100.00"]), None, None),
+            _known("1000.00"),
         ) is None
 
     def test_a_figure_with_no_DAY_determines_nothing_either(self):
@@ -381,7 +486,8 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         2026-08-23.
         """
         assert resolve_anchor(
-            _plain(["100.00"]), Decimal("500.00"), None, _known("1000.00"),
+            _parsed(_plain(["100.00"]), Decimal("500.00"), None),
+            _known("1000.00"),
         ) is None
 
 
@@ -422,7 +528,8 @@ class TestAFileMayStateABalanceItsOwnLinesCannotReach:
         lines = _plain(["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("2459.60"), date(2026, 8, 23), _known("1000.00"),
+            _parsed(lines, Decimal("2459.60"), date(2026, 8, 23)),
+            _known("1000.00"),
         )
 
         assert balance.stated == Decimal("2459.60")
@@ -445,7 +552,8 @@ class TestAFileMayStateABalanceItsOwnLinesCannotReach:
         lines = _plain(["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("9999.99"), date(2026, 3, 1), _known("1000.00"),
+            _parsed(lines, Decimal("9999.99"), date(2026, 3, 1)),
+            _known("1000.00"),
         )
 
         assert not balance.is_anchored
@@ -465,7 +573,10 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
         lines = _chain("1000.00", ["100.00", "-40.00"])
 
         with pytest.raises(StatementBalanceUnexplained) as raised:
-            resolve_anchor(lines, Decimal("9999.99"), date(2026, 3, 9), None)
+            resolve_anchor(
+                _parsed(lines, Decimal("9999.99"), date(2026, 3, 9)),
+                None,
+            )
 
         assert raised.value.stated == Decimal("9999.99")
         assert raised.value.implied == Decimal("1060.00")
@@ -475,7 +586,10 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
         lines = _chain("1000.00", ["100.00"])
 
         with pytest.raises(StatementBalanceUnexplained) as raised:
-            resolve_anchor(lines, Decimal("500.00"), date(2026, 3, 5), None)
+            resolve_anchor(
+                _parsed(lines, Decimal("500.00"), date(2026, 3, 5)),
+                None,
+            )
 
         assert raised.value.stated == Decimal("500.00")
         assert raised.value.implied == Decimal("1100.00")
@@ -491,7 +605,8 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
         lines = _chain("1000.00", ["100.00", "-40.00"])
 
         balance = resolve_anchor(
-            lines, Decimal("1100.00"), date(2026, 3, 9), None,
+            _parsed(lines, Decimal("1100.00"), date(2026, 3, 9)),
+            None,
         )
 
         assert balance.effective_on == date(2026, 3, 1)

@@ -15,10 +15,21 @@ because those writes only ever ADD a fact the file states, but "leaves the
 database exactly as it was without depending on the rollback" was true of the
 older per-line loop and was not true of that one (found by adversarial
 financial review 2026-08-20).  :func:`_reconcile` now DECIDES the whole
-partition and returns it; the absorbing happens beside the staging, after the
+partition and returns it; the writes happen beside the staging, after the
 last refusal, so the session is untouched by a refused import.  The change was
 forced -- a merchant is a row now, and a row cannot be resolved for a file that
 is about to be refused -- and the older claim is what it restores.
+
+**What a file states about a line is that SOURCE's sighting of it** (plan
+step ``bank_import:X-f6b-1``, ruling **R-BI10**).  A line is the bank's fact
+-- account, day, amount, ordinal -- and every import that shows it writes a
+:class:`~app.models.statement_import.StatementLineSighting` carrying its own
+wording, id, stated day, balance and category.  So this door pairs within a
+SOURCE (:func:`_pair_group`): by the source's own id, then by its wording,
+then by count against the lines only other sources have shown; what is left
+is new.  A different wording from a different source is never a restatement
+(finding **N-303**), and a re-import of a file the app already holds records
+one sighting per line and no line.
 
 **Nothing here moves a figure.**  Recording what a bank said is separable from
 deciding which of the app's own rows it explains, and that separation is the
@@ -43,10 +54,18 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatementSourceEnum
-from app.exceptions import StatementLineConflict
+from app.exceptions import (
+    StatementLineConflict,
+    StatementLineIdMoved,
+    StatementParseError,
+)
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 
 from ._adapters import parse_statement
 from ._anchor import (
@@ -74,10 +93,19 @@ class ImportOutcome:
 
     Attributes:
         import_id: The ``budget.statement_imports`` row recording the act.
-        line_count: Lines the file held.
-        recorded_count: Lines this import wrote.
-        period_start: The earliest day the file covers.
-        period_end: The latest.
+        line_count: Lines the file held -- each now a sighting of this
+            import's.  **Read from the ONE aggregate the imports table and
+            the hero read** (:meth:`~app.models.statement_import
+            .StatementLineSighting.counts_by_import`) after the sightings
+            are flushed, and stored nowhere (plan step
+            ``bank_import:X-f6b-1``, ruling **R-IY**); a receipt that
+            counted the parsed lines itself would be a second spelling of
+            the same figure, agreeing today and free to part.
+        recorded_count: Lines this import was the FIRST to sight, from the
+            same aggregate.
+        declared_start: The first day the import DECLARED it answers for
+            (``StatementImport.declared_start``).
+        declared_end: The last.
         balance: What the file claimed the account held and what this import
             made of it, or ``None`` when the file states no balance.  The same
             value the row stores, so the receipt and the page say one thing.
@@ -96,8 +124,8 @@ class ImportOutcome:
     import_id: int
     line_count: int
     recorded_count: int
-    period_start: date
-    period_end: date
+    declared_start: date
+    declared_end: date
     balance: ImportedBalance | None
     anchors_released: int
 
@@ -116,37 +144,41 @@ class ImportOutcome:
 
 
 def _recorded_groups(
-    account_id: int, period_start: date, period_end: date,
+    account_id: int, declared_start: date, declared_end: date,
 ) -> "dict[tuple[date, Decimal], list[BankStatementLine]]":
-    """Return this account's already-recorded lines over the file's span.
+    """Return this account's already-recorded lines over the declared window.
 
     Loaded as ONE query over the day range rather than one per line: a full
     year's export is ~360 lines, and a per-line existence check would be 360
     round trips to answer a question one indexed range scan answers.
-    ``idx_bank_statement_lines_account_day`` is the index it uses.
+    ``idx_bank_statement_lines_account_day`` is the index it uses; the
+    sightings each line carries, and the import behind each sighting, ride in
+    the same statement (both relationships are ``joined``), because the
+    reconciliation reads every one of them.
 
     **Grouped by ``(posted_on, amount)`` rather than keyed by the full
     identity**, which is what makes the reconciliation set-wise: the recorded
     ordinal is a surrogate this app assigned, so a group is looked up by what
-    the BANK stated and the members inside it are then paired on their wording
-    (:func:`~._line.pair_by_statement`).
+    the BANK stated and the members inside it are then paired on what THIS
+    SOURCE stated (:func:`_pair_group`).
 
     Args:
         account_id: The account being imported into.
-        period_start: The earliest day the file covers.
-        period_end: The latest.
+        declared_start: The first day the file declares it answers for.
+        declared_end: The last.  Every line the file states falls inside the
+            window, so every line it could pair with is loaded.
 
     Returns:
         The recorded lines grouped by the day and amount they share, each
-        group ordered by its own ordinal so the pairing walks a stable
+        group ordered by its own ordinal so the count pairing walks a stable
         sequence.
     """
     rows = (
         db.session.query(BankStatementLine)
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.posted_on >= period_start,
-            BankStatementLine.posted_on <= period_end,
+            BankStatementLine.posted_on >= declared_start,
+            BankStatementLine.posted_on <= declared_end,
         )
         .order_by(BankStatementLine.sequence_in_group)
         .all()
@@ -159,22 +191,154 @@ def _recorded_groups(
     return dict(groups)
 
 
-def _refuse_restatement(
-    line: StatementLine, recorded: BankStatementLine,
+def _held_ids(
+    account_id: int, source_id: int, lines: "list[StatementLine]",
+) -> "dict[str, tuple[date, Decimal]]":
+    """Return where THIS SOURCE already holds each id the file states.
+
+    ONE query over the whole account rather than over the declared window,
+    because the shape it exists to refuse is an id held on a line OUTSIDE the
+    window: a source restating a line's day or amount under the same id
+    (:func:`_refuse_moved_ids`).  Empty for a file carrying no ids, which
+    issues no statement -- SECU's CSV carries none.
+
+    Args:
+        account_id: The account being imported into.
+        source_id: The import's source; another source's ids are its own.
+        lines: The file's lines.
+
+    Returns:
+        ``{external_id: (posted_on, amount)}`` for every stated id one of
+        this source's sightings carries, the line's group key beside it.
+    """
+    stated = {line.external_id for line in lines if line.external_id}
+    if not stated:
+        return {}
+    rows = (
+        db.session.query(
+            StatementLineSighting.external_id,
+            BankStatementLine.posted_on, BankStatementLine.amount,
+        )
+        .join(BankStatementLine, StatementLineSighting.of_its_line())
+        .join(StatementImport, StatementLineSighting.of_its_import())
+        .filter(
+            StatementLineSighting.account_id == account_id,
+            StatementImport.source_id == source_id,
+            StatementLineSighting.external_id.in_(stated),
+        )
+        .all()
+    )
+    return {
+        external_id: group_key(posted_on, amount)
+        for external_id, posted_on, amount in rows
+    }
+
+
+def _refuse_repeated_ids(lines: "list[StatementLine]") -> None:
+    """Refuse a file that states one id on two of its own lines.
+
+    A source names ONE line per id, and every rule downstream rests on it:
+    the id step of :func:`_pair_group` maps an id to one recorded line, and
+    :func:`_held_ids` reads one group per id.  A file carrying an id twice
+    would record two lines under it -- the first pairing to the held line and
+    the second minted fresh beside it -- and the next import's lookup would
+    hold that id on whichever row came back last.  Found by adversarial
+    review 2026-09-18; the unique index the sighting relation retired had
+    refused this as a database error.
+
+    Args:
+        lines: The file's lines.
+
+    Raises:
+        StatementParseError: On the first id the file states twice.  A parse
+            refusal, because a source that repeats an id has been read
+            wrongly or is defective, and nothing about the account can
+            repair that.
+    """
+    seen: "set[str]" = set()
+    for line in lines:
+        if not line.external_id:
+            continue
+        if line.external_id in seen:
+            raise StatementParseError(
+                f"This file states line id '{line.external_id}' on two "
+                f"lines.  A source names one line per id, so the file was "
+                f"read wrongly or is defective.  Nothing was imported."
+            )
+        seen.add(line.external_id)
+
+
+def _refuse_moved_ids(
+    lines: "list[StatementLine]", held: "dict[str, tuple[date, Decimal]]",
 ) -> None:
-    """Refuse when a recorded line's own DESCRIPTION is restated.
+    """Refuse a file that states a held id on another day or amount.
+
+    A source names ONE line per id, and the pairing that honours that
+    (:func:`_pair_group`, step 1) works within a ``(day, amount)`` group -- so
+    an id whose recorded line is in a DIFFERENT group is the one shape the
+    pairing cannot reach and recording would make two lines of.  While the id
+    lived on the line, ``uq_bank_statement_lines_external_id`` refused that
+    state as a database error; this is the same refusal with a sentence.
+
+    Args:
+        lines: The file's lines.
+        held: :func:`_held_ids`' answer.
+
+    Raises:
+        StatementLineIdMoved: On the first stated id whose recorded group is
+            not the group this file states it in.
+    """
+    for line in lines:
+        if not line.external_id:
+            continue
+        recorded = held.get(line.external_id)
+        stated = group_key(line.posted_on, line.amount)
+        if recorded is not None and recorded != stated:
+            raise StatementLineIdMoved(line.external_id, recorded, stated)
+
+
+def _sightings_from(row: BankStatementLine, source_id: int) -> list:
+    """Return *row*'s sightings by THIS source, latest first.
+
+    Latest by :attr:`~app.models.statement_import.StatementImport.act_key`,
+    so the wording a same-source re-import is compared against is what this
+    source said most recently.
+
+    Args:
+        row: A recorded line, its sightings loaded.
+        source_id: The source to select.
+
+    Returns:
+        The :class:`~app.models.statement_import.StatementLineSighting` rows,
+        possibly empty -- another source showed this line.
+    """
+    return sorted(
+        (
+            sighting for sighting in row.sightings
+            if sighting.statement_import.source_id == source_id
+        ),
+        key=lambda sighting: sighting.statement_import.act_key,
+        reverse=True,
+    )
+
+
+def _refuse_restatement(line: StatementLine, recorded: str) -> None:
+    """Refuse when a source restates a line's own DESCRIPTION.
 
     A statement line is an OBSERVATION, and an observation quietly rewritten is
-    what ruling **R-FL** exists to prevent -- so the fact the source states
-    ABOUT THE LINE must agree with what is already recorded.
+    what ruling **R-FL** exists to prevent -- so the fact a source states
+    ABOUT A LINE must agree with what that same source already stated.
 
-    **What reaches this is a group whose incoming and recorded halves BOTH have
-    a member the other cannot account for** (:attr:`~._line.GroupPairing
-    .restates`), which is the only shape that is a contradiction rather than a
-    change in what the export covers.  It used to be reached by a positional
-    compare, and that fired on two events the bank had not restated at all: a
-    re-ordered pair of same-day same-amount lines, and a genuinely new line the
-    bank inserted ahead of a recorded one.
+    **What reaches this is a group where THIS SOURCE's own sightings hold a
+    member the file no longer states beside an incoming member nothing
+    accounts for** (:func:`_pair_group`), which is the only shape that is a
+    contradiction rather than a change in what the export covers.  A wording
+    another source used is never compared -- two sources call one line two
+    things, and reading that as a restatement is finding **N-303**, the
+    defect the sighting relation exists to close.  It used to be reached by a
+    positional compare, and that fired on two events the bank had not restated
+    at all: a re-ordered pair of same-day same-amount lines, and a genuinely
+    new line the bank inserted ahead of a recorded one.
 
     **The running balance is deliberately NOT compared, and that is a measured
     correction rather than a relaxation.**  A running balance is not a fact
@@ -188,10 +352,9 @@ def _refuse_restatement(
     bank as having restated something it had not, and left that account unable
     to import ever again.  The in-file chain check
     (:func:`~._integrity.verify_running_balance`) is where a balance is graded;
-    once recorded it is provenance, and :func:`_absorb_gained_facts` keeps it
-    current.
+    once recorded it is a sighting's provenance.
 
-    **The two lines it names are EXAMPLES, not a pairing.**
+    **The two wordings it names are EXAMPLES, not a pairing.**
     :func:`~._line.pair_by_statement` declined to pair them -- that is what
     makes them leftovers -- so with three unaccounted-for incoming lines and
     two unclaimed recorded ones there is no correspondence to state, and a
@@ -203,8 +366,8 @@ def _refuse_restatement(
 
     Args:
         line: One incoming line the file states and the app cannot account for.
-        recorded: One recorded line in the same group the file no longer
-            states.
+        recorded: What this source called one recorded line in the same group
+            that the file no longer states.
 
     Raises:
         StatementLineConflict: Always.  The caller has already established that
@@ -212,8 +375,7 @@ def _refuse_restatement(
             copy of that decision.
     """
     raise StatementLineConflict(
-        line.posted_on, line.amount,
-        recorded.description, line.description,
+        line.posted_on, line.amount, recorded, line.description,
     )
 
 
@@ -221,58 +383,35 @@ def _absorb_gained_facts(
     line: StatementLine, recorded: BankStatementLine,
     merchants: "dict[str, int]",
 ) -> None:
-    """Fill in what a later export states and the recorded row does not.
+    """Fill in the merchant KEY where a later sighting names one and the line has none.
 
-    **Information GAINED is not a restatement**, and until this existed it was
-    silently discarded -- on the path the user actually takes.  The
-    running-balance column is an export OPTION: the developer imported the
-    10-column file first, was told by the page to re-export with the column,
-    and the second import recognised every line as already known and threw the
-    balances away, leaving the column NULL forever on the very fact the CSV was
-    chosen over the OFX to obtain.
+    **The one fact a sighting does not carry for itself.**  Every other thing
+    a source states about a line -- its wording, its stated day, its id, its
+    balance, its category -- is that source's own and lives on that source's
+    :class:`~app.models.statement_import.StatementLineSighting`, so a later
+    import that states more fills nothing in and overwrites nothing: it
+    records what it saw, beside what the earlier one saw.  *This function
+    filled four of those onto the line until plan step
+    ``bank_import:X-f6b-1``*, because the line had one home for each and a
+    NULL there was a fact lost on the path the user actually takes.
 
-    Only ``NULL`` is filled.  A value that DISAGREES is left alone rather than
-    overwritten, for the reason :func:`_refuse_restatement` no longer compares
-    it: the later file is not more authoritative about a figure that depends on
-    listing order.  **That rule is what makes the ``transaction_on`` arm safe
-    to add**: a stated transaction day is an observation, so a second export
-    restating it differently is a disagreement to leave alone rather than a
-    correction to apply.
+    The merchant is different because it is the app's KEY rather than a
+    source's word: a line whose merchant is NULL joins no destination policy,
+    so a row recorded by an adapter that could not name a merchant would go
+    on being offered a bare chooser forever, even after an export that DOES
+    name one had been imported over it.  Only ``NULL`` is filled; a key
+    already minted is left alone, so the first source to name a word decides
+    which merchant row a rule about this line is stated against, and a second
+    source's different word is that sighting's own provenance.
 
     Args:
         line: The incoming line the file states.
-        recorded: The line already held, paired to it by wording.
+        recorded: The line already held, paired to it.
         merchants: This pass's merchant rows by name
             (:func:`~._merchants.resolve_merchants`), TOTAL over every name a
             line here can carry -- :func:`_merchant_words`' second half is what
             puts them in it.
     """
-    if recorded.running_balance is None and line.running_balance is not None:
-        recorded.running_balance = line.running_balance
-    if recorded.source_category is None and line.source_category:
-        recorded.source_category = line.source_category
-    if recorded.external_id is None and line.external_id:
-        recorded.external_id = line.external_id
-    # **The transaction day joins the same rule at plan step X-f6a-3a**, and
-    # it is the one that MOVES A DATE rather than adding provenance: a match
-    # writes this day onto a matched purchase's ``purchased_on`` (ruling
-    # **R-FW**).  A row recorded by an adapter that could not read it carries
-    # NULL, and without this arm a re-import of the very same file would leave
-    # it NULL forever -- the exact defect the running-balance arm above exists
-    # for, on a column that feeds a date write instead of a display.  Found by
-    # adversarial financial review 2026-08-18, which measured the re-import
-    # leaving the column untouched.
-    if recorded.transaction_on is None and line.transaction_on is not None:
-        recorded.transaction_on = line.transaction_on
-    # **The merchant joins the same rule at plan step X-f6a-3d**, and it is the
-    # one a RULE matches on: a line whose merchant is NULL joins no destination
-    # policy, so a row recorded by an adapter that could not name a merchant
-    # would go on being offered a bare chooser forever, even after an export
-    # that DOES name one had been imported over it.  The direction is the same
-    # as every arm above -- ``NULL`` is filled, a disagreement is left alone --
-    # and a disagreement cannot arrive here anyway: this merchant is read from
-    # the same cell as ``description``, which the pairing that produced this
-    # pair matched on.
     if recorded.merchant_id is None and line.merchant:
         recorded.merchant_id = merchants[line.merchant]
 
@@ -282,37 +421,167 @@ class _Reconciled:
     """What comparing a file against the record DECIDED, before any write.
 
     Plan step ``bank_import:X-gd-1``.  :func:`_reconcile` used to write as it
-    decided, calling :func:`_absorb_gained_facts` inside its own loop, so a
-    refusal on a later group left earlier ones dirty in the session -- the
-    caveat the module docstring carried.  Both halves of the decision are
-    values now, and the writes happen together after the last refusal.
+    decided, so a refusal on a later group left earlier ones dirty in the
+    session -- the caveat the module docstring carried.  Both halves of the
+    decision are values now, and the writes happen together after the last
+    refusal.
 
     Attributes:
         fresh: The lines to write, with their ordinals, in the file's own
-            order.
-        absorbing: Every ``(incoming, recorded)`` pair whose recorded row this
-            file may fill a NULL on (:func:`_absorb_gained_facts`), in group
-            order.  It is a PAIR and not a row because what is absorbed comes
-            from the incoming line.
+            order.  Each becomes a line AND this import's sighting of it.
+        held: Every ``(incoming, recorded)`` pair the file states a line the
+            app already holds by, in group order.  Each becomes this import's
+            sighting of the recorded line, and may fill its merchant key
+            (:func:`_absorb_gained_facts`).  It is a PAIR and not a row
+            because what the sighting records comes from the incoming line.
     """
 
     fresh: "list[KeyedLine]"
-    absorbing: "list[tuple[StatementLine, BankStatementLine]]"
+    held: "list[tuple[StatementLine, BankStatementLine]]"
+
+
+@dataclass(frozen=True)
+class _GroupPairing:
+    """How one group's incoming lines pair against its recorded ones.
+
+    Attributes:
+        held: ``(incoming index, recorded index)`` pairs.
+        fresh: The incoming indexes nothing recorded accounts for.
+        restated: What THIS source called a recorded member the file no
+            longer states, or ``None``.  Set only when :attr:`fresh` is also
+            non-empty, which is the contradiction :func:`_refuse_restatement`
+            refuses; a same-source member the file merely omits is a shorter
+            export and refuses nothing.
+    """
+
+    held: "list[tuple[int, int]]"
+    fresh: "list[int]"
+    restated: "str | None"
+
+
+def _pair_by_id(
+    incoming: "list[StatementLine]", by_source: "list[list]", same: "list[int]",
+) -> "tuple[list[tuple[int, int]], list[int]]":
+    """Pair incoming lines carrying an id to the lines this source holds them on.
+
+    Step 1 of :func:`_pair_group`.  A source holds one line per id
+    (:func:`_refuse_moved_ids`), so the map from id to recorded index is a
+    function, and an incoming id it does not hold falls through to the
+    wording step.
+
+    Args:
+        incoming: The group's incoming lines, in file order.
+        by_source: Per recorded line, its sightings by this source
+            (:func:`_sightings_from`).
+        same: The recorded indexes with at least one such sighting.
+
+    Returns:
+        ``(held, unpaired)`` -- the ``(incoming, recorded)`` index pairs, and
+        the incoming indexes left for the steps after.
+    """
+    id_of = {
+        sighting.external_id: index
+        for index in same
+        for sighting in by_source[index]
+        if sighting.external_id
+    }
+    held: "list[tuple[int, int]]" = []
+    claimed: "set[int]" = set()
+    unpaired: "list[int]" = []
+    for index, line in enumerate(incoming):
+        target = id_of.get(line.external_id) if line.external_id else None
+        if target is not None and target not in claimed:
+            held.append((index, target))
+            claimed.add(target)
+        else:
+            unpaired.append(index)
+    return held, unpaired
+
+
+def _pair_group(
+    incoming: "list[StatementLine]", recorded: "list[BankStatementLine]",
+    source_id: int,
+) -> _GroupPairing:
+    """Pair one ``(day, amount)`` group's incoming lines to its recorded ones.
+
+    **The pairing rule of ruling R-BI10, in its four steps**, each consuming
+    what the one before it left:
+
+    1. An incoming line carrying an id pairs to the recorded line a sighting
+       of THIS SOURCE already carries that id on (:func:`_pair_by_id`).  The
+       id breaks ties within the group; it is not the identity, and
+       :func:`_refuse_moved_ids` has already established that every held
+       id's line IS in this group.
+    2. The rest pair by WORDING against the recorded lines this source has
+       sighted (:func:`~._line.pair_by_statement`, multiset, unchanged) --
+       against what this source called each of them most recently.
+    3. The rest pair by COUNT, in ordinal order, against the recorded lines
+       NO sighting of this source holds: another source showed them, its
+       wording is expected to differ, and a different wording across sources
+       is never a restatement (finding **N-303**).
+    4. The rest are FRESH.
+
+    **The refusal keeps its reach**: after the three pairings, a group where
+    this source's OWN sightings still hold a member the file does not state,
+    beside an incoming member nothing accounts for, is the same-source
+    restatement ruling **R-FL** refuses.  A member another source holds and
+    this file does not state is that source's business.
+
+    Args:
+        incoming: The file's lines in this group, in file order.
+        recorded: The recorded lines in this group, in ordinal order.
+        source_id: The import's source.
+
+    Returns:
+        The :class:`_GroupPairing`.
+    """
+    by_source = [_sightings_from(row, source_id) for row in recorded]
+    same = [index for index, seen in enumerate(by_source) if seen]
+    held, unpaired = _pair_by_id(incoming, by_source, same)
+    # 2. By this source's wording, among what this source has sighted and the
+    # id step did not claim.
+    claimed = {recorded_index for _, recorded_index in held}
+    same_open = [index for index in same if index not in claimed]
+    pairing = pair_by_statement(
+        [incoming[index].description for index in unpaired],
+        [by_source[index][0].description for index in same_open],
+    )
+    held.extend(
+        (unpaired[incoming_offset], same_open[recorded_offset])
+        for incoming_offset, recorded_offset in pairing.held
+    )
+    rest = [unpaired[offset] for offset in pairing.fresh]
+    # 3. By count, in ordinal order, against what only other sources showed.
+    # ``recorded`` arrives in ordinal order, so index order is ordinal order,
+    # and neither earlier step can have claimed one of these.
+    other = [index for index in range(len(recorded)) if index not in same]
+    held.extend(zip(rest, other))
+    fresh = rest[len(other):]
+    unclaimed_same = [same_open[offset] for offset in pairing.unclaimed]
+    return _GroupPairing(
+        held=held,
+        fresh=fresh,
+        restated=(
+            by_source[unclaimed_same[0]][0].description
+            if fresh and unclaimed_same else None
+        ),
+    )
 
 
 def _reconcile(
     lines: "list[StatementLine]",
     already: "dict[tuple[date, Decimal], list[BankStatementLine]]",
+    source_id: int,
 ) -> _Reconciled:
-    """Decide what this file adds and what it fills in, refusing a restatement.
+    """Decide what this file adds and what it re-sights, refusing a restatement.
 
     **The partition is total and it is decided per GROUP**, not per line.  Every
-    incoming line either pairs with one the app already holds -- by the wording
-    the bank stated, which is the only thing about a line the bank authored --
-    or it is new; and a group where BOTH halves have an unaccounted-for member
-    is the restatement ruling **R-FL** refuses.  The ordinal takes no part in
-    that decision (:func:`~._line.pair_by_statement`); it is minted for the
-    fresh lines afterwards (:func:`~._line.fresh_ordinals`).
+    incoming line either pairs with one the app already holds
+    (:func:`_pair_group`) or it is new; and a group where this source's own
+    record and the file each hold a member the other cannot account for is
+    the restatement ruling **R-FL** refuses.  The ordinal takes no part in
+    that decision; it is minted for the fresh lines afterwards
+    (:func:`~._line.fresh_ordinals`).
 
     **It DECIDES and does not write** (plan step ``bank_import:X-gd-1``).  It
     absorbed as it went until then, which put a write ahead of a refusal this
@@ -323,30 +592,29 @@ def _reconcile(
 
     Args:
         lines: The file's lines, in the file's own order.
-        already: What is recorded over the same span, grouped by day and
+        already: What is recorded over the same window, grouped by day and
             amount.
+        source_id: The import's source, which is what a sighting is "from".
 
     Returns:
         The :class:`_Reconciled` decision.
 
     Raises:
-        StatementLineConflict: When a recorded line is restated differently.
+        StatementLineConflict: When this source restates a line it recorded.
     """
     fresh: "list[tuple[int, KeyedLine]]" = []
-    absorbing: "list[tuple[StatementLine, BankStatementLine]]" = []
+    held: "list[tuple[StatementLine, BankStatementLine]]" = []
     for key, indexes in group_indexes(lines).items():
         recorded = already.get(key, [])
-        pairing = pair_by_statement(
-            [lines[index].description for index in indexes],
-            [row.description for row in recorded],
+        pairing = _pair_group(
+            [lines[index] for index in indexes], recorded, source_id,
         )
-        if pairing.restates:
+        if pairing.restated is not None:
             _refuse_restatement(
-                lines[indexes[pairing.fresh[0]]],
-                recorded[pairing.unclaimed[0]],
+                lines[indexes[pairing.fresh[0]]], pairing.restated,
             )
         for incoming_index, recorded_index in pairing.held:
-            absorbing.append((
+            held.append((
                 lines[indexes[incoming_index]], recorded[recorded_index],
             ))
         ordinals = fresh_ordinals(
@@ -366,7 +634,7 @@ def _reconcile(
     # are what ``recent_lines`` breaks ties on.
     return _Reconciled(
         fresh=[keyed for _, keyed in sorted(fresh, key=lambda pair: pair[0])],
-        absorbing=absorbing,
+        held=held,
     )
 
 
@@ -391,17 +659,52 @@ def _merchant_words(reconciled: _Reconciled) -> "set[str]":
         if keyed.line.merchant
     }
     words.update(
-        line.merchant for line, recorded in reconciled.absorbing
+        line.merchant for line, recorded in reconciled.held
         if recorded.merchant_id is None and line.merchant
     )
     return words
+
+
+def _sighting_of(
+    account_id: int, import_id: int, line_id: int, line: StatementLine,
+) -> StatementLineSighting:
+    """Return this import's sighting of one line, from what the source stated.
+
+    THE one place a :class:`~._line.StatementLine`'s per-source facts become a
+    row, so the fresh half and the held half of a pass cannot record them
+    differently.
+
+    Args:
+        account_id: The account being imported into.
+        import_id: The import that is recording the sighting.
+        line_id: The recorded line it is a sighting of.
+        line: What the source stated.
+
+    Returns:
+        The unstaged row.
+    """
+    return StatementLineSighting(
+        account_id=account_id,
+        import_id=import_id,
+        line_id=line_id,
+        description=line.description,
+        merchant=line.merchant,
+        transaction_on=line.transaction_on,
+        external_id=line.external_id,
+        running_balance=line.running_balance,
+        source_category=line.source_category,
+    )
 
 
 def _stage_lines(
     account_id: int, import_id: int, fresh: "list[KeyedLine]",
     merchants: "dict[str, int]",
 ) -> None:
-    """Stage one :class:`BankStatementLine` per fresh line.
+    """Stage one :class:`BankStatementLine` and its sighting per fresh line.
+
+    The line needs its id before the sighting can name it, so the lines are
+    flushed once, together, between the two loops -- one round trip for the
+    pass rather than one per line.
 
     Args:
         account_id: The account being imported into.
@@ -412,25 +715,27 @@ def _stage_lines(
             fresh line names -- :func:`_merchant_words` is what puts them in
             it, so this indexes rather than defaulting.
     """
-    for keyed in fresh:
-        line = keyed.line
-        db.session.add(BankStatementLine(
+    rows = [
+        BankStatementLine(
             account_id=account_id,
-            import_id=import_id,
-            posted_on=line.posted_on,
-            transaction_on=line.transaction_on,
-            amount=line.amount,
-            description=line.description,
+            posted_on=keyed.line.posted_on,
+            amount=keyed.line.amount,
             # ``None`` where the source names none, which keys no rule -- the
             # direction a missing fact has to fail in.
             merchant_id=(
-                merchants[line.merchant] if line.merchant else None
+                merchants[keyed.line.merchant] if keyed.line.merchant
+                else None
             ),
-            source_category=line.source_category,
-            external_id=line.external_id,
             sequence_in_group=keyed.sequence_in_group,
-            running_balance=line.running_balance,
-        ))
+        )
+        for keyed in fresh
+    ]
+    db.session.add_all(rows)
+    db.session.flush()
+    db.session.add_all(
+        _sighting_of(account_id, import_id, row.id, keyed.line)
+        for row, keyed in zip(rows, fresh)
+    )
 
 
 def _write_records(
@@ -438,12 +743,16 @@ def _write_records(
 ) -> None:
     """Write everything this file adds to the record, in one merchant pass.
 
-    **The three writes that share one fact, kept together because of it** (plan
-    step ``bank_import:X-gd-1``).  A merchant WORD becomes a merchant ROW here
-    and nowhere else (:func:`~._merchants.resolve_merchants`); a re-import then
-    fills the merchant a recorded row is missing, and every fresh line names
-    one.  Splitting them would mean resolving the same words twice or threading
-    a mapping across the door, and the two callers are two lines apart.
+    **The writes that share one fact, kept together because of it** (plan step
+    ``bank_import:X-gd-1``).  A merchant WORD becomes a merchant ROW here and
+    nowhere else (:func:`~._merchants.resolve_merchants`); a re-import then
+    fills the merchant a held line is missing, and every fresh line names one.
+    Splitting them would mean resolving the same words twice or threading a
+    mapping across the door, and the callers are a few lines apart.
+
+    **Every line the file states gains this import's sighting** (ruling
+    **R-BI10**): the held half records what this source said about a line
+    the app already holds, the fresh half records the line and what was said.
 
     **It runs after the last refusal**, which is what the module's opening
     claim rests on: this is the first statement that INSERTS, and a file about
@@ -454,13 +763,25 @@ def _write_records(
 
     Args:
         account_id: The account being imported into.
-        import_id: The import recording the fresh lines.
-        reconciled: What :func:`_reconcile` decided this file adds and fills.
+        import_id: The import recording the pass.
+        reconciled: What :func:`_reconcile` decided this file adds and holds.
     """
     merchants = resolve_merchants(account_id, _merchant_words(reconciled))
-    for line, recorded in reconciled.absorbing:
+    for line, recorded in reconciled.held:
         _absorb_gained_facts(line, recorded, merchants)
+    db.session.add_all(
+        _sighting_of(account_id, import_id, recorded.id, line)
+        for line, recorded in reconciled.held
+    )
     _stage_lines(account_id, import_id, reconciled.fresh, merchants)
+    # The held lines' eager ``sightings`` collections were loaded BEFORE the
+    # rows above existed, and a sighting staged by its ids does not join a
+    # loaded collection.  Expire them, so a reader of a held line's wording
+    # or day in this same unit of work reads the row and not the collection
+    # as it was -- the loaded-relationship rule ``BankStatementLine.merchant``
+    # documents, applied to the relation this door writes.
+    for _line, recorded in reconciled.held:
+        db.session.expire(recorded, ["sightings"])
 
 
 def record_statement(
@@ -477,10 +798,10 @@ def record_statement(
     against what is already recorded.  Only after all four does anything get
     staged.
 
-    **Re-importing an overlapping span is a no-op on the lines and still
-    records the ACT.**  A line names the import that FIRST recorded it, so the
-    original provenance survives, and the second import's ``recorded_count``
-    reports honestly that it added nothing.
+    **Re-importing an overlapping span records a SIGHTING of every line it
+    already holds and records the ACT** (ruling **R-BI10**).  The line stays
+    one line; this import's window now also vouches for its days; and the
+    receipt's ``recorded_count`` reports honestly that it added nothing.
 
     Args:
         account_id: The account the user chose.  The CALLER has already proven
@@ -496,13 +817,16 @@ def record_statement(
         The :class:`ImportOutcome`.
 
     Raises:
-        StatementParseError: The file is not the shape the adapter reads.
+        StatementParseError: The file is not the shape the adapter reads, or
+            states one of its own ids twice.
         StatementIntegrityError: The file's running balances do not follow
             from its own lines.
         StatementBalanceUnexplained: The file states a balance that no day it
             covers reconciles with what is already known.
         StatementAccountMismatch: The file is for a different account.
-        StatementLineConflict: A recorded line is restated.
+        StatementLineIdMoved: This source restates a line's day or amount
+            under an id it already holds.
+        StatementLineConflict: This source restates a line's wording.
     """
     parsed = parse_statement(source, payload)
     verify_running_balance(parsed.lines)
@@ -512,28 +836,24 @@ def record_statement(
         account_id, user_id, source_id, parsed.external_account_id,
     )
 
-    # MIN/MAX rather than first/last: the span must be total over the file's
-    # own days whatever order it arrived in.  The adapter refuses a file that
-    # is not in date order, so these agree with the ends today -- and deriving
-    # them from the extremes means a future adapter that forgets to sort
-    # produces a correct span rather than a backwards one that trips
-    # ``ck_statement_imports_period_ordered`` and surfaces as a database error.
-    period_start = min(line.posted_on for line in parsed.lines)
-    period_end = max(line.posted_on for line in parsed.lines)
-
+    _refuse_repeated_ids(parsed.lines)
+    _refuse_moved_ids(
+        parsed.lines, _held_ids(account_id, source_id, parsed.lines),
+    )
     reconciled = _reconcile(
         parsed.lines,
-        _recorded_groups(account_id, period_start, period_end),
+        _recorded_groups(
+            account_id, parsed.declared_start, parsed.declared_end,
+        ),
+        source_id,
     )
     # Read BEFORE the import row exists, so the walk sees only what was
     # recorded before this act -- and resolve the anchor here, with the other
     # refusals, because an unexplained balance must refuse the file rather
     # than be discovered after its lines are staged.
     balance = resolve_anchor(
-        parsed.lines,
-        parsed.stated_balance,
-        parsed.stated_balance_on,
-        recorded_opening_before(account_id, period_start),
+        parsed,
+        recorded_opening_before(account_id, parsed.declared_start),
     )
 
     # Every refusal is now behind us, so this is the first write.
@@ -548,10 +868,8 @@ def record_statement(
         source_id=source_id,
         file_name=file_name[:255],
         file_digest=hashlib.sha256(payload).hexdigest(),
-        period_start=period_start,
-        period_end=period_end,
-        line_count=len(parsed.lines),
-        recorded_count=len(reconciled.fresh),
+        declared_start=parsed.declared_start,
+        declared_end=parsed.declared_end,
         # The bank's OWN claim, verbatim.  The claim and the day it is FOR
         # are two facts (ruling **R-GF**): SECU writes the figure as of the
         # export INSTANT and labels it with the export's day, so on the
@@ -561,8 +879,8 @@ def record_statement(
         stated_balance_on=parsed.stated_balance_on,
     )
     db.session.add(statement_import)
-    # The lines carry the import's id in a composite key, so the import row
-    # must exist before they are staged.
+    # The sightings carry the import's id in a composite key, so the import
+    # row must exist before they are staged.
     db.session.flush()
 
     _write_records(account_id, statement_import.id, reconciled)
@@ -573,7 +891,7 @@ def record_statement(
     # -- the key ``fk_anchor_history_statement_import_claim`` would refuse
     # anything else -- and its evidence is what the solve above worked out.
     # Written after the lines because it is a conclusion drawn from them,
-    # and inside the file's own span by ``budget.level_lies_within_file``.
+    # and inside the declared window by ``budget.level_lies_within_file``.
     if balance is not None and balance.is_anchored:
         db.session.add(AccountAnchorHistory(
             account_id=account_id,
@@ -605,12 +923,19 @@ def record_statement(
     )
     db.session.flush()
 
+    # The receipt's two counts come from the aggregate every other surface
+    # reads, so the receipt, the imports table and the hero cannot part.  A
+    # file with no line wrote no sighting and reads ``(0, 0)``.
+    counted = db.session.execute(
+        StatementLineSighting.counts_by_import(account_id)
+        .where(StatementLineSighting.import_id == statement_import.id),
+    ).one_or_none()
     return ImportOutcome(
         import_id=statement_import.id,
-        line_count=len(parsed.lines),
-        recorded_count=len(reconciled.fresh),
-        period_start=period_start,
-        period_end=period_end,
+        line_count=0 if counted is None else counted.sighted,
+        recorded_count=0 if counted is None else counted.first,
+        declared_start=parsed.declared_start,
+        declared_end=parsed.declared_end,
         balance=balance,
         anchors_released=anchors_released,
     )

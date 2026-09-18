@@ -59,7 +59,6 @@ from app.services import (
     anchor_service,
     balance_at,
     loan_posting_service,
-    pay_period_write,
     posting_service,
     status_seam,
     transaction_service,
@@ -609,7 +608,7 @@ class TestWalkAccountLedger:
                 seed_user["bootstrap_period"].start_date,
             )
             _db.session.commit()
-            movement, = status_seam.covering_movements(txn)
+            movement, = txn.covering_movements
             _db.session.query(TransactionEntry).filter(
                 TransactionEntry.id == movement.id,
             ).update(
@@ -1946,9 +1945,9 @@ class TestSyncEntryPoints:
             _db.session.add(user2)
             _db.session.flush()
             # Through the writer that owns the table (plan step pay_calendar:C4-b-1).
-            period2 = open_owner_calendar(
+            open_owner_calendar(
                 user2.id, seed_user["bootstrap_period"].start_date,
-            )[0]
+            )
             checking_type_id = seed_user["account"].account_type_id
             account2 = account_service.create_account(
                 account_service.AccountSpec(
@@ -2143,7 +2142,6 @@ class TestTheSharedFilingDoor:
         rather than merely widen it.
         """
         with app.app_context():
-            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
             record_paydays_across_a_hole(
                 user_id=seed_second_user["user"].id,
                 first_payday=date(2025, 1, 1), num_periods=4, rhythm=rhythm_of(14),

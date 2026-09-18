@@ -3525,9 +3525,8 @@ def create_settled_transfer(
     # convention every helper in this module follows.
     from app import ref_cache
     from app.enums import SettledDayBasisEnum, StatusEnum
-    from app.extensions import db
     from app.services import transfer_service
-    from app.services.settle_day import SettleDay, record_settle_day
+    from app.services.settle_day import SettleDay
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
@@ -3547,7 +3546,12 @@ def create_settled_transfer(
             else SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED)
         )
     if settled_amount is not None:
-        update_kwargs["settled_amount"] = settled_amount
+        # The service's key is the VALUE -- the figure and who wrote it, a
+        # person's here as the popover's would be (plan step X-bi-3e-1) --
+        # under the name the door reads; ``update_transfer`` ignores a key it
+        # does not know, so the old column-named key would settle at the plan
+        # and say nothing.
+        update_kwargs["figure"] = typed(settled_amount)
     transfer_service.update_transfer(
         transfer.id, seed_user["user"].id, **update_kwargs
     )
@@ -3565,7 +3569,7 @@ def create_settled_cash_transaction(  # pylint: disable=too-many-arguments
     The cash analog of :func:`create_settled_transfer` for the Build-Order
     Step 3 posting-ledger oracle: a ONE-OFF placed through
     :func:`one_off_row_of` (plan step balance:X-bi-7c; it built a link-less
-    row owning its figure until then, the shape the cutover deletes), then
+    row owning its figure until then, the shape the cutover deleted), then
     settled through :func:`settle_cash_row` -- the two REAL go-forward
     production primitives, the status seam and the posting builder, in the
     order the mark-done route applies them.  So the returned transaction is
@@ -3628,10 +3632,12 @@ def settle_cash_row(
     """Settle the Projected row *txn* go-forward and post its cash effect.
 
     The settle half of :func:`create_settled_cash_transaction`, its own
-    function since plan step balance:X-bi-7c so a case whose subject is the
-    LEGACY link-less shape settles :func:`legacy_link_less_row_of`'s row
-    through the same two primitives without re-spelling either (ruling
-    **R-BAL59**).  Income settles to Received and expenses to Paid (Done) --
+    function since plan step balance:X-bi-7c so a case that builds its row
+    another way settles it through the same two primitives without
+    re-spelling either (ruling **R-BAL59**; the legacy link-less builder
+    was its first other caller, until the cutover ``balance:X-bi-7d-2``
+    deleted that shape).  Income settles to Received and expenses to Paid
+    (Done) --
     the same split the mark-done route applies (``mutations.py``).  A plain
     transaction carries no entries, so its effect is its resolved figure;
     callers needing the envelope debit-only effect attach credit entries
@@ -4101,6 +4107,47 @@ def default_settle_day(period, status_id):
     return period.start_date if status_id in settled_status_ids() else None
 
 
+def typed(amount):
+    """Return *amount* as a figure a PERSON stated.
+
+    The :class:`~app.services.stated_figure.StatedFigure` every human door
+    builds (plan step **X-bi-3e-1**, ruling **R-BAL69**), for a fixture that
+    plays one: the add-purchase form, the entry PATCH, the popovers, the
+    reconcile panel.  A test that means the BANK stated the figure says
+    :func:`observed`; the two names keep the writer visible at every call
+    site, which is the fact the step exists to record.
+
+    Args:
+        amount: The figure, a ``Decimal``.
+
+    Returns:
+        The ``typed`` :class:`~app.services.stated_figure.StatedFigure`.
+    """
+    from app.enums import MovementFigureSourceEnum
+    from app.services.stated_figure import StatedFigure
+    return StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
+
+
+def observed(amount):
+    """Return *amount* as a figure the BANK's line stated.
+
+    :func:`typed`'s twin for a fixture that plays the statement matcher, the
+    one writer that states ``observed`` (plan step **X-bi-3e-1**, ruling
+    **R-BAL61**).
+
+    Args:
+        amount: The figure, a ``Decimal``.
+
+    Returns:
+        The ``observed`` :class:`~app.services.stated_figure.StatedFigure`.
+    """
+    from app.enums import MovementFigureSourceEnum
+    from app.services.stated_figure import StatedFigure
+    return StatedFigure(
+        amount=amount, source=MovementFigureSourceEnum.OBSERVED,
+    )
+
+
 def settlement_if_settling(txn, new_status_id, submitted=None):
     """Return the :class:`Settlement` a fixture owes the seam, or ``None``.
 
@@ -4139,7 +4186,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     their plan, so the two agree" -- true while a generated row stored a figure
     and false the moment one stopped.  A generated row is DERIVED now and its
     column is NULL, so the old spelling handed the seam
-    ``Settlement(amount=None, basis=derived)`` and every fixture that settles a
+    ``Settlement(amount=None, source=None)`` and every fixture that settles a
     generated row died on the record's own refusal: *a 'derived' settlement
     must state the figure that moved*.  Reading the rule instead is what makes
     this helper's promise -- that it answers ARM FOR ARM the way the real verbs
@@ -4156,7 +4203,6 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     """
     # pylint: disable=import-outside-toplevel  -- the lazy-app-import
     # convention every helper in this module follows.
-    from app.enums import SettlementBasisEnum
     from app.services.status_seam import Settlement, recorded_settlement
     from app.services.cash_ledger import derived_amount_basis
     from app.services.transaction_service import (
@@ -4168,7 +4214,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     if not enters_settled_band(txn, new_status_id):
         return None
     if settles_from_entries(txn):
-        return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
+        return Settlement(amount=None, source=None)
     # ONE basis for the whole act, exactly as ``settle_transaction`` builds it,
     # and ``settle_amount``'s second arm IS the retained correction -- so this
     # asks the same rule once rather than re-branching on
@@ -4176,8 +4222,11 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     booked = settle_amount(
         txn, derived_amount_basis(txn.account.user_id, txn.scenario_id),
     )
+    # A fixture's figure is a PERSON's, stated as such (plan step X-bi-3e-1,
+    # ruling R-BAL69): the verbs take the figure and its writer as one value.
     correction = (
-        submitted if submitted is not None and submitted != booked else None
+        typed(submitted) if submitted is not None and submitted != booked
+        else None
     )
     return Settlement.from_settle(booked, correction, recorded_settlement(txn))
 
@@ -4457,10 +4506,13 @@ def family_journal_filter(txn):
     cases the developer confirmed on 2026-09-15 widen their subject the same
     way and no figure moves: the row's entries, plus its covering movements'.
 
-    The movements are read through ``status_seam.covering_movements``, which
-    answers only while the row stands settled -- after a revert the mirror
-    is deleted and its postings, reversed first, carry no link -- so a
-    reverted row's family is the row alone, exactly as before.
+    The movements are read through ``Transaction.covering_movements``.  A
+    revert KEEPS the mirror, un-dated (plan step **X-bi-3e-2**, ruling
+    **R-BAL61**), so a reverted row's family includes its survivor's linked
+    postings -- a net-zero pair once the door's reconcile has reversed them
+    -- where through 3e-1 the mirror was deleted and the pair stood unlinked.
+    Every reader of this filter sums a net or scopes by period, so the pair
+    changes no figure.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction`, or its id.
@@ -4473,7 +4525,6 @@ def family_journal_filter(txn):
     from app.extensions import db
     from app.models.journal_entry import JournalEntry
     from app.models.transaction import Transaction
-    from app.services.status_seam import covering_movements
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
     if row is None:
@@ -4482,7 +4533,7 @@ def family_journal_filter(txn):
         # family is whatever still names the id -- nothing, which is the claim
         # such a case makes.
         return JournalEntry.transaction_id == txn
-    movement_ids = [movement.id for movement in covering_movements(row)]
+    movement_ids = [movement.id for movement in row.covering_movements]
     own = JournalEntry.transaction_id == row.id
     if not movement_ids:
         return own
@@ -4495,8 +4546,10 @@ def purchases_of(txn):
     Plan step **X-bi-3a**: a settled bill or an envelope closed empty holds
     one covering movement, written by the status seam and never by a person,
     so "this row took no purchase" is graded over the entries that are not
-    that mirror (``status_seam.covering_movements``).  A refused purchase
-    still leaves the row with exactly the movement it had.
+    that mirror -- the app's own reading, ``Transaction.purchases`` (plan
+    step **X-bi-3e-2**, ruling **R-BAL68**), which this helper hand-rolled
+    until that reading existed.  A refused purchase still leaves the row with
+    exactly the movement it had.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction`, or its id.
@@ -4508,11 +4561,9 @@ def purchases_of(txn):
     # convention every helper in this module follows.
     from app.extensions import db
     from app.models.transaction import Transaction
-    from app.services.status_seam import covering_movements
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
-    covering = covering_movements(row)
-    return [entry for entry in row.entries if entry not in covering]
+    return row.purchases
 
 
 def family_cash_leg(txn):
@@ -4610,7 +4661,6 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     # avoidance as the loan helpers above.
     from app import ref_cache
     from app.enums import StatusEnum, TxnTypeEnum
-    from app.models.transaction import Transaction
     if status_enum is None:
         status_enum = StatusEnum.PROJECTED
     account = seed_user["account"] if account is None else account
@@ -4631,7 +4681,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     # definition priced at *amount* plus its placed row, dated on the
     # paycheck's start unless *due_date* says otherwise, exactly what the grid
     # writes for a one-off -- where this built a link-less row owning its
-    # figure, the shape the cutover (X-bi-7d) deletes.  What stays BARE is the
+    # figure, the shape the cutover (X-bi-7d-2) deleted.  What stays BARE is the
     # state laid on top: the status, the soft-delete flag and the settle
     # columns, which is this builder's purpose (see above).
     txn = one_off_row_of(
@@ -4780,15 +4830,18 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
     **What the hand-built rows were.**  A link-less ``Transaction(...)`` --
     ``template_id`` NULL, OWNING its figure, its flags in its own sealed
     cells, undated in most cases -- is the shape the cutover
-    (``balance:X-bi-7d``) deletes: it mints every such production row a
-    definition, dates the undated on their paycheck's start and declares
-    each ``TEMPLATE``-priced.  A control that hand-builds that shape grades
-    a row the application stopped making at ``X-bi-7b-1`` and will not hold
-    at all after 7d; every one of those sites moves onto this builder so the
-    cutover's CHECK (``ck_transactions_one_pricing_link`` at ``= 1``) binds
-    on rows the app's own door wrote.  Until 7d, the sites whose SUBJECT is
-    the legacy shape itself -- the accessors' ``template_id is None``
-    branch, the frozen flag cells -- keep building it by hand and say so.
+    (``balance:X-bi-7d-2``, migration ``596408fab6f1``) deleted: it minted
+    every such production row a definition (34 on the 2026-09-18 restore),
+    dated the undated on their paycheck's start and declared each
+    ``TEMPLATE``-priced, then re-cut ``ck_transactions_one_pricing_link`` to
+    ``= 1`` so the shape is unstorable.  Every hand-built site moved onto
+    this builder before that (7c) so the CHECK binds on rows the app's own
+    door wrote; the sites whose SUBJECT was the legacy shape itself -- the
+    accessors' own-cell arm, the frozen flag cells -- built it by hand on
+    ``legacy_link_less_row_of`` until 7d-2 retired them with the arm.  The
+    link-less rows left are a transfer's shadows and a CC payback, which
+    have builders of their own (:func:`create_transfer`,
+    :func:`payback_row_of`).
 
     Two consequences follow from getting the producer's row, each the point
     rather than a cost, exactly as for :func:`generate_row_of`:
@@ -4805,7 +4858,12 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
       rulings **R-BAL22** / **R-BAL25**): the paycheck's start unless
       *due_date* says otherwise, so ``idx_transactions_template_scenario_
       occurrence`` holds over it.  A fixture that wants a row on the
-      "anytime this period" shelf wants a shape 7d deletes.
+      "anytime this period" shelf wants a row no definition prices -- a
+      transfer shadow (:func:`create_transfer` with no ``due_date``) or a
+      CC payback (:func:`payback_row_of`; the producer dates none) -- the
+      two undated shapes left since the cutover.  On the 2026-09-18
+      production restore it is the paybacks that are undated (31 of 31) and
+      no shadow is.
 
     The row is placed PROJECTED, which is the only state the producer
     writes.  A fixture wanting a SETTLED row settles this one as the app
@@ -4867,81 +4925,6 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
         scenario_id=scenario_id,
         due_date=due_date,
     )
-
-
-def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
-    period, *, name, amount, user_id, account_id, scenario_id,
-    transaction_type_id, category_id=None, is_envelope=False,
-    companion_visible=False, due_date=None,
-):
-    """Hand-build the LEGACY link-less row -- the ONE home of a shape 7d deletes.
-
-    **Transitional, and named so.**  A row with no ``template_id``, OWNING
-    its figure, its flags in its own sealed cells and undated unless a day
-    is given, is what every one-off was before plan step ``balance:X-bi-7b``
-    and what production still holds until the cutover (``X-bi-7d``: 34
-    such rows on the 2026-09-12 restore) mints each a definition, dates it
-    and declares it ``TEMPLATE``-priced.  Until then the accessors keep a
-    ``template_id is None`` branch, the flag cells are frozen, and a test
-    whose SUBJECT is that branch or that shape needs a row in it -- which
-    :func:`one_off_row_of` (the producer's row) cannot be.  This helper is
-    the one NAMED home of that shape (plan step ``balance:X-bi-7c``, ruling
-    **R-BAL59**): the hand-built ``Transaction(`` sites 7c-2..n move onto the
-    producer or onto this, and once they have the cutover deletes ONE builder
-    and the cases that call it, rather than hunting the shape across the
-    suite.  ``tests/manual/census_hand_built_rows.py`` counts what is left.
-    **A case moved onto the producer that still PASSES may be one of these**
-    (7c-2's adversarial review found three): a docstring saying "no
-    template", "ad-hoc", "undated" or "its own flag" over a row that is now
-    placed grades the placed branch twice and the legacy branch not at all.
-
-    A fixture that does NOT mean the legacy shape -- one that wants "a row on
-    this paycheck" -- is :func:`one_off_row_of`'s.  Projected, flushed; a
-    caller wanting it settled settles it (``create_settled_cash_transaction``
-    takes the row), deleted or annotated sets the column.
-
-    Args:
-        period: The :class:`~app.models.pay_period.PayPeriod` row it is
-            filed under.
-        name: The row's name.
-        amount: Its OWN figure, as a :class:`~decimal.Decimal` or anything
-            ``Decimal(str(...))`` reads.
-        user_id: The owner.
-        account_id: The account the money moves through.
-        scenario_id: The scenario the row is in.
-        transaction_type_id: Expense or income (``ref_cache.txn_type_id``).
-        category_id: What the money is, or ``None``.
-        is_envelope: The row's OWN purchase-tracking cell.
-        companion_visible: The row's OWN companion-visibility cell.
-        due_date: The day it falls, or ``None`` for undated.
-
-    Returns:
-        The hand-built :class:`~app.models.transaction.Transaction`, flushed.
-    """
-    # pylint: disable=import-outside-toplevel  -- the module convention.
-    from app import ref_cache
-    from app.enums import StatusEnum
-    from app.extensions import db
-    from app.models.transaction import Transaction
-
-    row = Transaction(
-        template_id=None,
-        user_id=user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario_id,
-        account_id=account_id,
-        name=name,
-        category_id=category_id,
-        transaction_type_id=transaction_type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        is_envelope=is_envelope,
-        companion_visible=companion_visible,
-        due_date=due_date,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-    )
-    db.session.add(row)
-    db.session.flush()
-    return row
 
 
 def generate_transfer_of(template, period):
@@ -6190,7 +6173,10 @@ def state_template_price(template, amount=None, *, effective_on=None):
     )
 
 
-def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
+def bare_expense_template(
+    db_session, seed_user, name="Cadence Under Test", *, account=None,
+    is_envelope=False,
+):
     """Create and flush an expense template carrying NO cadence.
 
     The definition a test authors a rule onto when the rule is the subject and
@@ -6198,6 +6184,21 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
     necessary: ``ck_recurrence_rules_one_owner`` refuses a rule belonging to
     nothing, so ``author_rule`` takes an owner and there is no such thing as a
     free-standing rule any more.
+
+    **And the PRICING LINK a bare CHECK builder's row carries** since plan step
+    ``balance:X-bi-7d-1``.  The builders in ``tests/test_models`` whose
+    subject is a CHECK or key of ``budget.transactions`` construct their rows
+    by hand on purpose -- a control that reached the row through a door would
+    grade the door -- and the family's cutover (``X-bi-7d-2``) re-cuts
+    ``ck_transactions_one_pricing_link`` to ``= 1``, so a bare row must name
+    a definition to be storable at all.  A rule-less definition of the
+    owner's is the one such a row would have had the grid mint it
+    (**R-BAL20**), and this is the shared builder of that shape (the trigger
+    benchmark keeps a local one beside its clock, ``test_trigger_overhead
+    ._rule_less_definition``); each such row takes its OWN definition,
+    because two undated rows of one definition in one paycheck collide on
+    ``idx_transactions_template_scenario_undated`` and two dated ones on the
+    occurrence index.
 
     Distinct from :func:`make_expense_template`, which already gives its
     template an every-paycheck rule -- authoring a second onto that one is
@@ -6208,6 +6209,15 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
         db_session: The test session.
         seed_user: The seed user fixture dict.
         name: Display name; distinct per call when a test needs two.
+        account: The account the definition names, or ``None`` for the seed
+            user's.  Stated by a case that has DELETED the seeded account
+            before it mints (``transaction_templates.account_id`` is
+            ``ON DELETE RESTRICT``, so a definition minted on it beforehand
+            would refuse the very act under test, and one minted afterwards
+            has no account to name).
+        is_envelope: Whether the definition's rows take purchase entries --
+            the DEFINITION's setting, which ``Transaction.tracks_purchases``
+            reads for every row that names one.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -6222,11 +6232,12 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=Decimal("100.00"),
+        is_envelope=is_envelope,
     )
     db_session.add(template)
     db_session.flush()
@@ -9600,9 +9611,11 @@ def count_amount_bases(monkeypatch):
     return built
 
 
-#: One import, two bank lines and one match naming BOTH, in the shape
-#: ``statement_match._accept.record_match`` leaves: the group's EARLIEST line
-#: posts before the row that explains it settles.
+#: One import, two bank lines it sighted (plan step ``bank_import:X-f6b-1``:
+#: a line is held by its sightings, and the wording is the sighting's) and
+#: one match naming BOTH, in the shape ``statement_match._accept.record_match``
+#: leaves: the group's EARLIEST line posts before the row that explains it
+#: settles.
 #:
 #: **Raw SQL, and ONE copy of it.**  It lived in three test modules
 #: byte-identically until an adversarial test-quality review counted them --
@@ -9620,18 +9633,22 @@ _A_MATCHED_GROUP = """
     WITH import_row AS (
         INSERT INTO budget.statement_imports
                (account_id, user_id, source_id, file_name, file_digest,
-                period_start, period_end, line_count, recorded_count)
+                declared_start, declared_end)
         SELECT :a, :u,
                (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1),
-               'books-boundary-probe.csv', :digest, :early, :late, 2, 2
+               'books-boundary-probe.csv', :digest, :early, :late
         RETURNING id
     ), line_rows AS (
         INSERT INTO budget.bank_statement_lines
-               (account_id, import_id, posted_on, amount, description,
-                sequence_in_group)
-        SELECT :a, import_row.id, day.posted_on, -15.96, 'PROBE', 0
-          FROM import_row, (VALUES (:early), (:late)) AS day(posted_on)
+               (account_id, posted_on, amount, sequence_in_group)
+        SELECT :a, day.posted_on, -15.96, 0
+          FROM (VALUES (:early), (:late)) AS day(posted_on)
         RETURNING id
+    ), sighting_rows AS (
+        INSERT INTO budget.statement_line_sightings
+               (account_id, line_id, import_id, description)
+        SELECT :a, line_rows.id, import_row.id, 'PROBE'
+          FROM import_row, line_rows
     ), match_row AS (
         INSERT INTO budget.statement_matches
                (account_id, user_id, applied_by_rule)

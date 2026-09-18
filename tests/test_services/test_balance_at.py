@@ -3871,8 +3871,12 @@ class TestLiabilityOwedAtDates:
     (``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``):
     the horizon liability band used to reach past the seam into
     ``net_worth_kernel.loan_owed_at_dates`` and hold half the boundary rule (the
-    non-amortizing flat carry) itself.  These tests pin BOTH forward rules, the
-    today-point source, the sign convention, and the forward-only domain.
+    non-amortizing flat carry) itself.  Since plan step credit_card:CC-1 (ruling
+    R-CC14) the band is kind-blind -- every liability's future is the
+    kind-correct read, a loan's schedule or any other liability's cash fold --
+    and the flat hold survives only for the no-baseline case.  These tests pin
+    both arms of that read, the one-read-per-liability shape, the today-point
+    source, the sign convention, and the forward-only domain.
     """
 
     def test_amortizing_loan_amortizes_across_future_dates(
@@ -3954,26 +3958,31 @@ class TestLiabilityOwedAtDates:
 
             assert owed[acct.id] == [sentinel]
 
-    def test_non_amortizing_liability_holds_flat(
+    def test_a_card_with_no_rows_reads_its_opening_flat(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A revolving Credit Card has no forward model: flat owed magnitude.
+        """A revolving Credit Card with nothing planned reads its fold: the opening, flat.
 
-        The rule that used to live in the horizon consumer.  Also pins the sign
-        convention: a card's cash balance is NEGATIVE, and the seam returns the
-        POSITIVE owed magnitude (matching the net-worth reduction's
-        liability-minus rule, ``abs(bal)`` subtracted from the asset side).
+        The CONTROL for the case below.  Since plan step credit_card:CC-1
+        (ruling R-CC14) the band reads every non-loan liability's cash fold at
+        each future date rather than holding it flat; a card with no rows folds
+        to its asserted ``-500.00`` on every day, so the figures here are the
+        ones the old flat hold gave -- which is exactly why this case alone
+        cannot tell the two rules apart, and the sibling with planned rows can.
+        Also pins the sign convention: a card's cash balance is NEGATIVE, and
+        the seam returns the POSITIVE owed magnitude (matching the net-worth
+        reduction's liability-minus rule, ``abs(bal)`` subtracted from the
+        asset side).
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
             )
             db.session.commit()
-            today = date.today()
+            today = bctx.as_of
             samples = [today, date(today.year + 1, 12, 31),
                        date(today.year + 5, 12, 31)]
 
@@ -3981,16 +3990,202 @@ class TestLiabilityOwedAtDates:
                 [card], bctx, samples, {card.id: Decimal("-500.00")},
             )
 
-            # abs(-500) held flat at every sample -- no forward model.
+            # abs(-500) at every sample: today from the caller, the future from
+            # a fold that holds no row to move it.
             assert owed[card.id] == [Decimal("500.00")] * 3
+
+    def test_a_cards_planned_rows_move_it_across_the_horizon(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A card's projected purchase and payment move its owed balance by date.
+
+        THE rule plan step credit_card:CC-1 ships (ruling ``credit_card:R-CC14``,
+        design ``credit_card_from_scratch.md`` 3.1): a non-loan liability's
+        forward model is its cash fold -- opening plus recorded movements plus
+        the still-projected plan -- read at each future sample date, where the
+        seam used to hold it flat "because it has no forward model".  This test
+        REPLACES ``test_non_amortizing_liability_holds_flat``, which pinned that
+        flat hold; the developer ruled the behaviour changed (R-CC14,
+        2026-09-18), the one exception CLAUDE.md rule 5 allows.
+
+        The card is asserted at ``-500.00``.  A ``$120.00`` purchase is planned
+        in period 6 and a ``$200.00`` payment (an income row on the card) in
+        period 8; the samples are today, the START of period 7 (after the
+        purchase, before the payment) and the year end after next (after
+        both).  Hand-computed, owed magnitude = ``abs(fold)``::
+
+            today                 caller's -500.00              ->  500.00
+            period 7 start        -500.00 - 120.00 = -620.00    ->  620.00
+            Dec 31 next year      -620.00 + 200.00 = -420.00    ->  420.00
+
+        The second future point differs from the first, so a band that read
+        ONE forward figure and repeated it, or that still held flat, fails
+        here.  Every future point also equals the kind-correct scalar's own
+        answer at that date: the band and ``balance_at`` are readings of ONE
+        producer (``_kind_correct.balance_at_dates``), so the horizon cannot
+        drift from the account page.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
+            periods = seed_periods_today
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            one_off_row_of(
+                periods[6],
+                name="Groceries on the card",
+                amount=Decimal("120.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            )
+            one_off_row_of(
+                periods[8],
+                name="Card payment",
+                amount=Decimal("200.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+            )
+            db.session.commit()
+            today = bctx.as_of
+            between = periods[7].start_date
+            assert periods[6].start_date < between <= periods[8].start_date - timedelta(days=1)
+            assert between > today
+            year_end = date(today.year + 1, 12, 31)
+            samples = [today, between, year_end]
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], bctx, samples, {card.id: Decimal("-500.00")},
+            )
+
+            assert owed[card.id] == [
+                Decimal("500.00"), Decimal("620.00"), Decimal("420.00"),
+            ]
+            # The same producer answers the scalar, so the band's future
+            # points ARE the account page's figures for those days.
+            for sample, magnitude in zip(samples[1:], owed[card.id][1:]):
+                assert magnitude == abs(balance_at.balance_at(card, bctx, sample))
+
+    def test_no_baseline_holds_a_card_with_planned_rows_flat(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """With no baseline scenario a card holds flat even with rows planned.
+
+        The no-baseline hold is a gate OLDER than plan step credit_card:CC-1
+        and outside it: without a scenario there is no plan to fold, so the
+        band answers the caller's current magnitude at every date rather than
+        raising into ruling R-BW's handler.  Pinned on a card carrying planned
+        rows so that the case is not vacuous -- under a baseline those rows
+        move the band (the sibling above), and here they must not.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = seed_periods_today
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            one_off_row_of(
+                periods[6],
+                name="Groceries on the card",
+                amount=Decimal("120.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            )
+            db.session.commit()
+            no_baseline = _no_baseline(user_id)
+            today = no_baseline.as_of
+            samples = [today, periods[7].start_date, date(today.year + 1, 12, 31)]
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], no_baseline, samples, {card.id: Decimal("-500.00")},
+            )
+
+            assert owed[card.id] == [Decimal("500.00")] * 3
+
+    def test_each_liability_is_folded_once_per_pass(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The band reads each liability's producer ONCE over the whole future axis.
+
+        Plan step credit_card:CC-1's condition on its own shape: the band hands
+        the kind-correct producer the LIST of future dates, so a loan costs one
+        ``positions`` walk and a card one ``fold_asset_balances`` assembly, not
+        one per sample date.  Counted on the two producers the dispatch reaches,
+        with the dates each was handed, because a per-date loop would return the
+        identical figures and only the count can see it.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = all_periods(user_id)
+            mortgage, params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            today = bctx.as_of
+            future = [
+                date(today.year + 1, 12, 31),
+                date(today.year + 2, 12, 31),
+                date(today.year + 3, 12, 31),
+            ]
+            samples = [today, *future]
+
+            # pylint: disable=import-outside-toplevel -- the private seam
+            # modules are reached only to count the producers' calls.
+            from app.services.balance_at import _asset_fold, _kind_correct
+
+            positions_calls: list[list[date]] = []
+            fold_calls: list[list[date]] = []
+            real_positions = _kind_correct.positions
+            real_fold = _asset_fold.fold_asset_balances
+
+            def counting_positions(account, ctx, dates):
+                positions_calls.append(list(dates))
+                return real_positions(account, ctx, dates)
+
+            def counting_fold(account, ctx, dates, inputs):
+                fold_calls.append(list(dates))
+                return real_fold(account, ctx, dates, inputs)
+
+            monkeypatch.setattr(_kind_correct, "positions", counting_positions)
+            monkeypatch.setattr(
+                _asset_fold, "fold_asset_balances", counting_fold,
+            )
+
+            owed = balance_at.liability_owed_at_dates(
+                [mortgage, card], bctx, samples,
+                {mortgage.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
+            )
+
+            assert positions_calls == [future], positions_calls
+            assert fold_calls == [future], fold_calls
+            assert len(owed[mortgage.id]) == len(owed[card.id]) == 4
 
     def test_no_baseline_scenario_holds_every_liability_flat(
         self, app, db, seed_user, seed_periods_today,
     ):
         """``scenario=None`` is the degenerate case of the SAME rule, not an error.
 
-        No baseline means no loan is resolvable, so every liability -- including
-        an amortizing mortgage -- falls to the no-forward-model flat hold.  This
+        No baseline means no loan is resolvable and no plan can be folded, so
+        every liability -- including an amortizing mortgage -- holds flat.  This
         is the one public seam entry that does NOT raise on a None scenario: it
         has a correct answer, and raising would force each caller to re-derive
         the flat hold (the very duplication the seam exists to prevent).
@@ -4104,11 +4299,11 @@ class TestLiabilityOwedAtDates:
     def test_mixed_liability_set_in_one_call(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A loan and a card in ONE call: both forward rules coexist in one result.
+        """A loan and a card in ONE call: both arms of the read coexist in one result.
 
         The batch shape the sole caller actually passes.  The amortizing account
-        must amortize while the non-amortizing one holds flat, in the same result
-        dict -- the case where the splice and the flat carry have to coexist.
+        must amortize while the card -- which carries no planned row here --
+        folds to its asserted figure at every date, in the same result dict.
         The mortgage's $200,000 is asserted today so that it amortizes (see
         :meth:`test_amortizing_loan_amortizes_across_future_dates`).
         """
@@ -4139,7 +4334,8 @@ class TestLiabilityOwedAtDates:
             )
 
             assert set(owed) == {acct.id, card.id}
-            # The loan amortizes; the card has no forward model and holds flat.
+            # The loan amortizes; the card's fold holds no row, so it reads
+            # its asserted 500.00 at every date.
             assert owed[acct.id][1] < owed[acct.id][0]
             assert owed[card.id] == [Decimal("500.00"), Decimal("500.00")]
 

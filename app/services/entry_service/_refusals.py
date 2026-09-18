@@ -25,7 +25,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, SettlementBasisEnum
+from app.enums import MovementFigureSourceEnum, SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -78,7 +78,7 @@ from app.utils.dates import display_today
 #: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
 #: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
 #: down, on the purchase instead of on the row.
-_COST_BEARING_FIELDS = frozenset({"amount", "is_credit"})
+_COST_BEARING_FIELDS = frozenset({"figure", "is_credit"})
 
 
 def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
@@ -88,15 +88,19 @@ def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
     a settled purchase, and the EVIDENCE IS IN THE CALL.**
     :data:`_COST_BEARING_FIELDS` exists for a human's second thoughts -- a typed
     figure with nothing behind it -- and a statement is the opposite of one.  So
-    ``amount`` leaves the refused set exactly when the same submission records a
-    settle day whose basis is ``observed``.
+    ``figure`` leaves the refused set exactly when the figure submitted says
+    the bank's line wrote it.
 
-    **What bounds the permission is the BASIS, not a flag a caller asserts**, and
-    that is the whole design: ``observed`` means *the bank showed this money
-    move*, and the statement matcher is its only writer -- the entry PATCH door
-    writes ``entered`` and the reconcile panel ``asserted`` through its own bulk
-    UPDATE.  A caller holding an ``observed`` day HAS the evidence, so the rule
-    needs no second channel and no ordinary edit form can reach it.
+    **What bounds the permission is the figure's own stated SOURCE, not a flag
+    a caller asserts**, and that is the whole design: ``observed`` means *the
+    bank's line stated this figure*, and the statement matcher is its only
+    writer -- the entry PATCH door states ``typed`` and no other door writes a
+    figure here at all.  A caller holding an ``observed`` figure HAS the
+    evidence, so the rule needs no second channel and no ordinary edit form
+    can reach it.  Until plan step **X-bi-3e-1** the evidence was read off the
+    DAY beside the figure (an ``observed`` settle day in the same call); the
+    figure now states its writer itself (ruling **R-BAL69**), and the day is
+    left to say what it is about, which is when the money moved.
 
     ``is_credit`` is NOT released with it: which side of the card a purchase sat
     on is not a figure a statement states.
@@ -105,13 +109,13 @@ def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
         valid_updates: The submission, already narrowed to updatable fields.
 
     Returns:
-        The field names to weigh -- every changing field, less ``amount`` where
-        the call carries the bank's own observation.
+        The field names to weigh -- every changing field, less ``figure`` where
+        the figure carries the bank's own statement.
     """
     changing = frozenset(valid_updates)
-    evidence = valid_updates.get("settle_day")
-    if getattr(evidence, "basis", None) is SettledDayBasisEnum.OBSERVED:
-        return changing - {"amount"}
+    evidence = valid_updates.get("figure")
+    if getattr(evidence, "source", None) is MovementFigureSourceEnum.OBSERVED:
+        return changing - {"figure"}
     return changing
 
 
@@ -263,7 +267,7 @@ def _reject_settled_addition(
     settled rows carry a stored-figure settlement (8 of them envelopes on the
     developer's checking account) and every one holds ZERO purchases -- and a
     row that HAS purchases always settles on the ``purchases`` basis, because
-    ``settles_from_entries`` is ``tracks_purchases and txn.entries`` and
+    ``settles_from_entries`` is ``tracks_purchases and txn.purchases`` and
     ``carry_forward``'s direct call writes that basis unconditionally.
 
     **The purchase must state the day the BANK TOOK IT** (developer ruling,
@@ -682,12 +686,15 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     Plan step **X-bi-3a**, ruling **R-BAL39**: a bill (or an envelope closed
     empty) settling on the MANUAL branch has its figure mirrored as ONE
     covering movement, written and kept in step by the status seam alone --
-    the settle re-prices it, a revert deletes it, a day correction on the row
-    re-dates it.  The purchase doors reach it only through the entries list
-    an empty-closed envelope renders, and an edit or delete there would move
-    the row's money out from under its own record: the day the money moved
-    is the ROW's to state (its settle day), and withdrawing the record is a
-    revert.  Refused by name, with the door that owns the act.
+    the settle re-prices it, a revert un-dates it and keeps it (plan step
+    **X-bi-3e-2**, ruling **R-BAL61**), a day correction on the row re-dates
+    it, and only a ``$0.00`` or a ``purchases`` record withdraws it.  Since
+    that step no purchase list renders it (every purchase-meaning reader
+    asks ``Transaction.purchases``, ruling **R-BAL68**), so a door reaches it
+    by a crafted id alone; an edit or delete would still move the row's
+    money out from under its own record: the day the money moved is the
+    ROW's to state (its settle day), and the figure is the settle's.
+    Refused by name, with the door that owns the act.
 
     Args:
         entry: The purchase the door was asked to write.
@@ -700,6 +707,8 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
             f"Entry {entry.id} is the payment record of transaction "
             f"{entry.transaction_id}, written when that row was marked paid. "
             "It is not a purchase: to change the day its money moved, edit "
-            "the row's settle day; to change the figure, revert the row and "
-            "mark it paid again; to remove it, revert the row."
+            "the row's settle day; to change the figure, correct the row's "
+            "actual or revert it and mark it paid again. It is withdrawn "
+            "only by a $0.00 actual, or by closing the row from its own "
+            "purchases."
         )
