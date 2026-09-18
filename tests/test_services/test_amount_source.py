@@ -1835,7 +1835,7 @@ class TestTheBasisIsOneDerivationPerReadPass:
         assert _answer == {row.id: Decimal("35.00")}
         # **Graded on the two derivations' own memos since plan step
         # balance:X-bi-7c** (ruling **R-BAL59**, the rule-5 batch).  The three
-        # statements are finding **BAL-511** (owner X-bi-7d).
+        # statements are finding **BAL-511** (closed at X-bi-7d-2: the grid read path is flat across the cutover).
         # An ordinary expense row is a ONE-OFF -- a rule-less definition's
         # placed row, TEMPLATE-priced (rule 3) -- so pricing it reads the row's
         # OWN relations: its definition, that definition's price series, and
