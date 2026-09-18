@@ -438,7 +438,8 @@ class TestWhichSideRestsOnAnAssumption:
             agreement = _agreement(seed_user)
             row = _day(agreement, date(2026, 3, 2))
 
-            assert agreement.anchor is None
+            assert not agreement.anchored
+            assert [run.anchor for run in agreement.runs] == [None]
             assert row.bank_balance is None
             assert row.gap is None
             assert agreement.constant_offset is None
@@ -484,7 +485,8 @@ class TestWhichSideRestsOnAnAssumption:
             assert agreement.disagreeing == []
             assert agreement.constant_offset is not None
             assert agreement.constant_offset != _ZERO
-            assert agreement.anchor.evidence is _UNCORROBORATED
+            (run,) = agreement.runs
+            assert run.anchor.evidence is _UNCORROBORATED
 
     def test_ONE_compared_day_cannot_demonstrate_a_constant_offset(
         self, app, seed_user, seed_periods, db,
@@ -521,16 +523,21 @@ class TestWhichSideRestsOnAnAssumption:
 class TestThePageCannotClaimAWalkItDidNotPerform:
     """A derivation named over a column of dashes."""
 
-    def test_days_a_DISCONNECTED_anchor_cannot_reach_are_counted(
+    def test_days_in_the_GAP_between_two_anchored_runs_are_counted(
         self, app, seed_user, seed_periods, db,
     ):
-        """Reproduced by adversarial review 2026-08-24.
+        """Reproduced by adversarial review 2026-08-24; half of it since fixed.
 
-        A ``file_chain`` anchor in an old run is the STRONGEST, so it is the
-        one walked from -- and it reaches nothing in a later, disconnected run,
-        including that run's own anchored day whose crossing is empty.  The
-        report must say how many days it could not price rather than name the
-        figure over dashes.
+        A ``file_chain`` anchor in an old run was the STRONGEST, so it was
+        the one walked from for the whole account -- and it reached nothing
+        in a later, disconnected run, including that run's own anchored day
+        whose crossing is empty (finding **N-343**).  Since plan step
+        ``balance:X-bj-1b`` (ruling **R-BAL63**) each run walks from its own
+        anchor, so the March day is PRICED -- the developer flipped this
+        assertion with that ruling -- and what remains unpriced is the gap
+        between the runs, which the report must still count rather than name
+        a figure over dashes.  The day BEFORE the March run's first line is
+        reached from the March anchor, so the gap counts 02-01..03-13.
         """
         with app.app_context():
             _seed_import(
@@ -550,10 +557,22 @@ class TestThePageCannotClaimAWalkItDidNotPerform:
 
             agreement = _agreement(seed_user)
 
-            assert agreement.anchor is not None
-            assert agreement.unpriced_days > 0
-            # The later run's own anchored day is among them.
-            assert _day(agreement, date(2026, 3, 20)).bank_balance is None
+            assert agreement.anchored
+            assert [run.anchor.day for run in agreement.runs] == [
+                date(2026, 1, 31), date(2026, 3, 20),
+            ]
+            # 02-01..03-13 inclusive: 28 February days and 13 March days.
+            assert agreement.unpriced_days == 41
+            assert _day(agreement, date(2026, 3, 13)).bank_balance is None
+            # The day before the March run's first line is the balance its
+            # lines start from, walked back from the March anchor.
+            assert _day(agreement, date(2026, 3, 14)).bank_balance == Decimal(
+                "505.00",
+            )
+            # The later run's own anchored day, priced from its own anchor.
+            assert _day(agreement, date(2026, 3, 20)).bank_balance == Decimal(
+                "500.00",
+            )
 
     def test_an_account_with_NO_anchor_reports_zero_unpriced_days(
         self, app, seed_user, seed_periods, db,
@@ -573,8 +592,129 @@ class TestThePageCannotClaimAWalkItDidNotPerform:
 
             agreement = _agreement(seed_user)
 
-            assert agreement.anchor is None
+            assert not agreement.anchored
             assert agreement.unpriced_days == 0
+
+
+class TestTheReportCarriesTheRuns:
+    """Plan step ``balance:X-bj-1b``: the runs are the ONE home of coverage.
+
+    Ruling **R-BAL65**: ``BankAgreement.runs`` carries every recorded run
+    with its anchor and checkpoints, ``imports`` is derived from it, and the
+    per-day bank balances are each run's own walk.
+    """
+
+    def test_runs_carry_each_anchor_and_imports_is_DERIVED_from_them(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Two anchored runs: two anchors, two spans, and one source of both.
+
+        The hero (``headline``) walks back to the latest priced compared day,
+        which is now the later run's own anchored day rather than the older
+        run's, and the standing gap on the span's last day is a figure.
+        """
+        with app.app_context():
+            _seed_import(
+                db, seed_user["account"], stated="1000.00",
+                effective_on=date(2026, 1, 31), evidence=_FILE_CHAIN,
+                lines=[(date(2026, 1, 31), "10.00")],
+                period=(date(2026, 1, 1), date(2026, 1, 31)),
+                file_name="january.csv",
+            )
+            _seed_import(
+                db, seed_user["account"], stated="500.00",
+                effective_on=date(2026, 3, 20), evidence=_UNCORROBORATED,
+                file_name="march.csv",
+                lines=[(date(2026, 3, 15), "50.00"),
+                       (date(2026, 3, 20), "-5.00")],
+            )
+            db.session.commit()
+
+            agreement = _agreement(seed_user)
+
+            assert agreement.imports == [
+                (run.first_day, run.last_day) for run in agreement.runs
+            ] == [
+                (date(2026, 1, 1), date(2026, 1, 31)),
+                (date(2026, 3, 15), date(2026, 3, 20)),
+            ]
+            assert [run.anchor.file_name for run in agreement.runs] == [
+                "january.csv", "march.csv",
+            ]
+            assert agreement.headline.day == date(2026, 3, 20)
+            assert agreement.headline.bank_balance == Decimal("500.00")
+            # The level on the span's last day: the books less the bank's
+            # 500.00 there, a figure now rather than the ``None`` the
+            # account-wide walk left on every day it could not reach.
+            assert agreement.standing_gap == (
+                _day(agreement, date(2026, 3, 20)).app_balance
+                - Decimal("500.00")
+            )
+
+    def test_a_checkpoint_rides_on_its_run_and_moves_no_day(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The disagreeing statement is listed; the column is the anchor's walk."""
+        with app.app_context():
+            _seed_import(
+                db, seed_user["account"], stated="1000.00",
+                effective_on=date(2026, 3, 5), evidence=_FILE_CHAIN,
+                file_name="ytd.csv",
+                lines=[(date(2026, 3, 1), "100.00"),
+                       (date(2026, 3, 3), "-40.00"),
+                       (date(2026, 3, 5), "25.00")],
+            )
+            _seed_import(
+                db, seed_user["account"], stated="1075.00",
+                effective_on=date(2026, 3, 3), evidence=_UNCORROBORATED,
+                file_name="guessed.csv", lines=[],
+                period=(date(2026, 3, 1), date(2026, 3, 3)),
+            )
+            db.session.commit()
+
+            agreement = _agreement(seed_user)
+
+            (run,) = agreement.runs
+            (checkpoint,) = run.checkpoints
+            assert checkpoint.file_name == "guessed.csv"
+            assert checkpoint.difference == Decimal("-100.00")
+            assert _day(agreement, date(2026, 3, 3)).bank_balance == Decimal(
+                "975.00",
+            )
+
+    def test_a_run_with_no_level_counts_its_days_unpriced_beside_an_anchored_one(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Ruling **R-BAL64** on the report: the count names both causes.
+
+        February (02-20) is anchored; March 1..5 holds lines and no figure.
+        Unpriced: the gap 02-21..02-28 (8 days) and March's 5 days, 13 --
+        March's day-before-first-line among the gap's, since no anchor
+        reaches it either.  (The service suite's today is 2026-03-20.)
+        """
+        with app.app_context():
+            _seed_import(
+                db, seed_user["account"], stated="500.00",
+                effective_on=date(2026, 2, 20), evidence=_UNCORROBORATED,
+                file_name="february.csv",
+                lines=[(date(2026, 2, 20), "-5.00")],
+            )
+            _seed_import(
+                db, seed_user["account"], stated=None, file_name="march.csv",
+                lines=[(date(2026, 3, 1), "50.00"),
+                       (date(2026, 3, 5), "-20.00")],
+            )
+            db.session.commit()
+
+            agreement = _agreement(seed_user)
+
+            february, march = agreement.runs
+            assert february.anchor is not None
+            assert march.anchor is None
+            assert agreement.anchored
+            assert agreement.unpriced_days == 13
+            assert _day(agreement, date(2026, 2, 28)).bank_balance is None
+            assert _day(agreement, date(2026, 3, 5)).bank_balance is None
 
 
 class TestTheDrillDownNamesWhatMakesUpADay:

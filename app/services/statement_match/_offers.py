@@ -415,7 +415,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         :attr:`~._bars.BarredLine.reason` is: a template restating a partition
         is a second place for it to be wrong, and this one is a claim about
         money -- the panel that reads it is asserting the bank failed to make a
-        payment.  ``app.routes.accounts.bank_agreement._anchor_is_assumed``
+        payment.  :attr:`app.services.statement_import.BankAnchor.unconfirmed`
         makes the same argument for the same kind of decision.
 
         **It reads** :attr:`states_own_figure` **and asks nothing else**, which

@@ -23,8 +23,9 @@ of the dump changed.
 What it captures, per account:
 
 * the bank side: ``covered_runs``, ``recorded_span``, the whole
-  ``fold_bank_balances`` (its chosen anchor and every recorded day plus one
-  either side) and ``recorded_opening_before`` the first recorded day;
+  ``fold_bank_balances`` (every recorded run with its chosen anchor and its
+  checkpoints, and every recorded day plus one either side) and
+  ``recorded_opening_before`` the first recorded day;
 * the cash side: ``resolve_anchor``, ``governing_anchor``,
   ``reconciled_through``, every ``cash_anchor_facts`` row,
   ``earliest_assertion_day``;
@@ -35,6 +36,15 @@ What it captures, per account:
 Keys are positional (account id, day, import id), never a level row id, so a
 re-minted id does not read as a moved figure.  It answers "did anything move",
 never "is the answer right".
+
+**Re-run for ``balance:X-bj-1b``** (the walk anchors PER RUN and reads the
+other levels in a run as checkpoints; the fold is total and carries the runs).
+Two dumps grade it: the untouched production restore, where one run holds one
+level and nothing may move, and a planted copy holding a second disconnected
+run with its own level, two checkpoints and a run with no level, where the
+moved lines are the step's own claim.  The shape keys moved with the value
+(``fold.anchor`` became ``fold.runs``; ``agreement.anchor`` and
+``agreement.imports`` became ``agreement.runs``) and are compared by hand.
 
 Usage::
 
@@ -105,7 +115,7 @@ def _bank_side(account_id):
         "covered_runs": _plain(runs),
         "recorded_span": _plain(span),
         "fold": None if folded is None else {
-            "anchor": _plain(folded.anchor),
+            "runs": _plain(folded.runs),
             "balances": _plain(folded.balances),
         },
         "recorded_opening_before_first_line": _plain(opening_before),
@@ -163,8 +173,7 @@ def _with_context(account, ctx):
         out["agreement"] = {
             "span": _plain(agreement.span),
             "records_begin": _plain(agreement.records_begin),
-            "anchor": _plain(getattr(agreement, "anchor", None)),
-            "anchors": _plain(getattr(agreement, "anchors", None)),
+            "runs": _plain(agreement.runs),
             "imports": _plain(agreement.imports),
             "days": _plain(agreement.days),
             "unpriced_days": agreement.unpriced_days,
