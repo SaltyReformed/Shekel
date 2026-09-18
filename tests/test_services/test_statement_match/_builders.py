@@ -32,7 +32,11 @@ from app.models.account import AccountAnchorHistory
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import derived_amount_basis
@@ -281,28 +285,28 @@ def an_assertion(
 
 
 def an_import(
-    seed_user, account=None, *, line_count=1, recorded_count=1, created_at=None,
+    seed_user, account=None, *, created_at=None,
+    declared=(date(2026, 1, 1), date(2026, 12, 31)),
 ):
     """Stage and return one statement import for an account.
 
     Args:
         seed_user: The seeded user bundle.
         account: The account; the seeded checking one by default.
-        line_count: How many lines the FILE held.
-        recorded_count: How many of them this import WROTE.  Defaults equal to
-            *line_count*'s default, which is the whole-file case; a re-import
-            of an overlapping span states a smaller number here, and
-            ``ck_statement_imports_recorded_within_file`` refuses a larger one.
-            **The builder does not derive it from the lines a test then
-            attaches**: the column is what the import DECLARED, and a fixture
-            that recomputed it could not stage the disagreement a re-import
-            produces.
         created_at: The instant the import ran, or ``None`` to take the
             column's own ``now()`` default.  Stated only by a case whose
             subject is WHICH import is newest or WHICH day one displays on --
             and it has to be stated for the first of those, because ``now()``
             is the TRANSACTION's start time in PostgreSQL, so two imports
             written in one test carry the identical instant.
+        declared: The window the import DECLARES it answers for, as
+            ``(first, last)`` (ruling **R-BAL71**).  Wide by default so a
+            line staged on any seeded day falls inside it.
+
+    **It states no count** since plan step ``bank_import:X-f6b-1``: what a
+    file held and what it added are derived from the sightings its lines
+    carry (:func:`a_bank_line`, :func:`a_sighting`), so a fixture states the
+    sightings it means and the counts follow.
 
     Returns:
         The staged :class:`~app.models.statement_import.StatementImport`.
@@ -315,10 +319,8 @@ def an_import(
         ),
         file_name="statement.csv",
         file_digest="c" * 64,
-        period_start=date(2026, 1, 1),
-        period_end=date(2026, 12, 31),
-        line_count=line_count,
-        recorded_count=recorded_count,
+        declared_start=declared[0],
+        declared_end=declared[1],
     )
     if created_at is not None:
         statement.created_at = created_at
@@ -372,11 +374,18 @@ def a_bank_line(
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
     transaction_on=None, merchant=None, source_category=None,
 ):
-    """Stage and return one recorded bank line under *statement*.
+    """Stage and return one recorded bank line, sighted by *statement*.
+
+    The line is the bank's fact and *statement*'s sighting of it is what
+    that source said (plan step ``bank_import:X-f6b-1``, ruling **R-BI10**):
+    the line carries the day, the amount, the ordinal and the merchant KEY;
+    the sighting carries the wording, the merchant WORD, the stated day and
+    the category.  A second import that shows the same line adds a sighting
+    through :func:`a_sighting`.
 
     Args:
         seed_user: The seeded user bundle.
-        statement: The import that recorded it.
+        statement: The import that showed it.
         amount: Signed, positive INTO the account.
         posted_on: The day the bank posted it.
         description: What the bank called it.
@@ -391,13 +400,14 @@ def a_bank_line(
             for a source naming none -- which is the DEFAULT, and it is a
             fixture decision worth stating.  The string is resolved to a
             :class:`~app.models.merchant.Merchant` row here
-            (:func:`a_merchant`), so a test states the name it means and the
-            fixture reproduces the production identity.  **It is NOT
-            derived from *description* here.**  A
-            builder that re-ran the adapter's own parse would move with it, so
-            a change to that parse would shift the fixture and the assertion
-            together and grade nothing; the parse is graded where it belongs,
-            against real CSV bytes, in
+            (:func:`a_merchant`) for the line's KEY, and recorded verbatim
+            as the sighting's WORD, so a test states the name it means and
+            the fixture reproduces the production identity.  **It is NOT
+            derived from *description* here.**  A builder that re-ran the
+            adapter's own parse would move with it, so a change to that
+            parse would shift the fixture and the assertion together and
+            grade nothing; the parse is graded where it belongs, against
+            real CSV bytes, in
             ``tests/test_services/test_statement_import/test_secu_csv.py``.
             What these builders state is the recorded FACT.  ``None`` is the
             default because it is the state every guard here has to survive: a
@@ -415,28 +425,76 @@ def a_bank_line(
 
     Returns:
         The staged
-        :class:`~app.models.statement_import.BankStatementLine`.
+        :class:`~app.models.statement_import.BankStatementLine`, its
+        sighting loaded.
     """
     day = posted_on or seed_user["bootstrap_period"].start_date
     line = BankStatementLine(
         account_id=statement.account_id,
-        import_id=statement.id,
         posted_on=day,
-        transaction_on=transaction_on,
         amount=Decimal(amount),
-        description=description,
         merchant_id=(
             None if merchant is None
             else a_merchant(
                 seed_user, merchant, account_id=statement.account_id,
             ).id
         ),
-        source_category=source_category,
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
     db.session.flush()
+    a_sighting(
+        statement, line, description=description, merchant=merchant,
+        transaction_on=transaction_on, source_category=source_category,
+    )
     return line
+
+
+def a_sighting(
+    statement, line, *, description="ACH DEBIT DUKEENERGY", merchant=None,
+    transaction_on=None, source_category=None, external_id=None,
+    running_balance=None,
+):
+    """Stage and return *statement*'s sighting of *line*.
+
+    What ONE import said about ONE line (plan step ``bank_import:X-f6b-1``).
+    :func:`a_bank_line` writes the first; a case whose subject is a line two
+    imports showed writes the second here.  **The line is expired afterwards**
+    so its eager ``sightings`` collection reloads on the next read rather
+    than reporting the one it held before this row existed -- the same
+    loaded-relationship rule ``BankStatementLine.merchant`` documents.
+
+    Args:
+        statement: The import that showed the line.
+        line: The line it showed.
+        description: What this source called it.
+        merchant: The merchant WORD this source named, or ``None``.
+        transaction_on: The day this source states it was made, or ``None``.
+        source_category: This source's category string, or ``None``.
+        external_id: This source's own id for the line, or ``None``.
+        running_balance: The balance this source stated after it, or ``None``.
+
+    Returns:
+        The staged
+        :class:`~app.models.statement_import.StatementLineSighting`.
+    """
+    sighting = StatementLineSighting(
+        account_id=line.account_id,
+        line_id=line.id,
+        import_id=statement.id,
+        description=description,
+        merchant=merchant,
+        transaction_on=transaction_on,
+        source_category=source_category,
+        external_id=external_id,
+        running_balance=(
+            None if running_balance is None else Decimal(running_balance)
+        ),
+    )
+    db.session.add(sighting)
+    db.session.flush()
+    db.session.expire(line, ["sightings"])
+    return sighting
 
 
 def the_merchant_id(seed_user, name, *, account=None):

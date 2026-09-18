@@ -9611,9 +9611,11 @@ def count_amount_bases(monkeypatch):
     return built
 
 
-#: One import, two bank lines and one match naming BOTH, in the shape
-#: ``statement_match._accept.record_match`` leaves: the group's EARLIEST line
-#: posts before the row that explains it settles.
+#: One import, two bank lines it sighted (plan step ``bank_import:X-f6b-1``:
+#: a line is held by its sightings, and the wording is the sighting's) and
+#: one match naming BOTH, in the shape ``statement_match._accept.record_match``
+#: leaves: the group's EARLIEST line posts before the row that explains it
+#: settles.
 #:
 #: **Raw SQL, and ONE copy of it.**  It lived in three test modules
 #: byte-identically until an adversarial test-quality review counted them --
@@ -9631,18 +9633,22 @@ _A_MATCHED_GROUP = """
     WITH import_row AS (
         INSERT INTO budget.statement_imports
                (account_id, user_id, source_id, file_name, file_digest,
-                period_start, period_end, line_count, recorded_count)
+                declared_start, declared_end)
         SELECT :a, :u,
                (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1),
-               'books-boundary-probe.csv', :digest, :early, :late, 2, 2
+               'books-boundary-probe.csv', :digest, :early, :late
         RETURNING id
     ), line_rows AS (
         INSERT INTO budget.bank_statement_lines
-               (account_id, import_id, posted_on, amount, description,
-                sequence_in_group)
-        SELECT :a, import_row.id, day.posted_on, -15.96, 'PROBE', 0
-          FROM import_row, (VALUES (:early), (:late)) AS day(posted_on)
+               (account_id, posted_on, amount, sequence_in_group)
+        SELECT :a, day.posted_on, -15.96, 0
+          FROM (VALUES (:early), (:late)) AS day(posted_on)
         RETURNING id
+    ), sighting_rows AS (
+        INSERT INTO budget.statement_line_sightings
+               (account_id, line_id, import_id, description)
+        SELECT :a, line_rows.id, import_row.id, 'PROBE'
+          FROM import_row, line_rows
     ), match_row AS (
         INSERT INTO budget.statement_matches
                (account_id, user_id, applied_by_rule)

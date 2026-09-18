@@ -849,6 +849,13 @@ def parse(payload: bytes) -> ParsedStatement:
     return ParsedStatement(
         external_account_id=accounts.pop(),
         lines=lines,
+        # A CSV export states no range, so what it DECLARES is the days its
+        # own lines reach (ruling **R-BAL71**).  MIN/MAX rather than first
+        # and last: ``_refuse_unordered`` has already held the file to date
+        # order, so the two agree, and the extremes stay right if that
+        # refusal is ever relaxed.
+        declared_start=min(line.posted_on for line in lines),
+        declared_end=max(line.posted_on for line in lines),
         stated_balance=stated_balance,
         stated_balance_on=stated_balance_on,
     )

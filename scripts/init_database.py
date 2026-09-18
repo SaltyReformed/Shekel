@@ -71,6 +71,7 @@ from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
+from app.sighting_infrastructure import apply_sighting_infrastructure
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.append_only_infrastructure import (
     apply_append_only_infrastructure,
@@ -204,6 +205,16 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Level-within-file bound ready.")
+
+    # A bank line goes with its last sighting (plan step bank_import:X-f6b-1,
+    # ruling R-BI10): the rule that makes a line no source stands behind
+    # unrepresentable.  Same fresh-DB reason, same three-caller contract.
+    print("Applying last-sighting rule (statement lines)...")
+    apply_sighting_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Last-sighting rule ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

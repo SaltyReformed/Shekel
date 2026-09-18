@@ -541,6 +541,44 @@ class StatementAccountMismatch(StatementImportError):
         )
 
 
+class StatementLineIdMoved(StatementImportError):
+    """A source's own id for a line now names a different day or amount.
+
+    Plan step ``bank_import:X-f6b-1``, ruling **R-BI10**.  A source that
+    carries its own line ids (an OFX ``FITID``, the feed's ``id``) has ONE
+    line per id, and the reconciliation pairs an incoming line to the line
+    this source's earlier sighting carries that id on before it compares any
+    wording.  That pairing is within a ``(day, amount)`` group, so a file
+    stating a held id on a DIFFERENT day or amount is the one shape it cannot
+    pair and must not record: recording it would give this source two lines
+    under one id, which is the state ``uq_bank_statement_lines_external_id``
+    refused as a database error while the id lived on the line.  The
+    refusal is the door's now, with a sentence.
+
+    Attributes:
+        external_id: The id the source reused.
+        recorded: ``(posted_on, amount)`` -- where this source's earlier
+            sighting holds the id.  The reconciliation's own group key
+            (:func:`app.services.statement_import.group_key`), because that
+            is exactly the pair the id failed to agree with.
+        stated: ``(posted_on, amount)`` this file states for it.
+    """
+
+    def __init__(self, external_id, recorded, stated):
+        self.external_id = external_id
+        self.recorded = recorded
+        self.stated = stated
+        super().__init__(
+            f"This file states line id '{external_id}' on {stated[0]} for "
+            f"{stated[1]}, while this source has already shown that id on "
+            f"{recorded[0]} for {recorded[1]}.  Nothing was imported.  A "
+            f"source names one line per id, so the app will not record a "
+            f"second under it.  If the recorded line is the wrong one, delete "
+            f"the import that recorded it on the statements page and import "
+            f"this file again."
+        )
+
+
 class StatementLineConflict(StatementImportError):
     """A line already recorded now states something DIFFERENT.
 

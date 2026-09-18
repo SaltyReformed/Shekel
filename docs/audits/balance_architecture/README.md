@@ -313,8 +313,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       the latest assertion's own day so that assertion clears it and the balance line does not move
       (R-DH (a)); amount DERIVED from the postings OTHER than itself until the owner categorises
       it; offered only where a `statement_imports` row covers the span at a zero residue -- which
-      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is
-      bounded by an import's LINE DAYS rather than the period its file declares (**N-434**). The
+      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is bounded by the window an import DECLARES (**R-BAL71**, `bank_import:X-f6b-1`; N-434 closed there). The
       posted ledger, the Book-vs-bank row and the income statement all move. Closes **N-171** --
       a figure this step must RE-DERIVE rather than quote, because the plug is the net of every
       correction and moves with each one: `$1,776.88` when this entry was written and `$2,370.02`

@@ -193,7 +193,9 @@ def _statements_page(user_id, account_id):
     return [
         {
             "import_id": r.import_id,
-            "period": [r.period_start.isoformat(), r.period_end.isoformat()],
+            # The declared window since ``bank_import:X-f6b-1``; the dump key
+            # keeps its name so a before/after diff shows values, not a rename.
+            "period": [r.declared_start.isoformat(), r.declared_end.isoformat()],
             "line_count": r.line_count,
             "recorded_count": r.recorded_count,
             "matches_affected": r.matches_affected,

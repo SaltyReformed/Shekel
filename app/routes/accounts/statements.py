@@ -397,7 +397,7 @@ def _import_flash(outcome):
     )
     return (
         f"Recorded {outcome.recorded_count} new line(s) from "
-        f"{outcome.period_start} to {outcome.period_end}{known}{balance}"
+        f"{outcome.declared_start} to {outcome.declared_end}{known}{balance}"
         f"{released}",
         "warning" if unproven else "success",
     )
@@ -694,8 +694,8 @@ def import_statement(account_id):
             import_id=outcome.import_id,
             line_count=outcome.line_count,
             recorded_count=outcome.recorded_count,
-            period_start=outcome.period_start.isoformat(),
-            period_end=outcome.period_end.isoformat(),
+            declared_start=outcome.declared_start.isoformat(),
+            declared_end=outcome.declared_end.isoformat(),
             anchors_released=outcome.anchors_released,
         )
         # **Only when it did something**, which is what keeps the log honest
@@ -777,8 +777,8 @@ def _removal_flash(account_id: int, removal) -> tuple:
         "A recorded statement import was deleted.",
         user_id=current_user.id, account_id=account_id,
         import_id=removal.import_id, file_name=removal.file_name,
-        period_start=removal.period_start.isoformat(),
-        period_end=removal.period_end.isoformat(),
+        declared_start=removal.declared_start.isoformat(),
+        declared_end=removal.declared_end.isoformat(),
         lines_removed=removal.lines_removed,
         matches_released=removal.matches_released,
         rows_removed=removal.rows_removed,
@@ -847,7 +847,7 @@ def _removal_flash(account_id: int, removal) -> tuple:
     )
     return (
         f"Deleted the import of '{removal.file_name}' covering "
-        f"{removal.period_start} to {removal.period_end}, and the "
+        f"{removal.declared_start} to {removal.declared_end}, and the "
         f"{removal.lines_removed} bank line(s) it had recorded."
         f"{released}{removed_rows}{unskipped}{unplaced}{forgotten_merchants}"
         f"{forgotten}",
