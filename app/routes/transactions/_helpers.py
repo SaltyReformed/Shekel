@@ -492,15 +492,20 @@ def _finalised_edit_response(txn, data):
 def _update_schema_for(txn):
     """Return the PATCH schema *txn*'s shape loads (plan step ``balance:X-bi-7b``).
 
-    A row whose tracking / visibility flags are editable at the popover
-    loads :class:`~app.schemas.validation.TransactionItemUpdateSchema` --
-    a placed row (a rule-less definition's; the flags land on the
-    definition, ruling **R-BAL23**) and, until the family's cutover, a
-    link-less row (a legacy one-off's own cells; a shadow's and a payback's
-    as they always were).  A RECURRING definition's row loads the row schema
-    alone, which declares no flag: the flag a crafted PATCH used to land on
-    such a row's dead cell (finding **BAL-484**) is dropped by
-    ``Meta.unknown = EXCLUDE`` before any code could write it.
+    A PLACED row -- a rule-less definition's, whose tracking / visibility
+    flags are the definition's and editable at the popover (ruling
+    **R-BAL23**) -- loads
+    :class:`~app.schemas.validation.TransactionItemUpdateSchema`, which
+    declares them.  Every other row loads the row schema alone, which
+    declares no flag, so a flag in a crafted PATCH is dropped by
+    ``Meta.unknown = EXCLUDE`` before any code could write it: a RECURRING
+    definition's row since leaf 7b-2 (the writer finding **BAL-484**
+    recorded), and a transfer shadow or a CC payback since the family's
+    cutover (plan step ``balance:X-bi-7d-2``, ruling **R-BAL73**) -- such a
+    row has no definition and no cell of its own, so there is nothing for a
+    flag to land on.  Until that cutover the item schema was loaded for
+    every non-recurring row, because a legacy link-less one-off stated its
+    flags in cells of its own.
 
     Args:
         txn: The row being edited.
@@ -508,7 +513,7 @@ def _update_schema_for(txn):
     Returns:
         The schema instance to validate and load ``request.form`` with.
     """
-    return _update_schema if txn.recurs else _item_update_schema
+    return _item_update_schema if txn.is_placed else _update_schema
 
 
 def _get_owned_transaction(txn_id):

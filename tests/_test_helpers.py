@@ -3565,7 +3565,7 @@ def create_settled_cash_transaction(  # pylint: disable=too-many-arguments
     The cash analog of :func:`create_settled_transfer` for the Build-Order
     Step 3 posting-ledger oracle: a ONE-OFF placed through
     :func:`one_off_row_of` (plan step balance:X-bi-7c; it built a link-less
-    row owning its figure until then, the shape the cutover deletes), then
+    row owning its figure until then, the shape the cutover deleted), then
     settled through :func:`settle_cash_row` -- the two REAL go-forward
     production primitives, the status seam and the posting builder, in the
     order the mark-done route applies them.  So the returned transaction is
@@ -3628,10 +3628,12 @@ def settle_cash_row(
     """Settle the Projected row *txn* go-forward and post its cash effect.
 
     The settle half of :func:`create_settled_cash_transaction`, its own
-    function since plan step balance:X-bi-7c so a case whose subject is the
-    LEGACY link-less shape settles :func:`legacy_link_less_row_of`'s row
-    through the same two primitives without re-spelling either (ruling
-    **R-BAL59**).  Income settles to Received and expenses to Paid (Done) --
+    function since plan step balance:X-bi-7c so a case that builds its row
+    another way settles it through the same two primitives without
+    re-spelling either (ruling **R-BAL59**; the legacy link-less builder
+    was its first other caller, until the cutover ``balance:X-bi-7d-2``
+    deleted that shape).  Income settles to Received and expenses to Paid
+    (Done) --
     the same split the mark-done route applies (``mutations.py``).  A plain
     transaction carries no entries, so its effect is its resolved figure;
     callers needing the envelope debit-only effect attach credit entries
@@ -4631,7 +4633,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     # definition priced at *amount* plus its placed row, dated on the
     # paycheck's start unless *due_date* says otherwise, exactly what the grid
     # writes for a one-off -- where this built a link-less row owning its
-    # figure, the shape the cutover (X-bi-7d) deletes.  What stays BARE is the
+    # figure, the shape the cutover (X-bi-7d-2) deleted.  What stays BARE is the
     # state laid on top: the status, the soft-delete flag and the settle
     # columns, which is this builder's purpose (see above).
     txn = one_off_row_of(
@@ -4780,15 +4782,18 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
     **What the hand-built rows were.**  A link-less ``Transaction(...)`` --
     ``template_id`` NULL, OWNING its figure, its flags in its own sealed
     cells, undated in most cases -- is the shape the cutover
-    (``balance:X-bi-7d``) deletes: it mints every such production row a
-    definition, dates the undated on their paycheck's start and declares
-    each ``TEMPLATE``-priced.  A control that hand-builds that shape grades
-    a row the application stopped making at ``X-bi-7b-1`` and will not hold
-    at all after 7d; every one of those sites moves onto this builder so the
-    cutover's CHECK (``ck_transactions_one_pricing_link`` at ``= 1``) binds
-    on rows the app's own door wrote.  Until 7d, the sites whose SUBJECT is
-    the legacy shape itself -- the accessors' ``template_id is None``
-    branch, the frozen flag cells -- keep building it by hand and say so.
+    (``balance:X-bi-7d-2``, migration ``596408fab6f1``) deleted: it minted
+    every such production row a definition (34 on the 2026-09-18 restore),
+    dated the undated on their paycheck's start and declared each
+    ``TEMPLATE``-priced, then re-cut ``ck_transactions_one_pricing_link`` to
+    ``= 1`` so the shape is unstorable.  Every hand-built site moved onto
+    this builder before that (7c) so the CHECK binds on rows the app's own
+    door wrote; the sites whose SUBJECT was the legacy shape itself -- the
+    accessors' own-cell arm, the frozen flag cells -- built it by hand on
+    ``legacy_link_less_row_of`` until 7d-2 retired them with the arm.  The
+    link-less rows left are a transfer's shadows and a CC payback, which
+    have builders of their own (:func:`create_transfer`,
+    :func:`payback_row_of`).
 
     Two consequences follow from getting the producer's row, each the point
     rather than a cost, exactly as for :func:`generate_row_of`:
@@ -4805,7 +4810,9 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
       rulings **R-BAL22** / **R-BAL25**): the paycheck's start unless
       *due_date* says otherwise, so ``idx_transactions_template_scenario_
       occurrence`` holds over it.  A fixture that wants a row on the
-      "anytime this period" shelf wants a shape 7d deletes.
+      "anytime this period" shelf wants an undated transfer shadow
+      (:func:`create_transfer` with no ``due_date``), the one undated shape
+      left since the cutover.
 
     The row is placed PROJECTED, which is the only state the producer
     writes.  A fixture wanting a SETTLED row settles this one as the app
@@ -4867,81 +4874,6 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
         scenario_id=scenario_id,
         due_date=due_date,
     )
-
-
-def legacy_link_less_row_of(  # pylint: disable=too-many-arguments
-    period, *, name, amount, user_id, account_id, scenario_id,
-    transaction_type_id, category_id=None, is_envelope=False,
-    companion_visible=False, due_date=None,
-):
-    """Hand-build the LEGACY link-less row -- the ONE home of a shape 7d deletes.
-
-    **Transitional, and named so.**  A row with no ``template_id``, OWNING
-    its figure, its flags in its own sealed cells and undated unless a day
-    is given, is what every one-off was before plan step ``balance:X-bi-7b``
-    and what production still holds until the cutover (``X-bi-7d``: 34
-    such rows on the 2026-09-12 restore) mints each a definition, dates it
-    and declares it ``TEMPLATE``-priced.  Until then the accessors keep a
-    ``template_id is None`` branch, the flag cells are frozen, and a test
-    whose SUBJECT is that branch or that shape needs a row in it -- which
-    :func:`one_off_row_of` (the producer's row) cannot be.  This helper is
-    the one NAMED home of that shape (plan step ``balance:X-bi-7c``, ruling
-    **R-BAL59**): the hand-built ``Transaction(`` sites 7c-2..n move onto the
-    producer or onto this, and once they have the cutover deletes ONE builder
-    and the cases that call it, rather than hunting the shape across the
-    suite.  ``tests/manual/census_hand_built_rows.py`` counts what is left.
-    **A case moved onto the producer that still PASSES may be one of these**
-    (7c-2's adversarial review found three): a docstring saying "no
-    template", "ad-hoc", "undated" or "its own flag" over a row that is now
-    placed grades the placed branch twice and the legacy branch not at all.
-
-    A fixture that does NOT mean the legacy shape -- one that wants "a row on
-    this paycheck" -- is :func:`one_off_row_of`'s.  Projected, flushed; a
-    caller wanting it settled settles it (``create_settled_cash_transaction``
-    takes the row), deleted or annotated sets the column.
-
-    Args:
-        period: The :class:`~app.models.pay_period.PayPeriod` row it is
-            filed under.
-        name: The row's name.
-        amount: Its OWN figure, as a :class:`~decimal.Decimal` or anything
-            ``Decimal(str(...))`` reads.
-        user_id: The owner.
-        account_id: The account the money moves through.
-        scenario_id: The scenario the row is in.
-        transaction_type_id: Expense or income (``ref_cache.txn_type_id``).
-        category_id: What the money is, or ``None``.
-        is_envelope: The row's OWN purchase-tracking cell.
-        companion_visible: The row's OWN companion-visibility cell.
-        due_date: The day it falls, or ``None`` for undated.
-
-    Returns:
-        The hand-built :class:`~app.models.transaction.Transaction`, flushed.
-    """
-    # pylint: disable=import-outside-toplevel  -- the module convention.
-    from app import ref_cache
-    from app.enums import StatusEnum
-    from app.extensions import db
-    from app.models.transaction import Transaction
-
-    row = Transaction(
-        template_id=None,
-        user_id=user_id,
-        pay_period_id=period.id,
-        scenario_id=scenario_id,
-        account_id=account_id,
-        name=name,
-        category_id=category_id,
-        transaction_type_id=transaction_type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        is_envelope=is_envelope,
-        companion_visible=companion_visible,
-        due_date=due_date,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-    )
-    db.session.add(row)
-    db.session.flush()
-    return row
 
 
 def generate_transfer_of(template, period):

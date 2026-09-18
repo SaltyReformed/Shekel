@@ -632,9 +632,9 @@ def settle_from_entries(
          other public settle surfaces rather than restated here -- this
          helper's own wording of the transfer rule was a SECOND spelling of
          it (finding **N-233**).
-      2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked,
-         either via its template's ``is_envelope`` flag or, for an ad-hoc
-         row, its own ``is_envelope`` column.  Envelope semantics are the
+      2. ``txn.tracks_purchases`` is True -- the row is purchase-tracked
+         through its definition's ``is_envelope`` flag.  Envelope semantics
+         are the
          contract this helper relies on; calling on a non-tracked row is
          a programming error and surfaces as a ``ValidationError``.
       3. ``txn.status`` is mutable (``status.is_immutable`` is False).
@@ -669,16 +669,15 @@ def settle_from_entries(
     # therefore autoflush) to keep the failure path side-effect-free.
     # The shared pair reads two columns, so it belongs at the front.
     reject_unsettleable(txn)
-    # Resolved purchase-tracking check: covers template-generated rows
-    # (template.is_envelope) and ad-hoc rows (own is_envelope flag).  For
-    # an ad-hoc row tracks_purchases reads a column only -- no relationship
-    # access -- so the cheap-first / autoflush-safe ordering holds; for a
-    # template row it accesses the template exactly as the prior guard did.
+    # Resolved purchase-tracking check: the DEFINITION's ``is_envelope``
+    # (``tracks_purchases`` accesses the template exactly as the prior guard
+    # did; a link-less shadow or payback answers False off its own columns,
+    # so the cheap-first / autoflush-safe ordering holds for those).
     if not txn.tracks_purchases:
         raise ValidationError(
             f"Transaction {txn.id} is not envelope-tracked; "
             "settle_from_entries requires individual purchase tracking "
-            "(template.is_envelope, or is_envelope on an ad-hoc row).",
+            "(the definition's is_envelope).",
         )
     # Guard against settling an already-finalised row.  ``status`` may
     # be unloaded if the caller passed a detached or freshly-constructed

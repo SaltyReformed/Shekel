@@ -188,9 +188,9 @@ def build_entry_lists_dict(
     over-limit cards stuck on the loading spinner.  Server-side
     rendering eliminates the fan-out entirely.
 
-    Only purchase-tracking rows (``txn.tracks_purchases`` -- a template
-    with ``is_envelope`` set, or an ad-hoc row carrying its own
-    ``is_envelope`` flag) get an entry, matching the macro's guard for
+    Only purchase-tracking rows (``txn.tracks_purchases`` -- a row whose
+    definition has ``is_envelope`` set) get an entry, matching the macro's
+    guard for
     whether to render the inline entries section.  Non-tracking
     transactions are silently skipped.
 

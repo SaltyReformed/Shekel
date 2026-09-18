@@ -287,9 +287,9 @@ def create_entry(
     if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
 
-    # Entry-capable: purchase tracking must be enabled, via the template
-    # (template-generated rows) or the row's own is_envelope flag (ad-hoc
-    # rows).  Resolved by Transaction.tracks_purchases.
+    # Entry-capable: purchase tracking must be enabled on the row's
+    # DEFINITION (its ``is_envelope``).  Resolved by
+    # Transaction.tracks_purchases.
     if not txn.tracks_purchases:
         raise ValidationError(
             "This transaction does not support individual purchase tracking. "

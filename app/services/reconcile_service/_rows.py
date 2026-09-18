@@ -504,8 +504,8 @@ def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
     deposit and a TRANSFER SHADOW are unaffected: they carry a single amount,
     and :func:`lands_on_or_before` is the whole bound for them.  **A shadow
     holds no PURCHASE** -- ``entry_service.create_entry`` refuses a parent
-    that is not ``tracks_purchases``, and a shadow has no template and a False
-    ``is_envelope`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
+    that is not ``tracks_purchases``, and a shadow has no template, so it
+    answers ``False`` (production, 2026-09-15: 342 shadows, 0 entries).  The one
     entry a shadow does hold since plan step ``balance:X-bi-3c`` is the status
     seam's covering movement, written when the leg SETTLES and released when
     it leaves the band, so no row this OUTSTANDING scope offers carries one.

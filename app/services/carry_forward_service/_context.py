@@ -207,12 +207,15 @@ def _build_carry_forward_context(source_period_id, target_period_id,
             # rows*, one per paycheck, and a rule-less envelope carried whole
             # into a paycheck already holding its sibling collided on the
             # occurrence index (finding **BAL-496**).  So the rollover is
-            # every ENVELOPE OF A DEFINITION's, and only a LEGACY link-less
-            # envelope (until the family's cutover mints it one) still moves
-            # whole, carrying its entries.  The envelope half reaches the one
-            # accessor rather than restating ``template.is_envelope`` beside
-            # it (plan step balance:X-bi-1, ruling R-IZ); the link is read
-            # first, so a link-less row costs no load.
+            # every ENVELOPE OF A DEFINITION's.  A LEGACY link-less envelope
+            # fell through to the discrete branch and moved WHOLE with its
+            # entries until the family's cutover (``X-bi-7d-2``) minted
+            # every one a definition; the only link-less row that reaches
+            # the discrete branch now is a CC payback, which tracks no
+            # purchases.  The envelope half reaches the one accessor rather
+            # than restating ``template.is_envelope`` beside it (plan step
+            # balance:X-bi-1, ruling R-IZ); the link is read first, so a
+            # link-less row costs no load.
             envelope_txns.append(txn)
         else:
             discrete_txns.append(txn)

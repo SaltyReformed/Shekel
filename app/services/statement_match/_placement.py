@@ -406,16 +406,15 @@ def _new_envelope_placement(
     **A RECURRING definition's row is NOT converged on**: naming a template
     is a DIFFERENT answer with its own resolution beside this one, and an
     owner who means the recurring envelope has that answer available and did
-    not pick it.  **A LEGACY link-less row IS** (until the family's cutover
-    mints it a definition; 33 of the developer's 256 offerable destinations
-    on 2026-08-30): it has no definition for the answer to name, so the
-    flip does not happen and the name compare lasts exactly until the
-    cutover -- but a definition minted beside it would be N-327's
-    fragmentation for every one of those rows.  So the convergence key is
-    still "no cadence made it" (``PurchaseDestination.names_no_cadence``),
-    and the FLIP is keyed on ``is_placed``
-    (:func:`~._naming.name_the_filed_definition`); at the cutover the two
-    coincide and this paragraph retires.
+    not pick it.  The convergence key is "no cadence made it"
+    (``PurchaseDestination.names_no_cadence``), which is ``is_placed`` --
+    the same predicate the FLIP is keyed on
+    (:func:`~._naming.name_the_filed_definition`).  Until the family's
+    cutover (plan step ``balance:X-bi-7d-2``) the key also admitted a LEGACY
+    link-less row (33 of the developer's 256 offerable destinations on
+    2026-08-30), which had no definition for the answer to name, so the
+    name compare lasted while the flip could not happen; the cutover minted
+    each of those a definition and the two predicates coincide.
 
     Args:
         rule: The stated answer, whose ``answer`` is ``NEW_ENVELOPE``.  It

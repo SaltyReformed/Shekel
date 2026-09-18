@@ -29,7 +29,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry
-from app.models.ref import Status, TransactionType
+from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service, status_seam, transaction_service
@@ -50,7 +50,6 @@ from tests._test_helpers import (
     family_journal_filter,
     figure_source_columns,
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     net_posted_by_day,
@@ -382,38 +381,6 @@ class TestSettleFromEntriesPreconditions:
                 ref_cache.status_id(StatusEnum.PROJECTED)
             )
             assert reloaded.is_deleted is True
-
-    def test_rejects_template_less_transaction(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A LEGACY link-less transaction is not envelope-tracked.
-
-        Its ``tracks_purchases`` reads the row's own cell (the ``template_id
-        is None`` arm), which production holds until the cutover (X-bi-7d);
-        mark_done's manual-actual branch handles it.  Built on the shape's
-        one transitional home (plan step balance:X-bi-7c, ruling R-BAL59);
-        7d retires this case with the arm.  A one-off placed today reads its
-        definition's flag, which ``test_rejects_non_envelope_template``
-        grades on a definition.
-        """
-        with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType)
-                .filter_by(name="Expense").one()
-            )
-            txn = legacy_link_less_row_of(
-                seed_periods[0], name="Ad-hoc expense", amount="50.00",
-                user_id=seed_periods[0].user_id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=seed_user["categories"]["Groceries"].id,
-            )
-            db.session.flush()
-
-            with pytest.raises(ValidationError) as exc_info:
-                transaction_service.settle_from_entries(txn)
-            assert "envelope-tracked" in str(exc_info.value)
 
     def test_rejects_non_envelope_template(
         self, app, db, seed_user, seed_periods,

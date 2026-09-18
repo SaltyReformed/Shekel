@@ -58,7 +58,6 @@ from tests._test_helpers import (
     freeze_today,
     generate_row_of,
     last_covered_day,
-    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     make_investment_account,
@@ -5866,91 +5865,6 @@ class TestTheGridGroupsAOneOffsRowsByName:
                 (template.id, seed_periods_today[4].id): [gen_0.id],
                 (template.id, seed_periods_today[5].id): [gen_1.id],
                 (None, seed_periods_today[4].id): [one_off.id],
-            }
-
-    def test_a_legacy_link_less_row_sharing_a_recurring_definitions_name_is_its_own_row(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Trace 5's OWN shape: rows 2584 / 2581 on production are link-less.
-
-        The placed-row case above leaves the legacy arm ungraded -- restoring
-        the old ``rk.template_id is not None and txn.template_id is not
-        None`` survived it (adversarial review) -- so this is the control
-        that fails on that revert.  The row is the LEGACY shape on its one
-        transitional home (plan step balance:X-bi-7c, ruling R-BAL59); the
-        cutover (X-bi-7d) retires this case with the shape.
-        """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            template = make_expense_template(
-                db.session, seed_user, amount="15.00", name="Streaming",
-                category_key="Groceries",
-            )
-            gen_4 = generate_row_of(template, seed_periods_today[4])
-            gen_5 = generate_row_of(template, seed_periods_today[5])
-            legacy = legacy_link_less_row_of(
-                seed_periods_today[4],
-                name="Streaming",
-                amount=Decimal("12.00"),
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=seed_user["categories"]["Groceries"].id,
-            )
-            db.session.commit()
-
-            _, matched = self._expense_rows(app, auth_client)
-            by_key = {
-                (tid, period_id): [t.id for t in txns]
-                for (cat, tid, name, period_id), txns in matched.items()
-                if name == "Streaming"
-            }
-            assert by_key == {
-                (template.id, seed_periods_today[4].id): [gen_4.id],
-                (template.id, seed_periods_today[5].id): [gen_5.id],
-                (None, seed_periods_today[4].id): [legacy.id],
-            }
-
-    def test_a_legacy_link_less_row_still_groups_by_name(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """THE CONTROL: a link-less row keys as it always did, beside a one-off of its name.
-
-        The row is the LEGACY shape on its one transitional home (plan step
-        balance:X-bi-7c, ruling R-BAL59); the cutover (X-bi-7d) retires this
-        case with the shape.
-        """
-        from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            legacy = legacy_link_less_row_of(
-                seed_periods_today[4],
-                name="Coffee",
-                amount=Decimal("3.00"),
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=seed_user["categories"]["Groceries"].id,
-            )
-            placed = self._place(seed_user, seed_periods_today[5], "Coffee")
-            db.session.commit()
-
-            row_keys, matched = self._expense_rows(app, auth_client)
-            coffee = [rk for rk in row_keys if rk.txn_name == "Coffee"]
-            assert len(coffee) == 1 and coffee[0].template_id is None
-            cells = {
-                period_id: [t.id for t in txns]
-                for (cat, tid, name, period_id), txns in matched.items()
-                if name == "Coffee"
-            }
-            assert cells == {
-                seed_periods_today[4].id: [legacy.id],
-                seed_periods_today[5].id: [placed.id],
             }
 
 

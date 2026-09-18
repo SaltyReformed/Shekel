@@ -168,8 +168,9 @@ class TransactionTemplate(
         ``recurrence:R-F6`` put on the RULE's side -- and delegated to by
         :attr:`Transaction.recurs` for every row it generated.  A definition
         with no rule is a ONE-OFF's: its rows are PLACED rather than
-        generated (a cleared cadence's survivors today; the family's cutover
-        and doors leaves mint one per one-off), no pass ever regenerates
+        generated (one per one-off since the family's doors and cutover
+        leaves, ``X-bi-7b`` and ``X-bi-7d-2``; a cleared cadence's
+        survivors too), no pass ever regenerates
         them, the account-delete refusal counts these out, and
         ``recurrence_engine.propagate_to_unruled_definition`` is how its
         edits reach its rows.

@@ -33,8 +33,14 @@ from tests._test_helpers import (
 class TestCreditWorkflow:
     """Tests for the credit card status + auto-payback mechanism."""
 
-    def _create_expense(self, seed_user, seed_periods, amount="100.00"):
-        """Helper: create a projected expense in the first period."""
+    def _create_expense(
+        self, seed_user, seed_periods, amount="100.00", *, is_envelope=False,
+    ):
+        """Helper: create a projected expense in the first period.
+
+        ``is_envelope`` lands on the one-off's DEFINITION, which is the only
+        place the flag lives (plan step ``balance:X-bi-7d-2``).
+        """
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         txn = one_off_row_of(
@@ -46,6 +52,7 @@ class TestCreditWorkflow:
             scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
             category_id=seed_user["categories"]["Groceries"].id,
+            is_envelope=is_envelope,
         )
         db.session.flush()
         return txn
@@ -302,8 +309,8 @@ class TestCreditWorkflow:
             from app.models.transaction_entry import TransactionEntry
             from app.services import entry_credit_workflow
 
-            txn = self._create_expense(seed_user, seed_periods)
-            txn.is_envelope = True
+            txn = self._create_expense(seed_user, seed_periods, is_envelope=True)
+            assert txn.tracks_purchases is True
             entry = TransactionEntry(
                 **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,

@@ -387,8 +387,8 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
     ``definition_edit.apply_fields``, so a new
     category, account or type stayed on the Recurring page and never reached
     the grid.  Every row a rule-less definition holds is one of these: a
-    one-off's placed row once the family's cutover mints it a definition, and
-    today the rows a CLEARED cadence left behind.
+    one-off's placed rows (every one-off's since the family's cutover,
+    ``X-bi-7d-2``) and the rows a CLEARED cadence left behind.
 
     **The same refusal the regular pass makes, decided in the same place**
     (``_recurrence_common.classify_unruled_work``, over this engine's

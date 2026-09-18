@@ -21,7 +21,7 @@ import pytest
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
@@ -46,7 +46,7 @@ from app.services.statement_match import (
 from app.services.statement_match._placement import placements_for
 # pylint: disable-next=shekel-private-module-import
 from app.services.statement_match._sentence import for_placement
-from tests._test_helpers import legacy_link_less_row_of, resolved_amount
+from tests._test_helpers import resolved_amount
 
 from ._builders import (
     a_bank_line,
@@ -277,49 +277,6 @@ class TestANewEnvelopeAnswerMintsOnceAndNamesTheDefinition:
             stored = db.session.query(MerchantRule).one()
             assert stored.template_id is None
             assert stored.envelope_name == "Groceries"
-
-    def test_a_legacy_link_less_envelope_takes_the_line_and_names_nothing(
-        self, app, db, seed_user,
-    ):
-        """Until the cutover: converge on the legacy row, leave the rule as stated.
-
-        A pre-7b envelope carries no definition to name, so the answer's
-        first firing files into it (N-327, no second "Amazon" beside it) and
-        the stored answer stays NEW-ENVELOPE -- a name compare until the
-        family's cutover mints the row its definition.
-        """
-        with app.app_context():
-            category = seed_user["categories"]["Groceries"]
-            # The shape's one transitional home (plan step balance:X-bi-7c);
-            # the cutover retires this case with it.
-            legacy = legacy_link_less_row_of(
-                seed_user["bootstrap_period"], name="Amazon", amount="180.00",
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=category.id, is_envelope=True,
-            )
-            statement = an_import(seed_user)
-            _swipe(seed_user, statement, day=seed_user["bootstrap_period"].start_date)
-            a_rule(
-                seed_user, "Amazon", envelope_name="Amazon",
-                category_id=category.id,
-            )
-            db.session.commit()
-
-            filing = file_new_swipes(a_scope(seed_user), statement.id)
-            db.session.flush()
-
-            assert filing.outcome.envelopes_created == 0
-            db.session.refresh(legacy)
-            assert [entry.amount for entry in legacy.entries] == [Decimal("31.56")]
-            assert db.session.query(TransactionTemplate).filter_by(
-                name="Amazon",
-            ).count() == 0
-            stored = db.session.query(MerchantRule).one()
-            assert stored.template_id is None
-            assert stored.envelope_name == "Amazon"
 
     def test_an_owners_own_new_envelope_rewrites_no_rule(
         self, app, db, seed_user,

@@ -32,10 +32,11 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    create_savings_account,
+    create_transfer,
     eras_of,
     generate_row_of,
     last_covered_day,
-    legacy_link_less_row_of,
     one_off_row_of,
     record_paydays_across_a_hole,
     restate_fixture_era,
@@ -112,7 +113,8 @@ def _add_transaction(
     since plan step balance:X-bi-7c this builder places a one-off through
     the producer (:func:`one_off_row_of`), dated on its paycheck's start
     unless *due_date* says otherwise -- a case that means an UNDATED row
-    builds :func:`legacy_link_less_row_of` itself.
+    builds a transfer shadow, the one undated shape left since the family's
+    cutover (plan step balance:X-bi-7d-2).
 
     Args:
         db_session: Active database session.
@@ -319,25 +321,25 @@ class TestDayAssignment:
     def test_due_date_none_fallback(self, app, seed_user, seed_periods, db):
         """An UNDATED row falls back to period.start_date.day.
 
-        The undated row is the LEGACY link-less shape: every one-off is dated
+        The undated row is a transfer's expense shadow made without a due
+        date (the transfer form leaves it optional): every one-off is dated
         on its paycheck's start since plan step balance:X-bi-7b, and the
-        cutover (X-bi-7d) dates production's remaining undated rows the same
-        way -- so this is built on the shape's one transitional home (plan
-        step balance:X-bi-7c, ruling R-BAL59) and 7d retires it, with the
-        ``None`` arm of ``attribution_day`` at this door if nothing else
-        reaches it.  Through ``_add_transaction`` the case had become its
-        dated sibling's duplicate, passing on the placed row's own date
-        (found by 7c-2's adversarial review).
+        cutover (balance:X-bi-7d-2) dated production's remaining undated
+        one-offs the same way, so a row NO definition prices is what still
+        reaches the ``None`` arm of ``attribution_day`` at this door.  (A
+        LEGACY link-less row was the specimen until that cutover.)
         """
         with app.app_context():
             p0 = seed_periods[0]  # starts Jan 2
-            legacy_link_less_row_of(
-                p0, name="Manual", amount="50.00",
-                user_id=p0.user_id, account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            jar = create_savings_account(
+                seed_user, db.session, "Jar", Decimal("500.00"),
+            )
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], jar, p0,
+                amount=Decimal("50.00"),
             )
             db.session.commit()
+            assert all(row.due_date is None for row in xfer.shadow_transactions)
 
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id,
@@ -347,7 +349,7 @@ class TestDayAssignment:
             # Should fall back to period start_date (Jan 2).
             assert 2 in result.day_entries
             names = [e.name for e in result.day_entries[2]]
-            assert "Manual" in names
+            assert "Transfer to Jar" in names
 
     def test_day_entries_sorted_by_amount(self, app, seed_user, seed_periods, db):
         """Multiple txns on the same day sorted by abs(amount) descending."""

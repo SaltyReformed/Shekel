@@ -358,10 +358,12 @@ class TestEntryIntegration:
         row, so only a crafted PATCH reaches for its cell -- **and since plan
         step ``balance:X-bi-7b`` the write does NOT land**: the schema the
         door loads for a recurring definition's row declares no flag, so the
-        field is dropped before any code could reach the setter (finding
+        field is dropped before any code could reach a writer (finding
         **BAL-484**'s writer, deleted under ruling R-BAL20; this case
         asserted ``cell is True`` while the inert write plan step X-bi-1
-        left unrefused still landed).  The row's template is hidden, so the
+        left unrefused still landed, and the cell itself went at the
+        family's cutover, ``balance:X-bi-7d-2``).  The row's template is
+        hidden, so the
         row stays off the companion page and its entries door stays 404:
         both surfaces decide by the one accessor, ``visible_to_companion``
         (plan step ``X-bi-1b``, finding **BAL-482**).  Through the
@@ -387,15 +389,11 @@ class TestEntryIntegration:
         })
         assert resp.status_code == 200
         db.session.expire_all()
-        # The cell did NOT take the write: even a raw-SQL reader of it sees
-        # what it held.
-        cell = db.session.execute(
-            Transaction.__table__.select()
-            .with_only_columns(Transaction.__table__.c.companion_visible)
-            .where(Transaction.__table__.c.id == txn_id)
-        ).scalar_one()
-        assert cell is False
-        assert db.session.get(Transaction, txn_id).visible_to_companion is False
+        # Nothing took the write: the definition -- the only home a flag has
+        # -- holds what it held, and the row reads that.
+        row = db.session.get(Transaction, txn_id)
+        assert row.template.companion_visible is False
+        assert row.visible_to_companion is False
 
         # The owner's request above cached the owner on ``g._login_user``,
         # and the ``db`` fixture holds ONE app context for the whole test,

@@ -37,11 +37,17 @@ A bare ``Transfer`` has no shadow pair, which is fine for a constraint over
 the parent's own columns; it is the shape ``test_amount_ownership``'s
 Core-insert probe and its ad-hoc arm use, while a transfer OF A DEFINITION
 anywhere else in the suite is the engine's (``generate_transfer_of``, plan
-step X-ch).  **The two link-arrival cases assign the link onto an existing
-row** (``txn.template_id = ...``, ``xfer.transfer_template_id = ...``), which
-is the pattern ledger row BAL-480's closing census greps for: they are that
-census's one deliberate exception, because the UPDATE direction of a CHECK
-over the link cannot be graded any other way.
+step X-ch).  **The transfer link-arrival case assigns the link onto an
+existing row** (``xfer.transfer_template_id = ...``), which is the pattern
+ledger row BAL-480's closing census greps for: it is that census's one
+deliberate exception, because the UPDATE direction of a CHECK over the link
+cannot be graded any other way.  The transaction table has no such case
+since the family's cutover (plan step ``balance:X-bi-7d-2``): a bare row --
+no definition, no transfer, no credit source -- is unstorable under
+``ck_transactions_one_pricing_link`` at ``= 1``, so nothing exists for a link
+to arrive on; the control against over-refusal of the due-date CHECK is a
+transfer's undated shadow, and the bare row's refusal is asserted by the
+one-link CHECK's own name.
 
 The last class drives the migration's own ``downgrade()`` and ``upgrade()``
 over this test's private database clone, so the refusal the upgrade makes on
@@ -69,6 +75,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
     create_savings_account,
+    create_transfer,
     load_migration_module,
     make_expense_template,
     make_transfer_template,
@@ -76,6 +83,7 @@ from tests._test_helpers import (
 
 _TXN_CONSTRAINT = "ck_transactions_template_row_needs_due_date"
 _XFER_CONSTRAINT = "ck_transfers_template_row_needs_due_date"
+_ONE_LINK_CONSTRAINT = "ck_transactions_one_pricing_link"
 
 _MIGRATION = load_migration_module("4d7123cd9803_a_template_row_is_dated.py")
 
@@ -93,17 +101,11 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
 
-    **BARE on purpose, and the file 7d re-cuts CASE BY CASE.**  The subject
-    is ``ck_transactions_template_row_needs_due_date`` on
-    ``budget.transactions``, and a control that reached the row through a
-    door would grade the door.  Two cases here NEED the link-less shape the
-    cutover deletes -- ``test_an_undated_row_that_names_no_definition_is_
-    accepted`` (the control against over-refusal: the admitted arm IS that
-    shape) and ``test_linking_an_undated_row_to_a_definition_is_refused`` (a
-    link-less row is what receives the link) -- so a pricing link on this
-    builder would not keep them meaningful: 7d retires those two with the
-    arm and re-cuts the rest (plan step ``balance:X-bi-7c``, handoff s.3's
-    judgment per site).
+    **BARE on purpose.**  The subject is a CHECK on ``budget.transactions``,
+    and a control that reached the row through a door would grade the door.
+    Every case that stores a row passes ``template_id=`` (the row's one
+    pricing link); the one case that does not is the one-link CHECK's own
+    refusal control (plan step ``balance:X-bi-7d-2``, ruling **R-BAL20**).
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -247,39 +249,43 @@ class TestATransactionOfADefinitionIsDated:
             txn.due_date = None
             _flush_refused_by(_TXN_CONSTRAINT)
 
-    def test_linking_an_undated_row_to_a_definition_is_refused(
+    def test_an_undated_row_that_names_no_link_at_all_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """The other UPDATE direction: the link cannot arrive without a date.
+        """A BARE row is unstorable: ``ck_transactions_one_pricing_link`` reads ``= 1``.
 
-        No writer in ``app/`` sets ``template_id`` on an existing row -- that
-        census is why the two-term form needs no guard -- and this is the
-        storage tier holding the same line for a writer the census could not
-        see.
-        """
-        with app.app_context():
-            template = make_expense_template(db.session, seed_user)
-            txn = _make_transaction(seed_user, seed_periods, due_date=None)
-            db.session.add(txn)
-            db.session.commit()
-
-            txn.template_id = template.id
-            _flush_refused_by(_TXN_CONSTRAINT)
-
-    def test_an_undated_row_that_names_no_definition_is_accepted(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The control against over-refusal: an ad-hoc row may carry no date.
-
-        Nothing prices such a row by its date, and the create form offers the
-        field as optional.
+        Until the family's cutover (plan step ``balance:X-bi-7d-2``) this
+        was the control against over-refusal -- a link-less one-off could
+        carry no date -- and the CHECK read ``<= 1``.  The cutover minted
+        every such row a definition and re-cut the CHECK, so the same row
+        is refused, and by THAT constraint's name: the due-date CHECK admits
+        it (``template_id IS NULL``), which is why the name is asserted.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods, due_date=None)
             db.session.add(txn)
+            _flush_refused_by(_ONE_LINK_CONSTRAINT)
+
+    def test_an_undated_transfer_shadow_is_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The control against over-refusal: a row priced through its transfer may carry no date.
+
+        Nothing prices a shadow by its own date -- amount rule 5 reads the
+        parent -- and the transfer form offers the field as optional.  The
+        one undated shape the schema still admits since the cutover.
+        """
+        with app.app_context():
+            savings = _savings(seed_user)
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
             db.session.commit()
-            assert txn.id is not None
-            assert txn.due_date is None
+            shadows = xfer.shadow_transactions
+            assert len(shadows) == 2
+            assert all(row.id is not None and row.due_date is None for row in shadows)
+            assert all(row.template_id is None for row in shadows)
 
     def test_a_dated_row_that_names_a_definition_is_accepted(
         self, app, db, seed_user, seed_periods,

@@ -222,7 +222,7 @@ def _reject_tracking_on_income(txn, data):
     """Reject enabling purchase tracking on an income row.
 
     Purchase tracking is expense-only.  The popover only renders the
-    ``is_envelope`` checkbox for ad-hoc EXPENSE rows, so this is the crafted-
+    ``is_envelope`` checkbox for a PLACED expense row, so this is the crafted-
     request backstop -- the same layering every other route-tier guard here
     uses.  Checked against the STORED type because ``TransactionUpdateSchema``
     carries no ``transaction_type_id``, so a PATCH cannot change it.

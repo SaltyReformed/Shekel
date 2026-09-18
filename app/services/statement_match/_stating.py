@@ -622,14 +622,15 @@ def rule_naming(
       paycheck holds none of a rule-less definition (ruling **R-BAL24**,
       leaf 7b-3 of ``balance:X-bi-7b``) -- the identity across periods
       ruling **R-GA** says a rule needs;
-    * a LEGACY link-less row (until the family's cutover mints it a
-      definition) is named by :attr:`RuleAnswer.NEW_ENVELOPE` carrying that
-      row's own name and category, which
+    * an envelope that does not exist yet is named by
+      :attr:`RuleAnswer.NEW_ENVELOPE` carrying a name and category, which
       :func:`~._placement._new_envelope_placement` resolves to a definition
-      minted at its first firing and named thereafter.  Measured 2026-08-30
-      on the developer's own account: 223 of his 256 offerable destinations
-      carried a template and 33 did not, every one of the 33 minted by a
-      new-envelope answer -- the shape the cutover retires.
+      minted at its first firing and named thereafter.  Until the family's
+      cutover (``balance:X-bi-7d-2``) this was also how a LEGACY link-less
+      row was named -- measured 2026-08-30 on the developer's own account:
+      223 of his 256 offerable destinations carried a template and 33 did
+      not, every one of the 33 minted by a new-envelope answer -- and the
+      cutover minted each of those a definition.
 
     **It was keyed on ``recurs`` from leaf 7b-1 to leaf 7b-2**, because a
     TEMPLATE answer naming a definition that generates nothing resolved
