@@ -4,10 +4,16 @@ Shekel Budget App -- Transaction flag-resolution property tests
 Unit tests for ``Transaction.tracks_purchases`` and
 ``Transaction.visible_to_companion``.  Resolution rule: a
 template-generated row defers to its template's flag (the template is
-the single source of truth for every instance it generates), while an
-ad-hoc row (template_id IS NULL) uses its own column.  These properties
-are the load-bearing abstraction behind F2 (companion visibility) and
-F3 (purchase tracking) for ad-hoc transactions.
+the single source of truth for every instance it generates), while a
+LEGACY link-less row (template_id IS NULL) uses its own column.  These
+properties are the load-bearing abstraction behind F2 (companion
+visibility) and F3 (purchase tracking).  **The own-cell arm is the pre-7b
+shape and production's until the cutover** (plan step ``balance:X-bi-7d``):
+a one-off placed since ``balance:X-bi-7b`` reads both flags off its
+DEFINITION (ruling R-BAL36), so every ``_adhoc`` case here grades the
+legacy arm on its one transitional home (``legacy_link_less_row_of``, plan
+step ``balance:X-bi-7c``, ruling R-BAL59), and 7d retires those cases
+with the arm; the ``_templated`` cases are the live one.
 
 **Both cells are SEALED**: ``is_envelope`` since plan step ``balance:X-bi-1``
 (ruling **R-JQ**; the seal over a pin, developer 2026-09-11) and
@@ -25,30 +31,30 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import generate_row_of, legacy_link_less_row_of, make_expense_template
 
 
 def _adhoc(seed_user, period, *, is_envelope, companion_visible):
-    """Create and commit an ad-hoc (template_id IS NULL) transaction."""
-    txn = Transaction(
+    """Create and commit a LEGACY link-less (template_id IS NULL) transaction.
+
+    The shape whose own cells these cases grade (see the module docstring),
+    on its one transitional home; 7d retires both.
+    """
+    txn = legacy_link_less_row_of(
+        period,
         name="Ad-hoc",
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        amount=Decimal("100.00"),
         user_id=period.user_id,
-        pay_period_id=period.id,
         account_id=seed_user["account"].id,
-        category_id=list(seed_user["categories"].values())[0].id,
         scenario_id=seed_user["scenario"].id,
-        template_id=None,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        category_id=list(seed_user["categories"].values())[0].id,
         is_envelope=is_envelope,
         companion_visible=companion_visible,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 
