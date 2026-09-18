@@ -316,6 +316,11 @@ _FENCED_MODULE_RULINGS = {
         # account metadata, not balances.
         "classify_account",
         "is_payroll_deduction_funded",
+        # The revolving-credit predicate (plan step credit_card:CC-1): reads
+        # ONE boolean off the account's type row and dates nothing, sums
+        # nothing -- the same metadata question as the two above, on a flag
+        # the seed alone sets.
+        "is_revolving",
     })),
     # The loan WALK leaf (plan step B1, renamed ``_fold`` -> ``_walk`` at D-fold):
     # the event stream, the split, and the one running-balance replay over them,

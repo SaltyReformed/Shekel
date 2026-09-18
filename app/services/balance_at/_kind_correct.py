@@ -164,15 +164,15 @@ def build_maps(
     }
 
 
-def _modelled_scalar(
-    account: Account, ctx: BalanceContext, as_of: date,
-) -> Decimal:
-    """Return the account's replayed balance at one date.
+def _modelled_balances(
+    account: Account, ctx: BalanceContext, dates: list[date],
+) -> dict[date, Decimal]:
+    """Return the account's replayed balance at each of *dates*.
 
-    The non-loan arm of :func:`balance_at`, for EVERY non-loan kind: a plain
-    checking account, an HYSA, a brokerage and a Property all read the one
-    replay, which is the cash fold plus whatever modelled tiers the account's
-    own parameters put on it.
+    The non-loan arm of :func:`balance_at_dates`, for EVERY non-loan kind: a
+    plain checking account, an HYSA, a brokerage, a Property and a Credit Card
+    all read the one replay, which is the cash fold plus whatever modelled
+    tiers the account's own parameters put on it.
 
     **It reaches the replay through the SAME loader the map does**
     (:func:`._inputs._contribution_inputs_for_account`), so the scalar and the period
@@ -184,23 +184,88 @@ def _modelled_scalar(
     Measured before the PLAIN branch was routed here: on the real Checking
     account (804 transaction rows, 840-day horizon) the replay costs
     ``92.3 ms`` against the cash fold's ``91.7 ms`` -- the load dominates, and
-    an account that models no return adds only the per-day collapse.
+    an account that models no return adds only the per-day collapse.  N dates
+    cost ONE assembly (:func:`._asset_fold.fold_asset_balances` samples the
+    resolved step list at every requested date), which is why this takes the
+    list rather than one date: the liability band asks ~25 dates per account.
 
     Args:
         account: The account to value; its kind is consulted only by the replay.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
-        as_of: The VALUATION date.
+        dates: The VALUATION dates, in any order; duplicates collapse.
 
     Returns:
-        The cent-quantized ``Decimal`` balance at *as_of*.
+        ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
+        requested date.
 
     Raises:
         PayCalendarError: See :func:`._asset_fold._assemble`.
     """
     return _asset_fold.fold_asset_balances(
-        account, ctx, [as_of], _contribution_inputs_for_account(account, ctx),
-    )[as_of]
+        account, ctx, dates, _contribution_inputs_for_account(account, ctx),
+    )
+
+
+def balance_at_dates(
+    account: Account, ctx: BalanceContext, dates: list[date],
+) -> dict[date, Decimal]:
+    """Return one account's balance at each of *dates* -- the kind-correct multi-date read.
+
+    **The ONE spelling of the seam's DATE-keyed kind dispatch** (plan step
+    credit_card:CC-1, rule 14's ONE WALK), and since plan step X-g2b that
+    dispatch has exactly ONE branch: is this a CONFIGURED LOAN?  The
+    PERIOD-keyed map (:func:`._inputs._account_balance_map`) asks the same
+    question for itself, because its two arms answer per-period figures
+    (``AssetPeriodFigures``, the window sample) rather than a balance at a date;
+    it is the other of :func:`._resolution.configured_loan`'s two callers.
+
+    * **A configured loan** -> :func:`~app.services.balance_at.positions` over
+      the whole list: the event FOLD over the loan's SOURCE facts for a date at
+      or before the resolver's now (the only complete record of the past -- it
+      books the true-ups that never appear as schedule rows), and the forward
+      schedule projection after (step C3b).  N dates cost one fold walk.
+    * **Everything else** -> the event REPLAY (:func:`_modelled_balances`) over
+      the whole list.  That includes an AMORTIZING account with no
+      ``LoanParams`` -- a Mortgage typed but never filled in, which has no
+      schedule to fold and whose balance is its transaction rows -- and a
+      revolving Credit Card, whose balance is ``opening + SUM(movements)`` and
+      nothing more (ruling credit_card:R-CC14).
+
+    The branch is :func:`._resolution.configured_loan`, the seam's ONE spelling
+    of that question (plan step X-g3b-0): this dispatch, the per-period map and
+    -- until CC-1 -- the forward liability band each used to write it out for
+    themselves, so "the three agree" was an argument rather than a property.
+    The liability band now reads THIS function for every liability and holds
+    no copy of the dispatch; the scalar :func:`balance_at` is a one-date
+    reading of it.  The degrade is decided on the resolver's own fact, never on
+    a kind test that could disagree with it.
+
+    Args:
+        account: The account to value.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the resolver / loan schedule; its ``as_of`` is
+            the resolver's NOW -- see :func:`balance_at` for why the two dates
+            are distinct).
+        dates: The calendar dates to value the account at, in any order.
+            Duplicates collapse.
+
+    Returns:
+        ``{date: balance}`` -- one ``Decimal`` per distinct requested date.
+
+    Raises:
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        PayCalendarError: The owner's paydays cannot define a calendar.  The
+            REPLAY arm reaches it through :func:`._asset_fold._assemble`
+            since plan step C2-f2a; that function's ``Raises`` censuses
+            which surfaces the widening reached.  The loan arm does not.
+    """
+    _require_scenario(ctx)
+    if configured_loan(account, ctx) is not None:
+        return positions(account, ctx, dates)
+    return _modelled_balances(account, ctx, dates)
 
 
 def balance_at(
@@ -208,28 +273,15 @@ def balance_at(
 ) -> Decimal:
     """Return one account's balance as of a calendar date *as_of*.
 
-    The scalar-at-a-date producer, and since plan step X-g2b it has exactly ONE
-    branch: is this a CONFIGURED LOAN?
-
-    * **A configured loan** -> :func:`~app.services.balance_at.positions`: the
-      event FOLD over the loan's SOURCE facts for a date at or before the
-      resolver's now (the only complete record of the past -- it books the
-      true-ups that never appear as schedule rows), and the forward schedule
-      projection after (step C3b).  This scalar is also the accessor a consumer
-      wanting a loan's PAST balance must use; the seam's forward-only liability
-      view (:func:`~app.services.balance_at.liability_owed_at_dates`)
-      deliberately refuses a past date.
-    * **Everything else** -> the event REPLAY
-      (:func:`_modelled_scalar`).  That includes an AMORTIZING account with no
-      ``LoanParams`` -- a Mortgage typed but never filled in, which has no
-      schedule to fold and whose balance is its transaction rows.
-
-    The branch is :func:`._resolution.configured_loan`, the seam's ONE spelling
-    of that question (plan step X-g3b-0): this scalar, the per-period map and
-    the forward liability band each used to write it out for themselves, so
-    "the three agree" was an argument rather than a property.  The degrade is
-    decided on the resolver's own fact, never on a kind test that could
-    disagree with it.
+    The scalar-at-a-date producer: a ONE-DATE reading of
+    :func:`balance_at_dates`, which holds the seam's kind dispatch (a
+    configured loan is its :func:`~app.services.balance_at.positions`;
+    everything else is the event replay) so that this scalar, the forward
+    liability band and any future multi-date reader answer from one spelling
+    of it.  This scalar is also the accessor a consumer wanting a loan's PAST
+    balance must use; the seam's forward-only liability view
+    (:func:`~app.services.balance_at.liability_owed_at_dates`) deliberately
+    refuses a past date.
 
     **Every kind is DATE-precise now** (plan step X-g2b, finding N-71).  INTEREST,
     INVESTMENT and APPRECIATING used to resolve *as_of* to the pay period
@@ -283,10 +335,7 @@ def balance_at(
             since plan step C2-f2a; that function's ``Raises`` censuses
             which surfaces the widening reached.  The loan arm does not.
     """
-    _require_scenario(ctx)
-    if configured_loan(account, ctx) is not None:
-        return positions(account, ctx, [as_of])[as_of]
-    return _modelled_scalar(account, ctx, as_of)
+    return balance_at_dates(account, ctx, [as_of])[as_of]
 
 
 def investment_growth_since_anchor(

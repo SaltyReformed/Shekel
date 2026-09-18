@@ -154,32 +154,8 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
         `+$452.42`; closed **D45**, **N-532**. Archived with `R14`.
 - [x] **S3** `329b663d` -- the engine prices the WHOLE horizon (**R-SAL10**, **R-SAL11**,
       **R-SAL14**, **R-SAL15**; closed **N-541**); ticked with `S3-f-4`, the last leaf of its last
-      leaf. The span as it stood: `historical/salary_s3_as_built_2026-09-13.md`; its argument and
-      the `S3-a`..`S3-d` records: `historical/salary_s3_leaves_as_built_2026-09-11.md`.
-- [x] **S3-a** `e4491ee6` -- the merit horizon is a per-raise TERMINATION. Archived with `S3`.
-- [x] **S3-b** `8a8dd51e` -- `terminal_year` + three CHECKs (migration `c9a4e17b53d8`). Archived
-      with `S3`.
-- [x] **S3-c** `62567d87` -- THE CUTOVER (**R-SAL12**, **R-SAL13**). Archived with `S3`.
-- [x] **S3-d** `62612c9a` -- a FUNCTION of the payday (**R-SAL14**). Archived with `S3`.
-- [x] **S3-f** `329b663d` -- the PER-RAISE probe and its Save on the `/retirement` rail
-      (**R-SAL20**-**R-SAL24**, **R-SAL33**, **R-SAL34**); ticked with `S3-f-4`. Every leaf's
-      record: `historical/salary_s3f_as_built_2026-09-13.md`.
-- [x] **S3-f-1** `c463dfbc` -- the engine seam (**R-SAL20**). Archived with `S3-f`.
-- [x] **S3-f-2** `587c20d5` -- the plan point and the probe, two leaves. Archived with `S3-f`.
-- [x] **S3-f-2a** `f3032c87` -- the calibrated current paycheck (**R-SAL21**); MOVED `+$41,562.00`.
-      Archived with `S3-f`.
-- [x] **S3-f-2b** `587c20d5` -- the point believes each raise's end year; the rail probes it.
-      Archived with `S3-f`.
-- [x] **S3-f-3** `a5ef1bdf` -- the rail SAVES it (**R-SAL22**); the regeneration is a service
-      (**R-SAL24**). Archived with `S3-f`.
-- [x] **S3-f-4** `329b663d` -- the refused what-if RENDERED (**R-SAL33**, **R-SAL34**). Closed
-      **SAL-548**; opened **SAL-550**, **SAL-551** (owner `S5`). Archived with `S3-f`.
-- [x] **S3-e** `a6af5b3c` -- the hold is DELETED (**R-SAL15**, **R-SAL16**). Archived with `S3`.
-- [x] **S3-e-1** `b8ee429a` -- two window-only questions deleted (**R-SAL17**, **R-SAL18**).
-      Archived with `S3`.
-- [x] **S3-e-2** `a6af5b3c` -- the feed prices a payday ON DEMAND (**R-SAL15**, **R-SAL19**); MOVED
-      `+$194,321.85` on `/investment` and `-$4,909.81` on `/retirement`. As built:
-      `historical/salary_s3e2_as_built_2026-09-11.md`.
+      leaf. Its fourteen leaves left this document and the index 2026-09-18 (rule 5); the records
+      are the four `historical/salary_s3*` files (the span, S3-a..d, S3-f, S3-e-2).
 - [x] **R15** `77901fe0` -- what a payroll deduction's own FREQUENCY means: a RECURRENCE RULE on the
       row (**R-SAL3**, **R-SAL29**-**R-SAL32**, **R-SAL35**-**R-SAL37**); ticked with `R15-c`, its
       last leaf. The span as it stood: `historical/salary_r15_as_built_2026-09-14.md`.
@@ -227,6 +203,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       either way; 12 allowances (`$540`) in the wage base against 10 (`$450`); SS on 12-31 `$245.52`
       against `$251.10`; December keeps `$205.58` more under the ruled reading. `$0.00` while no
       owner has stated a history.
+- [ ] **S10 -- the database's defaults agree with the models** (finding **SAL-563**): one migration
+      sets the `server_default` autogenerate reports missing on
+      `auth.user_settings.safe_withdrawal_rate`, `salary.salary_profiles.name`,
+      `salary.tax_bracket_sets.child_credit_amount` and `.other_dependent_credit_amount`, so
+      `flask db check` reads clean; `$0.00`. Upkeep; minted 2026-09-18 at `credit_card:CC-1`'s tick
+      from its migration check.
 - [ ] **S8 -- the retirement gap reads the priced paycheck** (finding **SAL-561**):
       `compute_gap_net_biweekly` and the take-home-rate chip scale BASE by a net-over-gross ratio
       that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`

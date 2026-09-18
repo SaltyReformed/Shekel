@@ -6,12 +6,24 @@ calendar dates, answered in ONE loan-resolution pass.
 
 It exists because a long-horizon liability band needs each debt's owed balance
 at ~25 annual sample dates, and the caller should not have to know which forward
-rule each liability takes.  It composes the seam's total loan producer
-(:func:`~app.services.balance_at.positions`) once per amortizing loan over the
-whole future sample axis, and holds every other liability flat -- so the band
-cannot drift from the balance the rest of the app reports, and no consumer holds a
-balance-at-T boundary rule the seam exists to keep out of consumer hands
-(``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``).
+rule each liability takes.  It reads the seam's ONE kind-correct multi-date
+producer (:func:`._kind_correct.balance_at_dates`) once per liability over the
+whole future sample axis -- a configured loan's amortization ``positions``, every
+other liability's cash fold -- so the band cannot drift from the balance the rest
+of the app reports, and no consumer holds a balance-at-T boundary rule the seam
+exists to keep out of consumer hands
+(``docs/audits/balance_architecture/archive/followup_fence_loan_owed_at_dates.md``,
+a historical record of how the view came to be).
+
+**This module holds NO kind dispatch of its own** (plan step credit_card:CC-1,
+ruling R-CC14).  Until that step it asked :func:`._resolution.configured_loan`
+itself and held every non-loan liability FLAT at its current owed magnitude,
+"because it has no forward model" -- false since plan step X-g2b gave the cash
+fold a PLANNED tier for every account, and the reason a Credit Card's projected
+balance never reached the net-worth horizon.  Two rules are left here: the
+SPLICE (today reads the caller's confirmed figure, the future reads the
+producer) and the NO-BASELINE hold (no scenario, no plan to fold, every
+liability flat), which predates CC-1 and is named in the function's docstring.
 """
 
 from datetime import date
@@ -21,8 +33,7 @@ from app.models.account import Account
 from ._context import BalanceContext
 
 from ._inputs import ZERO
-from ._positions import positions
-from ._resolution import configured_loan
+from ._kind_correct import balance_at_dates
 
 
 def _spliced_owed_series(
@@ -79,35 +90,42 @@ def liability_owed_at_dates(
 ) -> dict[int, list[Decimal]]:
     """Return every liability's owed magnitude at each FORWARD sample date.
 
-    The seam's multi-date, multi-account LIABILITY view.  It owns BOTH forward
-    rules a liability can take, so no consumer has to know which is which:
+    The seam's multi-date, multi-account LIABILITY view.  It is KIND-BLIND: every
+    liability's future reads the seam's one kind-correct multi-date producer,
+    :func:`._kind_correct.balance_at_dates`, over the whole future sample axis --
+    ONE read per liability per pass, never one per date -- and that producer, not
+    this module, decides what each liability is:
 
-    * **AMORTIZING with a resolvable schedule** -- the seam's total loan producer
-      :func:`~app.services.balance_at.positions` over the whole future sample axis:
-      every date is strictly future here (filtered below), so positions answers
-      each from the forward PLAN fold (step C6b), seeded from the loan's confirmed
-      balance and reduced by the payments it is PROJECTED to make -- its projected
-      transfer records at their live cash, then contractual synthesis beyond the
-      record horizon.  The same forward balance the debt card and the ``2 years``
-      liability series read through the seam, so a band built on this cannot drift
-      from them.  The pass's memoized resolution and plan mean resolving each loan
-      once serves every sample date, not one walk per date.
+    * **A configured loan** answers from the forward PLAN fold
+      (:func:`~app.services.balance_at.positions`, step C6b): every date is
+      strictly future here (filtered below), so it is seeded from the loan's
+      confirmed balance and reduced by the payments it is PROJECTED to make --
+      its projected transfer records at their live cash, then contractual
+      synthesis beyond the record horizon.  The same forward balance the debt
+      card and the ``2 years`` liability series read through the seam, so a band
+      built on this cannot drift from them.
     * **Every other liability** -- a revolving Credit Card, a loan with no
-      ``LoanParams``, or ANY liability when there is no baseline scenario -- has
-      NO forward model, so it holds FLAT at its current owed magnitude.  This is
-      a balance rule, not a display choice: it is the same no-forward-model
-      branch a loan the resolver cannot resolve already takes, and it lives HERE
-      rather than in each consumer.  When revolving debt one day gets a real
-      forward model, this is the ONE place that changes.
+      ``LoanParams``, a plain custom liability -- answers from its cash fold: its
+      opening plus every recorded movement plus the still-projected plan
+      (ruling R-G's clamp, the PLANNED tier), sampled at each future date.  A
+      card with projected purchases and payments therefore MOVES across the
+      horizon; one with no rows reads its opening flat, because that is what its
+      fold says.  Until plan step credit_card:CC-1 this arm held every such
+      liability FLAT at its current owed magnitude on the claim that it "has no
+      forward model"; the fold IS its forward model (ruling R-CC14, design
+      ``docs/design/credit_card_from_scratch.md`` 3.1).
 
     ``scenario`` is nullable, and this is the ONE public seam entry that does not
     call :func:`._inputs._require_scenario`.  That guard exists to turn a missing
     baseline into a loud failure instead of a silently wrong number; here a
-    missing baseline is not an error but the DEGENERATE CASE OF THE SAME RULE --
-    no loan is resolvable, so every debt falls to the flat hold above, which is
-    the correct answer.  Raising would force every caller to re-derive that flat
-    hold, which is precisely the boundary-rule duplication the seam exists to
-    prevent.
+    missing baseline has a correct answer of its own: with no baseline there is
+    no loan to resolve AND no plan to fold, so every liability holds FLAT at its
+    current owed magnitude.  Raising would force every caller to re-derive that
+    flat hold, which is precisely the boundary-rule duplication the seam exists
+    to prevent.  **This no-baseline hold is a gate of its own, older than CC-1
+    and outside it**: whether the band should instead raise into ruling R-BW's
+    one handler like every other seam entry is not a question this step
+    answers.
 
     Sign convention: the result is a POSITIVE owed magnitude per date, matching
     the net-worth reduction's liability-minus rule (a liability contributes
@@ -116,13 +134,13 @@ def liability_owed_at_dates(
     signed either way (a loan resolves positive-owed, a Credit Card's cash
     balance is negative); ``abs`` is applied here.
 
-    The today point comes from *current_balances*, NOT from a schedule walk, and
+    The today point comes from *current_balances*, NOT from a fresh read, and
     that is load-bearing: the caller's current balance is the ledger-confirmed
     figure the net-worth hero renders, so a band built on this reconciles with
     the hero at index 0 by construction.  A schedule walk at ``today`` would
-    instead report the balance net of any OVERDUE unconfirmed payment
+    instead report a loan's balance net of any OVERDUE unconfirmed payment
     (understating the debt), which is why only STRICTLY-future dates are forwarded
-    to :func:`~app.services.balance_at.positions`; ``today`` itself reads
+    to :func:`._kind_correct.balance_at_dates`; ``today`` itself reads
     *current_balances* through the splice, never the projection.
 
     *today* is the CALLER'S as-of date, not a fresh :func:`datetime.date.today`
@@ -140,9 +158,9 @@ def liability_owed_at_dates(
 
     Args:
         liabilities: The liability accounts to value (every one appears in the
-            result).  ``account_type`` must be loaded --
-            :func:`._resolution.configured_loan` classifies it to select the
-            amortizing subset.
+            result).  ``account_type`` must be loaded -- the kind-correct
+            producer classifies it through :func:`._resolution.configured_loan`
+            to pick each liability's arm.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Its ``as_of`` is the present/future boundary AND the "now" its
             *sample_dates* were built against -- one clock, so this guard cannot
@@ -177,37 +195,31 @@ def liability_owed_at_dates(
             f"dates: {[d.isoformat() for d in stale]} (today={today.isoformat()})"
         )
 
-    # Deduplicated so a repeated sample date does not pay for a second schedule
-    # walk; the result is joined BY DATE below, so the producer's order and
+    # Deduplicated so a repeated sample date does not pay for a second fold
+    # sample; the result is joined BY DATE below, so the producer's order and
     # cardinality are its own business, not an implicit contract.
     future_dates = sorted({d for d in sample_dates if d > today})
-    owed_by_loan: dict[int, dict[date, Decimal]] = {}
+    forward_by_account: dict[int, dict[date, Decimal]] = {}
     if ctx.scenario is not None and future_dates:
         for account in liabilities:
-            if configured_loan(account, ctx) is None:
-                # Not an amortizing account, or one whose LoanParams were never
-                # entered: either way there is no forward model.  Omit it here so
-                # the flat-hold branch below carries it at its current owed
-                # magnitude -- the same no-forward-model rule the batch producer
-                # skipped it under.  The two halves used to be two guard clauses
-                # here, which made this the seam's THIRD spelling of "is this a
-                # configured loan?" (plan step X-g3b-0).
-                continue
-            # Every date is strictly future (filtered above), so positions()
-            # answers each from the forward PLAN fold (step C6b) -- the loan's
-            # projected payment records and contractual synthesis, folded from its
-            # confirmed present.  Every band consumer reads this one producer, so
-            # the band cannot drift from the balance the rest of the app reports.
-            # It returns the date-keyed dict the splice consumes directly.
-            owed_by_loan[account.id] = positions(account, ctx, future_dates)
+            # ONE kind-correct read per liability over the whole future axis:
+            # the producer picks the arm (a configured loan's positions, every
+            # other liability's fold), so this module spells no kind test --
+            # the configured-loan gate it carried until credit_card:CC-1 was
+            # the seam's second copy of balance_at's dispatch.  It returns the
+            # date-keyed dict the splice consumes directly.
+            forward_by_account[account.id] = balance_at_dates(
+                account, ctx, future_dates,
+            )
 
     result: dict[int, list[Decimal]] = {}
     for account in liabilities:
         raw_current = current_balances.get(account.id)
         current = abs(raw_current) if raw_current is not None else ZERO
-        forward = owed_by_loan.get(account.id)
+        forward = forward_by_account.get(account.id)
         if forward is None:
-            # No forward model: hold the current owed magnitude flat.
+            # No baseline scenario (or no future dates to project): nothing can
+            # be folded or resolved, so hold the current owed magnitude flat.
             result[account.id] = [current] * len(sample_dates)
             continue
         result[account.id] = _spliced_owed_series(
