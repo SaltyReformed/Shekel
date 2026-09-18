@@ -45,6 +45,14 @@ _MIGRATION = load_migration_module("d2e9f4a17c63_one_level_relation.py")
 _LATER = load_migration_module(
     "af07125d00f1_a_line_is_held_by_its_sightings.py",
 )
+#: The revision after THAT one on the same tables (plan step
+#: ``bank_import:X-f6b-1b``: the merchant key moves onto the sighting and
+#: the line's column goes), stepped down before ``_LATER`` and up after it
+#: for the same reason: ``af07125d00f1``'s upgrade backfills the sighting's
+#: ``merchant`` word, which exists only below this revision.
+_LATEST = load_migration_module(
+    "3ef820b7dd52_the_sighting_names_the_merchant.py",
+)
 
 
 def _sql(statement, **params):
@@ -165,6 +173,7 @@ class TestTheRoundTrip:
             "'account_anchor_history' AND operation = 'UPDATE'"
         )[0][0]
 
+        _run(_LATEST.downgrade, db.session)
         _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
 
@@ -208,6 +217,7 @@ class TestTheRoundTrip:
 
         _run(_MIGRATION.upgrade, db.session)
         _run(_LATER.upgrade, db.session)
+        _run(_LATEST.upgrade, db.session)
 
         # The standing placement is a level again, keyed to its import
         # and its claim; the released one owns no level -- the release is
@@ -271,6 +281,7 @@ class TestTheRoundTrip:
         ``uncorroborated`` row has no id to default the owner's rows to, and
         the revision says so instead of writing a wrong literal.
         """
+        _run(_LATEST.downgrade, db.session)
         _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
         db.session.execute(text(

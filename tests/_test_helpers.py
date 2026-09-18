@@ -488,13 +488,19 @@ def _db_clock_insert_attrs(model_class):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from sqlalchemy import Date, DateTime, inspect as sa_inspect
+    from sqlalchemy import Column, Date, DateTime, inspect as sa_inspect
     from sqlalchemy.sql.elements import TextClause
     from sqlalchemy.sql.functions import now as sa_now
 
     resolved = []
     for prop in sa_inspect(model_class).column_attrs:
         column = prop.columns[0]
+        # A ``column_property`` is a column attribute over an EXPRESSION, not
+        # a table column -- ``BankStatementLine``'s two merchant projections
+        # (plan step ``bank_import:X-f6b-1b``) are scalar subqueries -- and
+        # an INSERT omits nothing for it, so there is no default to read.
+        if not isinstance(column, Column):
+            continue
         default = column.server_default
         if default is None:
             continue

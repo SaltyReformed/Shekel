@@ -378,10 +378,10 @@ def a_bank_line(
 
     The line is the bank's fact and *statement*'s sighting of it is what
     that source said (plan step ``bank_import:X-f6b-1``, ruling **R-BI10**):
-    the line carries the day, the amount, the ordinal and the merchant KEY;
-    the sighting carries the wording, the merchant WORD, the stated day and
-    the category.  A second import that shows the same line adds a sighting
-    through :func:`a_sighting`.
+    the line carries the day, the amount and the ordinal; the sighting
+    carries the wording, the merchant KEY (plan step ``bank_import:X-f6b-1b``,
+    ruling **R-BI16**), the stated day and the category.  A second import
+    that shows the same line adds a sighting through :func:`a_sighting`.
 
     Args:
         seed_user: The seeded user bundle.
@@ -399,11 +399,12 @@ def a_bank_line(
         merchant: What the source NAMES the merchant, as a string, or ``None``
             for a source naming none -- which is the DEFAULT, and it is a
             fixture decision worth stating.  The string is resolved to a
-            :class:`~app.models.merchant.Merchant` row here
-            (:func:`a_merchant`) for the line's KEY, and recorded verbatim
-            as the sighting's WORD, so a test states the name it means and
-            the fixture reproduces the production identity.  **It is NOT
-            derived from *description* here.**  A builder that re-ran the
+            :class:`~app.models.merchant.Merchant` row
+            (:func:`a_merchant`, through :func:`a_sighting`) for the
+            sighting's KEY, so a test states the name it means and the
+            fixture reproduces the production identity; the line's own
+            ``merchant_id`` is then the read over its sightings the app
+            makes.  **It is NOT derived from *description* here.**  A builder that re-ran the
             adapter's own parse would move with it, so a change to that
             parse would shift the fixture and the assertion together and
             grade nothing; the parse is graded where it belongs, against
@@ -433,42 +434,43 @@ def a_bank_line(
         account_id=statement.account_id,
         posted_on=day,
         amount=Decimal(amount),
-        merchant_id=(
-            None if merchant is None
-            else a_merchant(
-                seed_user, merchant, account_id=statement.account_id,
-            ).id
-        ),
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
     db.session.flush()
     a_sighting(
-        statement, line, description=description, merchant=merchant,
-        transaction_on=transaction_on, source_category=source_category,
+        seed_user, statement, line, description=description,
+        merchant=merchant, transaction_on=transaction_on,
+        source_category=source_category,
     )
     return line
 
 
 def a_sighting(
-    statement, line, *, description="ACH DEBIT DUKEENERGY", merchant=None,
-    transaction_on=None, source_category=None, external_id=None,
-    running_balance=None,
+    seed_user, statement, line, *, description="ACH DEBIT DUKEENERGY",
+    merchant=None, transaction_on=None, source_category=None,
+    external_id=None, running_balance=None,
 ):
     """Stage and return *statement*'s sighting of *line*.
 
     What ONE import said about ONE line (plan step ``bank_import:X-f6b-1``).
     :func:`a_bank_line` writes the first; a case whose subject is a line two
-    imports showed writes the second here.  **The line is expired afterwards**
-    so its eager ``sightings`` collection reloads on the next read rather
-    than reporting the one it held before this row existed -- the same
-    loaded-relationship rule ``BankStatementLine.merchant`` documents.
+    imports showed writes the second here.  **The line is expired
+    afterwards** -- its eager ``sightings`` collection and its two merchant
+    projections, the one set the record door expires
+    (``BankStatementLine.READS_OVER_SIGHTINGS``) -- so the next read reports
+    the row and not the instance as it stood before this sighting existed.
 
     Args:
+        seed_user: The seeded user bundle, for :func:`a_merchant`.
         statement: The import that showed the line.
         line: The line it showed.
         description: What this source called it.
-        merchant: The merchant WORD this source named, or ``None``.
+        merchant: What this source NAMES the merchant, as a string, or
+            ``None`` for a source naming none.  Resolved to the account's
+            :class:`~app.models.merchant.Merchant` row here for this
+            sighting's KEY (plan step ``bank_import:X-f6b-1b``, ruling
+            **R-BI16**), which is the fact the app records.
         transaction_on: The day this source states it was made, or ``None``.
         source_category: This source's category string, or ``None``.
         external_id: This source's own id for the line, or ``None``.
@@ -483,7 +485,10 @@ def a_sighting(
         line_id=line.id,
         import_id=statement.id,
         description=description,
-        merchant=merchant,
+        merchant_id=(
+            None if merchant is None
+            else a_merchant(seed_user, merchant, account_id=line.account_id).id
+        ),
         transaction_on=transaction_on,
         source_category=source_category,
         external_id=external_id,
@@ -493,7 +498,7 @@ def a_sighting(
     )
     db.session.add(sighting)
     db.session.flush()
-    db.session.expire(line, ["sightings"])
+    db.session.expire(line, BankStatementLine.READS_OVER_SIGHTINGS)
     return sighting
 
 
