@@ -487,9 +487,9 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # chain, ``corroborated`` from agreement with a recorded statement,
     # ``uncorroborated`` from nothing); an owner's row takes the default,
     # which is the bottom rung -- see :func:`_owner_declared_evidence_id`.
-    # The rank is READ by the bank walk alone (``usable_anchor`` chooses the
-    # strongest standing bank level) and shown by the badge; no cash reader
-    # consults it.
+    # The rank is READ by the bank walk alone (``fold_bank_balances`` chooses
+    # the strongest standing bank level per run) and shown by the badge; no
+    # cash reader consults it.
     evidence_id = db.Column(
         db.Integer,
         # Named, so a database built by ``create_all`` (``init_database``'s

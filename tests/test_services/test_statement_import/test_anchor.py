@@ -402,10 +402,11 @@ class TestTheWeakestLinkRule:
     def test_the_ladder_is_strictly_ordered(self):
         """Proved by the file beats corroborated beats nothing.
 
-        Asserted here rather than trusted because ``usable_anchor`` picks the
-        strongest anchor by this order, and an early draft read the order off
-        the ref table's row ids instead -- which was measured BACKWARDS, since
-        the seed writes ``file_chain`` first.
+        Asserted here rather than trusted because the bank walk picks each
+        run's anchor by this order (``_balance._strongest_then_latest``), and
+        an early draft read the order off the ref table's row ids instead --
+        which was measured BACKWARDS, since the seed writes ``file_chain``
+        first.
         """
         assert _UNCORROBORATED.strength < _CORROBORATED.strength
         assert _CORROBORATED.strength < _FILE_CHAIN.strength
@@ -516,10 +517,10 @@ class TestTheRecordedHistoryWalk:
         Without it the anchor selection returned a row whose placed day was
         ``None`` and the coverage test raised ``TypeError`` comparing a date
         against it -- a 500.  Found by adversarial review 2026-08-23.  (The
-        selection moved to ``_balance.usable_anchor`` at plan step
-        ``bank_import:X-f6e-2``, and since ``balance:X-bj-1`` an unplaced
-        import simply owns no level row; this reaches it through the public
-        reader that consumes it.)
+        selection moved into ``_balance`` at plan step
+        ``bank_import:X-f6e-2``, became per run at ``balance:X-bj-1b``, and
+        since ``balance:X-bj-1`` an unplaced import simply owns no level row;
+        this reaches it through the public reader that consumes it.)
         """
         _seed_import(
             db, seed_user["account"], stated="2459.60", effective_on=None,
@@ -716,6 +717,86 @@ class TestTheRecordedHistoryWalk:
 
         # 1100.00, not 1100.00 plus the other account's 8000.00 line.
         assert known.amount == Decimal("1100.00")
+
+
+    def test_a_file_continuing_an_ASSUMED_run_opens_from_THAT_runs_anchor(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-BAL66**: the anchor that priced the day is the cap.
+
+        January holds a proved level; March, across an unimported February,
+        holds an assumed 500.00 at 03-20.  A file starting 03-21 opens at
+        500.00 -- walked from March's own anchor -- and is held
+        ``uncorroborated``, never stronger than that anchor.  Before plan
+        step ``balance:X-bj-1b`` the account-wide walk from the proved
+        January level could not reach 03-20, so this file got no opening and
+        a GUESSED day; it gets a SOLVED one now.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 1, 31),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 1, 31), "10.00")],
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, account, stated="500.00", effective_on=date(2026, 3, 20),
+            evidence=_UNCORROBORATED, file_name="march.csv",
+            lines=[(date(2026, 3, 20), "-5.00")],
+        )
+
+        known = recorded_opening_before(account.id, date(2026, 3, 21))
+
+        assert known.amount == Decimal("500.00")
+        assert known.evidence is _UNCORROBORATED
+
+    def test_a_file_starting_inside_a_GAP_still_opens_on_nothing(
+        self, app, db, seed_user,
+    ):
+        """Two anchored runs either side of a gap reach nothing inside it."""
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 1, 31),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 1, 31), "10.00")],
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, account, stated="500.00", effective_on=date(2026, 3, 20),
+            evidence=_UNCORROBORATED, file_name="march.csv",
+            lines=[(date(2026, 3, 20), "-5.00")],
+        )
+
+        assert recorded_opening_before(account.id, date(2026, 3, 10)) is None
+
+    def test_a_DISAGREEING_checkpoint_between_anchor_and_opening_changes_nothing(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-BAL66**: reported on the page, and a gate on nothing.
+
+        Anchor: proved 1000.00 at 03-05 over +100.00 (03-01), -40.00
+        (03-03), +25.00 (03-05).  A statement that assumed 1075.00 for 03-03
+        sits between the anchor and the opening day and is off by -100.00.
+        The balance before 03-02 is still the anchor's walk, 1015.00, and
+        still ``corroborated``: the checkpoint is the weaker figure by rank,
+        and the comparison is an instrument, never a gate (**R-GF**).
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 3, 5),
+            evidence=_FILE_CHAIN, file_name="ytd.csv",
+            lines=[(date(2026, 3, 1), "100.00"),
+                   (date(2026, 3, 3), "-40.00"),
+                   (date(2026, 3, 5), "25.00")],
+        )
+        _seed_import(
+            db, account, stated="1075.00", effective_on=date(2026, 3, 3),
+            evidence=_UNCORROBORATED, file_name="guessed.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+
+        known = recorded_opening_before(account.id, date(2026, 3, 2))
+
+        assert known.amount == Decimal("1015.00")
+        assert known.evidence is _CORROBORATED
 
 
 class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:

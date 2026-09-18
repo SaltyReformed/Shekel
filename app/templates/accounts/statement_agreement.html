@@ -20,7 +20,7 @@
    is the first two subtracted.
 
    Context (accounts.statement_agreement): account, agreement (BankAgreement or
-   None). #}
+   None), evidence_copy. #}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
@@ -118,53 +118,85 @@
       </div>
     </div>
 
-    {# WHICH SIDE RESTS ON AN ASSUMPTION.  A first import seats its figure by
-       assumption (finding N-342), and the signature of a wrong one is a
-       CONSTANT offset across the whole span -- an anchor is one number, so an
-       error in it shifts every day equally while leaving every movement
-       right.  A difference that VARIES cannot be that.  Ruling R-GF. #}
+    {# WHICH SIDE RESTS ON AN ASSUMPTION, PER RUN.  A first import seats its
+       figure by assumption (finding N-342), and the signature of a wrong one
+       is a CONSTANT offset across the whole span -- an anchor is one number,
+       so an error in it shifts every day equally while leaving every
+       movement right.  A difference that VARIES cannot be that.  Ruling R-GF.
+
+       ONE BLOCK PER RUN (plan step balance:X-bj-1b, rulings R-BAL63 and
+       R-BAL64): the imported days fall into contiguous runs, each walks from
+       the strongest statement figure inside it, and every OTHER figure a
+       statement places inside the run is a CHECKPOINT the walk is checked
+       against -- the bank's record against itself.  A run no statement
+       prices says so; it is never walked from a neighbouring run across
+       days nobody imported, and never from a figure the owner typed.  Files
+       are named because a re-import can place a second figure on the same
+       day.  Whether a figure is unconfirmed is read off the anchor
+       (``unconfirmed``, decided in Python on the enum member), never by
+       comparing a name here. #}
     <hr>
-    {% if agreement.anchor is none %}
-    <p class="mb-0 small text-muted">
-      <i class="bi bi-question-circle"></i>
-      <strong>No statement here places a balance on a day</strong>, so the two
-      running balances cannot be levelled against each other and the last two
-      columns are empty. The day-by-day comparison does not need one -- it
-      compares what moved, which your lines say on their own. The balance
-      columns fill in as soon as one recorded statement states a balance its
-      own lines can reach.
-    </p>
-    {% else %}
-    <p class="mb-0 small text-muted">
+    {% for run in agreement.runs %}
+    <p class="small text-muted mb-2">
       <i class="bi bi-flag"></i>
-      {% set copy = evidence_copy[agreement.anchor.evidence] %}
-      The bank's balances below are walked from
-      <span class="font-mono">{{ money(agreement.anchor.balance) }}</span> on
-      {{ agreement.anchor.day }} --
+      <strong>Days {{ run.first_day }} to {{ run.last_day }}.</strong>
+      {% if run.anchor is none %}
+      No statement here places a balance on a day, so the bank column is
+      empty across them. The day-by-day comparison does not need one -- it
+      compares what moved, which your lines say on their own. The balance
+      columns fill in as soon as a recorded statement covering these days
+      states a balance its own lines can reach.
+      {% else %}
+      {% set copy = evidence_copy[run.anchor.evidence] %}
+      The bank's balances are walked from
+      <span class="font-mono">{{ money(run.anchor.balance) }}</span> on
+      {{ run.anchor.day }} ({{ run.anchor.file_name }}) --
       <span class="badge {{ copy.badge }}" title="{{ copy.sentence }}">{{ copy.label }}</span>.
-      {% if agreement.unpriced_days %}
-      <br>
-      <span class="badge text-bg-warning">{{ agreement.unpriced_days }} day(s) not priced</span>
-      Those days show <span class="font-mono">--</span> in the bank column: the
-      recorded lines do not reach them from that figure, because your imports
-      leave a gap between it and them. Import the missing span and they fill in.
-      {% endif %}
-      {% if anchor_assumed %}
-      Nothing has confirmed that figure, so the whole bank column could be
+      {% if run.anchor.unconfirmed %}
+      Nothing has confirmed that figure, so these days' bank column could be
       uniformly wrong by however much it is out. Only a statement that proves
       its own balance -- one carrying a running balance beside every line --
       can confirm it; a later statement continuing from this one inherits its
       strength rather than raising it.
       {% endif %}
-      {% if agreement.constant_offset is not none and agreement.constant_offset != 0 %}
+      {% for checkpoint in run.checkpoints %}
+      {% set copy = evidence_copy[checkpoint.evidence] %}
       <br>
+      Also stated: <span class="font-mono">{{ money(checkpoint.observed) }}</span> on
+      {{ checkpoint.day }} ({{ checkpoint.file_name }}) --
+      <span class="badge {{ copy.badge }}" title="{{ copy.sentence }}">{{ copy.label }}</span>
+      {% if checkpoint.agrees %}
+      <span class="badge text-bg-success">agrees</span> with the walk.
+      {% else %}
+      <span class="badge text-bg-warning">off by {{ money(checkpoint.difference) }}</span>
+      -- the walk from the figure above says
+      <span class="font-mono">{{ money(checkpoint.walked) }}</span> for that day.
+      Every line between the two days is recorded, so either one of the two
+      figures is placed on a day it is not the balance for, or the lines
+      recorded between them are not what the bank posted; a figure the app
+      had to assume a day for is the usual case.
+      {% endif %}
+      {% endfor %}
+      {% endif %}
+    </p>
+    {% endfor %}
+    {% if agreement.unpriced_days %}
+    <p class="mb-0 small text-muted">
+      <span class="badge text-bg-warning">{{ agreement.unpriced_days }} day(s) not priced</span>
+      Those days show <span class="font-mono">--</span> in the bank column:
+      they lie between your imports, where nobody has recorded the lines, or
+      in a stretch no statement places a balance on. Import the missing span,
+      or a statement stating a balance its own lines reach, and they fill in.
+    </p>
+    {% endif %}
+    {% if agreement.constant_offset is not none and agreement.constant_offset != 0 %}
+    <p class="mb-0 small text-muted">
       <span class="badge text-bg-warning">the offset is constant</span>
       Every compared day is out by exactly
       <span class="font-mono">{{ money(agreement.constant_offset) }}</span>.
       That is the signature of a wrong starting figure rather than of anything
       in your records: an anchor is one number, so an error in it shifts every
       day equally.
-      {% endif %}
     </p>
     {% endif %}
   </div>

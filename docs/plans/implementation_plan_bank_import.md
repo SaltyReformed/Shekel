@@ -81,7 +81,8 @@ nothing and says so on its own first line. The code as committed is what those s
         decision is ruled toward host cron through a CLI door, matching the no-scheduler,
         no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
         are already measured in R-FP's context) is worth minting once the card ledger exists
-        (`credit_card:CC1a`..`CC1c`); no step for it exists yet, deliberately.
+        (`credit_card:CC1c`; `CC1a` and `CC1b` dissolved under `R-CC14`); no step for it exists yet,
+        deliberately.
 
 **The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
 
@@ -179,6 +180,10 @@ what it leaves a LATER step is on that step's own entry.
       labelled by kind in the paycheck register's MM/DD, the gap to the bank's date printed, the
       settle day never shown (`.rec-row-day` now names the per-fact span, `accounts.css:1205-1211`);
       `CandidateRow` carries `period` and `purchased_on`; `_dating.py` presents; `_caveat.py` split.
+- [ ] **X-hb** `fix(import): the delete confirmation names the placement that leaves` -- **BI-501**
+      (was balance:BAL-489, re-homed 2026-09-18): the confirmation and the receipt read the level
+      relation `balance:X-bj-1` built and say this import's own placement leaves and which import
+      becomes the balance-of-record; `ImportRemoval` gains the field. `$0.00`; the door's copy only.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.

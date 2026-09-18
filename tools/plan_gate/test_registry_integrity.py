@@ -510,13 +510,17 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
     def test_the_control_fires_on_a_cycle(self, stage):
         """The control fires on a cycle.
 
-        ``CC0a`` is already blocked by ``X-f4``; pointing ``X-f4`` back at
-        ``CC0a`` closes the loop across two arcs, which is the shape no single
-        arc document could have seen.  (It staged ``R5`` until 2026-09-03, when
-        ruling R-R52 moved R5's gate off X-f4.)
+        Both edges are STAGED -- ``CC3a`` blocked by ``X-bi-4`` and ``X-bi-4``
+        blocked by ``CC3a`` -- so the control no longer rests on a live edge a
+        later tick retires: it staged ``R5`` until 2026-09-03 (R-R52 moved R5's
+        gate off X-f4) and ``CC0a <- X-f4`` until 2026-09-18 (the R-CC13 trace
+        made CC0a ``NOW``).  A loop across two arcs is the shape no single arc
+        document could have seen.
         """
-        line = row_of("steps", "| balance | X-f4 |")
-        stage("steps", line, with_cell(line, -1, "credit_card:CC0a"))
+        cc3a = row_of("steps", "| credit_card | CC3a |")
+        stage("steps", cc3a, with_cell(cc3a, -1, "balance:X-bi-4"))
+        line = row_of("steps", "| balance | X-bi-4 |")
+        stage("steps", line, with_cell(line, -1, "credit_card:CC3a"))
         problems = registry.blocked_by_violations()
         assert any("CYCLE" in p for p in problems), problems
 

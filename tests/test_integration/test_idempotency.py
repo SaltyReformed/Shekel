@@ -16,12 +16,10 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.paycheck_line import PaycheckLine
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
     CalcMethod, PaycheckLineKind, FilingStatus, RaiseType,
-    Status, TransactionType,
+    TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
@@ -31,11 +29,11 @@ from tests._test_helpers import (
     cadence_payload,
     last_covered_day,
     make_every_period_rule,
+    one_off_row_of,
     resolved_amount,
     rhythm_of,
 )
 from app.services.balance_at import BalanceContext
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -67,7 +65,7 @@ def _create_profile(seed_user):
     db.session.add(template)
     db.session.flush()
     # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_every_period_rule(db.session, template)
+    make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -264,13 +262,14 @@ class TestTransactionDoubleSubmit:
         """POST /transactions twice with identical data creates two transactions.
 
         This is the most financially dangerous double-submit scenario in the
-        application. Ad-hoc transactions (template_id=None) have no unique
-        constraint, so double-clicking 'Add Transaction' creates two
-        identical rows.
+        application. A one-off -- a rule-less definition and its row, since
+        plan step balance:X-bi-7b -- carries no dedupe key (each POST mints
+        its own definition, so the occurrence index never meets a twin), so
+        double-clicking 'Add Transaction' creates two identical rows.
 
-        # WARNING: No duplicate ad-hoc transaction prevention. Double-click
-        # creates two transactions. User's projected balance will be off by
-        # the duplicated amount. This is a real financial risk.
+        # WARNING: No duplicate one-off prevention. Double-click creates two
+        # transactions. User's projected balance will be off by the
+        # duplicated amount. This is a real financial risk.
         """
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -535,21 +534,18 @@ class TestMarkDoneDoubleSubmit:
         no state change, no corruption of actual_amount.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Electricity",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("120.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("120.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 
@@ -572,7 +568,7 @@ class TestMarkDoneDoubleSubmit:
             txn = db.session.get(Transaction, txn_id)
             assert txn.status.name == "Paid"
             assert txn.settled_amount == Decimal("115.50")
-            assert txn.estimated_amount == Decimal("120.00")
+            assert resolved_amount(txn) == Decimal("120.00")
 
 
 # ── Carry Forward Double Submit ──────────────────────────────────────
@@ -591,24 +587,21 @@ class TestCarryForwardDoubleSubmit:
         from app.services import carry_forward_service
 
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create 3 projected transactions in period 0.
             amounts = [Decimal("850.00"), Decimal("125.50"), Decimal("43.99")]
             for i, amount in enumerate(amounts):
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    seed_periods[0],
                     name=f"Item {i}",
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=amount,
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amount),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
             db.session.commit()
 
             # First carry-forward: moves 3 items.
@@ -635,7 +628,7 @@ class TestCarryForwardDoubleSubmit:
             assert len(target_txns) == 3
 
             # All amounts are preserved.
-            actual_amounts = sorted(t.estimated_amount for t in target_txns)
+            actual_amounts = sorted(resolved_amount(t) for t in target_txns)
             assert actual_amounts == sorted(amounts)
 
             # Source period has 0 projected transactions.

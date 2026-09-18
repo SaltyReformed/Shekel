@@ -40,7 +40,6 @@ from flask_login import current_user
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.statements import EVIDENCE_COPY
-from app.enums import StatementBalanceEvidenceEnum
 from app.schemas.validation.statements import AgreementDaySchema
 from app.services import balance_at, bank_agreement
 from app.utils.auth_helpers import require_owner
@@ -66,12 +65,15 @@ def statement_agreement(account_id):
     agreement = bank_agreement.bank_agreement(
         account, balance_at.BalanceContext.build(current_user.id),
     )
+    # Whether a run's anchor rests on a figure nothing confirmed is read off
+    # the anchor value itself (``BankAnchor.unconfirmed``, decided in Python
+    # on the enum member); with one anchor per run there is no single flag
+    # for this route to compute.
     return render_template(
         "accounts/statement_agreement.html",
         account=account,
         agreement=agreement,
         evidence_copy=EVIDENCE_COPY,
-        anchor_assumed=_anchor_is_assumed(agreement),
     )
 
 
@@ -126,28 +128,3 @@ def _requested_day() -> date:
     except ValidationError:
         # ``abort`` raises ``NotFound``; nothing falls through.
         return abort(404)
-
-
-def _anchor_is_assumed(agreement) -> bool:
-    """Return whether the bank column rests on a figure nothing confirmed.
-
-    Args:
-        agreement: The :class:`~app.services.bank_agreement.BankAgreement`, or
-            ``None``.
-
-    Returns:
-        True only when an anchor exists and its evidence is the weakest rung.
-
-    **Decided in Python, on the enum MEMBER**, which is the project-wide
-    IDs-for-logic rule at the place a template makes it easiest to break: a
-    ``{% if evidence.name == 'UNCORROBORATED' %}`` reads naturally, compares a
-    display string, and sits in the one language this project forbids financial
-    reasoning in.  The same reason ``difference.difference_verdict`` hands its
-    partial a computed name rather than a Decimal.
-    """
-    return (
-        agreement is not None
-        and agreement.anchor is not None
-        and agreement.anchor.evidence
-        is StatementBalanceEvidenceEnum.UNCORROBORATED
-    )

@@ -25,7 +25,7 @@ from app.services.statement_match import removals_by_match
 
 from ._adapters import supported_sources
 from ._anchor import ImportedBalance, PlacementRelease, resting_on
-from ._balance import bank_levels
+from ._balance import bank_levels, file_names_of
 
 
 @dataclass(frozen=True)
@@ -541,7 +541,7 @@ def import_history(
     placements = {
         level.statement_import_id: (level, release) for level, release in levels
     }
-    causes = _file_names_of(
+    causes = file_names_of(
         release.released_by_import_id
         for _level, release in levels
         if release is not None and release.released_by_import_id is not None
@@ -584,7 +584,7 @@ def _imported_balance(
             :func:`~._balance.bank_levels`, or ``None`` when it placed no
             figure.
         causes: ``{import_id: file_name}`` for every import a rendered
-            release names as its cause (:func:`_file_names_of`), TOTAL over
+            release names as its cause (:func:`~._balance.file_names_of`), TOTAL over
             them, so this indexes rather than defaulting.
 
     Returns:
@@ -629,32 +629,6 @@ def _imported_balance(
             lines_changed_from=release.lines_changed_from,
             released_at=release.created_at,
         ),
-    )
-
-
-def _file_names_of(import_ids) -> "dict[int, str]":
-    """Return ``{import_id: file_name}`` for every id in *import_ids*.
-
-    ONE query for every cause the page names rather than one per released
-    row.  The key ``fk_anchor_releases_import_account`` holds that a non-NULL
-    cause names a row that exists, so the mapping is total over the ids
-    given and a reader indexes it; a release whose cause is gone carries
-    NULL and is never looked up.
-
-    Args:
-        import_ids: The ``budget.statement_imports`` ids to name; duplicates
-            and an empty iterable are both fine.
-
-    Returns:
-        The mapping, empty when nothing was asked for (no query is issued).
-    """
-    wanted = set(import_ids)
-    if not wanted:
-        return {}
-    return dict(
-        db.session.query(StatementImport.id, StatementImport.file_name)
-        .filter(StatementImport.id.in_(wanted))
-        .all()
     )
 
 

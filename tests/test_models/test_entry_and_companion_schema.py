@@ -15,14 +15,12 @@ import pytest
 import sqlalchemy.exc
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType, UserRole
-from app.models.transaction import Transaction
+from app.models.ref import TransactionType, UserRole
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.models.user import User, UserSettings
+from app.models.user import User
 from app.services.auth_service import hash_password
-from tests._test_helpers import figure_source_columns, load_migration_module
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import figure_source_columns, load_migration_module, one_off_row_of
 
 _REFUND_MIGRATION = load_migration_module(
     "b8e4c1f7a903_a_refund_is_a_negative_purchase.py",
@@ -50,19 +48,16 @@ def _make_entry(txn, user, amount, description, **kwargs):
 def _make_txn(seed_user, seed_periods, estimated_amount=Decimal("500.00")):
     """Create a projected expense transaction in the first period."""
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    projected_status = db.session.query(Status).filter_by(name="Projected").one()
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected_status.id,
+    txn = one_off_row_of(
+        seed_periods[0],
         name="Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=estimated_amount,
+        user_id=seed_periods[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated_amount),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.flush()
     return txn
 

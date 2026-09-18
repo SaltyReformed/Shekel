@@ -11,11 +11,8 @@ Tests for the schema additions in Task 2 of the Transfer Architecture Rework:
 
 from decimal import Decimal
 
-import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models.category import Category
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -25,6 +22,7 @@ from app.schemas.validation import (
     TransactionCreateSchema,
 )
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import one_off_row_of
 
 
 class TestTransactionTransferId:
@@ -86,22 +84,18 @@ class TestTransactionTransferId:
     def test_transaction_transfer_id_nullable(self, app, db, seed_full_user_data):
         """Regular transaction with transfer_id=None saves without error."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             data = seed_full_user_data
-            txn = Transaction(
-                user_id=data['periods'][0].user_id,
-                pay_period_id=data["periods"][0].id,
-                scenario_id=data["scenario"].id,
-                account_id=data["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                data["periods"][0],
                 name="Regular Txn",
-                category_id=data["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=data['periods'][0].user_id,
+                account_id=data["account"].id,
+                scenario_id=data["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                transfer_id=None,
+                category_id=data["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert txn.transfer_id is None

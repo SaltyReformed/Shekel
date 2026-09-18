@@ -17,34 +17,47 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
-from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
     bare_expense_template,
     generate_row_of,
+    legacy_link_less_row_of,
     make_every_period_rule,
     make_expense_template,
+    one_off_row_of,
 )
 
 
-def _adhoc(seed_user, period):
-    """Create and commit a link-less (``template_id IS NULL``) row."""
-    txn = Transaction(
-        name="Ad-hoc",
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        account_id=seed_user["account"].id,
-        category_id=list(seed_user["categories"].values())[0].id,
-        scenario_id=seed_user["scenario"].id,
-        template_id=None,
-    )
-    db.session.add(txn)
+def _row_fields(seed_user, period):
+    """The kwargs both row builders below share."""
+    return {
+        "name": "Ad-hoc",
+        "amount": Decimal("100.00"),
+        "user_id": period.user_id,
+        "account_id": seed_user["account"].id,
+        "scenario_id": seed_user["scenario"].id,
+        "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        "category_id": list(seed_user["categories"].values())[0].id,
+    }
+
+
+def _placed(seed_user, period):
+    """Place and commit a one-off's row through the producer."""
+    txn = one_off_row_of(period, **_row_fields(seed_user, period))
+    db.session.commit()
+    return txn
+
+
+def _legacy(seed_user, period):
+    """Create and commit a LEGACY link-less (``template_id IS NULL``) row.
+
+    The shape the cutover deletes, on its one transitional home (plan step
+    balance:X-bi-7c, ruling R-BAL59); 7d retires its case with it.
+    """
+    txn = legacy_link_less_row_of(period, **_row_fields(seed_user, period))
     db.session.commit()
     return txn
 
@@ -132,9 +145,14 @@ class TestTheRowDelegates:
     def test_a_link_less_row_does_not(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An ad-hoc row names no definition, so nothing it could recur by."""
+        """A LEGACY link-less row names no definition, so nothing it could recur by.
+
+        The ``template_id is None`` arm of the accessor -- the shape 7d
+        deletes; the live one-off arm is the rule-less definition's case
+        above.
+        """
         with app.app_context():
-            row = _adhoc(seed_user, seed_periods_today[0])
+            row = _legacy(seed_user, seed_periods_today[0])
             assert row.template_id is None
             assert row.recurs is False
 
@@ -143,7 +161,7 @@ class TestTheRowDelegates:
     ):
         """A derivation with no setter; a write would shadow the descriptor."""
         with app.app_context():
-            row = _adhoc(seed_user, seed_periods_today[0])
+            row = _placed(seed_user, seed_periods_today[0])
             with pytest.raises(AttributeError):
                 row.recurs = True
             assert row.recurs is False
