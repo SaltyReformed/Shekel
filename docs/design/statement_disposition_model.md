@@ -258,6 +258,9 @@ vocabulary. It does not buy the key.
 1. **Does the trigger in section 5 ship with the container, or is the zombie filter kept?** The
    first costs a trigger and a migration; the second keeps `act_still_names_a_row` and gives up the
    key, which is most of the reason to do the work.
+   **A third option since `bank_import:R-BI18` (2026-09-18): neither** -- `X-hc` makes the state
+   unrepresentable (the members' row-side keys NO ACTION, every moving door refusing while the act
+   stands), so there is nothing for a trigger or a filter to catch; `X-gl-2` waits on `X-hc`.
 2. **Does `never a purchase` migrate to a refusal flag, or is it re-stated per merchant?** On the
    measured data (2026-08-19) the developer holds 30 standing rules and the answer is load-bearing
    on the Capital One family; a migration is mechanical, but if those merchants become TRANSFER

@@ -197,6 +197,13 @@ is on that step's own entry.
       swipes from card-side charges -- and the card-tender entry shape the loop must design over is
       the movement on the card CC-5 builds. Designing over the payback shape the card arc deletes is
       the mistake that withdrew `balance:X-au-i`.
+- [ ] **X-hc** `refactor(import): a row an accepted act names is the bank's` -- **R-BI18** (N-372's
+      round, X-f6b-2's design loop): its settle day and figure are observed facts, so every door
+      that would move them, its status or its existence REFUSES while the act stands ("undo the
+      match first"); the members' row-side keys become NO ACTION like the line-side key;
+      `_still_holds`, the fold and R-GX(c)'s whatever-its-age clause delete (R-GX(c) AMENDED when
+      this ships); its first act is the census of the doors it refuses at. After `balance:X-bi-4b`
+      (the figure's home moves there), beside `X-gl-2`. Closes **N-372**.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are
@@ -219,7 +226,9 @@ is on that step's own entry.
         the deletion of `_candidates.act_still_names_a_row` and most of
         `app/services/match_withdrawal`. **Without it X-gl-1's UNIQUE key is not earned**: a stale
         MATCH disposition would block a later SKIP on a genuinely unanswered line. FORK, unruled --
-        keeping the filter instead gives up the key, which is most of the reason to do the work.
+        keeping the filter instead gives up the key, which is most of the reason to do the work; a
+        THIRD option since **R-BI18** (2026-09-18): neither, because `X-hc` makes the state
+        unrepresentable (row-side keys NO ACTION, the doors refuse), so this waits on `X-hc`.
   - [ ] **X-gl-3** `feat(import): a rule states a disposition and a refusal` -- `merchant_rules`
         carries a nullable DISPOSITION beside a separate REFUSAL flag; *never a purchase* leaves the
         answer set and `RuleAnswer` is replaced by the verb set. Makes **R-JH** structural rather

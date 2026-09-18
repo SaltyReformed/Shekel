@@ -1235,12 +1235,12 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 45 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 48 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites (census 106 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
+  **N-212** cites (census 111 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its
