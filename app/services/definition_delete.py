@@ -10,9 +10,12 @@ guards let through (``routes/accounts/crud.hard_delete_account``, plan step
 rather than calling it, and an adversarial review of that step reproduced
 the state ruling **R-JE** (finding **N-440**) exists to refuse: a settled,
 soft-deleted, TEMPLATE-priced row left with ``template_id NULL`` -- priced by
-nothing, unrestorable by the cutover's downgrade -- because ``transactions.
-template_id`` is ``ON DELETE SET NULL`` until the family's cutover makes it
-``RESTRICT``.  One body, so the two doors cannot part again.
+nothing, unrestorable by the cutover's downgrade -- which ``transactions.
+template_id``'s ``ON DELETE SET NULL`` manufactured until the family's cutover
+(plan step ``balance:X-bi-7d-2``) made the key ``RESTRICT``: a definition
+with a surviving row is now undeletable by the database, so the order below
+(rows first, then the definition) is what a successful delete requires.  One
+body, so the two doors cannot part again.
 
 **What the act is, in order.**  Every NON-SETTLED row the definition names is
 deleted first -- after its purchase postings are reversed, because

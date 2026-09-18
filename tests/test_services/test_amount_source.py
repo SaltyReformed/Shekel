@@ -85,7 +85,6 @@ from tests._test_helpers import (
     create_savings_account,
     create_transfer,
     current_pay_period,
-    legacy_link_less_row_of,
     one_off_row_of,
     payback_row_of,
     generate_row_of,
@@ -558,23 +557,6 @@ class TestTheDispatchIsTotal:
 
 class TestWhichRulePricesARow:
     """The classification, and the order two of its arms depend on."""
-
-    def test_a_row_with_no_links_owns_its_amount(self, app, db, seed_user, seed_periods):
-        """A LEGACY link-less row states its own figure: nothing else can.
-
-        The shape every one-off had before plan step ``balance:X-bi-7b`` and
-        production holds until the cutover (``X-bi-7d``), built on its one
-        transitional home (plan step ``balance:X-bi-7c``, ruling **R-BAL59**);
-        a one-off placed today is TEMPLATE-priced, the case
-        below.  7d retires this case with the shape.
-        """
-        txn = legacy_link_less_row_of(
-            seed_periods[0], name="Haircut", amount="35.00",
-            user_id=seed_user["user"].id, account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        )
-        assert amount_rule(txn) is AmountRule.OWN
 
     def test_a_one_off_placed_today_is_priced_by_its_definition(
         self, app, db, seed_user, seed_periods,

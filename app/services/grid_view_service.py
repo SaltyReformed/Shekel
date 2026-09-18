@@ -45,8 +45,8 @@ from app.utils.balance_predicates import is_cancelled
 # Lightweight struct for a single row in the budget grid.  Rows of a
 # RECURRING definition collapse to one row per (category, template)
 # regardless of per-instance name drift; every other row -- a one-off's
-# (a rule-less definition's, ruling **R-BAL34**), a legacy link-less row,
-# a transfer shadow, a CC payback -- collapses to one row per (category,
+# (a rule-less definition's, ruling **R-BAL34**), a transfer shadow, a CC
+# payback -- collapses to one row per (category,
 # name), so ``template_id`` here is set exactly when the row is a
 # recurring definition's.
 RowKey = namedtuple("RowKey", [

@@ -66,7 +66,6 @@ from tests._test_helpers import (
     figure_source_columns,
     generate_row_of,
     generate_transfer_of,
-    legacy_link_less_row_of,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
@@ -96,8 +95,8 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     RECURRING definition is the engine's (:func:`generate_row_of`), and since
     plan step balance:X-bi-7c this builder places a one-off through the
     producer (:func:`one_off_row_of`: a rule-less definition plus its row).
-    A case that means the LEGACY link-less shape builds
-    :func:`legacy_link_less_row_of` itself.  It    can no longer spell one.
+    It can no longer spell a link-less row, and since the family's cutover
+    (plan step balance:X-bi-7d-2) neither can the schema.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -262,85 +261,9 @@ class TestAPeriodMoveRePlacesAOneOff:
             assert row.occurs_on == stated
             assert row.is_override is False
 
-    def test_a_legacy_link_less_row_is_not_re_dated(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """THE CONTROL: the re-placing is a PLACED row's; a link-less row keeps its branch.
-
-        A legacy one-off (``template_id IS NULL`` until the family's cutover
-        dates and links it) dated at its paycheck's start is moved and left
-        dated as it was -- its date is its own optional note, and the
-        cutover is what brings it under R-BAL22.  Built on the shape's one
-        transitional home (plan step balance:X-bi-7c, ruling R-BAL59); 7d
-        retires this case with the shape.
-        """
-        with app.app_context():
-            source_start = derived_span(seed_periods[0]).start_date
-            legacy = legacy_link_less_row_of(
-                seed_periods[0], name="Legacy", amount="100.00",
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=seed_user["categories"]["Groceries"].id,
-                due_date=source_start,
-            )
-            db.session.commit()
-            assert legacy.template_id is None
-            assert legacy.is_placed is False
-
-            carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-            )
-            db.session.commit()
-
-            db.session.expire_all()
-            db.session.refresh(legacy)
-            assert legacy.pay_period_id == seed_periods[1].id
-            assert legacy.due_date == source_start
-            assert legacy.occurs_on is None
-            assert legacy.is_override is False
-
 
 class TestCarryForwardUnpaid:
     """Unit tests for carry_forward_unpaid covering gaps in existing tests."""
-
-    def test_non_template_transaction_preserves_is_override_false(
-        self, app, db, seed_user, seed_periods
-    ):
-        """A LEGACY link-less transaction retains is_override=False after carry forward.
-
-        Existing tests verify template-linked items ARE flagged is_override=True.
-        This test verifies the inverse on the pre-7b shape: a link-less row
-        (``template_id=None``, production's until the cutover) must NOT have
-        is_override set to True.  A one-off placed today is
-        ``test_a_rule_less_definitions_row_moves_without_the_flip``'s subject;
-        this one is built on the shape's one transitional home (plan step
-        balance:X-bi-7c, ruling R-BAL59) and 7d retires it with the shape.
-        """
-        with app.app_context():
-            txn = legacy_link_less_row_of(
-                seed_periods[0], name="Ad-hoc Expense", amount="100.00",
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=seed_user["categories"]["Groceries"].id,
-            )
-            assert txn.template_id is None
-            assert txn.is_override is False
-
-            carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-            )
-            db.session.flush()
-
-            db.session.refresh(txn)
-            # Non-template transaction must remain is_override=False.
-            assert txn.is_override is False
-            assert txn.pay_period_id == seed_periods[1].id
 
     def test_settled_status_not_moved(self, app, db, seed_user, seed_periods):
         """Transactions in the RECEIVED status are not carried forward.

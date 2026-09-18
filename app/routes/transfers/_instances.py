@@ -18,8 +18,8 @@ non-repeating transaction.**  A transaction template with no recurrence rule
 generates nothing at creation, so there is nothing to create; the PROPAGATE
 half has a transaction twin since plan step ``balance:X-bi-7a``
 (:mod:`app.routes.templates._instances`), because the rows such a definition
-holds -- a cleared cadence's survivors today, a one-off's placed row once the
-family's cutover mints it a definition -- are reached by nothing else.  A
+holds -- a one-off's placed rows, a cleared cadence's survivors -- are
+reached by nothing else.  A
 transfer template with no rule still moves money exactly once: this module
 materialises that single Transfer (with its two shadow transactions,
 atomically) and then keeps it equal to the definition, because the

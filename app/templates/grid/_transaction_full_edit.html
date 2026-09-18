@@ -396,8 +396,8 @@
          the date prices the row, so it may move and never clear, and the
          browser refuses the clear first; the gate
          (``_gates._reject_generated_due_date_edit``) is the backstop.  A
-         legacy link-less row's date is its own optional note and stays
-         clearable until the family's cutover dates it. #}
+         transfer shadow's or a CC payback's date is its own optional note,
+         priced through its parent, and stays clearable. #}
       <div class="mb-2">
         <label class="form-label mb-0 small">Due Date</label>
         {% if not txn.recurs %}
@@ -474,13 +474,15 @@
          row that has none (the bank door's row for money it could not
          categorise, R-FN).
 
-         A LEGACY link-less row (template_id IS NULL, until the family's
-         cutover mints it a definition) carries its own flags on its own
-         sealed cells and renders the two checkboxes exactly as it always
-         did -- the predicate is ``not txn.recurs``, which both shapes
-         answer; a recurring definition's row reads its flags off the
-         definition and renders no control, and the PATCH door loads a
-         schema that declares none for it (BAL-484's writer is gone).
+         The two checkboxes render for a PLACED row alone (ruling R-BAL73,
+         plan step balance:X-bi-7d-2).  A recurring definition's row reads
+         its flags off the definition and renders no control, and the PATCH
+         door loads a schema that declares none for it (BAL-484's writer is
+         gone); a transfer shadow and a CC payback name no definition and
+         carry no cell of their own since the cutover dropped both, so they
+         render no control either and their PATCH drops a flag the same way.
+         Until the cutover a legacy link-less row stated its flags in cells
+         of its own and the predicate was ``not txn.recurs``.
 
          Each checkbox is followed by a hidden "false" input so an explicit
          value is always submitted: werkzeug's MultiDict keeps the FIRST
@@ -488,7 +490,6 @@
          unchecked box yields only the hidden "false".  This lets the item
          schema apply the flag without a load_default that would otherwise
          let a quick-edit silently clear it. #}
-      {% if not txn.recurs %}
       {% if txn.is_placed %}
       <div class="mb-2">
         <label class="form-label mb-0 small" for="txn-name-{{ txn.id }}">Name</label>
@@ -511,7 +512,6 @@
           {% endfor %}
         </select>
       </div>
-      {% endif %}
       {% if txn.is_expense %}
       <div class="form-check mb-2">
         <input type="checkbox" class="form-check-input" id="is_envelope"
@@ -538,13 +538,11 @@
          so nothing is authored by accident (R-BAL32).  The placed row is
          adopted by a rule that names its date, else replaced by the rule's
          own (R-BAL25). #}
-      {% if txn.is_placed %}
       <div class="mb-2">
         <a class="small" href="{{ url_for('templates.edit_template', template_id=txn.template_id) }}">
           <i class="bi bi-arrow-repeat"></i> Make this repeat
         </a>
       </div>
-      {% endif %}
       {% endif %}
     </div>
 

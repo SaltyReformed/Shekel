@@ -208,7 +208,7 @@ class TestARuleFilesANewSwipeByItself:
                 .filter(Transaction.name == "Amazon")
                 .one()
             )
-            assert minted.is_envelope is True
+            assert minted.tracks_purchases is True and minted.template.is_envelope is True
             # Nothing budgeted it, so it budgets nothing and records only its
             # own purchases (``_container._NO_BUDGET``) -- priced by its
             # rule-less DEFINITION's one version since leaf 7b-3 of

@@ -222,12 +222,12 @@ class TestTheUpgradeABORTSOnADisagreement:
             INSERT INTO budget.transactions
                 (template_id, account_id, pay_period_id, scenario_id,
                  status_id, name, transaction_type_id, estimated_amount,
-                 due_date, occurs_on, is_override, is_deleted, is_envelope,
-                 companion_visible, version_id, created_at, updated_at)
+                 due_date, occurs_on, is_override, is_deleted,
+                 version_id, created_at, updated_at)
             VALUES (:tid, :aid, :pid, :sid, :stid, 'Cross-owner', :ttid, 1.00,
                     (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
                     (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
-                    FALSE, FALSE, FALSE, FALSE, 1, now(), now())
+                    FALSE, FALSE, 1, now(), now())
         """), {
             "tid": definition.id,
             "aid": seed_user["account"].id,
@@ -263,12 +263,12 @@ class TestTheUpgradeABORTSOnADisagreement:
             INSERT INTO budget.transactions
                 (template_id, account_id, pay_period_id, scenario_id,
                  status_id, name, transaction_type_id, estimated_amount,
-                 due_date, occurs_on, is_override, is_deleted, is_envelope,
-                 companion_visible, version_id, created_at, updated_at)
+                 due_date, occurs_on, is_override, is_deleted,
+                 version_id, created_at, updated_at)
             VALUES (:tid, :aid, :pid, :sid, :stid, 'Consistent', :ttid, 1.00,
                     (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
                     (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
-                    FALSE, FALSE, FALSE, FALSE, 1, now(), now())
+                    FALSE, FALSE, 1, now(), now())
         """), {
             "tid": definition.id,
             "aid": seed_second_user["account"].id,

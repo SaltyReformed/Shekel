@@ -381,9 +381,10 @@ def get_accessible_transaction(txn_id):
     (:mod:`app.routes.entries`) and status-change
     (:mod:`app.routes.transactions`) transaction routes.  Owners reach
     transactions they OWN; companions reach their linked owner's
-    transactions restricted to companion-visible rows (a template flagged
-    ``companion_visible``, or an ad-hoc row whose own ``companion_visible``
-    flag is set -- resolved by ``Transaction.visible_to_companion``).
+    transactions restricted to companion-visible rows (a row whose
+    DEFINITION is flagged ``companion_visible`` -- resolved by
+    ``Transaction.visible_to_companion``, which answers ``False`` for a
+    transfer shadow or a CC payback, ruling **R-BAL73**).
 
     **The owner is read off the ROW, and this door is where plan step
     ``pay_calendar:C13-b`` started.**  It was ``txn.pay_period.user_id`` -- a

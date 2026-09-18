@@ -178,8 +178,9 @@ def outstanding_transfers(
     **Every offer is CORRECTABLE, and that follows from ruling R-FF rather than
     being a choice made here.**  A tick is correctable exactly when the settle
     verb takes its MANUAL branch, and a transfer has no other branch to take: a
-    shadow carries no template and a False ``is_envelope``, so it is never
-    purchase-tracked and there are no purchases for a figure to be derived from
+    shadow carries no template, so it is never purchase-tracked
+    (``tracks_purchases`` answers ``False`` for a row with no definition) and
+    there are no purchases for a figure to be derived from
     (measured on production 2026-09-15: 342 shadows, 0 entries; since plan step
     ``balance:X-bi-3c`` a SETTLED shadow holds the seam's covering movement,
     which is the settle's own record and never a purchase to derive from).  The

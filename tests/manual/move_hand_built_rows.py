@@ -26,17 +26,20 @@ them through regardless**: ``is_envelope`` and ``companion_visible`` land on
 the DEFINITION (the row reads them from it, ruling R-BAL36), and
 ``due_date=None`` -- or no ``due_date`` at all -- becomes the paycheck's
 START (R-BAL22), never an undated row.  A case that MEANS the row's own cell
-or an undated row is a legacy-subject case and belongs on
-``legacy_link_less_row_of``; the tool cannot know, so it moves the site and
-the test's failure (or its silent tautology -- read the docstrings) says.
+or an undated row was a legacy-subject case (it sat on
+``legacy_link_less_row_of`` until the cutover, plan step ``X-bi-7d-2``,
+deleted the shape); since then a row's flags are its definition's and the
+one undated shape is a transfer's shadow (``create_transfer``).  The tool
+cannot know, so it moves the site and the test's failure (or its silent
+tautology -- read the docstrings) says.
 The helper import is added by RE-SORTING the whole existing
 ``from tests._test_helpers import (...)`` block, so unrelated import lines
 move in the diff.
 
-**It cannot classify a site, and never tries.**  A case whose SUBJECT is the
-legacy link-less shape gets moved onto the producer like any other and then
-FAILS -- which is the signal: the failure is read (legacy-subject ->
-``legacy_link_less_row_of``; a reader of a column a derived row does not
+**It cannot classify a site, and never tries.**  A case whose SUBJECT was the
+legacy link-less shape got moved onto the producer like any other and then
+FAILED -- which was the signal: the failure is read (legacy-subject, retired
+or re-fixtured on a shadow; a reader of a column a derived row does not
 carry; a real defect the cutover would arm) and never patched.  The comment a
 constructor carried INSIDE its parentheses is dropped; the diff is read for
 those.  Imports the move makes dead (``Transaction``, ``AmountOwnership``) and

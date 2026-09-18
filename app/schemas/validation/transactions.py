@@ -33,8 +33,8 @@ class TransactionUpdateSchema(BaseSchema):
 
     ``name`` and ``category_id`` stay here.  A one-off's are its
     DEFINITION's and the door lands them there
-    (``routes/transactions/_field_updates``); a legacy link-less row's are
-    its own until the family's cutover; a generated row's are its
+    (``routes/transactions/_field_updates``); a transfer shadow's and a CC
+    payback's are their own; a generated row's are its
     definition's too, and a crafted PATCH still writes the row's copy, which
     the next regeneration rewrites -- the same shape the due-date gate
     closed for that field and no step has yet closed for these two.
@@ -141,14 +141,15 @@ class TransactionUpdateSchema(BaseSchema):
 class TransactionItemUpdateSchema(TransactionUpdateSchema):
     """The row's fields plus the flags of the ITEM the row is.
 
-    Loaded by the PATCH door for a row whose tracking / visibility flags are
-    editable at the popover (plan step ``balance:X-bi-7b``): a PLACED row --
-    a rule-less definition's, whose flags are the definition's and land
-    there (rulings **R-BAL23**, **R-BAL36**) -- and, until the family's
-    cutover (``X-bi-7d``), a legacy link-less row, whose flags are its own
-    sealed cells.  A transfer shadow and a CC payback are link-less too and
-    load this schema as they always did; the shadow branch forwards no flag
-    and the payback keeps the legacy branch it had.
+    Loaded by the PATCH door for a PLACED row alone -- a rule-less
+    definition's, whose tracking / visibility flags are the definition's and
+    land there (plan step ``balance:X-bi-7b``, rulings **R-BAL23**,
+    **R-BAL36**).  Until the family's cutover (``balance:X-bi-7d-2``, ruling
+    **R-BAL73**) it was loaded for every non-recurring row: a legacy
+    link-less one-off stated its flags in cells of its own, and a transfer
+    shadow or a CC payback rode along.  Those cells are gone, a shadow and a
+    payback have no definition, and both now load the row schema, which
+    declares no flag.
 
     The flags carry deliberately NO load_default: the quick-edit and inline
     PATCH forms render no flag control, and without a default a PATCH that
@@ -163,9 +164,8 @@ class TransactionItemUpdateSchema(TransactionUpdateSchema):
     # placed row (whose price, name, category and flags live there) and
     # compared by the route beside the row's own ``version_id``: a save that
     # touches only the definition bumps only its counter, so without this a
-    # second stale card would overwrite the first's price in silence.  A
-    # legacy row's card renders none, and the route ignores it for any row
-    # that is not placed.
+    # second stale card would overwrite the first's price in silence.  The
+    # route ignores it for any row that is not placed.
     template_version_id = RowId(validate=validate.Range(min=1))
 
 
