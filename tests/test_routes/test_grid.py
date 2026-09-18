@@ -23,6 +23,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
+from app.services.cash_flow_set import CashFlowSet
 from app import ref_cache
 from app.services import template_amount_service
 from app.enums import (
@@ -50,7 +51,10 @@ from tests._test_helpers import (
     all_periods,
     an_entered_day,
     append_balance_assertion,
+    create_account_of_type,
     create_hysa_account,
+    create_savings_account,
+    create_transfer,
     current_pay_period,
     derived_span,
     family_journal_filter,
@@ -5281,7 +5285,7 @@ class TestGridPeriodSubtotalCanonical:
             # rows, so these columns ARE the ground truth the rendered HTML
             # reflects rather than a second producer that has to agree with it.
             columns = balance_at.grid_balance_view(
-                seed_user["account"],
+                CashFlowSet.single(seed_user["account"]),
                 BalanceContext.build(seed_user["user"].id),
             ).columns
             column = columns[target_period.id]
@@ -8037,7 +8041,8 @@ class TestMobilePlanTab:
                 period.period_id: balance_at.GridColumn(
                     balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
-                    net=Decimal("0"), period_timing=Decimal("0.00"),
+                    net=Decimal("0"), elsewhere=Decimal("0.00"),
+                    period_timing=Decimal("0.00"),
                     book_vs_bank=Decimal("0.00"),
                     contribution=Decimal("0.00"), accrual=Decimal("0.00"),
                 )
@@ -8056,7 +8061,7 @@ class TestMobilePlanTab:
                 plan_matched_by_row_period={},
                 plan_columns=plan_columns,
                 plan_row_flags=balance_at.GridRowFlags(
-                    period_timing=False, book_vs_bank=False,
+                    elsewhere=False, period_timing=False, book_vs_bank=False,
                     contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
@@ -8216,6 +8221,7 @@ class TestMobilePlanTab:
                         income=Decimal("0"),
                         expense=Decimal("1200"),
                         net=Decimal("-1200"),
+                        elsewhere=Decimal("0.00"),
                         period_timing=Decimal("0.00"),
                         book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
@@ -8223,7 +8229,7 @@ class TestMobilePlanTab:
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    period_timing=False, book_vs_bank=False,
+                    elsewhere=False, period_timing=False, book_vs_bank=False,
                     contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
@@ -8291,6 +8297,7 @@ class TestMobilePlanTab:
                         income=Decimal("2500"),
                         expense=Decimal("0"),
                         net=Decimal("2500"),
+                        elsewhere=Decimal("0.00"),
                         period_timing=Decimal("0.00"),
                         book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
@@ -8298,7 +8305,7 @@ class TestMobilePlanTab:
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    period_timing=False, book_vs_bank=False,
+                    elsewhere=False, period_timing=False, book_vs_bank=False,
                     contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
@@ -8377,6 +8384,7 @@ class TestMobilePlanTab:
                         income=Decimal("0"),
                         expense=Decimal("125"),
                         net=Decimal("-125"),
+                        elsewhere=Decimal("0.00"),
                         period_timing=Decimal("0.00"),
                         book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
@@ -8384,7 +8392,7 @@ class TestMobilePlanTab:
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    period_timing=False, book_vs_bank=False,
+                    elsewhere=False, period_timing=False, book_vs_bank=False,
                     contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
@@ -8638,7 +8646,7 @@ def _summary_periods():
 
 
 def _summary_columns(
-    periods, *, period_timing="0.00", book_vs_bank="0.00",
+    periods, *, elsewhere="0.00", period_timing="0.00", book_vs_bank="0.00",
     contribution="0.00", accrual="0.00",
 ):
     """Return one hand-built GridColumn per period, all carrying the same figures.
@@ -8658,6 +8666,7 @@ def _summary_columns(
             income=Decimal("2400.00"),
             expense=Decimal("1450.00"),
             net=Decimal("950.00"),
+            elsewhere=Decimal(elsewhere),
             period_timing=Decimal(period_timing),
             book_vs_bank=Decimal(book_vs_bank),
             contribution=Decimal(contribution),
@@ -8668,7 +8677,7 @@ def _summary_columns(
 
 
 def _row_flags(
-    *, period_timing=False, book_vs_bank=False,
+    *, elsewhere=False, period_timing=False, book_vs_bank=False,
     contribution=False, accrual=False,
 ):
     """Return GridRowFlags with every arm explicit (no defaulted visibility).
@@ -8680,6 +8689,7 @@ def _row_flags(
     with the other off.
     """
     return balance_at.GridRowFlags(
+        elsewhere=elsewhere,
         period_timing=period_timing,
         book_vs_bank=book_vs_bank,
         contribution=contribution,
@@ -8867,6 +8877,7 @@ class TestTheTwoRemainderRows:
             columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
+                elsewhere=Decimal("0.00"),
                 period_timing=Decimal("-788.68"),
                 book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("0.00"), accrual=Decimal("0.00"),
@@ -9040,7 +9051,7 @@ class TestTheTwoRemainderRows:
             current = calendar.period_containing(bctx.as_of)
             window = calendar.window(current.period_index, 6)
             card_window = [window[0]]
-            view = balance_at.grid_balance_view(retirement, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(retirement), bctx)
             # The shape this test needs: the window contributes, its first
             # column does not.
             assert view.row_flags(window).contribution is True
@@ -9183,6 +9194,7 @@ class TestTheContributionsRow:
             columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
+                elsewhere=Decimal("0.00"),
                 period_timing=Decimal("0.00"),
                 book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("181.59"), accrual=Decimal("0.00"),
@@ -9389,6 +9401,7 @@ class TestTheAccrualRowSignReachesItsStyling:
             columns[periods[0].period_id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
+                elsewhere=Decimal("0.00"),
                 period_timing=Decimal("0.00"),
                 book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("0.00"), accrual=Decimal("95.98"),
@@ -9653,7 +9666,7 @@ class TestGridInterestAccrual:
         user_id = seed_user["user"].id
         current = current_pay_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
-        view = balance_at.grid_balance_view(hysa, bctx)
+        view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
         accrued = view.columns[current.id].balance
         interest = view.columns[current.id].accrual
 
@@ -9792,7 +9805,7 @@ class TestGridInterestAccrual:
         current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
-        live_view = balance_at.grid_balance_view(hysa, bctx)
+        live_view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
         accrued_live = live_view.columns[current.id].balance
         # Sanity: the definition's $5,000 is reflected -- the balance clears
         # the $10,000 anchor + the deposit.
@@ -10465,3 +10478,264 @@ class TestThePlanWindowIsDerivedFromTheOwnersCadence:
             plan_periods = self._plan_periods(app, auth_client)
 
             assert len(plan_periods) == 1
+
+
+class TestTheGridReadsCheckingAndItsCards:
+    """Plan step credit_card:CC-4-1: the paycheck grid across the owner's cash-flow set.
+
+    Developer ruling ``credit_card:R-CC16``: a plan item's ``account_id`` is
+    the account its money is expected to move through, so the phone bill that
+    is always paid by card is a row ON the card and the grid reads checking
+    and its cards as ONE paycheck -- the rows are every member's, the Total
+    Income / Expenses / Net rows are the paycheck's, the Projected End Balance
+    stays one account's, and the footer gains "On other accounts".  Ruling
+    ``credit_card:R-CC23``: a transfer between two members shows once, from
+    the balance line's side.
+
+    The first three tests render the three surfaces that carry the new row
+    against hand-built columns (the same shape ``TestTheTwoRemainderRows``
+    grades); the rest drive the live routes over the ruling's own worked
+    example -- phone ``$45`` on the card, grocery ``$500`` on checking, a
+    ``$165`` card payment in the same paycheck -- and read the figures the
+    seam's test hand-computed (``Total Expenses $710``, ``On other accounts
+    $45``, and from the card's side ``Total Income $165``).
+    """
+
+    _ROW = "On other accounts"
+
+    def test_the_desktop_footer_renders_the_row_first_when_flagged(self, app):
+        """Above Period timing (it is the budget-side term), hidden on a zero flag."""
+        periods = _summary_periods()
+        with app.app_context():
+            shown = _render_grid_footer(
+                app, periods,
+                _summary_columns(periods, elsewhere="45.00", period_timing="-427.22"),
+                _row_flags(elsewhere=True, period_timing=True),
+            )
+            hidden = _render_grid_footer(
+                app, periods,
+                _summary_columns(periods, period_timing="-427.22"),
+                _row_flags(period_timing=True),
+            )
+
+        assert self._ROW in shown
+        assert "$45" in shown
+        assert shown.index(self._ROW) < shown.index("Period timing")
+        assert shown.index("Period timing") < shown.index("Projected End Balance")
+        assert self._ROW not in hidden
+        assert "bi-wallet2" not in hidden
+
+    def test_the_mobile_card_and_the_plan_recap_render_it_on_the_same_rule(self, app):
+        """Ruling R-P: every form factor explains its balance the same way."""
+        period = _summary_periods()[0]
+        columns = _summary_columns([period], elsewhere="45.00")
+        with app.app_context():
+            card = _render_mobile_card(
+                app, period, columns, _row_flags(elsewhere=True),
+            )
+            card_hidden = _render_mobile_card(
+                app, period, columns, _row_flags(),
+            )
+            recap = _render_plan_recap(
+                app, period, columns, _row_flags(elsewhere=True),
+            )
+            recap_hidden = _render_plan_recap(
+                app, period, columns, _row_flags(),
+            )
+
+        assert self._ROW in card
+        assert "$45" in card
+        assert card.index("Net Cash Flow") < card.index(self._ROW)
+        assert self._ROW not in card_hidden
+        assert "Elsewhere $45" in recap
+        assert "Elsewhere" not in recap_hidden
+
+    @staticmethod
+    def _world(seed_user, periods):
+        """Build the worked example on a FUTURE paycheck; return its parts."""
+        user_id = seed_user["user"].id
+        scenario_id = seed_user["scenario"].id
+        checking = seed_user["account"]
+        card = create_account_of_type(
+            seed_user, db.session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+        paycheck = periods[6]
+        assert paycheck.start_date > BalanceContext.build(user_id).as_of + timedelta(days=1)
+        expense = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        phone = one_off_row_of(
+            paycheck, name="Phone on the card", amount=Decimal("45.00"),
+            user_id=user_id, account_id=card.id, scenario_id=scenario_id,
+            transaction_type_id=expense,
+        )
+        one_off_row_of(
+            paycheck, name="Grocery", amount=Decimal("500.00"),
+            user_id=user_id, account_id=checking.id, scenario_id=scenario_id,
+            transaction_type_id=expense,
+        )
+        create_transfer(
+            seed_user, db.session, checking, card, paycheck,
+            amount=Decimal("165.00"), name="Card payment",
+        )
+        db.session.commit()
+        # Ids, not rows: the request below closes the session, and a detached
+        # row cannot answer ``.id`` afterwards.
+        return checking.id, card.id, paycheck, phone.id
+
+    @staticmethod
+    def _tfoot(html):
+        """Return the sticky footer's HTML, closing tag included."""
+        end = html.index("</tfoot>") + len("</tfoot>")
+        return html[html.index("<tfoot"):end]
+
+    @staticmethod
+    def _figures(html, label):
+        """Return every money figure in the ``<tr>`` labelled *label*, in order.
+
+        Read per ROW rather than by substring over a section, so ``$710``
+        cannot be satisfied by ``-$710`` in another row and a fixture anchor
+        (``-$500.00``) cannot satisfy a ``$500`` the test means for a
+        different line.
+        """
+        start = html.index(label)
+        row = html[start:html.index("</tr>", start)]
+        return re.findall(r"-?\$[\d,]+(?:\.\d\d)?", row)
+
+    def test_the_page_shows_the_cards_row_and_the_paychecks_subtotals(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The phone bill renders as a grid row; the subtotals sum both accounts.
+
+        ``periods=1&offset=2`` renders ONE column, the fixture paycheck
+        (period 6: today sits in period 4, so an offset of two from the
+        current column reaches it), and every figure below is read off its
+        own labelled row.
+        """
+        with app.app_context():
+            checking, card, paycheck, phone = self._world(seed_user, seed_periods_today)
+            del checking, card
+            response = auth_client.get("/grid?periods=1&offset=2")
+        html = response.get_data(as_text=True)
+        assert response.status_code == 200
+        # The window's one column is the fixture paycheck.
+        assert paycheck.start_date.strftime("%-m/%-d") in html
+        # The card's row is on the paycheck grid.
+        assert f'id="txn-cell-{phone}"' in html
+        assert "Phone on the card" in html
+        # The paycheck's subtotals across both accounts (the ruling's worked
+        # example), and the term that reconciles them with checking's balance.
+        assert self._figures(html, "Total Income") == ["$0"]
+        assert self._figures(html, "Total Expenses") == ["$710"]
+        assert self._figures(html, "Net Cash Flow") == ["-$710"]
+        footer = self._tfoot(html)
+        assert self._figures(footer, self._ROW) == ["$45"]
+        assert footer.index(self._ROW) < footer.index("Projected End Balance")
+        # Checking's balance line moves by the paycheck's net plus the term:
+        # -710 + 45 = -665 off the seeded $1,000.00 opening.
+        assert self._figures(footer, "Projected End Balance") == ["$335"]
+
+    def test_the_self_refresh_partials_agree_with_the_page(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The balance row and the subtotal rows recompute the SAME set."""
+        with app.app_context():
+            self._world(seed_user, seed_periods_today)
+            page = auth_client.get("/grid?periods=1&offset=2").get_data(as_text=True)
+            balance_row = auth_client.get(
+                "/grid/balance-row?periods=1&offset=2",
+            ).get_data(as_text=True)
+            subtotal_rows = auth_client.get(
+                "/grid/subtotal-rows?periods=1&offset=2",
+            ).get_data(as_text=True)
+
+        assert self._figures(balance_row, self._ROW) == ["$45"]
+        assert self._figures(subtotal_rows, "Total Expenses") == ["$710"]
+        # The page's footer and the partial's are the same rendered rows.
+        assert self._tfoot(page).strip() == balance_row.strip()
+
+    def test_the_mobile_summary_partial_reads_the_set_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``/grid/this-period-summary`` recomputes the SAME set for its one period."""
+        with app.app_context():
+            checking, card, paycheck, phone = self._world(seed_user, seed_periods_today)
+            del checking, card, phone
+            period_id = paycheck.id
+            response = auth_client.get(
+                f"/grid/this-period-summary?period_id={period_id}",
+            )
+        html = response.get_data(as_text=True)
+        assert response.status_code == 200
+        # The mobile bars are ``<div>``s, not ``<tr>``s: read each labelled
+        # bar to its closing ``</div>`` the way ``_figures`` reads a row.
+        def bar(label):
+            start = html.index(label)
+            return re.findall(r"-?\$[\d,]+", html[start:html.index("</div>", start)])
+        assert bar("Net Cash Flow") == ["-$710"]
+        assert bar(self._ROW) == ["$45"]
+
+    def test_an_override_naming_the_card_moves_the_balance_line_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?account_id=<card>``: the card's balance and header; the same paycheck's rows.
+
+        From the card's side the payment is the NEAR leg -- Total Income
+        ``$165`` -- and "On other accounts" is checking's ``$500``.
+        """
+        with app.app_context():
+            checking, card, paycheck, phone = self._world(seed_user, seed_periods_today)
+            del checking, paycheck
+            response = auth_client.get(f"/grid?periods=1&offset=2&account_id={card}")
+        html = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert "Rewards Card Balance" in html
+        assert f'id="txn-cell-{phone}"' in html
+        assert "Grocery" in html
+        assert self._figures(html, "Total Income") == ["$165"]
+        assert self._figures(html, "Total Expenses") == ["$545"]
+        assert self._figures(html, "Net Cash Flow") == ["-$380"]
+        footer = self._tfoot(html)
+        assert self._figures(footer, self._ROW) == ["$500"]
+        # The card's line: -500 opening, then -45 + 165 = +120 -> -$380.
+        assert self._figures(footer, "Projected End Balance") == ["-$380"]
+
+    def test_an_override_outside_the_set_is_the_single_account_grid_as_before(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?account_id=<savings>``: no card row, no "On other accounts"."""
+        with app.app_context():
+            checking, card, paycheck, phone = self._world(seed_user, seed_periods_today)
+            del checking, card, paycheck
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("5000.00"),
+            )
+            db.session.commit()
+            savings_id = savings.id
+            response = auth_client.get(f"/grid?periods=1&offset=2&account_id={savings_id}")
+        html = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert "Savings Balance" in html
+        assert f'id="txn-cell-{phone}"' not in html
+        assert "Grocery" not in html
+        assert self._ROW not in self._tfoot(html)
+
+    def test_an_owner_with_no_card_sees_no_row_and_the_same_subtotals(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The pre-card grid: one member, the row hidden, checking's own figures."""
+        with app.app_context():
+            paycheck = seed_periods_today[6]
+            one_off_row_of(
+                paycheck, name="Grocery", amount=Decimal("500.00"),
+                user_id=seed_user["user"].id, account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            )
+            db.session.commit()
+            response = auth_client.get("/grid?periods=1&offset=2")
+        html = response.get_data(as_text=True)
+        assert response.status_code == 200
+        assert self._ROW not in html
+        assert "bi-wallet2" not in self._tfoot(html)
+        assert self._figures(html, "Total Expenses") == ["$500"]
+

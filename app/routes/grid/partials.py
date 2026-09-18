@@ -23,7 +23,8 @@ from flask import render_template, request
 from flask_login import current_user
 
 from app.models.account import Account
-from app.services.account_resolver import resolve_grid_account
+from app.services.cash_flow_set import CashFlowSet
+from app.services.account_resolver import resolve_cash_flow_set
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import PeriodWindow
 from app.utils.auth_helpers import require_owner
@@ -48,13 +49,20 @@ class _PartialBase(NamedTuple):
 
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
-        account: The grid account (checking by default, or the user's
-            preferred grid account), or ``None`` for the
-            user-with-zero-accounts edge case.
+        cash_flow: The owner's cash-flow set (checking and its cards, the
+            balance line named; ruling ``credit_card:R-CC16``, plan step
+            CC-4-1), or ``None`` for the user-with-zero-accounts edge case.
+            The same resolution the page performs, so a refresh recomputes
+            the SAME set's subtotals behind the same balance line.
     """
 
     balance_ctx: BalanceContext
-    account: Account | None
+    cash_flow: CashFlowSet | None
+
+    @property
+    def account(self) -> Account | None:
+        """The balance line's account, or ``None`` -- named once, as the page names it."""
+        return self.cash_flow.balance if self.cash_flow is not None else None
 
 
 def _resolve_partial_base(user_id):
@@ -80,11 +88,11 @@ def _resolve_partial_base(user_id):
         report is answered above this route now.
     """
     balance_ctx = BalanceContext.build(user_id)
-    account = resolve_grid_account(
+    cash_flow = resolve_cash_flow_set(
         user_id, current_user.settings,
         request.args.get("account_id", type=int),
     )
-    return _PartialBase(balance_ctx=balance_ctx, account=account)
+    return _PartialBase(balance_ctx=balance_ctx, cash_flow=cash_flow)
 
 
 class _PartialWindow(NamedTuple):
@@ -101,9 +109,8 @@ class _PartialWindow(NamedTuple):
 
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
-        account: The grid account (checking by default, or the user's
-            preferred grid account), or ``None`` for the
-            user-with-zero-accounts edge case.
+        cash_flow: The owner's cash-flow set, or ``None`` for the
+            user-with-zero-accounts edge case (see :class:`_PartialBase`).
         num_periods: Count of visible pay-period columns (the ``periods``
             query param, default 6).
         start_offset: Offset added to the current period's
@@ -115,10 +122,15 @@ class _PartialWindow(NamedTuple):
     """
 
     balance_ctx: BalanceContext
-    account: Account | None
+    cash_flow: CashFlowSet | None
     num_periods: int
     start_offset: int
     periods: PeriodWindow
+
+    @property
+    def account(self) -> Account | None:
+        """The balance line's account, or ``None`` (see :class:`_PartialBase`)."""
+        return self.cash_flow.balance if self.cash_flow is not None else None
 
 
 def _resolve_partial_window(user_id):
@@ -165,7 +177,7 @@ def _resolve_partial_window(user_id):
 
     return _PartialWindow(
         balance_ctx=base.balance_ctx,
-        account=base.account,
+        cash_flow=base.cash_flow,
         num_periods=num_periods,
         start_offset=start_offset,
         periods=periods,
@@ -198,7 +210,7 @@ def balance_row():
     # answers over the owner's whole calendar and this reads the window's flags
     # off it, which is what keeps this refresh and the full-page render one
     # projection.
-    view, _anchor = _build_grid_view(window.account, window.balance_ctx)
+    view, _anchor = _build_grid_view(window.cash_flow, window.balance_ctx)
 
     return render_template(
         "grid/_balance_row.html",
@@ -268,7 +280,7 @@ def subtotal_rows():
     # total than before (360.2 ms -> 331.0 ms) because the balance row stopped
     # building a second override map.  Finding N-56 records the remaining
     # duplication.
-    view, _anchor = _build_grid_view(window.account, window.balance_ctx)
+    view, _anchor = _build_grid_view(window.cash_flow, window.balance_ctx)
 
     return render_template(
         "grid/_subtotal_rows.html",
@@ -334,7 +346,7 @@ def mobile_this_period_summary():
     # kind-correct-grid feature).  Since plan step X-g3b every kind reads the
     # modelled balance; an account that models no return resolves no tier, so
     # its figure IS the cash-flow running balance.
-    view, _anchor = _build_grid_view(base.account, base.balance_ctx)
+    view, _anchor = _build_grid_view(base.cash_flow, base.balance_ctx)
 
     return render_template(
         "grid/_mobile_tp_summary.html",

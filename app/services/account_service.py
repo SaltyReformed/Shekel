@@ -404,7 +404,9 @@ def list_active_accounts(user_id: int) -> list[Account]:
     )
 
 
-def active_accounts_query(user_id: int, *, amortizing: bool):
+def active_accounts_query(
+    user_id: int, *, amortizing: bool, revolving: bool | None = None,
+):
     """Return the query for a user's active accounts on ONE amortizing side.
 
     The kind-boundary query composer shared by every surface that
@@ -421,23 +423,44 @@ def active_accounts_query(user_id: int, *, amortizing: bool):
     build-the-expression contract the reconcile readers follow (a caller
     completes the query with its own tail).
 
+    **``revolving`` is an ORTHOGONAL second filter on the same shape**
+    (credit-card design ``docs/design/credit_card_from_scratch.md`` 3.8, plan
+    step CC-4-1): ``True`` keeps only the owner's credit cards
+    (``AccountType.has_revolving_credit``, the flag plan step CC-1 added),
+    ``False`` keeps everything but them, and the default ``None`` leaves the
+    boundary unasked, which is every caller that existed before it.  It is a
+    filter value like ``amortizing`` rather than a second function, because
+    "the owner's active cards" is a query over the one active-account shape
+    and not a new one -- the "checking and its cards" set
+    (:func:`app.services.account_resolver.resolve_cash_flow_set`, ruling
+    ``credit_card:R-CC16``) reads it with ``True``; the salary deposit picker
+    and the transfer doors' refusals (plan step CC-10) will read it with
+    ``False``.  ``ck_account_types_revolving_is_plain`` makes a type that is
+    both revolving and amortizing unrepresentable, so the two filters can
+    never contradict each other on a real row.
+
     Args:
         user_id: ``auth.users.id`` of the owner whose accounts to query.
         amortizing: Which side of the ``has_amortization`` boundary to
             return.
+        revolving: Which side of the ``has_revolving_credit`` boundary to
+            return, or ``None`` for both.
 
     Returns:
         The filtered ``Account`` query; the caller adds ordering and an
         executor (``.all()`` / ``.first()``).
     """
+    filters = [
+        Account.user_id == user_id,
+        Account.is_active.is_(True),
+        AccountType.has_amortization.is_(amortizing),
+    ]
+    if revolving is not None:
+        filters.append(AccountType.has_revolving_credit.is_(revolving))
     return (
         db.session.query(Account)
         .join(Account.account_type)
-        .filter(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-            AccountType.has_amortization.is_(amortizing),
-        )
+        .filter(*filters)
     )
 
 
