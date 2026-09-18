@@ -34,6 +34,8 @@ import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.orm.exc import StaleDataError
 
+from app import ref_cache
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
@@ -52,7 +54,13 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.models.amount_ownership import AmountOwnership
 from app.services.amount_ownership import state_own_amount
-from tests._test_helpers import figure_source_columns, generate_row_of, make_expense_template
+from tests._test_helpers import (
+    figure_source_columns,
+    generate_row_of,
+    make_expense_template,
+    one_off_row_of,
+    repriced_by_the_owner,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -112,26 +120,23 @@ def _make_template(user_id, account_id, category_id):
 
 
 def _make_transaction(seed_user, period):
-    """Insert a Transaction in the given pay period and return it."""
-    expense_type = (
-        db.session.query(TransactionType).filter_by(name="Expense").one()
+    """Return a row OWNING `$50.00` in *period*: the ENGINE's row, re-priced by the owner.
+
+    C-18's subject is the ROW's optimistic lock at the PATCH door: an amount
+    edit writes the row and bumps its counter, and a race on that UPDATE is
+    a 409.  A ONE-OFF's typed figure restates its DEFINITION (ruling
+    R-BAL29; the definition's counter and the card's pin are graded in
+    ``test_one_off_row_doors``), so the row is never UPDATEd and the race
+    cannot fire -- which is why this fixture is a recurring definition's row
+    made the owner's (:func:`generate_row_of` + :func:`repriced_by_the_owner`,
+    the re-price door's two acts) rather than the one-off builder's row
+    (plan step balance:X-bi-7c, ruling R-BAL60).
+    """
+    template = make_expense_template(
+        db.session, seed_user, amount="50.00", name="Test Txn",
+        category_key="Groceries",
     )
-    projected = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
-    cat = seed_user["categories"]["Groceries"]
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=projected.id,
-        category_id=cat.id,
-        transaction_type_id=expense_type.id,
-        name="Test Txn",
-        amount_ownership=AmountOwnership.own(Decimal("50.00")),
-    )
-    db.session.add(txn)
+    txn = repriced_by_the_owner(generate_row_of(template, period), "50.00")
     db.session.commit()
     return txn
 
@@ -416,9 +421,21 @@ class TestTransactionVersionLifecycle:
     def test_new_transaction_starts_at_version_one(
         self, app, seed_user, seed_periods,
     ):
-        """``server_default='1'`` populates new rows at version 1."""
+        """``server_default='1'`` populates new rows at version 1.
+
+        A FRESH row -- the one-off builder's, one INSERT and no UPDATE --
+        rather than :func:`_make_transaction`'s re-priced row, whose
+        re-price is that row's first UPDATE.
+        """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods[0])
+            txn = one_off_row_of(
+                seed_periods[0], name="Test Txn", amount="50.00",
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             assert txn.version_id == 1
 
     def test_version_increments_only_on_update(

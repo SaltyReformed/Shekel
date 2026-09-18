@@ -51,7 +51,6 @@ import sqlalchemy as sa
 from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.amount_ownership import AmountOwnership
 from app.models.category import Category
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
@@ -68,6 +67,7 @@ from tests._test_helpers import (
     add_entry,
     derived_span,
     generate_row_of,
+    legacy_link_less_row_of,
     make_expense_template,
     resolved_amount,
     state_template_price,
@@ -460,18 +460,16 @@ class TestDueDate:
             box = re.search(r'<input type="date" name="due_date"[^>]*>', html)
             assert box is not None and "required" in box.group(0)
 
-            legacy = Transaction(
-                name="Legacy", user_id=seed_user["user"].id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
+            # The legacy half on the shape's one transitional home (plan step
+            # balance:X-bi-7c, ruling R-BAL59); 7d retires it with the shape.
+            legacy = legacy_link_less_row_of(
+                seed_periods_today[0], name="Legacy", amount="5.00",
+                user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                status_id=row.status_id,
-                amount_ownership=AmountOwnership.own(Decimal("5.00")),
-                template_id=None,
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(legacy)
             db.session.commit()
             html = _card(auth_client, legacy)
             box = re.search(r'<input type="date" name="due_date"[^>]*>', html)

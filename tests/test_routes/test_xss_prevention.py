@@ -20,7 +20,6 @@ from app.models.ref import (
     Status, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.services import transfer_service
 from app.services import account_service
 
@@ -28,6 +27,7 @@ from tests._test_helpers import (
     cadence_payload,
     create_loan_account,
     loan_params_for,
+    one_off_row_of,
     register_form_data,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -146,21 +146,16 @@ def _create_transaction(seed_user, seed_periods_today):
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    projected = (
-        db.session.query(Status).filter_by(name="Projected").one()
-    )
-    txn = Transaction(
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[0],
         name="Test Transaction",
-        category_id=seed_user["categories"]["Rent"].id,
+        amount=Decimal("100.00"),
+        user_id=seed_periods_today[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
+        category_id=seed_user["categories"]["Rent"].id,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 

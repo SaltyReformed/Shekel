@@ -14,13 +14,14 @@ Audit reference: F-046 / F-047 / F-161 -- broad rollout following the
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import account_service
 from tests._test_helpers import (
+    one_off_row_of,
     open_books_before_the_first_assertion,
     settlement_if_settling,
     shadow_amount,
@@ -33,23 +34,20 @@ from app.models.amount_ownership import AmountOwnership
 
 def _create_projected_expense(seed_user, seed_periods_today, period_index=0):
     """Insert a projected expense in the requested period."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    txn = Transaction(
-        user_id=seed_periods_today[period_index].user_id,
-        pay_period_id=seed_periods_today[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[period_index],
         name="Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("100.00"),
+        user_id=seed_periods_today[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
         due_date=seed_periods_today[period_index].start_date,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 
@@ -306,7 +304,6 @@ class TestTransferShadowMarkDoneStateMachine:
         shadows.  Returns the parent transfer so tests can drive
         status changes through it.
         """
-        from app.models.account import Account
         from app.models.category import Category
         from app.models.ref import AccountType
         from app.services import transfer_service
@@ -442,7 +439,6 @@ class TestTransferShadowMarkDoneStateMachine:
         from app.routes.transactions.mutations import (  # pylint: disable=import-outside-toplevel
             _apply_shadow_update,
         )
-        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
         with app.test_request_context():
             login_user(seed_user["user"])
