@@ -11,11 +11,13 @@ plan Section 6:
 
   1. **Per linked account (cash side).**  For each real account A (its linked
      ledger account), the net of A's posting legs equals
-     ``settled_transfer_effect(A) + settled_transaction_effect(A)`` -- the
-     combined effect of A's settled, non-deleted transfer shadows AND ordinary
-     transactions.  The transaction term is the signed
+     ``settled_transfer_effect(A) + posted_purchase_effect(A)`` -- the
+     combined effect of A's settled, non-deleted transfer shadows AND every
+     dated movement of an ordinary transaction (plan step ``balance:X-bi-4a``,
+     ruling **R-BAL80**: a plan row posts nothing of its own).  Through
+     ``X-bi-3e`` the second term was ``settled_transaction_effect``, the signed
      ``effective - Sigma(credit entries)`` (``+`` income / ``-`` expense), where
-     ``effective`` is what the row RECORDED as having moved
+     ``effective`` was what the row RECORDED as having moved
      (``posting_reads.settled_figure_clause``) -- it was
      ``COALESCE(actual_amount, estimated_amount)`` until plan step X-au-c3 made
      a settled row's figure its own record rather than a fallback to its plan.
@@ -37,9 +39,12 @@ plan Section 6:
   4. **Trial balance.**  ``SUM(account_postings.amount) = 0`` across the whole
      ledger (follows from 3, asserted directly as a cheap self-check).
   5. **Per-transaction completeness.**  Every settled, non-deleted, non-transfer
-     transaction with a NONZERO confirmed cash effect has at least one journal
-     entry -- no settled cash transaction is silently unposted.  A zero-effect
-     row (an all-credit envelope) is correctly NOT required to post.
+     transaction whose family holds a NONZERO dated cash movement has at least
+     one journal entry -- no settled cash transaction is silently unposted.  A
+     zero-effect row (an envelope closed from card purchases alone) is
+     correctly NOT required to post; so is a settled row the seam wrote no
+     mirror for, whose family is empty (that the seam writes one is
+     ``test_covering_movement.py``'s pin, not this file's).
   6. **Multi-scenario isolation** and **owner isolation** (via
      ``journal_entry.user_id``) -- a posting carries no ``user_id``; its owner is
      reached only through its journal entry, and one owner's / scenario's
@@ -60,15 +65,15 @@ the SQL it drove reads a column the head revision drops, not because it was
 redundant.
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
-transaction's estimate makes the per-account reconciliation FAIL -- driven
-through the real ``_assert_full_reconciliation`` sweep helper under
+transaction's covering movement makes the per-account reconciliation FAIL --
+driven through the real ``_assert_full_reconciliation`` sweep helper under
 ``pytest.raises``, so a regression in the helper itself is caught, not only in an
 inline re-derivation (a real ledger drift would be caught) -- and injecting one
 extra leg makes the trial balance go non-zero (the ``= 0`` assertion is a real
 check, not one the per-entry trigger makes unconditionally true).  A reverted
 transaction reconciles at zero (original + reversal net to zero; the source-side
-query drops it once it is no longer settled), proving the append-only correction
-discipline end to end.
+query drops its kept movement once the revert UN-DATES it), proving the
+append-only correction discipline end to end.
 
 **Non-tautological by construction**, the same three independent ways as Step 2:
 
@@ -81,10 +86,10 @@ discipline end to end.
     ``account_postings`` through a different join shape than the
     ``posting_service`` readers, and the source side
     (``_independent_combined_source_effect`` / ``_signed_cash_effect``) reads the
-    ``transactions`` table; asserting the two equal reconciles what the producers
-    WROTE against the transaction source of truth;
+    ``transactions`` and ``transaction_entries`` tables; asserting the two equal
+    reconciles what the producers WROTE against the source of truth;
   * **the production service helpers** -- ``account_posting_total``,
-    ``settled_transfer_effect``, and ``settled_transaction_effect`` (the readers
+    ``settled_transfer_effect``, and ``posted_purchase_effect`` (the readers
     Steps 4-5 will switch balances onto) must match the hand-computed literals
     too.
 
@@ -123,7 +128,12 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.account import AccountAnchorHistory
 from app.models.transaction_entry import TransactionEntry
-from app.services import ledger_account_service, posting_service, status_seam
+from app.services import (
+    ledger_account_service,
+    posting_service,
+    status_seam,
+    transaction_service,
+)
 from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     settled_status_ids,
@@ -143,7 +153,6 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.services import cash_ledger
-from app.services.row_valuation import settled_contribution
 
 
 # ---------------------------------------------------------------------------
@@ -155,10 +164,11 @@ from app.services.row_valuation import settled_contribution
 # the ledger side here reads ``account_postings`` and the source side reads
 # ``transactions`` with independently-written SQL/Python, and both are also
 # pinned to hand-computed literals.  (The source side necessarily restates the
-# one correct definition of a settled transaction's confirmed cash effect, so it
-# mirrors ``settled_transaction_effect``'s semantics; the hand-computed literals,
-# not these queries, are what make the oracle non-tautological -- this layer adds
-# the cross-table, whole-DB sweep the literals cannot.)
+# one correct definition of a family's cash effect -- its dated non-card
+# movements, plan step ``balance:X-bi-4a`` -- so it mirrors
+# ``posted_purchase_effect``'s semantics; the hand-computed literals, not these
+# queries, are what make the oracle non-tautological -- this layer adds the
+# cross-table, whole-DB sweep the literals cannot.)
 #
 # Some of these (``_independent_ledger_sum``, ``_trial_balance``,
 # ``_entries_violating_balance``, ``_independent_transfer_shadow_effect``) mirror
@@ -281,80 +291,30 @@ def _independent_transfer_shadow_effect(
     )
 
 
-def _independent_cash_txn_effect(account_id: int, scenario_id: int) -> Decimal:
-    """Sum an account's settled ordinary-transaction effect (independent query).
+def _independent_movement_effect(account_id: int, scenario_id: int) -> Decimal:
+    """Sum an account's DATED movements' effect (independent query).
 
-    The cash half of the balance-side truth: over the account's settled,
-    non-deleted, NON-transfer (``transfer_id IS NULL``) transactions in
-    *scenario_id*, sum the signed confirmed cash effect
-    ``effective - Sigma(credit entries)`` -- ``+`` income / ``-`` expense, where
-    ``effective = COALESCE(actual, estimated)`` and the per-transaction credit
-    sum is an independently-written correlated subquery.  Reads ``transactions``,
-    a different table than :func:`_independent_ledger_sum`, so asserting the two
-    equal reconciles what the producers wrote against the transaction source.
-    """
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = _db.func.coalesce(
-        Transaction.settled_amount, Transaction.estimated_amount
-    )
-    credit_sum = (
-        _db.session.query(
-            _db.func.coalesce(
-                _db.func.sum(TransactionEntry.amount), Decimal("0")
-            )
-        )
-        .filter(
-            TransactionEntry.transaction_id == Transaction.id,
-            TransactionEntry.is_credit.is_(True),
-        )
-        .correlate(Transaction)
-        .scalar_subquery()
-    )
-    cash_effect = effective - credit_sum
-    signed = case(
-        (Transaction.transaction_type_id == income_type_id, cash_effect),
-        else_=-cash_effect,
-    )
-    return (
-        _db.session.query(
-            _db.func.coalesce(_db.func.sum(signed), Decimal("0"))
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.is_(None),
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
-        )
-        .scalar()
-    )
+    The non-transfer half of the balance-side truth since plan step
+    ``balance:X-bi-4a`` (ruling **R-BAL80**): a plan row posts nothing of its
+    own, so every cash leg the ledger holds for an ordinary transaction's
+    family is a movement's.  Over every non-card ``transaction_entries`` row
+    carrying a ``settled_on`` ON THIS ACCOUNT (``TransactionEntry.account_id``,
+    the movement's own -- ruling **R-BAL75**) whose parent is a non-deleted,
+    balance-contributing, NON-transfer transaction in *scenario_id*, sum the
+    amount signed by the PARENT's type (``+`` income / ``-`` expense; plan
+    step X-bi-3b, ruling **R-BAL35**), whatever the parent's STATUS: a dated
+    purchase under an open envelope and a settled bill's covering movement
+    are one kind of fact.  Reads ``transaction_entries`` and ``transactions``,
+    different tables than :func:`_independent_ledger_sum`, so asserting the
+    two equal reconciles what the producers wrote against the source of
+    truth.
 
+    **It replaced two helpers** that between them spelled the pre-4a rule --
+    ``effective - Sigma(credit)`` over SETTLED rows, plus the purchases posted
+    under UNSETTLED parents -- an oracle that would have stayed green had the
+    writer regressed to posting the row's own leg beside its movement.
 
-def _independent_posted_purchase_effect(
-    account_id: int, scenario_id: int
-) -> Decimal:
-    """Sum the purchases posted under a NOT-YET-SETTLED parent (independent query).
-
-    The third term of the balance-side truth, and ruling **R-FM** is why it
-    exists (plan step X-f3b): a purchase whose bank posting day the owner
-    recorded books its own cash leg whatever its envelope's status is, so an
-    account's ledger now holds money no SETTLED row's ``effective`` figure
-    accounts for.
-
-    Only the purchases whose PARENT is unsettled.  A purchase on a settled
-    parent is already inside :func:`_independent_cash_txn_effect`: that
-    expression sums ``effective - Sigma(credit)`` over the whole row, which is
-    exactly what the parent's own leg and its purchases' legs add up to, so
-    counting one here would double it.
-
-    Signed by the PARENT's type, as :func:`_independent_cash_txn_effect`
-    signs a row's own figure (plan step X-bi-3b, ruling **R-BAL35**: a
-    movement's direction is its parent's).  No purchase can sit under an
-    unsettled income parent today, so the income arm meets nothing; it is
-    stated so this oracle grades the whole rule and not the rule minus a
-    case.
-
-    Restated in SQL rather than shared with ``posting_service._purchase_posts``
+    Restated in SQL rather than shared with ``_posting_purchases.purchase_posts``
     or ``cash_ledger.movement_cash_leg``, for the reason every helper in this
     file is: an oracle that imported the rule it grades could not grade it.
     """
@@ -372,11 +332,10 @@ def _independent_posted_purchase_effect(
         )
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .filter(
-            Transaction.account_id == account_id,
+            TransactionEntry.account_id == account_id,
             Transaction.scenario_id == scenario_id,
             Transaction.transfer_id.is_(None),
             Transaction.is_deleted.is_(False),
-            Transaction.status_id.notin_(settled_status_ids()),
             Transaction.status_id.notin_(balance_excluded_status_ids()),
             TransactionEntry.settled_on.isnot(None),
             TransactionEntry.is_credit.is_(False),
@@ -391,34 +350,43 @@ def _independent_combined_source_effect(
     """Sum an account's combined settled transfer + transaction source effect.
 
     The full balance-side truth a linked account's ledger must equal in Step 3:
-    transfer shadows AND ordinary transactions, both signed debit-positive, plus
-    the purchases posted under a still-unsettled parent (plan step X-f3b, ruling
-    **R-FM**).  The independent restatement of ``settled_transfer_effect +
-    settled_transaction_effect + posted_purchase_effect``.
+    transfer shadows AND every dated movement of an ordinary transaction, both
+    signed debit-positive (plan step ``balance:X-bi-4a``, ruling **R-BAL80**).
+    The independent restatement of ``settled_transfer_effect +
+    posted_purchase_effect``.
     """
     return (
         _independent_transfer_shadow_effect(account_id, scenario_id)
-        + _independent_cash_txn_effect(account_id, scenario_id)
-        + _independent_posted_purchase_effect(account_id, scenario_id)
+        + _independent_movement_effect(account_id, scenario_id)
     )
 
 
 def _signed_cash_effect(txn: Transaction) -> Decimal:
-    """Return a transaction's signed, debit-positive confirmed cash effect.
+    """Return a transaction family's signed, debit-positive cash effect.
 
-    The per-row independent computation used by the per-counter sweep:
-    ``(effective_amount - Sigma(credit entries))`` signed ``+`` for income / ``-``
-    for an expense.  ``effective_amount`` is the model property (``actual`` over
-    ``estimated``, or ``0`` for a deleted / excluded row); the credit sum is over
-    the loaded entries.  Independent of ``posting_service`` (it never imports the
-    builder's ``_signed_cash_leg``); the counter leg the ledger should hold for
+    The per-row independent computation used by the per-counter sweep: the
+    sum of the row's DATED non-card movements, signed ``+`` for income / ``-``
+    for an expense, whatever the row's status WITHIN the contributing gate --
+    a plan row posts nothing of its own since plan step ``balance:X-bi-4a``
+    (ruling **R-BAL80**), so its family's whole effect is its movements'; and
+    a soft-deleted or balance-excluded parent's family is worth ``0`` whatever
+    it holds, as the writer posts nothing for it (``purchase_posts``'s first
+    term, ruling **R-FM**).  The gate is restated here from the same
+    primitive the SQL twin filters on, not imported from the writer.  (It was
+    ``settled_contribution - Sigma(credit)`` for a settled row through
+    ``X-bi-3e``.)  Independent of ``posting_service`` and ``cash_ledger`` (it
+    imports neither producer); the counter leg the ledger should hold for
     *txn* is the negation of this.
     """
-    credit_sum = sum(
-        (entry.amount for entry in txn.entries if entry.is_credit),
+    if txn.is_deleted or txn.status_id in balance_excluded_status_ids():
+        return Decimal("0")
+    effect = sum(
+        (
+            entry.amount for entry in txn.entries
+            if not entry.is_credit and entry.settled_on is not None
+        ),
         Decimal("0"),
     )
-    effect = settled_contribution(txn) - credit_sum
     return effect if txn.is_income else -effect
 
 
@@ -539,12 +507,13 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
     was deleted and the row never re-synced) -- precisely why the orphan is
     reconciled by the linkage, not by re-resolving ``category_id``.
 
-    **A PURCHASE's leg is resolved to its PARENT before grouping** (plan step
+    **A MOVEMENT's leg is resolved to its PARENT before grouping** (plan step
     X-f3b, ruling **R-FM**): it links by ``transaction_entry_id`` and carries no
     ``transaction_id``, so grouping on that column alone would drop every one
     into the hard-deleted bucket and fail with the wrong cause.  Resolved, the
-    per-transaction expectation stays whole -- a SETTLED row's counter net is
-    its own leg plus its purchases', and an unsettled row's IS its purchases'.
+    per-transaction expectation stays whole -- a row's counter net is its dated
+    movements' (the covering movement's and its purchases'), whatever its
+    status, since plan step ``balance:X-bi-4a`` (ruling **R-BAL80**).
 
     A ``transaction_id IS NULL`` group is a hard-deleted transaction's
     SET-NULL'd legs: the reverse-before-delete pair MUST net to zero, asserted
@@ -557,12 +526,13 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
     )
     for counter in counters:
         lhs = _ledger_account_sum(counter.id, scenario_id)
-        # A PURCHASE's counter leg links by ``transaction_entry_id`` and carries
+        # A MOVEMENT's counter leg links by ``transaction_entry_id`` and carries
         # NO ``transaction_id`` (plan step X-f3b, ruling **R-FM**), so grouping
         # on that column alone would drop every one of them into the
         # hard-deleted bucket below and fail with the wrong cause.  Resolving it
-        # to the purchase's PARENT is what keeps the per-transaction expectation
-        # whole: a settled row's counter net is its own leg plus its purchases'.
+        # to the movement's PARENT is what keeps the per-transaction expectation
+        # whole: a row's counter net is its dated movements' (plan step
+        # ``balance:X-bi-4a``).
         parent_of_purchase = (
             _db.session.query(TransactionEntry.transaction_id)
             .filter(TransactionEntry.id == JournalEntry.transaction_entry_id)
@@ -606,26 +576,12 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
                 f"a non-zero leg no longer exists (link should have SET NULL)"
             )
             # A non-zero net on a counter account comes from an active,
-            # non-transfer transaction that has either SETTLED or had a purchase
-            # post under it (plan step X-f3b); everything else nets to zero.
+            # non-transfer transaction with a DATED movement under it -- its
+            # covering movement or a purchase -- whatever its status (plan
+            # step ``balance:X-bi-4a``); everything else nets to zero.
             assert txn.transfer_id is None
             assert txn.is_deleted is False
-            if txn.status.is_settled:
-                # Its own leg plus its purchases' legs, which sum to the whole
-                # confirmed cash effect however that total is split.
-                expected_counter = -_signed_cash_effect(txn)
-            else:
-                # Not settled: the row's own leg is absent, so the net IS its
-                # posted purchases -- an expense's counter leg is a debit, hence
-                # positive.  Restated from the entries rather than read off the
-                # ledger, so the two sides stay independent.
-                expected_counter = sum(
-                    (
-                        entry.amount for entry in txn.entries
-                        if not entry.is_credit and entry.settled_on is not None
-                    ),
-                    Decimal("0"),
-                )
+            expected_counter = -_signed_cash_effect(txn)
             assert net == expected_counter, (
                 f"counter {counter.id}: transaction {transaction_id} net {net} "
                 f"!= expected counter leg {expected_counter}"
@@ -671,10 +627,11 @@ def _assert_every_settled_transaction_posts(user_id: int) -> None:
     """Assert every settled, nonzero-effect cash transaction posted >= 1 entry.
 
     The per-transaction completeness backstop: a settled, non-deleted,
-    non-transfer transaction with a NONZERO confirmed cash effect must carry at
-    least one journal entry (no silent unposted row).  A zero-effect row (an
-    all-credit envelope: ``effective == Sigma(credit)``) posts nothing and is
-    correctly NOT required to have an entry.
+    non-transfer transaction with a NONZERO cash effect must carry at least
+    one journal entry (no silent unposted row).  A zero-effect row (an
+    envelope closed from card purchases alone, so its family holds no dated
+    non-card movement) posts nothing and is correctly NOT required to have an
+    entry.
     """
     settled = (
         _db.session.query(Transaction)
@@ -1023,8 +980,8 @@ class TestPerEntryAndTrialBalance:
             # Three settled sources -> three source-linked balanced entries
             # (the Step-5 openings carry their own correction sources).  The
             # two expense sources link by their covering movement since plan
-            # step X-bi-3a (``transaction_entry_id``); the income one still by
-            # ``transaction_id`` until X-bi-3b.
+            # step X-bi-3a (``transaction_entry_id``), and the income one
+            # since X-bi-3b; the transfer by ``transfer_id``.
             assert (
                 _db.session.query(JournalEntry)
                 .filter(_db.or_(
@@ -1052,10 +1009,13 @@ class TestEverySettledTransactionPosts:
         """Two posted expenses post entries; a zero-effect envelope posts none.
 
         Two settled expenses ($50 Groceries, $40 Rent) each post one entry; an
-        all-credit "envelope" (a $75 actual with a single $75 credit entry,
-        effect = 75 - 75 = 0) posts nothing and is correctly NOT flagged as
+        all-credit envelope (closed from its one $75 card purchase, so its
+        record is ``purchases`` and its family holds no dated non-card
+        movement -- effect 0) posts nothing and is correctly NOT flagged as
         unposted.  The completeness sweep requires an entry for every settled
-        nonzero-effect row and excludes the zero-effect one.
+        nonzero-effect row and excludes the zero-effect one.  Through
+        ``X-bi-3e`` the zero-effect row was a typed $75 figure beside a $75
+        card purchase, a shape ruling **R-BAL78** refuses at the door.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1070,11 +1030,9 @@ class TestEverySettledTransactionPosts:
                 seed_user, db.session, period, Decimal("40.00"),
                 category=seed_user["categories"]["Rent"],
             )
-            # An all-credit row: settled, nonzero amount, but zero cash effect.
-            all_credit = add_txn(
-                db.session, seed_user, period, "All Credit", "75.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-                settled_amount="75.00",
+            # An all-credit envelope: settled from a card purchase, zero effect.
+            all_credit = create_envelope_txn(
+                seed_user, db.session, period, "All Credit", Decimal("75.00"),
             )
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
@@ -1082,14 +1040,18 @@ class TestEverySettledTransactionPosts:
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
             ))
+            db.session.flush()
+            transaction_service.settle_transaction(all_credit)
             db.session.commit()
             all_credit_id = all_credit.id
 
             _assert_every_settled_transaction_posts(user_id)
-            # The zero-effect row posted nothing (no silent spurious entry).
+            # The zero-effect FAMILY posted nothing (no silent spurious entry):
+            # a row posts nothing of its own since plan step X-bi-4a, so a
+            # ``transaction_id`` read alone would be true of every row here.
             assert (
                 _db.session.query(JournalEntry)
-                .filter_by(transaction_id=all_credit_id)
+                .filter(family_journal_filter(all_credit_id))
                 .count()
             ) == 0
             _assert_full_reconciliation(scenario_id)
@@ -1450,8 +1412,8 @@ class TestRevertedTransactionReconcilesAtZero:
         Arithmetic: a $50 Groceries expense posts -50 / +50, then a revert to
         Projected reconciles a -50 / +50 reversal (append-only).
         Groceries-Expense nets to zero and Checking lands back on its
-        $1000.00 opening, the reverted row is no longer ``is_settled`` so it
-        drops from the source effect too, and two entries survive (the
+        $1000.00 opening, the revert UN-DATES the row's kept covering movement
+        so it drops from the source effect too, and two entries survive (the
         original is never edited).
 
         **The pair's LINK assertion was re-expressed at plan step
@@ -1539,16 +1501,17 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
     ):
         """A $40 purchase under a $100 Projected envelope, taken by the bank.
 
-        Arithmetic: the envelope has not settled, so it books nothing of its
-        own; the purchase books ``Checking -40.00 / Groceries-Expense +40.00``
+        Arithmetic: the envelope books nothing of its own (no row does since
+        plan step ``balance:X-bi-4a``, and this one has not settled either);
+        the purchase books ``Checking -40.00 / Groceries-Expense +40.00``
         on the day the bank took it.  Checking's linked ledger is therefore
         ``1000.00 - 40.00 = 960.00`` and the Groceries counter is ``+40.00``.
 
         Both figures are asserted directly AND the full sweep is run, because
-        the sweep is what 15 other tests rely on: its linked arm needs the third
-        source term (`_independent_posted_purchase_effect`) and its counter arm
-        needs a purchase leg resolved to its parent, and neither is exercised by
-        any other test in this file.
+        the sweep is what 15 other tests rely on: its linked arm's movement
+        term (`_independent_movement_effect`) and its counter arm's parent
+        resolution must both hold over a PURCHASE under an OPEN envelope --
+        the one movement in this file that is not the seam's covering one.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1610,6 +1573,172 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
                 .count()
             ) == 1
             _assert_full_reconciliation(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# A CANCELLED envelope's DATED purchase is worth nothing on either arm
+# ---------------------------------------------------------------------------
+
+
+class TestACancelledEnvelopesDatedPurchaseReconcilesAtZero:
+    """The contributing gate, graded on the per-row twin and the sweep.
+
+    The writer posts a dated purchase only under a contributing parent
+    (``purchase_posts``, ruling **R-FM**): cancelling the envelope reverses
+    the purchase's leg.  The SQL oracle filters the same gate; the per-row
+    twin the counter arm uses must too, or a writer that dropped the term
+    would leave ``+40`` on the Groceries counter that the twin's ``-40``
+    exactly explains, and only the linked arm would fire (the X-bi-4a M1
+    fix's review, 2026-09-18).  So the twin is asserted at ``0`` DIRECTLY
+    while the purchase is still dated, beside the sweep.
+    """
+
+    def test_cancelling_the_parent_zeroes_both_arms(self, app, db, seed_user):
+        """A $40 dated purchase under a $100 envelope, then the envelope Cancelled.
+
+        Arithmetic: the purchase posts ``Checking -40.00 / Groceries +40.00``
+        on its bank day; the cancel reverses the pair (Checking back to its
+        $1000.00 opening, Groceries 0.00).  The purchase keeps its
+        ``settled_on``; the parent's exclusion is what makes the family worth
+        ``0`` -- on the SQL oracle, on the per-row twin, and in the sweep.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+            posted_on = _db.session.query(
+                _db.func.max(AccountAnchorHistory.observed_on),
+            ).filter(
+                AccountAnchorHistory.account_id == checking.id,
+            ).scalar() + timedelta(days=1)
+            txn = create_envelope_txn(
+                seed_user, db.session, period, "Groceries", Decimal("100.00"),
+            )
+            entry = TransactionEntry(
+                **figure_source_columns(),
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=user_id,
+                amount=Decimal("40.00"), description="Kroger",
+                purchased_on=posted_on, **settle_day_columns(posted_on),
+                is_credit=False,
+            )
+            _db.session.add(entry)
+            _db.session.flush()
+            posting_service.sync_transaction_postings(txn)
+            db.session.commit()
+            assert _independent_ledger_sum(
+                checking.id, scenario_id,
+            ) == Decimal("960.00")
+            assert _signed_cash_effect(txn) == Decimal("-40.00")
+
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            status_seam.apply_status_change(
+                txn, cancelled_id,
+                settlement=settlement_if_settling(txn, cancelled_id),
+            )
+            posting_service.sync_transaction_postings(txn)
+            db.session.commit()
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            (purchase,) = txn.purchases
+            assert purchase.settled_on == posted_on  # still dated
+            assert txn.status_id in balance_excluded_status_ids()
+
+            # The twin, directly: without the gate this reads -40.00.
+            assert _signed_cash_effect(txn) == Decimal("0")
+            assert _independent_movement_effect(
+                checking.id, scenario_id,
+            ) == Decimal("0.00")
+            assert _independent_ledger_sum(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            groceries_counter = _counter_ledger_id(
+                user_id, LedgerAccountClassEnum.EXPENSE, txn.category_id,
+            )
+            assert _ledger_account_sum(
+                groceries_counter, scenario_id,
+            ) == Decimal("0.00")
+            _assert_full_reconciliation(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# A settled envelope's UN-DATED purchase is in flight, not in the ledger
+# ---------------------------------------------------------------------------
+
+
+class TestASettledEnvelopesUndatedPurchasePostsNothing:
+    """The shape the oracle could not tell apart through ``X-bi-3e``.
+
+    The reason the source side was re-expressed (the X-bi-4a review's M1):
+    the pre-4a writer booked a settled envelope's un-dated purchases as the
+    ROW's own leg on the close day, and an oracle spelling ``effective -
+    Sigma(credit)`` over settled rows agreed with that ledger, so no case
+    here could catch a writer that regressed to it.  Since plan step
+    ``balance:X-bi-4a`` (rulings **R-BAL77** / **R-BAL80**) a purchase posts
+    when it is DATED, on its own day, and the close books nothing; the
+    movement oracle expects nothing for an un-dated purchase, so the
+    regressed writer's leg makes the linked sweep FAIL.  Proven to fire
+    under exactly that mutation on 2026-09-18 (``_emit_transaction_deltas``
+    handed the pre-4a own-leg target for a settled row).
+    """
+
+    def test_a_closed_envelopes_undated_purchase_reconciles_at_zero(
+        self, app, db, seed_user,
+    ):
+        """A $200 envelope closed over one un-dated $65 purchase posts nothing.
+
+        Arithmetic: the envelope's record is ``purchases`` ($65.00, the one
+        purchase), so the seam writes no covering movement; the purchase
+        carries no ``settled_on``, so it posts nothing.  Checking's linked
+        ledger stays at its $1000.00 opening, the Groceries counter at 0.00,
+        the family holds no journal entry, and the independent movement
+        effect is 0.00.  The sweep runs FIRST, because the sweep is the claim
+        under test; the literals after it pin the same figures by hand.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            user_id = seed_user["user"].id
+            checking = seed_user["account"]
+            period = seed_user["bootstrap_period"]
+
+            txn = create_envelope_txn(
+                seed_user, db.session, period, "Groceries", Decimal("200.00"),
+            )
+            db.session.add(TransactionEntry(
+                **figure_source_columns(),
+                transaction_id=txn.id, account_id=txn.account_id,
+                user_id=user_id,
+                amount=Decimal("65.00"), description="Kroger",
+                purchased_on=period.start_date, is_credit=False,
+            ))
+            db.session.flush()
+            transaction_service.settle_transaction(txn)
+            db.session.commit()
+            txn_id = txn.id
+            assert txn.status.is_settled
+            assert txn.covering_movements == []
+            (purchase,) = txn.purchases
+            assert purchase.settled_on is None
+
+            _assert_full_reconciliation(scenario_id)
+            assert _independent_movement_effect(
+                checking.id, scenario_id,
+            ) == Decimal("0.00")
+            assert _independent_ledger_sum(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            groceries_counter = _counter_ledger_id(
+                user_id, LedgerAccountClassEnum.EXPENSE, txn.category_id,
+            )
+            assert _ledger_account_sum(
+                groceries_counter, scenario_id,
+            ) == Decimal("0.00")
+            assert (
+                _db.session.query(JournalEntry)
+                .filter(family_journal_filter(txn_id))
+                .count()
+            ) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1691,14 +1820,14 @@ class TestOracleIsNotVacuous:
     def test_per_account_reconciliation_catches_a_tampered_transaction(
         self, app, db, seed_user,
     ):
-        """Tampering a settled expense's estimate makes ledger != source effect.
+        """Tampering a settled expense's movement makes ledger != source effect.
 
         A reconciled $100 Groceries expense has Checking ledger -100 and a source
-        effect of -100.  Forcing the row's estimated amount to 999 via raw SQL
-        (no actual override, so its effective becomes 999) leaves the ledger at
-        -100 but pushes the source effect to -999 -- so the per-account
-        reconciliation the oracle relies on now FAILS.  This proves the check is a
-        real comparison, not one that passes unconditionally.
+        effect of -100.  Forcing its covering movement's amount to 999 via raw
+        SQL leaves the ledger at -100 but pushes the source effect to -999 -- so
+        the per-account reconciliation the oracle relies on now FAILS.  This
+        proves the check is a real comparison, not one that passes
+        unconditionally.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1714,24 +1843,25 @@ class TestOracleIsNotVacuous:
             # Reconciled (absolutely) before tampering.
             assert _independent_ledger_sum(
                 checking.id, scenario_id,
-            ) == _opening_anchor(checking.id) + _independent_cash_txn_effect(
+            ) == _opening_anchor(checking.id) + _independent_movement_effect(
                 checking.id, scenario_id,
             )
 
-            # Tamper the RECORDED figure, not the estimate (plan step
-            # X-au-c3): a settled row's effect is what it recorded as having
-            # moved, and its plan is beside that rather than behind it -- so
-            # moving the estimate on a settled row is now inert, which is the
-            # substitution this step exists to remove.  Transactions carry no
-            # balance trigger, so the tamper commits.
+            # Tamper the MOVEMENT's figure -- the fold's and the oracle's one
+            # input since plan step ``balance:X-bi-4a`` (ruling **R-BAL80**);
+            # the row's ``settled_amount`` beside it is the stale cache
+            # ``X-bi-4b`` deletes and moves nothing here.  (Through
+            # ``X-bi-3e`` this tampered the row's recorded figure, plan step
+            # X-au-c3's subject.)  Entries carry no balance trigger, so the
+            # tamper commits.
             db.session.execute(_db.text(
-                "UPDATE budget.transactions SET settled_amount = 999 "
-                "WHERE id = :i"
+                "UPDATE budget.transaction_entries SET amount = 999 "
+                "WHERE transaction_id = :i AND covers_settlement"
             ), {"i": txn_id})
             db.session.commit()
 
             ledger = _independent_ledger_sum(checking.id, scenario_id)
-            effect = _independent_cash_txn_effect(checking.id, scenario_id)
+            effect = _independent_movement_effect(checking.id, scenario_id)
             assert ledger == Decimal("900.00")  # ledger unchanged
             assert effect == Decimal("-999.00")  # transaction truth drifted
             # opening (1000) + effect (-999) != ledger (900): the drift shows.
