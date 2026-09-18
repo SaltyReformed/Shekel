@@ -396,7 +396,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         the builder; 15 failures classified (**R-BAL60**: ten raw-column readers onto
         `resolved_amount`, the two C-18 locking cases on an owner-repriced engine row); three
         category-delete cases re-aimed at the row's clause; the marker 227 -> 169.
-      * [ ] **X-bi-7c-4** `tests/test_routes/test_grid.py` (72 + 7 splat) and `test_grid_regression.py`.
+      * [x] **X-bi-7c-4** `a32a7c98` -- 89 of the grid pair's 90 rows onto the builder (81 by the mover,
+        8 by hand); 2 raw-column readers re-aimed (R-BAL60's class), two double-graded R-BAL34 cases
+        and two own-flag fixtures put on the app's own state; one bare row stays, grading the
+        table's NOT NULL; the marker 169 -> 80.
       * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
         `tests/test_performance`, `tests/test_concurrent`, `test_audit_fixes`; the marker's last figure.
     * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated

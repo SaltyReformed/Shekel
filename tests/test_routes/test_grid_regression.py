@@ -45,8 +45,8 @@ from tests._test_helpers import (
     derived_span,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 class TestPaydayWorkflowRegression:
@@ -120,26 +120,21 @@ class TestPaydayWorkflowRegression:
         rebuild Phase 6, audit item C3).
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             income_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.post(
@@ -172,9 +167,6 @@ class TestPaydayWorkflowRegression:
         forward so they remain visible in the current view.
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             done_status = (
                 db.session.query(Status).filter_by(name="Paid").one()
             )
@@ -193,31 +185,29 @@ class TestPaydayWorkflowRegression:
                 db.session, seed_user, amount="100.00", name="Rent Payment",
             )
             txn_template = generate_row_of(template, past_period)
-            # Projected expense 2: ad-hoc (no template).
-            txn_adhoc = Transaction(
-                user_id=past_period.user_id,
-                pay_period_id=past_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            # Projected expense 2: a one-off (a rule-less definition's row).
+            txn_one_off = one_off_row_of(
+                past_period,
                 name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("200.00"),
+                user_id=past_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
             # Done expense: should NOT be carried forward.
-            txn_done = Transaction(
-                user_id=past_period.user_id,
-                pay_period_id=past_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=done_status.id,
+            txn_done = one_off_row_of(
+                past_period,
                 name="Car Payment",
-                category_id=seed_user["categories"]["Car Payment"].id,
+                amount=Decimal("300.00"),
+                user_id=past_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
+                category_id=seed_user["categories"]["Car Payment"].id,
             )
-            db.session.add_all([txn_adhoc, txn_done])
+            txn_done.status_id = done_status.id
             db.session.commit()
 
             response = auth_client.post(
@@ -233,12 +223,12 @@ class TestPaydayWorkflowRegression:
             )
 
             db.session.refresh(txn_template)
-            db.session.refresh(txn_adhoc)
+            db.session.refresh(txn_one_off)
             db.session.refresh(txn_done)
 
             # Both projected transactions moved to current period.
             assert txn_template.pay_period_id == current_period.id
-            assert txn_adhoc.pay_period_id == current_period.id
+            assert txn_one_off.pay_period_id == current_period.id
 
             # Done transaction stays in the past period.
             assert txn_done.pay_period_id == past_period.id
@@ -264,26 +254,21 @@ class TestPaydayWorkflowRegression:
         rebuild Phase 6, audit item C3).
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Electric Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("150.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.post(
@@ -313,9 +298,6 @@ class TestPaydayWorkflowRegression:
         credit card rather than paid from checking.
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
@@ -323,18 +305,16 @@ class TestPaydayWorkflowRegression:
 
             # Create expense in seed_periods_today[0]; the payback will go to
             # seed_periods_today[1] (the next period by index).
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Restaurant",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.post(
@@ -378,9 +358,6 @@ class TestPaydayWorkflowRegression:
         current after any grid edit.
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             income_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
@@ -395,29 +372,26 @@ class TestPaydayWorkflowRegression:
             current_period = current_pay_period(
                 seed_user["user"].id
             )
-            income_txn = Transaction(
-                user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current_period,
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-            )
-            expense_txn = Transaction(
+                amount=Decimal("2000.00"),
                 user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("800.00")),
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add_all([income_txn, expense_txn])
+            one_off_row_of(
+                current_period,
+                name="Rent",
+                amount=Decimal("800.00"),
+                user_id=current_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
+            )
             db.session.commit()
 
             response = auth_client.get(
@@ -515,9 +489,6 @@ class TestPaydayWorkflowRegression:
         ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``.
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             income_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
@@ -546,56 +517,49 @@ class TestPaydayWorkflowRegression:
             # -- Create test transactions --
 
             # Past period: projected expense ($150).
-            past_expense = Transaction(
-                user_id=past_period.user_id,
-                pay_period_id=past_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            past_expense = one_off_row_of(
+                past_period,
                 name="Past Rent",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("150.00"),
+                user_id=past_period.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
             # Current period: income ($2,000).
-            income_txn = Transaction(
-                user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            income_txn = one_off_row_of(
+                current_period,
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=current_period.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
             # Current period: expense to mark done ($500).
-            expense_done = Transaction(
-                user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            expense_done = one_off_row_of(
+                current_period,
                 name="Electric Bill",
-                category_id=seed_user["categories"]["Car Payment"].id,
+                amount=Decimal("500.00"),
+                user_id=current_period.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Car Payment"].id,
             )
             # Current period: expense to mark credit ($300).
-            expense_credit = Transaction(
-                user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            expense_credit = one_off_row_of(
+                current_period,
                 name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("300.00"),
+                user_id=current_period.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add_all([
-                past_expense, income_txn, expense_done, expense_credit,
-            ])
             db.session.commit()
 
             # -- Step 1: True-up anchor to $5,000 --
