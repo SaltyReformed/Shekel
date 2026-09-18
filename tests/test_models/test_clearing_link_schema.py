@@ -57,6 +57,7 @@ from app.services import entry_service, status_seam
 from tests._test_helpers import (
     an_entered_day,
     append_only_guard_lifted,
+    bare_expense_template,
     figure_source_columns,
     settle_day_columns,
     settlement_columns,
@@ -125,18 +126,27 @@ def _make_transaction(data, **overrides) -> Transaction:
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
 
-    **BARE on purpose, and past the cutover.**  The subject here is a
-    CONSTRAINT of ``budget.transactions``, and a control that reached the
-    row through a door would grade the door; the shape 7d's pricing-link
-    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
-    builder (a pricing link on every row it stages) rather than any case
-    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    owner's** (plan step ``balance:X-bi-7d-1``).  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the row
+    through a door would grade the door -- so the row is still constructed by
+    hand.  What it stopped being is LINK-LESS: the family's cutover
+    (``X-bi-7d-2``) re-cuts ``ck_transactions_one_pricing_link`` to ``= 1``,
+    so every row staged here names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`) and carries the
+    paycheck's start as the day it is due and the occurrence it answers --
+    the shape ``one_off.place_row_of`` writes -- unless the case states
+    otherwise.  The link is never the subject.
     """
     expense_type = (
         _db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        _db.session, data, name="Clearing control definition",
+    )
     fields = {
         "user_id": data["periods"][0].user_id,
+        "template_id": definition.id,
         "pay_period_id": data["periods"][0].id,
         "scenario_id": data["scenario"].id,
         "account_id": data["account"].id,
@@ -145,6 +155,8 @@ def _make_transaction(data, **overrides) -> Transaction:
         "category_id": data["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
         "estimated_amount": Decimal("300.00"),
+        "due_date": data["periods"][0].start_date,
+        "occurs_on": data["periods"][0].start_date,
     }
     fields.update(overrides)
     # **The settle DAY carries its basis unless the caller states one** (plan

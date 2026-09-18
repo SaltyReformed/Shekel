@@ -74,6 +74,7 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
+    bare_expense_template,
     generate_row_of,
     generate_transfer_of,
     load_migration_module,
@@ -163,8 +164,9 @@ def _make_transaction(seed_user, seed_periods, **overrides):
       and ``is_override`` and gets exactly the two acts the re-price door
       performs.  ``pay_period_id`` picks the paycheck the engine writes into
       and is not restated afterwards.
-    * **An AD-HOC row** (no ``template_id``, or ``None``) is constructed bare
-      and returned UNFLUSHED, as before.
+    * **A BARE row** (no ``template_id``, or ``None``) is constructed by hand
+      and returned UNFLUSHED, naming a rule-less definition of its OWN
+      (below).
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
@@ -178,14 +180,19 @@ def _make_transaction(seed_user, seed_periods, **overrides):
 
     Returns:
         The :class:`~app.models.transaction.Transaction`: flushed on the
-        definition arm, unflushed on the ad-hoc one.
+        definition arm, unflushed on the bare one.
 
-    **BARE on purpose, and past the cutover.**  The subject here is a
-    CONSTRAINT of ``budget.transactions``, and a control that reached the
-    row through a door would grade the door; the shape 7d's pricing-link
-    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
-    builder (a pricing link on every row it stages) rather than any case
-    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    owner's** (plan step ``balance:X-bi-7d-1``).  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the row
+    through a door would grade the door -- so the row is still constructed by
+    hand.  What it stopped being is LINK-LESS: the family's cutover
+    (``X-bi-7d-2``) re-cuts ``ck_transactions_one_pricing_link`` to ``= 1``,
+    so every row staged here names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`) and carries its
+    paycheck's start as the day it is due and the occurrence it answers --
+    the shape ``one_off.place_row_of`` writes -- unless the case states
+    otherwise.  The link is never the subject.
     """
     template_id = overrides.pop("template_id", None)
     if template_id is not None:
@@ -193,9 +200,14 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        db.session, seed_user, name="Ownership control definition",
+    )
+    period = _period_named(seed_periods, overrides)
     fields = {
         "user_id": seed_periods[0].user_id,
-        "pay_period_id": seed_periods[0].id,
+        "template_id": definition.id,
+        "pay_period_id": period.id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
         "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
@@ -203,10 +215,33 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
         "amount_ownership": AmountOwnership.own(Decimal("300.00")),
+        "due_date": period.start_date,
+        "occurs_on": period.start_date,
     }
     fields.update(overrides)
     fields.update(_settle_day_pair(overrides))
     return Transaction(**fields)
+
+
+def _period_named(seed_periods, overrides):
+    """Return the paycheck *overrides* files the row in, else the first.
+
+    The ONE lookup both arms of :func:`_make_transaction` make: the
+    definition arm hands the paycheck to the engine, the bare arm takes its
+    START as the row's day, and each reads it off the ``pay_period_id`` a
+    case states before the row is built.  Leaves *overrides* untouched, so
+    the bare arm can still lay the id onto its row.
+
+    Args:
+        seed_periods: The ``seed_periods`` fixture list.
+        overrides: The caller's column values, which may name
+            ``pay_period_id``.
+
+    Returns:
+        The :class:`~app.models.pay_period.PayPeriod` the row is filed in.
+    """
+    period_id = overrides.get("pay_period_id", seed_periods[0].id)
+    return next(p for p in seed_periods if p.id == period_id)
 
 
 def _row_of_definition(seed_periods, template_id, overrides):
@@ -221,8 +256,8 @@ def _row_of_definition(seed_periods, template_id, overrides):
     Returns:
         The flushed :class:`~app.models.transaction.Transaction`.
     """
-    period_id = overrides.pop("pay_period_id", seed_periods[0].id)
-    period = next(p for p in seed_periods if p.id == period_id)
+    period = _period_named(seed_periods, overrides)
+    overrides.pop("pay_period_id", None)
     txn = generate_row_of(db.session.get(TransactionTemplate, template_id), period)
     for column, value in {**overrides, **_settle_day_pair(overrides)}.items():
         setattr(txn, column, value)
@@ -266,6 +301,14 @@ def _insert_transaction_row(seed_user, seed_periods, *, figure, source_id,
     is NOT this application: a migration, a ``psql`` session, a trigger.  Core
     is that writer.
 
+    **It names a rule-less definition of the owner's and is dated on the
+    paycheck's start**, for the reason :func:`_make_transaction`'s bare arm
+    does (plan step ``balance:X-bi-7d-1``): the family's cutover makes a
+    link-less row unstorable, and a row that violated TWO constraints would
+    match one only by the order PostgreSQL reports them in -- which is not
+    the control.  A constructor census could not see this writer (it is no
+    ``Transaction(`` call), which is why it is stated here.
+
     Args:
         seed_user: The ``seed_user`` fixture payload.
         seed_periods: The ``seed_periods`` fixture list.
@@ -283,8 +326,12 @@ def _insert_transaction_row(seed_user, seed_periods, *, figure, source_id,
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        db.session, seed_user, name="Ownership control definition",
+    )
     values = {
         "user_id": seed_periods[0].user_id,
+        "template_id": definition.id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
@@ -294,6 +341,8 @@ def _insert_transaction_row(seed_user, seed_periods, *, figure, source_id,
         "transaction_type_id": expense_type.id,
         "estimated_amount": figure,
         "amount_source_id": source_id,
+        "due_date": seed_periods[0].start_date,
+        "occurs_on": seed_periods[0].start_date,
     }
     # Overrides FIRST: ``settle_day_columns`` reads ``settled_on`` to decide
     # the basis beside it, so applying them the other way round would pair a

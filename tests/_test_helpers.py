@@ -6190,7 +6190,10 @@ def state_template_price(template, amount=None, *, effective_on=None):
     )
 
 
-def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
+def bare_expense_template(
+    db_session, seed_user, name="Cadence Under Test", *, account=None,
+    is_envelope=False,
+):
     """Create and flush an expense template carrying NO cadence.
 
     The definition a test authors a rule onto when the rule is the subject and
@@ -6198,6 +6201,21 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
     necessary: ``ck_recurrence_rules_one_owner`` refuses a rule belonging to
     nothing, so ``author_rule`` takes an owner and there is no such thing as a
     free-standing rule any more.
+
+    **And the PRICING LINK a bare CHECK builder's row carries** since plan step
+    ``balance:X-bi-7d-1``.  The builders in ``tests/test_models`` whose
+    subject is a CHECK or key of ``budget.transactions`` construct their rows
+    by hand on purpose -- a control that reached the row through a door would
+    grade the door -- and the family's cutover (``X-bi-7d-2``) re-cuts
+    ``ck_transactions_one_pricing_link`` to ``= 1``, so a bare row must name
+    a definition to be storable at all.  A rule-less definition of the
+    owner's is the one such a row would have had the grid mint it
+    (**R-BAL20**), and this is the shared builder of that shape (the trigger
+    benchmark keeps a local one beside its clock, ``test_trigger_overhead
+    ._rule_less_definition``); each such row takes its OWN definition,
+    because two undated rows of one definition in one paycheck collide on
+    ``idx_transactions_template_scenario_undated`` and two dated ones on the
+    occurrence index.
 
     Distinct from :func:`make_expense_template`, which already gives its
     template an every-paycheck rule -- authoring a second onto that one is
@@ -6208,6 +6226,15 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
         db_session: The test session.
         seed_user: The seed user fixture dict.
         name: Display name; distinct per call when a test needs two.
+        account: The account the definition names, or ``None`` for the seed
+            user's.  Stated by a case that has DELETED the seeded account
+            before it mints (``transaction_templates.account_id`` is
+            ``ON DELETE RESTRICT``, so a definition minted on it beforehand
+            would refuse the very act under test, and one minted afterwards
+            has no account to name).
+        is_envelope: Whether the definition's rows take purchase entries --
+            the DEFINITION's setting, which ``Transaction.tracks_purchases``
+            reads for every row that names one.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
@@ -6222,11 +6249,12 @@ def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=Decimal("100.00"),
+        is_envelope=is_envelope,
     )
     db_session.add(template)
     db_session.flush()
