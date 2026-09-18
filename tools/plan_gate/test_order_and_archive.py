@@ -177,7 +177,7 @@ class TestTheStartsCellIsDerivedAndReconciled:
         and ``#32`` were a stored copy of a value the live table decides, and
         they rotted on the first commit that renumbered it.
         """
-        line = row_of("steps", "| credit_card | CC0a |")
+        line = row_of("steps", "| credit_card | CC-2 |")
         stage("steps", line, with_cell(
             line, 6, "after #1 / balance:X-f4 / balance:X-aj2",
         ))
@@ -186,7 +186,7 @@ class TestTheStartsCellIsDerivedAndReconciled:
         )
         problems = order.starts_violations()
         assert any(
-            "credit_card:CC0a" in p and f"#{latest}" in p for p in problems
+            "credit_card:CC-2" in p and f"#{latest}" in p for p in problems
         ), problems
 
     def test_the_control_fires_when_a_ready_row_claims_to_be_blocked(self, stage):

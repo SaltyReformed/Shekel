@@ -365,6 +365,19 @@ class TestAShippedStepIsAPointer:
         ]
         assert ticked, "no ticked step anywhere -- rule 7 grades nothing"
 
+    def test_a_fenced_heading_does_not_end_the_steps_section(self):
+        """A ``##`` inside a code sample must not end the section early.
+
+        STAGED into the card document's text: no live steps section carries a
+        fence (0 on 2026-09-18), so the clean case alone grades nothing.
+        """
+        spec = SPECS["credit_card"]
+        text = spec.read()
+        anchor = [ln for ln in text.splitlines() if ln.startswith("- [") and "**CC-" in ln][0]
+        staged = text.replace(anchor, "```text\n## a heading in a fence\n```\n\n" + anchor, 1)
+        idents = [ident for ident, _, _ in step_entries(staged, spec)]
+        assert "CC-1" in idents and "CC-11" in idents, idents
+
     def test_the_control_fires_when_a_ticked_entry_drops_its_hash(self):
         """pay_calendar C1 is ticked and opens with `f9d148fe`.
 

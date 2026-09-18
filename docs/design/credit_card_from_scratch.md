@@ -773,13 +773,14 @@ CC-6), **N-264** (`CC4c` -> CC-8), **N-351** credit_card (`CC3b`/`CC3c` -> CC-7)
 -> CC-7). Other-arc waits re-pointed: the O2 outcome row lists the new leaves; `bank_import:X-gg`
 waits on CC-5 (the entry shape) instead of `CC3c`; `balance:X-au-l`'s wait on `CC4d` DROPS, because
 the finance charge carries `template_id` from birth and `amount_source_id` needs no card link to
-go -- the coordinator's call. Registry edits the re-mint owes beyond the card rows:
-`recurrence:R16-d`'s sentence gains the `DAILY_ACTUAL_365` member (rule 14: one convention table);
-`X-bi-4`'s README entry spells BOTH halves of the fork (the key relaxed AND the fold's movement
-predicate `TransactionEntry.account_id`, which `_events.py:750` reads as the parent's today) and its
-`steps.md` sentence if that changes; `X-bi-6`'s entry loses its "restore NO ACTION" clause (3.2);
-`R-CC3` is recorded as amended by `R-CC18` with its finance-charge clause deferred by `R-CC19`;
-`R-CC17` as amended by `R-CC20` and `R-CC21`; `R-CC18` as amended by `R-CC22`.
+go -- RULED DROPPED by the developer 2026-09-18 (AskUserQuestion in the coordinator session).
+Registry edits the re-mint owes beyond the card rows: `recurrence:R16-d`'s sentence gains the
+`DAILY_ACTUAL_365` member (rule 14: one convention table); `X-bi-4`'s README entry spells BOTH
+halves of the fork (the key relaxed AND the fold's movement predicate `TransactionEntry.account_id`,
+which `_events.py:750` reads as the parent's today) and its `steps.md` sentence if that changes;
+`X-bi-6`'s entry loses its "restore NO ACTION" clause (3.2); `R-CC3` is recorded as amended by
+`R-CC18` with its finance-charge clause deferred by `R-CC19`; `R-CC17` as amended by `R-CC20` and
+`R-CC21`; `R-CC18` as amended by `R-CC22`.
 
 ## 6. The forks, in the order they were asked
 
