@@ -159,6 +159,7 @@ from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.level_infrastructure import apply_level_infrastructure
+from app.sighting_infrastructure import apply_sighting_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -301,6 +302,13 @@ def _populate_template(app) -> None:
         # blocks above, and a constraint a FIXTURE can trip for the same
         # reason the two above are.
         apply_level_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # A bank line goes with its last sighting (plan step
+        # bank_import:X-f6b-1): idempotent re-application, same contract.
+        apply_sighting_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()
