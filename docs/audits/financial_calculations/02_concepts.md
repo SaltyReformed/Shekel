@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Phase 2: Concept Catalog
 
 This document accumulates across sessions P2-a, P2-b, P2-c, and P2-d. It is gated complete only by
