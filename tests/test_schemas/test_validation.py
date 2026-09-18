@@ -21,6 +21,7 @@ from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from tests._test_helpers import cadence_payload
 from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
+    RECURRENCE_NEEDS_A_START,
     AccountCreateSchema,
     CategoryCreateSchema,
     PaycheckLineCreateSchema,
@@ -1021,6 +1022,61 @@ class TestDeductionCreateSchema:
         # Without a target every kind loads.
         del payload["target_account_id"]
         assert PaycheckLineCreateSchema().load(payload)["paycheck_line_kind_id"] == kind_id
+
+
+    def test_a_chosen_cadence_with_a_blank_start_loads_and_the_span_is_composed(self):
+        """A line's start may be blank (the opening payday); a stated start and bound load as one value.
+
+        Plan step salary:R18-c (ruling **R-SAL38** (2), amending R-SAL30 /
+        R-SAL31): the line schema carries the whole recurrence form mixin
+        with ``recurrence_start_is_required`` OFF, so a chosen cadence with
+        no start is not refused here -- the route derives the opening -- and
+        the three end-bound controls compose to one ``EndBound``.  The
+        template forms keep the requirement; an inverted window is refused
+        on the end date, the mixin's own rule.
+        """
+        from app.enums import PeriodPlacementEnum  # pylint: disable=import-outside-toplevel
+        from app.services.recurrence import EndsOnDate  # pylint: disable=import-outside-toplevel
+
+        base = {
+            "name": "Phone Allowance", "paycheck_line_kind_id": "1",
+            "calc_method_id": "1", "amount": "45.0000",
+            **cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH,
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                states_a_start=False,
+            ),
+        }
+        blank = PaycheckLineCreateSchema().load(base)
+        assert "starts_on" not in blank
+        assert "recurrence_end_mode" not in blank
+
+        stated = PaycheckLineCreateSchema().load({
+            **base, "starts_on": "2026-09-01",
+            "recurrence_end_mode": "on_date", "end_date": "2027-06-30",
+        })
+        assert stated["starts_on"] == date(2026, 9, 1)
+        assert stated["recurrence_end_mode"] == EndsOnDate(on=date(2027, 6, 30))
+        assert "end_date" not in stated
+
+        with pytest.raises(ValidationError) as exc:
+            PaycheckLineCreateSchema().load({
+                **base, "starts_on": "2026-09-01",
+                "recurrence_end_mode": "on_date", "end_date": "2026-08-01",
+            })
+        assert "end_date" in exc.value.messages
+
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load({
+                "name": "Rent", "account_id": "1", "category_id": "1",
+                "transaction_type_id": "1", "default_amount": "100.00",
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                    states_a_start=False,
+                ),
+            })
+        assert exc.value.messages == RECURRENCE_NEEDS_A_START
 
 
 # ── FicaConfigSchema ─────────────────────────────────────────────────

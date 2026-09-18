@@ -52,6 +52,7 @@ from app.services.recurrence import (
     describe,
     resolved_recurrence,
 )
+from app.utils.dates import month_name
 
 #: What a line with no rule reads as: R-SAL3's NULL, every paycheck.  The
 #: recurrence package words the same cadence identically for a rule that
@@ -161,7 +162,11 @@ def cadence_phrase(deduction, calendar: PayCalendar | None) -> str:
 
     Returns:
         :data:`EVERY_PAYCHECK` for a line with no rule, else the rule's
-        described cadence.
+        described cadence -- followed, since plan step salary:R18-c (ruling
+        **R-SAL38** (2)), by its SPAN where the rule states one: ``from
+        <date>`` when the start is not the unit's zero at the opening (the
+        derived default, which says nothing worth a word), and the recurrence
+        package's own stop phrase when the bound is not *never*.
 
     Raises:
         ValueError: A line carries a rule and no calendar was given -- the
@@ -189,7 +194,21 @@ def cadence_phrase(deduction, calendar: PayCalendar | None) -> str:
             f"pay periods; a rule is authored against one, so this is a "
             f"broken invariant rather than a line taken every paycheck."
         )
-    return describe(resolved).cadence
+    described = describe(resolved)
+    words = [described.cadence]
+    default_start = first_occurrence(resolved.unit, resolved.interval_n, calendar)
+    if rule.starts_on != default_start:
+        # Worded as the recurrence package words its stop date (``_until``),
+        # month name and zero-padded day, so one cell does not carry two
+        # date formats -- and ``%b`` is the locale hazard that producer
+        # escaped.
+        words.append(
+            f"from {month_name(rule.starts_on.month, abbr=True)} "
+            f"{rule.starts_on.day:02d}, {rule.starts_on.year}"
+        )
+    if described.stops is not None:
+        words.append(described.stops)
+    return ", ".join(words)
 
 
 def cadence_phrases(deductions, calendar: PayCalendar | None) -> dict[int, str]:

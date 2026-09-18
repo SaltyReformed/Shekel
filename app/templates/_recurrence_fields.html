@@ -448,7 +448,12 @@
    it.  Carrying a class no script removes is how a control ships permanently
    invisible; the suite cannot see the difference, which is what
    tests/manual/verify_recurrence_form.py exists for. #}
-{% macro recurrence_starts_on(picker, selected, date_min, date_max, swappable=false) %}
+{% macro recurrence_starts_on(picker, selected, date_min, date_max, swappable=false, open_help=none) %}
+{# ``selected.starts_on`` may be NONE since plan step salary:R18-c: the payroll-line
+   form's box opens BLANK, blank meaning the owner's opening payday (ruling
+   R-SAL38 (2), R-SAL30's default kept as the default) and the route deriving
+   it; the two template forms always pass a date.  ``open_help`` lets that form
+   say what blank means; every other caller keeps the sentence below. #}
 <div class="mb-3" id="field-starts-on">
   <label class="form-label" for="starts_on">Starts on</label>
   <div class="row g-2 align-items-center">
@@ -464,7 +469,7 @@
       <input type="date" id="starts_on" name="starts_on" class="form-control"
              aria-describedby="starts-on-help"
              min="{{ date_min.isoformat() }}" max="{{ date_max.isoformat() }}"
-             value="{{ selected.starts_on.isoformat() }}"
+             value="{{ selected.starts_on.isoformat() if selected.starts_on is not none else '' }}"
              {{ 'disabled' if selected.locked else '' }}>
     </div>
     {# The ambiguity control.  The COPY is static and the option set is fixed
@@ -522,7 +527,7 @@
      could read. #}
   {% set starts_on_locked_help =
        "Set from the loan's first payment, and updated when the loan changes." %}
-  {% set starts_on_open_help =
+  {% set starts_on_open_help = open_help if open_help is not none else
        "The first time this happens. It repeats from here, and nothing is generated before it." %}
   <div id="starts-on-help" class="form-text"
        {% if swappable %}
