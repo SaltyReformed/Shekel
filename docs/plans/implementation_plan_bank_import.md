@@ -81,7 +81,8 @@ nothing and says so on its own first line. The code as committed is what those s
         decision is ruled toward host cron through a CLI door, matching the no-scheduler,
         no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
         are already measured in R-FP's context) is worth minting once the card ledger exists
-        (`credit_card:CC1a`..`CC1c`); no step for it exists yet, deliberately.
+        (`credit_card:CC1c`; `CC1a` and `CC1b` dissolved under `R-CC14`); no step for it exists yet,
+        deliberately.
 
 **The release is cut after `X-gj-4b` merges and before `X-gi`** (`bank_import:R-JK`, 2026-09-03).
 
