@@ -2,29 +2,24 @@
 Shekel Budget App -- Transaction flag-resolution property tests
 
 Unit tests for ``Transaction.tracks_purchases`` and
-``Transaction.visible_to_companion``.  Resolution rule: a
-template-generated row defers to its template's flag (the template is
-the single source of truth for every instance it generates), while a
-LEGACY link-less row (template_id IS NULL) uses its own column.  These
-properties are the load-bearing abstraction behind F2 (companion
-visibility) and F3 (purchase tracking).  **The own-cell arm is the pre-7b
-shape and production's until the cutover** (plan step ``balance:X-bi-7d``):
-a one-off placed since ``balance:X-bi-7b`` reads both flags off its
-DEFINITION (ruling R-BAL36), so every ``_adhoc`` case here grades the
-legacy arm on its one transitional home (``legacy_link_less_row_of``, plan
-step ``balance:X-bi-7c``, ruling R-BAL59), and 7d retires those cases
-with the arm; the ``_templated`` cases are the live one.
+``Transaction.visible_to_companion``.  Resolution rule: a row's two flags
+are its DEFINITION's (the definition is the single source of truth for
+every row it generates or places), and a row that names no definition -- a
+transfer shadow, a CC payback -- answers ``False`` (ruling **R-BAL73**).
+These properties are the load-bearing abstraction behind F2 (companion
+visibility) and F3 (purchase tracking).
 
-**Both cells are SEALED**: ``is_envelope`` since plan step ``balance:X-bi-1``
-(ruling **R-JQ**; the seal over a pin, developer 2026-09-11) and
-``companion_visible`` since ``balance:X-bi-1b`` (ruling **R-BAL19**, once
-``companion_service`` stopped keying SQL on it).
-:class:`TestTheDeadCellHasNoPublicName` pins what that means, on each.  On a
-template-generated row the row's own cell is dead, and keying on it read
-4 envelopes where there are 238 (3 visible rows where there are 232, for
-the twin) -- so each public column name now READS the one accessor and
-only WRITES the cell, and every derived flag's class-level name refuses to
-key a query rather than silently matching nothing.
+**The row carries no flag of its own** (plan step ``balance:X-bi-7d-2``,
+ruling **R-BAL20**).  Until that cutover a LEGACY link-less row stated both
+flags in two cells of its own, sealed at ``balance:X-bi-1`` / ``X-bi-1b`` so
+the dead half on a generated row could not be read (keying on it read 4
+envelopes where there are 238); the cutover minted every such row a
+rule-less definition carrying its flags and dropped both columns, so the
+public names ``is_envelope`` / ``companion_visible`` that read the accessor
+and wrote the cell are gone from the row too.
+:class:`TestTheRowCarriesNoFlag` pins what that means; the derived flags'
+class-level names still refuse to key a query rather than silently matching
+nothing.
 """
 from decimal import Decimal
 
@@ -34,18 +29,20 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from tests._test_helpers import generate_row_of, legacy_link_less_row_of, make_expense_template
+from tests._test_helpers import (
+    create_savings_account,
+    create_transfer,
+    generate_row_of,
+    make_expense_template,
+    one_off_row_of,
+)
 
 
-def _adhoc(seed_user, period, *, is_envelope, companion_visible):
-    """Create and commit a LEGACY link-less (template_id IS NULL) transaction.
-
-    The shape whose own cells these cases grade (see the module docstring),
-    on its one transitional home; 7d retires both.
-    """
-    txn = legacy_link_less_row_of(
+def _placed(seed_user, period, *, is_envelope, companion_visible):
+    """Place and commit a ONE-OFF's row whose definition carries the flags."""
+    txn = one_off_row_of(
         period,
-        name="Ad-hoc",
+        name="One-off",
         amount=Decimal("100.00"),
         user_id=period.user_id,
         account_id=seed_user["account"].id,
@@ -59,273 +56,158 @@ def _adhoc(seed_user, period, *, is_envelope, companion_visible):
     return txn
 
 
-def _templated(seed_user, period, *, tpl_envelope, tpl_visible,
-               own_envelope, own_visible):
-    """Create a template (with tpl_* flags) plus the engine's row of it.
-
-    The row is the definition's own, generated through the engine
-    (:func:`generate_row_of`, plan step balance:X-cf) rather than restated
-    here.  The engine writes neither flag on a row -- both are the row's own
-    cells, at their defaults -- so the row's OWN flags are then set to the
-    opposite of the template's, which is the state that proves the resolved
-    property reads the template and not the row.  The ``is_envelope`` write
-    goes through the sealed cell's public setter, the same door the ad-hoc
-    constructors use; on a generated row it is the inert write plan step
-    X-bi-5 deletes.
-    """
+def _generated(seed_user, period, *, is_envelope, companion_visible):
+    """Create a RECURRING definition with the flags plus the engine's row of it."""
     tpl = make_expense_template(
         db.session, seed_user, amount="100.00", name="Templated",
-        is_envelope=tpl_envelope, companion_visible=tpl_visible,
+        is_envelope=is_envelope, companion_visible=companion_visible,
     )
     txn = generate_row_of(tpl, period)
-    txn.is_envelope = own_envelope
-    txn.companion_visible = own_visible
     db.session.commit()
     return txn
+
+
+def _shadow(seed_user, period):
+    """Create a transfer through the service and return one of its shadows.
+
+    A shadow names its transfer and no definition -- one of the two
+    link-less shapes left since the cutover.
+    """
+    savings = create_savings_account(
+        seed_user, db.session, "Savings", Decimal("500.00"),
+    )
+    xfer = create_transfer(
+        seed_user, db.session, seed_user["account"], savings, period,
+    )
+    db.session.commit()
+    shadow = xfer.shadow_transactions[0]
+    assert shadow.transfer_id == xfer.id and shadow.template_id is None
+    return shadow
 
 
 class TestTracksPurchasesResolution:
     """Resolution of Transaction.tracks_purchases."""
 
-    def test_adhoc_uses_own_flag_true(
+    def test_a_placed_row_reads_its_definition(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An ad-hoc row with is_envelope=True tracks purchases."""
+        """A one-off's row tracks purchases exactly when its definition does."""
         with app.app_context():
-            txn = _adhoc(
+            tracking = _placed(
                 seed_user, seed_periods_today[0],
                 is_envelope=True, companion_visible=False,
             )
-            assert txn.tracks_purchases is True
-
-    def test_adhoc_uses_own_flag_false(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """An ad-hoc row with is_envelope=False does not track purchases."""
-        with app.app_context():
-            txn = _adhoc(
-                seed_user, seed_periods_today[0],
+            plain = _placed(
+                seed_user, seed_periods_today[1],
                 is_envelope=False, companion_visible=False,
             )
-            assert txn.tracks_purchases is False
+            assert tracking.tracks_purchases is True
+            assert plain.tracks_purchases is False
 
-    def test_template_row_defers_to_template(
+    def test_a_generated_row_reads_its_definition(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A template row reads the template flag, ignoring its own column.
-
-        Both rows set the OWN flag to the opposite of the template flag,
-        so a passing assertion proves the template wins.
-        """
+        """A recurring definition's row reads the definition's flag."""
         with app.app_context():
-            # Template ON, row's own flag OFF -> resolves ON.
-            txn_on = _templated(
+            txn_on = _generated(
                 seed_user, seed_periods_today[0],
-                tpl_envelope=True, tpl_visible=False,
-                own_envelope=False, own_visible=False,
+                is_envelope=True, companion_visible=False,
+            )
+            txn_off = _generated(
+                seed_user, seed_periods_today[1],
+                is_envelope=False, companion_visible=False,
             )
             assert txn_on.tracks_purchases is True
-
-            # Template OFF, row's own flag ON -> resolves OFF.
-            txn_off = _templated(
-                seed_user, seed_periods_today[1],
-                tpl_envelope=False, tpl_visible=False,
-                own_envelope=True, own_visible=False,
-            )
             assert txn_off.tracks_purchases is False
+
+    def test_a_row_with_no_definition_answers_false(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A transfer shadow tracks no purchases (ruling R-BAL73).
+
+        There is no definition to ask and no cell of the row's own, so the
+        answer is stated without either -- what every shadow's cell held
+        before the cutover dropped it (0 of 354 on the 2026-09-18 restore).
+        """
+        with app.app_context():
+            shadow = _shadow(seed_user, seed_periods_today[0])
+            assert shadow.tracks_purchases is False
 
 
 class TestVisibleToCompanionResolution:
     """Resolution of Transaction.visible_to_companion."""
 
-    def test_adhoc_uses_own_flag_true(
+    def test_a_placed_row_reads_its_definition(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An ad-hoc row with companion_visible=True is visible."""
+        """A one-off's row is visible exactly when its definition says so."""
         with app.app_context():
-            txn = _adhoc(
+            visible = _placed(
                 seed_user, seed_periods_today[0],
                 is_envelope=False, companion_visible=True,
             )
-            assert txn.visible_to_companion is True
-
-    def test_adhoc_uses_own_flag_false(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """An ad-hoc row with companion_visible=False is not visible."""
-        with app.app_context():
-            txn = _adhoc(
-                seed_user, seed_periods_today[0],
+            private = _placed(
+                seed_user, seed_periods_today[1],
                 is_envelope=False, companion_visible=False,
             )
-            assert txn.visible_to_companion is False
+            assert visible.visible_to_companion is True
+            assert private.visible_to_companion is False
 
-    def test_template_row_defers_to_template(
+    def test_a_generated_row_reads_its_definition(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A template row reads the template's companion_visible flag."""
+        """A recurring definition's row reads the definition's flag."""
         with app.app_context():
-            txn_on = _templated(
+            txn_on = _generated(
                 seed_user, seed_periods_today[0],
-                tpl_envelope=False, tpl_visible=True,
-                own_envelope=False, own_visible=False,
+                is_envelope=False, companion_visible=True,
+            )
+            txn_off = _generated(
+                seed_user, seed_periods_today[1],
+                is_envelope=False, companion_visible=False,
             )
             assert txn_on.visible_to_companion is True
-
-            txn_off = _templated(
-                seed_user, seed_periods_today[1],
-                tpl_envelope=False, tpl_visible=False,
-                own_envelope=False, own_visible=True,
-            )
             assert txn_off.visible_to_companion is False
 
+    def test_a_row_with_no_definition_answers_false(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A transfer shadow is not companion-visible (ruling R-BAL73).
 
-# The two sealed cells, each as ``(column name, accessor name)``: the public
-# column name reads the accessor and writes the cell.  Every claim below is
-# graded on both, because ``companion_visible`` took the seal one step after
-# ``is_envelope`` (plan step balance:X-bi-1b) and a claim proved on one cell
-# says nothing about its twin.
-SEALED_CELLS = [
-    ("is_envelope", "tracks_purchases"),
-    ("companion_visible", "visible_to_companion"),
-]
-
-
-def _templated_with(seed_user, period, column, *, template, own):
-    """Generate a row under a template whose *column* flag is *template*.
-
-    The row's OWN cell for that column is then set to *own* -- through the
-    public setter, the same door the ad-hoc constructors use -- with the
-    other flag at its default on both.  The state that proves a reader of
-    the column name gets the template's answer is ``own != template``.
-    """
-    flags = {"tpl_envelope": False, "tpl_visible": False,
-             "own_envelope": False, "own_visible": False}
-    suffix = {"is_envelope": "envelope", "companion_visible": "visible"}[column]
-    flags[f"tpl_{suffix}"] = template
-    flags[f"own_{suffix}"] = own
-    return _templated(seed_user, period, **flags)
+        A SECURITY predicate answered ``False`` where nothing states
+        otherwise: no definition, no cell.
+        """
+        with app.app_context():
+            shadow = _shadow(seed_user, seed_periods_today[0])
+            assert shadow.visible_to_companion is False
 
 
-class TestTheDeadCellHasNoPublicName:
-    """Plan steps ``balance:X-bi-1`` / ``X-bi-1b``: both cells are sealed.
+class TestTheRowCarriesNoFlag:
+    """Plan step ``balance:X-bi-7d-2``: a row has no flag of its own.
 
-    Six claims per cell, and they fail for different reasons.  The public
-    name READS the accessor (a reader reaching for the column name gets the
-    template's answer on a generated row); it still WRITES the cell (the
-    ad-hoc doors keep their kwarg); the guessed single-underscore name
-    reaches no column; the SQL name is unchanged; a class-level name
-    refuses to key a query on any spelling (the silent-empty-result trap
-    measured 2026-09-11); and the two read-only flags refuse assignment.
+    Four claims.  The two column names are gone from the row -- from the
+    mapped class, from its constructor and from the table -- so nothing can
+    state a flag on a row; the class-level name of each derived flag refuses
+    to key a query (the silent-empty-result trap measured 2026-09-11); and
+    the two derived flags refuse assignment.
     """
 
-    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
-    def test_the_public_name_reads_the_template_on_a_generated_row(
-        self, app, db, seed_user, seed_periods_today, column, accessor,
-    ):
-        """``txn.<column>`` on a generated row is the TEMPLATE's answer.
+    @pytest.mark.parametrize("name", ["is_envelope", "companion_visible"])
+    def test_the_public_name_is_gone_from_the_row(self, app, name):
+        """``Transaction.<name>`` is no attribute, no constructor kwarg, no column.
 
-        Both rows set the own cell to the opposite of the template flag,
-        so a passing assertion proves the column name no longer reaches the
-        dead cell -- the 4-where-there-are-238 misread, unrepresentable.
+        Reaching the name on the class raises rather than answering a
+        descriptor; the declarative constructor refuses the kwarg every
+        pre-cutover door once passed; and the table has no such column, so
+        a Core writer cannot reach a cell either.
         """
         with app.app_context():
-            txn_on = _templated_with(
-                seed_user, seed_periods_today[0], column,
-                template=True, own=False,
-            )
-            assert getattr(txn_on, column) is True
-            assert getattr(txn_on, column) is getattr(txn_on, accessor)
+            assert not hasattr(Transaction, name)
+            with pytest.raises(TypeError):
+                Transaction(**{name: True})
+            assert name not in Transaction.__table__.c
 
-            txn_off = _templated_with(
-                seed_user, seed_periods_today[1], column,
-                template=False, own=True,
-            )
-            assert getattr(txn_off, column) is False
-            assert getattr(txn_off, column) is getattr(txn_off, accessor)
-
-    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
-    def test_the_public_name_reads_the_own_cell_on_an_adhoc_row(
-        self, app, db, seed_user, seed_periods_today, column, accessor,
-    ):
-        """On an ad-hoc row the cell IS the answer, through the same accessor."""
-        with app.app_context():
-            txn = _adhoc(
-                seed_user, seed_periods_today[0],
-                **{"is_envelope": False, "companion_visible": False, column: True},
-            )
-            assert getattr(txn, column) is True
-            setattr(txn, column, False)
-            db.session.commit()
-            db.session.expire(txn)
-            assert getattr(txn, column) is False
-            assert getattr(txn, accessor) is False
-
-    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
-    def test_a_setattr_over_a_variable_name_still_writes_the_cell(
-        self, app, db, seed_user, seed_periods_today, column, accessor,
-    ):
-        """The PATCH route's generic ``setattr`` loop keeps working.
-
-        ``routes/transactions/mutations._apply_field_updates`` writes every
-        schema field by name, so the seal must not turn that write into a
-        plain instance attribute the next load forgets.  Written, committed,
-        EXPIRED and re-read: the cell holds it.
-        """
-        with app.app_context():
-            txn = _adhoc(
-                seed_user, seed_periods_today[0],
-                is_envelope=False, companion_visible=False,
-            )
-            field = column
-            setattr(txn, field, True)
-            db.session.commit()
-            db.session.expire(txn)
-            assert getattr(txn, accessor) is True
-
-    @pytest.mark.parametrize("column, accessor", SEALED_CELLS)
-    def test_a_guessed_single_underscore_reaches_no_column(
-        self, app, db, seed_user, seed_periods_today, column, accessor,
-    ):
-        """``row._<column>`` binds a plain attribute, never the cell.
-
-        The seal's own claim about itself, from the column comment: the
-        double underscore mangles the mapped name, so the spelling a reader
-        would guess is a no-op the next read exposes.
-        """
-        with app.app_context():
-            txn = _adhoc(
-                seed_user, seed_periods_today[0],
-                is_envelope=False, companion_visible=False,
-            )
-            setattr(txn, f"_{column}", True)
-            db.session.commit()
-            db.session.expire(txn)
-            assert getattr(txn, accessor) is False
-            assert getattr(txn, column) is False
-
-    @pytest.mark.parametrize("column", [c for c, _ in SEALED_CELLS])
-    def test_the_sql_name_is_unchanged(self, app, column):
-        """The seal renames the ATTRIBUTE and leaves the column where it was.
-
-        No migration rides with either seal; this is the half of that claim
-        a model test can grade.  The other half -- an autogenerate diff
-        with nothing on either flag -- was measured for ``is_envelope`` on
-        2026-09-11 against an untouched ``origin/dev`` tree, and for
-        ``companion_visible`` on 2026-09-12 against the ``18f9efac`` tree it
-        builds on: the same six pre-existing ``system.*`` items on both
-        sides each time.
-        """
-        with app.app_context():
-            sql_column = Transaction.__table__.c[column]
-            assert sql_column.name == column
-            assert sql_column.nullable is False
-            assert str(sql_column.server_default.arg) == "false"
-
-    @pytest.mark.parametrize("flag", [
-        "is_envelope", "tracks_purchases",
-        "companion_visible", "visible_to_companion",
-    ])
+    @pytest.mark.parametrize("flag", ["tracks_purchases", "visible_to_companion"])
     def test_a_query_keyed_on_a_derived_flag_refuses_to_build(
         self, app, flag,
     ):
@@ -353,18 +235,17 @@ class TestTheDeadCellHasNoPublicName:
             with pytest.raises(TypeError, match="cannot key a query"):
                 db.session.query(Transaction).filter(getattr(Transaction, flag))
 
-    def test_the_read_only_flags_refuse_assignment(
+    def test_the_derived_flags_refuse_assignment(
         self, app, db, seed_user, seed_periods_today,
     ):
         """``tracks_purchases`` and ``visible_to_companion`` have no setter.
 
         A derivation that accepted a write would bind a plain instance
-        attribute shadowing the descriptor for that one row -- the same
-        silent shape the single-underscore test above pins from the other
-        side.
+        attribute shadowing the descriptor for that one row, and the row
+        would answer something its definition never said.
         """
         with app.app_context():
-            txn = _adhoc(
+            txn = _placed(
                 seed_user, seed_periods_today[0],
                 is_envelope=False, companion_visible=False,
             )

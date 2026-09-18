@@ -124,6 +124,8 @@ def _a_destination(name="Lowe's", is_settled=False):
             end_is_projected=False,
         ),
         is_settled=is_settled,
+        # Every destination names its DEFINITION (plan step balance:X-bi-7d-2).
+        template_id=9,
     )
 
 

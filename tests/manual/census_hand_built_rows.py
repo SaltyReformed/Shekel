@@ -1,10 +1,11 @@
 """Census every ``Transaction(...)`` construction under ``tests/`` by what it links.
 
-Plan step **balance:X-bi-7c**'s instrument.  The step moves every LINK-LESS
+Plan step **balance:X-bi-7c**'s instrument.  The step moved every LINK-LESS
 hand-built row onto the suite's one-off builder (``tests._test_helpers.
 one_off_row_of``, on ``one_off.place_one_off``) so the cutover's CHECK
-(``ck_transactions_one_pricing_link`` at ``= 1``, plan step ``X-bi-7d``) binds
-on rows the app's own door wrote -- and *which* constructions name no link is,
+(``ck_transactions_one_pricing_link`` at ``= 1``, plan step ``X-bi-7d-2``)
+binds on rows the app's own door wrote -- and *which* constructions name no
+link is,
 as the step's own row says, **an AST walk's answer and never a total stated in
 a document**.  ``docs/plans/steps.md`` carries the grep census the plan gate
 re-runs (code lines matching ``\\bTransaction\\(``); this walk is the partition
@@ -16,11 +17,14 @@ Four classes, over every ``ast.Call`` whose callee is the model
 * ``LINKED`` -- names ``template_id``, ``transfer_id`` or
   ``credit_payback_for_id`` with a value other than the literal ``None``.
   The engine's rows, transfer shadows and CC paybacks; not this step's.
-* ``LINKLESS`` -- names none of the three, or names them as ``None``.  The
-  step's population, each to move onto ``one_off_row_of`` -- or, where the
-  case's SUBJECT is the legacy shape itself (the accessors' ``template_id is
-  None`` branch, the frozen flag cells), onto its one transitional home
-  ``legacy_link_less_row_of``, which 7d deletes with its callers.
+* ``LINKLESS`` -- names none of the three, or names them as ``None``.  7c's
+  population, each moved onto ``one_off_row_of``; the cases whose SUBJECT
+  was the legacy shape itself (the accessors' own-cell arm, the frozen flag
+  cells) sat on its one transitional home ``legacy_link_less_row_of`` until
+  the cutover (7d-2) deleted the builder and retired them.  What is left in
+  this class after 7d-2 is a construction that never reaches the database
+  as a bare row (an unsaved type token, a constructor-kwarg case, a NOT NULL
+  probe), since the schema refuses one.
 * ``SPLAT`` -- passes ``**kwargs`` (or ``*args``), so the keywords cannot be
   read here; each is opened by hand.
 * ``OTHER`` -- a bare ``Transaction(`` where the name is not the model.

@@ -1,24 +1,29 @@
 """
-Shekel Budget App -- Ad-hoc transaction flag tests (F2 / F3)
+Shekel Budget App -- One-off transaction flag tests (F2 / F3)
 
-LEGACY link-less transactions (template_id IS NULL) carry their own
-``is_envelope`` (purchase tracking) and ``companion_visible`` flags,
-since they have no template to inherit from.  **That is the pre-7b shape
-and production's until the cutover** (plan step ``balance:X-bi-7d``): a
-one-off placed since ``balance:X-bi-7b`` reads both flags off its
-DEFINITION (ruling R-BAL36, graded in ``test_one_off_row_doors``), and the
-grid's create doors mint one.  This whole module is the legacy contract,
-built on the shape's one transitional home (``legacy_link_less_row_of``,
-plan step ``balance:X-bi-7c``, ruling R-BAL59), and 7d retires it with the
-own-cell branch.  These tests cover:
+A ONE-OFF is a rule-less definition plus its placed row (plan step
+``balance:X-bi-7b``, ruling **R-BAL20**), and its ``is_envelope`` (purchase
+tracking) and ``companion_visible`` flags are the DEFINITION's, read by the
+row through ``Transaction.tracks_purchases`` / ``visible_to_companion``
+(ruling **R-BAL36**; the item-edit door is graded in
+``test_one_off_row_doors``).  Until the family's cutover (plan step
+``balance:X-bi-7d-2``) this module graded the LEGACY link-less row, which
+stated both flags in cells of its own; the cutover minted every such row a
+definition and dropped the cells, so every case here that was about a
+one-off's BEHAVIOUR moved onto the producer's row
+(:func:`~tests._test_helpers.one_off_row_of`), and the one case whose
+subject was the legacy shape itself -- an envelope with no definition
+moving WHOLE at carry-forward -- retired (a placed envelope takes the
+rollover, ``test_carry_forward_service.
+test_a_rule_less_definitions_envelope_takes_the_rollover``).  These tests
+cover:
 
-  * F3 -- purchase tracking on ad-hoc rows: entry creation, the
-    expense-only guard, settle-from-entries on mark-done, the
-    Credit-status block, the popover / create-form controls, the
-    checkbox-persistence semantics of the shared update schema, and
-    carry-forward (ad-hoc envelopes move whole, no rollover).
-  * F2 -- companion visibility of ad-hoc rows: the companion query and
-    the entry-access check resolve the row's own flag.
+  * F3 -- purchase tracking on a one-off: entry creation, the expense-only
+    guard, settle-from-entries on mark-done, the Credit-status block, the
+    popover / create-form controls, and the checkbox-persistence semantics
+    of the item update schema.
+  * F2 -- companion visibility of a one-off: the companion query and the
+    entry-access check resolve the definition's flag.
 
 Resolution of the underlying properties is unit-tested in
 tests/test_models/test_transaction_flag_resolution.py.
@@ -32,22 +37,25 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services.balance_at import BalanceContext
-from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
-from tests._test_helpers import figure_source_columns, legacy_link_less_row_of
+from tests._test_helpers import (
+    figure_source_columns,
+    one_off_row_of,
+    resolved_amount,
+)
 
 
-def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
-                income=False, name="Ad-hoc", amount="100.00",
-                status=StatusEnum.PROJECTED):
-    """Create and commit a LEGACY link-less (template_id IS NULL) transaction.
+def _make_one_off(seed_user, period, *, is_envelope=False, companion_visible=False,
+                  income=False, name="One-off", amount="100.00",
+                  status=StatusEnum.PROJECTED):
+    """Place and commit a ONE-OFF's row: a rule-less definition carrying the flags.
 
-    The shape this module grades (see the module docstring), on its one
-    transitional home; 7d retires both.
+    Through the producer (:func:`~tests._test_helpers.one_off_row_of`), so
+    the row is what the grid's create doors make; the two flags land on the
+    definition and the row reads them there.
     """
     type_enum = TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE
-    txn = legacy_link_less_row_of(
+    txn = one_off_row_of(
         period, name=name, amount=amount,
         user_id=period.user_id, account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
@@ -76,18 +84,18 @@ def _add_entry(txn, seed_user, amount, description, purchased_on=None):
     return entry
 
 
-# ── F3: purchase tracking on ad-hoc transactions ─────────────────────
+# ── F3: purchase tracking on one-offs ────────────────────────────────
 
 
-class TestAdhocPurchaseTracking:
-    """Entry tracking works on ad-hoc envelope transactions."""
+class TestOneOffPurchaseTracking:
+    """Entry tracking works on a one-off whose definition is an envelope."""
 
-    def test_entry_create_succeeds_on_adhoc_envelope(
+    def test_entry_create_succeeds_on_a_one_off_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """POST an entry on an ad-hoc envelope row creates it (200)."""
+        """POST an entry on a one-off envelope row creates it (200)."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=True,
             )
             resp = auth_client.post(
@@ -107,12 +115,12 @@ class TestAdhocPurchaseTracking:
             assert len(entries) == 1
             assert entries[0].amount == Decimal("40.00")
 
-    def test_entry_create_rejected_on_adhoc_without_envelope(
+    def test_entry_create_rejected_on_a_one_off_without_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """POST an entry on a non-envelope ad-hoc row is rejected (400)."""
+        """POST an entry on a non-envelope one-off is rejected (400)."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=False,
             )
             resp = auth_client.post(
@@ -130,16 +138,16 @@ class TestAdhocPurchaseTracking:
                 .filter_by(transaction_id=txn.id).count() == 0
             )
 
-    def test_mark_done_settles_adhoc_envelope_from_entries(
+    def test_mark_done_settles_a_one_off_envelope_from_entries(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """mark-done on an ad-hoc envelope sets actual_amount = sum(entries).
+        """mark-done on a one-off envelope settles it at sum(entries).
 
         Two debit entries of 30.00 + 20.00 -> actual_amount 50.00, and
         the status becomes Paid (Done).
         """
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=True,
                 amount="500.00",
             )
@@ -156,15 +164,15 @@ class TestAdhocPurchaseTracking:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             assert txn.status_id == done_id
 
-    def test_credit_status_blocked_on_adhoc_envelope(
+    def test_credit_status_blocked_on_a_one_off_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Setting Credit status on an ad-hoc envelope row is rejected (400).
+        """Setting Credit status on a one-off envelope row is rejected (400).
 
         Credit is per-entry on tracked rows, never per-transaction.
         """
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=True,
             )
             credit_id = ref_cache.status_id(StatusEnum.CREDIT)
@@ -176,30 +184,30 @@ class TestAdhocPurchaseTracking:
             assert b"individual purchase tracking" in resp.data
 
 
-class TestAdhocFlagUI:
+class TestOneOffFlagUI:
     """The flag controls render only where they apply."""
 
-    def test_full_edit_popover_shows_controls_for_adhoc_expense(
+    def test_full_edit_popover_shows_controls_for_a_one_off_expense(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Ad-hoc expense popover renders both flag checkboxes."""
+        """A one-off expense's popover renders both flag checkboxes."""
         with app.app_context():
-            txn = _make_adhoc(seed_user, seed_periods_today[0])
+            txn = _make_one_off(seed_user, seed_periods_today[0])
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
             assert resp.status_code == 200
             assert b'name="is_envelope"' in resp.data
             assert b'name="companion_visible"' in resp.data
 
-    def test_full_edit_popover_hides_tracking_for_adhoc_income(
+    def test_full_edit_popover_hides_tracking_for_a_one_off_income(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Ad-hoc income popover hides is_envelope but shows companion_visible.
+        """A one-off income's popover hides is_envelope but shows companion_visible.
 
         Purchase tracking is expense-only; companion visibility applies
         to income too.
         """
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], income=True, name="Side gig",
             )
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
@@ -213,18 +221,18 @@ class TestAdhocFlagUI:
         """The tracking box renders checked exactly when the row tracks.
 
         The control reads ``txn.tracks_purchases`` since plan step
-        ``balance:X-bi-1`` -- the one accessor -- rather than the column
-        name; inside the ad-hoc guard the two are one value, and this is
-        the case that says so for BOTH states.  The tag is matched by its
+        ``balance:X-bi-1`` -- the one accessor -- which is the DEFINITION's
+        flag for a placed row, and this is the case that says so for BOTH
+        states.  The tag is matched by its
         own ``id``, because ``companion_visible``'s box on the same card
         renders ``checked`` too and a page-wide search would read it.
         """
         with app.app_context():
-            tracking = _make_adhoc(
+            tracking = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=True,
                 name="Tracking",
             )
-            plain = _make_adhoc(
+            plain = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=False,
                 name="Plain",
             )
@@ -249,16 +257,15 @@ class TestAdhocFlagUI:
 
         The tracking box's twin: the control reads
         ``txn.visible_to_companion`` since plan step ``balance:X-bi-1b`` --
-        the one accessor -- rather than the column name, and inside the
-        ad-hoc guard the two are one value.  Matched by its own ``id`` for
-        the reason the tracking case gives.
+        the one accessor, the DEFINITION's flag for a placed row.  Matched
+        by its own ``id`` for the reason the tracking case gives.
         """
         with app.app_context():
-            visible = _make_adhoc(
+            visible = _make_one_off(
                 seed_user, seed_periods_today[0], companion_visible=True,
                 name="Visible",
             )
-            private = _make_adhoc(
+            private = _make_one_off(
                 seed_user, seed_periods_today[0], companion_visible=False,
                 name="Private",
             )
@@ -279,9 +286,9 @@ class TestAdhocFlagUI:
     def test_full_edit_popover_shows_purchases_when_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Ad-hoc envelope popover renders the Purchases entry list."""
+        """A one-off envelope's popover renders the Purchases entry list."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], is_envelope=True,
             )
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
@@ -292,7 +299,7 @@ class TestAdhocFlagUI:
     def test_full_create_form_renders_flag_controls(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The ad-hoc full-create popover renders the flag checkboxes."""
+        """The one-off full-create popover renders the flag checkboxes."""
         with app.app_context():
             category = list(seed_user["categories"].values())[0]
             expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -323,13 +330,13 @@ class TestAdhocFlagUI:
             assert b"data-adhoc-envelope-row" in resp.data
 
 
-class TestAdhocFlagValidation:
+class TestOneOffFlagValidation:
     """Income guard and create-time flag handling."""
 
     def test_inline_create_expense_sets_flags(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """create_inline persists is_envelope / companion_visible when sent."""
+        """create_inline lands is_envelope / companion_visible on the definition."""
         with app.app_context():
             category = list(seed_user["categories"].values())[0]
             expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -349,8 +356,10 @@ class TestAdhocFlagValidation:
                 .filter_by(pay_period_id=seed_periods_today[0].id)
                 .order_by(Transaction.id.desc()).first()
             )
-            assert txn.is_envelope is True
-            assert txn.companion_visible is True
+            assert txn.template.is_envelope is True
+            assert txn.template.companion_visible is True
+            assert txn.tracks_purchases is True
+            assert txn.visible_to_companion is True
 
     def test_inline_create_defaults_flags_off(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -373,8 +382,10 @@ class TestAdhocFlagValidation:
                 .filter_by(pay_period_id=seed_periods_today[0].id)
                 .order_by(Transaction.id.desc()).first()
             )
-            assert txn.is_envelope is False
-            assert txn.companion_visible is False
+            assert txn.template.is_envelope is False
+            assert txn.template.companion_visible is False
+            assert txn.tracks_purchases is False
+            assert txn.visible_to_companion is False
 
     def test_inline_create_income_rejects_is_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -401,7 +412,7 @@ class TestAdhocFlagValidation:
     def test_create_transaction_expense_sets_flags(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """create_transaction (the Add Transaction modal endpoint) persists flags."""
+        """create_transaction (the Add Transaction modal endpoint) lands the flags on the definition."""
         with app.app_context():
             category = list(seed_user["categories"].values())[0]
             expense_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -421,8 +432,10 @@ class TestAdhocFlagValidation:
                 db.session.query(Transaction)
                 .filter_by(name="Modal Expense").one()
             )
-            assert txn.is_envelope is True
-            assert txn.companion_visible is True
+            assert txn.template.is_envelope is True
+            assert txn.template.companion_visible is True
+            assert txn.tracks_purchases is True
+            assert txn.visible_to_companion is True
 
     def test_create_transaction_income_rejects_is_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -450,9 +463,9 @@ class TestAdhocFlagValidation:
     def test_update_income_rejects_is_envelope(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """PATCH cannot enable tracking on an ad-hoc income row (400)."""
+        """PATCH cannot enable tracking on a one-off income row (400)."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], income=True, name="Side gig",
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
@@ -461,11 +474,12 @@ class TestAdhocFlagValidation:
             })
             assert resp.status_code == 400
             db.session.refresh(txn)
-            assert txn.is_envelope is False
+            assert txn.tracks_purchases is False
+            assert txn.template.is_envelope is False
 
 
-class TestAdhocFlagPersistence:
-    """The shared update schema must not clobber flags it was not sent."""
+class TestOneOffFlagPersistence:
+    """The item update schema must not clobber flags it was not sent."""
 
     def test_quick_edit_does_not_clear_flags(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -473,26 +487,30 @@ class TestAdhocFlagPersistence:
         """A PATCH omitting the flag fields leaves them untouched.
 
         The quick-edit form sends only estimated_amount; without a
-        load_default on the shared update schema, the absent flags are
-        not applied, so an ad-hoc envelope row stays an envelope.
+        load_default on the item update schema, the absent flags are not
+        applied, so a one-off envelope stays an envelope.  The typed figure
+        restates the definition's price in place (ruling **R-BAL29**), so
+        it is read through the resolver rather than off the row.
         """
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0],
                 is_envelope=True, companion_visible=True,
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
                 "estimated_amount": "150.00",
-                # What the quick-edit box was rendered with (R-JR); differing
-                # from the submitted figure is what makes this a real retype.
-                "estimated_amount_as_rendered": str(txn.estimated_amount),
+                # What the quick-edit box was rendered with (R-JR): the
+                # RESOLVED figure, since a placed row stores none of its own;
+                # differing from the submitted figure is what makes this a
+                # real retype.
+                "estimated_amount_as_rendered": str(resolved_amount(txn)),
                 "version_id": txn.version_id,
             })
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("150.00")
-            assert txn.is_envelope is True
-            assert txn.companion_visible is True
+            assert resolved_amount(txn) == Decimal("150.00")
+            assert txn.tracks_purchases is True
+            assert txn.visible_to_companion is True
 
     def test_unchecking_flag_persists_false(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -503,7 +521,7 @@ class TestAdhocFlagPersistence:
         submits only the hidden ``companion_visible=false``.
         """
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0], companion_visible=True,
             )
             resp = auth_client.patch(f"/transactions/{txn.id}", data={
@@ -512,22 +530,23 @@ class TestAdhocFlagPersistence:
             })
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.companion_visible is False
+            assert txn.visible_to_companion is False
+            assert txn.template.companion_visible is False
 
 
-# ── F2: companion visibility of ad-hoc transactions ──────────────────
+# ── F2: companion visibility of one-offs ─────────────────────────────
 
 
-class TestAdhocCompanionVisibility:
-    """A companion sees ad-hoc rows by their own companion_visible flag."""
+class TestOneOffCompanionVisibility:
+    """A companion sees a one-off by its definition's companion_visible flag."""
 
-    def test_companion_sees_visible_adhoc(
+    def test_companion_sees_a_visible_one_off(
         self, app, db, seed_user, seed_periods_today,
         seed_companion, companion_client,
     ):
-        """An ad-hoc companion_visible row appears in the companion view."""
+        """A one-off whose definition is companion_visible appears in the companion view."""
         with app.app_context():
-            _make_adhoc(
+            _make_one_off(
                 seed_user, seed_periods_today[0],
                 companion_visible=True, name="Shared Dinner",
             )
@@ -537,13 +556,13 @@ class TestAdhocCompanionVisibility:
             assert resp.status_code == 200
             assert b"Shared Dinner" in resp.data
 
-    def test_companion_cannot_see_hidden_adhoc(
+    def test_companion_cannot_see_a_hidden_one_off(
         self, app, db, seed_user, seed_periods_today,
         seed_companion, companion_client,
     ):
-        """An ad-hoc row with companion_visible=False is hidden."""
+        """A one-off whose definition is not companion_visible is hidden."""
         with app.app_context():
-            _make_adhoc(
+            _make_one_off(
                 seed_user, seed_periods_today[0],
                 companion_visible=False, name="Secret Gift",
             )
@@ -553,13 +572,13 @@ class TestAdhocCompanionVisibility:
             assert resp.status_code == 200
             assert b"Secret Gift" not in resp.data
 
-    def test_companion_entry_access_on_visible_adhoc(
+    def test_companion_entry_access_on_a_visible_one_off(
         self, app, db, seed_user, seed_periods_today,
         seed_companion, companion_client,
     ):
-        """A companion may read entries on a visible ad-hoc envelope row."""
+        """A companion may read entries on a visible one-off envelope."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0],
                 is_envelope=True, companion_visible=True,
             )
@@ -568,59 +587,16 @@ class TestAdhocCompanionVisibility:
             assert resp.status_code == 200
             assert b"Lunch" in resp.data
 
-    def test_companion_entry_access_denied_on_hidden_adhoc(
+    def test_companion_entry_access_denied_on_a_hidden_one_off(
         self, app, db, seed_user, seed_periods_today,
         seed_companion, companion_client,
     ):
-        """A companion cannot read entries on a hidden ad-hoc row (404)."""
+        """A companion cannot read entries on a hidden one-off (404)."""
         with app.app_context():
-            txn = _make_adhoc(
+            txn = _make_one_off(
                 seed_user, seed_periods_today[0],
                 is_envelope=True, companion_visible=False,
             )
             _add_entry(txn, seed_user, "25.00", "Lunch")
             resp = companion_client.get(f"/transactions/{txn.id}/entries")
             assert resp.status_code == 404
-
-
-# ── F3: carry-forward of ad-hoc envelope rows ────────────────────────
-
-
-class TestAdhocEnvelopeCarryForward:
-    """Ad-hoc envelopes carry forward as a whole-row move, not a rollover."""
-
-    def test_adhoc_envelope_moves_whole_with_entries(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """An ad-hoc envelope carries forward whole, keeping its entries.
-
-        A recurring envelope TEMPLATE would settle-and-roll, but an
-        ad-hoc envelope has no next canonical to roll into, so it falls
-        into the discrete bucket: relocated to the target period, status
-        unchanged (Projected), is_override left False, entries intact.
-        """
-        with app.app_context():
-            source = seed_periods_today[0]
-            target = seed_periods_today[1]
-            txn = _make_adhoc(
-                seed_user, source, is_envelope=True, name="Ad-hoc Envelope",
-            )
-            _add_entry(txn, seed_user, "15.00", "Partial spend")
-
-            carry_forward_service.carry_forward_unpaid(
-                source.id, target.id, seed_user["scenario"].id,
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-            )
-            db.session.commit()
-
-            db.session.refresh(txn)
-            assert txn.pay_period_id == target.id
-            assert txn.is_override is False
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.status_id == projected_id
-            entries = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id).all()
-            )
-            assert len(entries) == 1
-            assert entries[0].amount == Decimal("15.00")

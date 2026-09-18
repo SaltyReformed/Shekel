@@ -67,8 +67,8 @@ from tests._test_helpers import (
     add_entry,
     derived_span,
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
+    payback_row_of,
     resolved_amount,
     state_template_price,
 )
@@ -450,28 +450,33 @@ class TestDueDate:
             assert row.due_date == moved_to
             assert row.occurs_on == moved_to
 
-    def test_the_input_is_required_on_a_placed_row_and_not_on_a_legacy_one(
+    def test_the_input_is_required_on_a_placed_row_and_not_on_a_payback(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The card refuses the clear first; the gate stays the backstop."""
+        """The card refuses the clear first; the gate stays the backstop.
+
+        The other half is a row NO definition prices: a CC payback's date
+        is its owner's optional note, priced through its parent, so its box
+        stays clearable.  (A legacy link-less row was that half until the
+        family's cutover, ``balance:X-bi-7d-2``, minted every one a
+        definition.)
+        """
         with app.app_context():
             row = _placed(seed_user, seed_periods_today[0])
             html = _card(auth_client, row)
             box = re.search(r'<input type="date" name="due_date"[^>]*>', html)
             assert box is not None and "required" in box.group(0)
 
-            # The legacy half on the shape's one transitional home (plan step
-            # balance:X-bi-7c, ruling R-BAL59); 7d retires it with the shape.
-            legacy = legacy_link_less_row_of(
-                seed_periods_today[0], name="Legacy", amount="5.00",
-                user_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                category_id=seed_user["categories"]["Groceries"].id,
+            envelope = _placed(
+                seed_user, seed_periods_today[0], name="Card envelope",
+                is_envelope=True,
+            )
+            payback = payback_row_of(
+                db.session, seed_user, envelope, Decimal("5.00"),
+                seed_periods_today[0].start_date,
             )
             db.session.commit()
-            html = _card(auth_client, legacy)
+            html = _card(auth_client, payback)
             box = re.search(r'<input type="date" name="due_date"[^>]*>', html)
             assert box is not None and "required" not in box.group(0)
 
@@ -689,10 +694,12 @@ class TestTheItemIsEditedOnTheDefinition:
     ):
         """BAL-484's writer is gone: the row schema declares no flag.
 
-        The write used to LAND on the sealed cell (inert to every reader in
-        the application, readable by raw SQL).  It is unrepresentable
-        through this door now: the payload's flag is excluded before any
-        code runs, and the cell holds what it held.
+        The write used to LAND on the row's sealed cell (inert to every
+        reader in the application, readable by raw SQL) until the cutover
+        dropped the cell.  It is unrepresentable through this door: the
+        payload's flag is excluded before any code runs, so the DEFINITION
+        -- the only place a flag lives -- holds what it held and the row
+        reads that.
         """
         with app.app_context():
             recurring = _recurring(seed_user, seed_periods_today)
@@ -703,15 +710,47 @@ class TestTheItemIsEditedOnTheDefinition:
             })
             assert resp.status_code == 200, resp.data
             db.session.expire_all()
-            cells = db.session.execute(
-                Transaction.__table__.select()
-                .with_only_columns(
-                    Transaction.__table__.c.companion_visible,
-                    Transaction.__table__.c.is_envelope,
-                )
-                .where(Transaction.__table__.c.id == recurring.id)
-            ).one()
-            assert tuple(cells) == (False, False)
+            row = db.session.get(Transaction, recurring.id)
+            assert (row.template.companion_visible, row.template.is_envelope) == (
+                False, False,
+            )
+            assert (row.visible_to_companion, row.tracks_purchases) == (False, False)
+
+    def test_a_paybacks_crafted_flag_is_dropped_by_the_schema_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling R-BAL73: a row with no definition loads the row schema.
+
+        A CC payback rendered both checkboxes and landed them on its own
+        cells until the family's cutover (``balance:X-bi-7d-2``); it has no
+        definition and no cell now, so its card renders no flag control and
+        a crafted flag is excluded before any code runs, exactly as a
+        recurring row's is.  The payback's own fields still save.
+        """
+        with app.app_context():
+            envelope = _placed(
+                seed_user, seed_periods_today[0], name="Card envelope",
+                is_envelope=True,
+            )
+            payback = payback_row_of(
+                db.session, seed_user, envelope, Decimal("5.00"),
+                seed_periods_today[0].start_date,
+            )
+            db.session.commit()
+            html = _card(auth_client, payback)
+            assert 'name="is_envelope"' not in html
+            assert 'name="companion_visible"' not in html
+            resp = auth_client.patch(f"/transactions/{payback.id}", data={
+                "companion_visible": "true",
+                "is_envelope": "true",
+                "notes": "crafted",
+                "version_id": payback.version_id,
+            })
+            assert resp.status_code == 200, resp.data
+            db.session.expire_all()
+            row = db.session.get(Transaction, payback.id)
+            assert row.notes == "crafted"
+            assert (row.visible_to_companion, row.tracks_purchases) == (False, False)
 
 
 class TestTheOverrideFlip:

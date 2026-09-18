@@ -59,8 +59,7 @@ def name_the_filed_definition(
     alone, so that pick turned a NEW-ENVELOPE answer into a TEMPLATE answer
     naming the recurring definition -- a standing answer the owner never
     stated, routing every later import (found by 7b-3's adversarial review).
-    A legacy link-less envelope names nothing and the rule stays as stated
-    until the family's cutover.  An owner's own new envelope under a
+    An owner's own new envelope under a
     different name is a one-line choice and rewrites nothing either; a
     hand-typed name and category that happen to equal the stated answer ARE
     the answer coming true, and flip.

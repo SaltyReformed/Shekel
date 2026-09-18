@@ -52,7 +52,7 @@ id string, legal above this revision and refused by the old per-account
 unique index below it.
 
 Revision ID: af07125d00f1
-Revises: ad573b07bede
+Revises: 596408fab6f1
 Create Date: 2026-09-18 15:20:00
 """
 
@@ -67,7 +67,7 @@ from app.sighting_infrastructure import (
 
 # revision identifiers, used by Alembic.
 revision = "af07125d00f1"
-down_revision = "ad573b07bede"
+down_revision = "596408fab6f1"
 branch_labels = None
 depends_on = None
 
