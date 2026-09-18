@@ -42,6 +42,8 @@ from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
     default_settle_day,
+    legacy_link_less_row_of,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     settle_day_columns,
     settlement_columns,
@@ -99,20 +101,21 @@ class TestTransactionEffectiveAmount:
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         settled_on = default_settle_day(seed_periods[0], status.id)
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=estimated,
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(estimated),
-            **settle_day_columns(settled_on),
-            **settlement_columns(settled_on, estimated, submitted=actual),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
+        txn.status_id = status.id
+        for _column, _value in settle_day_columns(settled_on).items():
+            setattr(txn, _column, _value)
+        for _column, _value in settlement_columns(settled_on, estimated, submitted=actual).items():
+            setattr(txn, _column, _value)
         db.session.flush()
         return txn
 
@@ -259,20 +262,17 @@ class TestTransactionTypeProperties:
     def test_is_income(self, app, db, seed_user, seed_periods):
         """is_income returns True for income-type transactions."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert txn.is_income is True
@@ -281,20 +281,17 @@ class TestTransactionTypeProperties:
     def test_is_expense(self, app, db, seed_user, seed_periods):
         """is_expense returns True for expense-type transactions."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("85.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("85.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             assert txn.is_expense is True
@@ -843,19 +840,18 @@ class TestDaysUntilDue:
         """Helper: create a transaction with given status and due_date."""
         status = db.session.query(Status).filter_by(name=status_name).one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Due",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("100.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
             due_date=due_date_val,
         )
-        db.session.add(txn)
+        txn.status_id = status.id
         db.session.flush()
         return txn
 
@@ -883,9 +879,26 @@ class TestDaysUntilDue:
             assert txn.days_until_due is None
 
     def test_days_until_due_no_due_date(self, app, db, seed_user, seed_periods):
-        """Transaction with no due_date returns None."""
+        """A LEGACY undated row returns None.
+
+        The undated shape is what the cutover dates away (a placed row is
+        due on its paycheck's start, R-BAL22), so the row is the legacy
+        one on its transitional home (plan step balance:X-bi-7c, ruling
+        R-BAL59); 7d retires this case with the arm.
+        """
         with app.app_context():
-            txn = self._make_txn(seed_user, seed_periods, "Projected", None)
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            txn = legacy_link_less_row_of(
+                seed_periods[0],
+                name="Test Due",
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                due_date=None,
+            )
             assert txn.days_until_due is None
 
 
@@ -918,22 +931,23 @@ class TestSettleDayRefusesAnInstant:
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Instant refusal",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                **settle_day_columns(seed_periods[0].start_date),
-                **settlement_columns(
-                    seed_periods[0].start_date, Decimal("100.00"),
-                ),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.status_id = status.id
+            for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
+                setattr(txn, _column, _value)
+            for _column, _value in settlement_columns(
+                    seed_periods[0].start_date, Decimal("100.00"),
+                ).items():
+                setattr(txn, _column, _value)
             db.session.flush()
 
             # The BARE column assignment, which is exactly the path the
@@ -954,6 +968,12 @@ class TestSettleDayRefusesAnInstant:
         The declarative constructor assigns through ``setattr``, so the same
         validator covers it -- which is the path a fixture is most likely to
         take, and the one the X-f1 conversion actually took 16 times.
+
+        A bare ``Transaction(`` on purpose, and never added: the CONSTRUCTOR
+        call is the subject (the sibling above grades the plain assignment),
+        so no builder can stand in for it -- a stay of the same kind as
+        ``test_state_machine``'s unsaved type token (plan step
+        balance:X-bi-7c; 7d's CHECK never sees a row that is never flushed).
         """
         with app.app_context():
             status = db.session.query(Status).filter_by(name="Paid").one()
@@ -992,21 +1012,22 @@ class TestDaysPaidBeforeDue:
         """Helper: create a transaction with given due_date and settle day."""
         status = db.session.query(Status).filter_by(name="Paid").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Paid Timing",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("100.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
             due_date=due_date_val,
-            **settle_day_columns(settled_on_val),
-            **settlement_columns(settled_on_val, Decimal("100.00")),
         )
-        db.session.add(txn)
+        txn.status_id = status.id
+        for _column, _value in settle_day_columns(settled_on_val).items():
+            setattr(txn, _column, _value)
+        for _column, _value in settlement_columns(settled_on_val, Decimal("100.00")).items():
+            setattr(txn, _column, _value)
         db.session.flush()
         return txn
 

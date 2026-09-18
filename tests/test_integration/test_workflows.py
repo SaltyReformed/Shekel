@@ -10,29 +10,22 @@ Tests multi-step workflows that span services and routes:
   - Carry forward → projected items moved to target period
 """
 
-from collections import OrderedDict
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 
-from app.extensions import db
-from app.models.account import Account
-from app.models.category import Category
 from app.models.ref import (
     AccountType, Status, TransactionType,
 )
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
-from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.services import (
     carry_forward_service,
     credit_workflow,
     recurrence_engine,
     transaction_service,
-    transfer_recurrence,
 )
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
@@ -41,6 +34,7 @@ from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     make_cadence_rule,
     make_every_period_rule,
+    one_off_row_of,
     override_anchor,
     resolved_amount,
     settle_instant_on,
@@ -72,7 +66,7 @@ class TestSalaryToGrid:
             db.session.flush()
             state_template_price(template)
             # The definition first, then the cadence onto it (plan step R-F6).
-            rule = make_every_period_rule(db.session, template)
+            make_every_period_rule(db.session, template)
 
             # Generate income transactions across all 10 periods.
             txns = recurrence_engine.generate_for_template(
@@ -112,7 +106,7 @@ class TestTemplateRecurrenceToGrid:
             db.session.flush()
             state_template_price(template)
             # The definition first, then the cadence onto it (plan step R-F6).
-            rule = make_cadence_rule(
+            make_cadence_rule(
                 template,
                 MONTHLY,
                 fires_on_day=15,
@@ -213,21 +207,18 @@ class TestCreditPaybackBalance:
     def test_credit_creates_payback_and_zeroes_effective(self, app, db, seed_user, seed_periods):
         """Marking as credit creates payback and makes original effective_amount 0."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Dinner Out",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # Mark as credit -- creates payback in next period.
@@ -268,22 +259,19 @@ class TestAnchorTrueUpBalance:
     def test_anchor_change_shifts_all_balances(self, app, db, seed_user, seed_periods):
         """Changing anchor balance shifts all downstream period balances by the same delta."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create an expense in period 1.
-            txn = Transaction(
-                user_id=seed_periods[1].user_id,
-                pay_period_id=seed_periods[1].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                seed_periods[1],
                 name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("1200.00"),
+                user_id=seed_periods[1].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # Plan step X-g4b: the anchor is an ASSERTION the account carries,
@@ -341,24 +329,21 @@ class TestCarryForwardWorkflow:
         status, name, category_id, and transaction_type_id exactly.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
 
             # Create 2 projected expenses in period 0.
             for name, amount in [("Groceries", "85.00"), ("Gas", "45.00")]:
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=groceries_cat_id,
+                    amount=Decimal(amount),
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal(amount)),
+                    category_id=groceries_cat_id,
                 )
-                db.session.add(txn)
             db.session.commit()
 
             # Carry forward from period 0 → period 1.
@@ -388,13 +373,13 @@ class TestCarryForwardWorkflow:
 
             # Verify every moved transaction retains original values.
             by_name = {t.name: t for t in moved}
-            assert by_name["Groceries"].estimated_amount == Decimal("85.00")
+            assert resolved_amount(by_name["Groceries"]) == Decimal("85.00")
             assert by_name["Groceries"].pay_period_id == seed_periods[1].id
             assert by_name["Groceries"].status.name == "Projected"
             assert by_name["Groceries"].category_id == groceries_cat_id
             assert by_name["Groceries"].transaction_type_id == expense_type.id
 
-            assert by_name["Gas"].estimated_amount == Decimal("45.00")
+            assert resolved_amount(by_name["Gas"]) == Decimal("45.00")
             assert by_name["Gas"].pay_period_id == seed_periods[1].id
             assert by_name["Gas"].status.name == "Projected"
             assert by_name["Gas"].category_id == groceries_cat_id
@@ -414,7 +399,6 @@ class TestCarryForwardEdgeCases:
         estimated_amount, name, category_id, or transaction_type_id.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             groceries_cat_id = seed_user["categories"]["Groceries"].id
             rent_cat_id = seed_user["categories"]["Rent"].id
@@ -425,18 +409,16 @@ class TestCarryForwardEdgeCases:
                 ("Coffee", Decimal("43.99"), groceries_cat_id),
             ]
             for name, amount, cat_id in items:
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=cat_id,
+                    amount=amount,
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amount),
+                    category_id=cat_id,
                 )
-                db.session.add(txn)
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -454,7 +436,7 @@ class TestCarryForwardEdgeCases:
             by_name = {t.name: t for t in moved}
 
             for name, amount, cat_id in items:
-                assert by_name[name].estimated_amount == amount
+                assert resolved_amount(by_name[name]) == amount
                 assert by_name[name].pay_period_id == seed_periods[1].id
                 assert by_name[name].status.name == "Projected"
                 assert by_name[name].category_id == cat_id
@@ -478,25 +460,23 @@ class TestCarryForwardEdgeCases:
         Carried-forward 'projected' transactions are appended, not merged.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create 2 existing 'done' transactions in the TARGET period.
             existing_ids = []
             for name, amount in [("Internet", Decimal("500.00")), ("Phone", Decimal("200.00"))]:
-                txn = Transaction(
-                    user_id=seed_periods[1].user_id,
-                    pay_period_id=seed_periods[1].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=done.id,
+                txn = one_off_row_of(
+                    seed_periods[1],
                     name=name,
-                    category_id=seed_user["categories"]["Rent"].id,
+                    amount=amount,
+                    user_id=seed_periods[1].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amount),
+                    category_id=seed_user["categories"]["Rent"].id,
                 )
-                db.session.add(txn)
+                txn.status_id = done.id
                 db.session.flush()
                 existing_ids.append(txn.id)
 
@@ -506,18 +486,16 @@ class TestCarryForwardEdgeCases:
                 ("Snacks", Decimal("125.50")),
                 ("Coffee", Decimal("43.99")),
             ]:
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                txn = one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=amount,
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amount),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -544,7 +522,7 @@ class TestCarryForwardEdgeCases:
             # Verify carried-forward items have correct amounts.
             carried = [t for t in target_txns if t.status.name == "Projected"]
             assert len(carried) == 3
-            carried_amounts = sorted(t.estimated_amount for t in carried)
+            carried_amounts = sorted(resolved_amount(t) for t in carried)
             assert carried_amounts == sorted([
                 Decimal("850.00"), Decimal("125.50"), Decimal("43.99"),
             ])
@@ -573,18 +551,17 @@ class TestCarryForwardEdgeCases:
                 ("OnCard", Decimal("75.00"), credit),
             ]
             for name, amount, status in status_names:
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=status.id,
+                txn = one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=amount,
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amount),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
+                txn.status_id = status.id
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -622,18 +599,17 @@ class TestCarryForwardEdgeCases:
 
             # Source has only non-projected transactions.
             for name, status in [("Paid", done), ("Nope", cancelled)]:
-                txn = Transaction(
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=status.id,
+                txn = one_off_row_of(
+                    seed_periods[0],
                     name=name,
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=Decimal("100.00"),
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
+                txn.status_id = status.id
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -666,21 +642,18 @@ class TestCarryForwardEdgeCases:
         and returns 0 immediately. No transactions are duplicated.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                seed_periods[0],
                 name="SelfCarry",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("99.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("99.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
@@ -695,7 +668,7 @@ class TestCarryForwardEdgeCases:
             txn_check = db.session.query(Transaction).filter_by(
                 pay_period_id=seed_periods[0].id, name="SelfCarry",
             ).filter(Transaction.is_deleted.is_(False)).one()
-            assert txn_check.estimated_amount == Decimal("99.00")
+            assert resolved_amount(txn_check) == Decimal("99.00")
             assert txn_check.status.name == "Projected"
 
 
@@ -714,21 +687,18 @@ class TestCreditWorkflowEdgeCases:
         credit_payback_for_id link back to the original.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Grocery Run",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.43"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.43")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 
@@ -759,21 +729,18 @@ class TestCreditWorkflowEdgeCases:
         a second one.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Double Credit Test",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 
@@ -805,18 +772,17 @@ class TestCreditWorkflowEdgeCases:
             done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=done.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Already Paid",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.status_id = done.id
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
@@ -832,18 +798,17 @@ class TestCreditWorkflowEdgeCases:
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=cancelled.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Cancelled Order",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("60.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("60.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.status_id = cancelled.id
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
@@ -859,22 +824,19 @@ class TestCreditWorkflowEdgeCases:
         None for the last period. The source then raises ValidationError.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             last_period = seed_periods[-1]
-            txn = Transaction(
-                user_id=last_period.user_id,
-                pay_period_id=last_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                last_period,
                 name="Last Period Purchase",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("99.99"),
+                user_id=last_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("99.99")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
@@ -888,21 +850,18 @@ class TestCreditWorkflowEdgeCases:
         the auto-generated payback transaction no longer exists.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Unmark Test",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("45.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("45.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 
@@ -936,21 +895,18 @@ class TestCreditWorkflowEdgeCases:
         Marking a paycheck as 'credit' makes no financial sense.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             from app.exceptions import ValidationError as ShekelValidationError
@@ -980,47 +936,41 @@ class TestFullBudgetWorkflow:
           6. Assert final state of both periods.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-            done = db.session.query(Status).filter_by(name="Paid").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Step 1: Create 3 projected expenses in period 0.
-            txn1 = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn1 = one_off_row_of(
+                seed_periods[0],
                 name="Rent",
+                amount=Decimal("1200.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
                 category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
-            txn2 = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn2 = one_off_row_of(
+                seed_periods[0],
                 name="Dining Out",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
-            )
-            txn3 = Transaction(
+                amount=Decimal("75.00"),
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Gas Station",
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("45.50")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add_all([txn1, txn2, txn3])
+            one_off_row_of(
+                seed_periods[0],
+                name="Gas Station",
+                amount=Decimal("45.50"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             db.session.commit()
-            txn1_id, txn2_id, txn3_id = txn1.id, txn2.id, txn3.id
+            txn2_id = txn2.id
 
             # Step 2: Mark Rent as 'done' with a CORRECTION -- the figure a
             # human read off a statement, which the settle records as
@@ -1032,9 +982,8 @@ class TestFullBudgetWorkflow:
             db.session.commit()
 
             # Step 3: Mark Dining Out as 'credit' → payback in period 1.
-            payback = credit_workflow.mark_as_credit(txn2_id, seed_user["user"].id)
+            credit_workflow.mark_as_credit(txn2_id, seed_user["user"].id)
             db.session.commit()
-            payback_id = payback.id
 
             # Step 4: Gas Station stays projected.
             # Step 5: Carry forward from period 0 → period 1.
@@ -1056,10 +1005,10 @@ class TestFullBudgetWorkflow:
 
             by_name_p0 = {t.name: t for t in period0_txns}
             assert by_name_p0["Rent"].status.name == "Paid"
-            assert by_name_p0["Rent"].estimated_amount == Decimal("1200.00")
+            assert resolved_amount(by_name_p0["Rent"]) == Decimal("1200.00")
             assert by_name_p0["Rent"].settled_amount == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
-            assert by_name_p0["Dining Out"].estimated_amount == Decimal("75.00")
+            assert resolved_amount(by_name_p0["Dining Out"]) == Decimal("75.00")
             assert settled_contribution(by_name_p0["Dining Out"]) == Decimal("0")
 
             # Period 0 has no projected transactions remaining.
@@ -1077,6 +1026,6 @@ class TestFullBudgetWorkflow:
             assert by_name_p1["CC Payback: Dining Out"].status.name == "Projected"
             assert by_name_p1["CC Payback: Dining Out"].credit_payback_for_id == txn2_id
 
-            assert by_name_p1["Gas Station"].estimated_amount == Decimal("45.50")
+            assert resolved_amount(by_name_p1["Gas Station"]) == Decimal("45.50")
             assert by_name_p1["Gas Station"].status.name == "Projected"
             assert by_name_p1["Gas Station"].pay_period_id == seed_periods[1].id

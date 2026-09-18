@@ -50,7 +50,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from tests._test_helpers import create_savings_account, load_migration_module
+from tests._test_helpers import create_savings_account, load_migration_module, one_off_row_of
 from app.models.amount_ownership import AmountOwnership
 
 _MIGRATION = load_migration_module(
@@ -76,20 +76,19 @@ def _restore_the_archive(db):
 
 def _a_row(db, seed_user, period, status_id, *, income=False, name="row"):
     """Insert one transaction of the given TYPE in the given status."""
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("42.00"),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(
             TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
         ),
-        amount_ownership=AmountOwnership.own(Decimal("42.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
+    txn.status_id = status_id
     db.session.flush()
     return txn
 

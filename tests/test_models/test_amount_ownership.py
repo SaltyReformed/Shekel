@@ -76,9 +76,9 @@ from app.models.transfer import Transfer
 from tests._test_helpers import (
     generate_row_of,
     generate_transfer_of,
-    repriced_by_the_owner,
     load_migration_module,
     make_every_period_rule,
+    repriced_by_the_owner,
     settle_day_columns,
     settlement_columns,
 )
@@ -179,6 +179,13 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     Returns:
         The :class:`~app.models.transaction.Transaction`: flushed on the
         definition arm, unflushed on the ad-hoc one.
+
+    **BARE on purpose, and past the cutover.**  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the
+    row through a door would grade the door; the shape 7d's pricing-link
+    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
+    builder (a pricing link on every row it stages) rather than any case
+    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
     """
     template_id = overrides.pop("template_id", None)
     if template_id is not None:
@@ -655,7 +662,7 @@ class TestOnePricingLink:
             # constraint under test is ever reached.  It began as a precaution
             # against the undated index firing first, while the fixture's row
             # was hand-built; that cause is gone and this one replaced it.
-            txn = _make_transaction(
+            _make_transaction(
                 data, data["periods"],
                 pay_period_id=data["periods"][1].id,
                 template_id=data["template"].id,
@@ -684,7 +691,7 @@ class TestOnePricingLink:
             db.session.add(source_row)
             db.session.flush()
 
-            payback = _make_transaction(
+            _make_transaction(
                 data, data["periods"],
                 pay_period_id=data["periods"][1].id,
                 name="Payback control",
@@ -1266,7 +1273,7 @@ class TestTheSalaryCutoverKnowsWhatItCannotRestore:
         """
         with app.app_context():
             salary_template = _salary_template(seed_user)
-            txn = _make_transaction(
+            _make_transaction(
                 seed_user, seed_periods,
                 template_id=salary_template.id,
                 is_override=True,
@@ -1533,7 +1540,7 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
                 transaction_template_id=template.id,
                 effective_date=date(2026, 1, 1), amount=Decimal("7.77"),
             ))
-            txn = _make_transaction(
+            _make_transaction(
                 seed_user, seed_periods,
                 template_id=template.id,
                 due_date=date(2026, 3, 1),
@@ -1739,7 +1746,7 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
         with app.app_context():
             data = seed_full_user_data
             _state_series(data, Decimal("100.00"))
-            xfer = _make_transfer(
+            _make_transfer(
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
@@ -1807,7 +1814,7 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
                 transfer_template_id=data["transfer_template"].id,
                 derive_from_loan=False, extra_principal=Decimal("25.00"),
             ))
-            xfer = _make_transfer(
+            _make_transfer(
                 data, due_date=date(2026, 3, 1),
                 amount_ownership=AmountOwnership.own(Decimal("100.00")),
             )
@@ -1862,7 +1869,7 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
         with app.app_context():
             data = seed_full_user_data
             _state_series(data, Decimal("100.00"))
-            xfer = _make_transfer(
+            _make_transfer(
                 data, due_date=date(2026, 3, 1), is_override=True,
                 amount_ownership=AmountOwnership.own(Decimal("250.00")),
             )

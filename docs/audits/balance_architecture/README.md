@@ -382,9 +382,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer -- the DECOMPOSED parent, split
-      2026-09-16 into the builder and four leaves of sites by file group (the AST census in
-      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked); ticks with 7c-5.
+    * [x] **X-bi-7c** `4f15f222` -- the suite's one-off builder on 7b's producer, the DECOMPOSED parent
+      split 2026-09-16 into the builder and four leaves by file group (the AST census in
+      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
+      the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5.
       * [x] **X-bi-7c-1** `555410b6` -- `one_off_row_of` on the producer (the twin of
         `generate_row_of`); the three bare builders on it; `legacy_link_less_row_of` the one
         transitional home; `payback_row_of`; the census instrument; the 16 failures the move
@@ -400,8 +401,11 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         8 by hand); 2 raw-column readers re-aimed (R-BAL60's class), two double-graded R-BAL34 cases
         and two own-flag fixtures put on the app's own state; one bare row stays, grading the
         table's NOT NULL; the marker 169 -> 80.
-      * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
-        `tests/test_performance`, `tests/test_concurrent`, `test_audit_fixes`; the marker's last figure.
+      * [x] **X-bi-7c-5** `4f15f222` -- 50 of the last 67 sites (`test_integration`, `test_models`,
+        `test_adversarial`, `test_performance`, `test_concurrent`, `test_audit_fixes`) onto the
+        builder; 17 failures classified (15 raw-column readers under R-BAL60, 3 legacy-subject); the
+        three benchmark workloads re-cut over ONE rule-less definition per batch; 16 bare CHECK
+        builders named with the sentence each grades; the marker 80 -> 30, the last figure.
     * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
@@ -410,12 +414,17 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
-    the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
+    the payment row a purchase already is (**R-BAL39**); five leaves, only 3d moves money.
     * [x] **X-bi-3c** `68401855` -- both transfer legs covered through the seam (**R-BAL41**); the
       ledger's endpoint ruled C (**R-BAL45**), 3c its first leaf; an endpoint move carries the
       movements (**R-BAL46**, migration `c4e8a2d7f1b3`); the lock predicate total; six rows born.
-    * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
-      scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
+    * [x] **X-bi-3d** `3a15daf4` -- every settled row covered by the fail-closed migration
+      `ad573b07bede` (**R-BAL40**): 162 rows / `$89,741.80` on the 2026-09-18 restore, 0 dateless; the
+      figure's source is the writer's (**R-BAL61**), the downgrade leaves the rows (**R-BAL62**);
+      **MOVED MONEY** `$0.00`, three harnesses byte-identical across the cutover and the resync.
+    * [ ] **X-bi-3e** the settle record carries the figure's source, each writer stating it
+      (**R-BAL61**); both day-inference spellings deleted; a revert un-dates the movement. Closes
+      **BAL-508**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     **Its design loop hears a fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18): whether
     `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than

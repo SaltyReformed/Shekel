@@ -15,12 +15,13 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
-    moved_by_the_owner,
     account_never_asserted,
     add_txn,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_expense_template,
+    moved_by_the_owner,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     open_owner_calendar,
     populate_in_a_fresh_pass,
@@ -35,7 +36,6 @@ from scripts.integrity_check import (
     check_referential_integrity,
     run_all_checks,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── CheckResult dataclass ────────────────────────────────────────
@@ -590,19 +590,20 @@ class TestDataConsistency:
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         settled_on = seed_periods[0].start_date
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=status_done.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Done No Correction",
+            amount=Decimal("50.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=txn_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
-            **settle_day_columns(settled_on),
-            **settlement_columns(settled_on, Decimal("50.00")),
         )
-        db.session.add(txn)
+        txn.status_id = status_done.id
+        for _column, _value in settle_day_columns(settled_on).items():
+            setattr(txn, _column, _value)
+        for _column, _value in settlement_columns(settled_on, Decimal("50.00")).items():
+            setattr(txn, _column, _value)
         db.session.flush()
 
         results = check_data_consistency(db.session)

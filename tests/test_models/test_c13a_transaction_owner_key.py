@@ -66,6 +66,18 @@ def _txn_kwargs(seed_user, period, **overrides):
     Everything is the seeded owner's unless a case overrides it, so a case
     states only the axis it is about -- and the control that must succeed is
     this dict with nothing overridden.
+
+    **BARE on purpose, and past the cutover.**  The subject is the three
+    owner keys on ``budget.transactions``, every negative asserts a key BY
+    NAME, and the control that must succeed is this dict with nothing
+    overridden -- so a door cannot stand in (the producer refuses a
+    stranger's paycheck one tier ABOVE the key, and R-BAL59 (3) names this
+    file as where the key is graded on a bare row).  7d re-cuts THIS dict
+    with a pricing link when its CHECK binds, and re-measures the one
+    assertion that names WHICH constraint PostgreSQL reports first
+    (``test_a_user_holding_transactions_cannot_be_deleted``: a definition on
+    the row adds a second RI trigger to that order) (plan step
+    ``balance:X-bi-7c``, handoff s.3's judgment per site).
     """
     fields = {
         "user_id": period.user_id,

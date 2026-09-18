@@ -19,13 +19,11 @@ import threading
 from datetime import date, timedelta
 from decimal import Decimal
 
-import pytest
 
-from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
@@ -37,16 +35,17 @@ from app.services import (
     pay_schedule_service,
 )
 from tests._test_helpers import (
-    mint_fixture_era,
     assert_pay_period_invariants,
     last_covered_day,
     linked_ledger_total,
+    mint_fixture_era,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     open_owner_calendar,
+    resolved_amount,
 )
 from app.services import cash_ledger
 from app.utils.dates import display_today
-from app.models.amount_ownership import AmountOwnership
 
 
 # ---------------------------------------------------------------------------
@@ -236,23 +235,20 @@ class TestConcurrentMarkDone:
         Invariant: transaction ends up with status=Paid, no 500 errors.
         """
         data = _create_user_with_data(db.session)
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
 
-        txn = Transaction(
-            account_id=data["account"].id,
-            user_id=data['past_period'].user_id,
-            pay_period_id=data["past_period"].id,
-            scenario_id=data["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            data["past_period"],
             name="Rent",
-            category_id=data["category"].id,
+            amount=Decimal("1500.00"),
+            user_id=data['past_period'].user_id,
+            account_id=data["account"].id,
+            scenario_id=data["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("1500.00")),
+            category_id=data["category"].id,
         )
-        db.session.add(txn)
         db.session.commit()
         txn_id = txn.id
         client_a = _make_auth_client(
@@ -291,23 +287,20 @@ class TestConcurrentMarkDone:
         Invariant: transaction ends up with status=Received.
         """
         data = _create_user_with_data(db.session)
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = (
             db.session.query(TransactionType).filter_by(name="Income").one()
         )
 
-        txn = Transaction(
-            account_id=data["account"].id,
-            user_id=data['past_period'].user_id,
-            pay_period_id=data["past_period"].id,
-            scenario_id=data["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            data["past_period"],
             name="Paycheck",
-            category_id=data["category"].id,
+            amount=Decimal("3000.00"),
+            user_id=data['past_period'].user_id,
+            account_id=data["account"].id,
+            scenario_id=data["scenario"].id,
             transaction_type_id=income_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("3000.00")),
+            category_id=data["category"].id,
         )
-        db.session.add(txn)
         db.session.commit()
         txn_id = txn.id
         client_a = _make_auth_client(
@@ -356,23 +349,20 @@ class TestConcurrentCarryForwardAndEdit:
         exactly once across all periods with a valid amount.
         """
         data = _create_user_with_data(db.session)
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
 
-        txn = Transaction(
-            account_id=data["account"].id,
-            user_id=data['past_period'].user_id,
-            pay_period_id=data["past_period"].id,
-            scenario_id=data["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            data["past_period"],
             name="Groceries",
-            category_id=data["category"].id,
+            amount=Decimal("100.00"),
+            user_id=data['past_period'].user_id,
+            account_id=data["account"].id,
+            scenario_id=data["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            category_id=data["category"].id,
         )
-        db.session.add(txn)
         db.session.commit()
         txn_id = txn.id
         past_period_id = data["past_period"].id
@@ -406,10 +396,13 @@ class TestConcurrentCarryForwardAndEdit:
         assert final.pay_period_id in (past_period_id, current_period_id), (
             f"Transaction in unexpected period {final.pay_period_id}"
         )
-        # Amount must be one of the valid values.
-        assert final.estimated_amount in (
+        # Amount must be one of the valid values -- read through the resolver:
+        # a one-off's row stores no figure, its definition prices it (ruling
+        # R-BAL60); a typed figure that landed would have restated it.
+        worth = resolved_amount(final)
+        assert worth in (
             Decimal("100.00"), Decimal("200.00"),
-        ), f"Unexpected amount: {final.estimated_amount}"
+        ), f"Unexpected amount: {worth}"
 
 
 # ---------------------------------------------------------------------------

@@ -31,9 +31,8 @@ from sqlalchemy.exc import IntegrityError
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db as _db
-from app.models.amount_ownership import AmountOwnership
-from app.models.transaction import Transaction
 from tests._test_helpers import (
+    one_off_row_of,
     load_migration_module,
     run_migration_callable as _run,
 )
@@ -71,24 +70,23 @@ def _installed(session):
     }
 
 
-def _a_row(seed_user, period, **overrides):
-    """Stage one ordinary Projected transaction and return it flushed."""
-    fields = {
-        "user_id": period.user_id,
-        "account_id": seed_user["account"].id,
-        "pay_period_id": period.id,
-        "scenario_id": seed_user["scenario"].id,
-        "status_id": ref_cache.status_id(StatusEnum.PROJECTED),
-        "name": "Backfill subject",
-        "category_id": seed_user["categories"]["Groceries"].id,
-        "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        "amount_ownership": AmountOwnership.own(Decimal("15.00")),
-    }
-    fields.update(overrides)
-    row = Transaction(**fields)
-    _db.session.add(row)
-    _db.session.flush()
-    return row
+def _a_row(seed_user, period, *, name="Backfill subject"):
+    """Place one ordinary Projected one-off in *period* and return it flushed.
+
+    The producer's row (plan step balance:X-bi-7c): the cases here grade the
+    migration's round trip over rows that EXIST, and which door wrote them
+    is not the subject.
+    """
+    return one_off_row_of(
+        period,
+        name=name,
+        amount=Decimal("15.00"),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        category_id=seed_user["categories"]["Groceries"].id,
+    )
 
 
 class TestTheRevisionRoundTrips:
