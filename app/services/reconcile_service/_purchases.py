@@ -38,7 +38,7 @@ from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import posting_service
+from app.services import posting_service, status_seam
 from app.services.cash_ledger import reject_movement_before_books_open
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import OutstandingPurchase
@@ -70,10 +70,21 @@ def _outstanding_scope(statement: "_rows.Statement"):
     makes the per-arm reading the obvious one: this function is not visible
     outside its own arm.
 
-    Five clauses, each load-bearing:
+    Six clauses, each load-bearing:
 
     * ``settled_on IS NULL`` -- the definition itself.  A purchase whose
       posting day is already recorded is not outstanding, whatever that day is.
+    * ``NOT covers_settlement`` -- a PURCHASE, never the row's own payment
+      record (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  The
+      status seam's covering movement is a ``transaction_entries`` row too,
+      and since that step a revert KEEPS it, un-dated, under a Projected
+      parent -- every other clause here admits it.  Offered, it would be a
+      phantom purchase of the row's whole close (a `$100.00` envelope
+      reverted after a typed `$120.00` close would offer `$120.00`), and
+      ticking it would date and post the seam's own mirror around the seam.
+      Stated through ``status_seam.covering_clause()``, the query-side twin
+      of :attr:`~app.models.transaction.Transaction.purchases`, so this
+      scope and the fold's reservation exclude the mark by one spelling.
     * ``is_credit IS FALSE`` -- a credit-card purchase never touches checking;
       it leaves through its own CC Payback sibling, so it is not on this
       account's statement and reconciling it would mean nothing.
@@ -147,6 +158,7 @@ def _outstanding_scope(statement: "_rows.Statement"):
     """
     return [
         TransactionEntry.settled_on.is_(None),
+        ~status_seam.covering_clause(),
         TransactionEntry.is_credit.is_(False),
         TransactionEntry.purchased_on <= statement.observed_on,
         TransactionEntry.transaction_id.in_(

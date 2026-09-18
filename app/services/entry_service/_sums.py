@@ -107,11 +107,19 @@ def build_entry_sums_dict(
     transactions: list,
     budgets: dict[int, Decimal],
 ) -> dict[int, dict]:
-    """Build a {txn_id: sums_dict} mapping for transactions with entries.
+    """Build a {txn_id: sums_dict} mapping for transactions with purchases.
 
     Used by grid routes and HTMX cell-render endpoints to pre-compute
     entry aggregates for the cell template.  Only transactions with
-    non-empty entries are included in the result.
+    non-empty purchases are included in the result.
+
+    **Over the row's PURCHASES, never its whole family** (plan step
+    ``balance:X-bi-3e-2``, ruling **R-BAL68**): the status seam's covering
+    movement -- the payment row a manual-branch close writes -- is an entry
+    too, and it is not something the owner spent.  Read over ``entries``,
+    a settled envelope closed at the door with no purchases showed its own
+    close as one purchase (8 such rows on production, `$794.79`), and a
+    reverted one would show the withdrawn close under a Projected row.
 
     The dict carries ``budget``, ``remaining`` and ``over_budget`` so the
     grid cell template renders without inline Jinja arithmetic
@@ -152,16 +160,17 @@ def build_entry_sums_dict(
     """
     result: dict[int, dict] = {}
     for txn in transactions:
-        if txn.entries:
-            debit, credit = compute_entry_sums(txn.entries)
+        purchases = txn.purchases
+        if purchases:
+            debit, credit = compute_entry_sums(purchases)
             total = debit + credit
             budget = budgets[txn.id]
-            remaining = compute_remaining(budget, txn.entries)
+            remaining = compute_remaining(budget, purchases)
             result[txn.id] = {
                 "debit": debit,
                 "credit": credit,
                 "total": total,
-                "count": len(txn.entries),
+                "count": len(purchases),
                 "budget": budget,
                 "remaining": remaining,
                 "over_budget": remaining < Decimal("0"),
@@ -248,7 +257,7 @@ def build_entry_lists_dict(
     """
     return {
         txn.id: entry_list_view(
-            list(txn.entries),
+            txn.purchases,
             budgets[txn.id],
             periods[txn.pay_period_id],
         )
@@ -311,9 +320,12 @@ def entry_list_view(
     what the arc is removing rather than adding.
 
     Args:
-        entries: The transaction's entries, already loaded and ordered by
-            ``purchased_on``.  Taken as an argument because the callers load
-            them differently -- the route through the owner-scoped
+        entries: The transaction's PURCHASES
+            (:attr:`~app.models.transaction.Transaction.purchases`, never the
+            family: the seam's covering movement is not a purchase, ruling
+            **R-BAL68**), already loaded and ordered by ``purchased_on``.
+            Taken as an argument because the callers load them differently
+            -- the route through the owner-scoped
             :func:`get_entries_for_transaction`, the grid off an eager-loaded
             relationship -- and neither may lose its scoping to share this
             derivation.

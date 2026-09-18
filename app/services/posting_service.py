@@ -719,8 +719,10 @@ def reverse_purchase_postings_before_delete(entry) -> None:
     """
     txn = entry.transaction
     # A shadow's covering movement never posted (ruling **R-BAL45**, plan step
-    # ``balance:X-bi-3c``), so its release -- a revert of the transfer, which
-    # deletes the movement through the seam -- has nothing to reverse here.
+    # ``balance:X-bi-3c``), so its withdrawal -- a ``$0.00`` or ``purchases``
+    # record landing on the leg, the seam's delete arm -- has nothing to
+    # reverse here.  (A REVERT keeps the movement since plan step
+    # ``balance:X-bi-3e-2`` and reaches no delete at all.)
     if txn.transfer_id is not None:
         return
     entries = emit_purchase_deltas(entry, txn, posted=False)

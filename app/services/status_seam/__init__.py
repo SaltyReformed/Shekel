@@ -82,7 +82,6 @@ Architecture:
 from app.services.status_seam._record import (
     Settlement,
     correction_record,
-    covering_movements,
     honoured_correction,
     recorded_settlement,
 )
@@ -113,7 +112,6 @@ __all__ = [
     "apply_status_change",
     "covered_cash_leg",
     "covering_clause",
-    "covering_movements",
     "record_clearing",
     "settled_family_leg",
     "figure_for_status",

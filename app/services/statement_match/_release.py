@@ -441,8 +441,11 @@ def _container_survives(
     # about.  A per-container SELECT was the first spelling and it made the
     # bulk fold pay one query per container -- measured, 8 acts cost 18
     # statements where 2 cost 12, which is the per-act cost :data:`_WHOLE_ACT`
-    # exists to remove.
-    return any(entry.id not in going for entry in container.entries)
+    # exists to remove.  The PURCHASES, never the family (ruling R-BAL68):
+    # what a container still HOLDS is what people recorded against it, and a
+    # covering movement -- its own close, or a reverted close kept un-dated
+    # -- is not a reason to keep the line.
+    return any(entry.id not in going for entry in container.purchases)
 
 
 def _names_of(match: StatementMatch) -> "tuple[set[int], set[int]]":

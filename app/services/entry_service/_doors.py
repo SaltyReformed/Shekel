@@ -777,9 +777,14 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 def get_entries_for_transaction(
     transaction_id: int, user_id: int,
 ) -> list[TransactionEntry]:
-    """Return all entries for a transaction, ordered by purchased_on ASC.
+    """Return a transaction's PURCHASES, ordered by purchased_on ASC.
 
-    Validates ownership before returning entries.
+    Validates ownership before returning them.  The purchases and never the
+    whole family (:attr:`~app.models.transaction.Transaction.purchases`,
+    ruling **R-BAL68**): the status seam's covering movement is an entry the
+    seam wrote for the row's own close, and the list this feeds
+    (``grid/_transaction_entries.html`` through the HTMX refresh) is what
+    the owner reads back as what they spent.
 
     Args:
         transaction_id: The parent transaction ID.
@@ -801,5 +806,5 @@ def get_entries_for_transaction(
 
     # The entries relationship is ordered by ``purchased_on`` via the
     # ``order_by`` on ``Transaction.entries`` -- the BUDGET clock, which is
-    # the order a user reads their purchases in.
-    return list(txn.entries)
+    # the order a user reads their purchases in -- and ``purchases`` keeps it.
+    return txn.purchases

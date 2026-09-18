@@ -44,7 +44,6 @@ from app.models.statement_match import (
 from app.services import (
     bank_agreement,
     cash_ledger,
-    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -913,7 +912,7 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
                 txn, settle_day=an_entered_day(date(2026, 3, 3)),
             )
             db.session.flush()
-            assert len(status_seam.covering_movements(txn)) == 1
+            assert len(txn.covering_movements) == 1
             line = db.session.query(BankStatementLine).filter(
                 BankStatementLine.account_id == seed_user["account"].id,
             ).one()

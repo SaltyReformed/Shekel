@@ -3525,9 +3525,8 @@ def create_settled_transfer(
     # convention every helper in this module follows.
     from app import ref_cache
     from app.enums import SettledDayBasisEnum, StatusEnum
-    from app.extensions import db
     from app.services import transfer_service
-    from app.services.settle_day import SettleDay, record_settle_day
+    from app.services.settle_day import SettleDay
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
@@ -4505,10 +4504,13 @@ def family_journal_filter(txn):
     cases the developer confirmed on 2026-09-15 widen their subject the same
     way and no figure moves: the row's entries, plus its covering movements'.
 
-    The movements are read through ``status_seam.covering_movements``, which
-    answers only while the row stands settled -- after a revert the mirror
-    is deleted and its postings, reversed first, carry no link -- so a
-    reverted row's family is the row alone, exactly as before.
+    The movements are read through ``Transaction.covering_movements``.  A
+    revert KEEPS the mirror, un-dated (plan step **X-bi-3e-2**, ruling
+    **R-BAL61**), so a reverted row's family includes its survivor's linked
+    postings -- a net-zero pair once the door's reconcile has reversed them
+    -- where through 3e-1 the mirror was deleted and the pair stood unlinked.
+    Every reader of this filter sums a net or scopes by period, so the pair
+    changes no figure.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction`, or its id.
@@ -4521,7 +4523,6 @@ def family_journal_filter(txn):
     from app.extensions import db
     from app.models.journal_entry import JournalEntry
     from app.models.transaction import Transaction
-    from app.services.status_seam import covering_movements
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
     if row is None:
@@ -4530,7 +4531,7 @@ def family_journal_filter(txn):
         # family is whatever still names the id -- nothing, which is the claim
         # such a case makes.
         return JournalEntry.transaction_id == txn
-    movement_ids = [movement.id for movement in covering_movements(row)]
+    movement_ids = [movement.id for movement in row.covering_movements]
     own = JournalEntry.transaction_id == row.id
     if not movement_ids:
         return own
@@ -4543,8 +4544,10 @@ def purchases_of(txn):
     Plan step **X-bi-3a**: a settled bill or an envelope closed empty holds
     one covering movement, written by the status seam and never by a person,
     so "this row took no purchase" is graded over the entries that are not
-    that mirror (``status_seam.covering_movements``).  A refused purchase
-    still leaves the row with exactly the movement it had.
+    that mirror -- the app's own reading, ``Transaction.purchases`` (plan
+    step **X-bi-3e-2**, ruling **R-BAL68**), which this helper hand-rolled
+    until that reading existed.  A refused purchase still leaves the row with
+    exactly the movement it had.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction`, or its id.
@@ -4556,11 +4559,9 @@ def purchases_of(txn):
     # convention every helper in this module follows.
     from app.extensions import db
     from app.models.transaction import Transaction
-    from app.services.status_seam import covering_movements
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
-    covering = covering_movements(row)
-    return [entry for entry in row.entries if entry not in covering]
+    return row.purchases
 
 
 def family_cash_leg(txn):
@@ -4658,7 +4659,6 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     # avoidance as the loan helpers above.
     from app import ref_cache
     from app.enums import StatusEnum, TxnTypeEnum
-    from app.models.transaction import Transaction
     if status_enum is None:
         status_enum = StatusEnum.PROJECTED
     account = seed_user["account"] if account is None else account

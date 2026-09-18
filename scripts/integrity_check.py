@@ -494,7 +494,7 @@ def check_data_consistency(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks DC-02 through DC-09.
+        List of CheckResult for checks DC-02 through DC-10.
 
     Note:
         DC-01 ("done/received transactions without actual_amount") was
@@ -674,6 +674,43 @@ def check_data_consistency(session):
         JOIN budget.accounts a ON pd.target_account_id = a.id
         WHERE pd.target_account_id IS NOT NULL
           AND sp.user_id != a.user_id
+        """,
+    )))
+
+    # DC-10: An UN-DATED movement holding a live journal leg (critical).
+    #
+    # ``_posting_purchases.purchase_posts`` is the write side's one statement
+    # of "this movement is in the ledger": a contributing parent, a debit,
+    # and a RECORDED posting day.  So a movement with no ``settled_on`` owes
+    # the ledger nothing, and a non-zero net of postings linked to it is
+    # money booked for a day nobody has stated.  Reachable since plan step
+    # ``balance:X-bi-3e-2``, when a revert began KEEPING the status seam's
+    # covering movement un-dated (ruling **R-BAL61**): the seam releases the
+    # day and the DOOR's family reconcile reverses the legs
+    # (``transaction_service.apply_requested_status`` ->
+    # ``posting_service.sync_transaction_postings``), so a caller that
+    # reached the bare seam and never reconciled would leave exactly this
+    # state -- and this arm grades it without depending on that door.  Over
+    # EVERY un-dated entry, not the seam's alone: a purchase whose day was
+    # cleared through ``entry_service.update_entry`` reconciles through the
+    # same family walk (``_doors._resync_after_entry_change`` ->
+    # ``sync_transaction_postings``) and owes the same zero.  Net per ledger
+    # account: a reversed leg appears with its reversal and nets to zero, so
+    # a fully-reversed movement does not report.
+    results.append(_run_check(session, CheckSpec(
+        "DC-10", "consistency", "critical",
+        "Un-dated movements (no settled_on) holding a live journal leg",
+        """
+        SELECT e.id AS entry_id, e.transaction_id, e.covers_settlement,
+               p.ledger_account_id, SUM(p.amount) AS net
+        FROM budget.transaction_entries e
+        JOIN budget.journal_entries je ON je.transaction_entry_id = e.id
+        JOIN budget.account_postings p ON p.journal_entry_id = je.id
+        WHERE e.settled_on IS NULL
+        GROUP BY e.id, e.transaction_id, e.covers_settlement,
+                 p.ledger_account_id
+        HAVING SUM(p.amount) <> 0
+        ORDER BY e.id, p.ledger_account_id
         """,
     )))
 

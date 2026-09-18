@@ -106,7 +106,11 @@ def fixed_settle_amount(txn: Transaction) -> "Decimal | None":
         The figure the row's own records answer, or ``None`` when they do not.
     """
     if settles_from_entries(txn):
-        return purchases_total(txn.entries)
+        # The PURCHASES, never the family (ruling R-BAL68): this prices the
+        # row BEFORE the seam runs, and a reverted manual close's kept
+        # movement is still on the row then -- the seam withdraws it when
+        # the ``purchases`` record lands.
+        return purchases_total(txn.purchases)
     return honoured_correction(txn)
 
 
@@ -322,9 +326,9 @@ def settle_transaction(
        that prices it -- so there is no cache to reconcile, no ordering between
        the refresh and the seam, and no way for the plan and the record to
        state one number twice.
-       **The ``and txn.entries`` half is load-bearing**, and production says
-       so: ``Kayla's Spending Money`` carries no entries at all, so settling it
-       from entries unconditionally would book ``$0.00`` against its
+       **The ``and txn.purchases`` half is load-bearing**, and production says
+       so: ``Kayla's Spending Money`` carries no purchases at all, so settling
+       it from purchases unconditionally would book ``$0.00`` against its
        ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
        decides money, three doors settle a row, and a door that picks its own
        figure is how one row comes to book two amounts depending on which
@@ -581,7 +585,7 @@ def settle_from_entries(
     record that no money left the account while marking the row Paid.  The
     discriminator is therefore the CALLER's act, not the row, which is why the
     rule cannot live in a shared branch and why :func:`settle_transaction` gates
-    its entries branch on ``and txn.entries``.
+    its entries branch on ``and txn.purchases``.
 
     Production carries both signatures, which is how the difference was found:
     of 9 settled entry-less envelopes, 8 were booked at their estimate
@@ -597,9 +601,11 @@ def settle_from_entries(
         ``entry_service``'s re-derivation of a settled envelope's figure -- with
         one copy there is nothing for a reconciler to keep in step, and a
         purchase corrected later moves the close by exactly its own difference.
-        What the close BOOKS is still ``sum(e.amount for e in txn.entries)``,
-        which is ``Decimal("0")`` when ``txn.entries`` is empty -- see the
-        ruling above.
+        What the close BOOKS is still ``sum(e.amount for e in txn.purchases)``
+        -- the row's purchases, never the covering movement a revert kept
+        (ruling **R-BAL68**; the ``purchases`` record withdraws it) -- which is
+        ``Decimal("0")`` when the row holds no purchase -- see the ruling
+        above.
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
@@ -742,6 +748,6 @@ def settle_from_entries(
         # the row: a ``purchases`` settlement stores nothing to read.
         # ``purchases_total`` answers ``Decimal("0")`` for an empty entry list,
         # which is the carry-forward "no spend, full rollover" case.
-        settled_amount=str(purchases_total(txn.entries)),
+        settled_amount=str(purchases_total(txn.purchases)),
         settled_on=txn.settled_on.isoformat(),
     )

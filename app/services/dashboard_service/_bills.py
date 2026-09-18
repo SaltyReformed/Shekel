@@ -201,7 +201,11 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     passes it in; the template surfaces ``bill.amount_base`` to disclose it.
 
     Expects txn.template and txn.entries to already be loaded on the
-    transaction object (eager-loaded by the caller).
+    transaction object (eager-loaded by the caller).  Read over the row's
+    PURCHASES (:attr:`~app.models.transaction.Transaction.purchases`, ruling
+    **R-BAL68**), never the family: the seam's covering movement is not
+    something the owner spent, and over ``entries`` a settled envelope
+    closed at the door with no purchases read its own close as one.
 
     Args:
         txn: The Transaction to inspect.
@@ -214,7 +218,8 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
         Dict with the five entry progress fields.
     """
     is_tracked = txn.tracks_purchases
-    if not is_tracked or not txn.entries:
+    purchases = txn.purchases if is_tracked else []
+    if not purchases:
         return {
             "is_tracked": is_tracked,
             "entry_total": None,
@@ -224,9 +229,9 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
             "entry_over_budget_amount": None,
         }
 
-    debit, credit = compute_entry_sums(txn.entries)
+    debit, credit = compute_entry_sums(purchases)
     total = debit + credit
-    remaining = compute_remaining(budget, txn.entries)
+    remaining = compute_remaining(budget, purchases)
     # **ONE spelling of over-budget** (plan step ``bank_import:X-gj-2b-3``).
     # It read ``total > budget`` while ``entry_service._sums`` asks
     # ``remaining < 0`` for the same row on the grid -- two statements of one
@@ -245,7 +250,7 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     return {
         "is_tracked": True,
         "entry_total": total,
-        "entry_count": len(txn.entries),
+        "entry_count": len(purchases),
         "entry_remaining": remaining,
         "entry_over_budget": over_budget,
         "entry_over_budget_amount": over_budget_amount,
