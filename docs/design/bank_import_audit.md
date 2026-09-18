@@ -158,8 +158,8 @@ not have, it is a TRANSFER between my own accounts, or I SKIP it.
 | root cause | finding / ruling | owner and rank | what it does to the inbox until fixed |
 | --- | --- | --- | --- |
 | Payroll net is 4-6 cents short | N-239 | `balance:X-aw`, pulled forward by this audit, starts NOW | one permanent resident per pay period, unless the developer hand-types the net |
-| A card payment has no home | N-337, R-GJ | `credit_card:CC1a`..`CC1c` then `CC3b`, after the cutover | one permanent resident per card payment |
-| Envelopes close before the bank sees the swipes | R-GK | `bank_import:X-gg`, after `credit_card:CC3c` | every rule-filed swipe reopens a figure the developer considered final, and double counts it if he also hand-entered it |
+| A card payment has no home | N-337, R-GJ | `credit_card:CC-1` then `CC-6` and `CC-7` (re-minted 2026-09-18; was `CC1a`..`CC1c` then `CC3b`), after the cutover | one permanent resident per card payment |
+| Envelopes close before the bank sees the swipes | R-GK | `bank_import:X-gg`, after `credit_card:CC-5` (re-minted 2026-09-18; was `CC3c`) | every rule-filed swipe reopens a figure the developer considered final, and double counts it if he also hand-entered it |
 
 Nothing in a skin changes those three counts. The design below gives the first two a holding shape
 so they stop rendering as work, and gives the third an interim that asks the developer for one

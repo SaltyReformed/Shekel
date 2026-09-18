@@ -196,8 +196,8 @@ class StepRow:
         The same grammar as :meth:`alias_keys`, through the same function: both
         cells carry a ``/``-separated list of annotated step keys, and a second
         copy of that grammar is the denormalization these registries exist to
-        remove.  The annotation is real and load-bearing -- ``CC3b`` carries
-        ``balance:X-f1 (shipped; absorbed the X-f1b leaf this once named)`` --
+        remove.  The annotation is real and load-bearing -- ``CC-5`` carries
+        ``balance:X-bi-4 (both halves of the fork ruled on its entry: ...)`` --
         so the key is parsed OUT of the entry rather than the entry being read
         as a key.
         """

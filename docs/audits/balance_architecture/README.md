@@ -395,25 +395,26 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         MOVES MONEY, own PR; discloses **CC-352**'s window. Closes **BAL-484**.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
-  * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
-    the payment row a purchase already is (**R-BAL39**); five leaves, only 3d moves money.
+  * [x] **X-bi-3** `d1e3f7a6` -- the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**), ticked
+    with its last leaf: every settle writes the payment row a purchase already is (**R-BAL39**);
+    five leaves, only 3d moved money (3a-3c are archived under rule 5). Closed **N-447**: a
+    `purchases` row stores no figure since X-au-c3 and its sum reads its own movements since 3e-2.
     * [x] **X-bi-3d** `3a15daf4` -- every settled row covered by the fail-closed migration
       `ad573b07bede` (**R-BAL40**): 162 rows / `$89,741.80` on the 2026-09-18 restore, 0 dateless; the
       figure's source is the writer's (**R-BAL61**), the downgrade leaves the rows (**R-BAL62**);
       **MOVED MONEY** `$0.00`, three harnesses byte-identical across the cutover and the resync.
-    * [ ] **X-bi-3e** the settle record carries the figure's source and the revert keeps the movement;
-      two leaves (**R-BAL61**, **R-BAL68**, **R-BAL69**, **R-BAL70**). Closes **BAL-508** at 3e-2.
+    * [x] **X-bi-3e** `d1e3f7a6` -- the settle record carries the figure's source and the revert keeps
+      the movement; two leaves (**R-BAL61**, **R-BAL68**, **R-BAL69**, **R-BAL70**, **R-BAL72**).
+      Closed **BAL-508**.
       * [x] **X-bi-3e-1** `925a4df8` -- every door states who wrote a figure as a `StatedFigure`;
         both day-inference spellings deleted; a record with no movement reads by the cutover
-        mapping; R-GE's release re-spelled onto the figure's source. `$0.00`; the revert still
-        deletes.
-      * [ ] **X-bi-3e-2** the revert un-dates the movement and keeps it; `Transaction.purchases`
-        and its ~15 readers (the 8 production envelopes' phantom purchase with them).
+        mapping; R-GE's release re-spelled onto the figure's source. `$0.00`.
+      * [x] **X-bi-3e-2** `d1e3f7a6` -- the revert un-dates the movement and keeps it;
+        `Transaction.purchases` / `covering_movements` on the model and sixteen readers (the 8
+        production envelopes' phantom purchase, `$794.79`, read 8 -> 0 on the clone); the endpoint
+        move assigns every shadow's movement (R-BAL72); DC-10. `$0.00` on the clone (0 reverted rows).
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
-    **Its design loop hears a fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18): whether
-    `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than
-    its plan row's (a card charge is the plan row's covering movement ON THE CARD); `X-bi-6`
-    restores that key's `NO ACTION`, a different axis of the same key.
+    **Its design loop rules BOTH halves of the fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18; `credit_card:CC-5` waits on the answer): the KEY -- whether `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than its plan row's (a card charge is the plan row's covering movement ON THE CARD; the design re-cuts it to a plain `transaction_id` FK) -- AND the fold's MOVEMENT PREDICATE: `TransactionEntry.account_id`, which `cash_ledger/_events.py:750` reads as the parent's today and the posted ledger reads as the movement's (`_posting_purchases.py:180`).
     After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
     is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
     predicate is kind-blind across 66 sites, so that cut would erect a discriminator only to delete
@@ -430,9 +431,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     `status_id` (`_restore.py:144-221`) -- and the fence is **38 sites, not 20**: 20 Python branches
   in 12 modules, 7 Jinja in 3 templates, 4 inverted guards, 7 query exclusions. **The pair-drift
     repairer is `transfer_service._restore`, NOT `posting_service`**, which only skips and warns --
-  deleting the latter removes a skip arm and leaves the repairer standing. It also restores `NO ACTION` on
-  `fk_transaction_entries_parent_account`'s update rule (**BAL-506**): the shadow was the cascade's one
-  beneficiary. Closes **BAL-503**, **BAL-506**. **Still after X-bi-4:
+  deleting the latter removes a skip arm and leaves the repairer standing. The `NO ACTION` restore this entry once carried has no object since the 2026-09-18 re-mint (`credit_card:CC-5` re-cuts that key to a plain FK; its row is **CC-353**, renamed from BAL-506). Closes **BAL-503**. **Still after X-bi-4:
     INVARIANT 5 IS WHY THE MIRROR EXISTS.** Closes **BAL-475**.
 * [ ] **X-ci** transfers take the one-definition shape their data holds (X-bi-7's 10.3): the ad-hoc
   door closes, the discardable count and detaching move are fixed. Closes **BAL-492**, **BAL-493**.
@@ -454,7 +453,7 @@ one grew its own private repair mechanism.** Salary income is repaired at READ t
 transfer shadow by a two-line copy in `transfer_service.update_transfer` beside a drift corrector
 that logs `"Correcting shadow %d estimated_amount drift"`; an ordinary template row by
 `regenerate_for_template`, which DELETES and recreates every non-override row from a date the form
-supplies and never stores. `credit_card:CC4b` plans a fifth. **R-FI deletes the class**: a derived
+supplies and never stores. `credit_card:CC4b` planned a fifth (re-minted 2026-09-18 as `CC-6`, which prices through the resolver). **R-FI deletes the class**: a derived
 amount is not stored, one total resolver answers, and the CHECK makes a stale derived figure
 unrepresentable rather than merely unlikely.
 
@@ -494,7 +493,7 @@ two disagree -- **N-440**, which `budget.transfers` forbids and `budget.transact
 **What made it look necessary is that the ARC IS INCOMPLETE**: `credit_payback_for_id` has no
 `AmountSourceEnum` member and **N-264**'s finance charge would carry no link at all. N-264 had two
 readings -- a reason to keep the column, or a missing leg -- and **the developer ruled the second**:
-`CC4d` gives CC4c its own link, `X-au-l` DELETES the column. That is the END STATE; both sit behind
+the finance charge is a row of a card-owned definition carrying `template_id` from birth (`credit_card:CC-8`; `CC4d` dissolved at the 2026-09-18 re-mint), `X-au-l` DELETES the column. That is the END STATE; both sit behind
 this phase's cutovers, which create the population it must be true across.
 
 **The rule is general and its BOUNDARY is part of it** (`R-IY`): *every derivable column is deleted,
@@ -536,8 +535,7 @@ in SILENCE where a refused DELETE is loud.
   of scope left nothing deletable), and it claimed **N-40**, which `../../plans/ledger.md` owned to
   `X-i2`. **It also WITHDRAWS `X-au-i`** (developer, 2026-08-21), which leaves the order as `X-ar`
   did: the CC payback is a PHANTOM the card arc's locked 2026-07-19 rulings already condemn -- "the
-  phantom payback dies", `CC3b` deletes it and `CC3c` deletes `credit_workflow.py` whole while
-  RENAMING `credit_payback_for_id` to `card_charge_for_id` -- so a `credit_source` relation, a ref
+  phantom payback dies", `CC3b` deletes it and `CC3c` deletes `credit_workflow.py` whole while RENAMING `credit_payback_for_id` to `card_charge_for_id` (both re-minted 2026-09-18 as `CC-7`, which deletes the link outright) -- so a `credit_source` relation, a ref
   seed and a 23-row migration would buy structure on a column about to be renamed, for a kind R-FI's
   five never included. What was LIVE in it shipped at X-au-j: **N-252**'s hand-edit refusal and
   **N-323**'s narrowed predicate. N-243's payback bullets and N-311 pass to the card arc. The
@@ -603,8 +601,7 @@ in SILENCE where a refused DELETE is loud.
   `AmountSourceEnum` and `_declared_relation`'s per-dispatch reverse map all go, and `amount_rule`
   reads the LINK -- ONE walk. Both ownership CHECKs become *a figure OR exactly one pricing link*,
   which makes **N-440**'s disagreement state unrepresentable rather than guarded. A migration; moves
-  no money. **Gated on `credit_card:CC4d`**, which gives the one derived row that carries no link
-  today its own. Closes **N-440**.
+  no money. **Its wait on the card arc's `CC4d` DROPPED at the 2026-09-18 re-mint** (developer): the finance charge is a row of a card-owned definition carrying `template_id` from birth (`credit_card:CC-8`). Closes **N-440**.
 * [x] **X-au-f** `cb4239a2` -- the DECOMPOSED parent of the PARENT-transfer cutover, ticked with its last leaf; split into three 2026-09-09 (**R-BAL10**) and RE-CUT into two 2026-09-10 (**R-BAL14**), `X-au-f-3` ABSORBED into `X-au-f-2`. Family record: `archive/x_au_f_family_2026-09-11.md`.
 * [x] **X-au-f-2** `cb4239a2` -- THE CUTOVER in one act (**R-BAL10**, **R-BAL11**, **R-BAL12**; `b7e4c1f38a20` empties `transfers.amount`). Closed **N-263**, **N-451**, **BAL-476**, **N-449**, **N-352**; opened **BAL-477**; **NOT N-450**, which is `X-bp`'s. Record: `archive/x_au_f_2_as_built_2026-09-10.md`.
 
@@ -1024,6 +1021,13 @@ section 4, under their unchanged ids.*
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
 *The `X-br` family -- the fresh container per run, its container and four leaves -- is ARCHIVED to `archive/x_br_family_2026-09-09.md` (2026-09-09, developer's call under rule 4). Every id still resolves in `steps.md`.*
+* [ ] **X-cq** `fix(savings): the horizon's asset band reads the fold for plain cash` -- closes
+  **BAL-520**: `_horizon._asset_bands` holds a PLAIN asset at today's balance compounded at 0% and folds
+  no planned row, while `_liability_band` reads the fold since `credit_card:CC-1`, so a planned card
+  payment funded from checking reads as a net-worth GAIN (`$80.00` at every future sample on the
+  planted card). One rule for both sides: the asset band reads `balance_at_dates` too; the loan
+  asymmetry the horizon always had (loans amortize, checking holds flat) ends with it. Reward tier: a
+  figure the developer reads moves to the correct one. Minted 2026-09-18 at CC-1's tick.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
   The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
   `is_override` term; the undated arm keeps the term because its index does. Script and test only.

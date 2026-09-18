@@ -203,10 +203,11 @@ what it leaves a LATER step is on that step's own entry.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
-      **It waits on `credit_card:CC3c`** (developer ruling 2026-08-24): envelope filling is
-      two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
-      card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
-      payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
+      **It waits on `credit_card:CC-5`** (developer ruling 2026-08-24, on `CC3c`; re-pointed at the
+      2026-09-18 re-mint): envelope filling is two-source -- debit swipes from SECU lines, card
+      swipes from card-side charges -- and the card-tender entry shape the loop must design over is
+      the movement on the card CC-5 builds. Designing over the payback shape the card arc deletes is
+      the mistake that withdrew `balance:X-au-i`.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are

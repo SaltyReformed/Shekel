@@ -906,8 +906,10 @@ def _compute_debt_summary(
         # payment", plan C8d).
         payoff_outlook=loan_payoff_outlook(loan_ads),
         # What the payoff date CANNOT speak for (plan step X-q3, finding
-        # N-99): every liability with no forward model -- today, a revolving
-        # card -- is invisible to the derivation, so the caption says so
+        # N-99): every liability with no PAYOFF model -- today, a revolving
+        # card, whose forward balance is its cash fold since plan step
+        # credit_card:CC-1 but which no schedule pays off -- is invisible to
+        # the derivation, so the caption says so
         # instead of implying the user is out of debt on a date that only
         # covers their loans.
         revolving_debt=debt_without_payoff_model(account_data),
