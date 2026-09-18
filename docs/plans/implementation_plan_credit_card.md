@@ -1,6 +1,7 @@
 # Credit card arc: the plan of record
 
-**Status: APPROVED 2026-07-19. Not started.**
+**Status: APPROVED 2026-07-19; every leaf's wait RE-CUT 2026-09-18 from the R-CC13 trace (R-CC14,
+R-CC15).**
 
 **The 2026-07-19 "Ratified sequencing" was DISCHARGED and is ARCHIVED** to
 `historical/credit_card_sequencing_2026-07-19.md`. It stayed here, live-looking, until 2026-08-11,
@@ -9,13 +10,13 @@ archived files: the warning must be on the artifact. Two of the bare ids it orde
 steps in other arcs (`pay_calendar:C8`, `recurrence:D1`), so it could send a reader at the wrong
 work by grep alone.
 
-**What gates this arc is ruling R-EB**, newer than that 2026-07-19 ruling: `CC1b`'s fold is
-specified against the reset semantics R-EB deletes at the cutover, and `CC3b` derives a settle from
-`paid_at`, which `X-f1b` deleted. **When this arc may start is `steps.md`'s answer**, and the reason
-is `../audits/balance_architecture/README.md` Section 5.0 block 4.
-**Since 2026-09-15 that gate is re-derived PER LEAF** (`credit_card:R-CC13`, `rulings.md`): the card
-arc is outcome O2 of the order `steps.md` states, and the lane that opens it traces each leaf's real
-wait before building.
+**The 2026-07-19 gate (ruling R-EB: `CC1b`'s fold against the reset semantics the cutover deletes,
+`CC3b`'s settle from a `paid_at` that `X-f1b` deleted) was DISCHARGED on 2026-09-18** by the
+per-leaf trace `credit_card:R-CC13` asked for: Phase 1 dissolved (**R-CC14**) and Phase 3 took the
+movement shape (**R-CC15**), so no leaf waits on `balance:X-f4`.
+**When each leaf may start is `steps.md`'s answer**, never restated here. Every card test builds
+rows through the suite's builders (`one_off_row_of`, `generate_row_of`, `payback_row_of`), never
+`Transaction(`: `X-bi-7c`'s census marker counts the latter.
 
 **This arc's findings live in `ledger.md`, its steps are indexed in `steps.md`, its rules are
 `conventions.md` and what "done" means is `verification.md`** -- the shared registries for every
@@ -51,7 +52,13 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
 
 ## Architecture (decided during planning)
 
-- **Every card event is a real row on the card account**: purchases (retargeted or direct), payments
+**Two bullets below were SUPERSEDED on 2026-09-18** (`R-CC14`, `R-CC15`, `rulings.md`): the card
+rides the shipped cash fold and grows no producer of its own, and a charge is the plan row's
+covering movement on the card rather than a retargeted row. They stay as the 2026-07-19 record,
+marked.
+
+- **Every card event is a real row on the card account** (SUPERSEDED for purchases by `R-CC15`: a
+  charge is a movement on the card, the row never moves): purchases (retargeted or direct), payments
   (transfer shadows), interest charges and reward redemptions (system-generated PROJECTED rows the
   user confirms, projected->done philosophy). The card's past balance is a pure transaction sum;
   Step-2/Step-3 posting writers (`posting_service.py`, sign-based `_signed_cash_leg`, already
@@ -73,13 +80,13 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
   resolution, so card rows are invisible to loan code). Card gets its own thin loader + write route;
   `loan_features.py` docstrings updated to say "loan or card APR".
 - **The card must NOT ride `calculate_balances`** (Projected-only premise + cash D1 would drop
-  settled post-anchor purchases -- a card owner does not re-anchor daily). REVOLVING gets its own
-  TOTAL fold producer in `balance_at`, sharing the instant-partition absorb/reset core from
-  `account_posting_service/_walk.py` (R-B: shared, never copied; per the ratified sequencing, X1
-  lands it first and CC1a consumes it).
+  settled post-anchor purchases -- a card owner does not re-anchor daily). SUPERSEDED by `R-CC14`:
+  the card rides the shipped cash fold (`cash_ledger/_walk.py` + `balance_at/_assertions.py` +
+  `_fold.sample_cumulative`) as PLAIN does today; the 2026-07-19 text gave REVOLVING its own TOTAL
+  fold producer sharing `account_posting_service/_walk.py`'s core, a producer `X-f4` deletes.
 - **Context memos use the C8d injection shape**: `BalanceContext` memos inject their deriver (the
   `loan_payoff(account, derive)` precedent) instead of lazy-importing the seam -- the lazy-import
-  shape closed real import cycles. Applies to CC1b's walk memo and CC4b's derived payment.
+  shape closed real import cycles. Applies to CC4b's derived payment (CC1b is dissolved).
 - **Sign convention**: the card balance stays a negative cash-style number; `_liability.py`
   magnitude and net-worth abs rules unchanged.
 - **Scope exclusions**: no cash advances (transfers OUT of the card rejected, sibling of the loan
@@ -98,41 +105,33 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       `has_revolving_credit` (server_default false) + updates the Credit Card row (name-match legal
       in migration); model + all 19 `ACCT_TYPE_SEEDS` tuples + `_seed_account_types` upsert;
       `AccountProjectionKind.REVOLVING` + classifier branch; behavior-preserving shims (scalar
-      `balance_at` REVOLVING joins PLAIN's date-precise cash branch); audit all ~12
-      `classify_account` call sites for no-op. Oracle: byte-identical pre/post parity for a Credit
-      Card account's scalar/map/grid; classifier precedence tests incl. the both-flags pathological
-      type; migration up+down + template rebuild.
+      `balance_at` REVOLVING joins PLAIN's date-precise cash branch); audit every `classify_account`
+      call site for no-op (32 on 2026-09-18, not the ~12 written here; two kind-keyed tables fail
+      loud on a new member: `routes/grid/_shared.py:248`,
+      `ledger_account_service/_counters.py:141`). Its design loop opens on whether REVOLVING is a
+      projection KIND at all now the seam is kind-blind (the trace's question, 2026-09-18). Oracle:
+      byte-identical pre/post parity for a Credit Card account's scalar/map/grid; classifier
+      precedence tests incl. the both-flags pathological type; migration up+down + template rebuild.
 - [ ] **CC0b** `feat(cards): budget.credit_card_params satellite` -- model + migration as specced in
       Architecture; constraint negative controls; inert by design.
 - [ ] **CC0c** `feat(cards): card params setup flow` -- create/update routes + Marshmallow schema
   (percent->fraction `@pre_load`, E-28); `_setup_redirect_url` REVOLVING branch -> cash_detail
   until Phase 6; params-absent dormancy pinned by test.
 
-### Phase 1 -- The revolving balance producer
+### Phase 1 -- The revolving balance producer (DISSOLVED to one leaf, R-CC14, 2026-09-18)
 
-- [ ] **CC1a** `refactor(balance): the card consumes the shared instant-partition fold core` -- per
-      the ratified sequencing X1 lands the shared absorb/reset helper; this step consumes it (if the
-      sequencing changes and X1 has not landed, this step extracts it from
-      `account_posting_service/_walk.py` byte-identically instead, with the walk's own tests as the
-      no-move oracle). Classify any new fenced public fn (W9909 fails closed).
-- [ ] **CC1b** `feat(balance): a card is an event stream -- the revolving fold (additive)` --
-      `balance_at/_revolving.py`: events = anchor facts at assertion instants + settled rows at
-      settle instants (shared civil-date rule) + projected rows forward;
-      `revolving_positions(account, ctx, dates)` + `revolving_period_map` via the shared
-      `window_sample_date`; unwired (the C3a additive discipline); `BalanceContext` clock, no
-      `date.today()`; memo via the injection shape. Oracle: hand-computed matrix -- pre-anchor
-      absorb, settled post-anchor purchase counted (negative control: the cash producer drops the
-      same row, the cash D1 shape, shown to fire), re-anchor reset, projected forward, direct
-      income, payment shadow, evening-Eastern `paid_at` boundary, multi-scenario, reset_pay_periods
-      same-value re-anchor (N-4 shape).
-- [ ] **CC1c** `feat(balance): the seam dispatches REVOLVING to the fold (cutover)` -- four
-      surfaces: `_account_balance_map` REVOLVING arm; scalar reads `revolving_positions` (deletes
-      the CC0a shim); `grid_balance_view` REVOLVING arm = fold map + EMPTY increments (interest is
-      real rows; reconciliation invariant pinned; probe `period_subtotal` semantics first);
-      `liability_owed_at_dates` forward values replace the flat hold. `stale_anchor_warning` returns
-      False for REVOLVING (nothing is dropped anymore). Moved numbers individually explained (the
-      balance README Section 7.1 standard); dev-clone live-render (savings cockpit, grid,
-      obligations, net-worth trend); fence classification tests updated.
+- **CC1a and CC1b are DISSOLVED** (**R-CC14**): the card keeps riding the shipped cash fold
+  (`cash_ledger/_walk.py` + `balance_at/_assertions.py` + `_fold.sample_cumulative`, through
+  `balance_at/_asset_fold.py`), which is the core `CC1a` was to consume and the three-tier stream
+  `CC1b`'s oracle matrix restated; built as written `CC1b` would have been a second walk against the
+  reset semantics the flip deletes. No code; the card inherits the flip by construction.
+- [ ] **CC1c** `feat(balance): the liability band reads the fold's forward values` -- ONE surface:
+      `balance_at/_liability.py`'s flat hold for a non-loan liability (its docstring: "the ONE place
+      that changes"). The other three surfaces the 2026-07-19 entry named are already the fold:
+      `_account_balance_map` has one branch (the configured loan), the scalar and
+      `grid_balance_view` are kind-blind, and `stale_anchor_warning` no longer exists. Moved numbers
+      individually explained (the balance README Section 7.1 standard); dev-clone live-render; fence
+      classification tests updated.
 
 ### Phase 2 -- Statement math (pure, no Flask/db -- the rate_period_engine discipline)
 
@@ -151,7 +150,19 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
       + `load_card_rate_records`; docstring updates; double-submit uniqueness test; pin that the
       loan loaders' account set (LoanParams-driven) never contains the card.
 
-### Phase 3 -- The re-account action, the migration, the deletion
+### Phase 3 -- The charge, the migration, the deletion (the 2026-07-19 re-account shape, see below)
+
+**R-CC15 (2026-09-18) re-opens R-CC1 and R-CC9; the three entries below are the 2026-07-19 shape and
+stand as HISTORY where they move the row or write provenance:** a charge is the plan row's covering
+MOVEMENT on the card, the row never moves, and a card-tender purchase is a movement on the card that
+clears on the card's statement line by line. The shape needs `fk_transaction_entries_parent_account`
+relaxed, a fork the balance chain's design loop hears first (recorded on `X-bi-4`'s entry in the
+balance README); each leaf's own design loop restates its entry. The trace's finding for `CC3b`:
+`paid_at` is a column `X-f1b` deleted -- a settle is `settled_on` + `settled_day_basis_id`,
+`settled_amount` + `settled_basis_id` and the covering movement, written as ONE act the way
+`status_seam.apply_status_change` writes them, and WHICH day a migrated pair settles on is the
+ruling `CC3b` owes (13 of the 14 link-less Credit rows were undated on the 2026-09-12 restore); its
+in-migration postings are redundant with the deploy resync.
 
 - [ ] **CC3a** `feat(cards): charge-to-card (additive)` -- migration:
       `transactions.charged_from_account_id` (NULL FK SET NULL, partial index) = undo provenance.
@@ -257,9 +268,9 @@ them, and the four `Grid / companion hard requirements` taken the same day are `
 
 Card cockpit page (statement hero, close/due chips, min due, grace state, utilization vs limit, APR
 history, rewards chip + redeem, payment setup/track) replacing cash_detail for REVOLVING; grid
-affordances (charge picker popover, card badge replacing CC/payback badges, the ghost-row
-requirement above); savings cockpit tile states; palette polish. Every screen through the
-`shekel-design` loop with its own dev-clone live-verify.
+affordances (charge picker popover, card badge replacing CC/payback badges, what the source grid
+shows once `CC3a`'s loop answers re-opened R-CC9); savings cockpit tile states; palette polish.
+Every screen through the `shekel-design` loop with its own dev-clone live-verify.
 
 ## Consumer inventory (cutover checklist; grep-verified 2026-07-19)
 
@@ -286,7 +297,7 @@ state-machine, carry-forward, posting-lifecycle suites asserting Credit shapes.
 **The standard is `verification.md`**, one copy for every arc; what every commit owes is
 `CLAUDE.md`'s Definition of Done. This section states only what is SPECIFIC to this arc.
 
-- **The Phase 1 cutover and the Phase 3 migration are live-render gates**: on the dev clone, before
+- **`CC1c`'s cutover and the Phase 3 migration are live-render gates**: on the dev clone, before
   landing, render the grid on the card, the savings cockpit, obligations, the net-worth trend and
   the balance sheet. Every moved number is individually explained and signed off.
 - **End-to-end acceptance on the dev clone**, one walk: create card + params -> charge a projected
