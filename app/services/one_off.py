@@ -339,8 +339,9 @@ def restate_price(row: Transaction, amount: Decimal) -> None:
     -- priced by the definition, carrying no flag, which is what
     :func:`place_row_of` writes at birth -- is idempotent on a row never
     detached and heals a detached one on its next TYPED FIGURE (a rename, a
-    flag or a date edit alone leaves it detached).  What stays behind for a
-    residue row nobody re-prices is the cutover migration's (``X-bi-7d``).
+    flag or a date edit alone leaves it detached).  A residue row nobody
+    re-priced by the cutover was re-attached by its migration
+    (``X-bi-7d-2``, ruling **R-BAL37**; 0 on the 2026-09-18 restore).
 
     Args:
         row: A placed :class:`~app.models.transaction.Transaction`, its

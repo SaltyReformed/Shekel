@@ -24,11 +24,11 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
 from app.exceptions import BaselineMissingError
 
-from app import ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum, TxnTypeEnum
+from app.enums import PostingKindEnum, PostingSourceEnum
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.services import ledger_report_service
@@ -39,8 +39,6 @@ from app.utils.dates import pay_period_range_label
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_cash_transaction,
-    legacy_link_less_row_of,
-    settle_cash_row,
     create_settled_transfer,
     last_covered_day,
     linked_ledger_account,
@@ -704,40 +702,40 @@ class TestDisplayLabels:
             assert report.expense.total == Decimal("100.00")
 
     def test_orphaned_category_uses_snapshot_label(self, app, db, seed_user):
-        """Deleting the category leaves the line on its snapshot label.
+        """A category ledger account whose category is gone keeps its snapshot label.
 
-        A $100 Groceries expense posts to the category ledger account; deleting
-        the budget category SET-NULLs the account's ``category_id`` (its
-        ``kind_id`` stays ``category``), so the line falls back to the account's
+        A $100.00 Groceries expense posts to the category ledger; when the
+        budget category's key SET-NULLs the account's ``category_id`` (its
+        ``kind_id`` stays ``category``), the line falls back to the account's
         own "Family: Groceries" snapshot and the amount is untouched.
 
-        **On the LEGACY link-less row, until the cutover** (plan step
-        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
-        definition references the category, ``transaction_templates.
-        category_id`` is RESTRICT, and the delete this case reproduces cannot
-        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
-        or retires this case with it.
+        **The orphan state is STAGED, not reached through a category delete.**
+        Every plan row names a definition since the family's cutover (plan
+        step ``balance:X-bi-7d-2``) and ``transaction_templates.category_id``
+        is RESTRICT, so a category with a settled one-off under it cannot be
+        deleted at all (the category door archives it; the database refuses
+        the delete).  A LEGACY link-less row reached the state through the
+        delete until then.  Production can still hold the state -- accounts
+        orphaned before the cutover, or a category deleted once every row
+        under it was hard-deleted -- so the reader's fallback is graded on
+        the state itself: the SET NULL the key performs, written here.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            settle_cash_row(
-                legacy_link_less_row_of(
-                    seed_user["bootstrap_period"], name="Cash Txn",
-                    amount="100.00", user_id=user_id,
-                    account_id=seed_user["account"].id,
-                    scenario_id=seed_user["scenario"].id,
-                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
+            groceries_id = seed_user["categories"]["Groceries"].id
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("100.00"),
+                category=seed_user["categories"]["Groceries"],
                 settled_on=date(2026, 3, 15),
             )
             db.session.commit()
-
-            groceries = db.session.get(
-                Category, seed_user["categories"]["Groceries"].id,
-            )
-            db.session.delete(groceries)
+            orphaned = db.session.execute(sa.text(
+                "UPDATE budget.ledger_accounts SET category_id = NULL "
+                "WHERE category_id = :cid"
+            ), {"cid": groceries_id}).rowcount
             db.session.commit()
+            assert orphaned == 1
 
             report = ledger_report_service.compute_income_statement(
                 user_id, calendar_for(user_id), StatementWindow("month", month=3, year=2026),

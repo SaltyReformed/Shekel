@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import (
@@ -66,6 +67,7 @@ from tests._test_helpers import (
     typed,
     all_periods,
     cadence_payload,
+    constraint_name_from,
     create_account_of_type,
     create_loan_account,
     current_pay_period,
@@ -2569,10 +2571,10 @@ class TestTemplateHardDelete:
             # (Decimal from string per coding standards).
             assert refreshed.settled_amount == Decimal("2000.00")
 
-    def test_hard_delete_template_bulk_delete_skips_settled_rows(
+    def test_hard_delete_template_bulk_delete_cannot_take_a_settled_row(
         self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):
-        """C21-5: Even if the predicate is bypassed, the bulk delete spares settled rows.
+        """C21-5: Even if the predicate is bypassed, a settled row is not destroyed.
 
         Defense in depth (CRIT-05 / E-22): the predicate fix above
         catches every settled status, but the destructive route is
@@ -2582,16 +2584,21 @@ class TestTemplateHardDelete:
         the guard cannot physically destroy settled financial history.
         This test forces the bypass scenario by monkey-patching
         ``template_has_paid_history`` to return False even when a
-        RECEIVED row exists, then asserts the post-condition: the
-        settled row is still present after the route returns.
+        RECEIVED row exists, then asserts the post-condition.
 
-        ``Transaction.template_id`` is a FK with ``ON DELETE SET NULL``
-        (cited by NAME rather than by line: the line number this carried was
-        already stale, and the 2026-09-06 ``__table_args__`` split moved the
-        surrounding file again), so the surviving
-        RECEIVED row has its ``template_id`` cleared but its financial
-        data -- amount, status, period -- is intact.  The financial
-        history that CRIT-05 was destroying is preserved.
+        **The post-condition is the DATABASE's since the one-definition
+        cutover** (plan step ``balance:X-bi-7d-2``, ruling **R-BAL20**).
+        ``Transaction.template_id`` was ``ON DELETE SET NULL``, so the
+        surviving RECEIVED row lost its link and stood as a zero-link row
+        with its money intact; ``ck_transactions_one_pricing_link`` reads
+        ``= 1`` and the key is ``RESTRICT`` now, so the definition cannot go
+        while a row names it: the ORM nulls the survivor's link ahead of the
+        parent delete, the CHECK refuses that statement, and the WHOLE act
+        rolls back -- the settled row keeps its definition, the Projected
+        row the bulk statement had deleted comes back, and the definition
+        stands.  A raw ``IntegrityError`` rather than a designed refusal,
+        because the guard this test bypasses is the designed one (the
+        ``hard_delete_template`` docstring).
         """
         with app.app_context():
             # Mix: one RECEIVED + one Projected row of the same income
@@ -2613,33 +2620,32 @@ class TestTemplateHardDelete:
             projected_id = projected_paycheck.id
 
             # Force the bypass: predicate lies and says "no history."
-            # The defense-in-depth filter inside the route is what must
-            # save the RECEIVED row.
             monkeypatch.setattr(
                 "app.routes.templates.crud.archive_helpers.template_has_paid_history",
                 lambda _template_id: False,
             )
 
-            resp = auth_client.post(
-                f"/templates/{template_id}/hard-delete",
-                follow_redirects=True,
-            )
-            assert resp.status_code == 200
+            with pytest.raises(IntegrityError) as exc:
+                auth_client.post(
+                    f"/templates/{template_id}/hard-delete",
+                    follow_redirects=True,
+                )
+            assert constraint_name_from(exc.value) == "ck_transactions_one_pricing_link"
+            db.session.rollback()
+            db.session.expire_all()
 
-            # Settled row SURVIVES.  Its template_id is now NULL (FK
-            # ON DELETE SET NULL) because the template itself was
-            # deleted, but the financial data is intact.
+            # Settled row SURVIVES, its definition and its money intact.
             surviving = db.session.get(Transaction, received_id)
             assert surviving is not None
+            assert surviving.template_id == template_id
             assert surviving.status_id == received_status.id
             assert surviving.is_deleted is False
             assert surviving.settled_amount == Decimal("1500.00")
 
-            # Non-settled (Projected) row was deleted by the route, as intended.
-            assert db.session.get(Transaction, projected_id) is None
-
-            # Template itself was deleted (the bypass path completed).
-            assert db.session.get(TransactionTemplate, template_id) is None
+            # The act rolled back WHOLE: the Projected row and the
+            # definition stand too.
+            assert db.session.get(Transaction, projected_id) is not None
+            assert db.session.get(TransactionTemplate, template_id) is not None
 
     def test_list_separates_active_and_archived(self, app, auth_client, seed_user):
         """C-5A.5-15: List page shows active and archived in separate sections."""

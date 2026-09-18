@@ -19,8 +19,9 @@ paycheck's start unless the owner had stated a day (**R-BAL33**); and a
 moved due date carries ``occurs_on`` with it (**R-BAL25**).  A RECURRING
 definition's row keeps every act it had: a typed figure or a period move
 detaches it (OWN, ``is_override``), because that is a statement about one
-occurrence among many.  A link-less row -- a legacy one-off until the
-family's cutover, a CC payback -- keeps its own branch, frozen.
+occurrence among many.  A link-less row -- a CC payback, the one shape this
+door still reaches with no definition since the family's cutover -- keeps
+its own branch, frozen.
 
 Boundary discipline: this writes the loaded row from the request's
 already-schema-loaded ``data``; it issues no query of its own beyond the

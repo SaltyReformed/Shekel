@@ -24,7 +24,6 @@ from app import ref_cache
 from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import NotFoundError
 from app.extensions import db
-from app.models.ref import TransactionType
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import companion_service
@@ -32,10 +31,11 @@ from app.services.auth_service import hash_password
 from app.services.pay_calendar import PayCalendarError, calendar_for
 from tests._test_helpers import (
     capture_sql_statements,
+    create_savings_account,
+    create_transfer,
     figure_source_columns,
     generate_row_of,
     make_expense_template,
-    legacy_link_less_row_of,
     moved_by_the_owner,
     one_off_row_of,
     open_owner_calendar,
@@ -215,65 +215,35 @@ class TestVisibilityFiltering:
         ).transactions
         assert len(txns) == 0
 
-    def test_ad_hoc_transactions_excluded(
+    def test_a_row_with_no_definition_is_hidden(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """A LEGACY link-less row is hidden unless its OWN flag says so.
+        """A transfer's shadows are hidden: nothing states they may be shown.
 
-        With no template to defer to, ``visible_to_companion`` reads the
-        row's own cell, and this row left it at the column's default.  (The
-        sentence here said the template JOIN dropped ad-hoc rows, which was
-        true once and had not been since the outer join of plan step F2.)
-        The row is production's shape until the cutover (X-bi-7d), built on
-        its one transitional home (plan step balance:X-bi-7c, ruling
-        R-BAL59); a one-off placed today reads its DEFINITION's flag, the
-        case below.  7d retires this pair with the own-cell branch.
+        Ruling **R-BAL73**: a row that names no definition -- a transfer
+        shadow, a CC payback -- answers ``False`` to
+        ``visible_to_companion``.  Until the family's cutover (plan step
+        ``balance:X-bi-7d-2``) a legacy link-less one-off stated its own
+        ``companion_visible`` in a cell of the row's and this service read
+        it; the cutover minted every such row a definition (the placed case
+        below) and dropped the cell, so a shadow -- expense leg on the
+        owner's checking, income leg on the savings -- is shown by nothing.
         """
-        expense_type = (
-            db.session.query(TransactionType)
-            .filter_by(name="Expense").one()
+        savings = create_savings_account(
+            seed_user, db.session, "Savings", Decimal("500.00"),
         )
-        category = list(seed_user["categories"].values())[0]
-        legacy_link_less_row_of(
-            seed_periods_today[0], name="Ad-hoc", amount="100.00",
-            user_id=seed_periods_today[0].user_id,
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            transaction_type_id=expense_type.id, category_id=category.id,
+        xfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods_today[0],
         )
         db.session.commit()
+        assert len(xfer.shadow_transactions) == 2
 
         companion = seed_companion["user"]
         txns = companion_service.get_visible_transactions(
             companion.id, period_id=seed_periods_today[0].id,
         ).transactions
         assert len(txns) == 0
-
-    def test_ad_hoc_transactions_included_by_their_own_flag(
-        self, app, db, seed_user, seed_periods_today, seed_companion,
-    ):
-        """A LEGACY link-less row whose own ``companion_visible`` is set is shown.
-
-        The other half of the own-cell rule, at the service door: the route
-        cases in ``test_adhoc_flags`` see it through the page.  On the shape's
-        transitional home, as the case above; 7d retires both.
-        """
-        txn = legacy_link_less_row_of(
-            seed_periods_today[0], name="Shared Dinner", amount="60.00",
-            user_id=seed_periods_today[0].user_id,
-            account_id=seed_user["account"].id,
-            scenario_id=seed_user["scenario"].id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            category_id=list(seed_user["categories"].values())[0].id,
-            companion_visible=True,
-        )
-        db.session.commit()
-
-        companion = seed_companion["user"]
-        txns = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods_today[0].id,
-        ).transactions
-        assert [t.id for t in txns] == [txn.id]
 
     @pytest.mark.parametrize("shown", [True, False])
     def test_a_placed_one_offs_visibility_is_its_definitions(
@@ -304,44 +274,6 @@ class TestVisibilityFiltering:
             companion.id, period_id=seed_periods_today[0].id,
         ).transactions
         assert [t.id for t in txns] == ([txn.id] if shown else [])
-
-    def test_a_generated_rows_own_cell_decides_nothing(
-        self, app, db, seed_user, seed_periods_today, seed_companion,
-    ):
-        """The TEMPLATE decides a generated row's visibility; its cell is dead.
-
-        Two generated rows in one period, each with its own
-        ``companion_visible`` cell set to the OPPOSITE of its template's
-        flag -- the inert write the setter still accepts until the family's
-        cutover deletes the cell (a crafted PATCH could make it until plan
-        step ``balance:X-bi-7b`` dropped the flag from the generated row's
-        schema, BAL-484).  The row under the
-        visible template is shown though its cell says hidden; the row under
-        the hidden template is hidden though its cell says shown.  This is
-        the case that tells the one property apart from a reader of the
-        row's column (plan step ``balance:X-bi-1b``, finding **BAL-482**):
-        on the SQL clause this replaced the answer was the same, and on a
-        filter over the raw cell it would be inverted on both rows.  It is a
-        security case -- the hidden template's row is what a companion must
-        not see.
-        """
-        shown_tpl = _make_template(
-            seed_user, companion_visible=True, name="Groceries",
-        )
-        hidden_tpl = _make_template(
-            seed_user, companion_visible=False, name="Mortgage",
-        )
-        shown = _make_txn(seed_periods_today[0], shown_tpl)
-        hidden = _make_txn(seed_periods_today[0], hidden_tpl)
-        shown.companion_visible = False
-        hidden.companion_visible = True
-        db.session.commit()
-
-        companion = seed_companion["user"]
-        txns = companion_service.get_visible_transactions(
-            companion.id, period_id=seed_periods_today[0].id,
-        ).transactions
-        assert [t.id for t in txns] == [shown.id]
 
     def test_the_filter_costs_no_query_per_row(
         self, app, db, seed_user, seed_periods_today, seed_companion,

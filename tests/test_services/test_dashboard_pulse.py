@@ -41,7 +41,7 @@ from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    legacy_link_less_row_of,
+    create_transfer,
     one_off_row_of,
     record_paydays_across_a_hole,
     rhythm_of,
@@ -112,25 +112,32 @@ def _add_expense(
     return txn
 
 
-def _legacy_undated_expense(db_session, seed_user, period, name, amount):
-    """Create an UNDATED link-less expense -- the pre-7b shape, until the cutover.
+def _undated_transfer_out(db_session, seed_user, period, to_account_name, amount):
+    """Create an UNDATED transfer-out shadow on the checking account.
 
-    The pulse's "anytime this period" shelf exists for rows with no due date,
-    and since plan step balance:X-bi-7b no door writes one: every one-off is
-    dated on its paycheck's start (R-BAL22) and the cutover (X-bi-7d) dates
-    production's 26 undated rows the same way.  Built on the shape's one
-    transitional home (plan step balance:X-bi-7c, ruling R-BAL59); 7d
-    retires the cases that call this with the shape, and the shelf with them
-    if nothing else feeds it.
+    The pulse's "anytime this period" shelf exists for rows with no due date.
+    Every one-off is dated on its paycheck's start since plan step
+    balance:X-bi-7b (R-BAL22) and the cutover (balance:X-bi-7d-2) dated
+    production's 26 undated one-offs the same way, so what still feeds the
+    shelf is a row NO definition prices: a transfer's expense shadow (the
+    unpaid-expense query includes transfer-out shadows, the Gate B4b ruling)
+    made without a due date, which the transfer form leaves optional.  The
+    shadow is named ``Transfer to <to_account_name>`` by the service.
     """
-    txn = legacy_link_less_row_of(
-        period, name=name, amount=Decimal(str(amount)),
-        user_id=period.user_id, account_id=seed_user["account"].id,
-        scenario_id=seed_user["scenario"].id,
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+    savings = create_savings_account(
+        seed_user, db_session, to_account_name, Decimal("500.00"),
+    )
+    xfer = create_transfer(
+        seed_user, db_session, seed_user["account"], savings, period,
+        amount=Decimal(str(amount)),
     )
     db_session.flush()
-    return txn
+    shadow = next(
+        s for s in xfer.shadow_transactions
+        if s.account_id == seed_user["account"].id
+    )
+    assert shadow.due_date is None
+    return shadow
 
 
 def _add_tracked_expense(db_session, seed_user, period, name, estimated):
@@ -1141,17 +1148,18 @@ class TestPulseDueSoon:
         """Dated rows carry day_offset from period start; undated flagged.
 
         Current period 5 starts 2026-03-13.  A bill due 2026-03-22 has
-        day_offset = (03-22 - 03-13).days = 9.  An undated bill carries
-        day_offset None and undated True, and sorts AFTER dated rows.
+        day_offset = (03-22 - 03-13).days = 9.  An undated transfer-out
+        shadow carries day_offset None and undated True, and sorts AFTER
+        dated rows.
         """
         with app.app_context():
             _add_expense(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
                 "Dated bill", "100.00", due_date=date(2026, 3, 22),
             )
-            _legacy_undated_expense(
+            _undated_transfer_out(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
-                "Undated bill", "50.00",
+                "Undated jar", "50.00",
             )
             db.session.commit()
 
@@ -1160,7 +1168,9 @@ class TestPulseDueSoon:
             )
             due_soon = result["due_soon"]
             # Dated first (chronological), undated last.
-            assert [b["name"] for b in due_soon] == ["Dated bill", "Undated bill"]
+            assert [b["name"] for b in due_soon] == [
+                "Dated bill", "Transfer to Undated jar",
+            ]
 
             dated = due_soon[0]
             assert dated["undated"] is False
@@ -1317,18 +1327,18 @@ class TestPulseDueSoonStations:
     ):
         """Undated rows stay off the axis but remain in due_soon (shelf).
 
-        An undated bill has no day_offset, so it forms no station, but it
-        still appears in the flat due_soon list the "anytime this period"
-        shelf renders.
+        An undated transfer-out shadow has no day_offset, so it forms no
+        station, but it still appears in the flat due_soon list the "anytime
+        this period" shelf renders.
         """
         with app.app_context():
             _add_expense(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
                 "Dated", "10.00", due_date=date(2026, 3, 18),
             )
-            _legacy_undated_expense(
+            _undated_transfer_out(
                 db.session, seed_user, seed_periods[_CURRENT_IDX],
-                "Undated", "10.00",
+                "Undated jar", "10.00",
             )
             db.session.commit()
 
@@ -1339,9 +1349,9 @@ class TestPulseDueSoonStations:
             # Only the dated bill forms a station.
             assert len(stations) == 1
             assert stations[0]["visible_items"][0]["name"] == "Dated"
-            # The undated bill is still on the flat list (shelf intact).
+            # The undated shadow is still on the flat list (shelf intact).
             undated = [b for b in result["due_soon"] if b["undated"]]
-            assert [b["name"] for b in undated] == ["Undated"]
+            assert [b["name"] for b in undated] == ["Transfer to Undated jar"]
 
 
 # ── The hero == first chart point identity ──────────────────────────

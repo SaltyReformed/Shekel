@@ -72,6 +72,8 @@ from tests._test_helpers import (
     typed,
     record_paydays_across_a_hole,
     all_periods,
+    one_off_row_of,
+    payback_row_of,
     an_entered_day,
     derived_span,
     eras_of,
@@ -3261,52 +3263,58 @@ class TestResolveConflicts:
             # the $999.99 the owner had typed.
             assert resolved_amount(txn) == Decimal("100.00")
 
-    def test_a_row_whose_TEMPLATE_IS_GONE_is_skipped_not_declared(
+    def test_a_row_that_names_NO_DEFINITION_is_skipped_not_declared(
         self, app, db, seed_user, seed_periods
     ):
-        """A row cannot be handed back to a definition it no longer names.
+        """A row cannot be handed back to a definition it does not name.
 
-        ``fk_transactions_template`` is ON DELETE SET NULL, so a row can
-        outlive its template. Declaring such a row would write exactly the
-        state ledger row **N-440** describes -- ``amount_source_id = template``
-        with no template to read -- which ``_rule_within_definition`` answers
-        TEMPLATE for and ``_stated_amount`` then refuses, in a money path.
+        Declaring such a row would write ``amount_source_id = template`` with
+        no template to read -- the state ledger row **N-440** describes,
+        which ``_rule_within_definition`` answers TEMPLATE for and
+        ``_stated_amount`` then refuses, in a money path.  The row here is a
+        CC payback: it names its credit source and no definition, and since
+        the one-definition cutover (plan step ``balance:X-bi-7d-2``) a
+        transfer shadow and a payback are the only rows with no definition --
+        the orphan this case used to plant (``template_id`` nulled by the
+        SET NULL key) is unstorable under ``ck_transactions_one_pricing_link``
+        at ``= 1``.
 
-        **Unreachable from the route** (the hard delete that orphans a row also
-        404s the Apply POST), so this drives the service entry directly: the
-        guard is defence in depth for a published function, and a guard nothing
-        exercises is a guard nobody has seen work.
+        **Unreachable from the route** (the Apply POST's conflict set is
+        built by selecting on ``template_id``), so this drives the service
+        entry directly: the guard is defence in depth for a published
+        function, and a guard nothing exercises is a guard nobody has seen
+        work.
         """
         with app.app_context():
-            template = self._make_template_with_rule(
-                seed_user, EVERY_PERIOD
+            envelope = one_off_row_of(
+                seed_periods[0], name="Card envelope", amount="200.00",
+                user_id=seed_user["user"].id, account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                is_envelope=True,
             )
-            created = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_period_ids(
-                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
-                ), seed_user["scenario"].id,
+            payback = payback_row_of(
+                db.session, seed_user, envelope, Decimal("999.99"),
+                seed_periods[0].start_date,
             )
+            payback.is_override = True
             db.session.flush()
-
-            txn = created[0]
-            txn.is_override = True
-            state_own_amount(txn, Decimal("999.99"))
-            # The orphan state the FK produces.
-            txn.template_id = None
-            db.session.flush()
+            assert payback.template_id is None
+            assert payback.amount_source_id is None
 
             recurrence_engine.resolve_conflicts(
-                [txn.id], action="update",
+                [payback.id], action="update",
                 user_id=seed_user["user"].id,
             )
             db.session.flush()
-            db.session.refresh(txn)
+            db.session.refresh(payback)
 
             # Untouched: still the owner's figure, still flagged, never
             # declared -- the one answer that stays true.
-            assert txn.amount_source_id is None
-            assert txn.estimated_amount == Decimal("999.99")
-            assert txn.is_override is True
+            assert payback.amount_source_id is None
+            assert payback.estimated_amount == Decimal("999.99")
+            assert payback.is_override is True
 
     def test_resolve_update_prices_a_past_row_from_ITS_date_not_todays(
         self, app, db, seed_user, seed_periods

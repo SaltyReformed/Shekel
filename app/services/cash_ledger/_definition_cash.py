@@ -159,10 +159,13 @@ def _stated_amount(template, on_date: date, subject: str) -> Decimal:
     if template is None:
         raise AmountUnresolvable(
             f"{subject} names a template that could not be "
-            "loaded, so the definition that states its price is gone. The FK "
-            "is ON DELETE SET NULL, so the database cannot hold this pairing -- "
-            "it is a row whose template was hard-deleted in this same session "
-            "while the row still carried the id."
+            "loaded, so the definition that states its price is gone. The "
+            "database cannot hold this pairing -- it is a row whose template "
+            "was hard-deleted in this same session while the row still "
+            "carried the id, a state only the transfer twin can still reach: "
+            "budget.transfers.transfer_template_id is ON DELETE SET NULL, "
+            "where budget.transactions.template_id has been ON DELETE "
+            "RESTRICT since plan step balance:X-bi-7d-2."
         )
     if not template_amount_service.owns_its_amount(template):
         raise AmountUnresolvable(
