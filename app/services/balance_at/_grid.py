@@ -21,7 +21,7 @@ accrual -- is one
 plan load, one valuation, grouped on the two clocks the identity binds.
 
     balance[p] - balance[p-1]
-        == net[p] + period_timing[p] + book_vs_bank[p]
+        == net[p] + elsewhere[p] + period_timing[p] + book_vs_bank[p]
            + contribution[p] + accrual[p]
 
 The grid used to compute those figures in three independent producer passes a
@@ -31,6 +31,35 @@ only still-UNPAID rows while the balance counted the anchor plus the same rows
 all, and that broke on 8 of 59 real period pairs (worst ``$2,505.17``) the
 moment the balance became a fold (finding N-41).  Reading one row set grouped
 two ways makes the identity a property of the object the template reads.
+
+**The subtotals are the PAYCHECK's, across the owner's cash-flow set, and the
+balance is ONE account's -- so the identity carries ``elsewhere[p]``** (developer
+ruling ``credit_card:R-CC16``, plan step CC-4-1).  A plan item's ``account_id``
+is the account its money is expected to move through, the phone bill that is
+always paid by card being a row ON the card; the grid reads checking and its
+cards as one set (:class:`~app.services.cash_flow_set.CashFlowSet`), so
+``income`` / ``expense`` / ``net`` sum every member's rows -- the balance
+account's through :func:`._cash_periods.period_view_of` and each other member's
+through :func:`._cash_periods.paycheck_legs`, each off ITS OWN assembled fold
+-- while ``balance`` stays the balance account's.  What the paycheck budgets on
+the other members does not move that balance, and ``elsewhere[p]`` names it:
+the other members' expense less their income, the sign that makes the identity
+read forward.  Rendered "On other accounts", it is the figure the ``Credit``
+cheat showed the owner as the Credit rows' total.  It is computed FROM the
+other members' legs, never as a residual of the balance change, for the reason
+:func:`._cash_periods._assemble_figures` gives for its two remainders.  A
+transfer between two members counts ONCE, from the balance line's side
+(ruling ``credit_card:R-CC23``; :mod:`app.services.cash_flow_set`).  On the
+ruling's example -- phone ``$45`` on the card, grocery ``$500`` on checking, a
+``$165`` checking -> card payment in the same paycheck -- Total Expenses reads
+``$710``, Net ``-$710``, On other accounts ``+$45``, and checking's balance
+moves ``-$665``.  A one-member set (no cards) carries ``elsewhere = 0.00`` in
+every column and the R-O rule hides the row, so the RENDER of such an owner's
+grid is byte-for-byte what it was before this step (measured on a production
+clone, 2026-09-18); the record itself gained the field, and its three
+subtotals are now rounded once each over the composed legs rather than read
+off the cash column verbatim -- equal under the seam's standing premise that
+every leg is cent-quantized.
 
 **The identity carries FOUR terms, not three** (ruling R-W as corrected at
 X-g2b, measured at ruling R-AH).  A modelled asset has TWO modelled tiers, and
@@ -107,8 +136,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.models.account import Account
+from app.services.cash_flow_set import CashFlowSet, far_legs_of
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.utils.money import round_money
 
 from ._context import BalanceContext
 from . import _asset_fold, _cash_fold, _cash_periods
@@ -123,20 +153,23 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
 
     The per-period unit of :class:`GridBalanceView`, and ruling R-K's row set
     expressed as one record: the same valued rows grouped on the budget clock
-    (:attr:`income` / :attr:`expense` / :attr:`net`), what the cash clock adds
+    (:attr:`income` / :attr:`expense` / :attr:`net`), what the paycheck budgets
+    on the set's OTHER accounts (:attr:`elsewhere`), what the cash clock adds
     on top of that (:attr:`period_timing`), what the user's own balance
     readings booked (:attr:`book_vs_bank`), the two modelled tiers
-    (:attr:`contribution` and :attr:`accrual`), and the balance all five roll
+    (:attr:`contribution` and :attr:`accrual`), and the balance all six roll
     forward to (:attr:`balance`).
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because this
+    Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed because this
     is the flat per-period bundle the grid's footer renders row by row
     (``columns[period.period_id].<figure>``, one row per attribute); every
     field is a line on screen and the identity below names all of them, so
     nesting a sub-bundle would add an access level no template reads as a unit
     while splitting one visible row set across two objects.  It reached 8 at
     plan step S1-c, when ruling R-DH (f) split the single "Timing & true-ups"
-    remainder into the two figures a user can actually act on.
+    remainder into the two figures a user can actually act on, and 9 at plan
+    step CC-4-1, when the subtotals became the paycheck's across the owner's
+    cash-flow set and the balance stayed one account's.
 
     Attributes:
         balance: The projected end balance the surface displays, cent-quantized
@@ -157,7 +190,18 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
-            with.
+            with.  **The three subtotals are the PAYCHECK's** (ruling
+            ``credit_card:R-CC16``): every member of the owner's cash-flow set
+            contributes its rows, the balance account's through
+            :func:`._cash_periods.period_view_of` and each card's through
+            :func:`._cash_periods.paycheck_legs`.
+        elsewhere: What the paycheck budgets on the set's OTHER accounts --
+            their expense less their income, cent-quantized -- rendered "On
+            other accounts".  The term that reconciles a paycheck-wide
+            ``net`` with a one-account ``balance``: ``net + elsewhere`` is the
+            balance account's own budget-clock net.  ``0.00`` in every column
+            for an owner with no card, and for a balance line outside the set.
+            Computed from the other members' legs, never as a residual.
         period_timing: Ruling R-K's remainder from the ROWS, rendered as
             "Period timing": money budgeted to this period that moved in
             another (or has not moved yet), and money that moved here but is
@@ -211,6 +255,7 @@ class GridColumn:  # pylint: disable=too-many-instance-attributes
     period_timing: Decimal
     book_vs_bank: Decimal
     # pylint: enable=duplicate-code
+    elsewhere: Decimal
     contribution: Decimal
     accrual: Decimal
 
@@ -258,7 +303,15 @@ class GridRowFlags:
     timing row beside them, which reads as "measured and zero" for a fact that
     was never in question.  R-O's rule is per ROW, so it is asked per row.
 
+    **The "On other accounts" row takes the same rule** (plan step CC-4-1): it
+    is a reconciliation row like the two remainders, present for the window
+    when any visible column budgets something on another member of the
+    owner's cash-flow set, and absent -- not a permanently-``$0.00`` line --
+    for the owner with no card, which is why the grid of such an owner is
+    byte-for-byte what it was before the term existed.
+
     Attributes:
+        elsewhere: Whether the "On other accounts" row renders.
         period_timing: Whether ruling R-O's "Period timing" row renders.
         book_vs_bank: Whether the "Book vs bank" row renders.
         contribution: Whether the "Contributions" row renders.
@@ -266,6 +319,7 @@ class GridRowFlags:
             "Growth" / "Appreciation" by the route, ruling R-AI).
     """
 
+    elsewhere: bool
     period_timing: bool
     book_vs_bank: bool
     contribution: bool
@@ -351,6 +405,9 @@ class GridBalanceView:
         # R-AJ (c)).  The comparison itself IS ruling R-O's visibility rule and
         # stays load-bearing -- only the impossible-shape half went.
         return GridRowFlags(
+            elsewhere=any(
+                column.elsewhere != _ZERO_MONEY for column in columns
+            ),
             period_timing=any(
                 column.period_timing != _ZERO_MONEY for column in columns
             ),
@@ -366,23 +423,78 @@ class GridBalanceView:
         )
 
 
+def _elsewhere_legs(
+    cash_flow: CashFlowSet,
+    ctx: BalanceContext,
+    window: PeriodWindow,
+) -> "dict[int, tuple[Decimal, Decimal]]":
+    """Return ``{period_id: (income, expense)}`` budgeted on the set's other members.
+
+    One assembled fold per other member -- its own walk, plan and valuation,
+    the ONE producer of a budget leg (rule 14) -- reduced by
+    :func:`._cash_periods.paycheck_legs`, less the far legs of the set's
+    intra-set transfers (ruling ``credit_card:R-CC23``), which
+    :func:`~app.services.cash_flow_set.far_legs_of` answers ONCE for every
+    member here.  Summed across members, SIGNED and UNROUNDED, in
+    :func:`._cash_periods._budget_legs`'s contract; the caller rounds once.
+
+    Args:
+        cash_flow: The set; its :attr:`~app.services.cash_flow_set.CashFlowSet.others`
+            are the members summed.
+        ctx: The read pass.
+        window: The reported periods.
+
+    Returns:
+        The summed legs, total over *window* (zeros for no other member).
+    """
+    income = {period.period_id: _ZERO_MONEY for period in window}
+    expense = {period.period_id: _ZERO_MONEY for period in window}
+    far = far_legs_of(cash_flow)
+    for member in cash_flow.others:
+        legs = _cash_periods.paycheck_legs(
+            _cash_fold.assembled_fold(member, ctx), window, far,
+        )
+        for period_id, (member_income, member_expense) in legs.items():
+            income[period_id] += member_income
+            expense[period_id] += member_expense
+    return {
+        period_id: (income[period_id], expense[period_id])
+        for period_id in income
+    }
+
+
 def _assemble_columns(
     window: PeriodWindow,
     figures: "OrderedDict[int, _cash_periods.CashPeriodFigures]",
     modelled: "OrderedDict[int, _asset_fold.AssetPeriodFigures]",
+    elsewhere: "dict[int, tuple[Decimal, Decimal]]",
 ) -> "OrderedDict[int, GridColumn]":
-    """Combine each period's cash and modelled figures into one :class:`GridColumn`.
+    """Combine each period's cash, modelled and elsewhere figures into one :class:`GridColumn`.
+
+    **The subtotals are composed here and rounded once** (plan step CC-4-1):
+    the balance account's figures arrive cent-quantized from
+    :func:`._cash_periods._assemble_figures`, and the other members' legs are
+    sums of cent-quantized legs, so every ``round_money`` below is a no-op on
+    real data and ``round(a) + round(b) == round(a + b)`` holds -- the same
+    argument that function makes for its two remainders, and what keeps the
+    identity exact on the DISPLAYED figures: ``net + elsewhere`` equals the
+    balance account's own ``cash.net`` to the cent, so
+    ``balance[p] - balance[p-1] == net + elsewhere + period_timing +
+    book_vs_bank + contribution + accrual`` is a property of this record.
 
     Args:
         window: The pay periods to report.
         figures: The period view's
-            :class:`._cash_periods.CashPeriodFigures` per period (the
-            budget-clock subtotals and ruling R-K's two remainders).  Total
-            over *window*.
+            :class:`._cash_periods.CashPeriodFigures` per period (the balance
+            account's budget-clock subtotals and ruling R-K's two remainders).
+            Total over *window*.
         modelled: The :class:`._asset_fold.AssetPeriodFigures` per period -- the
             DISPLAYED balance and the two modelled tiers.  Total over *window*,
             so a missing key is a defect rather than a blank column; it is
             indexed, not ``.get``.
+        elsewhere: The other members' ``(income, expense)`` per period
+            (:func:`_elsewhere_legs`), signed and unrounded.  Total over
+            *window*; indexed for the same reason.
 
     Returns:
         ``OrderedDict`` period id -> :class:`GridColumn`, one per requested
@@ -392,13 +504,17 @@ def _assemble_columns(
     for period in window:
         cash = figures[period.period_id]
         tiers = modelled[period.period_id]
+        other_income, other_expense = elsewhere[period.period_id]
+        income = round_money(cash.income + other_income)
+        expense = round_money(cash.expense + other_expense)
         columns[period.period_id] = GridColumn(
             balance=tiers.balance,
-            income=cash.income,
-            expense=cash.expense,
-            net=cash.net,
+            income=income,
+            expense=expense,
+            net=round_money(income - expense),
             period_timing=cash.period_timing,
             book_vs_bank=cash.book_vs_bank,
+            elsewhere=round_money(other_expense - other_income),
             contribution=tiers.contribution,
             accrual=tiers.accrual,
         )
@@ -406,23 +522,39 @@ def _assemble_columns(
 
 
 def grid_balance_view(
-    account: Account, ctx: BalanceContext,
+    cash_flow: CashFlowSet, ctx: BalanceContext,
 ) -> GridBalanceView:
-    """Return the kind-aware cash-flow-surface view for *account*.
+    """Return the kind-aware cash-flow-surface view for a cash-flow set.
 
-    The single entry the budget grid reads to project one account's column set.
-    ONE :func:`~app.services.balance_at._cash_fold.assembled_fold` supplies every
-    figure the surface renders: :func:`._cash_periods.period_view_of` regroups it
-    into the income and expense subtotals and ruling R-K's remainder, and
+    The single entry the budget grid reads to project its column set.  ONE
+    :func:`~app.services.balance_at._cash_fold.assembled_fold` of the set's
+    BALANCE account supplies its balance and its own subtotals:
+    :func:`._cash_periods.period_view_of` regroups it into the income and
+    expense subtotals and ruling R-K's remainder, and
     :func:`._asset_fold.resolve` resolves the modelled tiers over the SAME
-    record for the balance, the accrual and the contribution.  So
+    record for the balance, the accrual and the contribution.  Each OTHER
+    member of the set (ruling ``credit_card:R-CC16``; plan step CC-4-1) is
+    assembled ONCE too and contributes its rows to the subtotals through
+    :func:`._cash_periods.paycheck_legs`, its intra-set far legs excluded
+    (ruling ``credit_card:R-CC23``).  So
 
         balance[p] - balance[p-1]
-            == net[p] + period_timing[p] + book_vs_bank[p]
+            == net[p] + elsewhere[p] + period_timing[p] + book_vs_bank[p]
                + contribution[p] + accrual[p]
 
     is a property of the construction rather than an invariant a test polices
     across three independent producer passes (finding N-48).
+
+    **It takes the SET as one value** (the read pass is the other): the route
+    hands over what the resolver built, and a single-account reader -- the
+    cross-page equality tests, the anchor surfaces, the balance baseline
+    harness -- says so with :meth:`~app.services.cash_flow_set.CashFlowSet.single`,
+    a legitimate set of one under which ``elsewhere`` is ``0.00`` in every
+    column and the subtotals are that account's own.  It took ``(account,
+    ctx)`` until plan step CC-4-1; a first cut kept that signature and grew an
+    ``others=()`` tail, so the route destructured the set it held and this
+    rebuilt it -- one value, two spellings across a boundary, which the
+    leaf's adversarial review named.
 
     **The sharing is the point, and it is what plan step X-g2a built**
     (Section 4's constraint under ruling R-AA).  Reaching the replay through its
@@ -473,9 +605,11 @@ def grid_balance_view(
     kind, which is how one account could be valued on two income bases.
 
     Args:
-        account: The account to project (the grid account; any kind).  The
-            replay reads its parameters to decide which modelled tiers it has;
-            no branch here consults its kind.
+        cash_flow: The owner's :class:`~app.services.cash_flow_set.CashFlowSet`.
+            Its balance account is projected (any kind: the replay reads its
+            parameters to decide which modelled tiers it has, and no branch
+            here consults its kind); its other members' rows join the
+            subtotals and their balances do not.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             **Its ``reported_periods()`` is the column set** since plan step
             C2-c -- the owner's whole saved calendar, in payday order, each
@@ -506,6 +640,7 @@ def grid_balance_view(
         # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
+    account = cash_flow.balance
     folded = _cash_fold.assembled_fold(account, ctx)
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
@@ -524,7 +659,10 @@ def grid_balance_view(
         window,
     )
     return GridBalanceView(
-        columns=_assemble_columns(window, view.columns, modelled),
+        columns=_assemble_columns(
+            window, view.columns, modelled,
+            _elsewhere_legs(cash_flow, ctx, window),
+        ),
     )
 
 

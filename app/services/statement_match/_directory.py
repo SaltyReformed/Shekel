@@ -339,8 +339,11 @@ class MerchantDirectory:
 def merchant_activity(account_id: int) -> "dict[int, MerchantActivity]":
     """Return what this account's recorded lines say about each merchant.
 
-    ONE grouped read over ``budget.bank_statement_lines``, served by
-    ``idx_bank_statement_lines_account_merchant``.
+    ONE grouped read over ``budget.bank_statement_lines`` by each line's
+    merchant -- the read over its sightings that
+    :attr:`~app.models.statement_import.BankStatementLine.merchant_id` is
+    (ruling **R-BI16**), so a line two imports showed under two words counts
+    ONCE, for the merchant the earliest surviving sighting names.
 
     Args:
         account_id: The account whose lines to measure.  ``bank_statement_lines``
@@ -363,7 +366,10 @@ def merchant_activity(account_id: int) -> "dict[int, MerchantActivity]":
         )
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant_id.isnot(None),
+            # Pylint: ``no-member`` -- a false positive on a hybrid: pylint
+            # infers the getter function, where at class level this is the
+            # sealed ``column_property``'s own expression (R-BI16).
+            BankStatementLine.merchant_id.isnot(None),  # pylint: disable=no-member
         )
         .group_by(BankStatementLine.merchant_id)
         .all()

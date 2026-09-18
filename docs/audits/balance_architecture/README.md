@@ -313,8 +313,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       the latest assertion's own day so that assertion clears it and the balance line does not move
       (R-DH (a)); amount DERIVED from the postings OTHER than itself until the owner categorises
       it; offered only where a `statement_imports` row covers the span at a zero residue -- which
-      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is
-      bounded by an import's LINE DAYS rather than the period its file declares (**N-434**). The
+      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is bounded by the window an import DECLARES (**R-BAL71**, `bank_import:X-f6b-1`; N-434 closed there). The
       posted ledger, the Book-vs-bank row and the income statement all move. Closes **N-171** --
       a figure this step must RE-DERIVE rather than quote, because the plug is the net of every
       correction and moves with each one: `$1,776.88` when this entry was written and `$2,370.02`
@@ -1030,8 +1029,15 @@ section 4, under their unchanged ids.*
   asymmetry the horizon always had (loans amortize, checking holds flat) ends with it. Reward tier: a
   figure the developer reads moves to the correct one. Minted 2026-09-18 at CC-1's tick.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
-  The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
-  `is_override` term; the undated arm keeps the term because its index does. Script and test only.
+  The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its `is_override` term;
+  the undated arm keeps the term because its index does. Script and test only.
+* [ ] **X-cr** `test(conftest): each request runs in its own app context` -- closes **BAL-521**: the `db`
+  fixture's one app context makes Flask reuse `g` across a test's requests, and Flask-Login's cached
+  principal then makes a second client's every request run as the FIRST login's user (seven two-client
+  tests, three of them IDOR or security tests, green for the wrong reason). The test client pushes a fresh app
+  context per request, as production does; the outer context stays for `db.session`. A test-only hook
+  clearing the login cache was rejected (developer 2026-09-18): it leaves every other `g`-cached value
+  shared. First upkeep row below the horizon by the developer's word.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.

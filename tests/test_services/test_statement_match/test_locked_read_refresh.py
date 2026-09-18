@@ -13,16 +13,21 @@ only the attributes an existing instance has NOT loaded
 fetched the row the lock now holds and the door decided on the one from
 before it.
 
-The one concurrent writer of a recorded line is a re-import's NULL-fill
-(``statement_import._record._absorb_gained_facts``: running balance, source
-category, external id, transaction day, merchant), and two of those columns
-reach every door's decision: ``merchant_id`` is the rule lookup at the create
-and income doors, the deposit's category placement at the income door and the
-skip door's account-payment refusal (ruling **bank_import:R-JI**);
-``transaction_on`` is the day the create door files the purchase on and the
-day the match door re-dates one to (``MatchDays.of``, ruling **R-FW**).  The
-door cases below take one door per column -- the skip and the create -- and
-the read cases cover the other two, which take the same helper.
+The one concurrent writer of a recorded line is a re-import, and since plan
+step ``bank_import:X-f6b-1b`` (ruling **R-BI16**) it writes ONE thing: a new
+SIGHTING carrying what the re-export stated -- the merchant its word names
+and its transaction day among them; the line itself is not written.  Both
+facts reach a door's decision: ``merchant_id`` -- the earliest sighting
+naming one, a ``column_property`` loaded with the row -- is the rule lookup
+at the create and income doors, the deposit's category placement at the
+income door and the skip door's account-payment refusal (ruling
+**bank_import:R-JI**); ``transaction_on`` -- the earliest day any sighting
+states, read off the eager ``sightings`` collection -- is the day the create
+door files the purchase on and the day the match door re-dates one to
+(``MatchDays.of``, ruling **R-FW**).  So the refresh must reach the line's
+loaded PROJECTIONS and its eager ``sightings`` collection both.  The door
+cases below take one door per fact -- the skip and the create -- and the read
+cases cover the other two, which take the same helper.
 
 The remedy is one clause at the one spelling of the lock:
 :func:`~app.services.statement_match._resolve.locked_for_write` composes
@@ -30,10 +35,11 @@ The remedy is one clause at the one spelling of the lock:
 the lock is what the lock protects.  Two layers of case:
 
 1. **The READ, at each site that returns a row.**  Hydrate through the real
-   pre-lock reader, fill the row from a second connection, read it locked:
-   the instance handed back is the hydrated one, refreshed -- its columns and
-   its joined merchant both.  FIRING CONTROL: delete ``populate_existing()``
-   from ``locked_for_write`` and both cases read the hydrated ``NULL``.
+   pre-lock reader, land the sighting from a second connection, read it
+   locked: the instance handed back is the hydrated one, refreshed -- its
+   two merchant projections and its sightings both.  FIRING CONTROL: delete
+   ``populate_existing()`` from ``locked_for_write`` and both cases read the
+   hydrated ``NULL``.
 2. **The DOOR, in the pass.**  The derivation, the fill, then the press: the
    skip door refuses a line whose merchant now pays an account the owner
    holds, and the create door files a purchase on the day the fill stated.
@@ -79,6 +85,7 @@ from ._builders import (
 )
 
 _TABLE = "budget.bank_statement_lines"
+_SIGHTINGS = "budget.statement_line_sightings"
 
 #: What SECU files a card payment under, verbatim -- the one string
 #: :data:`~app.services.statement_match._vocabulary.ACCOUNT_PAYMENT_CATEGORIES`
@@ -87,43 +94,66 @@ _TABLE = "budget.bank_statement_lines"
 _CARD_PAYMENT = "Financial Services/Credit Card Payment"
 
 
-def _a_re_import_fills(db, line_id, **columns):
-    """Land a re-import's NULL-fill on *line_id* from a SECOND connection.
+def _a_re_import_fills(
+    db, line, again, *, merchant_id=None, transaction_on=None,
+):
+    """Land a re-import's write on *line* from a SECOND connection.
 
-    ``_absorb_gained_facts`` writes exactly this: a column the recorded row
-    holds ``NULL`` on, set to what a later export states.  Written as the
-    ``UPDATE`` the ORM flushes it to, on a connection of its own that commits
-    -- a committed write the test session's open transaction did not make,
-    which is the shape a re-import landing between the page's derivation and
-    its press has.  The audit trigger tolerates the unbound actor (its
-    ``current_setting(..., true)`` reads ``NULL``), which is the documented
-    direct-write path.
+    ``_write_records`` writes exactly this for a held line: the re-import's
+    SIGHTING carrying what the later export stated -- the merchant its word
+    names and its transaction day (ruling **R-BI16**; the line itself is not
+    written).  Written as the statement the ORM flushes it to, on a
+    connection of its own that commits -- a committed write the test
+    session's open transaction did not make, which is the shape a re-import
+    landing between the page's derivation and its press has.  The audit
+    trigger tolerates the unbound actor (its ``current_setting(..., true)``
+    reads ``NULL``), which is the documented direct-write path.
 
     Args:
         db: The extension, for its engine.
-        line_id: The recorded line.
-        **columns: The columns to fill, by name, with the values a later
-            export stated.
+        line: The recorded line.
+        again: The COMMITTED re-import whose sighting lands.
+        merchant_id: The key the re-export's word names, or ``None`` for a
+            source naming none.
+        transaction_on: The day the re-export stated, or ``None``.
     """
-    assignments = ", ".join(f"{column} = :{column}" for column in columns)
     with db.engine.connect() as connection:
         connection.execute(
-            text(f"UPDATE {_TABLE} SET {assignments} WHERE id = :id"),
-            {"id": line_id, **columns},
+            text(
+                f"INSERT INTO {_SIGHTINGS} (account_id, line_id, import_id, "
+                "description, merchant_id, transaction_on) "
+                "VALUES (:a, :l, :i, :d, :m, :t)"
+            ),
+            {
+                "a": line.account_id, "l": line.id, "i": again.id,
+                "d": "POINT OF SALE DEBIT L340 THING", "m": merchant_id,
+                "t": transaction_on,
+            },
         )
         connection.commit()
 
 
 def _the_row(db, line_id):
-    """Return ``(merchant_id, transaction_on)`` as the DATABASE holds them.
+    """Return ``(merchant_id, earliest stated day)`` as the DATABASE holds them.
 
     The session's own statement, so under ``READ COMMITTED`` it sees the
     second connection's commit -- which is what makes the ORM instance's
     stale value a fact about the identity map rather than about the write
-    not having landed.
+    not having landed.  Both are HAND-SPELLED oracles, independent of the
+    producers under test and stating the same rules: the merchant is the
+    earliest sighting naming one by the import act order, the day the
+    earliest any sighting states.
     """
     return db.session.execute(
-        text(f"SELECT merchant_id, transaction_on FROM {_TABLE} WHERE id = :id"),
+        text(
+            f"SELECT (SELECT s2.merchant_id FROM {_SIGHTINGS} s2 "
+            "JOIN budget.statement_imports i ON i.id = s2.import_id "
+            "WHERE s2.line_id = l.id AND s2.merchant_id IS NOT NULL "
+            "ORDER BY i.created_at, i.id LIMIT 1), "
+            f"min(s.transaction_on) FROM {_TABLE} l "
+            f"JOIN {_SIGHTINGS} s ON s.line_id = l.id "
+            "WHERE l.id = :id GROUP BY l.id"
+        ),
         {"id": line_id},
     ).one()
 
@@ -154,6 +184,7 @@ class TestALockedReadHandsBackTheRowTheLockHolds:
             ``(merchant, stated_on)`` -- what the fill wrote.
         """
         merchant = a_merchant(seed_user, "Amazon")
+        again = an_import(seed_user)
         db.session.commit()
         stated_on = line.posted_on - timedelta(days=3)
         account_id = seed_user["account"].id
@@ -164,10 +195,10 @@ class TestALockedReadHandsBackTheRowTheLockHolds:
         hydrated = [each for each in undisposed_lines(account_id) if each.id == line.id]
         assert hydrated == [line] and hydrated[0] is line
         assert line.merchant_id is None and line.transaction_on is None
-        assert line.merchant is None
+        assert line.merchant_name is None
 
         _a_re_import_fills(
-            db, line.id, merchant_id=merchant.id, transaction_on=stated_on,
+            db, line, again, merchant_id=merchant.id, transaction_on=stated_on,
         )
 
         # The write LANDED and this transaction can see it; only the ORM
@@ -198,10 +229,9 @@ class TestALockedReadHandsBackTheRowTheLockHolds:
             assert read is line, "the locked read returned a second instance"
             assert read.merchant_id == merchant.id
             assert read.transaction_on == stated_on
-            # The joined-eager half: ``merchant_name`` reads the relationship,
-            # not the key, so a refresh of the columns alone would still name
-            # the line by its description on the receipt.
-            assert read.merchant is merchant
+            # The second projection: ``merchant_name`` is its own subquery,
+            # loaded beside the key, so a refresh that reached one alone
+            # would still name the line by its description on the receipt.
             assert read.merchant_name == "Amazon"
             db.session.rollback()
 
@@ -224,7 +254,7 @@ class TestALockedReadHandsBackTheRowTheLockHolds:
             assert read is line, "the locked read returned a second instance"
             assert read.merchant_id == merchant.id
             assert read.transaction_on == stated_on
-            assert read.merchant is merchant
+            assert read.merchant_name == "Amazon"
             db.session.rollback()
 
 
@@ -264,6 +294,7 @@ class TestTheDoorDecidesOnTheFilledLine:
                 source_category=_CARD_PAYMENT,
             )
             card = a_merchant(seed_user, "Capital One Credit Card")
+            again = an_import(seed_user)
             db.session.commit()
 
             scope = a_scope(seed_user)
@@ -273,7 +304,7 @@ class TestTheDoorDecidesOnTheFilledLine:
             assert offered[card_payment.id] is None
             assert card_payment.merchant_id is None
 
-            _a_re_import_fills(db, card_payment.id, merchant_id=card.id)
+            _a_re_import_fills(db, card_payment, again, merchant_id=card.id)
             assert _the_row(db, card_payment.id)[0] == card.id
 
             outcome = statement_match.apply_reviewed(
@@ -311,6 +342,7 @@ class TestTheDoorDecidesOnTheFilledLine:
             line = _a_line_the_first_export_named_no_merchant_on(
                 seed_user, merchant="Amazon",
             )
+            again = an_import(seed_user)
             db.session.commit()
             posted = line.posted_on
             made_on = posted - timedelta(days=3)
@@ -320,7 +352,7 @@ class TestTheDoorDecidesOnTheFilledLine:
             assert {each.line_id for each in review.unmatched} == {line.id}
             assert line.transaction_on is None
 
-            _a_re_import_fills(db, line.id, transaction_on=made_on)
+            _a_re_import_fills(db, line, again, transaction_on=made_on)
             assert _the_row(db, line.id)[1] == made_on
 
             outcome = statement_match.apply_reviewed(

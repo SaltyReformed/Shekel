@@ -28,6 +28,7 @@ from __future__ import annotations
 import sys
 
 from app import create_app
+from app.services.cash_flow_set import CashFlowSet
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
@@ -114,7 +115,7 @@ def _apply(rule, entries, observed_by_account, instant_by_account):
 
 def _columns(account, user_id):
     """Return ``{period_id: balance}`` from the grid's own producer."""
-    view = grid_balance_view(account, BalanceContext.build(user_id))
+    view = grid_balance_view(CashFlowSet.single(account), BalanceContext.build(user_id))
     return {pid: col.balance for pid, col in view.columns.items()}
 
 

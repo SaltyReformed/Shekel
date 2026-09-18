@@ -77,6 +77,7 @@ from app.services import (
     investment_dashboard_service,
     savings_dashboard_service,
 )
+from app.services.cash_flow_set import CashFlowSet
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
@@ -296,7 +297,7 @@ def _grid_value(ctx):
     for the cash matrix and both modelled locks below.
     """
     view = balance_at.grid_balance_view(
-        ctx["account"], _bctx(ctx),
+        CashFlowSet.single(ctx["account"]), _bctx(ctx),
     )
     return view.columns[ctx["anchor_period"].id].balance
 
@@ -311,7 +312,7 @@ def _grid_current_period_value(ctx):
     ``grid_balance_view`` entry the route calls; only the column differs.
     """
     view = balance_at.grid_balance_view(
-        ctx["account"], _bctx(ctx),
+        CashFlowSet.single(ctx["account"]), _bctx(ctx),
     )
     current = current_pay_period(ctx["user_id"])
     return view.columns[current.id].balance
@@ -660,7 +661,7 @@ class TestSubtotalReconciliation:
             )
 
             columns = balance_at.grid_balance_view(
-                ctx["account"], _bctx(ctx),
+                CashFlowSet.single(ctx["account"]), _bctx(ctx),
             ).columns
 
             anchor_idx = next(

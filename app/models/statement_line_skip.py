@@ -19,13 +19,14 @@ else leaves the line reading unexplained forever.  The disposition therefore
 needs a store of its own.
 
 **Why it is not a column on the line** (ruling **R-JG**).  Every column on
-:class:`~app.models.statement_import.BankStatementLine` is a fact the SOURCE
-stated, and the re-import path is written on that premise:
-``statement_import._record._absorb_gained_facts`` fills any NULL column from
-what a later export states.  A *the owner skipped this* column would be the
-first column there with no source, and that loop would need a rule excluding it
--- a fence where a separate table needs none.  The line table also carries no
-``user_id``, so who decided would be unrecordable.
+:class:`~app.models.statement_import.BankStatementLine` is the BANK's fact
+-- what every source agrees on -- and what each source said about the line
+is that source's sighting (plan step ``bank_import:X-f6b-1``); the
+re-import path is written on that premise.  A *the owner skipped this*
+column would be the first column there that no bank stated, and every
+reader of the line would need a rule excluding it -- a fence where a
+separate table needs none.  The line table also carries no ``user_id``, so
+who decided would be unrecordable.
 
 **Why it is not append-only** (ruling **R-JG**).  Undoing a skip DELETES the
 row, and the forensic record is kept by infrastructure that already exists:

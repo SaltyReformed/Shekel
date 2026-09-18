@@ -134,6 +134,7 @@ import traceback
 from datetime import date
 
 from app import create_app
+from app.services.cash_flow_set import CashFlowSet
 from app.extensions import db
 from app.models.user import User
 from app.services import balance_at, companion_service, pay_period_service
@@ -336,7 +337,7 @@ def _grid_figures(user_id):
 
     account = resolve_grid_account(user_id, None, None)
     view = (
-        balance_at.grid_balance_view(account, ctx)
+        balance_at.grid_balance_view(CashFlowSet.single(account), ctx)
         if account is not None else balance_at.empty_grid_view()
     )
     visible = _periods_in_range(user_id, calendar, current.period_index, 6)

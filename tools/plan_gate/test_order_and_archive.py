@@ -18,7 +18,7 @@ import _archive as archive
 import _order as order
 import _registry as registry
 from _classes import decomposition_leaf_keys
-from _staging import row_of, stage_a_live_container, with_cell
+from _staging import a_prefix_trap, row_of, stage_a_live_container, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -771,6 +771,29 @@ class TestTheOrderTableIsSorted:
             "balance:X-f4" in p and "INSIDE the order table" in p
             for p in problems
         ), problems
+
+
+class TestTheIdPrefixTrapSpecimenIsANumberContinuation:
+    """``_staging.a_prefix_trap`` grades the NUMBER-continuing trap and nothing else."""
+
+    def test_a_letter_suffixed_follow_up_is_not_the_specimen(self, stage):
+        """A follow-up spelled ``<shipped id>b`` is related, so it never grabs the slot.
+
+        STAGED: an open ``credit_card:CC-1b`` beside SHIPPED ``CC-1``, the live
+        specimen against ``CC-10`` / ``CC-11``.  On 2026-09-18 ``X-f6b-1b``
+        (open, letter-suffixed) followed ``X-f6b-1`` (shipped) into the table
+        ahead of ``CC-1``, the fixture chose that pair, and the leaf derivation
+        -- reading a letter suffix as related, by design -- turned the
+        number-boundary control red over a pair that is no trap at all.
+        """
+        shipped, sharers = a_prefix_trap()
+        assert shipped == "credit_card:CC-1", (shipped, sharers)
+        line = row_of("steps", "| credit_card | CC-1 |")
+        follow_up = with_cell(with_cell(with_cell(
+            line.replace("| credit_card | CC-1 |", "| credit_card | CC-1b |", 1),
+            4, "#999"), 5, "--"), 6, "NOW")
+        stage("steps", line, line + "\n" + follow_up)
+        assert a_prefix_trap() == (shipped, sharers)
 
 
 class TestThePathIsTheLeadingBlockAndTheHorizonIsAKey:

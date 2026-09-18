@@ -1,7 +1,7 @@
 """the card's terms
 
 Revision ID: 97f92340fffc
-Revises: 596408fab6f1
+Revises: 3ef820b7dd52
 Create Date: 2026-09-18
 
 Plan step **credit_card:CC-2** of ``docs/design/credit_card_from_scratch.md``
@@ -57,7 +57,7 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = '97f92340fffc'
-down_revision = '596408fab6f1'
+down_revision = '3ef820b7dd52'
 branch_labels = None
 depends_on = None
 
