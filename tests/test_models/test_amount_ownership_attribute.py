@@ -53,6 +53,13 @@ def _row(seed_user, seed_periods, ownership=None, **overrides):
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
+
+    **BARE on purpose, and past the cutover.**  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the
+    row through a door would grade the door; the shape 7d's pricing-link
+    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
+    builder (a pricing link on every row it stages) rather than any case
+    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()

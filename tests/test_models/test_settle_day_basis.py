@@ -66,11 +66,11 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from tests._test_helpers import (
-    figure_source_columns,
     an_asserted_day,
     an_entered_day,
     an_observed_day,
     append_balance_assertion,
+    figure_source_columns,
     last_covered_day,
     load_migration_module,
     settle_day_columns,
@@ -98,6 +98,13 @@ def _make_transaction(seed_user, seed_periods, **overrides):
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
+
+    **BARE on purpose, and past the cutover.**  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the
+    row through a door would grade the door; the shape 7d's pricing-link
+    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
+    builder (a pricing link on every row it stages) rather than any case
+    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()

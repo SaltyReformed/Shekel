@@ -48,8 +48,8 @@ from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
     make_balanced_entry,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # Module-level xdist_group marker pins every test in this module to
@@ -408,12 +408,8 @@ class TestUserIdCapture:
     ):
         """SET LOCAL written before INSERT shows up in audit_log.user_id."""
         # pylint: disable=import-outside-toplevel
-        from app.models.transaction import Transaction
-        from app.models.ref import Status, TransactionType
+        from app.models.ref import TransactionType
 
-        projected = (
-            db.session.query(Status).filter_by(name="Projected").one()
-        )
         expense = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -423,18 +419,16 @@ class TestUserIdCapture:
             {"uid": str(seed_user["user"].id)},
         )
 
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
+        one_off_row_of(
+            seed_periods[0],
             name="UID Capture Test",
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal("12.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense.id,
-            amount_ownership=AmountOwnership.own(Decimal("12.00")),
+            category_id=seed_user["categories"]["Rent"].id,
         )
-        db.session.add(txn)
         db.session.flush()
 
         rows = db.session.execute(db.text(

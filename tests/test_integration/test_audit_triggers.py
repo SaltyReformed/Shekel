@@ -10,11 +10,9 @@ from decimal import Decimal
 from app.audit_infrastructure import AUDITED_TABLES, EXPECTED_TRIGGER_COUNT
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 import pytest
-from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
+from tests._test_helpers import one_off_row_of
 
 
 def _get_audit_rows(table_name=None, operation=None):
@@ -37,20 +35,17 @@ def _get_audit_rows(table_name=None, operation=None):
 
 def _create_transaction(seed_user, seed_periods):
     """Helper: create a minimal transaction and return it."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods[0],
         name="Test Expense",
-        category_id=seed_user["categories"]["Rent"].id,
+        amount=Decimal("100.00"),
+        user_id=seed_periods[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense.id,
-        amount_ownership=AmountOwnership.own(Decimal("100.00")),
+        category_id=seed_user["categories"]["Rent"].id,
     )
-    db.session.add(txn)
     db.session.flush()
     return txn
 
@@ -152,10 +147,13 @@ class TestAuditTriggerUpdate:
     ):
         """UPDATE on budget.transactions produces an audit_log row."""
         txn = _create_transaction(seed_user, seed_periods)
-        state_own_amount(txn, Decimal("200.00"))
+        # The ROW's own column: a one-off's figure is its definition's, and
+        # detaching the row OWN is a state no door writes (R-BAL37); the
+        # trigger fires on any UPDATE of the row.
+        txn.notes = "audited"
         db.session.flush()
         rows = _get_audit_rows("transactions", "UPDATE")
-        # Exactly 1 UPDATE from changing estimated_amount
+        # Exactly 1 UPDATE from changing notes
         assert len(rows) == 1
 
     def test_update_captures_changed_fields(

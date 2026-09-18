@@ -17,14 +17,14 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
 from app.services import recurrence_engine
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from tests._test_helpers import make_every_period_rule
-from app.models.amount_ownership import AmountOwnership
+from app.services.one_off import place_row_of
+from app.services.pay_calendar import calendar_for
+from tests._test_helpers import make_every_period_rule, state_template_price
 
 # Per-workload overhead ceilings, in percent.
 #
@@ -60,6 +60,17 @@ from app.models.amount_ownership import AmountOwnership
 #   insert      3.1 -  10.3 %      base 51-53 ms
 #   update    290.2 - 309.7 %      base  1.8-1.9 ms  (260 rows)
 #   delete     21.4 -  31.9 %      base  7.7-7.7 ms
+#
+# Re-measured 2026-09-18 for the three workloads whose rows moved onto
+# the one-off row placer (plan step balance:X-bi-7c; the hand-built rows
+# were the shape the cutover's pricing-link CHECK refuses), FIVE serial
+# runs, ordinary machine load:
+#
+#   insert      6.1 -  12.3 %      base 26-28 ms   (one INSERT + flush per row)
+#   update    125.2 - 140.8 %      base  4.6 ms    (the ``notes`` column; 260 rows)
+#   delete     21.3 -  25.4 %      base  5.5-5.7 ms
+#
+# The ceilings stand: each is still >= 2x the re-measured maximum.
 #
 # Each ceiling is ~1.5-2x its measured maximum: loose enough to survive
 # a busier runner, tight enough that a trigger doing materially more
@@ -209,6 +220,27 @@ def _report_and_assert(workload, label, overhead_pct, time_with, time_without):
         f"{label}: trigger overhead {overhead_pct:.1f}% exceeds "
         f"the {ceiling}% ceiling for this workload"
     )
+
+
+def _rule_less_definition(perf_user, *, name):
+    """Return a flushed, priced definition with NO cadence -- a one-off's.
+
+    The twin of :func:`_create_template` without the rule: the definition
+    whose rows ``one_off.place_row_of`` places, one per paycheck.
+    """
+    expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+    template = TransactionTemplate(
+        user_id=perf_user["user"].id,
+        account_id=perf_user["account"].id,
+        category_id=perf_user["category"].id,
+        transaction_type_id=expense_type.id,
+        name=name,
+        default_amount=Decimal("50.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    state_template_price(template)
+    return template
 
 
 def _create_template(perf_user):
@@ -382,28 +414,29 @@ class TestRecurrenceEngineOverhead:
     def test_bulk_transaction_insert_overhead(self, app, db, perf_user, perf_periods):
         """Bulk INSERT of one transaction per pay period, within its ceiling.
 
-        Direct ORM inserts to isolate trigger overhead from recurrence logic.
+        One row per paycheck of ONE rule-less definition, through the app's
+        row placer (``one_off.place_row_of``, ruling R-BAL24's shape: a
+        bank-born envelope's row in each later paycheck) -- one INSERT and
+        one flush per row on ``budget.transactions``, the table whose
+        trigger ``_disable_triggers`` toggles.  A bare ``Transaction(...)``
+        was the shape the cutover's pricing-link CHECK refuses; the whole
+        one-off producer per row would add a definition and a version INSERT
+        on two tables whose triggers fire in BOTH arms, tripling the
+        denominator against one table's trigger (found by 7c-5's review);
+        and the engine's bulk insert is the ``generate`` workload above.
+        The definition and the owner's calendar are resolved outside the
+        clock.  Measured 2026-09-18 (plan step balance:X-bi-7c), five
+        serial runs: 6.1 - 12.3 % over a 26-28 ms base (the header's table).
         """
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         scenario_id = perf_user["scenario"].id
-        category_id = perf_user["category"].id
-        account_id = perf_user["account"].id
+        definition = _rule_less_definition(perf_user, name="Bulk Txn")
+        db.session.commit()
+        calendar = calendar_for(perf_user["user"].id)
+        paychecks = [calendar.period_by_id(p.id) for p in perf_periods[:100]]
 
         def _bulk_insert():
-            for i, period in enumerate(perf_periods[:100]):
-                txn = Transaction(
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account_id,
-                    status_id=projected.id,
-                    name=f"Bulk Txn {i}",
-                    category_id=category_id,
-                    transaction_type_id=expense.id,
-                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                )
-                db.session.add(txn)
+            for paycheck in paychecks:
+                place_row_of(definition, paycheck, scenario_id=scenario_id)
             db.session.flush()
 
         def _time_bulk(iterations=ITERATIONS, warmup=WARMUP):
@@ -446,16 +479,21 @@ class TestRecurrenceEngineOverhead:
         """Bulk UPDATE of ROWS_PER_PERIOD rows per period, within its ceiling.
 
         UPDATEs are the most common write operation in a budgeting app
-        (editing amounts, marking done, changing statuses).
+        (editing amounts, marking done, changing statuses).  The column
+        written is ``notes`` -- the ROW's own: a placed row carries no
+        figure (its definition does), and ``ck_transactions_amount_ownership``
+        refuses a stored one on a derived row (plan step balance:X-bi-7c).
+        Measured 2026-09-18, five serial runs: 125.2 - 140.8 % over a 4.6 ms
+        base (the 2026-08-28 figure on the amount column was ~300 % over
+        1.8 ms), inside the 450 ceiling; the header's table.
         """
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
         scenario_id = perf_user["scenario"].id
-        category_id = perf_user["category"].id
-        account_id = perf_user["account"].id
         batch_size = min(len(perf_periods), 100)
 
-        # Pre-insert rows to update.
+        # Pre-insert rows to update: ROWS_PER_PERIOD rule-less definitions,
+        # each placed in every paycheck through the app's row placer (the
+        # insert workload's vehicle; a definition holds one row per paycheck
+        # and day, so the copies are definitions, not rows).
         # ROWS_PER_PERIOD rows per period rather than one.  A 52-row
         # UPDATE runs in ~1.7 ms, which is small enough that the fixed
         # per-statement costs (parse, plan, one round trip) are a large
@@ -464,45 +502,40 @@ class TestRecurrenceEngineOverhead:
         # run in eight, and a skipped benchmark measures nothing while
         # reporting no failure.  A wider batch amortises the fixed costs
         # into the per-row work the trigger actually affects.
-        for i, period in enumerate(perf_periods[:batch_size]):
-            for copy in range(ROWS_PER_PERIOD):
-                txn = Transaction(
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account_id,
-                    status_id=projected.id,
-                    name=f"Update Txn {i}-{copy}",
-                    category_id=category_id,
-                    transaction_type_id=expense.id,
-                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                )
-                db.session.add(txn)
+        definitions = [
+            _rule_less_definition(perf_user, name=f"Update Txn {copy}")
+            for copy in range(ROWS_PER_PERIOD)
+        ]
+        calendar = calendar_for(perf_user["user"].id)
+        for period in perf_periods[:batch_size]:
+            paycheck = calendar.period_by_id(period.id)
+            for definition in definitions:
+                place_row_of(definition, paycheck, scenario_id=scenario_id)
         db.session.flush()
         db.session.commit()
 
-        def _bulk_update(amount_val):
-            """Update all benchmark transactions to a new amount."""
+        def _bulk_update(note):
+            """Update all benchmark transactions' notes."""
             db.session.execute(
                 db.text(
                     "UPDATE budget.transactions "
-                    "SET estimated_amount = :amt "
+                    "SET notes = :note "
                     "WHERE name LIKE 'Update Txn%'"
                 ),
-                {"amt": amount_val},
+                {"note": note},
             )
             db.session.flush()
 
-        def _time_update(amount_val, iterations=ITERATIONS, warmup=WARMUP):
+        def _time_update(note, iterations=ITERATIONS, warmup=WARMUP):
             """Time bulk UPDATE over multiple iterations, return median ms."""
             for _ in range(warmup):
-                _bulk_update(amount_val)
+                _bulk_update(note)
                 db.session.commit()
 
             times = []
             for _ in range(iterations):
                 start = time.perf_counter()
-                _bulk_update(amount_val)
+                _bulk_update(note)
                 elapsed_ms = (time.perf_counter() - start) * 1000
                 times.append(elapsed_ms)
                 db.session.commit()
@@ -510,7 +543,7 @@ class TestRecurrenceEngineOverhead:
 
         # Time with triggers enabled.
         overhead_pct, time_with, time_without = _paired_overhead(
-            lambda: _time_update(Decimal("75.00"), iterations=1, warmup=0),
+            lambda: _time_update("benchmark touch", iterations=1, warmup=0),
         )
 
         if time_without < 1.0:
@@ -522,29 +555,23 @@ class TestRecurrenceEngineOverhead:
         )
 
     def test_bulk_delete_trigger_overhead(self, app, db, perf_user, perf_periods):
-        """Bulk DELETE of transactions stays within its audit ceiling."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
-        expense = db.session.query(TransactionType).filter_by(name="Expense").one()
+        """Bulk DELETE of transactions stays within its audit ceiling.
+
+        The rows are one rule-less definition's per batch, placed through the
+        app's row placer (the insert workload's vehicle); the raw DELETE
+        takes the rows and leaves the definition, which is what the timed
+        statement is about.
+        """
         scenario_id = perf_user["scenario"].id
-        category_id = perf_user["category"].id
-        account_id = perf_user["account"].id
         batch_size = min(len(perf_periods), 100)
+        calendar = calendar_for(perf_user["user"].id)
+        paychecks = [calendar.period_by_id(p.id) for p in perf_periods[:batch_size]]
 
         def _insert_batch(label):
             """Insert a batch of transactions for deletion benchmarking."""
-            for i, period in enumerate(perf_periods[:batch_size]):
-                txn = Transaction(
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account_id,
-                    status_id=projected.id,
-                    name=f"Delete {label} {i}",
-                    category_id=category_id,
-                    transaction_type_id=expense.id,
-                    amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                )
-                db.session.add(txn)
+            definition = _rule_less_definition(perf_user, name=f"Delete {label}")
+            for paycheck in paychecks:
+                place_row_of(definition, paycheck, scenario_id=scenario_id)
             db.session.flush()
             db.session.commit()
 

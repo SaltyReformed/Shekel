@@ -8,16 +8,14 @@ Tests for fixes identified in the 2026-02-27 adversarial code audit:
 - Unique constraint double-submission prevention
 """
 
-from datetime import date
 from decimal import Decimal
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from tests._test_helpers import cadence_payload
+from tests._test_helpers import cadence_payload, one_off_row_of
 from app.models.user import User, UserSettings
-from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.transaction import Transaction
@@ -136,19 +134,17 @@ class TestEffectiveAmountDecimal:
         """Cancelled/credit Transaction.effective_amount must be Decimal."""
         credit_status = db.session.query(Status).filter_by(name="Credit").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        txn = Transaction(
-            template_id=None,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=credit_status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Credit",
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal("100.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            category_id=seed_user["categories"]["Rent"].id,
         )
-        db.session.add(txn)
+        txn.status_id = credit_status.id
         db.session.flush()
 
         assert isinstance(settled_contribution(txn), Decimal)
@@ -158,19 +154,17 @@ class TestEffectiveAmountDecimal:
         """Cancelled Transaction.effective_amount must be Decimal."""
         cancelled_status = db.session.query(Status).filter_by(name="Cancelled").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        txn = Transaction(
-            template_id=None,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=cancelled_status.id,
+        txn = one_off_row_of(
+            seed_periods[0],
             name="Test Cancelled",
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal("50.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
+            category_id=seed_user["categories"]["Rent"].id,
         )
-        db.session.add(txn)
+        txn.status_id = cancelled_status.id
         db.session.flush()
 
         assert isinstance(settled_contribution(txn), Decimal)
