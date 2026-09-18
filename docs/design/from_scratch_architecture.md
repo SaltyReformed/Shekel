@@ -1203,17 +1203,24 @@ first draft had them the other way round, which would have hand-built the shape 
    `one_off_row_of(...)` calls 7b's producer, as `X-cf-1`'s `generate_row_of`
    (`tests/_test_helpers.py:4162`) calls the engine. No app change.
 4. **`X-bi-7d` -- the cutover.** The migration of trace 8; the model setters and both columns go;
-   the accessors lose their branch; the CHECK reads `= 1` and both `SET NULL` link keys read
-   `RESTRICT` (a nulled link is a zero-link row); every minted row records its date in `occurs_on`
-   (`R-BAL25`); `_stated_amount`'s `template is None` refusal (`_definition_cash.py:143`) goes with
-   the `SET NULL` that made it reachable (the label fallback once named here beside it,
-   `grid_view_service:158`, left at 7b-2). **Closes `BAL-484`** -- the cell is gone. Its grade is
-   EQUALITY of the grid across the cutover on the production restore (`R-BAL34` at 7b-2 separated
-   the six cells the first draft graded as a DIFF), beside every migrated figure reproduced to the
-   cent through amount rule 3. **Split 2026-09-18** into `X-bi-7d-1` (the suite's bare CHECK
-   builders and the Core / raw-SQL writers 7c's constructor census could not see take a pricing
-   link; tests only) and `X-bi-7d-2` (the migration; MOVES MONEY), because the fixtures must bind
-   under `= 1` before the CHECK does.
+   the accessors' cell-reading arm goes (the link test stays, answering False for a shadow or a
+   payback); the CHECK reads `= 1` and both `SET NULL` link keys read `RESTRICT` (a nulled link is a
+   zero-link row); every minted row records its date in `occurs_on` (`R-BAL25`); `_stated_amount`'s
+   `template is None` refusal (`_definition_cash.py:159`) STAYS -- 7d-2's trace (2026-09-18) found
+   it shared with the transfer pricing arm, and `budget.transfers.transfer_template_id` is still
+   `SET NULL`, so its reason is restated to name the transfer key while the transaction arm's reach
+   to it ends with RESTRICT (the label fallback once named here beside it, `grid_view_service:158`,
+   is gone since 7b-2, `e27e5134`: `build_row_keys` has no label fallback). **Closes `BAL-484`** --
+   the cell is gone. Its grade is EQUALITY of the grid across the cutover on the production restore
+   (`R-BAL34` at 7b-2 separated the six cells the first draft graded as a DIFF), beside every
+   migrated figure reproduced to the cent through amount rule 3. **Split 2026-09-18** into
+   `X-bi-7d-1` (the suite's bare CHECK builders and the Core / raw-SQL writers 7c's constructor
+   census could not see take a pricing link; tests only) and `X-bi-7d-2` (the migration; MOVES
+   MONEY), because the fixtures must bind under `= 1` before the CHECK does.
+   **`BAL-511` is decided here**: 7d-2's harness counts the grid render's statements across the
+   cutover (lane 1's 2026-09-18 figure on the 12:34 restore: 23 before, 23 after, definitions 43 ->
+   77, so the "multiplied" claim does not hold on the grid) and the row closes or re-points on that
+   number at the tick.
 
 `R-BAL20` as first drafted said the family's FIRST leaf owns `BAL-484`. The finding is
 *a dead cell keeps a writer and no step deletes it*; the writer goes at 7b and the cell at 7d, so

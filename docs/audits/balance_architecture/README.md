@@ -1039,7 +1039,20 @@ section 4, under their unchanged ids.*
 * [ ] **X-cm** `fix(cash): the constant-offset signature reads per run` -- closes **BAL-512**:
   `BankAgreement.constant_offset` is account-wide while the walk anchors per run (**R-BAL63**), so
   one run's wrong starting figure goes unreported beside a run whose is right; per `RecordedRun`,
-  rendered in its block; the account-wide property then has no reader and goes.
+  rendered in its block; the account-wide property then has no reader and goes. **Closes BAL-514 too**: a standing level NO run reaches is listed on the agreement page in a block of its own, so the statements page and the agreement page agree about what the owner asserted (whether such a level is PRICED is that block's design question).
+* [ ] **X-cn** `fix(transfers): the transfer door refuses an unknown key` -- closes **BAL-513**:
+  `update_transfer` documents silently ignoring an unknown kwarg where `update_entry` refuses one,
+  so a renamed key in a caller's bag settled the row at its plan in silence (two fixtures, 3e-1).
+* [ ] **X-co** `feat(plan-gate): a cross-tree arm` -- closes **BAL-515**: two branches that each
+  advance a prose count merge clean with the same wrong number, and a duplicate id minted in two
+  trees (`R-BAL10`, 2026-09-09) fires nowhere until the merge; the gate reads ONE tree. Deletes
+  `STANDING.md`'s 2026-09-09 line when it ships. Also: the SessionStart hook reads `origin/dev`'s
+  steps.md, not its checkout's (`~/projects/Shekel` is the deploy path, kept at main, so every
+  fresh lane read a stale rank #1 until 2026-09-18).
+* [ ] **X-cp** `refactor(tests): copied builders and dead controls made honest` -- closes **BAL-516**,
+  **BAL-517**, **BAL-518**, **BAL-519**: the `settlement_columns` setattr loop copied into 16 files;
+  that helper's "ONE caller" docstring against 24 (23 besides its own module); `test_grid`'s uncompared `baseline`;
+  `test_race_conditions.py`'s one live request per race.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
