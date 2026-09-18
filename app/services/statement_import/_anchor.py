@@ -362,9 +362,9 @@ def recorded_opening_before(
             line posted on it.
 
     Returns:
-        The :class:`KnownOpening`, or ``None`` when this account holds no
-        anchored import, or when its recorded coverage does not reach from that
-        anchor to *day*.
+        The :class:`KnownOpening`, or ``None`` when no run of this account's
+        recorded lines holds a standing bank level that reaches the day
+        before *day*.
 
     **The evidence comes back with the figure, and never stronger than
     ``corroborated``.**  Reaching an answer here means two statements agree,
@@ -375,6 +375,17 @@ def recorded_opening_before(
     learned: a report displaying the same figure learns nothing new and carries
     the anchor's own strength unchanged.
 
+    **The anchor it is capped against is the one that PRICED the day** (plan
+    step ``balance:X-bj-1b``, ruling **R-BAL66**): the walk anchors per run,
+    so the day before a file's first line is walked from the anchor of the
+    run it sits in, and :meth:`~._balance.BankBalances.anchor_for` names that
+    anchor off the same membership the price came from.  A file continuing an
+    assumed run therefore opens with a SOLVED day held ``uncorroborated``,
+    where the account-wide walk gave it no opening and a guessed day.  A
+    checkpoint in that run that disagrees with the walk changes nothing here:
+    it is reported on the agreement page, and by rank it is the weaker of the
+    two figures.
+
     **Coverage is why this can answer ``None`` on an account that HAS an
     anchor**, and the direction it fails in is deliberate.  The walk is only
     exact if every line between the anchor and *day* is recorded; a gap between
@@ -384,17 +395,16 @@ def recorded_opening_before(
     receipt SAYS -- an unchecked anchor the owner is told about beats a checked
     one that is false.
     """
-    folded = fold_bank_balances(account_id, [day - timedelta(days=1)])
-    if folded is None:
-        return None
-    balance = folded.balances.get(day - timedelta(days=1))
+    day_before = day - timedelta(days=1)
+    folded = fold_bank_balances(account_id, [day_before])
+    balance = folded.balances.get(day_before)
     if balance is None:
         return None
     return KnownOpening(
         amount=balance,
         evidence=weaker_of(
             StatementBalanceEvidenceEnum.CORROBORATED,
-            folded.anchor.evidence,
+            folded.anchor_for(day_before).evidence,
         ),
     )
 

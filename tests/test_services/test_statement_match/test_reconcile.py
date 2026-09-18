@@ -41,6 +41,7 @@ from app.services.statement_match._accepted_view import (
 )
 from app.services.statement_match._verbs import Verb
 from app.services.bank_agreement import AgreementDay, BankAgreement, ComparedSpan
+from app.services.statement_import import RecordedRun
 from app.services.statement_match._create import (
     MintedEnvelopes,
 )
@@ -1049,13 +1050,15 @@ class TestTheHeroReportsADayBOTHRecordsCanSpeakFor:
         Returns:
             The :class:`~app.services.bank_agreement.BankAgreement`.
 
-        **``imports`` is ONE run covering the whole hand-built span** (plan
-        step ``balance:X-f3c-3``, which added the field).  It is deliberately
-        not empty: an empty list means "no import covers any of these days",
-        which is a real state and not the one this class is about -- every case
-        here is about the HERO, and a hand-built agreement claiming its own
-        days are unimported would be describing a different account than the
-        one its ``days`` describe.
+        **``runs`` is ONE run covering the whole hand-built span** (plan step
+        ``balance:X-f3c-3`` added the coverage; ``balance:X-bj-1b`` made the
+        run the one home of it).  It is deliberately not empty: an empty list
+        means "no import covers any of these days", which is a real state and
+        not the one this class is about -- every case here is about the HERO,
+        and a hand-built agreement claiming its own days are unimported would
+        be describing a different account than the one its ``days`` describe.
+        The run anchors on nothing; the hand-built days carry their own bank
+        balances, which is what the hero reads.
         """
         return BankAgreement(
             account_id=account_id,
@@ -1064,9 +1067,8 @@ class TestTheHeroReportsADayBOTHRecordsCanSpeakFor:
                 recorded_from=days[0].day, recorded_through=days[-1].day,
             ),
             records_begin=days[0].day,
-            anchor=None,
+            runs=[RecordedRun(days[0].day, days[-1].day, None, ())],
             days=list(days),
-            imports=[(days[0].day, days[-1].day)],
         )
 
     def _day(self, day, bank, books, in_records=True):

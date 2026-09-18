@@ -63,6 +63,8 @@ from ._anchor import (
 from ._balance import (
     BankAnchor,
     BankBalances,
+    Checkpoint,
+    RecordedRun,
     bank_balance_on,
     bank_daily_movements,
     bank_levels,
@@ -100,6 +102,7 @@ from ._undo import ImportRemoval, delete_import
 __all__ = [
     "BankAnchor",
     "BankBalances",
+    "Checkpoint",
     "GroupPairing",
     "ImportOutcome",
     "ImportedBalance",
@@ -108,6 +111,7 @@ __all__ = [
     "ImportRemovalPreview",
     "ImportRemoval",
     "KeyedLine",
+    "RecordedRun",
     "RecordedSpan",
     "SourceOption",
     "StatementLine",

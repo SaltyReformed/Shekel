@@ -180,6 +180,10 @@ what it leaves a LATER step is on that step's own entry.
       labelled by kind in the paycheck register's MM/DD, the gap to the bank's date printed, the
       settle day never shown (`.rec-row-day` now names the per-fact span, `accounts.css:1205-1211`);
       `CandidateRow` carries `period` and `purchased_on`; `_dating.py` presents; `_caveat.py` split.
+- [ ] **X-hb** `fix(import): the delete confirmation names the placement that leaves` -- **BI-501**
+      (was balance:BAL-489, re-homed 2026-09-18): the confirmation and the receipt read the level
+      relation `balance:X-bj-1` built and say this import's own placement leaves and which import
+      becomes the balance-of-record; `ImportRemoval` gains the field. `$0.00`; the door's copy only.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.

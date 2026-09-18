@@ -19,6 +19,7 @@ from app.enums import StatementBalanceEvidenceEnum
 from app.models.statement_import import BankStatementLine
 from app.models.account import AccountAnchorHistory
 from app.services.statement_import import (
+    RecordedRun,
     bank_balance_on,
     fold_bank_balances,
     release_anchors_from,
@@ -183,13 +184,23 @@ class TestTheFoldWalksFromTheAnchor:
 
 
 class TestAnAccountWithNoAnchorHasNoBankBalance:
-    """The state BOTH of the developer's real imports are in."""
+    """The state BOTH of the developer's real imports are in.
+
+    **The fold is TOTAL since plan step ``balance:X-bj-1b``** (ruling
+    **R-BAL65**): it answered ``None`` for these accounts until then, and
+    answers a value holding no priced day now -- the same fact, and one a
+    reader no longer branches on.  The developer re-aimed these assertions
+    with that ruling.
+    """
 
     def test_no_import_at_all_answers_NOTHING(self, app, db, seed_user):
-        """Nothing recorded, so nothing to walk from."""
-        assert fold_bank_balances(
+        """Nothing recorded, so no run and nothing to walk from."""
+        folded = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1)],
-        ) is None
+        )
+
+        assert folded.runs == []
+        assert folded.balances == {}
         assert bank_balance_on(
             seed_user["account"].id, date(2026, 3, 1),
         ) is None
@@ -199,16 +210,22 @@ class TestAnAccountWithNoAnchorHasNoBankBalance:
 
         Measured: the developer's 2026-01-02..2026-03-31 export, pulled
         2026-08-23, states a figure 145 days past its own last line.  Its lines
-        are recorded and its claim is stored; no day carries it.
+        are recorded and its claim is stored; no day carries it -- the run is
+        there, and it anchors on nothing (ruling **R-BAL64**).
         """
         _seed_import(
             db, seed_user["account"], stated="2459.60", effective_on=None,
             evidence=None, lines=[(date(2026, 3, 1), "100.00")],
         )
 
-        assert fold_bank_balances(
+        folded = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1)],
-        ) is None
+        )
+
+        assert folded.runs == [
+            RecordedRun(date(2026, 3, 1), date(2026, 3, 1), None, ()),
+        ]
+        assert folded.balances == {}
 
 
 class TestTheWalkAnchorsOnStandingBankLevelsOnly:
@@ -238,9 +255,13 @@ class TestTheWalkAnchorsOnStandingBankLevelsOnly:
         ))
         db.session.flush()
 
-        assert fold_bank_balances(
+        folded = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1), date(2026, 3, 2)],
-        ) is None
+        )
+
+        # The run is there; the owner's level anchors it on nothing.
+        assert [run.anchor for run in folded.runs] == [None]
+        assert folded.balances == {}
 
     def test_a_RELEASED_level_is_not_an_anchor(self, app, db, seed_user):
         """Withdrawn by a later import's line, the level prices no day.
@@ -266,9 +287,12 @@ class TestTheWalkAnchorsOnStandingBankLevelsOnly:
         )
         db.session.flush()
 
-        assert fold_bank_balances(
+        folded = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 3)],
-        ) is None
+        )
+
+        assert [run.anchor for run in folded.runs] == [None]
+        assert folded.balances == {}
 
 
 class TestTheStrongestAnchorIsWalkedFrom:
@@ -293,13 +317,13 @@ class TestTheStrongestAnchorIsWalkedFrom:
             file_name="later.csv", lines=[(date(2026, 3, 2), "20.00")],
         )
 
-        anchor = fold_bank_balances(
+        (run,) = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1)],
-        ).anchor
+        ).runs
 
-        assert anchor.day == date(2026, 3, 1)
-        assert anchor.balance == Decimal("1000.00")
-        assert anchor.evidence is _FILE_CHAIN
+        assert run.anchor.day == date(2026, 3, 1)
+        assert run.anchor.balance == Decimal("1000.00")
+        assert run.anchor.evidence is _FILE_CHAIN
 
     def test_the_anchors_own_evidence_travels_UNCAPPED(
         self, app, db, seed_user,
@@ -318,11 +342,11 @@ class TestTheStrongestAnchorIsWalkedFrom:
             lines=[(date(2026, 3, 1), "10.00")],
         )
 
-        folded = fold_bank_balances(
+        (run,) = fold_bank_balances(
             seed_user["account"].id, [date(2026, 3, 1)],
-        )
+        ).runs
 
-        assert folded.anchor.evidence is _FILE_CHAIN
+        assert run.anchor.evidence is _FILE_CHAIN
 
 
 class TestADayTheLinesCannotREACHIsNotAnswered:
@@ -454,3 +478,303 @@ class TestASpanWhoseLinesAreGoneClaimsNoCoverage:
         # NOT 1000.00 -- the re-import's span no longer vouches for days whose
         # lines have gone, so the walk refuses rather than crossing the hole.
         assert bank_balance_on(account_id, date(2026, 2, 28)) is None
+
+
+class TestTheWalkAnchorsPerRun:
+    """One anchor per run, and the others in the run are checkpoints.
+
+    Plan step ``balance:X-bj-1b``, finding **N-343**, rulings **R-BAL63**
+    (per-run anchor, checkpoints), **R-BAL64** (a run with no level anchors
+    on nothing), **R-BAL65** (the fold is total and carries the runs).  Until
+    this step ONE level was chosen for the whole account by evidence, so a
+    ``file_chain`` level in an old run left every day of a later, disconnected
+    run unpriced -- including that run's own placed day, whose crossing is
+    empty.
+    """
+
+    def test_a_disconnected_run_is_priced_from_its_OWN_anchor(
+        self, app, db, seed_user,
+    ):
+        """N-343's shape, reproduced 2026-08-24 and priced now.
+
+        January: ``file_chain`` 1000.00 at 01-31.  March, across an
+        unimported February: an assumed 500.00 at 03-20 over +50.00 (03-15)
+        and -5.00 (03-20).  The stronger January anchor cannot reach March
+        and no longer has to: March walks from its own figure.  03-19 is
+        500.00 less the 03-20 line, 505.00; 03-14, the day before March's
+        first line, is 505.00 less the 03-15 line, 455.00 -- the balance the
+        run's lines start from.  The gap stays unpriced.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 1, 31),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 1, 31), "10.00")],
+            period=(date(2026, 1, 1), date(2026, 1, 31)),
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, account, stated="500.00", effective_on=date(2026, 3, 20),
+            evidence=_UNCORROBORATED, file_name="march.csv",
+            lines=[(date(2026, 3, 15), "50.00"), (date(2026, 3, 20), "-5.00")],
+        )
+
+        folded = fold_bank_balances(account.id, [
+            date(2026, 1, 31), date(2026, 2, 14), date(2026, 3, 13),
+            date(2026, 3, 14), date(2026, 3, 15), date(2026, 3, 19),
+            date(2026, 3, 20), date(2026, 3, 21),
+        ])
+
+        assert [(run.first_day, run.last_day) for run in folded.runs] == [
+            (date(2026, 1, 1), date(2026, 1, 31)),
+            (date(2026, 3, 15), date(2026, 3, 20)),
+        ]
+        assert [run.anchor.day for run in folded.runs] == [
+            date(2026, 1, 31), date(2026, 3, 20),
+        ]
+        assert folded.balances == {
+            date(2026, 1, 31): Decimal("1000.00"),
+            date(2026, 3, 14): Decimal("455.00"),
+            date(2026, 3, 15): Decimal("505.00"),
+            date(2026, 3, 19): Decimal("505.00"),
+            date(2026, 3, 20): Decimal("500.00"),
+        }
+
+    def test_each_run_chooses_the_strongest_then_the_latest_WITHIN_it(
+        self, app, db, seed_user,
+    ):
+        """The account-wide rank, applied per run.
+
+        Run one holds a proved level at 03-01 and an assumed one at 03-05:
+        the proved one anchors it however early it is.  Run two holds two
+        assumed levels, 04-10 and 04-12: the later day anchors it.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 3, 1),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 3, 1), "10.00")],
+            file_name="proved.csv",
+        )
+        _seed_import(
+            db, account, stated="9999.00", effective_on=date(2026, 3, 5),
+            evidence=_UNCORROBORATED, file_name="assumed.csv",
+            lines=[(date(2026, 3, 2), "20.00"), (date(2026, 3, 5), "1.00")],
+        )
+        _seed_import(
+            db, account, stated="700.00", effective_on=date(2026, 4, 10),
+            evidence=_UNCORROBORATED, file_name="april-early.csv",
+            lines=[(date(2026, 4, 10), "5.00")],
+        )
+        _seed_import(
+            db, account, stated="710.00", effective_on=date(2026, 4, 12),
+            evidence=_UNCORROBORATED, file_name="april-late.csv",
+            lines=[(date(2026, 4, 11), "3.00"), (date(2026, 4, 12), "7.00")],
+        )
+
+        first, second = fold_bank_balances(account.id, []).runs
+
+        assert (first.anchor.day, first.anchor.file_name) == (
+            date(2026, 3, 1), "proved.csv",
+        )
+        assert (second.anchor.day, second.anchor.file_name) == (
+            date(2026, 4, 12), "april-late.csv",
+        )
+
+    def test_two_levels_on_ONE_day_are_told_apart_by_id_then_by_file(
+        self, app, db, seed_user,
+    ):
+        """A re-import of one file places a second figure on the same day.
+
+        ``uq_anchor_history_statement_import`` is per import (ruling
+        **R-BAL56**), so the relation legitimately holds two levels for one
+        day and figure.  Equal in evidence and day, the later recorded one
+        (the higher id) anchors; the other is a checkpoint that agrees, and
+        the file name is what tells the two apart on the page.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 3, 2),
+            evidence=_CORROBORATED, file_name="first.csv",
+            lines=[(date(2026, 3, 1), "10.00"), (date(2026, 3, 2), "20.00")],
+        )
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 3, 2),
+            evidence=_CORROBORATED, file_name="again.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 2)),
+        )
+
+        (run,) = fold_bank_balances(account.id, []).runs
+
+        assert run.anchor.file_name == "again.csv"
+        (checkpoint,) = run.checkpoints
+        assert checkpoint.file_name == "first.csv"
+        assert checkpoint.day == date(2026, 3, 2)
+        assert checkpoint.walked == checkpoint.observed == Decimal("1000.00")
+        assert checkpoint.agrees
+
+    def test_every_other_level_in_the_run_is_a_checkpoint_walked_minus_observed(
+        self, app, db, seed_user,
+    ):
+        """The bank's record checked against itself.
+
+        Anchor: proved 1000.00 at 03-05 over +100.00 (03-01), -40.00 (03-03),
+        +25.00 (03-05), then +15.00 on 03-06 from a later file.  The walk
+        puts 03-03 at 975.00 (1000.00 less the 03-05 line) and 03-06 at
+        1015.00 (1000.00 plus the 03-06 line).  A statement that ASSUMED
+        1075.00 for 03-03 is off by ``walked - observed`` = -100.00; one
+        corroborated at 975.00 for 03-03 agrees; the later file's own
+        1020.00 at 03-06 is off by -5.00, the same subtraction run the other
+        way.  All three are listed ascending by DAY then id -- the later
+        file is seeded FIRST so an id order would put it first -- each naming
+        its file and carrying its own evidence, and the priced days are the
+        anchor's walk untouched (ruling **R-BAL66**).
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1020.00", effective_on=date(2026, 3, 6),
+            evidence=_UNCORROBORATED, file_name="later.csv",
+            lines=[(date(2026, 3, 6), "15.00")],
+        )
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 3, 5),
+            evidence=_FILE_CHAIN, file_name="ytd.csv",
+            lines=[(date(2026, 3, 1), "100.00"),
+                   (date(2026, 3, 3), "-40.00"),
+                   (date(2026, 3, 5), "25.00")],
+        )
+        _seed_import(
+            db, account, stated="1075.00", effective_on=date(2026, 3, 3),
+            evidence=_UNCORROBORATED, file_name="guessed.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        _seed_import(
+            db, account, stated="975.00", effective_on=date(2026, 3, 3),
+            evidence=_CORROBORATED, file_name="agreeing.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+
+        folded = fold_bank_balances(
+            account.id, [date(2026, 3, 3), date(2026, 3, 6)],
+        )
+        (run,) = folded.runs
+
+        assert (run.first_day, run.last_day) == (
+            date(2026, 3, 1), date(2026, 3, 6),
+        )
+        assert run.anchor.file_name == "ytd.csv"
+        guessed, agreeing, later = run.checkpoints
+        assert (guessed.file_name, guessed.evidence) == (
+            "guessed.csv", _UNCORROBORATED,
+        )
+        assert guessed.observed == Decimal("1075.00")
+        assert guessed.walked == Decimal("975.00")
+        assert guessed.difference == Decimal("-100.00")
+        assert not guessed.agrees
+        assert (agreeing.file_name, agreeing.evidence) == (
+            "agreeing.csv", _CORROBORATED,
+        )
+        assert agreeing.difference == Decimal("0.00")
+        assert agreeing.agrees
+        assert (later.file_name, later.day) == ("later.csv", date(2026, 3, 6))
+        assert later.walked == Decimal("1015.00")
+        assert later.difference == Decimal("-5.00")
+        assert folded.balances == {
+            date(2026, 3, 3): Decimal("975.00"),
+            date(2026, 3, 6): Decimal("1015.00"),
+        }
+
+    def test_a_run_with_no_level_beside_an_anchored_one_anchors_on_NOTHING(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-BAL64**: neither across the gap nor from a true-up.
+
+        March is anchored; April holds lines, an owner's true-up inside it,
+        and no statement figure.  April anchors on nothing and prices no day
+        -- not its own days, and not the day before its first line.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="500.00", effective_on=date(2026, 3, 20),
+            evidence=_UNCORROBORATED, file_name="march.csv",
+            lines=[(date(2026, 3, 20), "-5.00")],
+        )
+        _seed_import(
+            db, account, stated=None, file_name="april.csv",
+            lines=[(date(2026, 4, 1), "50.00"), (date(2026, 4, 5), "-20.00")],
+        )
+        db.session.add(AccountAnchorHistory(
+            account_id=account.id,
+            anchor_balance=Decimal("2900.00"),
+            observed_on=date(2026, 4, 3),
+        ))
+        db.session.flush()
+
+        folded = fold_bank_balances(account.id, [
+            date(2026, 3, 20), date(2026, 3, 31), date(2026, 4, 1),
+            date(2026, 4, 3), date(2026, 4, 5),
+        ])
+
+        march, april = folded.runs
+        assert march.anchor is not None
+        assert april.anchor is None
+        assert april.checkpoints == ()
+        assert folded.balances == {date(2026, 3, 20): Decimal("500.00")}
+
+    def test_a_level_on_the_day_BEFORE_a_runs_first_line_belongs_to_the_run(
+        self, app, db, seed_user,
+    ):
+        """The within-file bound admits ``period_start - 1``, and so does the run.
+
+        A file whose stated figure IS its opening places its level on the day
+        before its first line.  That day is reached from every level in the
+        run -- the run's lines start from it -- so the level anchors the run
+        and prices every day of it: 1000.00 at 02-28, then +10.00 on 03-01.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 2, 28),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 3, 1), "10.00")],
+        )
+
+        folded = fold_bank_balances(
+            account.id, [date(2026, 2, 27), date(2026, 2, 28), date(2026, 3, 1)],
+        )
+
+        (run,) = folded.runs
+        assert (run.first_day, run.anchor.day) == (
+            date(2026, 3, 1), date(2026, 2, 28),
+        )
+        assert folded.balances == {
+            date(2026, 2, 28): Decimal("1000.00"),
+            date(2026, 3, 1): Decimal("1010.00"),
+        }
+
+    def test_anchor_for_names_the_anchor_that_PRICED_the_day(
+        self, app, db, seed_user,
+    ):
+        """What the import door caps its evidence against (ruling R-BAL66).
+
+        Two runs, two anchors: a day in each names its own run's anchor, and
+        a day in the gap names none -- exactly when ``balances`` holds it.
+        """
+        account = seed_user["account"]
+        _seed_import(
+            db, account, stated="1000.00", effective_on=date(2026, 1, 31),
+            evidence=_FILE_CHAIN, lines=[(date(2026, 1, 31), "10.00")],
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, account, stated="500.00", effective_on=date(2026, 3, 20),
+            evidence=_UNCORROBORATED, file_name="march.csv",
+            lines=[(date(2026, 3, 20), "-5.00")],
+        )
+        days = [date(2026, 1, 31), date(2026, 2, 14), date(2026, 3, 19)]
+
+        folded = fold_bank_balances(account.id, days)
+
+        assert folded.anchor_for(date(2026, 1, 31)).file_name == "january.csv"
+        assert folded.anchor_for(date(2026, 3, 19)).file_name == "march.csv"
+        assert folded.anchor_for(date(2026, 2, 14)) is None
+        for day in days:
+            assert (folded.anchor_for(day) is None) == (
+                day not in folded.balances
+            )

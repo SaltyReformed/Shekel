@@ -119,6 +119,20 @@ def _money_cells(row):
     return re.findall(r"-?\$[\d,]+\.\d{2}", row)
 
 
+def _bank_balance_cell(row):
+    """Return the rendered ``<td>`` of the Bank balance column, by position.
+
+    The third cell from the end in BOTH row shapes: a compared day renders
+    eight cells and a day before the records begin renders six (its middle
+    three are one ``colspan``), and the last three are the bank balance, the
+    app's balance and the difference either way.  By position rather than by
+    searching the row for a figure, because the difference cell can carry the
+    same figure as the bank cell (books 1,000.00 against a bank 500.00 is
+    apart by 500.00) and a membership test would pass on the wrong column.
+    """
+    return re.findall(r"<td\b.*?</td>", row, re.S)[-3]
+
+
 def _settled(db, seed_user, period, name, amount, day):
     """Insert one SETTLED expense whose cash moved on *day*."""
     status_id = ref_cache.status_id(StatusEnum.DONE)
@@ -445,6 +459,154 @@ class TestThePageSaysWhatTheStepIsOBLIGEDToSay:
 
         assert b"Apart" in response.data
         assert b"your books against your bank" in response.data
+
+
+class TestThePageListsEachRunWithItsAnchorAndCheckpoints:
+    """Plan step ``balance:X-bj-1b``, rulings **R-BAL63** and **R-BAL64**.
+
+    One block per run: the figure it walks from, named by file, and every
+    other statement figure inside the run with its verdict against the walk.
+    Each obligation is graded on the rendered body, because a paragraph the
+    service tests cannot see is a paragraph a template edit deletes silently.
+    """
+
+    def test_each_run_gets_its_own_block_naming_its_file(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """Two disconnected runs, two blocks, two files; the later run priced."""
+        _seed_import(
+            db, seed_user["account"], stated="1000.00",
+            effective_on=date(2026, 1, 31), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 1, 31), "10.00")],
+            period=(date(2026, 1, 1), date(2026, 1, 31)),
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, seed_user["account"], stated="500.00",
+            effective_on=date(2026, 3, 10), evidence=_UNCORROBORATED,
+            file_name="march.csv",
+            lines=[(date(2026, 3, 5), "50.00"), (date(2026, 3, 10), "-5.00")],
+        )
+        db.session.commit()
+
+        body = auth_client.get(_url(seed_user["account"].id)).get_data(
+            as_text=True,
+        )
+
+        assert "Days 2026-01-01 to 2026-01-31." in body
+        assert "Days 2026-03-05 to 2026-03-10." in body
+        assert body.count("walked from") == 2
+        assert "(january.csv)" in body
+        assert "(march.csv)" in body
+        # The later run's own anchored day carries its figure in the table.
+        assert "$500.00" in _bank_balance_cell(_row_for(body, date(2026, 3, 10)))
+        # Only the gap between the runs is unpriced: 02-01..03-03, 31 days.
+        assert "31 day(s) not priced" in body
+
+    def test_the_unconfirmed_caption_is_PER_RUN(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """A proved run and an assumed run: the caption appears once, under the second."""
+        _seed_import(
+            db, seed_user["account"], stated="1000.00",
+            effective_on=date(2026, 1, 31), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 1, 31), "10.00")],
+            period=(date(2026, 1, 1), date(2026, 1, 31)),
+            file_name="january.csv",
+        )
+        _seed_import(
+            db, seed_user["account"], stated="500.00",
+            effective_on=date(2026, 3, 10), evidence=_UNCORROBORATED,
+            file_name="march.csv", lines=[(date(2026, 3, 10), "-5.00")],
+        )
+        db.session.commit()
+
+        body = auth_client.get(_url(seed_user["account"].id)).get_data(
+            as_text=True,
+        )
+
+        assert body.count("Nothing has confirmed that figure") == 1
+        assert body.index("(january.csv)") < body.index(
+            "Nothing has confirmed that figure",
+        )
+        assert body.index("(march.csv)") < body.index(
+            "Nothing has confirmed that figure",
+        )
+
+    def test_a_checkpoint_is_listed_with_its_verdict(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """One agreeing statement and one off by -$100.00, each named."""
+        _seed_import(
+            db, seed_user["account"], stated="1000.00",
+            effective_on=date(2026, 3, 5), evidence=_FILE_CHAIN,
+            file_name="ytd.csv",
+            lines=[(date(2026, 3, 1), "100.00"),
+                   (date(2026, 3, 3), "-40.00"),
+                   (date(2026, 3, 5), "25.00")],
+        )
+        _seed_import(
+            db, seed_user["account"], stated="1075.00",
+            effective_on=date(2026, 3, 3), evidence=_UNCORROBORATED,
+            file_name="guessed.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        _seed_import(
+            db, seed_user["account"], stated="975.00",
+            effective_on=date(2026, 3, 3),
+            evidence=StatementBalanceEvidenceEnum.CORROBORATED,
+            file_name="agreeing.csv", lines=[],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        db.session.commit()
+
+        body = auth_client.get(_url(seed_user["account"].id)).get_data(
+            as_text=True,
+        )
+
+        assert body.count("Also stated:") == 2
+        # Each checkpoint's verdict is read between its own file name and
+        # the next "Also stated:" (or the block's end), so a figure the
+        # OTHER checkpoint states cannot satisfy this one's assertion.
+        guessed = body[body.index("(guessed.csv)"):body.index("(agreeing.csv)")]
+        assert "off by -$100.00" in guessed
+        assert re.search(
+            r"the walk from the figure above says\s*"
+            r'<span class="font-mono">\$975\.00</span> for that day',
+            guessed,
+        )
+        agreeing = body[body.index("(agreeing.csv)"):body.index("</p>", body.index("(agreeing.csv)"))]
+        assert ">agrees</span>" in agreeing
+        assert "off by" not in agreeing
+        # The checkpoint moves nothing: 03-03's bank balance is the walk's.
+        assert "$975.00" in _bank_balance_cell(_row_for(body, date(2026, 3, 3)))
+
+    def test_a_run_with_no_figure_says_so_beside_an_anchored_one(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """Ruling **R-BAL64**: both blocks on one page, and the count."""
+        _seed_import(
+            db, seed_user["account"], stated="500.00",
+            effective_on=date(2026, 2, 20), evidence=_UNCORROBORATED,
+            file_name="february.csv", lines=[(date(2026, 2, 20), "-5.00")],
+        )
+        _seed_import(
+            db, seed_user["account"], stated=None, file_name="march.csv",
+            lines=[(date(2026, 3, 1), "50.00"), (date(2026, 3, 5), "-20.00")],
+        )
+        db.session.commit()
+
+        body = auth_client.get(_url(seed_user["account"].id)).get_data(
+            as_text=True,
+        )
+
+        assert "walked from" in body
+        assert "No statement here places a balance on a day" in body
+        assert body.index("(february.csv)") < body.index(
+            "No statement here places a balance on a day",
+        )
+        # The gap 02-21..02-28 (8) and March's 5 days.
+        assert "13 day(s) not priced" in body
 
 
 class TestTheDrillDown:

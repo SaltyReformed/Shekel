@@ -347,22 +347,15 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   the level relation (**R-IS**), split 2026-09-03 by ruling **R-JN**: as written it claimed *a level
   never moves a balance* eight ranks before `X-f3c-5` stops an assertion resetting a plain account.
   It ticks with its second leaf; it subsumed `bank_import:X-gh` and took `X-f6g`'s coverage pass.
-  * [ ] **X-bj-1** the DECOMPOSED parent of the level relation (**R-BAL55**): 1a built it, 1b
-    chooses within the run; ticks with 1b.
-    * [x] **X-bj-1a** `1d1f7ce8` -- ONE level relation: `budget.account_anchor_history` holds the
-      owner's true-ups and the bank's placements (**R-BAL47**..**R-BAL52**), a release is an appended
-      `budget.anchor_releases` row, coverage stays the statement's (**R-BAL53**), the within-file
-      bound is a two-attachment trigger (**R-BAL54**), the two gates narrowed (**R-BAL56**,
-      **R-BAL57**); closed **BAL-485**. Record in `archive/x_bj_1a_as_built_2026-09-16.md`.
-    * [ ] **X-bj-1b** `feat(cash): the bank walk anchors within the run` -- **N-343**. `usable_anchor`
-      still chooses ONE anchor per account by evidence, so a stronger anchor in an older,
-      disconnected run leaves recent days unpriced (reproduced: a `file_chain` anchor at 2026-01-31
-      left 2026-08-21 answering nothing). `fold_bank_balances` chooses PER RUN among standing bank
-      levels the run reaches (`reaches_end_of`), strongest evidence then the latest day; every other
-      level in the run is a CHECKPOINT `walked - observed` on `BankBalances`; `BankAgreement.anchor`
-      becomes per-run anchors plus checkpoints and `statement_agreement.html` lists them. No schema
-      change; it CAN price a day unpriced today, so it is graded on its own before/after dump with
-      `tests/manual/verify_level_relation.py` and every moved day explained.
+  * [x] **X-bj-1** `82b534f6` -- the DECOMPOSED parent of the level relation (**R-BAL55**): 1a built
+    it (`1d1f7ce8`, **R-BAL47**..**R-BAL57**; record in `archive/x_bj_1a_as_built_2026-09-16.md`),
+    1b chose within the run; ticked with 1b.
+    * [x] **X-bj-1b** `82b534f6` -- the bank walk anchors PER RUN, every other standing bank level a
+      run reaches a CHECKPOINT listed per run with its file (**R-BAL63**); a run with no standing
+      bank level anchors on nothing (**R-BAL64**); the fold TOTAL, `runs` replacing `anchor` and
+      `imports` (**R-BAL65**); the import door's opening from the run's anchor (**R-BAL66**); 0
+      leaves moved on production's shape, 27 predicted on the planted copy; closed **N-343**, opened
+      **BAL-512**. Record in `archive/x_bj_1b_as_built_2026-09-18.md`.
   * [ ] **X-bj-2** `feat(cash): a level is an observation, never a reset` -- the second half, riding
     **X-f3c-5** (**R-JN**): once the flip stops an assertion resetting a plain account, a level moves no
     balance and yields `discrepancy = observed - computed`, zero being healthy. It closes **N-314**: the
@@ -382,26 +375,11 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [ ] **X-bi-7c** the suite's one-off builder on 7b's producer -- the DECOMPOSED parent, split
-      2026-09-16 into the builder and four leaves of sites by file group (the AST census in
-      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked); ticks with 7c-5.
-      * [x] **X-bi-7c-1** `555410b6` -- `one_off_row_of` on the producer (the twin of
-        `generate_row_of`); the three bare builders on it; `legacy_link_less_row_of` the one
-        transitional home; `payback_row_of`; the census instrument; the 16 failures the move
-        surfaced classified in six classes and fixed; **R-BAL58** (the one app change), **R-BAL59**.
-      * [x] **X-bi-7c-2** `1c1b2de8` -- 60 rows in 25 files (`test_services`, `test_utils`,
-        `test_ref_cache`) onto the builder by the committed mover; 7 failures classified, five
-        double-graded cases moved to the legacy home and named for 7d; the marker 287 -> 227.
-      * [x] **X-bi-7c-3** `b9ee1495` -- 58 rows in 26 files (`test_routes` minus the grid pair) onto
-        the builder; 15 failures classified (**R-BAL60**: ten raw-column readers onto
-        `resolved_amount`, the two C-18 locking cases on an owner-repriced engine row); three
-        category-delete cases re-aimed at the row's clause; the marker 227 -> 169.
-      * [x] **X-bi-7c-4** `a32a7c98` -- 89 of the grid pair's 90 rows onto the builder (81 by the mover,
-        8 by hand); 2 raw-column readers re-aimed (R-BAL60's class), two double-graded R-BAL34 cases
-        and two own-flag fixtures put on the app's own state; one bare row stays, grading the
-        table's NOT NULL; the marker 169 -> 80.
-      * [ ] **X-bi-7c-5** `tests/test_integration`, `tests/test_models`, `tests/test_adversarial`,
-        `tests/test_performance`, `tests/test_concurrent`, `test_audit_fixes`; the marker's last figure.
+    * [x] **X-bi-7c** `4f15f222` -- the suite's one-off builder on 7b's producer, the DECOMPOSED parent
+      split 2026-09-16 into the builder and four leaves by file group (the AST census in
+      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
+      the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5. The five leaves'
+      records: `archive/shipped_steps_archived_2026-09-18.md`.
     * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
       one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
       `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
@@ -410,12 +388,14 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
-    the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
-    * [x] **X-bi-3c** `68401855` -- both transfer legs covered through the seam (**R-BAL41**); the
-      ledger's endpoint ruled C (**R-BAL45**), 3c its first leaf; an endpoint move carries the
-      movements (**R-BAL46**, migration `c4e8a2d7f1b3`); the lock predicate total; six rows born.
-    * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
-      scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
+    the payment row a purchase already is (**R-BAL39**); five leaves, only 3d moves money.
+    * [x] **X-bi-3d** `3a15daf4` -- every settled row covered by the fail-closed migration
+      `ad573b07bede` (**R-BAL40**): 162 rows / `$89,741.80` on the 2026-09-18 restore, 0 dateless; the
+      figure's source is the writer's (**R-BAL61**), the downgrade leaves the rows (**R-BAL62**);
+      **MOVED MONEY** `$0.00`, three harnesses byte-identical across the cutover and the resync.
+    * [ ] **X-bi-3e** the settle record carries the figure's source, each writer stating it
+      (**R-BAL61**); both day-inference spellings deleted; a revert un-dates the movement. Closes
+      **BAL-508**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     **Its design loop hears a fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18): whether
     `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than
@@ -1043,6 +1023,10 @@ section 4, under their unchanged ids.*
 * [ ] **X-cl** `chore(tests): delete the dead reconcile-rules harness` -- closes **BAL-510**:
   `tests/manual/measure_entry_reconcile_rules.py` reads and writes two deleted columns, so it
   cannot run against any current schema; a proof instrument that cannot compile claims nothing.
+* [ ] **X-cm** `fix(cash): the constant-offset signature reads per run` -- closes **BAL-512**:
+  `BankAgreement.constant_offset` is account-wide while the walk anchors per run (**R-BAL63**), so
+  one run's wrong starting figure goes unreported beside a run whose is right; per `RecordedRun`,
+  rendered in its block; the account-wide property then has no reader and goes.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
