@@ -51,6 +51,7 @@ from app.services.reconcile_service._offers import (
     OfferKind,
     OutstandingTransaction,
 )
+from app.services.stated_figure import StatedFigure
 from app.utils.log_events import EVT_TRANSACTIONS_RECONCILED
 
 
@@ -136,7 +137,7 @@ def _offer_kind(txn: Transaction) -> OfferKind:
 
 def _settle_one(
     txn: Transaction,
-    submitted: Decimal | None,
+    submitted: StatedFigure | None,
     statement: _rows.Statement,
 ) -> bool:
     """Settle one row through the grid's own verb; say if a human's figure won.

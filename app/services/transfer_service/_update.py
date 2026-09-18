@@ -16,7 +16,7 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 """
 
 import logging
-from decimal import Decimal
+
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
@@ -46,6 +46,7 @@ from app.services.status_seam import (
     figure_for_status,
 )
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.services.transfer_service._status import (
     apply_settle_day_correction,
     apply_status_to_all_three,
@@ -71,7 +72,7 @@ logger = logging.getLogger(__name__)
 #: exactly what this module did until plan step X-f2-c3, where every reconcile
 #: tick stamped the settle day with the derived one and then rewrote it with the
 #: statement's through ruling **R-ED**'s CORRECTION door.
-_SETTLE_OWNED_FIELDS = frozenset({"status_id", "settled_amount", "settle_day"})
+_SETTLE_OWNED_FIELDS = frozenset({"status_id", "figure", "settle_day"})
 
 
 def _fields_the_settle_left(
@@ -93,7 +94,7 @@ def _fields_the_settle_left(
     send it, and the refusal is the reason a settled transfer always carries the
     day its money moved.
 
-    **``settled_amount=None`` no longer needs an exception, and losing it is
+    **A ``None`` figure no longer needs an exception, and losing it is
     plan step X-au-c3's** (see :func:`_apply_remaining_fields`' figure arm).  It
     used to mean "clear the column", because a settled transfer carrying no
     figure was a legal state -- every reader fell back to the row's plan.  A
@@ -149,22 +150,22 @@ def _grade_submitted_figure(
     Args:
         rows: The transfer and both shadows, at their pre-update status.
         updates: The update kwargs as submitted.  Mutated in place: an echoed
-            ``settled_amount`` has its key removed.
+            ``figure`` has its key removed.
 
     Raises:
-        ValidationError: When a ``settled_amount`` DIFFERING from what the pair
+        ValidationError: When a ``figure`` DIFFERING from what the pair
             records arrives beside a status that settles nothing.
     """
-    if updates.get("settled_amount") is None:
+    if updates.get("figure") is None:
         return
     figure = figure_for_status(
         rows.transfer,
         updates.get("status_id", rows.transfer.status_id),
-        updates["settled_amount"],
+        updates["figure"],
         recorded_figure(rows.expense),
     )
     if figure is None:
-        del updates["settled_amount"]
+        del updates["figure"]
 
 
 def _dispatch_settle(
@@ -212,7 +213,7 @@ def _dispatch_settle(
         return None
     return _settle.settle(
         rows, updates["status_id"],
-        submitted=updates.get("settled_amount"),
+        submitted=updates.get("figure"),
         settle_day=updates.get("settle_day"),
     )
 
@@ -231,7 +232,7 @@ def _apply_remaining_fields(
 
     :data:`_SETTLE_OWNED_FIELDS` reach it only when this update did NOT settle,
     because a settle writes all three as one act and they are dropped before
-    this runs.  So a ``status_id``, a ``settle_day`` or a ``settled_amount``
+    this runs.  So a ``status_id``, a ``settle_day`` or a ``figure``
     among the arms below belongs to a non-settling change -- a revert, a cancel,
     an archive, or a CORRECTION to what a pair already recorded -- and each arm
     says what that means.
@@ -300,7 +301,7 @@ def _apply_remaining_fields(
     # A figure only ever reaches here as a CORRECTION -- a settling one is the
     # settle's (:data:`_SETTLE_OWNED_FIELDS`), and one on an unsettled pair was
     # refused before any field was written (:func:`_grade_submitted_figure`).
-    submitted = updates.get("settled_amount")
+    submitted = updates.get("figure")
     correction = (
         None if submitted is None
         else correction_record(rows.expense, submitted)
@@ -708,7 +709,7 @@ def settle_transfer(
     transfer_id,
     user_id,
     *,
-    submitted: Decimal | None = None,
+    submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
@@ -738,9 +739,11 @@ def settle_transfer(
     Args:
         transfer_id: The transfer to settle.
         user_id: The expected owner (defense-in-depth).
-        submitted: The figure a HUMAN supplied, when a door collected one --
-            the reconcile panel's amount box.  ``None`` means nobody typed one,
-            and the settle then books what the row is worth.
+        submitted: The figure a door stated and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`; the reconcile
+            panel's amount box and the shadow popover, both ``typed``).
+            ``None`` means nobody stated one, and the settle then books what
+            the row is worth.
         settle_day: The civil day the money moved and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`), when the caller knows
             it -- the reconcile tick's statement day on the ``asserted`` basis,
@@ -764,7 +767,7 @@ def settle_transfer(
     """
     updates = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if submitted is not None:
-        updates["settled_amount"] = submitted
+        updates["figure"] = submitted
     if settle_day is not None:
         updates["settle_day"] = settle_day
     _, corrected = _apply_transfer_updates(
@@ -795,8 +798,9 @@ def update_transfer(transfer_id, user_id, **kwargs):
     carry it.  Both are gone.  See :func:`_resolve_endpoints` for what a move
     is refused for and :func:`_apply_endpoint_move` for what it writes.
 
-    Accepted kwargs:
-        amount         -- New transfer amount (positive Decimal).
+    Accepted kwargs (``amount`` is NOT one since plan step X-au-f: the plan's
+    figure travels as ``amount_ownership`` below, and a bare ``amount`` is
+    silently ignored like any other unlisted key):
         status_id      -- New status for transfer and both shadows.
         pay_period_id  -- New period for transfer and both shadows.
         from_account_id -- New SOURCE account for the transfer and its expense
@@ -810,9 +814,12 @@ def update_transfer(transfer_id, user_id, **kwargs):
         category_id    -- New category (expense shadow only).
         name           -- New display name (transfer only, not shadows).
         notes          -- New notes (transfer only, not shadows).
-        settled_amount -- What MOVED, recorded on both shadows only: a
-                          transfer's money moves on its two legs and the parent
-                          carries no such column.  A figure arriving WITH a
+        figure         -- What MOVED and WHO WROTE the figure, as one
+                          :class:`~app.services.stated_figure.StatedFigure`
+                          (``typed`` from the transfer and shadow popovers,
+                          plan step X-bi-3e-1), recorded on both shadows only:
+                          a transfer's money moves on its two legs and the
+                          parent carries no such column.  A figure arriving WITH a
                           settling ``status_id`` is the settle's own, subject to
                           its echo rule (:data:`_SETTLE_OWNED_FIELDS`).  One
                           arriving on a pair that is ALREADY settled is a

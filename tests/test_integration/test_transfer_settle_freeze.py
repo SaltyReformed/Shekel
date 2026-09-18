@@ -67,6 +67,7 @@ from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    typed,
     amount_basis_for,
     an_entered_day,
     create_transfer,
@@ -223,7 +224,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_amount=Decimal("1512.44"),
+                figure=typed(Decimal("1512.44")),
             )
             db.session.commit()
 
@@ -253,7 +254,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_amount=Decimal("250.00"),
+                figure=typed(Decimal("250.00")),
             )
             db.session.commit()
 
@@ -622,10 +623,10 @@ class TestTheNamedVerbItself:
                 nothing_typed.id, owner,
             ) is False
             assert transfer_service.settle_transfer(
-                echoed.id, owner, submitted=Decimal("120.00"),
+                echoed.id, owner, submitted=typed(Decimal("120.00")),
             ) is False
             assert transfer_service.settle_transfer(
-                corrected.id, owner, submitted=Decimal("95.50"),
+                corrected.id, owner, submitted=typed(Decimal("95.50")),
             ) is True
 
             db.session.commit()
@@ -675,7 +676,7 @@ class TestTheNamedVerbItself:
             # A stale tab replays the settle, carrying a figure and a later day.
             assert transfer_service.settle_transfer(
                 xfer.id, owner,
-                submitted=Decimal("999.99"),
+                submitted=typed(Decimal("999.99")),
                 settle_day=an_entered_day(display_today()),
             ) is False
             db.session.commit()
@@ -778,7 +779,7 @@ class TestTheNamedVerbItself:
             corrected = Decimal("1512.44")
 
             transfer_service.settle_transfer(
-                xfer.id, user_id, submitted=corrected,
+                xfer.id, user_id, submitted=typed(corrected),
             )
             db.session.commit()
             transfer_service.update_transfer(
@@ -810,7 +811,7 @@ class TestTheNamedVerbItself:
             xfer, _shadow = _derived_loan_transfer(seed_user, seed_periods)
             transfer_service.settle_transfer(
                 xfer.id, seed_user["user"].id,
-                submitted=Decimal("1512.44"),
+                submitted=typed(Decimal("1512.44")),
             )
             db.session.commit()
 
@@ -854,7 +855,7 @@ class TestATransfersOfferIsWhatItsReSettleBOOKS:
             # Settle at a HUMAN's figure, then revert -- the round trip the
             # full-edit card instructs.
             assert transfer_service.settle_transfer(
-                xfer_id, owner, submitted=Decimal("95.50"),
+                xfer_id, owner, submitted=typed(Decimal("95.50")),
             ) is True
             db.session.commit()
             transfer_service.update_transfer(

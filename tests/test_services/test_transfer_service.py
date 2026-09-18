@@ -32,6 +32,7 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    typed,
     record_paydays_across_a_hole,
     rhythm_of,
     write_past_the_amount_seam,
@@ -584,7 +585,7 @@ class TestUpdateTransfer:
 
             with pytest.raises(ValidationError, match="is not settling"):
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, settled_amount=Decimal("245.00")
+                    xfer.id, td["user"].id, figure=typed(Decimal("245.00"))
                 )
 
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
@@ -710,7 +711,7 @@ class TestUpdateTransfer:
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                status_id=done_id, settled_amount=Decimal("100"),
+                status_id=done_id, figure=typed(Decimal("100")),
             )
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer.id,
@@ -2303,7 +2304,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             day = self._legs(xfer.id)[0].settled_on
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settled_amount=Decimal("263.11"),
+                xfer.id, td["user"].id, figure=typed(Decimal("263.11")),
             )
             db.session.flush()
 
@@ -2364,7 +2365,7 @@ class TestTheFigureCorrectionDoorOnAPair:
                     xfer.id, td["user"].id,
                     is_override=True,
                     amount_ownership=AmountOwnership.own(Decimal("999.00")),
-                    settled_amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                 )
 
             assert "has nothing to record" in str(exc.value)
@@ -2399,7 +2400,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             )
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settled_amount=Decimal("250.00"),
+                xfer.id, td["user"].id, figure=typed(Decimal("250.00")),
             )
             db.session.flush()
 
@@ -2444,7 +2445,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             # False the moment the settle stops owning it (neutral review,
             # 2026-08-18).
             corrected = transfer_service.settle_transfer(
-                xfer.id, td["user"].id, submitted=Decimal("241.00"),
+                xfer.id, td["user"].id, submitted=typed(Decimal("241.00")),
             )
             db.session.flush()
 

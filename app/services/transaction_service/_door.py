@@ -17,13 +17,12 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 ``request`` / ``session`` imports, no commit.
 """
 
-from decimal import Decimal
-
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
 from app.services.row_valuation import recorded_figure
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
@@ -43,7 +42,7 @@ def apply_requested_status(
     new_status_id: int,
     *,
     settle_day: SettleDay | None = None,
-    submitted: Decimal | None = None,
+    submitted: StatedFigure | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
 
@@ -102,12 +101,16 @@ def apply_requested_status(
             the submission -- which is what stamps the ``entered`` basis on a
             day that came out of a date box.  ``None`` leaves the seam's rule in
             force.
-        submitted: The figure a HUMAN supplied, when the door collected one.
-            Read only by the SETTLE arm, which decides whether it is a
-            correction to record; ``None`` means nobody typed one, and the
-            settle records what it resolved instead.  Every other status change
-            ignores it, because a figure records what MOVED and nothing else
-            here moves money.
+        submitted: The figure the door STATED and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`): ``typed`` from
+            the popover, ``observed`` from the statement matcher's transaction
+            arm (plan step **X-bi-3e-1**, ruling **R-BAL61**).  Read by the
+            SETTLE arm, which decides whether it is a correction to record, and
+            by the identity arm, which records it as one on a row staying
+            settled; ``None`` means nobody stated one, and the settle records
+            what it resolved instead.  Every other status change ignores it,
+            because a figure records what MOVED and nothing else here moves
+            money.
 
     Raises:
         ValidationError: From an illegal transition or the seam's settle-day
@@ -179,7 +182,7 @@ def apply_requested_status(
 
 
 def _correction_for_status(
-    txn: Transaction, new_status_id: int, submitted: Decimal | None,
+    txn: Transaction, new_status_id: int, submitted: StatedFigure | None,
 ) -> Settlement | None:
     """Return the record a submitted figure makes on *txn*, or ``None``.
 
@@ -208,13 +211,13 @@ def _correction_for_status(
         txn: The row the figure arrived for.
         new_status_id: The ``ref.statuses.id`` the row is moving to -- the
             SUBMITTED status when the form carried one, else the row's own.
-        submitted: The figure a human supplied, or ``None`` when nobody typed
-            one.
+        submitted: The figure the door stated and who wrote it, or ``None``
+            when nobody stated one.
 
     Returns:
-        A ``corrected`` :class:`~app.services.status_seam.Settlement`, or
-        ``None`` when no figure arrived or the one that did is an echo of what
-        the row already records.
+        A ``corrected`` :class:`~app.services.status_seam.Settlement` carrying
+        the stated source, or ``None`` when no figure arrived or the one that
+        did is an echo of what the row already records.
 
     Raises:
         ValidationError: When the status settles nothing (propagated from

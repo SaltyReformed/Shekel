@@ -36,7 +36,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, SettlementBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
@@ -45,6 +45,7 @@ from app.services.settle_day import record_settle_day, recorded_settle_day
 from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    typed,
     family_journal_filter,
     add_entry,
     amount_basis_for,
@@ -853,6 +854,14 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             assert resolve_transaction_amount(
                 reloaded, amount_basis_for(reloaded),
             ) == Decimal("500.00")
+            # WHO WROTE it: the popover is a person's door, and the route
+            # states ``typed`` with the figure (plan step X-bi-3e-1, ruling
+            # R-BAL61) -- graded on the covering movement, the source's home.
+            (movement,) = status_seam.covering_movements(reloaded)
+            assert movement.amount == Decimal("245.32")
+            assert movement.figure_source_id == ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
+            )
 
     def test_a_submitted_actual_on_a_derived_row_is_refused(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -934,7 +943,7 @@ class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
         txn.template.is_envelope = False
         db.session.commit()
         transaction_service.settle_transaction(
-            txn, submitted=Decimal("245.32"),
+            txn, submitted=typed(Decimal("245.32")),
         )
         db.session.commit()
         status_seam.apply_status_change(
@@ -959,7 +968,7 @@ class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
             txn_id = txn.id
 
             offered = transaction_service.settle_amount(txn, amount_basis_for(txn))
-            transaction_service.settle_transaction(txn, submitted=offered)
+            transaction_service.settle_transaction(txn, submitted=typed(offered))
             db.session.commit()
 
             booked = settled_figure(db.session.get(Transaction, txn_id))
@@ -984,7 +993,7 @@ class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
             txn_id = txn.id
 
             transaction_service.settle_transaction(
-                txn, submitted=Decimal("500.00"),
+                txn, submitted=typed(Decimal("500.00")),
             )
             db.session.commit()
 

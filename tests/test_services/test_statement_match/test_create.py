@@ -31,7 +31,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
@@ -303,6 +303,36 @@ class TestRecordingALineAddsTheMovement:
             assert entry.settled_on == posted
             assert entry.purchased_on == posted - timedelta(days=3)
             assert recorded.made_on == posted - timedelta(days=3)
+
+    def test_the_purchase_says_the_BANK_wrote_its_figure(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-BAL61**, at the one site that states ``observed``.
+
+        The born-purchase builder (``_create._born_purchase``) is one of the
+        two places in the app that state a figure as the bank's, and the
+        door no longer infers it from the ``observed`` day beside it (plan
+        step X-bi-3e-1) -- so the label is graded here, through the review
+        screen's own create path, on the stored column.  Change the builder
+        to say ``typed`` and this fails while every day assertion still
+        passes.
+        """
+        with app.app_context():
+            envelope = _closed_from_purchases(seed_user)
+            statement = an_import(seed_user)
+            posted = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+            line = a_bank_line(
+                seed_user, statement, amount="-57.96", posted_on=posted,
+            )
+
+            recorded = _record(seed_user, line, transaction_id=envelope.id)
+            db.session.flush()
+
+            entry = db.session.get(TransactionEntry, recorded.entry_id)
+            assert entry.amount == Decimal("57.96")
+            assert entry.figure_source_id == ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.OBSERVED,
+            )
 
     def test_a_line_stating_no_made_day_takes_the_posting_day(
         self, app, db, seed_user,
