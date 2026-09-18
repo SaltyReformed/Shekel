@@ -36,10 +36,8 @@ def _bank_level(account, *, amount, day, period):
         ),
         file_name="bank.csv",
         file_digest="bank.csv".ljust(64, "0"),
-        period_start=period[0],
-        period_end=period[1],
-        line_count=1,
-        recorded_count=1,
+        declared_start=period[0],
+        declared_end=period[1],
         stated_balance=Decimal(amount),
         stated_balance_on=period[1],
     )

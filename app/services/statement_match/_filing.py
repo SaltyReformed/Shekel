@@ -25,13 +25,15 @@ files a subset of that set and can never widen it, which is the property
 **Three narrowings turn "the screen would offer this" into "a rule may file
 it", and each is a measured hazard rather than caution.**
 
-* **NEW swipe lines only** (**R-GI**).  A line names the import that FIRST
-  recorded it, so ``import_id`` IS the freshness fact and no second column is
-  needed.  It is also exactly right about the case that looks like an
-  exception: :func:`~app.services.statement_import._record._absorb_gained_facts`
-  fills a recorded line's ``merchant_id`` when a later export names one the
-  first adapter could not, so such a line becomes rule-keyed at a LATER import
-  while still naming the earlier one -- and it is not a new swipe, so it is not
+* **NEW swipe lines only** (**R-GI**).  A line is fresh to the import that
+  FIRST sighted it (plan step ``bank_import:X-f6b-1``: derived from the
+  sightings, ``_fresh_line_ids``), so no second column is needed.  It is also
+  exactly right about the case that looks like an exception:
+  :func:`~app.services.statement_import._record._absorb_gained_facts` fills
+  a recorded line's ``merchant_id`` when a later export names one the first
+  adapter could not, so such a line becomes rule-keyed at a LATER import
+  while its first sighting stays the earlier one -- and it is not a new
+  swipe, so it is not
   filed.  A re-import of an overlapping span records no fresh line and
   therefore files nothing, which is what makes this door idempotent for free.
 * **The pass must have finished LOOKING** (:meth:`~._reads.ReviewSet
@@ -78,7 +80,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
-from app.models.statement_import import BankStatementLine
+from app.models.statement_import import StatementLineSighting
 from app.models.statement_match import StatementMatch
 
 from ._accepted_view import AcceptedGroup, accepted_groups
@@ -258,15 +260,17 @@ RECEIPT_LIMIT: int = 20
 
 
 def _fresh_line_ids(account_id: int, import_id: int) -> "frozenset[int]":
-    """Return the ids of the lines *import_id* was the FIRST to record.
+    """Return the ids of the lines *import_id* was the FIRST to sight.
 
-    **The freshness fact is the line's own ``import_id``** and no second column
-    states it: :func:`~app.services.statement_import._record.record_statement`
-    writes it once, when the line is staged, and a re-import of an overlapping
-    span recognises the line rather than re-writing it (which is what
-    ``ImportOutcome.already_known`` reports).  So this reads the answer the
-    recording layer already stored instead of the caller threading a list
-    across the two doors.
+    **The freshness fact is derived from the sightings** (plan step
+    ``bank_import:X-f6b-1``): a line is fresh to an import when that
+    import's sighting of it is the line's earliest
+    (:meth:`~app.models.statement_import.StatementLineSighting
+    .first_import_of_each_line`), which is the one spelling of *first* the
+    receipt's *recorded* count reads too.  *It read the line's own
+    ``import_id`` until that step*, when a line belonged to one import; a
+    line another source had already shown is not this import's to file,
+    because it was offered when it first appeared.
 
     Args:
         account_id: The account being imported into, which is the ONE statement
@@ -276,14 +280,12 @@ def _fresh_line_ids(account_id: int, import_id: int) -> "frozenset[int]":
         import_id: The import that just ran.
 
     Returns:
-        The line ids, or empty for an import that recorded nothing.
+        The line ids, or empty for an import that sighted nothing first.
     """
+    first = StatementLineSighting.first_import_of_each_line(account_id)
     rows = (
-        db.session.query(BankStatementLine.id)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.import_id == import_id,
-        )
+        db.session.query(first.c.line_id)
+        .filter(first.c.import_id == import_id)
         .all()
     )
     return frozenset(row[0] for row in rows)
@@ -611,7 +613,9 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
             one caller is the import route, which passes the outcome it has
             just received.
             Its account is *scope*'s: an import belongs to one account
-            (``fk_bank_statement_lines_import_account``) and so does a pass,
+            (``statement_imports.account_id``, and every sighting of a line
+            is keyed to its import's account and its line's) and so does a
+            pass,
             and taking the account from the SCOPE is what stops one door's
             import being filed against another door's account -- a foreign
             ``import_id`` yields no line at all rather than a foreign one.

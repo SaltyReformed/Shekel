@@ -410,7 +410,12 @@ class TestTheAmountsAreUntouched:
     def test_no_figure_and_no_day_moves_across_the_backfill(
         self, app, db, seed_user, pre_migration_shape,
     ):
-        """Every column but the merchant is identical either side."""
+        """Every column but the merchant is identical either side.
+
+        The line's columns are the four every source agrees on since plan
+        step ``bank_import:X-f6b-1`` (the wording and the rest are a
+        sighting's); the backfill under test touches ``merchant_id`` alone.
+        """
         statement = an_import(seed_user)
         a_bank_line(
             seed_user, statement, amount="-40.81", merchant="Food Lion",
@@ -418,17 +423,15 @@ class TestTheAmountsAreUntouched:
         )
         _to_the_pre_migration_state(db)
         before = db.session.execute(text(
-            "SELECT id, posted_on, transaction_on, amount, description, "
-            "source_category, external_id, sequence_in_group, running_balance "
+            "SELECT id, posted_on, amount, sequence_in_group "
             "FROM budget.bank_statement_lines ORDER BY id"
         )).all()
 
         _upgrade(db)
 
         after = db.session.execute(text(
-            "SELECT id, posted_on, transaction_on, amount, description, "
-            "source_category, external_id, sequence_in_group, running_balance "
+            "SELECT id, posted_on, amount, sequence_in_group "
             "FROM budget.bank_statement_lines ORDER BY id"
         )).all()
         assert after == before
-        assert before[0][3] == Decimal("-40.81")
+        assert before[0][2] == Decimal("-40.81")

@@ -126,12 +126,14 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     Attributes:
         import_id: The act that was undone.
         file_name: What it was uploaded as, so the flash names what went.
-        period_start: The earliest day it covered.
-        period_end: The latest.
-        lines_removed: Bank lines this import had FIRST recorded, and which
-            went with it.  A line a later import merely re-saw is one this
-            import owns; a line THIS import merely re-saw belongs to an earlier
-            one and stays.
+        declared_start: The first day it declared it answered for.
+        declared_end: The last.
+        lines_removed: Bank lines this import ALONE had sighted, and which
+            went with it (plan step ``bank_import:X-f6b-1``, ruling
+            **R-BI10**).  A line another import also sighted stays, whichever
+            of the two showed it first, because a line lives while any
+            sighting does.  *It read "lines this import had FIRST recorded"
+            until that step*, when a line belonged to one import.
         matches_released: Accepted matches that named at least one of those
             lines.  Each is released whole, so a match spanning two imports
             frees the other import's lines back to unexplained as well.
@@ -175,8 +177,8 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
 
     import_id: int
     file_name: str
-    period_start: date
-    period_end: date
+    declared_start: date
+    declared_end: date
     lines_removed: int
     matches_released: int
     anchors_released: int
@@ -199,14 +201,14 @@ class _Doomed:
     Attributes:
         source_id: Which adapter recorded it, for the identity reclamation.
         file_name: What it was uploaded as, so the flash names what went.
-        period_start: The earliest day it covered.
-        period_end: The latest.
+        declared_start: The first day it declared it answered for.
+        declared_end: The last.
     """
 
     source_id: int
     file_name: str
-    period_start: date
-    period_end: date
+    declared_start: date
+    declared_end: date
 
     @classmethod
     def of(cls, statement_import: StatementImport) -> "_Doomed":
@@ -221,8 +223,8 @@ class _Doomed:
         return cls(
             source_id=statement_import.source_id,
             file_name=statement_import.file_name,
-            period_start=statement_import.period_start,
-            period_end=statement_import.period_end,
+            declared_start=statement_import.declared_start,
+            declared_end=statement_import.declared_end,
         )
 
 
@@ -369,10 +371,10 @@ def delete_import(
 
     The order is the guarantee.  Every fact the report needs is read while the
     rows still exist; the affected matches are RELEASED, each through the one
-    door that releases a match; only then is the import removed, taking the
-    lines it first recorded with it; and the source-account pairing is
-    reconsidered afterwards, because whether it survives depends on what is
-    left.
+    door that releases a match; only then is the import removed, taking its
+    sightings and every line it alone sighted with it; and the source-account
+    pairing is reconsidered afterwards, because whether it survives depends
+    on what is left.
 
     Does NOT commit -- the route owns the session boundary.
 
@@ -397,13 +399,16 @@ def delete_import(
     # Counted, and the EARLIEST day among them taken, before the cascade
     # removes them: what an anchor rests on is the lines themselves, so the
     # release below is keyed on the days that actually go rather than on this
-    # import's declared span.  An import that recorded NOTHING removes nothing
-    # and must therefore release nothing -- measured on the developer's own
-    # database, where undoing a re-import of his 2026-08-16 export took a good
-    # anchor with it while deleting 0 lines.  **The SAME read the page
-    # previews with** (:func:`~._reads.lines_by_import`), for the reason the
-    # two reads below give: the confirmation keys its preview of the release
-    # on this day, and a second spelling of it here could disagree.
+    # import's declared window.  The lines that go are the ones this import
+    # ALONE sighted (``budget.remove_line_left_unsighted`` takes a line with
+    # its last sighting), so an import whose every line another import also
+    # sighted removes nothing and must therefore release nothing -- measured
+    # on the developer's own database, where undoing a re-import of his
+    # 2026-08-16 export took a good anchor with it while deleting 0 lines.
+    # **The SAME read the page previews with**
+    # (:func:`~._reads.lines_by_import`), for the reason the two reads below
+    # give: the confirmation keys its preview of the release on this day, and
+    # a second spelling of it here could disagree.
     owned = lines_by_import(account_id).get(import_id)
     # **Decided BEFORE the rows go, from the ONE read the confirmation
     # previews with** (:func:`~._reads.orphan_merchants_by_import`); deleted
@@ -447,11 +452,13 @@ def delete_import(
     )
     db.session.flush()
 
-    # The lines go with the import at the database tier
-    # (``fk_bank_statement_lines_import_account``), and so does the level it
-    # placed (``fk_anchor_history_statement_import_account``), which is also
-    # what makes the ordering above provable: with the matches gone, nothing
-    # names a line, and ``fk_statement_match_members_line_account`` would
+    # The sightings go with the import at the database tier
+    # (``fk_statement_line_sightings_import_account``), every line left with
+    # no sighting goes with them (``budget.remove_line_left_unsighted``), and
+    # so does the level the import placed
+    # (``fk_anchor_history_statement_import_account``) -- which is also what
+    # makes the ordering above provable: with the matches gone, nothing names
+    # a dying line, and ``fk_statement_match_members_line_account`` would
     # refuse this statement if anything did.
     db.session.delete(statement_import)
     db.session.flush()
@@ -469,8 +476,8 @@ def delete_import(
     return ImportRemoval(
         import_id=import_id,
         file_name=doomed.file_name,
-        period_start=doomed.period_start,
-        period_end=doomed.period_end,
+        declared_start=doomed.declared_start,
+        declared_end=doomed.declared_end,
         lines_removed=0 if owned is None else owned.count,
         matches_released=matches_released,
         identity_forgotten=identity_forgotten,

@@ -113,21 +113,24 @@ def locked_for_write(query):
     ``populate_existing()`` the ORM handed back the instance it already held,
     unrefreshed, because it populates only the attributes an existing
     instance has NOT loaded.  The one concurrent writer of a recorded line
-    is a re-import's NULL-fill
-    (``statement_import._record._absorb_gained_facts``: running balance,
-    source category, external id, transaction day, merchant), and two of
-    those columns reach every door's decision: ``merchant_id`` is the rule
-    lookup at the create and income doors, the deposit's category placement
-    at the income door and the skip door's account-payment refusal (ruling
-    **R-JI**); ``transaction_on`` is the day the create door files the
-    purchase on and, through :meth:`~._offers.MatchDays.of`, the day the
-    match door re-dates a purchase to (ruling **R-FW**).  *A first draft of
-    this sentence named two doors; the neutral review counted four, and an
-    enumeration a reader takes as complete has to be.*
-    ``populate_existing()`` overwrites every column from the
-    locked row and re-runs the joined ``merchant`` load, so ``merchant_name``
-    is the row's too; a change pending on the instance is flushed before the
-    statement runs (the session autoflushes), so the row read back holds it.
+    is a re-import, which since plan step ``bank_import:X-f6b-1`` writes
+    two things: the merchant KEY filled on the line where it held none
+    (``statement_import._record._absorb_gained_facts``), and a new SIGHTING
+    row carrying what the later export stated -- its transaction day among
+    them.  Both reach a door's decision: ``merchant_id`` is the rule lookup
+    at the create and income doors, the deposit's category placement at the
+    income door and the skip door's account-payment refusal (ruling
+    **R-JI**); ``transaction_on`` -- the earliest day any sighting states --
+    is the day the create door files the purchase on and, through
+    :meth:`~._offers.MatchDays.of`, the day the match door re-dates a
+    purchase to (ruling **R-FW**).  *A first draft of this sentence named
+    two doors; the neutral review counted four, and an enumeration a reader
+    takes as complete has to be.*  ``populate_existing()`` overwrites every
+    column from the locked row and re-runs the joined ``merchant`` and
+    ``sightings`` loads, so ``merchant_name`` and the sighting-derived
+    reads are the row's too; a change pending on the instance is flushed
+    before the statement runs (the session autoflushes), so the row read
+    back holds it.
     It composes HERE rather than at each site for the reason the mode does:
     a locked read written next year inherits it by calling this.  On
     :func:`lock_lines` it is vacuous by construction -- that read selects
@@ -166,12 +169,13 @@ def _lines_on(account_id: int, line_ids: "frozenset[int]"):
 
     **``id`` and not ``(posted_on, id)``, which this read ordered by until
     that step, because the order has to compose with the other ORDERED
-    writer of these rows and only ``id`` does.**  A re-import fills what a later export
-    states and the recorded line does not
-    (``statement_import._record._absorb_gained_facts``, the five columns
-    :func:`locked_for_write` names), and the ORM flushes a mapper's UPDATEs sorted
-    by PRIMARY KEY (``sqlalchemy.orm.persistence._sort_states``), so that
-    transaction takes its row locks in id order.  Ids are not monotone in
+    writer of these rows and only ``id`` does.**  A re-import fills the
+    merchant KEY a recorded line lacks
+    (``statement_import._record._absorb_gained_facts``; its other facts go
+    to a new sighting row, which takes only ``FOR KEY SHARE`` on the line),
+    and the ORM flushes a mapper's UPDATEs sorted by PRIMARY KEY
+    (``sqlalchemy.orm.persistence._sort_states``), so that transaction
+    takes its row locks in id order.  Ids are not monotone in
     posted day across imports -- a fresher export inserts a finalized swipe
     into an earlier day's block -- so a pass ordered by day held a later-id
     line while wanting an earlier one that the re-import held: the cycle one

@@ -24,13 +24,27 @@ from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.anchor_release import AnchorRelease
-from app.models.statement_import import StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from tests._test_helpers import (
     load_migration_module,
     run_migration_callable as _run,
 )
 
 _MIGRATION = load_migration_module("d2e9f4a17c63_one_level_relation.py")
+#: The revision AFTER this one that touches the same tables (plan step
+#: ``bank_import:X-f6b-1``: the sighting relation, and the import's window
+#: under its declared name).  A round trip of ``d2e9f4a17c63`` at head has to
+#: step it down first and up last, the way ``test_r18a_paycheck_lines_rename``
+#: steps ``R18-b`` around ``R18-a``: a migration's downgrade runs on the
+#: schema it left, and this one's ``create_check_constraint`` names
+#: ``period_start``, which exists only below the later revision.
+_LATER = load_migration_module(
+    "af07125d00f1_a_line_is_held_by_its_sightings.py",
+)
 
 
 def _sql(statement, **params):
@@ -57,7 +71,12 @@ def _trigger_count(pattern):
 
 
 def _seed_placed_import(account, *, file_name, stated, day, period):
-    """One import stating *stated*, placed on *day* -- through the head schema."""
+    """One import stating *stated*, placed on *day* -- through the head schema.
+
+    It sights ONE line, because the later revision's downgrade refuses an
+    import that sighted none (the schema it steps down to cannot hold a
+    zero-line import), and a placed import in production always has lines.
+    """
     statement = StatementImport(
         account_id=account.id,
         user_id=account.user_id,
@@ -66,14 +85,23 @@ def _seed_placed_import(account, *, file_name, stated, day, period):
         ),
         file_name=file_name,
         file_digest=file_name.ljust(64, "0")[:64],
-        period_start=period[0],
-        period_end=period[1],
-        line_count=1,
-        recorded_count=1,
+        declared_start=period[0],
+        declared_end=period[1],
         stated_balance=Decimal(stated),
         stated_balance_on=period[1],
     )
     db.session.add(statement)
+    db.session.flush()
+    line = BankStatementLine(
+        account_id=account.id, posted_on=period[1], amount=Decimal("-1.00"),
+        sequence_in_group=0,
+    )
+    db.session.add(line)
+    db.session.flush()
+    db.session.add(StatementLineSighting(
+        account_id=account.id, line_id=line.id, import_id=statement.id,
+        description=file_name,
+    ))
     db.session.flush()
     level = AccountAnchorHistory(
         account_id=account.id,
@@ -137,6 +165,7 @@ class TestTheRoundTrip:
             "'account_anchor_history' AND operation = 'UPDATE'"
         )[0][0]
 
+        _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
 
         # The import row carries the placement again -- for the STANDING
@@ -178,6 +207,7 @@ class TestTheRoundTrip:
         assert _trigger_count("ck\\_file\\_span\\_holds\\_level") == 0
 
         _run(_MIGRATION.upgrade, db.session)
+        _run(_LATER.upgrade, db.session)
 
         # The standing placement is a level again, keyed to its import
         # and its claim; the released one owns no level -- the release is
@@ -241,6 +271,7 @@ class TestTheRoundTrip:
         ``uncorroborated`` row has no id to default the owner's rows to, and
         the revision says so instead of writing a wrong literal.
         """
+        _run(_LATER.downgrade, db.session)
         _run(_MIGRATION.downgrade, db.session)
         db.session.execute(text(
             "DELETE FROM ref.statement_balance_evidence "
