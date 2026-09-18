@@ -73,14 +73,19 @@ nothing and says so on its own first line. The code as committed is what those s
         **N-343** went with it. What remains here is the panel change, reading that coverage; ranked
         below the card arc with the other enhancements (**R-JL**).
   - [ ] **X-f6b** `feat(import): the statement arrives without being fetched` -- the automated
-        SOURCE ADAPTER (**R-FP**), the DECOMPOSED parent of three leaves;
+        SOURCE ADAPTER (**R-FP**), the DECOMPOSED parent of four leaves;
         **DESIGN LOOP CLOSED 2026-09-18** (**R-BI10**..**R-BI14**, **R-BAL71**; the argument and
         every option space are `HANDOFF-X-f6b.md` s.1 until the coordinator names the in-repo design
         home). R-FU stands; N-372 and N-381 are -2's own design rounds first; the Capital One CSV
         adapter stays the card's manual fallback.
-    - [ ] **X-f6b-1** `feat(import): a line is held by its sightings` -- `statement_line_sightings`,
-          coverage the window an import DECLARES, the derived span and count columns deleted
-          (**R-BI10**, **R-BAL71**); no money. Closes **N-303**, **N-313**, **N-331**, **N-434**.
+    - [x] **X-f6b-1** `d4eb2752` -- the sighting relation, coverage the declared window, the solve's
+          candidates the line days + the stated day (**R-BI10**, **R-BAL71**, **R-BAL74**); no
+          money. Closed **N-303**, **N-313**, **N-331**, **N-434**.
+    - [ ] **X-f6b-1b** `refactor(import): a line's merchant is a read over its sightings` -- the
+          sighting carries the merchant its word names, the line answers with the earliest surviving
+          sighting's that names one (one rule, SQL and Python), the stored key dropped by a
+          migration (**R-BI15**; before -2, so the adapter never writes one); no money. Closes
+          **BI-504**.
     - [ ] **X-f6b-2** `feat(import): the SimpleFIN feed` -- `bank_feeds` under the renamed field key
           (**R-BI12**, **BI-503**), the claim and mapping, one sync function (**R-BI13**), a match
           carrying the reviewed day (**R-BI14**). Closes **N-338**, **BI-499**, **BI-503**.
