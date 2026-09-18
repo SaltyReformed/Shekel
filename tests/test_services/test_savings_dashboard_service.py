@@ -16,6 +16,7 @@ import pytest
 from app.exceptions import BaselineMissingError
 
 from app import ref_cache
+from app.services.cash_flow_set import CashFlowSet
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
@@ -2942,7 +2943,7 @@ class TestCanonicalProducerRouting:
             # point of the test is that the two surfaces read ONE producer --
             # and this account is PLAIN, where they agree by construction.
             grid_current_balance = balance_at.grid_balance_view(
-                seed_user["account"],
+                CashFlowSet.single(seed_user["account"]),
                 BalanceContext.build(seed_user["user"].id),
             ).columns[current_period.id].balance
 

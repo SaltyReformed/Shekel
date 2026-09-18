@@ -29,11 +29,12 @@ from app.services import (
     pay_period_rolling,
 )
 from app.services.account_resolver import (
-    resolve_grid_account,
+    resolve_cash_flow_set,
     serves_cash_detail,
 )
 from app.services.balance_at import BalanceContext
 from app.utils.amount_relationships import valuation_load_options
+from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
 from app.services.cash_ledger import (
     amounts_by_id,
     settled_amounts_by_id,
@@ -163,10 +164,14 @@ class _GridContext(NamedTuple):
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of +
             the owner's pay calendar).
-        account: The grid account (checking by default, or the user's
-            preferred grid account), or ``None`` when the user has no
-            account rows at all (the post-Commit-3 user-with-zero-
-            accounts edge case).
+        cash_flow: The owner's cash-flow set -- checking and its cards, with
+            the balance line's account named (developer ruling
+            ``credit_card:R-CC16``, plan step CC-4-1;
+            :func:`~app.services.account_resolver.resolve_cash_flow_set`) --
+            or ``None`` when the user has no account rows at all (the
+            post-Commit-3 user-with-zero-accounts edge case).  The rows this
+            page loads are every member's; the balance, the anchor and the
+            bank control are :attr:`account`'s.
         num_periods: Count of visible pay-period columns.
         start_offset: Offset added to the current period's
             ``period_index`` for the leftmost visible column.
@@ -185,12 +190,23 @@ class _GridContext(NamedTuple):
     """
 
     balance_ctx: BalanceContext
-    account: Account | None
+    cash_flow: CashFlowSet | None
     num_periods: int
     start_offset: int
     current_period: DerivedPeriod
     periods: PeriodWindow
     all_periods: PeriodWindow
+
+    @property
+    def account(self) -> Account | None:
+        """The BALANCE line's account (the set's primary, or the override).
+
+        What every single-account surface on this page reads -- the header,
+        the anchor, the bank control, the accrual label, the create form's
+        default -- so it is named once rather than spelled
+        ``ctx.cash_flow.balance if ctx.cash_flow else None`` at each.
+        """
+        return self.cash_flow.balance if self.cash_flow is not None else None
 
 
 def _resolve_grid_context(user_id, request_args, settings):
@@ -244,8 +260,12 @@ def _resolve_grid_context(user_id, request_args, settings):
     """
     balance_ctx = BalanceContext.build(user_id)
 
-    # Get the grid account (checking by default, or user preference).
-    account = resolve_grid_account(
+    # The owner's cash-flow set: checking and its cards (ruling R-CC16), the
+    # balance line being the primary grid account or the ``account_id``
+    # override -- an override within the set keeps the set's rows behind
+    # that member's balance; one outside it (a savings account) is that
+    # account's single-account grid as it always was.
+    cash_flow = resolve_cash_flow_set(
         user_id, settings, request_args.get("account_id", type=int),
     )
 
@@ -266,7 +286,7 @@ def _resolve_grid_context(user_id, request_args, settings):
 
     return _GridContext(
         balance_ctx=balance_ctx,
-        account=account,
+        cash_flow=cash_flow,
         num_periods=num_periods,
         start_offset=start_offset,
         current_period=current_period,
@@ -279,16 +299,20 @@ def _resolve_grid_context(user_id, request_args, settings):
     )
 
 
-def _load_grid_transactions(account, balance_ctx, all_periods):
-    """Load all transactions for the visible account and scenario.
+def _load_grid_transactions(cash_flow, balance_ctx, all_periods):
+    """Load all transactions for the owner's cash-flow set and scenario.
 
-    Every transaction has ``account_id`` NOT NULL, so filtering by
-    ``account_id`` ensures the grid only shows income/expenses
-    belonging to the selected account.  Without this filter, checking
-    transactions would appear on the savings grid and corrupt the
-    projected balance.  ``account=None`` (the user-with-zero-accounts
-    edge case) omits the account filter so the resulting list is
-    naturally empty.
+    **The rows are the PAYCHECK's across the set -- checking and its cards --
+    not one account's** (developer ruling ``credit_card:R-CC16``, plan step
+    CC-4-1), through the ONE clause every plan-item reader appends,
+    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
+    rows, less the far leg of a transfer between two members, which the grid
+    shows once from the balance line's side (ruling ``credit_card:R-CC23``).
+    It was ``Transaction.account_id == account.id``, the filter that kept
+    checking's rows off the savings grid; the clause keeps that property (a
+    balance line outside the set is a set of one) and adds the cards.
+    ``cash_flow=None`` (the user-with-zero-accounts edge case) omits the
+    account filter so the resulting list is naturally empty.
 
     ``all_periods`` is the pass's reported window, every member of which is
     MATERIALISED -- so ``period_id`` is never ``None`` and the ``IN`` clause
@@ -307,8 +331,8 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
         Transaction.scenario_id == balance_ctx.scenario_id,
         Transaction.is_deleted.is_(False),
     ]
-    if account:
-        txn_filters.append(Transaction.account_id == account.id)
+    if cash_flow is not None:
+        txn_filters.append(paycheck_rows_clause(cash_flow))
     return (
         db.session.query(Transaction)
         # What a CONTRIBUTION pass reads, stated by the valuation rather than
@@ -720,9 +744,9 @@ def index():
         return ctx
 
     all_transactions = _load_grid_transactions(
-        ctx.account, ctx.balance_ctx, ctx.all_periods,
+        ctx.cash_flow, ctx.balance_ctx, ctx.all_periods,
     )
-    grid_view, anchor = _build_grid_view(ctx.account, ctx.balance_ctx)
+    grid_view, anchor = _build_grid_view(ctx.cash_flow, ctx.balance_ctx)
     # The ONE map every cell on this page reads its amount from, built by the
     # ONE rule every OTHER surface reads it by (``amounts_by_id``): what the
     # row's amount RESOLVES to (ruling R-Q).  It reads the pass's own basis, so
@@ -819,6 +843,7 @@ def index():
         # the seam now answers before the render, and one more reader of the
         # nullable this step exists to stop handing out.
         scenario_id=ctx.balance_ctx.scenario_id,
+        # The BALANCE line's account; the rows above are the whole set's.
         account=ctx.account,
         # The door into what the BANK said, beside the anchor it agrees
         # with: both answer "what did this account really do", and the
