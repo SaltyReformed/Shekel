@@ -30,7 +30,6 @@ from app.enums import (
 )
 from app.models.account import Account
 from app.models.ref import AccountType
-from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services import auth_service, cash_ledger
 from app.services.scenario_resolver import get_baseline_scenario
@@ -38,12 +37,12 @@ from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
     create_account_of_type,
+    one_off_row_of,
     settle_day_columns,
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
 from tests.test_services.test_statement_import.test_anchor import _seed_import
-from app.models.amount_ownership import AmountOwnership
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _UNCORROBORATED = StatementBalanceEvidenceEnum.UNCORROBORATED
@@ -137,19 +136,22 @@ def _bank_balance_cell(row):
 def _settled(db, seed_user, period, name, amount, day):
     """Insert one SETTLED expense whose cash moved on *day*."""
     status_id = ref_cache.status_id(StatusEnum.DONE)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(day, amount, amount),
-        **settle_day_columns(day),
     )
-    db.session.add(txn)
+    txn.status_id = status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settlement_columns(day, amount, amount).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settle_day_columns(day).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 

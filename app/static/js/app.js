@@ -561,17 +561,40 @@ function _populateLineForm(editBtn) {
     // Setting a <select>'s value from script fires no change event, so the
     // one dispatch below is what re-links everything, exactly as the
     // calc-method prefill above does for its label.
+    // The SPAN (plan step salary:R18-c) rides the same dispatch: the rule's
+    // own start -- blank for a line with no rule, blank meaning the opening
+    // payday -- and the bound's MODE are set BEFORE the unit's change event,
+    // with the interval, placement and ceiling, because toggleFields reads
+    // all of them as it re-links: it shows the span rows for a cadence and
+    // hides and DISABLES them for "Does not repeat" (a hidden control still
+    // posts; a disabled one does not), reveals and enables the one input the
+    // chosen bound shape needs, and offers the nominal day's options off the
+    // (unit, date) pair.  A change dispatched on the mode select itself
+    // would re-enable it under "Does not repeat" and post a bound nothing
+    // asked for (an adversarial review of this leaf), so there is exactly
+    // one dispatch here, the unit's.  The bound's value and the nominal day
+    // are filled AFTER it, into controls it has just enabled.
     var unit = form.querySelector('[name=recurrence_unit]');
     var interval = form.querySelector('[name=interval_n]');
     var placement = form.querySelector('[name=recurrence_placement]');
     var ceiling = form.querySelector('[name=max_per_month]');
+    var startsOn = form.querySelector('[name=starts_on]');
+    var endMode = form.querySelector('[name=recurrence_end_mode]');
     if (unit) {
         if (interval) interval.value = editBtn.dataset.lineInterval || '1';
         if (placement) placement.value = editBtn.dataset.linePlacementId || '';
         if (ceiling) ceiling.value = editBtn.dataset.lineMaxPerMonth || '';
+        if (startsOn) startsOn.value = editBtn.dataset.lineStartsOn || '';
+        if (endMode) endMode.value = editBtn.dataset.lineEndMode || 'never';
         unit.value = editBtn.dataset.lineUnitId || '';
         unit.dispatchEvent(new Event('change', { bubbles: true }));
     }
+    var nominalDay = form.querySelector('[name=nominal_day]');
+    if (nominalDay) nominalDay.value = editBtn.dataset.lineNominalDay || '';
+    var endDate = form.querySelector('[name=end_date]');
+    if (endDate) endDate.value = editBtn.dataset.lineEndDate || '';
+    var maxOccurrences = form.querySelector('[name=max_occurrences]');
+    if (maxOccurrences) maxOccurrences.value = editBtn.dataset.lineMaxOccurrences || '';
 
     var cap = form.querySelector('[name=annual_cap]');
     if (cap) cap.value = editBtn.dataset.lineCap || '';
@@ -618,6 +641,10 @@ function _resetLineForm() {
     _resetForm('line-form', 'line-submit-btn', '<i class="bi bi-plus"></i> Add');
     var form = document.getElementById('line-form');
     var unit = form && form.querySelector('[name=recurrence_unit]');
+    // form.reset() has put the span controls back on their rendered state
+    // (a blank start, the bound's "never") by the time this fires, and
+    // toggleFields hides and disables them with the rest for "Does not
+    // repeat" (plan step salary:R18-c) -- one dispatch, the unit's.
     if (unit) unit.dispatchEvent(new Event('change', { bubbles: true }));
 }
 

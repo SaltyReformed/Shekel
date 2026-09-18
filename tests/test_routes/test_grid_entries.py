@@ -18,23 +18,22 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
 from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services import transaction_service
 
 from tests._test_helpers import (
-    figure_source_columns,
     an_entered_day,
     current_pay_period,
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
 )
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 
 def _sums(rows):
@@ -118,22 +117,19 @@ def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
 
 def _create_plain_txn(seed_user, seed_periods_today, period_index=0,
                        estimated=Decimal("200.00"), name="Test Expense"):
-    """Create a non-tracked ad-hoc expense transaction (no template)."""
+    """Create a non-tracked one-off expense (its definition's ``is_envelope`` False)."""
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    projected = db.session.query(Status).filter_by(name="Projected").one()
 
-    txn = Transaction(
-        user_id=seed_periods_today[period_index].user_id,
-        pay_period_id=seed_periods_today[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[period_index],
         name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=estimated,
+        user_id=seed_periods_today[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.flush()
     return txn
 
@@ -242,7 +238,7 @@ class TestBuildEntrySumsDict:
             assert txn.id not in result
 
     def test_non_tracked_excluded(self, app, seed_user, seed_periods_today):
-        """Non-tracked transaction (no template) is NOT in the result dict."""
+        """Non-tracked transaction (a non-envelope definition's) is NOT in the result dict."""
         with app.app_context():
             txn = _create_plain_txn(seed_user, seed_periods_today)
             db.session.commit()
@@ -465,7 +461,7 @@ class TestBuildEntryListsDict:
     def test_non_envelope_excluded(
         self, app, seed_user, seed_periods_today,
     ):
-        """Non-envelope (no template) txn is NOT in the result dict.
+        """Non-envelope (a non-envelope definition's) txn is NOT in the result dict.
 
         The macro's ``txn.tracks_purchases`` guard means the
         inline entries section is only rendered for envelope
@@ -654,7 +650,7 @@ class TestCellProgressDisplay:
                                     seed_user, seed_periods_today):
         """Non-tracked transaction renders standard amount (regression).
 
-        Plain ad-hoc expense with no template: shows '200' in font-mono span.
+        A plain one-off (its definition no envelope): shows '200' in font-mono span.
         """
         with app.app_context():
             txn = _create_plain_txn(seed_user, seed_periods_today)

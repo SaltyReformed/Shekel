@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # 06 - DRY and SOLID Audit
 
 Phase 6 output. Authoritative spec: `financial_calculation_audit_plan.md`
@@ -1790,7 +1794,7 @@ is the architecture statement at `CLAUDE.md:96-100` and audit-plan 6.3).
   reaching a service would make that calculation untestable in isolation and
   couple a financial computation to request state; none exists today.
 
-## B6-02 -- Transfer Invariant 5: the balance calculator never reads `budget.transfers` (HOLDS; re-proven from live source, NOT inherited from F-012)
+## B6-02 -- Transfer Invariant 5: the balance calculator never reads `budget.transfers` (HELD until `balance:X-bi-6a`, 2026-09-15, rewrote the invariant under R-BAL38: the forward loan plan reads `budget.transfers` for occurrence identity, R-R66; re-proven from live source, NOT inherited from F-012)
 
 - **Principle**: Transfer Invariant 5 -- "Balance calculator queries ONLY
   `budget.transactions`. NEVER also query `budget.transfers`."
@@ -1980,8 +1984,11 @@ element plus the boundary-specific presence/absence greps:
   `flask`-token hits classified as loop-variable / docstring noise; 193
   `db.session` uses are the permitted SQLAlchemy Models access. Negative
   finding, fully grep-proven.
-- **B6-02** (Invariant 5, E-09): **HOLDS, re-proven from live source not
-  inherited** -- `balance_calculator.py` has zero `Transfer`/`budget.transfers`
+- **B6-02** (Invariant 5, E-09): **HELD until `balance:X-bi-6a` (2026-09-15)
+  rewrote Invariant 5 under R-BAL38 -- the forward loan plan now reads
+  `budget.transfers` for occurrence identity alone (R-R66); historical.** As
+  measured then, re-proven from live source not
+  inherited -- `balance_calculator.py` had zero `Transfer`/`budget.transfers`
   reads (only 2 docstring-prose hits); full import set Read; absence greps for
   a second balance reader pasted empty; the lone other-service reader
   `_compute_transfers_summary` Read in full and classified a display aggregate

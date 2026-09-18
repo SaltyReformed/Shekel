@@ -197,16 +197,28 @@ def process(path):
     for start, end, stmt in sorted(edits, reverse=True):
         lines[start:end] = [stmt]
     out = "".join(lines)
-    # imports
-    if "one_off_row_of" not in src:
+    # imports -- asked of the tree, not the text: a file that names the
+    # builder in prose and never imports it still needs the import
+    already_imported = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "tests._test_helpers"
+        and "one_off_row_of" in {alias.name for alias in node.names}
+        for node in ast.walk(tree)
+    )
+    if not already_imported:
         m = re.search(r"from tests\._test_helpers import \(\n((?:    [A-Za-z_0-9]+,\n)+)\)", out)
         if m:
             names = [l.strip().rstrip(",") for l in m.group(1).splitlines()]
             names = sorted(set(names) | {"one_off_row_of"}, key=lambda n: (n.lower().lstrip("_"), n))
             block = "from tests._test_helpers import (\n" + "".join(f"    {n},\n" for n in names) + ")"
             out = out[:m.start()] + block + out[m.end():]
+        elif re.search(r"^from tests\._test_helpers import \(\n", out, re.M):
+            # a block the sorter cannot read (an ``as`` alias, a comment):
+            # insert unsorted, first in the block
+            m = re.search(r"^from tests\._test_helpers import \(\n", out, re.M)
+            out = out[:m.end()] + "    one_off_row_of,\n" + out[m.end():]
         else:
-            m = re.search(r"^from tests\._test_helpers import (.+)$", out, re.M)
+            m = re.search(r"^from tests\._test_helpers import ([^(\n]+)$", out, re.M)
             if m:
                 out = out[:m.start()] + f"from tests._test_helpers import {m.group(1)}, one_off_row_of" + out[m.end():]
             else:
