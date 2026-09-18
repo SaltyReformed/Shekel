@@ -18,10 +18,9 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import AccountType, Status, TransactionType
-from app.models.transaction import Transaction
 from app.services import account_service, status_seam, transfer_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import one_off_row_of, resolved_amount, settlement_if_settling
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -37,18 +36,17 @@ def _create_expense(seed_user, seed_periods_today, status_name="Projected"):
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    txn = Transaction(
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
+    txn = one_off_row_of(
+        seed_periods_today[0],
         name="Fragment Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("55.00"),
+        user_id=seed_periods_today[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("55.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
+    txn.status_id = status.id
     db.session.commit()
     return txn
 
@@ -147,7 +145,10 @@ class TestDesktopCellErrorFragment:
             assert "estimated_amount" in body
 
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("55.00")
+            # Unchanged, read through the resolver: the row is a ONE-OFF (plan step
+            # balance:X-bi-7c), priced by its definition, so the raw column is None
+            # and the app's resolver is the reader (ruling R-BAL60).
+            assert resolved_amount(txn) == Decimal("55.00")
 
 
 class TestMobileCardErrorFragment:

@@ -14,32 +14,28 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.ref import AccountType, Status, TransactionType
-from app.models.transaction import Transaction
+from app.models.ref import AccountType, TransactionType
 from app.services import account_service, status_seam, transfer_service
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import settlement_if_settling, one_off_row_of
 from app.models.amount_ownership import AmountOwnership
 
 
 def _create_expense(seed_user, seed_periods_today, *, is_envelope=False):
-    """Insert a projected ad-hoc expense for a full-edit GET."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
+    """Insert a projected one-off expense for a full-edit GET."""
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    txn = Transaction(
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[0],
         name="Prehint Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("42.00"),
+        user_id=seed_periods_today[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("42.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
         is_envelope=is_envelope,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 

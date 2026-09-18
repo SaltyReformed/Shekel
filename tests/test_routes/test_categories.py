@@ -18,8 +18,7 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.ref import TransactionType, Status
-from app.models.transaction import Transaction
+from app.models.ref import TransactionType
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.transaction_template import TransactionTemplate
@@ -40,9 +39,9 @@ from tests._test_helpers import (
     generate_transfer_of,
     make_expense_template,
     make_transfer_template,
+    one_off_row_of,
     select_option_values,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -247,26 +246,27 @@ class TestCategoryDelete:
             assert db.session.get(Category, category.id) is not None
 
     def test_delete_category_in_use_by_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /categories/<id>/delete for a category used by a transaction is rejected."""
+        """POST /categories/<id>/delete for a category only a ROW uses is rejected.
+
+        ``category_has_usage`` asks the definitions first, so a row whose
+        definition names the category never reaches the transaction clause
+        (a one-off's definition does, which made this case grade the
+        template clause twice; found by 7c-3's adversarial review).  The
+        row here is a recurring definition's, re-categorised ON THE ROW as
+        the PATCH door writes it (act 1 of ``_apply_field_updates``, no
+        flag), with its definition left on another category: the one state
+        in which the transaction clause alone blocks the delete.
+        """
         with app.app_context():
             category = seed_user["categories"]["Groceries"]
-            txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected = db.session.query(Status).filter_by(name="Projected").one()
-
-            txn = Transaction(
-                template_id=None,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
-                name="Grocery Trip",
-                amount_ownership=AmountOwnership.own(Decimal("85.00")),
-                status_id=projected.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="85.00", name="Grocery Trip",
+                category_key="Rent",
             )
-            db.session.add(txn)
+            row = generate_row_of(template, seed_periods_today[0])
+            row.category_id = category.id
             db.session.commit()
+            assert template.category_id != category.id
 
             resp = auth_client.post(
                 f"/categories/{category.id}/delete",
@@ -347,7 +347,10 @@ class TestCategoryDelete:
 
         The DB FK constraint blocks deletion regardless of is_deleted
         status, so the in-use check correctly includes soft-deleted
-        transactions to give a friendly error instead of a DB crash.
+        transactions to give a friendly error instead of a DB crash.  The
+        row is a recurring definition's re-categorised on the row, its
+        definition on another category, so the transaction clause is the
+        one that answers (see ``test_delete_category_in_use_by_transaction``).
         """
         with app.app_context():
             category = Category(
@@ -358,26 +361,15 @@ class TestCategoryDelete:
             db.session.add(category)
             db.session.flush()
 
-            txn_type = db.session.query(TransactionType).filter_by(
-                name="Expense"
-            ).one()
-            projected = db.session.query(Status).filter_by(
-                name="Projected"
-            ).one()
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
-                name="Soft Deleted Expense",
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                status_id=projected.id,
-                is_deleted=True,
+            template = make_expense_template(
+                db.session, seed_user, amount="50.00",
+                name="Soft Deleted Expense", category_key="Groceries",
             )
-            db.session.add(txn)
+            txn = generate_row_of(template, seed_periods_today[0])
+            txn.category_id = category.id
+            txn.is_deleted = True
             db.session.commit()
+            assert template.category_id != category.id
 
             resp = auth_client.post(
                 f"/categories/{category.id}/delete",
@@ -390,7 +382,12 @@ class TestCategoryDelete:
     def test_delete_blocked_by_active_transaction(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Category cannot be deleted when active transactions reference it."""
+        """Category cannot be deleted when active transactions reference it.
+
+        The row is a recurring definition's re-categorised on the row, its
+        definition on another category, so the transaction clause is the
+        one that answers (see ``test_delete_category_in_use_by_transaction``).
+        """
         with app.app_context():
             category = Category(
                 user_id=seed_user["user"].id,
@@ -400,25 +397,14 @@ class TestCategoryDelete:
             db.session.add(category)
             db.session.flush()
 
-            txn_type = db.session.query(TransactionType).filter_by(
-                name="Expense"
-            ).one()
-            projected = db.session.query(Status).filter_by(
-                name="Projected"
-            ).one()
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
-                name="Active Expense",
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                status_id=projected.id,
+            template = make_expense_template(
+                db.session, seed_user, amount="100.00",
+                name="Active Expense", category_key="Groceries",
             )
-            db.session.add(txn)
+            row = generate_row_of(template, seed_periods_today[0])
+            row.category_id = category.id
             db.session.commit()
+            assert template.category_id != category.id
 
             resp = auth_client.post(
                 f"/categories/{category.id}/delete",
@@ -704,21 +690,16 @@ class TestCategoryEdit:
             txn_type = db.session.query(TransactionType).filter_by(
                 name="Expense"
             ).one()
-            projected = db.session.query(Status).filter_by(
-                name="Projected"
-            ).one()
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=cat.id,
-                transaction_type_id=txn_type.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Fill Up",
-                amount_ownership=AmountOwnership.own(Decimal("45.00")),
-                status_id=projected.id,
+                amount=Decimal("45.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=txn_type.id,
+                category_id=cat.id,
             )
-            db.session.add(txn)
             db.session.commit()
             cat_id = cat.id
             txn_id = txn.id
@@ -1197,20 +1178,17 @@ class TestArchiveHelpers:
         """C-5A.5-6: account_has_history returns True when account has any non-deleted txn."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
+            one_off_row_of(
+                seed_periods_today[0],
                 name="Account History Txn",
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                status_id=projected_status.id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             result = account_has_history(seed_user["account"].id)
@@ -1486,7 +1464,6 @@ class TestCategoryArchiveDelete:
         with app.app_context():
             category = db.session.get(Category, seed_user["categories"]["Rent"].id)
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             # The txn must live inside the grid's default visible window so
             # the assertion targets the archived-category rendering path
@@ -1500,18 +1477,16 @@ class TestCategoryArchiveDelete:
                 "default visible grid window"
             )
 
-            txn = Transaction(
-                user_id=current_period.user_id,
-                pay_period_id=current_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                category_id=category.id,
-                transaction_type_id=txn_type.id,
+            one_off_row_of(
+                current_period,
                 name="Rent Payment",
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
-                status_id=projected.id,
+                amount=Decimal("1200.00"),
+                user_id=current_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=txn_type.id,
+                category_id=category.id,
             )
-            db.session.add(txn)
 
             # Archive the category AFTER creating the transaction.
             category.is_active = False

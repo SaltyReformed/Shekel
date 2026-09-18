@@ -23,10 +23,8 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.services import status_seam
-from app.models.ref import Status, TransactionType
-from app.models.transaction import Transaction
-from tests._test_helpers import settlement_if_settling
-from app.models.amount_ownership import AmountOwnership
+from app.models.ref import TransactionType
+from tests._test_helpers import one_off_row_of, resolved_amount, settlement_if_settling
 
 
 def _create_projected_expense(seed_user, seed_periods_today):
@@ -36,22 +34,19 @@ def _create_projected_expense(seed_user, seed_periods_today):
     these tests share the auth_client / seed_user wiring without
     introducing a parallel fixture stack.
     """
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    txn = Transaction(
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[0],
         name="Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("123.45"),
+        user_id=seed_periods_today[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("123.45")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 
@@ -248,7 +243,7 @@ class TestPatchRejectsFinalisedFieldEdit:
             db.session.refresh(txn)
             # The pre-edit value (123.45 from _create_projected_expense)
             # survives -- the rewrite never reached the row.
-            assert txn.estimated_amount == Decimal("123.45")
+            assert resolved_amount(txn) == Decimal("123.45")
 
     def test_paid_row_category_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -318,7 +313,7 @@ class TestPatchRejectsFinalisedFieldEdit:
             db.session.refresh(txn)
             # Neither the status nor the amount moved.
             assert txn.status_id == done_id
-            assert txn.estimated_amount == Decimal("123.45")
+            assert resolved_amount(txn) == Decimal("123.45")
 
 
 class TestPatchAllowsEditableField:
@@ -339,7 +334,7 @@ class TestPatchAllowsEditableField:
             )
             assert response.status_code == 200
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("200.00")
+            assert resolved_amount(txn) == Decimal("200.00")
 
     def test_paid_row_notes_edit_allowed(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -381,7 +376,7 @@ class TestPatchAllowsEditableField:
             assert response.status_code == 200
             db.session.refresh(txn)
             assert txn.status_id == projected_id
-            assert txn.estimated_amount == Decimal("200.00")
+            assert resolved_amount(txn) == Decimal("200.00")
 
     def test_finalised_full_edit_notes_save_with_money_omitted_allowed(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -406,4 +401,4 @@ class TestPatchAllowsEditableField:
             db.session.refresh(txn)
             assert txn.notes == "Reconciled"
             assert txn.status_id == done_id
-            assert txn.estimated_amount == Decimal("123.45")
+            assert resolved_amount(txn) == Decimal("123.45")

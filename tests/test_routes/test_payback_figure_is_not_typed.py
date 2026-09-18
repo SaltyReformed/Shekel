@@ -22,40 +22,40 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import credit_workflow
 from app.services.entry_credit_workflow import sync_entry_payback
-from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import figure_source_columns
+from tests._test_helpers import figure_source_columns, one_off_row_of, resolved_amount
 
 
 @pytest.fixture(name="payback_pair")
 def _payback_pair(app, seed_user, seed_periods):
-    """Return ``(source, payback)`` for an ad-hoc expense marked Credit.
+    """Return ``(source, payback)`` for a one-off expense marked Credit.
 
-    An AD-HOC row deliberately: it carries no template, which is precisely the
-    state ``is_override`` cannot describe and the reason this refusal exists.
+    The PAYBACK is the row under test: it carries no definition -- its one
+    pricing link is the row it repays -- which is precisely the state
+    ``is_override`` cannot describe and the reason this refusal exists.  The
+    source is a one-off (a rule-less definition's placed row, plan step
+    balance:X-bi-7c), as the grid writes one.
 
     Yields:
         The source :class:`~app.models.transaction.Transaction` and the payback
         ``credit_workflow.mark_as_credit`` created for it.
     """
     with app.app_context():
-        source = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            category_id=seed_user["categories"]["Groceries"].id,
-            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        source = one_off_row_of(
+            seed_periods[0],
             name="Card purchase",
-            amount_ownership=AmountOwnership.own(Decimal("181.58")),
+            amount=Decimal("181.58"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        _db.session.add(source)
         _db.session.flush()
         payback = credit_workflow.mark_as_credit(
             source.id, seed_user["user"].id,
@@ -131,19 +131,17 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
     ):
         """An envelope source HAS purchases, so that is the repair named."""
         with app.app_context():
-            envelope = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            envelope = one_off_row_of(
+                seed_periods[0],
                 name="Card envelope",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
                 is_envelope=True,
             )
-            _db.session.add(envelope)
             _db.session.flush()
             _db.session.add(TransactionEntry(
                 **figure_source_columns(),
@@ -201,19 +199,17 @@ class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
         screen.
         """
         with app.app_context():
-            envelope = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            envelope = one_off_row_of(
+                seed_periods[0],
                 name="Card envelope",
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                amount=Decimal("500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
                 is_envelope=True,
             )
-            _db.session.add(envelope)
             _db.session.flush()
             _db.session.add(TransactionEntry(
                 **figure_source_columns(),
@@ -314,10 +310,10 @@ class TestThePatchDoorRefusesATypedFigure:
     def test_an_ordinary_rows_estimate_still_writes(
         self, app, auth_client, payback_pair,
     ):
-        """The control: an ad-hoc row that repays nothing is still editable.
+        """The control: a one-off that repays nothing is still editable.
 
-        The source here is ad-hoc and carries no payback link of its own, so it
-        is the nearest neighbour to a payback the guard must NOT catch.
+        The source here is a one-off and carries no payback link of its own,
+        so it is the nearest neighbour to a payback the guard must NOT catch.
         """
         source_id, _ = payback_pair
         with app.app_context():
@@ -337,6 +333,9 @@ class TestThePatchDoorRefusesATypedFigure:
 
             assert resp.status_code == 200
             _db.session.expire_all()
-            assert _db.session.get(
-                Transaction, source_id,
-            ).estimated_amount == Decimal("200.00")
+            # Read through the resolver: the row is a ONE-OFF (plan step
+            # balance:X-bi-7c), priced by its definition, so the raw column is None
+            # and the app's resolver is the reader (ruling R-BAL60).
+            assert resolved_amount(
+                _db.session.get(Transaction, source_id),
+            ) == Decimal("200.00")

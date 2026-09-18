@@ -10,6 +10,7 @@ instances, preserving the pre-split monolith's behaviour.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -25,7 +26,12 @@ from app.models.ref import (
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
-from app.routes._recurrence_form_render import edit_form_cadence
+from app.routes._recurrence_form_render import (
+    RecurrenceEnd,
+    RecurrenceStart,
+    edit_form_cadence,
+    edit_form_end,
+)
 from app.services import (
     account_service,
     paycheck_line_kinds,
@@ -34,13 +40,15 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import picker_model
+from app.services.recurrence import NEVER_ENDS, EndBound, picker_model
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
+    EFFECTIVE_DATE_MAX,
+    EFFECTIVE_DATE_MIN,
+    FicaConfigSchema,
     PaycheckLineCreateSchema,
     PaycheckLineUpdateSchema,
-    FicaConfigSchema,
     RaiseCreateSchema,
     RaiseUpdateSchema,
     SalaryProfileCreateSchema,
@@ -352,24 +360,83 @@ def _line_cadence_context(profile) -> dict:
       The section emits each as ``data-line-*`` attributes on the row's edit
       button, and ``app.js`` fills the one inline form from them the way it
       fills every other field of that form.
+    * ``selected_spans`` -- ``{line id: LineSpan}``, the row's start, nominal
+      day and closing bound for the same edit prefill (plan step
+      salary:R18-c, ruling **R-SAL38** (2)); ``add_form_start`` /
+      ``add_form_end`` -- what the ADD form's span rows open on: a BLANK
+      start (blank is the opening payday) and *never*; ``starts_on_min`` /
+      ``starts_on_max`` -- the schema's own date window, so the browser hint
+      and the refusal state one range.
 
     Args:
         profile: The salary profile whose lines the section lists.
 
     Returns:
-        The five context keys.
+        The nine context keys.
     """
     options = paycheck_line_kinds.kind_options()
+    picker = picker_model()
     return {
         "kind_options": options,
         "kind_labels": dict(options),
         "cadence_phrases": _line_cadence_phrases(profile),
-        "recurrence_picker": picker_model(),
+        "recurrence_picker": picker,
         "selected_cadences": {
             line.id: edit_form_cadence(line)
             for line in profile.lines
         },
+        "selected_spans": {line.id: _line_span(line, picker) for line in profile.lines},
+        "add_form_start": RecurrenceStart(starts_on=None, nominal_day=None),
+        "add_form_end": RecurrenceEnd(selected=NEVER_ENDS),
+        "starts_on_min": EFFECTIVE_DATE_MIN,
+        "starts_on_max": EFFECTIVE_DATE_MAX,
     }
+
+
+@dataclass(frozen=True)
+class LineSpan:
+    """What a stored line's SPAN controls prefill with on an edit.
+
+    Attributes:
+        starts_on: The rule's own first occurrence, or ``None`` for a line
+            with no rule -- rendered as a BLANK box, because blank is what the
+            form means by "from the opening payday" and a re-save of a blank
+            box derives the same default again (plan step salary:R18-c).
+        nominal_day: The rule's nominal day, or ``None``.
+        end: The closing bound as the ONE value the form's three controls
+            compose to (:class:`~app.services.recurrence.EndBound`): *never*
+            for a line with no rule.
+    """
+    starts_on: date | None
+    nominal_day: int | None
+    end: EndBound
+
+
+def _line_span(line, picker) -> LineSpan:
+    """Return *line*'s span for the edit prefill, through the render-side readers.
+
+    The bound comes from :func:`~app.routes._recurrence_form_render.edit_form_end`
+    -- the same reader the template forms use, so the three stored shapes are
+    discriminated in one place; a payroll line's bounds are never the loan's,
+    so the row is never locked.  The start is read off the rule rather than
+    through ``edit_form_starts_on``, which opens a rule-less definition on
+    TODAY -- the template forms' default, and the wrong one here, where a
+    blank box is the opening payday and today would be read as a stated
+    start.
+
+    Args:
+        line: One of the profile's lines.
+        picker: The form's offer sets.
+
+    Returns:
+        The :class:`LineSpan`.
+    """
+    rule = line.recurrence_rule
+    return LineSpan(
+        starts_on=None if rule is None else rule.starts_on,
+        nominal_day=None if rule is None else rule.nominal_day,
+        end=edit_form_end(line, None, picker, locked=False).selected,
+    )
 
 
 def _render_lines_partial(profile):
