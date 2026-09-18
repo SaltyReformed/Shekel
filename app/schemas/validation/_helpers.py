@@ -50,6 +50,24 @@ _PERCENT_INPUT_RANGE = validate.Range(
     min=Decimal("0"), max=Decimal("100"),
 )
 
+# A rate in its STORED domain -- the fraction, after a schema's ``@pre_load``
+# has divided the form percent by 100 (E-28) -- pinned to ``[0, 1]`` exactly
+# as every rate column's CHECK pins it.  Declared here at plan step
+# credit_card:CC-2 for the reason ``_NON_NEGATIVE_MONETARY`` is: a bound used
+# by more than one schema has one home.  The 19 inline spellings that predate
+# it (grep 2026-09-18, ``Range(min=0, max=1)`` in either Decimal or int form:
+# ``accounts.py`` 3, ``investments.py`` 4, ``loans.py`` 5, ``retirement.py``
+# 2, ``salary.py`` 4, ``settings.py`` 1) are the same fact stated again,
+# reported at that step as a sweep rather than made in it.
+_RATE_FRACTION_RANGE = validate.Range(min=Decimal("0"), max=Decimal("1"))
+
+# A day of the month as a rule MEANS it, 1..31 before any month-end clamp;
+# the clamp is the reader's (``app.utils.dates.clamped_day``), never the
+# form's, so a rule meaning the 31st keeps meaning it (ruling R-R3).  The
+# three inline spellings (``loans.py`` 2, ``templates.py`` 1) are the same
+# sweep's.
+_DAY_OF_MONTH_RANGE = validate.Range(min=1, max=31)
+
 # The app's range for a non-negative money INPUT, where the DB CHECK is
 # ``>= 0``.  10,000,000 is generous: it accommodates very large W-4
 # adjustments while still rejecting an obvious typo (extra digit) on

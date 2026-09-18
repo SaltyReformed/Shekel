@@ -533,7 +533,7 @@ def _register_context_processors(app):
 _BLUEPRINT_MODULES = (
     "auth", "grid", "transactions", "templates", "pay_periods", "accounts",
     "categories", "settings", "salary", "transfers", "savings", "loan",
-    "investment", "retirement", "charts", "analytics", "dashboard",
+    "card", "investment", "retirement", "charts", "analytics", "dashboard",
     "debt_strategy", "obligations", "health", "entries", "companion",
     "static_pass",
 )
