@@ -1,9 +1,16 @@
 """
 Shekel Budget App -- Ad-hoc transaction flag tests (F2 / F3)
 
-Ad-hoc transactions (template_id IS NULL) carry their own
+LEGACY link-less transactions (template_id IS NULL) carry their own
 ``is_envelope`` (purchase tracking) and ``companion_visible`` flags,
-since they have no template to inherit from.  These tests cover:
+since they have no template to inherit from.  **That is the pre-7b shape
+and production's until the cutover** (plan step ``balance:X-bi-7d``): a
+one-off placed since ``balance:X-bi-7b`` reads both flags off its
+DEFINITION (ruling R-BAL36, graded in ``test_one_off_row_doors``), and the
+grid's create doors mint one.  This whole module is the legacy contract,
+built on the shape's one transitional home (``legacy_link_less_row_of``,
+plan step ``balance:X-bi-7c``, ruling R-BAL59), and 7d retires it with the
+own-cell branch.  These tests cover:
 
   * F3 -- purchase tracking on ad-hoc rows: entry creation, the
     expense-only guard, settle-from-entries on mark-done, the
@@ -28,30 +35,27 @@ from app.models.transaction_entry import TransactionEntry
 from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
-from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import figure_source_columns
+from tests._test_helpers import figure_source_columns, legacy_link_less_row_of
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
                 income=False, name="Ad-hoc", amount="100.00",
                 status=StatusEnum.PROJECTED):
-    """Create and commit an ad-hoc (template_id IS NULL) transaction."""
+    """Create and commit a LEGACY link-less (template_id IS NULL) transaction.
+
+    The shape this module grades (see the module docstring), on its one
+    transitional home; 7d retires both.
+    """
     type_enum = TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE
-    txn = Transaction(
-        name=name,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
-        transaction_type_id=ref_cache.txn_type_id(type_enum),
-        status_id=ref_cache.status_id(status),
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        account_id=seed_user["account"].id,
-        category_id=list(seed_user["categories"].values())[0].id,
+    txn = legacy_link_less_row_of(
+        period, name=name, amount=amount,
+        user_id=period.user_id, account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
-        template_id=None,
-        is_envelope=is_envelope,
-        companion_visible=companion_visible,
+        transaction_type_id=ref_cache.txn_type_id(type_enum),
+        category_id=list(seed_user["categories"].values())[0].id,
+        is_envelope=is_envelope, companion_visible=companion_visible,
     )
-    db.session.add(txn)
+    txn.status_id = ref_cache.status_id(status)
     db.session.commit()
     return txn
 

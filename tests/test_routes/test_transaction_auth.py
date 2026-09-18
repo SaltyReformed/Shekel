@@ -10,21 +10,17 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from app.extensions import db
 from app.models.user import User, UserSettings
-from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_write
 from app.services import account_service
-from tests._test_helpers import pay_periods_hydrated, rhythm_of
-from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import one_off_row_of, pay_periods_hydrated, resolved_amount, rhythm_of
 
 
 def _create_other_user_with_txn(seed_user, seed_periods_today):
@@ -82,21 +78,18 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
     db.session.add(category)
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-    txn = Transaction(
-        user_id=other_periods[0].user_id,
-        pay_period_id=other_periods[0].id,
-        scenario_id=scenario.id,
-        account_id=account.id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        other_periods[0],
         name="Other User Rent",
-        category_id=category.id,
+        amount=Decimal("1500.00"),
+        user_id=other_periods[0].user_id,
+        account_id=account.id,
+        scenario_id=scenario.id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("1500.00")),
+        category_id=category.id,
     )
-    db.session.add(txn)
     db.session.commit()
 
     return {
@@ -156,7 +149,10 @@ class TestTransactionOwnership:
 
             # Verify the transaction was NOT modified.
             db.session.refresh(other["transaction"])
-            assert other["transaction"].estimated_amount == Decimal("1500.00")
+            # Unchanged, read through the resolver: the row is a ONE-OFF (plan step
+            # balance:X-bi-7c), priced by its definition, so the raw column is None
+            # and the app's resolver is the reader (ruling R-BAL60).
+            assert resolved_amount(other["transaction"]) == Decimal("1500.00")
 
     def test_mark_done_blocked(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done returns 404 for another user's txn."""
@@ -935,20 +931,16 @@ class TestWriteDoorsResolveOwnershipStructurally:
         """
         with app.app_context():
             other = _create_other_user_with_txn(seed_user, seed_periods_today)
-            mine = Transaction(
+            mine = one_off_row_of(
+                seed_periods_today[0],
+                name="Mine",
+                amount=Decimal("10.00"),
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
-                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=db.session.query(Status).filter_by(
-                    name="Projected",
-                ).one().id,
-                name="Mine",
-                category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=self._expense_type_id(),
-                amount_ownership=AmountOwnership.own(Decimal("10.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(mine)
             db.session.commit()
             txn_id, foreign_period_id = mine.id, other["period"].id
 
@@ -989,22 +981,18 @@ class TestTheOwnerIsReadOffTheRow:
     ):
         """GET /transactions/<id>/entries loads no ORM PayPeriod."""
         with app.app_context():
-            txn = Transaction(
+            txn = one_off_row_of(
+                seed_periods_today[0],
+                name="Groceries envelope",
+                amount=Decimal("200.00"),
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
-                pay_period_id=seed_periods_today[0].id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=db.session.query(Status).filter_by(
-                    name="Projected",
-                ).one().id,
-                name="Groceries envelope",
-                category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=db.session.query(TransactionType)
                 .filter_by(name="Expense").one().id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
                 is_envelope=True,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 

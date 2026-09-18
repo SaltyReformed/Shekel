@@ -13,7 +13,7 @@ Tests for the analytics page shell and HTMX tab endpoints:
 
 import json
 import re
-from datetime import date, datetime, time, timezone
+from datetime import date, time
 from decimal import Decimal
 from html import unescape
 
@@ -21,15 +21,14 @@ import pytest
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
-from app.models.transaction import Transaction
-from app.services import account_service, pay_period_write, status_seam
+from app.services import account_service, status_seam
 
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    one_off_row_of,
     record_paydays_across_a_hole,
     rhythm_of,
-    default_settle_day,
     settle_day_columns,
     settlement_columns,
 )
@@ -50,7 +49,6 @@ from app.services.spending_report_service import (
     SpendingItemRow,
     SpendingWindow,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 @pytest.fixture(autouse=True)
@@ -98,22 +96,23 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     paid_status_id = ref_cache.status_id(StatusEnum.DONE)
     cat = seed_user["categories"].get(category_key)
-    txn = Transaction(
+    txn = one_off_row_of(
+        seed_periods[0],
+        name=name,
+        amount=amount,
+        user_id=seed_periods[0].user_id,
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        status_id=paid_status_id,
         transaction_type_id=expense_type_id,
-        name=name,
-        amount_ownership=AmountOwnership.own(amount),
         category_id=cat.id if cat else None,
-        # A settled row carries the whole record -- day, figure and basis --
-        # through the one door a bare-built fixture uses (plan step X-au-c3).
-        **settle_day_columns(seed_periods[0].start_date),
-        **settlement_columns(seed_periods[0].start_date, amount),
     )
-    db.session.add(txn)
+    txn.status_id = paid_status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(seed_periods[0].start_date, amount).items():
+        setattr(txn, _column, _value)
     db.session.commit()
 
 
@@ -1235,23 +1234,20 @@ class TestCalendarMonthView:
         """
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="Test Income",
+                amount=Decimal("3000.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("3000.00")),
                 due_date=date(2026, 1, 5),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(
@@ -1413,31 +1409,28 @@ class TestCalendarInlineTotals:
         """Day with transactions shows inline income/expense totals."""
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
-            txn_inc = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn_inc = one_off_row_of(
+                seed_periods[0],
                 name="Test Paycheck",
+                amount=Decimal("2500.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
                 due_date=date(2026, 1, 5),
             )
-            txn_exp = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn_exp = one_off_row_of(
+                seed_periods[0],
                 name="Test Rent",
+                amount=Decimal("1200.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
                 due_date=date(2026, 1, 5),
             )
             db.session.add_all([txn_inc, txn_exp])
@@ -1456,23 +1449,20 @@ class TestCalendarInlineTotals:
         """Day with entries has a template element containing the transaction name."""
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="Electric Bill Detail",
+                amount=Decimal("150.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
                 due_date=date(2026, 1, 10),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(
@@ -1488,23 +1478,20 @@ class TestCalendarInlineTotals:
         """Calendar month view does not contain Bootstrap popover attributes."""
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[0],
                 name="Popover Check",
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 15),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(
@@ -1519,25 +1506,22 @@ class TestCalendarInlineTotals:
         """Day with entries has data-day and role=button attributes."""
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
             # Period 1 (Jan 16-29) is the period whose span contains the
             # Jan 20 due date, so the clamped attribution lands on the 20th.
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods[1].user_id,
-                pay_period_id=seed_periods[1].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                seed_periods[1],
                 name="Click Test",
+                amount=Decimal("200.00"),
+                user_id=seed_periods[1].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
                 due_date=date(2026, 1, 20),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(
@@ -1642,7 +1626,7 @@ class TestCalendarFlowStrip:
         bill nobody paid, and one that pins no trough.
         """
         with app.app_context():
-            from datetime import date, datetime, timezone
+            from datetime import date
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
@@ -1692,7 +1676,7 @@ class TestCalendarFlowStrip:
         documents: a past month's line moves on what actually happened.
         """
         with app.app_context():
-            from datetime import date, datetime, timezone
+            from datetime import date
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
@@ -1768,8 +1752,7 @@ class TestCalendarFlowStrip:
         """
         with app.app_context():
             from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
+            from app.enums import TxnTypeEnum
             from datetime import date
             from decimal import Decimal
 
@@ -1781,17 +1764,16 @@ class TestCalendarFlowStrip:
                 ("Tiny Fee", TxnTypeEnum.EXPENSE, Decimal("50.00")),
             ]
             for name, txn_type, amount in flows:
-                db.session.add(Transaction(
-                    account_id=seed_user["account"].id,
-                    user_id=seed_periods[0].user_id,
-                    pay_period_id=seed_periods[0].id,
-                    scenario_id=seed_user["scenario"].id,
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                one_off_row_of(
+                    seed_periods[0],
                     name=name,
+                    amount=amount,
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=ref_cache.txn_type_id(txn_type),
-                    amount_ownership=AmountOwnership.own(amount),
                     due_date=date(2026, 1, 5),
-                ))
+                )
             db.session.commit()
 
             resp = auth_client.get(
@@ -2051,28 +2033,27 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         The flushed :class:`Transaction`.
     """
     cat = seed_user["categories"].get(category_key)
-    txn = Transaction(
+    txn = one_off_row_of(
+        period,
+        name=name,
+        amount=Decimal(estimated),
+        user_id=period.user_id,
         account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        status_id=ref_cache.status_id(StatusEnum.DONE),
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        name=name,
-        amount_ownership=AmountOwnership.own(Decimal(estimated)),
         category_id=cat.id if cat else None,
         due_date=due_date,
-        # A settled row carries the day its money moved AND the record of what
-        # moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
-        # resolved through the one door a bare-built fixture uses.  *actual* is
-        # a figure a HUMAN typed, which makes the record ``corrected``.
-        **settle_day_columns(due_date or period.start_date),
-        **settlement_columns(
+    )
+    txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(due_date or period.start_date).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(
             due_date or period.start_date, Decimal(estimated),
             submitted=Decimal(actual) if actual is not None else None,
-        ),
-    )
-    db.session.add(txn)
+        ).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 

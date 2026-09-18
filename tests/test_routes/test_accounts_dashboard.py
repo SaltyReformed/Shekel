@@ -12,9 +12,8 @@ from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app.models.savings_goal import SavingsGoal
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
@@ -26,8 +25,8 @@ from tests._test_helpers import (
     create_loan_account,
     loan_params_for,
     make_every_period_rule,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def _create_savings_account(
@@ -347,20 +346,17 @@ class TestAccountHardDelete:
             account = seed_user["account"]
             acct_id = account.id
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected = db.session.query(Status).filter_by(name="Projected").one()
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=acct_id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=txn_type.id,
+            one_off_row_of(
+                seed_periods_today[0],
                 name="Test Expense",
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                status_id=projected.id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=acct_id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=txn_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.post(
@@ -598,20 +594,17 @@ class TestAccountHardDelete:
             account = seed_user["account"]
             acct_id = account.id
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected = db.session.query(Status).filter_by(name="Projected").one()
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=acct_id,
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=txn_type.id,
+            one_off_row_of(
+                seed_periods_today[0],
                 name="Pre-existing Expense",
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                status_id=projected.id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=acct_id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=txn_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
 
             account.is_active = False
             db.session.commit()

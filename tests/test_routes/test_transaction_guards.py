@@ -9,11 +9,8 @@ operations return 400, and regular transactions are unaffected.
 from datetime import date
 from decimal import Decimal
 
-import pytest
 
 from app.extensions import db
-from app.models.account import Account
-from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
@@ -21,7 +18,9 @@ from app.services import transfer_service
 from app.services import account_service
 from tests._test_helpers import (
     create_loan_account,
+    one_off_row_of,
     open_books_before_the_first_assertion,
+    resolved_amount,
     shadow_amount,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -76,20 +75,17 @@ def _create_test_transfer(seed_user, seed_periods_today):
 
 def _create_regular_txn(seed_user, seed_periods_today):
     """Create a regular transaction (no transfer_id)."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=seed_periods_today[0].user_id,
-        pay_period_id=seed_periods_today[0].id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods_today[0],
         name="Regular Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("50.00"),
+        user_id=seed_periods_today[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("50.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 
@@ -416,7 +412,10 @@ class TestRegularTransactionUnaffected:
 
             assert resp.status_code == 200
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("75.00")
+            # Read through the resolver: the row is a ONE-OFF (plan step
+            # balance:X-bi-7c), priced by its definition, so the raw column is None
+            # and the app's resolver is the reader (ruling R-BAL60).
+            assert resolved_amount(txn) == Decimal("75.00")
 
     def test_mark_done_regular_transaction(
         self, app, db, auth_client, seed_user, seed_periods_today
@@ -457,10 +456,10 @@ class TestRegularTransactionUnaffected:
             db.session.refresh(txn)
             assert txn.status.name == "Cancelled"
 
-    def test_delete_regular_ad_hoc_transaction(
+    def test_delete_regular_one_off_transaction(
         self, app, db, auth_client, seed_user, seed_periods_today
     ):
-        """Delete on regular ad-hoc transaction works normally."""
+        """Delete on a regular one-off works normally."""
         with app.app_context():
             txn = _create_regular_txn(seed_user, seed_periods_today)
             txn_id = txn.id
@@ -497,21 +496,18 @@ class TestDueDatePatch:
         """PATCH due_date updates the transaction's due_date."""
         with app.app_context():
             from datetime import date
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Test Bill",
+                amount=Decimal("500.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
                 due_date=date(2026, 1, 15),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.patch(
@@ -552,19 +548,17 @@ class TestDueDatePatch:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Stable",
+                amount=Decimal("750.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense.id,
-                amount_ownership=AmountOwnership.own(Decimal("750.00")),
-                notes="original note",
                 due_date=date(2026, 1, 5),
             )
-            db.session.add(txn)
+            txn.notes = "original note"
             db.session.commit()
 
             auth_client.patch(
@@ -572,28 +566,25 @@ class TestDueDatePatch:
                 data={"due_date": "2026-01-25"},
             )
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("750.00")
+            assert resolved_amount(txn) == Decimal("750.00")
             assert txn.notes == "original note"
             assert txn.status_id == projected.id
 
     def test_full_edit_shows_due_date(self, app, auth_client, seed_user, seed_periods_today):
         """GET full-edit popover contains due_date input for txn with due_date."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="With Due",
+                amount=Decimal("100.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
                 due_date=date(2026, 1, 10),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")

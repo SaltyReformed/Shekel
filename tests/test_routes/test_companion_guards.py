@@ -9,14 +9,16 @@ role-appropriate content.
 """
 
 import pytest
-from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.models.ref import TransactionType
-from app.models.transaction import Transaction
-from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import (
+    generate_row_of,
+    legacy_link_less_row_of,
+    make_expense_template,
+    one_off_row_of,
+)
 
 
 # ── Companion blocked from all guarded routes ────────────────────────
@@ -428,12 +430,15 @@ class TestMarkDoneCompanionAccess:
     def test_companion_blocked_from_templateless_transaction(
         self, app, db, seed_user, seed_periods_today, seed_companion,
     ):
-        """Companion gets 404 for ad-hoc transactions (no template).
+        """Companion gets 404 for a LEGACY link-less transaction (no template).
 
         Transactions without a template (template_id is None) are
         inaccessible to companions because
         _get_accessible_transaction_for_status requires a template
-        with companion_visible=True.
+        with companion_visible=True -- the own-cell branch production holds
+        until the cutover (X-bi-7d), built on its one transitional home
+        (plan step balance:X-bi-7c, ruling R-BAL59); 7d retires it.  A
+        one-off placed today is the case below.
         """
         expense_type = (
             db.session.query(TransactionType)
@@ -441,23 +446,42 @@ class TestMarkDoneCompanionAccess:
         )
         category = list(seed_user["categories"].values())[0]
 
-        txn = Transaction(
-            name="Ad-hoc expense",
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            transaction_type_id=expense_type.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        txn = legacy_link_less_row_of(
+            seed_periods_today[0], name="Ad-hoc expense", amount="100.00",
             user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
             account_id=seed_user["account"].id,
-            category_id=category.id,
             scenario_id=seed_user["scenario"].id,
+            transaction_type_id=expense_type.id, category_id=category.id,
         )
-        db.session.add(txn)
         db.session.commit()
 
         comp = _login_companion(app)
         resp = comp.post(f"/transactions/{txn.id}/mark-done")
         assert resp.status_code == 404
+
+    @pytest.mark.parametrize("shown", [False, True])
+    def test_a_placed_one_off_is_the_companions_by_its_definitions_flag(
+        self, app, db, seed_user, seed_periods_today, seed_companion, shown,
+    ):
+        """A one-off placed today (balance:X-bi-7b): 404 unless its DEFINITION says shown.
+
+        Both halves, so a guard answering 404 for everything (or nothing)
+        fails one of them.
+        """
+        txn = one_off_row_of(
+            seed_periods_today[0], name="One-off expense", amount="100.00",
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            category_id=list(seed_user["categories"].values())[0].id,
+            companion_visible=shown,
+        )
+        db.session.commit()
+
+        comp = _login_companion(app)
+        resp = comp.post(f"/transactions/{txn.id}/mark-done")
+        assert resp.status_code == (200 if shown else 404)
 
 
 # ── Companion-guarded transaction routes ─────────────────────────────

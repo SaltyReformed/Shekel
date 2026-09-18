@@ -25,24 +25,23 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.paycheck_line import PaycheckLine
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, CalcMethod, PaycheckLineKind, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_at, pay_period_write, savings_dashboard_service
+from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
-    rhythm_of,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
     freeze_today,
     make_cadence_rule,
+    one_off_row_of,
+    record_paydays_across_a_hole,
+    rhythm_of,
     settle_day_columns,
     settlement_columns,
     transient_cadence_rule,
@@ -399,7 +398,6 @@ class TestDashboard:
     ):
         """Investment account cards show projected balances with compound growth."""
         import re
-        from app.services import pay_period_service
 
         with app.app_context():
             # Start periods 14 days before today so today falls inside
@@ -455,7 +453,6 @@ class TestDashboard:
     ):
         """Investment cards include employee + employer contributions in projections."""
         import re
-        from app.services import pay_period_service
 
         with app.app_context():
             # See test_dashboard_investment_account_shows_growth_projections
@@ -501,7 +498,6 @@ class TestDashboard:
     ):
         """Employer flat 5% works even when no paycheck deduction targets the account."""
         import re
-        from app.services import pay_period_service
 
         with app.app_context():
             # See test_dashboard_investment_account_shows_growth_projections
@@ -1237,7 +1233,7 @@ class TestSavingsDashboardShadowTransactions:
             # explanatory comment in
             # test_savings_balance_includes_transfer_deposit above
             # for the E-19 / Commit 6 SoT-shift rationale.
-            savings = _create_savings_account(
+            _create_savings_account(
                 seed_user, name="Plain Savings",
                 anchor_balance=Decimal("2000.00"),
             )
@@ -1330,26 +1326,25 @@ class TestEmergencyFundCommittedBaseline:
             category_id = seed_user["categories"]["Rent"].id
 
             for period in seed_periods[1:7]:
-                txn = Transaction(
-                    account_id=seed_user["account"].id,
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=seed_user["scenario"].id,
-                    status_id=settled_id,
+                txn = one_off_row_of(
+                    period,
                     name="Small Expense",
-                    category_id=category_id,
+                    amount=Decimal("10.00"),
+                    user_id=period.user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type_id,
-                    amount_ownership=AmountOwnership.own(Decimal("10.00")),
-                    # A settled row carries the day its money moved AND the
-                    # record of what moved -- one fact in three columns (plan
-                    # steps X-f1 / X-au-c3), resolved by the one door a
-                    # bare-built fixture uses.
-                    **settle_day_columns(period.start_date),
-                    **settlement_columns(
-                        period.start_date, Decimal("10.00"),
-                    ),
+                    category_id=category_id,
                 )
-                db.session.add(txn)
+                txn.status_id = settled_id
+                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                for _column, _value in settle_day_columns(period.start_date).items():
+                    setattr(txn, _column, _value)
+                for _column, _value in settlement_columns(
+                        period.start_date, Decimal("10.00"),
+                    ).items():
+                    setattr(txn, _column, _value)
 
             # Transfer template with higher committed amount.
             _create_test_transfer_template(
@@ -1377,12 +1372,14 @@ class TestEmergencyFundCommittedBaseline:
         DH-#29: ``_recent_settled_expenses_monthly`` is scoped to the
         same checking accounts as the committed floor, so a settled
         expense on a NON-checking account (here a Savings account) no
-        longer inflates the emergency-fund denominator.  With no
-        templates the floor is $0, so the displayed average is driven
-        entirely by the historical operand -- which must reflect only
-        the $120/period checking expenses, not the $300/period Savings
-        ones.  Today is frozen to 2026-03-20 (autouse fixture), so the
-        current period is seed_periods[5] and the recent-6 window is
+        longer inflates the emergency-fund denominator.  The floor is $0
+        -- each row's definition is rule-less, and a definition with no
+        rule commits nothing (``obligations_aggregator._committed_amount``)
+        -- so the displayed average is driven entirely by the historical
+        operand, which must reflect only the $120/period checking
+        expenses, not the $300/period Savings ones.  Today is frozen to
+        2026-03-20 (autouse fixture), so the current period is
+        seed_periods[5] and the recent-6 window is
         seed_periods[0:6]; seeding every window period the same amount
         makes the monthly average independent of the exact window.
         """
@@ -1399,40 +1396,49 @@ class TestEmergencyFundCommittedBaseline:
             category_id = seed_user["categories"]["Rent"].id
 
             # $120 on CHECKING and $300 on the non-checking SAVINGS
-            # account in each of the 6 recent (window) periods; no
-            # templates, so the floor is $0 and the historical operand
-            # alone drives the displayed average.
+            # account in each of the 6 recent (window) periods.  Each
+            # row's definition is rule-less and so commits nothing to
+            # the floor ($0); the historical operand alone drives the
+            # displayed average.
             for period in seed_periods[0:6]:
-                db.session.add(Transaction(
-                    account_id=seed_user["account"].id,
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=seed_user["scenario"].id,
-                    status_id=settled_id,
+                row = one_off_row_of(
+                    period,
                     name="Checking Expense",
-                    category_id=category_id,
-                    transaction_type_id=expense_type_id,
-                    amount_ownership=AmountOwnership.own(Decimal("120.00")),
-                    **settle_day_columns(period.start_date),
-                    **settlement_columns(
-                        period.start_date, Decimal("120.00"),
-                    ),
-                ))
-                db.session.add(Transaction(
-                    account_id=savings.id,
+                    amount=Decimal("120.00"),
                     user_id=period.user_id,
-                    pay_period_id=period.id,
+                    account_id=seed_user["account"].id,
                     scenario_id=seed_user["scenario"].id,
-                    status_id=settled_id,
-                    name="Savings Expense",
-                    category_id=category_id,
                     transaction_type_id=expense_type_id,
-                    amount_ownership=AmountOwnership.own(Decimal("300.00")),
-                    **settle_day_columns(period.start_date),
-                    **settlement_columns(
+                    category_id=category_id,
+                )
+                row.status_id = settled_id
+                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                for _column, _value in settle_day_columns(period.start_date).items():
+                    setattr(row, _column, _value)
+                for _column, _value in settlement_columns(
+                        period.start_date, Decimal("120.00"),
+                    ).items():
+                    setattr(row, _column, _value)
+                row = one_off_row_of(
+                    period,
+                    name="Savings Expense",
+                    amount=Decimal("300.00"),
+                    user_id=period.user_id,
+                    account_id=savings.id,
+                    scenario_id=seed_user["scenario"].id,
+                    transaction_type_id=expense_type_id,
+                    category_id=category_id,
+                )
+                row.status_id = settled_id
+                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                for _column, _value in settle_day_columns(period.start_date).items():
+                    setattr(row, _column, _value)
+                for _column, _value in settlement_columns(
                         period.start_date, Decimal("300.00"),
-                    ),
-                ))
+                    ).items():
+                    setattr(row, _column, _value)
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -1466,7 +1472,7 @@ class TestEmergencyFundCommittedBaseline:
             # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
             # history); the proper anchor-update path appends a fresh
             # history row, which is what the factory does at creation.
-            savings = _create_savings_account(
+            _create_savings_account(
                 seed_user, name="EF Savings",
                 anchor_balance=Decimal("10000.00"),
             )
@@ -1501,7 +1507,7 @@ class TestEmergencyFundCommittedBaseline:
             # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
             # history); the proper anchor-update path appends a fresh
             # history row, which is what the factory does at creation.
-            savings = _create_savings_account(
+            _create_savings_account(
                 seed_user, name="EF Savings",
                 anchor_balance=Decimal("10000.00"),
             )
@@ -1582,7 +1588,7 @@ class TestEmergencyFundCommittedBaseline:
             # producer (it logs EVT_ANCHOR_CACHE_RECONCILED and uses
             # history); the proper anchor-update path appends a fresh
             # history row, which is what the factory does at creation.
-            savings = _create_savings_account(
+            _create_savings_account(
                 seed_user, name="EF Savings",
                 anchor_balance=Decimal("10000.00"),
             )
@@ -2961,7 +2967,7 @@ class TestIncomeRelativeGoalForm:
         """Dashboard does NOT show an income descriptor for fixed goals."""
         with app.app_context():
             acct = _create_savings_account(seed_user)
-            goal = _create_goal(seed_user, acct, name="Fixed Display")
+            _create_goal(seed_user, acct, name="Fixed Display")
 
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
@@ -3004,7 +3010,7 @@ class TestTrajectoryDisplay:
             # The definition first, then the cadence onto it (plan step R-F6).
             make_cadence_rule(template, MONTHLY)
 
-            goal = _create_goal(seed_user, acct, name="Trajectory Goal")
+            _create_goal(seed_user, acct, name="Trajectory Goal")
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -3018,7 +3024,7 @@ class TestTrajectoryDisplay:
         """C-5.15-15: Goal with no recurring transfer shows no-contribution message."""
         with app.app_context():
             acct = _create_savings_account(seed_user)
-            goal = _create_goal(seed_user, acct, name="No Transfer Goal")
+            _create_goal(seed_user, acct, name="No Transfer Goal")
 
             resp = auth_client.get("/savings")
             assert resp.status_code == 200
@@ -3033,7 +3039,7 @@ class TestTrajectoryDisplay:
             # Default savings account has $5,000 balance.
             acct = _create_savings_account(seed_user)
             # Target is $3,000 -- already exceeded.
-            goal = _create_goal(
+            _create_goal(
                 seed_user, acct, name="Met Goal",
                 target_amount=Decimal("3000.00"),
             )
@@ -3118,7 +3124,7 @@ class TestTrajectoryDisplay:
             # The definition first, then the cadence onto it (plan step R-F6).
             make_cadence_rule(template, EVERY_PERIOD)
 
-            goal = _create_goal(seed_user, acct, name="Biweekly Goal")
+            _create_goal(seed_user, acct, name="Biweekly Goal")
             db.session.commit()
 
             resp = auth_client.get("/savings")

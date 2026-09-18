@@ -27,7 +27,6 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    figure_source_columns,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -36,9 +35,11 @@ from tests._test_helpers import (
     create_transfer,
     current_pay_period,
     derived_span,
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
     make_projected_envelope_expense,
+    one_off_row_of,
     open_books_before_the_first_assertion,
     open_owner_calendar,
     record_paydays_across_a_hole,
@@ -62,13 +63,11 @@ from app.services import (
     balance_at,
     cash_ledger,
     pay_period_service,
-    pay_period_write,
     status_seam,
 )
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -90,8 +89,6 @@ def _create_other_user_account():
     Returns:
         dict with keys: user, account.
     """
-    from datetime import date, timedelta  # pylint: disable=import-outside-toplevel
-    from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
     from app.services import account_service  # pylint: disable=import-outside-toplevel
 
     other_user = User(
@@ -5496,34 +5493,31 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
 
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create income and expense in all post-anchor periods.
             for p in periods[1:]:
-                db.session.add(Transaction(
-                    user_id=p.user_id,
-                    pay_period_id=p.id,
-                    scenario_id=scenario.id,
-                    account_id=acct.id,
-                    status_id=projected_status.id,
+                one_off_row_of(
+                    p,
                     name="Paycheck",
-                    category_id=category.id,
-                    transaction_type_id=income_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-                ))
-                db.session.add(Transaction(
+                    amount=Decimal("2000.00"),
                     user_id=p.user_id,
-                    pay_period_id=p.id,
-                    scenario_id=scenario.id,
                     account_id=acct.id,
-                    status_id=projected_status.id,
-                    name="Expenses",
+                    scenario_id=scenario.id,
+                    transaction_type_id=income_type.id,
                     category_id=category.id,
+                )
+                one_off_row_of(
+                    p,
+                    name="Expenses",
+                    amount=Decimal("1500.00"),
+                    user_id=p.user_id,
+                    account_id=acct.id,
+                    scenario_id=scenario.id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-                ))
+                    category_id=category.id,
+                )
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/details")
@@ -5564,33 +5558,30 @@ class TestCheckingDetail:
             acct = self._create_checking_account(seed_user, periods)
             db.session.flush()
 
-            projected_status = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             for p in periods[1:]:
-                db.session.add(Transaction(
-                    user_id=p.user_id,
-                    pay_period_id=p.id,
-                    scenario_id=scenario.id,
-                    account_id=acct.id,
-                    status_id=projected_status.id,
+                one_off_row_of(
+                    p,
                     name="Paycheck",
-                    category_id=category.id,
-                    transaction_type_id=income_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-                ))
-                db.session.add(Transaction(
+                    amount=Decimal("2000.00"),
                     user_id=p.user_id,
-                    pay_period_id=p.id,
-                    scenario_id=scenario.id,
                     account_id=acct.id,
-                    status_id=projected_status.id,
-                    name="Bills",
+                    scenario_id=scenario.id,
+                    transaction_type_id=income_type.id,
                     category_id=category.id,
+                )
+                one_off_row_of(
+                    p,
+                    name="Bills",
+                    amount=Decimal("1500.00"),
+                    user_id=p.user_id,
+                    account_id=acct.id,
+                    scenario_id=scenario.id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-                ))
+                    category_id=category.id,
+                )
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/details")
@@ -5703,17 +5694,17 @@ class TestCheckingDetail:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
             # Create a credit expense in the first post-anchor period.
-            db.session.add(Transaction(
-                user_id=periods[1].user_id,
-                pay_period_id=periods[1].id,
-                scenario_id=scenario.id,
-                account_id=acct.id,
-                status_id=credit_status.id,
+            row = one_off_row_of(
+                periods[1],
                 name="Credit Card Groceries",
-                category_id=category.id,
+                amount=Decimal("1000.00"),
+                user_id=periods[1].user_id,
+                account_id=acct.id,
+                scenario_id=scenario.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            ))
+                category_id=category.id,
+            )
+            row.status_id = credit_status.id
             db.session.commit()
 
             resp = auth_client.get(f"/accounts/{acct.id}/details")
@@ -6411,7 +6402,6 @@ class TestCashDetailContext:
         db.session.add(acct)
         db.session.flush()
 
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = db.session.query(TransactionType).filter_by(
             name="Income",
         ).one()
@@ -6420,20 +6410,26 @@ class TestCashDetailContext:
         ).one()
         category = seed_user["categories"]["Salary"]
         for period in periods[1:]:
-            db.session.add(Transaction(
+            one_off_row_of(
+                period,
+                name="Paycheck",
+                amount=Decimal("2000.00"),
                 user_id=period.user_id,
-                pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
-                account_id=acct.id, status_id=projected.id, name="Paycheck",
-                category_id=category.id, transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-            ))
-            db.session.add(Transaction(
+                account_id=acct.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=category.id,
+            )
+            one_off_row_of(
+                period,
+                name="Bills",
+                amount=Decimal("1500.00"),
                 user_id=period.user_id,
-                pay_period_id=period.id, scenario_id=seed_user["scenario"].id,
-                account_id=acct.id, status_id=projected.id, name="Bills",
-                category_id=category.id, transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
-            ))
+                account_id=acct.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=category.id,
+            )
         db.session.commit()
         return acct, periods
 
@@ -6880,7 +6876,7 @@ class TestCashDetailContext:
             ))
             db.session.commit()
 
-            params = db.session.query(InterestParams).filter_by(
+            db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).one()
             current = current_pay_period(seed_user["user"].id)

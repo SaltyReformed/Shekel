@@ -15,7 +15,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType
+from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app import ref_cache
@@ -24,12 +24,13 @@ from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
-    purchases_of,
-    figure_source_columns,
     an_entered_day,
+    figure_source_columns,
     freeze_today,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
+    purchases_of,
     settlement_basis_id,
 )
 
@@ -46,7 +47,6 @@ def _freeze_today_inside_seed_range(monkeypatch):
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
 from app.services import entry_service
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -96,23 +96,20 @@ def _create_tracked_txn(seed_user, seed_periods):
 
 def _create_non_tracked_txn(seed_user, seed_periods):
     """Create a regular expense transaction without entry tracking."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
 
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods[0],
         name="Non-Tracked Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("200.00"),
+        user_id=seed_periods[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("200.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 
@@ -260,7 +257,7 @@ class TestMarkPaidRecordsThePurchases:
     ):
         """Non-tracked transaction mark-done uses manual actual.
 
-        Setup: Non-tracked expense, no template tracking flag.
+        Setup: Non-tracked expense (its definition's tracking flag off).
         Expected: manual actual_amount from form is accepted.
         """
         with app.app_context():
