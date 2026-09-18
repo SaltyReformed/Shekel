@@ -272,8 +272,9 @@
     <span>Avg rate <span class="font-mono">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span></span>
     {# X-q3 / finding N-99: the date covers the debts that HAVE a payoff model
        -- amortizing loans -- so it is captioned as what it measures.  A
-       revolving balance has no forward model (the seam holds it flat), so it
-       can never reach zero and is named separately rather than implied away.
+       revolving balance has no PAYOFF model (its forward balance is its cash
+       fold, with no schedule naming a payoff day), so it is named separately
+       rather than implied away.
 
        X-s3 / ruling R-BE: all THREE states of the seam's payoff outlook are
        rendered here, read off the value object the summary carries whole.  The

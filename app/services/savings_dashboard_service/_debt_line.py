@@ -30,10 +30,11 @@ payment is not yet being made.  Two questions, two membership rules, one place
 each; what this module refuses is ONE question answered twice.
 
 **Scope: amortizing loans only, and the surfaces must say so** (developer
-ruling, finding N-99).  A revolving Credit Card has no forward model -- the
-seam holds it FLAT at its current owed magnitude, so it never reaches zero and
-can have no payoff date -- while the Horizon's liability band still sums it
-into the chart.  Including it under today's model would mean nobody carrying a
+ruling, finding N-99).  A revolving Credit Card has no PAYOFF model -- its
+forward balance is its cash fold (plan step credit_card:CC-1; the seam held it
+flat before), and no schedule names the day that fold reaches zero, so it can
+have no payoff date -- while the Horizon's liability band still sums it into the
+chart.  Including it under today's model would mean nobody carrying a
 card balance ever gets a date; the ruling is to keep the derivation over the
 debts that HAVE a payoff model and to caption the result as what it measures.
 **Those captions SHIPPED at plan step X-q3** (`bad97e6a`, closing finding
@@ -232,9 +233,10 @@ def debt_without_payoff_model(
 
     The figure that makes the caption HONEST rather than merely narrow
     (developer ruling on finding N-99, plan step X-q3).  Every liability that
-    is not an amortizing loan has no forward model -- the seam holds it FLAT
-    at its current owed magnitude, so it never reaches zero -- and is
-    therefore invisible to :func:`loan_payoff_outlook`.  A user carrying a
+    is not an amortizing loan has no PAYOFF model -- its forward balance is
+    its cash fold (plan step credit_card:CC-1; the seam held it flat before),
+    with no schedule naming the day it reaches zero -- and is therefore
+    invisible to :func:`loan_payoff_outlook`.  A user carrying a
     revolving card balance would otherwise read "Loans paid off Jun 2056" on a
     page whose own liability band never touches zero, with nothing saying why.
 

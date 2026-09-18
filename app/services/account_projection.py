@@ -11,7 +11,11 @@ into a single classifier whose flag-driven order is the project's
 canonical answer to "which engine for this account?".  Also centralises
 the payroll-deduction funding decision that previously lived as a
 hardcoded enum-frozenset literal in ``app/routes/investment.py`` (S6-04;
-see :func:`is_payroll_deduction_funded` for the replacement).
+see :func:`is_payroll_deduction_funded` for the replacement).  Since plan
+step credit_card:CC-1 it also holds :func:`is_revolving`, the ONE predicate
+every credit-card feature gates on: a schema flag on the account's type,
+which is the shape the payroll-funding comment below asks for rather than a
+copy of its enum tuple.
 
 Pure functions over Account / AccountType / int.  No Flask imports
 (the service-boundary rule from ``CLAUDE.md``).  Caller-supplied
@@ -117,6 +121,44 @@ def classify_account(account) -> AccountProjectionKind:
     if acct_type.has_parameters:
         return AccountProjectionKind.INVESTMENT
     return AccountProjectionKind.PLAIN
+
+
+def is_revolving(account) -> bool:
+    """Return True iff *account* is a revolving credit line (a Credit Card).
+
+    The ONE predicate every credit-card feature gates on (design
+    ``docs/design/credit_card_from_scratch.md`` 3.1, ruling ``credit_card:R-CC14``,
+    plan step CC-1): the statement cycle, the payment rule, the refusals at the
+    transfer doors, the "checking and its cards" plan-item set.  It reads the
+    schema flag :attr:`~app.models.ref.AccountType.has_revolving_credit`, which
+    only the seed sets, so it is the shape the comment under
+    :func:`classify_account` asks for -- a flag the type carries -- rather than
+    a second enum tuple beside :data:`_PAYROLL_DEDUCTION_FUNDED_TYPES`.
+
+    **It is NOT a projection kind, and :func:`classify_account` never reads it.**
+    A card's balance is ``opening + SUM(movements)``, the cash fold every
+    non-loan account already rides, so a card classifies PLAIN and nothing in
+    the balance seam dispatches on this flag.  The 2026-07-19 plan's sixth
+    kind (``REVOLVING``) existed to send the card to a fold of its own, which
+    ruling R-CC14 dissolved; ``ck_account_types_revolving_is_plain`` makes a
+    type that is revolving AND amortizing / interest / appreciating /
+    parameterised unrepresentable, so there is no precedence to decide here.
+
+    Args:
+        account: An :class:`~app.models.account.Account` with its
+            ``account_type`` relationship loaded (the same contract as
+            :func:`classify_account`; this predicate issues no queries).
+
+    Returns:
+        True when the account's type carries ``has_revolving_credit``; False
+        for every other type and for an account with no ``account_type``
+        (degenerate / partially loaded -- the same PLAIN default the classifier
+        takes, so a half-loaded account is never mistaken for a card).
+    """
+    acct_type = account.account_type
+    if acct_type is None:
+        return False
+    return acct_type.has_revolving_credit
 
 
 # Payroll-deduction-funded account types.  The schema does not

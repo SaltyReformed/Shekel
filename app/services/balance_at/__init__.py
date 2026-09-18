@@ -94,8 +94,11 @@ kill.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
-  maps nor the scalar can serve without re-resolving each loan per date.  See
-  :mod:`._liability`.
+  maps nor the scalar can serve without re-resolving each loan per date.  Since
+  plan step credit_card:CC-1 it is kind-blind: every liability's future is the
+  kind-correct multi-date read (``_kind_correct.balance_at_dates``, which the
+  scalar is a one-date reading of), so a Credit Card's projected balance reaches
+  the horizon instead of holding flat.  See :mod:`._liability`.
 * The LOAN-FIGURES entry (:func:`loan_figures`) answers everything a loan tile
   wants BESIDE its balance -- the payment, the rate, the payoff date, whether it
   is retired -- and deliberately carries NO balance, so a consumer holding it
@@ -174,7 +177,7 @@ FROM here, not the other way round.  Inside the package the direction is
 ``{_inputs, _positions, _loan_interest} -> _kernel -> _asset_fold ->
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
 _inputs}``,
-``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
+``_liability -> {_kind_correct, _inputs}``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, ``_loan_figures -> _positions -> {_plan, _plan_fold}`` (the figures'
 payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} ->
 _plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
