@@ -8,11 +8,17 @@ EQUALITY: a bare row OWNED its figure and the same figure is now the ONE
 version of its definition's series read on the row's own due date, so every
 money reader answers what it answered.  This is the instrument, in the shape
 of ``verify_level_relation.py``: run BEFORE the migration on a production
-restore and AFTER it, with the SAME application code (the branch's -- it
-reads both schemas: the pre-cutover columns it does not map are ignored, and
-a bare row is priced by rule 1 off its column), and diff the two dumps.  The
-balance seam itself is ``verify_balance_baseline.py``'s dump; run that
-alongside.
+restore with the PRE-CUTOVER application (a checkout of dev at the base the
+branch merged, this file copied in) and AFTER it with the branch, and diff
+the two dumps.  **The before side must be the pre-cutover code, and the
+flags are why**: the branch's model maps neither flag cell, so its
+``tracks_purchases`` answers ``False`` for a bare row that stated ``True``
+in its own cell -- a branch-code before-dump misread 4 envelopes and 3
+companion-visible rows on the 2026-09-18 restore and reported them as the
+cutover's doing.  The money halves (rule 1 prices a bare row off its column
+under either code) agree on both; the flags do not.  The balance seam itself
+is ``verify_balance_baseline.py``'s dump; run that alongside, both sides the
+same way.
 
 What it captures:
 
@@ -385,10 +391,13 @@ def compare(before_path, after_path):
             if b_row["due_date"] is None and b_row["settled_on"] is not None
             and row_id in b_days
         }
-        if set(changed) - newly_dated_paid:
+        # EXACTLY the newly-dated settled expenses, both directions: a row
+        # the cutover did not date may not move, and one it did must.
+        if set(changed) != newly_dated_paid:
             unexpected.append(
-                f"user {owner_id}: timeliness moved on rows the cutover did not date: "
-                f"{sorted(set(changed) - newly_dated_paid)}"
+                f"user {owner_id}: timeliness moved on {sorted(set(changed))}, "
+                f"expected exactly the newly-dated settled expenses "
+                f"{sorted(newly_dated_paid)}"
             )
         # Statements: flat in the one-off count.
         print(f"  grid statements: {b_user['statements']} -> {a_user['statements']}")

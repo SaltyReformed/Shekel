@@ -296,17 +296,17 @@ def create_entry(
 
     # Entry-capable: purchase tracking must be enabled on the row's
     # DEFINITION (its ``is_envelope``).  Resolved by
-    # Transaction.tracks_purchases.
+    # Transaction.tracks_purchases -- which also refuses a transfer shadow
+    # and a CC payback, since neither names a definition (ruling **R-BAL73**,
+    # plan step ``balance:X-bi-7d-2``).  A second guard on ``transfer_id``
+    # stood behind this one until that step made it unreachable: a shadow
+    # cannot track purchases, so it never got past this line.
     if not txn.tracks_purchases:
         raise ValidationError(
             "This transaction does not support individual purchase tracking. "
             "Enable 'Track individual purchases' on the transaction "
             "or its template first."
         )
-
-    # Transfer guard (mirrors credit_workflow.py line 59).
-    if txn.transfer_id is not None:
-        raise ValidationError("Cannot add entries to transfer transactions.")
 
     # Expense-only guard.
     if txn.is_income:

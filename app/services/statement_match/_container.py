@@ -178,8 +178,6 @@ class MintedEnvelopes:
             created: What the act did: the envelope, its definition, its
                 period, and the stored answer it made TEMPLATE.
         """
-        if created.template_id is None:
-            return
         answered = creation.new_envelope or created.answer_named
         if answered is not None:
             self.by_answer[envelope_answer_key(answered)] = created.template_id

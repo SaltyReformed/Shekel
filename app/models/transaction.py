@@ -247,7 +247,10 @@ class Transaction(
     # exactly one of its three links (``ck_transactions_one_pricing_link``
     # reads ``= 1``), so a key that nulled this one would manufacture the
     # zero-link row the cutover deleted.  A definition with rows is not
-    # deletable under it; ``definition_delete`` removes the rows first.
+    # deletable under it -- through the ORM the flush nulls the rows' links
+    # ahead of the parent delete and the CHECK refuses that statement; a raw
+    # ``DELETE`` meets this key -- so ``definition_delete`` removes the rows
+    # first.
     # Named ``fk_transactions_template_id`` at the re-create (the key carried
     # Postgres' default ``transactions_template_id_fkey`` until then).
     template_id = db.Column(

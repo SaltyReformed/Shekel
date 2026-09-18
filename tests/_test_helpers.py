@@ -4858,9 +4858,12 @@ def one_off_row_of(  # pylint: disable=too-many-arguments
       rulings **R-BAL22** / **R-BAL25**): the paycheck's start unless
       *due_date* says otherwise, so ``idx_transactions_template_scenario_
       occurrence`` holds over it.  A fixture that wants a row on the
-      "anytime this period" shelf wants an undated transfer shadow
-      (:func:`create_transfer` with no ``due_date``), the one undated shape
-      left since the cutover.
+      "anytime this period" shelf wants a row no definition prices -- a
+      transfer shadow (:func:`create_transfer` with no ``due_date``) or a
+      CC payback (:func:`payback_row_of`; the producer dates none) -- the
+      two undated shapes left since the cutover.  On the 2026-09-18
+      production restore it is the paybacks that are undated (31 of 31) and
+      no shadow is.
 
     The row is placed PROJECTED, which is the only state the producer
     writes.  A fixture wanting a SETTLED row settles this one as the app

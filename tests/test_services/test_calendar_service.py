@@ -113,8 +113,9 @@ def _add_transaction(
     since plan step balance:X-bi-7c this builder places a one-off through
     the producer (:func:`one_off_row_of`), dated on its paycheck's start
     unless *due_date* says otherwise -- a case that means an UNDATED row
-    builds a transfer shadow, the one undated shape left since the family's
-    cutover (plan step balance:X-bi-7d-2).
+    builds a row no definition prices (a transfer shadow here; a CC payback
+    is the other, and the one production holds undated), the shapes left
+    undated since the family's cutover (plan step balance:X-bi-7d-2).
 
     Args:
         db_session: Active database session.

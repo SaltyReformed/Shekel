@@ -49,44 +49,30 @@ from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import one_off_row_of, rhythm_of
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _add_txn(
-    db_session, seed_user, period, name, amount,
-    status_enum=StatusEnum.PROJECTED,
-    is_income=False,
-    due_date=None,
-    transfer_id=None,
-):
-    """Create a Transaction for the seeded user.
+def _add_txn(db_session, seed_user, period, name, amount):
+    """Place a Projected one-off expense for the seeded user, flushed.
 
-    Mirrors the helper in ``test_dashboard.py``; reproduced locally
-    so this test module stays self-contained and does not introduce
-    a cross-test-file import dependency.
+    Through the producer (:func:`~tests._test_helpers.one_off_row_of`): a
+    rule-less definition plus its placed row, the shape every one-off holds
+    since the one-definition cutover (plan step ``balance:X-bi-7d-2``; a
+    bare ``Transaction(...)`` is unstorable under
+    ``ck_transactions_one_pricing_link`` at ``= 1``).  It hand-built a
+    link-less row until then, carrying a ``transfer_id`` parameter no caller
+    passed, which is why 7c's constructor census read it as a LINKED site.
     """
-    type_id = (
-        ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-        if is_income
-        else ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    )
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
+    txn = one_off_row_of(
+        period, name=name, amount=Decimal(str(amount)),
+        user_id=period.user_id, account_id=seed_user["account"].id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status_enum),
-        name=name,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         category_id=seed_user["categories"]["Rent"].id,
-        transaction_type_id=type_id,
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        due_date=due_date,
-        transfer_id=transfer_id,
     )
-    db_session.add(txn)
     db_session.flush()
     return txn
 

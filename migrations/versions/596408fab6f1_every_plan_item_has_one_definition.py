@@ -44,7 +44,12 @@ this order, in one transaction:
    ``category_id``, ``transaction_type_id`` and ``name``; ``default_amount`` =
    the row's stored figure; ``is_envelope`` and ``companion_visible`` FROM THE
    ROW'S OWN CELLS (the two facts only a bare row stated for itself);
-   ``is_active`` TRUE, ``sort_order`` 0, ``version_id`` 1.  **Paired by row
+   ``is_active`` TRUE, ``sort_order`` 0, ``version_id`` 1.  A SOFT-DELETED
+   bare row (0 on the restore; the population includes them because the
+   CHECK binds on every row) gets an active definition like any other: the
+   application never pairs a deleted row with an inactive definition (a
+   placed row's delete is a hard delete that takes the definition), so this
+   writes the one shape the readers know.  **Paired by row
    id**: names repeat across the population (two Claude Max rows, two Dental
    Reimbursements), so the definition ids are drawn from the sequence into a
    temporary ``(transaction_id, template_id, due)`` map first and every later
@@ -75,7 +80,8 @@ this order, in one transaction:
    database that ran the 7b-1 code alone, and it selects nothing otherwise.
 6. **DDL**: drop ``is_envelope`` and ``companion_visible`` from the row (every
    cell they held is now on a definition or was ``false``: 0 of 354 shadows, 0
-   of 31 paybacks and 0 of 639 generated rows held ``true`` on the restore);
+   of 31 paybacks and 0 of the 639 rows already naming a definition -- 636
+   generated, 3 placed -- held ``true`` on the restore);
    re-cut ``ck_transactions_one_pricing_link`` from ``<= 1`` to ``= 1``; move
    ``template_id``'s key from ``ON DELETE SET NULL`` (unnamed today, Postgres'
    ``transactions_template_id_fkey``) to **``fk_transactions_template_id``**
