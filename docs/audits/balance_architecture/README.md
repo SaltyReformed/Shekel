@@ -401,9 +401,14 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       `ad573b07bede` (**R-BAL40**): 162 rows / `$89,741.80` on the 2026-09-18 restore, 0 dateless; the
       figure's source is the writer's (**R-BAL61**), the downgrade leaves the rows (**R-BAL62**);
       **MOVED MONEY** `$0.00`, three harnesses byte-identical across the cutover and the resync.
-    * [ ] **X-bi-3e** the settle record carries the figure's source, each writer stating it
-      (**R-BAL61**); both day-inference spellings deleted; a revert un-dates the movement. Closes
-      **BAL-508**.
+    * [ ] **X-bi-3e** the settle record carries the figure's source and the revert keeps the movement;
+      two leaves (**R-BAL61**, **R-BAL68**, **R-BAL69**, **R-BAL70**). Closes **BAL-508** at 3e-2.
+      * [x] **X-bi-3e-1** `925a4df8` -- every door states who wrote a figure as a `StatedFigure`;
+        both day-inference spellings deleted; a record with no movement reads by the cutover
+        mapping; R-GE's release re-spelled onto the figure's source. `$0.00`; the revert still
+        deletes.
+      * [ ] **X-bi-3e-2** the revert un-dates the movement and keeps it; `Transaction.purchases`
+        and its ~15 readers (the 8 production envelopes' phantom purchase with them).
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     **Its design loop hears a fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18): whether
     `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than
