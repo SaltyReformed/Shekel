@@ -36,6 +36,17 @@ from tests._test_helpers import (
 _MIGRATION = load_migration_module(
     "af07125d00f1_a_line_is_held_by_its_sightings.py",
 )
+#: The revision AFTER this one on the same tables (plan step
+#: ``bank_import:X-f6b-1b``, ruling **R-BI16**: the merchant KEY moves onto
+#: the sighting, the sighting's word and the line's key go).  A round trip of
+#: ``af07125d00f1`` at head steps it down first and up last, the way
+#: ``test_one_level_relation_migration`` steps this one: a migration's
+#: downgrade runs on the schema it left, and this one's upgrade backfills
+#: ``statement_line_sightings.merchant`` from ``bank_statement_lines
+#: .merchant_id``, both of which exist only below the later revision.
+_LATER = load_migration_module(
+    "3ef820b7dd52_the_sighting_names_the_merchant.py",
+)
 
 
 def _sql(statement, **params):
@@ -102,6 +113,18 @@ def _sight(statement, line, **facts):
     return sighting
 
 
+def _down(db_session):
+    """Step the head schema down to below ``af07125d00f1``: the later revision first."""
+    _run(_LATER.downgrade, db_session)
+    _run(_MIGRATION.downgrade, db_session)
+
+
+def _up(db_session):
+    """Step back up to head: this revision, then the later one."""
+    _run(_MIGRATION.upgrade, db_session)
+    _run(_LATER.upgrade, db_session)
+
+
 @pytest.mark.xdist_group("sighting_relation_ddl")
 class TestTheRoundTrip:
     """Head -> down -> up, over one line two imports sighted."""
@@ -149,7 +172,7 @@ class TestTheRoundTrip:
         shared_id, only_later_id = shared.id, only_later.id
         earlier_id, later_id = earlier.id, later.id
 
-        _run(_MIGRATION.downgrade, db.session)
+        _down(db.session)
 
         # The line carries the EARLIEST import's facts again -- its wording,
         # its id, its category -- and that import's id; the later sighting's
@@ -194,7 +217,7 @@ class TestTheRoundTrip:
             "'uq_bank_statement_lines_external_id'",
         ) == [(1,)]
 
-        _run(_MIGRATION.upgrade, db.session)
+        _up(db.session)
 
         # One sighting per line from the import the old column named; the
         # second sighting is not representable below this revision, so it is
@@ -216,8 +239,7 @@ class TestTheRoundTrip:
             (later_id, date(2026, 3, 15), date(2026, 4, 15)),
         ]
         assert _columns("bank_statement_lines") == {
-            "id", "account_id", "posted_on", "amount", "merchant_id",
-            "sequence_in_group",
+            "id", "account_id", "posted_on", "amount", "sequence_in_group",
         }
         assert _columns("statement_imports").isdisjoint(
             {"period_start", "period_end", "line_count", "recorded_count"},
@@ -236,7 +258,10 @@ class TestTheRoundTrip:
         """A backfilled sighting names the word the CSV parenthesised.
 
         The old line held the merchant KEY alone; the word that minted it is
-        the merchant row's name, and that is what the source called it.
+        the merchant row's name, and that is what the source called it.  Read
+        at the intermediate state -- this revision up, the later one still
+        down -- because the word column exists only there; the later
+        revision's own test grades the key it puts back.
         """
         account = seed_user["account"]
         statement = _an_import(
@@ -249,18 +274,22 @@ class TestTheRoundTrip:
             "VALUES (:a, 'Food Lion') RETURNING id", a=account.id,
         )[0][0]
         line = _a_line(account, day=date(2026, 3, 4), amount="-40.81")
-        line.merchant_id = merchant_id
-        _sight(statement, line, description="POINT OF SALE (Food Lion)")
+        _sight(
+            statement, line, description="POINT OF SALE (Food Lion)",
+            merchant_id=merchant_id,
+        )
         db.session.commit()
         line_id = line.id
 
-        _run(_MIGRATION.downgrade, db.session)
+        _down(db.session)
         _run(_MIGRATION.upgrade, db.session)
 
         assert _sql(
             "SELECT merchant FROM budget.statement_line_sightings "
             "WHERE line_id = :l", l=line_id,
         ) == [("Food Lion",)]
+
+        _run(_LATER.upgrade, db.session)
 
     def test_the_downgrade_REFUSES_an_id_two_sources_hold_on_two_lines(
         self, db, seed_user,
@@ -293,6 +322,7 @@ class TestTheRoundTrip:
         )
         db.session.commit()
 
+        _run(_LATER.downgrade, db.session)
         with pytest.raises(RuntimeError, match="1 external id"):
             _run(_MIGRATION.downgrade, db.session)
         db.session.rollback()
@@ -318,6 +348,7 @@ class TestTheRoundTrip:
         )
         db.session.commit()
 
+        _run(_LATER.downgrade, db.session)
         with pytest.raises(RuntimeError, match="1 statement import"):
             _run(_MIGRATION.downgrade, db.session)
         db.session.rollback()

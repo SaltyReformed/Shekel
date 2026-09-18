@@ -257,20 +257,20 @@ def _forget_merchants(account_id: int, merchant_ids: "list[int]") -> int:
     deleting the list the one read named is what makes the confirmation and
     the receipt the same count over the same stored state.  What separates
     the two evaluations is the window between the page's GET and this POST,
-    and it fails CLOSED: a line recorded or a rule stated for a listed
+    and it fails CLOSED: a sighting recorded or a rule stated for a listed
     merchant in that window makes this DELETE raise under the two ``NO
     ACTION`` foreign keys, and the door rolls the whole delete back with its
     "nothing was changed" sentence -- where the sweep would have succeeded
     with a count the confirmation never showed.  It still runs AFTER the
-    import and its lines are gone, because a line names its merchant under
-    ``fk_bank_statement_lines_merchant_account`` and would refuse the delete
-    while it stood.
+    import and its sightings are gone, because a sighting names its merchant
+    under ``fk_statement_line_sightings_merchant_account`` (ruling
+    **R-BI16**) and would refuse the delete while it stood.
 
     Args:
         account_id: The account the merchants belong to.  The ids are this
-            account's by construction -- the read groups this account's lines
-            and a line's merchant is held to the line's account -- so the
-            filter is the scope every destructive statement here carries
+            account's by construction -- the read groups this account's
+            sightings and a sighting's merchant is held to its account -- so
+            the filter is the scope every destructive statement here carries
             rather than a control a case could fire.
         merchant_ids: The merchants to delete, from the read.
 

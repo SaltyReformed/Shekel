@@ -113,24 +113,27 @@ def locked_for_write(query):
     ``populate_existing()`` the ORM handed back the instance it already held,
     unrefreshed, because it populates only the attributes an existing
     instance has NOT loaded.  The one concurrent writer of a recorded line
-    is a re-import, which since plan step ``bank_import:X-f6b-1`` writes
-    two things: the merchant KEY filled on the line where it held none
-    (``statement_import._record._absorb_gained_facts``), and a new SIGHTING
-    row carrying what the later export stated -- its transaction day among
-    them.  Both reach a door's decision: ``merchant_id`` is the rule lookup
-    at the create and income doors, the deposit's category placement at the
-    income door and the skip door's account-payment refusal (ruling
-    **R-JI**); ``transaction_on`` -- the earliest day any sighting states --
-    is the day the create door files the purchase on and, through
+    is a re-import, which since plan step ``bank_import:X-f6b-1b`` writes
+    ONE thing: a new SIGHTING row carrying what the later export stated --
+    the merchant its word names and its transaction day among them (ruling
+    **R-BI16**; through X-f6b-1 the merchant KEY was also filled on the line
+    itself).  Both facts reach a door's decision: ``merchant_id`` -- the
+    earliest naming sighting's -- is the rule lookup at the create and
+    income doors, the deposit's category placement at the income door and
+    the skip door's account-payment refusal (ruling **R-JI**);
+    ``transaction_on`` -- the earliest day any sighting states -- is the day
+    the create door files the purchase on and, through
     :meth:`~._offers.MatchDays.of`, the day the match door re-dates a
     purchase to (ruling **R-FW**).  *A first draft of this sentence named
     two doors; the neutral review counted four, and an enumeration a reader
     takes as complete has to be.*  ``populate_existing()`` overwrites every
-    column from the locked row and re-runs the joined ``merchant`` and
-    ``sightings`` loads, so ``merchant_name`` and the sighting-derived
-    reads are the row's too; a change pending on the instance is flushed
-    before the statement runs (the session autoflushes), so the row read
-    back holds it.
+    column and ``column_property`` from the locked row -- ``merchant_id``
+    and ``merchant_name`` are the two subqueries
+    ``BankStatementLine._stated_by_the_naming_sighting`` builds, loaded in
+    the same statement -- and re-runs the joined ``sightings`` load, so the
+    sighting-derived reads are the row's too; a change pending on the
+    instance is flushed before the statement runs (the session
+    autoflushes), so the row read back holds it.
     It composes HERE rather than at each site for the reason the mode does:
     a locked read written next year inherits it by calling this.  On
     :func:`lock_lines` it is vacuous by construction -- that read selects
@@ -168,22 +171,27 @@ def _lines_on(account_id: int, line_ids: "frozenset[int]"):
     still two spellings (``CLAUDE.md`` rule 14).
 
     **``id`` and not ``(posted_on, id)``, which this read ordered by until
-    that step, because the order has to compose with the other ORDERED
-    writer of these rows and only ``id`` does.**  A re-import fills the
-    merchant KEY a recorded line lacks
-    (``statement_import._record._absorb_gained_facts``; its other facts go
-    to a new sighting row, which takes only ``FOR KEY SHARE`` on the line),
-    and the ORM flushes a mapper's UPDATEs sorted by PRIMARY KEY
-    (``sqlalchemy.orm.persistence._sort_states``), so that transaction
-    takes its row locks in id order.  Ids are not monotone in
-    posted day across imports -- a fresher export inserts a finalized swipe
-    into an earlier day's block -- so a pass ordered by day held a later-id
-    line while wanting an earlier one that the re-import held: the cycle one
-    order over.  Named by adversarial design review 2026-09-12.  ``id`` also
-    rests on nothing that can move; a day order held only while no writer
-    ever changed ``posted_on``.  Nothing reads the returned list's order:
-    every consumer sums it, takes its ``max`` or ``min``, or iterates to
-    insert.
+    that step.**  The reason it was chosen: the order had to compose with
+    the other ORDERED writer of these rows, and only ``id`` did.  Through
+    plan step ``bank_import:X-f6b-1`` a re-import filled the merchant KEY a
+    recorded line lacked -- an ``UPDATE`` on the line -- and the ORM flushes
+    a mapper's UPDATEs sorted by PRIMARY KEY
+    (``sqlalchemy.orm.persistence._sort_states``), so that transaction took
+    its row locks in id order.  Ids are not monotone in posted day across
+    imports -- a fresher export inserts a finalized swipe into an earlier
+    day's block -- so a pass ordered by day held a later-id line while
+    wanting an earlier one that the re-import held: the cycle one order
+    over.  Named by adversarial design review 2026-09-12.  **Since plan step
+    ``bank_import:X-f6b-1b`` (ruling **R-BI16**) a re-import UPDATEs no
+    line at all**: every fact it states is a new sighting row, which takes
+    only ``FOR KEY SHARE`` on its line, and that lock conflicts with nothing
+    a pass takes (``FOR NO KEY UPDATE``) -- so the cycle with a re-import is
+    structurally gone, not ordered around.  The reason ``id`` STAYS: two
+    passes over overlapping sets still need one order, ``id`` rests on
+    nothing that can move (a day order held only while no writer ever
+    changed ``posted_on``), and a writer that UPDATEs lines again would
+    compose with it.  Nothing reads the returned list's order: every
+    consumer sums it, takes its ``max`` or ``min``, or iterates to insert.
 
     **The ORDER BY is what orders the LOCKS, and that is PostgreSQL's
     documented behaviour rather than an assumption**: a locking ``SELECT``

@@ -60,7 +60,7 @@ def _an_import_that_sighted(
         for offset in range(fresh)
     ]
     for line in again:
-        a_sighting(statement, line)
+        a_sighting(seed_user, statement, line)
     return statement, lines
 
 

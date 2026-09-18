@@ -7,8 +7,8 @@ staged.  So a refused import writes no new line without depending on the
 rollback.
 
 **The claim is about the SESSION too, and it was not until plan step
-``bank_import:X-gd-1``.**  The reconciliation walks group by group, and
-:func:`_absorb_gained_facts` used to fill a recorded row's NULLs as it went --
+``bank_import:X-gd-1``.**  The reconciliation walks group by group, and the
+absorbing arm this door had then filled a recorded row's NULLs as it went --
 so a refusal raised on group *k* left groups 1..*k*-1 dirty in the session and
 it was the route's rollback that discarded them.  Nothing was lost by that,
 because those writes only ever ADD a fact the file states, but "leaves the
@@ -30,6 +30,18 @@ then by count against the lines only other sources have shown; what is left
 is new.  A different wording from a different source is never a restatement
 (finding **N-303**), and a re-import of a file the app already holds records
 one sighting per line and no line.
+
+**A re-import writes NOTHING onto a recorded line** (plan step
+``bank_import:X-f6b-1b``, ruling **R-BI16**).  Every fact a source states
+about a line is its sighting's, the merchant KEY included: the sighting
+carries the merchant its word names, and the line's merchant is a read over
+its sightings.  Until that step this door filled a held line's NULL key from
+a later sighting -- an ``UPDATE`` on the line, and a key that outlived the
+import that minted it (finding **BI-504**).  Now a re-import UPDATEs no
+bank line: what it writes FOR a held line is a sighting, whose insert takes
+``FOR KEY SHARE`` on the line and nothing stronger (the import row, the
+merchant rows and, when the file states one, the level are the pass's other
+inserts, none of them on a line).
 
 **Nothing here moves a figure.**  Recording what a bank said is separable from
 deciding which of the app's own rows it explains, and that separation is the
@@ -379,43 +391,6 @@ def _refuse_restatement(line: StatementLine, recorded: str) -> None:
     )
 
 
-def _absorb_gained_facts(
-    line: StatementLine, recorded: BankStatementLine,
-    merchants: "dict[str, int]",
-) -> None:
-    """Fill in the merchant KEY where a later sighting names one and the line has none.
-
-    **The one fact a sighting does not carry for itself.**  Every other thing
-    a source states about a line -- its wording, its stated day, its id, its
-    balance, its category -- is that source's own and lives on that source's
-    :class:`~app.models.statement_import.StatementLineSighting`, so a later
-    import that states more fills nothing in and overwrites nothing: it
-    records what it saw, beside what the earlier one saw.  *This function
-    filled four of those onto the line until plan step
-    ``bank_import:X-f6b-1``*, because the line had one home for each and a
-    NULL there was a fact lost on the path the user actually takes.
-
-    The merchant is different because it is the app's KEY rather than a
-    source's word: a line whose merchant is NULL joins no destination policy,
-    so a row recorded by an adapter that could not name a merchant would go
-    on being offered a bare chooser forever, even after an export that DOES
-    name one had been imported over it.  Only ``NULL`` is filled; a key
-    already minted is left alone, so the first source to name a word decides
-    which merchant row a rule about this line is stated against, and a second
-    source's different word is that sighting's own provenance.
-
-    Args:
-        line: The incoming line the file states.
-        recorded: The line already held, paired to it.
-        merchants: This pass's merchant rows by name
-            (:func:`~._merchants.resolve_merchants`), TOTAL over every name a
-            line here can carry -- :func:`_merchant_words`' second half is what
-            puts them in it.
-    """
-    if recorded.merchant_id is None and line.merchant:
-        recorded.merchant_id = merchants[line.merchant]
-
-
 @dataclass(frozen=True)
 class _Reconciled:
     """What comparing a file against the record DECIDED, before any write.
@@ -431,9 +406,9 @@ class _Reconciled:
             order.  Each becomes a line AND this import's sighting of it.
         held: Every ``(incoming, recorded)`` pair the file states a line the
             app already holds by, in group order.  Each becomes this import's
-            sighting of the recorded line, and may fill its merchant key
-            (:func:`_absorb_gained_facts`).  It is a PAIR and not a row
-            because what the sighting records comes from the incoming line.
+            sighting of the recorded line, and nothing on the line.  It is a
+            PAIR and not a row because what the sighting records comes from
+            the incoming line.
     """
 
     fresh: "list[KeyedLine]"
@@ -641,11 +616,13 @@ def _reconcile(
 def _merchant_words(reconciled: _Reconciled) -> "set[str]":
     """Return every merchant word this pass will need a row for.
 
-    **Both halves, and the second is not decoration**: a re-import fills a
-    recorded line's merchant where the first adapter could not name one
-    (:func:`_absorb_gained_facts`), so a word that appears on NO fresh line can
-    still be written.  Asking only about the fresh half would leave that arm
-    indexing a mapping the word is not in.
+    **Both halves, TOTAL**: every sighting this pass writes carries the
+    merchant its word names (ruling **R-BI16**), whether the line is fresh or
+    held, so every word the file states needs a row.  *Until plan step
+    ``bank_import:X-f6b-1b`` the held half asked only for the words filling a
+    NULL key on the line*; a held line's word that the line already had a
+    key for was never resolved, so a second source's different word for a
+    known line had no row at all.
 
     Args:
         reconciled: What :func:`_reconcile` decided.
@@ -654,31 +631,32 @@ def _merchant_words(reconciled: _Reconciled) -> "set[str]":
         The words, as a set.  A line naming none contributes nothing, which is
         the source saying it names none.
     """
-    words = {
-        keyed.line.merchant for keyed in reconciled.fresh
-        if keyed.line.merchant
-    }
-    words.update(
-        line.merchant for line, recorded in reconciled.held
-        if recorded.merchant_id is None and line.merchant
-    )
-    return words
+    stated = [keyed.line for keyed in reconciled.fresh]
+    stated.extend(line for line, _recorded in reconciled.held)
+    return {line.merchant for line in stated if line.merchant}
 
 
 def _sighting_of(
     account_id: int, import_id: int, line_id: int, line: StatementLine,
+    merchants: "dict[str, int]",
 ) -> StatementLineSighting:
     """Return this import's sighting of one line, from what the source stated.
 
     THE one place a :class:`~._line.StatementLine`'s per-source facts become a
     row, so the fresh half and the held half of a pass cannot record them
-    differently.
+    differently -- the merchant KEY among them (ruling **R-BI16**): the word
+    the source named becomes this sighting's ``merchant_id`` here, for a
+    fresh line and a held one alike.
 
     Args:
         account_id: The account being imported into.
         import_id: The import that is recording the sighting.
         line_id: The recorded line it is a sighting of.
         line: What the source stated.
+        merchants: This pass's merchant rows by name
+            (:func:`~._merchants.resolve_merchants`), TOTAL over every word
+            the file states -- :func:`_merchant_words` is what puts them in
+            it, so this indexes rather than defaulting.
 
     Returns:
         The unstaged row.
@@ -688,7 +666,9 @@ def _sighting_of(
         import_id=import_id,
         line_id=line_id,
         description=line.description,
-        merchant=line.merchant,
+        # ``None`` where the source names none, which keys no rule -- the
+        # direction a missing fact has to fail in.
+        merchant_id=merchants[line.merchant] if line.merchant else None,
         transaction_on=line.transaction_on,
         external_id=line.external_id,
         running_balance=line.running_balance,
@@ -704,28 +684,22 @@ def _stage_lines(
 
     The line needs its id before the sighting can name it, so the lines are
     flushed once, together, between the two loops -- one round trip for the
-    pass rather than one per line.
+    pass rather than one per line.  The line takes what every source agrees
+    on and nothing else; the merchant the file names goes onto the sighting
+    (ruling **R-BI16**).
 
     Args:
         account_id: The account being imported into.
         import_id: The import that is recording them.
         fresh: The lines to write.
-        merchants: This pass's merchant rows by name
-            (:func:`~._merchants.resolve_merchants`), TOTAL over every word a
-            fresh line names -- :func:`_merchant_words` is what puts them in
-            it, so this indexes rather than defaulting.
+        merchants: This pass's merchant rows by name, for the sightings
+            (:func:`_sighting_of`).
     """
     rows = [
         BankStatementLine(
             account_id=account_id,
             posted_on=keyed.line.posted_on,
             amount=keyed.line.amount,
-            # ``None`` where the source names none, which keys no rule -- the
-            # direction a missing fact has to fail in.
-            merchant_id=(
-                merchants[keyed.line.merchant] if keyed.line.merchant
-                else None
-            ),
             sequence_in_group=keyed.sequence_in_group,
         )
         for keyed in fresh
@@ -733,7 +707,7 @@ def _stage_lines(
     db.session.add_all(rows)
     db.session.flush()
     db.session.add_all(
-        _sighting_of(account_id, import_id, row.id, keyed.line)
+        _sighting_of(account_id, import_id, row.id, keyed.line, merchants)
         for row, keyed in zip(rows, fresh)
     )
 
@@ -745,10 +719,11 @@ def _write_records(
 
     **The writes that share one fact, kept together because of it** (plan step
     ``bank_import:X-gd-1``).  A merchant WORD becomes a merchant ROW here and
-    nowhere else (:func:`~._merchants.resolve_merchants`); a re-import then
-    fills the merchant a held line is missing, and every fresh line names one.
-    Splitting them would mean resolving the same words twice or threading a
-    mapping across the door, and the callers are a few lines apart.
+    nowhere else (:func:`~._merchants.resolve_merchants`), and every sighting
+    this pass writes -- of a held line or a fresh one -- names its row
+    (ruling **R-BI16**).  Splitting them would mean resolving the same words
+    twice or threading a mapping across the door, and the callers are a few
+    lines apart.
 
     **Every line the file states gains this import's sighting** (ruling
     **R-BI10**): the held half records what this source said about a line
@@ -767,21 +742,21 @@ def _write_records(
         reconciled: What :func:`_reconcile` decided this file adds and holds.
     """
     merchants = resolve_merchants(account_id, _merchant_words(reconciled))
-    for line, recorded in reconciled.held:
-        _absorb_gained_facts(line, recorded, merchants)
     db.session.add_all(
-        _sighting_of(account_id, import_id, recorded.id, line)
+        _sighting_of(account_id, import_id, recorded.id, line, merchants)
         for line, recorded in reconciled.held
     )
     _stage_lines(account_id, import_id, reconciled.fresh, merchants)
-    # The held lines' eager ``sightings`` collections were loaded BEFORE the
-    # rows above existed, and a sighting staged by its ids does not join a
-    # loaded collection.  Expire them, so a reader of a held line's wording
-    # or day in this same unit of work reads the row and not the collection
-    # as it was -- the loaded-relationship rule ``BankStatementLine.merchant``
-    # documents, applied to the relation this door writes.
+    # The held lines' eager ``sightings`` collections and their two merchant
+    # projections were loaded BEFORE the rows above existed, and a sighting
+    # staged by its ids joins neither a loaded collection nor a loaded
+    # subquery answer.  Expire exactly that set, so a reader of a held line's
+    # wording, day or merchant in this same unit of work reads the row and
+    # not the instance as it was.  ONE spelling of the set
+    # (``BankStatementLine.READS_OVER_SIGHTINGS``), shared with the test
+    # builder that stages a sighting the same way.
     for _line, recorded in reconciled.held:
-        db.session.expire(recorded, ["sightings"])
+        db.session.expire(recorded, BankStatementLine.READS_OVER_SIGHTINGS)
 
 
 def record_statement(

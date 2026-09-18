@@ -19,7 +19,12 @@ re-typed the join would agree with a mistake as readily as with the truth.
 back, the two target columns cleared, ``merchant_id`` nullable on the
 destination -- because the test database is already at head.  It is the same
 construction ``test_c40_account_id_backfill.py`` uses to relax a NOT NULL it
-needs to write around, and it restores the schema on teardown.
+needs to write around, and it restores the schema on teardown.  **Since plan
+step ``bank_import:X-f6b-1b`` the line's own ``merchant_id`` is one of the
+columns the fixture puts back** (ruling **R-BI16** moved the key onto the
+sighting and deleted the line's column), so every read of it here is raw SQL
+against the re-added column: the ORM attribute of that name is the line's
+read over its sightings now, which this fixture has emptied.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture pattern,
@@ -40,7 +45,6 @@ from sqlalchemy import text
 
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
-from app.models.statement_import import BankStatementLine
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     an_import,
@@ -90,7 +94,7 @@ def pre_migration_shape(db):
     """
     db.session.execute(text(
         "ALTER TABLE budget.bank_statement_lines "
-        "ADD COLUMN merchant VARCHAR(100)"
+        "ADD COLUMN merchant VARCHAR(100), ADD COLUMN merchant_id INTEGER"
     ))
     db.session.execute(text(
         "ALTER TABLE budget.merchant_rules "
@@ -107,9 +111,12 @@ def pre_migration_shape(db):
 def _to_the_pre_migration_state(db):
     """Move what the builders staged back onto the string columns.
 
-    The builders write through the ORM, so they produce POST-migration rows.
-    This copies each row's merchant name onto the column the revision reads and
-    clears the column it writes, which is the state a real upgrade begins from.
+    The builders write through the ORM, so they produce POST-migration rows
+    -- and since ``bank_import:X-f6b-1b`` the merchant a builder names is the
+    SIGHTING's key.  This copies each line's merchant name (through its
+    sighting) onto the column the revision reads and clears every column it
+    writes, which is the state a real upgrade begins from; the sightings'
+    keys are cleared too, so the merchant rows can go.
 
     Args:
         db: The test database session.
@@ -117,7 +124,9 @@ def _to_the_pre_migration_state(db):
     db.session.flush()
     db.session.execute(text(
         "UPDATE budget.bank_statement_lines AS l SET merchant = m.name "
-        "FROM budget.merchants AS m WHERE m.id = l.merchant_id"
+        "FROM budget.statement_line_sightings AS s "
+        "JOIN budget.merchants AS m ON m.id = s.merchant_id "
+        "WHERE s.line_id = l.id"
     ))
     db.session.execute(text(
         "UPDATE budget.merchant_rules AS d SET merchant = m.name "
@@ -127,10 +136,21 @@ def _to_the_pre_migration_state(db):
         "UPDATE budget.bank_statement_lines SET merchant_id = NULL"
     ))
     db.session.execute(text(
+        "UPDATE budget.statement_line_sightings SET merchant_id = NULL"
+    ))
+    db.session.execute(text(
         "UPDATE budget.merchant_rules SET merchant_id = NULL"
     ))
     db.session.execute(text("DELETE FROM budget.merchants"))
     db.session.expire_all()
+
+
+def _line_keys(db):
+    """Return ``(sequence_in_group, merchant_id)`` per line, from the re-added column."""
+    return db.session.execute(text(
+        "SELECT sequence_in_group, merchant_id "
+        "FROM budget.bank_statement_lines ORDER BY sequence_in_group"
+    )).all()
 
 
 @contextlib.contextmanager
@@ -213,13 +233,11 @@ class TestTheUpgradeBackfill:
 
         _upgrade(db)
 
-        rows = db.session.query(BankStatementLine).order_by(
-            BankStatementLine.sequence_in_group,
-        ).all()
-        assert [row.merchant_id is None for row in rows] == [
+        rows = _line_keys(db)
+        assert [key is None for _ordinal, key in rows] == [
             False, False, True,
         ]
-        assert rows[0].merchant_id == rows[1].merchant_id
+        assert rows[0][1] == rows[1][1]
         assert db.session.query(Merchant).count() == 1
 
     def test_two_accounts_naming_one_merchant_get_a_row_EACH(
@@ -246,9 +264,11 @@ class TestTheUpgradeBackfill:
         _upgrade(db)
 
         assert db.session.query(Merchant).count() == 2
-        for line in db.session.query(BankStatementLine).all():
-            named = db.session.get(Merchant, line.merchant_id)
-            assert named.account_id == line.account_id
+        assert db.session.execute(text(
+            "SELECT count(*) FROM budget.bank_statement_lines AS l "
+            "JOIN budget.merchants AS m ON m.id = l.merchant_id "
+            "WHERE m.account_id = l.account_id"
+        )).scalar() == 2
 
     def test_a_destination_whose_merchant_has_NO_LINE_is_pointed(
         self, app, db, seed_user, pre_migration_shape,
@@ -279,8 +299,7 @@ class TestTheUpgradeBackfill:
         _to_the_pre_migration_state(db)
         # ...and now the merchant has no line at all, which is the state a
         # deleted import leaves behind.  Read through raw SQL because the
-        # re-added ``merchant`` COLUMN is not mapped -- the ORM's attribute of
-        # that name is the relationship this revision created.
+        # re-added ``merchant`` COLUMN is not mapped.
         assert db.session.execute(text(
             "SELECT count(*) FROM budget.bank_statement_lines "
             "WHERE merchant = 'Ghost Merchant'"

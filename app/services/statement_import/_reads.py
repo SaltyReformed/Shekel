@@ -270,29 +270,40 @@ def orphan_merchants_by_import(account_id: int) -> "dict[int, list[int]]":
     """Return which merchants each import is the ONLY thing still naming.
 
     Plan step ``bank_import:X-gr``, finding **BI-490**.  A merchant is swept
-    when no surviving line names it and no standing rule is about it (plan
-    step ``bank_import:X-gd-1``), so deleting an import orphans exactly the
-    unanswered merchants named only by lines it alone holds.  **ONE
-    derivation for the confirmation and the act**, :func:`matches_by_import`'
-    rule: :func:`import_history` takes ``len()`` of each list to say what a
-    delete would forget, and :func:`~._undo.delete_import` deletes the list.
-    The act swept the table AFTER the rows were gone until this step, which
-    answered a different question -- *what is orphaned now* -- and a preview
-    could only have agreed with it by an invariant rather than by being the
-    same read.  Over one stored state the two are one count; across the
-    window between the page's GET and the act's POST a concurrent write makes
-    the act REFUSE rather than diverge (:func:`~._undo._forget_merchants`).
+    when no surviving sighting names it and no standing rule is about it
+    (plan step ``bank_import:X-gd-1``; the key moved onto the sighting at
+    ``bank_import:X-f6b-1b``, ruling **R-BI16**), so deleting an import
+    orphans exactly the unanswered merchants that only its own sightings
+    name.  **ONE derivation for the confirmation and the act**,
+    :func:`matches_by_import`' rule: :func:`import_history` takes ``len()``
+    of each list to say what a delete would forget, and
+    :func:`~._undo.delete_import` deletes the list.  The act swept the table
+    AFTER the rows were gone until this step, which answered a different
+    question -- *what is orphaned now* -- and a preview could only have
+    agreed with it by an invariant rather than by being the same read.  Over
+    one stored state the two are one count; across the window between the
+    page's GET and the act's POST a concurrent write makes the act REFUSE
+    rather than diverge (:func:`~._undo._forget_merchants`).
 
-    A merchant named by NO line is not attributed to any import, and none
-    exists to attribute: :func:`~._merchants.resolve_merchants` creates a row
-    only for a word this pass then writes onto a line, in the same statement
-    pass, and nothing rewrites a line's merchant afterwards.  Measured on the
-    developer's own database 2026-09-12: 67 merchants, 0 named by no line.
+    **Read over the SIGHTINGS and not over the lines' derived merchant**,
+    because that is the question: an import's deletion takes its sightings,
+    and a merchant no surviving sighting names is one no line's read can
+    answer -- so a merchant named on a line only by THIS import's sighting is
+    orphaned even where another import also sighted the line under another
+    word, and the line's read moves to the survivor's word with nothing to
+    repair (finding **BI-504**, which the stored key made a stale copy of).
+
+    A merchant named by NO sighting is not attributed to any import, and
+    none exists to attribute: :func:`~._merchants.resolve_merchants` creates
+    a row only for a word this pass then writes onto a sighting, in the same
+    statement pass, and nothing rewrites a sighting's merchant afterwards.
+    Measured on the developer's own database 2026-09-12: 67 merchants, 0
+    named by no line.
 
     Args:
-        account_id: The account whose imports to read.  The lines' account
-            is what scopes it; a line's merchant is held to the line's account
-            by ``fk_bank_statement_lines_merchant_account``.
+        account_id: The account whose imports to read.  The sightings'
+            account is what scopes it; a sighting's merchant is held to its
+            account by ``fk_statement_line_sightings_merchant_account``.
 
     Returns:
         ``{import_id: [merchant_id, ...]}``, each list ascending, covering
@@ -303,27 +314,26 @@ def orphan_merchants_by_import(account_id: int) -> "dict[int, list[int]]":
         db.session.query(MerchantRule.merchant_id)
         .filter(MerchantRule.account_id == account_id)
     )
-    # ONE distinct import across every sighting of every line naming the
-    # merchant means one import holds all of those lines alone, so its
-    # deletion takes the last line the merchant is named by (plan step
-    # ``bank_import:X-f6b-1``).  A merchant whose lines two imports sighted
-    # survives either import's deletion and is absent here.
+    # ONE distinct import across every sighting naming the merchant means
+    # that import's sightings are all that name it, so its deletion takes the
+    # last one.  A merchant two imports' sightings name survives either
+    # import's deletion and is absent here.  Served by
+    # ``idx_statement_line_sightings_account_merchant``.
     rows = (
         db.session.query(
             db.func.min(StatementLineSighting.import_id),
-            BankStatementLine.merchant_id,
+            StatementLineSighting.merchant_id,
         )
-        .join(StatementLineSighting, StatementLineSighting.of_its_line())
         .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant_id.isnot(None),
-            BankStatementLine.merchant_id.notin_(answered),
+            StatementLineSighting.account_id == account_id,
+            StatementLineSighting.merchant_id.isnot(None),
+            StatementLineSighting.merchant_id.notin_(answered),
         )
-        .group_by(BankStatementLine.merchant_id)
+        .group_by(StatementLineSighting.merchant_id)
         .having(
             db.func.count(db.distinct(StatementLineSighting.import_id)) == 1,
         )
-        .order_by(BankStatementLine.merchant_id)
+        .order_by(StatementLineSighting.merchant_id)
         .all()
     )
     by_import: "dict[int, list[int]]" = {}
