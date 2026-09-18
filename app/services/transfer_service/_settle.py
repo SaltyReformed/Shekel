@@ -77,6 +77,7 @@ from app.services.cash_ledger import (
 )
 from app.services.row_valuation import fixed_contribution
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.services import status_seam
 from app.services.status_seam import (
     Settlement,
@@ -259,7 +260,7 @@ def settle(
     rows: TransferRows,
     new_status_id: int,
     *,
-    submitted: Decimal | None,
+    submitted: StatedFigure | None,
     settle_day: SettleDay | None,
 ) -> bool:
     """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
@@ -308,7 +309,7 @@ def settle(
     every reader fell back to the row's plan.
 
     **A settle never CLEARS the record, and there is no door that does.**  A
-    ``settled_amount`` arriving without a settling status is REFUSED outright
+    ``figure`` arriving without a settling status is REFUSED outright
     (``_update._apply_transfer_fields``), because a figure states what MOVED and
     an unsettled pair has moved nothing.  Correcting a recorded figure is
     revert, edit, settle again -- the revert KEEPS what moved and the re-settle
@@ -336,8 +337,10 @@ def settle(
         new_status_id: The settled status all three rows move to, as the DOOR
             asked for it.  Verified by
             :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
-        submitted: The figure a caller supplied, or ``None`` when nobody typed
-            one.
+        submitted: The figure a caller stated and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`; every caller
+            today is a person's door, so ``typed``), or ``None`` when nobody
+            stated one.
         settle_day: The civil day the money moved and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`), when the caller knows
             it -- the reconcile tick's statement day on the ``asserted`` basis,
@@ -375,7 +378,8 @@ def settle(
     held = honoured_correction(rows.expense)
     booked = resolved if held is None else held
     correction = (
-        submitted if submitted is not None and submitted != booked else None
+        submitted if submitted is not None and submitted.amount != booked
+        else None
     )
 
     # ONE act: the status, the pair's day, and what each leg RECORDS as having

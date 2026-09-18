@@ -63,6 +63,7 @@ from app.services.recurring_definition import (
 )
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    typed,
     all_periods,
     cadence_payload,
     create_account_of_type,
@@ -963,7 +964,7 @@ class TestTemplateUpdate:
                 txn.id,
                 seed_user["user"].id,
                 entry_service.EntryDetails(
-                    amount=Decimal("40.00"),
+                    figure=typed(Decimal("40.00")),
                     description="Kroger",
                     purchased_on=current.start_date,
                 ),

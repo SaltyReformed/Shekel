@@ -71,6 +71,8 @@ from app.services.statement_match._release import (  # pylint: disable=protected
     planned_removals,
 )
 
+from tests._test_helpers import typed
+
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -663,7 +665,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         envelope.template.is_envelope = False
         db.session.flush()
         transaction_service.apply_requested_status(
-            envelope, envelope.status_id, submitted=Decimal("999.99"),
+            envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
         )
         db.session.flush()
         assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
@@ -1017,7 +1019,7 @@ class TestTheSettledParentRuleIsTheArithmetic:
         doomed = entry_service.create_entry(
             transaction_id=envelope.id, user_id=seed_user["user"].id,
             details=entry_service.EntryDetails(
-                amount=Decimal("57.96"), description="Amazon",
+                figure=typed(Decimal("57.96")), description="Amazon",
                 purchased_on=start + timedelta(days=3), is_credit=True,
             ),
         )

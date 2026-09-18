@@ -37,6 +37,7 @@ from app.services.settle_day import (
     submitted_settle_day,
 )
 from app.services.state_machine import verify_transition
+from app.services.stated_figure import StatedFigure
 from app.services.status_seam._record import Settlement
 from app.services.status_seam._covering import sync_covering_movement
 from app.services.status_seam._refusals import (
@@ -203,9 +204,9 @@ def settle_day_for_status(
 def figure_for_status(
     row: StatusBearingRow,
     new_status_id: int,
-    submitted: Optional[Decimal],
+    submitted: Optional[StatedFigure],
     recorded: Optional[Decimal],
-) -> Optional[Decimal]:
+) -> Optional[StatedFigure]:
     """Return the figure a SUBMISSION means, or refuse a real conflict.
 
     **The figure's half of what :func:`settle_day_for_status` does for the day,
@@ -243,8 +244,11 @@ def figure_for_status(
         new_status_id: The ``ref.statuses.id`` the row is moving to -- the
             SUBMITTED status when the form carried one, else the row's own (an
             edit that changes only the figure is an identity transition).
-        submitted: The figure the form submitted, or ``None`` when it submitted
-            none.
+        submitted: The figure the form submitted and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`), or ``None``
+            when it submitted none.  Only the FIGURE is graded here; the
+            source rides through untouched, because an echo is decided by
+            the number and a refusal by the status.
         recorded: What the row RECORDS as having moved
             (:func:`app.services.row_valuation.recorded_figure`), which is what
             the box was prefilled from -- so equality here is exactly "the user
@@ -262,7 +266,7 @@ def figure_for_status(
     if submitted is None:
         return None
     if new_status_id not in settled_status_ids():
-        if submitted == recorded:
+        if submitted.amount == recorded:
             return None
         reject_figure_without_settled_status(row, new_status_id)
     return submitted

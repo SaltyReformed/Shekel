@@ -53,7 +53,12 @@ import pytest
 import sqlalchemy.exc
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, SettlementBasisEnum, StatusEnum
+from app.enums import (
+    MovementFigureSourceEnum,
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+)
 from app.extensions import db
 from app.models.ref import TransactionType
 from app.models.amount_ownership import AmountOwnership
@@ -767,7 +772,7 @@ class TestTheFigureBasisAndTheDayBasisAreDifferentColumns:
                 settle_day=an_asserted_day(seed_periods[0].start_date),
                 settlement=Settlement(
                     amount=Decimal("287.31"),
-                    basis=SettlementBasisEnum.CORRECTED,
+                    source=MovementFigureSourceEnum.TYPED,
                 ),
             )
             db.session.flush()

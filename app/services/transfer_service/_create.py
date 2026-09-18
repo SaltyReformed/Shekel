@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, SettlementBasisEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, MovementFigureSourceEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -457,13 +457,14 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         # ``row_valuation.settled_figure`` refuses to value.  So the create
         # supplies one: the figure
         # is the transfer's own amount, which is what a born-settled transfer
-        # says moved, and the basis is ``derived`` because the app resolved it
-        # from the row rather than a human correcting what the app booked (plan
-        # step X-au-c3).
+        # says moved, and its source is ``resolved`` -- the app priced it from
+        # the row rather than anyone stating what the bank took -- which is
+        # what makes the record's basis ``derived`` (plan step X-au-c3; the
+        # source is the stated field since X-bi-3e-1).
         apply_settle_day_to_pair(
             expense_shadow, income_shadow, spec.settle_day,
             settlement=status_seam.Settlement(
-                amount=amount, basis=SettlementBasisEnum.DERIVED,
+                amount=amount, source=MovementFigureSourceEnum.RESOLVED,
             ),
         )
         db.session.flush()

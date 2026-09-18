@@ -55,6 +55,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
 from tests._test_helpers import (
+    typed,
     an_entered_day,
     append_only_guard_lifted,
     figure_source_columns,
@@ -423,7 +424,7 @@ class TestAPurchasesAccountIsItsParents:
                 parent.id,
                 seed_user["user"].id,
                 entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Kroger",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -575,7 +576,7 @@ class TestALinkCannotOutliveItsSettleDay:
                 parent.id,
                 seed_user["user"].id,
                 entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Kroger",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -619,7 +620,7 @@ class TestALinkCannotOutliveItsSettleDay:
                 parent.id,
                 seed_user["user"].id,
                 entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Kroger",
                     purchased_on=opening.observed_on,
                 ),
@@ -653,7 +654,7 @@ class TestALinkCannotOutliveItsSettleDay:
                 parent.id,
                 seed_user["user"].id,
                 entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Kroger",
                     purchased_on=opening.observed_on,
                 ),
@@ -663,7 +664,7 @@ class TestALinkCannotOutliveItsSettleDay:
             db.session.flush()
 
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("13.75"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("13.75")),
             )
 
             assert entry.amount == Decimal("13.75")

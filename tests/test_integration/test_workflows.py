@@ -32,6 +32,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    typed,
     make_cadence_rule,
     make_every_period_rule,
     one_off_row_of,
@@ -977,7 +978,7 @@ class TestFullBudgetWorkflow:
             # ``corrected`` (plan step X-au-c3).  Through the real verb, because
             # a bare status assign leaves a state the record's CHECKs refuse.
             transaction_service.settle_transaction(
-                txn1, submitted=Decimal("1195.00"),
+                txn1, submitted=typed(Decimal("1195.00")),
             )
             db.session.commit()
 

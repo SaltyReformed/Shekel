@@ -51,6 +51,7 @@ from tests._test_helpers import (
     an_entered_day,
     create_account_of_type,
     linked_ledger_account,
+    typed,
 )
 from app.services import cash_ledger
 from app.models.amount_ownership import AmountOwnership
@@ -540,7 +541,7 @@ class TestSettleWithActualSameCall:
             _db.session.commit()
 
             # Settle and record the actual in ONE call (the trap).
-            _settle(transfer, user_id, settled_amount=Decimal("88.00"))
+            _settle(transfer, user_id, figure=typed(Decimal("88.00")))
             _db.session.commit()
 
             entries = _entries_for_transfer(transfer.id)

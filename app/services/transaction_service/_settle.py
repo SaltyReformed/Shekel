@@ -35,7 +35,6 @@ Architecture:
 import logging
 from decimal import Decimal
 
-from app.enums import SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
@@ -46,6 +45,7 @@ from app.services.cash_ledger import (
 )
 from app.services.row_valuation import purchases_total
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
@@ -227,9 +227,9 @@ def settle_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
 
 
 def _is_correction(
-    txn: Transaction, submitted: "Decimal | None", booked: Decimal,
+    txn: Transaction, submitted: "StatedFigure | None", booked: Decimal,
 ) -> bool:
-    """Return whether *submitted* is a HUMAN's figure this settle would BOOK.
+    """Return whether *submitted* is a STATED figure this settle would BOOK.
 
     **The verb's own act-1b decision, and it is finding N-231's fix.**  Three
     doors may hand a settle a figure and only some of them are corrections: a
@@ -270,8 +270,8 @@ def _is_correction(
 
     Args:
         txn: The row about to settle, still in its pre-settle status.
-        submitted: The figure a caller supplied, or ``None`` when nobody typed
-            one.
+        submitted: The figure a caller stated and who wrote it, or ``None``
+            when nobody stated one.
         booked: What this settle would book absent a correction, resolved once
             by :func:`settle_amount` and threaded here rather than re-derived.
 
@@ -282,14 +282,14 @@ def _is_correction(
     return (
         submitted is not None
         and not settles_from_entries(txn)
-        and submitted != booked
+        and submitted.amount != booked
     )
 
 
 def settle_transaction(
     txn: Transaction,
     *,
-    submitted: Decimal | None = None,
+    submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
@@ -387,18 +387,24 @@ def settle_transaction(
             REFUSED here, because a transfer settles through
             ``transfer_service.update_transfer`` so both legs and the parent
             move together.
-        submitted: What the row actually cost, when the CALLER knows -- i.e. a
-            figure a human supplied.  ``None`` does NOT mean "keep the stored
-            amount": it means "nobody typed one", and the settle then RECORDS
-            what it resolved, on the ``derived`` basis.  Ruling **R-FB** is what
-            gives the parameter its real callers: a BILL's tick may correct its
-            amount, prefilled, and an envelope's close may not -- the envelope
-            branch ignores a submitted figure outright, and the full-edit door
-            refuses one on such a row rather than dropping it silently.
-            **It is named for what it IS rather than for a column** since plan
-            step X-au-c3: it was ``actual_amount``, and the column of that name
-            is gone -- a settled row records what moved in ``settled_amount``
-            beside a ``settled_basis_id`` that says whether this figure is why.
+        submitted: What the row actually cost and WHO SAID SO, when the CALLER
+            knows (:class:`~app.services.stated_figure.StatedFigure`; plan step
+            **X-bi-3e-1**, ruling **R-BAL61**): ``typed`` from the reconcile
+            panel's tick, the grid's Mark Paid and the popover (through
+            :func:`._door.apply_requested_status`), ``observed`` from the
+            statement matcher's transaction arm through the same door.
+            ``None`` does NOT mean "keep the stored amount": it means "nobody
+            stated one", and the settle then RECORDS what it resolved, on the
+            ``derived`` basis with the ``resolved`` source.  Ruling **R-FB** is
+            what gives the parameter its real callers: a BILL's tick may
+            correct its amount, prefilled, and an envelope's close may not --
+            the envelope branch ignores a stated figure outright, and the
+            full-edit door refuses one on such a row rather than dropping it
+            silently.  **It is named for what it IS rather than for a column**
+            since plan step X-au-c3: it was ``actual_amount``, and the column
+            of that name is gone -- a settled row records what moved in
+            ``settled_amount`` beside a ``settled_basis_id`` that says whether
+            this figure is why.
         settle_day: The civil day the money moved and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`), when the CALLER knows
             it -- the reconcile tick's statement date on the ``asserted``
@@ -491,15 +497,16 @@ def settle_transaction(
         # reconcile panel PREFILLS its amount box, so an untouched tick submits
         # the figure the row would have booked anyway.
         #
-        # **The panel is the ONLY caller that reaches it**, and saying so
-        # replaces a claim this comment used to make that plan step X-ap turned
-        # out NOT to be true.  It predicted the full-edit door would thread its
-        # submitted ``actual_amount`` into this parameter; X-ap instead lets the
-        # PATCH handler's own ``setattr`` loop write that column and calls this
-        # verb with no figure, because two writers of one column in one request
-        # is the shape this arc removes.  A justification naming a caller that
-        # does not exist is the defect ruling R-EC deleted a whole parameter
-        # for; it is corrected here rather than left to read as coverage.
+        # **Four doors reach it with a figure**, and naming them replaces a
+        # sentence this comment carried from plan step X-ap ("the panel is the
+        # ONLY caller") that stopped being true when the popover's figure was
+        # threaded through ``apply_requested_status`` (2026-08-17) and the
+        # matcher's transaction arm through the same door: the reconcile
+        # panel's tick, the grid's Mark Paid, the full-edit popover and the
+        # matcher.  Every one states who wrote the figure with it (plan step
+        # X-bi-3e-1).  A justification naming a caller that does not exist is
+        # the defect ruling R-EC deleted a whole parameter for; it is corrected
+        # here rather than left to read as coverage.
         #
         # ONE basis for the whole act (developer ruling, 2026-08-17): the
         # figure this settle books and the echo rule's comparison are two
@@ -711,9 +718,7 @@ def settle_from_entries(
     # difference with no second write.
     apply_status_change(
         txn, new_status_id, settle_day=settle_day,
-        settlement=Settlement(
-            amount=None, basis=SettlementBasisEnum.PURCHASES,
-        ),
+        settlement=Settlement(amount=None, source=None),
     )
 
     log_event(
