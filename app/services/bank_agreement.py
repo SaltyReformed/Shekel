@@ -108,8 +108,10 @@ class AgreementDay:
             with the books.*
         app_balance: What the app says the account held at the day's end.
         bank_balance: What the bank's own record says it held, or ``None``
-            when no anchored import places a figure, or when the recorded
-            lines do not reach this day from the one that does.
+            when no anchor reaches the day: it lies in a run no statement
+            prices, or between runs -- bar the day before an anchored run's
+            first line, which that run's lines start from and its anchor
+            reaches.
         in_records: Whether the app's records reach back this far.  ``False``
             for a day before the account's first cash fact, where a zero
             :attr:`recorded` means "nothing recorded" rather than "nothing
@@ -216,35 +218,59 @@ class BankAgreement:
         records_begin: The day the app's own records start, or ``None`` for an
             account holding none.  Days before it are :attr:`AgreementDay`
             values with ``in_records`` False.
-        anchor: The :class:`~app.services.statement_import.BankAnchor` every
-            bank balance here was walked from, or ``None`` when no import
-            places a figure -- in which case the LEVEL is unknown and only the
-            movement half of this report is answerable.
-        days: One :class:`AgreementDay` per day of the span, ascending.
-        imports: The account's imported spans merged into contiguous runs
-            (:func:`app.services.statement_import.covered_runs`), ascending and
-            disjoint -- so two runs are separated by at least one day nobody
-            has imported.  **A run is not the same question as
-            :attr:`ComparedSpan.recorded_from` and
+        runs: The account's imported spans merged into contiguous runs, each
+            with what prices it: a
+            :class:`~app.services.statement_import.RecordedRun` carrying the
+            anchor every bank balance in that run was walked from (or
+            ``None``, when no statement in the run places a figure -- the
+            LEVEL there is unknown and only the movement half of this report
+            answers for its days) and the checkpoints the walk was checked
+            against (plan step ``balance:X-bj-1b``, rulings **R-BAL63** and
+            **R-BAL65**).  Ascending and disjoint, so two runs are separated
+            by at least one day nobody has imported.  **A run is not the
+            same question as :attr:`ComparedSpan.recorded_from` and
             :attr:`~ComparedSpan.recorded_through`**: two imports either side
             of a gap reach both of those ends while nobody has read what lies
             between them, and a quiet day inside a gap is indistinguishable
             from a quiet day inside a run by any count over :attr:`days`.
             **Carried on the VALUE and loaded once** (plan step
-            **balance:X-f3c-3**), because its reader is
+            **balance:X-f3c-3**), because one reader is
             :mod:`app.services.outstanding_difference`, which folds this report
             down to a verdict for one span and must not issue a query of its
             own: an answer that depended on when it was asked rather than on
             what this report was built from is the shape a memoized read pass
-            exists to remove.
+            exists to remove.  It is the ONE home of the run spans: the fold
+            that priced :attr:`days` produced it, so no second list of spans
+            rides beside it to be kept in step.
+        days: One :class:`AgreementDay` per day of the span, ascending.
     """
 
     account_id: int
     span: ComparedSpan
     records_begin: "date | None"
-    anchor: "statement_import.BankAnchor | None"
+    runs: "list[statement_import.RecordedRun]"
     days: "list[AgreementDay]"
-    imports: "list[tuple[date, date]]"
+
+    @property
+    def imports(self) -> "list[tuple[date, date]]":
+        """Return the runs' spans, ``[(first_day, last_day), ...]``.
+
+        What :mod:`app.services.outstanding_difference` reads to count the
+        days of a span the bank's lines cover; DERIVED from :attr:`runs`
+        rather than stored beside them (ruling **R-BAL65**), so there is no
+        second list to agree with the first.
+        """
+        return [(run.first_day, run.last_day) for run in self.runs]
+
+    @property
+    def anchored(self) -> bool:
+        """Return whether any statement places a figure on a day of any run.
+
+        False is the state BOTH of the developer's pre-X-f6e-1 imports were
+        in: the bank column is empty throughout and the page says so once,
+        per run, rather than also counting every day as unpriced.
+        """
+        return any(run.anchor is not None for run in self.runs)
 
     @property
     def compared(self) -> "list[AgreementDay]":
@@ -336,23 +362,28 @@ class BankAgreement:
     def unpriced_days(self) -> int:
         """Return how many drawn days the bank's own record cannot price.
 
-        A day is unpriced when the recorded lines do not REACH it from the
-        anchor -- across a gap between imports, or from a different run
-        entirely.  Reported because the page would otherwise say *"the bank's
-        balances below are walked from $X on D"* over a column of dashes,
-        which is a derivation claimed and not performed.
+        A day is unpriced when no run's anchor REACHES it: it lies in a gap
+        between imports, or in a run that holds no standing bank level
+        (ruling **R-BAL64**).  Reported because the page would otherwise say
+        *"walked from $X on D"* over a column of dashes, which is a
+        derivation claimed and not performed.
 
         Reproduced by adversarial review 2026-08-24: a ``file_chain`` anchor in
         a January run left every August day unpriced -- including the effective
         day of August's OWN anchored import, whose crossing is empty -- while
-        the page named the January figure.
+        the page named the January figure.  Since plan step
+        ``balance:X-bj-1b`` each run walks from its own anchor, so that shape
+        counts only the gap between the two runs.
 
         Returns:
-            The count, or ``0`` when no anchor places a balance at all (the
-            page says THAT instead, and one absence should not be reported as
-            two).
+            The count, or ``0`` when no anchor places a balance at all (every
+            run's block says THAT instead, and one absence should not be
+            reported as two).  Beside an anchored run, an unpriced run's days
+            ARE counted (ruling **R-BAL64**): its block names its own
+            absence, and the count says how much of the drawn span the bank
+            column cannot fill.
         """
-        if self.anchor is None:
+        if not self.anchored:
             return 0
         return sum(1 for day in self.days if day.bank_balance is None)
 
@@ -564,8 +595,9 @@ def bank_agreement(
         account, ctx, first_day, last_day,
     )
     bank_moves = _bank_moves(account.id, first_day, last_day)
+    # ONE fold prices the days AND says which runs the lines form and what
+    # each walks from; the runs are read off it rather than queried again.
     folded = statement_import.fold_bank_balances(account.id, days)
-    balances = {} if folded is None else folded.balances
     records_begin = series.first_event_on
 
     return BankAgreement(
@@ -577,11 +609,7 @@ def bank_agreement(
             recorded_through=span.last_day,
         ),
         records_begin=records_begin,
-        anchor=None if folded is None else folded.anchor,
-        # The days an import actually vouches for, which is NOT the same
-        # question as the two ends of ``span``: two imports either side of a
-        # gap reach both ends while nobody has read what lies between them.
-        imports=statement_import.covered_runs(account.id),
+        runs=folded.runs,
         days=[
             AgreementDay(
                 day=day,
@@ -589,7 +617,7 @@ def bank_agreement(
                 recorded=series.facts[day].recorded,
                 asserted=series.facts[day].asserted,
                 app_balance=series.facts[day].balance,
-                bank_balance=balances.get(day),
+                bank_balance=folded.balances.get(day),
                 in_records=(
                     records_begin is not None and day >= records_begin
                 ),
