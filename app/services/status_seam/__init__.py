@@ -99,7 +99,6 @@ from app.services.status_seam._covering import (
     covered_cash_leg,
     covering_clause,
     record_clearing,
-    settled_family_leg,
 )
 from app.services.status_seam._seam import (
     apply_status_change,
@@ -114,7 +113,6 @@ __all__ = [
     "covered_cash_leg",
     "covering_clause",
     "record_clearing",
-    "settled_family_leg",
     "figure_for_status",
     "correction_record",
     "honoured_correction",

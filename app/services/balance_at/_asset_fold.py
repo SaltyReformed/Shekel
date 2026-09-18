@@ -7,7 +7,7 @@ more event kinds on it::
     AssetEvent = (effective_date, kind, payload)
 
     kind = ASSERTION    balance := asserted_value      (AccountAnchorHistory, every OWNER row)
-         | ACTUAL       balance += settled_cash_leg    (settled rows)
+         | ACTUAL       balance += movement_cash_leg   (dated movements)
          | PLANNED      balance += reservation         (still-projected, clamped, R-G)
          | CONTRIBUTION balance += modelled_rate       (payroll deductions + employer)
          | ACCRUAL      balance += balance * rate      (modelled return, DAILY, R-T)

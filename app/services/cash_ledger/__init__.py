@@ -223,7 +223,6 @@ from ._cash_leg import (
     movement_figure_for,
     off_statement_sum,
     posted_purchase_sum,
-    settled_cash_leg,
 )
 from ._clearing import (
     ClearableLine,
@@ -330,7 +329,6 @@ __all__ = [
     "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",
-    "settled_cash_leg",
     "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",

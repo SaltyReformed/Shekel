@@ -92,9 +92,11 @@ neither of the above:
     reach a settled row (it filters to ``is_projected``), and an un-dated
     purchase under one is a movement in flight, a plan item beside the
     reservation rather than a leg of the row (ruling **R-BAL77**).
-    :func:`._cash_leg.settled_cash_leg` -- ``settled_contribution -
-    Sigma(credit entries) - Sigma(dated purchases)`` -- remains as the
-    statement matcher's pricing of a settled row (``bank_import``'s
+    ``_cash_leg.settled_cash_leg`` -- ``settled_contribution -
+    Sigma(credit entries) - Sigma(dated purchases)`` -- outlived that step by
+    one cut as the statement matcher's pricing of a settled row and is
+    deleted (ruling **R-BAL81**: a settled row is worth what its covering
+    movement moves, ``status_seam.covered_cash_leg``; ``bank_import``'s
     question, stated there), read by neither the walk nor the writer.
 
 **Why they are one module (plan step D1c).**  They were split across two: the
@@ -598,7 +600,7 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     doors (:func:`app.services.entry_service._reject_future_purchase_date`)
     -- and a purchase that happened belongs in the reservation whatever date the
     reader is asking from.  What a row is WORTH is a function of the row, as
-    :func:`._cash_leg.settled_cash_leg` beside it already is; the reader's clock decides
+    :func:`._cash_leg.cash_leg_of` beside it already is; the reader's clock decides
     WHEN the row lands (ruling R-G's clamp, in the seam's fold), never what it
     is worth.
 

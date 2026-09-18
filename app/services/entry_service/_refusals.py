@@ -72,8 +72,9 @@ from app.utils.dates import display_today
 #: ``settled_on`` was already outside the set and its reason is unchanged: it
 #: is the day the BANK took this purchase, an OBSERVATION rather than a
 #: restatement of what was spent.  Recording it moves that purchase's cash out
-#: of its envelope's close and onto its own day
-#: (``cash_ledger.settled_cash_leg``'s third term, ruling **R-FM**), and the two
+#: of its envelope's close and onto its own day (ruling **R-FM**; since plan
+#: step ``balance:X-bi-4a`` an un-dated purchase is in flight and a dated one
+#: a movement on its day, the row itself booking nothing), and the two
 #: always sum to the same total.  That is the SAME split plan step X-au-c3 is
 #: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
 #: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
@@ -181,10 +182,10 @@ def _reject_settled_parent(
     of which any money rule reads.
 
     ``settled_on`` is the field that argument was written for.  Recording it
-    changes no total -- it moves that purchase's cash out of the envelope's
-    close and onto its own day, and ``settled_cash_leg`` subtracts exactly what
-    the purchase's own leg books, so the two always sum to the row's whole debit
-    total.  Refusing it would leave already-spent money dated on the day the
+    changes no total -- it moves that purchase's cash from IN FLIGHT onto its
+    own day (ruling **R-BAL77**: the row books nothing, and an un-dated
+    purchase is a reservation until it is dated), so the two always sum to the
+    row's whole debit total.  Refusing it would leave already-spent money dated on the day the
     envelope happened to be closed with no door to correct it: measured on the
     2026-08-17 production dump, 28 closed envelopes hold 61 debit purchases
     with no posting day recorded, totalling ``$4,360.07``.
@@ -254,9 +255,12 @@ def _reject_settled_addition(txn: Transaction) -> None:
       `$18.64` to the 2026-05-21 Groceries close shrank that day's anchor
       true-up by exactly `$18.64`;
     * a ``derived`` or ``corrected`` settlement STORES its figure, fixed before
-      the purchase existed, so the gross cannot rise and ``settled_cash_leg``'s
-      third term subtracts money it never held.  Measured: adding `$367.62` to a
-      `$163.95` close moved that leg to **`+203.67`** -- an EXPENSE row
+      the purchase existed, so the purchase's movement would post BESIDE the
+      covering movement that already carries the close -- money counted twice
+      (ruling **R-BAL80**).  Measured through ``X-bi-3e``, when the row's own
+      leg subtracted the purchase from a gross that never held it: adding
+      `$367.62` to a `$163.95` close moved that leg to **`+203.67`** -- an
+      EXPENSE row
       publishing an inflow -- while the true-up moved `$0.00`.  Both legs still
       net to `-163.95`, which is why the balance instrument is BLIND to it.
 
@@ -369,8 +373,8 @@ def removal_refusal(txn: Transaction) -> "str | None":
     **A settled row recording a STORED figure is refused whatever the purchase
     is**, for :func:`_reject_settled_addition`'s own reason: a ``derived`` or
     ``corrected`` settlement stores a figure fixed before this purchase was
-    weighed, so ``settled_cash_leg``'s third term would stop subtracting money
-    the total never contained.
+    weighed, so its movement would be counted beside the covering movement
+    that already carries the whole close (ruling **R-BAL80**).
 
     **It was TWO sentences until plan step X-am** (ruling **balance:R-HA**).
     The terminal ``Settled`` ARCHIVE got one of its own, because that message's

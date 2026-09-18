@@ -21,7 +21,7 @@ recorded difference at the cutover (``balance:X-f3c``).
 
 Sign convention, stated once: :attr:`BankStatementLine.amount` is SIGNED and
 positive means money ENTERING the account, matching
-``cash_ledger.settled_cash_leg`` exactly so a later match compares two figures
+``cash_ledger.movement_cash_leg`` exactly so a later match compares two figures
 that already agree about direction.  Both of the developer's sources use that
 convention natively (OFX ``TRNAMT``, and the CSV's Credit / Debit pair), so no
 adapter has to invert anything.

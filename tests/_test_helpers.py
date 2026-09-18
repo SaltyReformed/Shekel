@@ -4569,26 +4569,29 @@ def purchases_of(txn):
 
 
 def family_cash_leg(txn):
-    """Return what *txn*'s FAMILY books: its own leg plus its covering movements'.
+    """Return what a settled *txn* is WORTH: the cash its covering movement moves.
 
-    The reader's twin of :func:`family_journal_filter` for the fold's own
-    valuation (plan step **X-bi-3a**): ``cash_ledger.settled_cash_leg``
-    answers zero for a covered bill, and the app's one family valuation,
-    ``status_seam.settled_family_leg``, adds the movement back -- asked
-    here through that producer so a case that asserts "what this settled
-    row is worth" grades the same rule the matcher and the undo dialog read.
+    The reader's twin of :func:`family_journal_filter` for the app's one
+    valuation of a settled row, ``status_seam.covered_cash_leg`` (ruling
+    **R-BAL81**, plan step ``balance:X-bi-4a``) -- asked here through that
+    producer so a case that asserts "what this settled row is worth" grades
+    the same rule the matcher, its accepted register and its undo dialog
+    read.  Through ``X-bi-4a``'s first cut this read ``settled_family_leg``,
+    the row's own leg plus its covering movement's; the row's leg is deleted
+    and an envelope closed from its purchases is worth ``0`` here, its
+    purchases carrying the money.
 
     Args:
         txn: The settled :class:`~app.models.transaction.Transaction`.
 
     Returns:
-        The signed ``Decimal`` the family books.
+        The signed ``Decimal`` the row's covering movement moves.
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
-    from app.services.status_seam import settled_family_leg
+    from app.services.status_seam import covered_cash_leg
 
-    return settled_family_leg(txn)
+    return covered_cash_leg(txn)
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments

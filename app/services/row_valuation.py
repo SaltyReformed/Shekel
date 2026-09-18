@@ -78,8 +78,8 @@ Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01): ORM rows in,
 ``Decimal`` out; no Flask import, no writes, and no query this module ISSUES.
 :func:`settled_figure` reads the ``entries`` relationship for a
 ``purchases``-basis row, which lazy-loads if a caller did not eager-load it --
-the same access :func:`~app.services.cash_ledger.settled_cash_leg` already
-makes, and the fold's own loader issues ``selectinload(Transaction.entries)`` so
+the same access ``status_seam.covered_cash_leg`` makes for a settled row,
+and the fold's own loader issues ``selectinload(Transaction.entries)`` so
 no routed caller pays for it per row.
 """
 
@@ -100,8 +100,10 @@ def purchases_total(entries) -> Decimal:
     The figure a ``purchases``-basis settlement records
     (:class:`app.enums.SettlementBasisEnum`), and the one statement of it.  Both
     kinds of entry count: the credit portion leaves the account through its CC
-    Payback sibling rather than through this row, and
-    :func:`~app.services.cash_ledger.settled_cash_leg` is what subtracts it,
+    Payback sibling rather than through this row: the fold and the ledger
+    read it as a movement that moves nothing
+    (:func:`~app.services.cash_ledger.movement_cash_leg`) and the reconcile
+    panel subtracts it (:func:`~app.services.cash_ledger.off_statement_sum`),
     so removing it here would take it out twice.
 
     **It lives HERE rather than in ``entry_service``, where it was
@@ -397,19 +399,16 @@ def fixed_contribution(txn) -> "Decimal | None":
 def settled_contribution(txn) -> Decimal:
     """Return what a row that has SETTLED contributes, refusing one that has not.
 
-    The cheap accessor for a reader whose rows have ALL settled -- the settled
-    cash leg, the loan replay, the loan posting sync and its confirmed history,
-    the settled-spend metric and the spending report.  **SIX of the seven load
-    their rows with ``status_id.in_(settled_status_ids())`` in SQL**, so
-    building an amount basis for them would run the paycheck engine to
-    re-derive a figure the row already recorded.  The seventh is
-    :func:`~app.services.cash_ledger.settled_cash_leg`, which issues no query of
-    its own and is read through ``status_seam.settled_family_leg`` alone since
-    plan step ``balance:X-bi-4a`` (the walk and the posting writer, which
-    once restricted the row set in SQL, read a settled row's money as its
-    movements now); of ITS four callers, one restricts the row set --
-    ``statement_match._candidates._price`` branches on
-    ``txn.status.is_settled``.
+    The cheap accessor for a reader whose rows have ALL settled -- the loan
+    replay, the loan posting sync and its confirmed history, the settled-spend
+    metric and the spending report.  **All six load their rows with
+    ``status_id.in_(settled_status_ids())`` in SQL**, so building an amount
+    basis for them would run the paycheck engine to re-derive a figure the
+    row already recorded.  A seventh, ``cash_ledger.settled_cash_leg`` -- the
+    statement matcher's pricing of a settled row, which issued no query of its
+    own and branched on ``txn.status.is_settled`` at its one caller -- is
+    deleted at plan step ``balance:X-bi-4a`` (ruling **R-BAL81**: a settled
+    row is worth what its covering movement moves, a stored figure).
 
     **THE OTHER THREE DO NOT RESTRICT ANYTHING, AND THAT IS DELIBERATE.**
     ``statement_match``'s ``_accepted_view._accepted_row``, ``_release
@@ -440,8 +439,8 @@ def settled_contribution(txn) -> Decimal:
     **Routing that fall-through to the RESOLVER was the other option, and it is
     the wrong answer for these readers** (developer, 2026-09-06).  Their
     question is what a row's money DID, and a row that has not settled has done
-    nothing: ``settled_cash_leg`` means CONFIRMED cash effect, so pricing a
-    projected row's forecast there would publish a plan as a fact.  That is the
+    nothing: a settled row's record means CONFIRMED cash effect, so pricing
+    a projected row's forecast there would publish a plan as a fact.  That is the
     substitution plan step X-au-c3 exists to remove, and :func:`settled_figure`
     refuses to perform it for exactly the same reason.  Resolving would also
     have made today's LOUD failure silent: a derived projected row raises here

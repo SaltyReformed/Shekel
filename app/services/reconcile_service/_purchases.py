@@ -119,8 +119,8 @@ def _outstanding_scope(statement: "_rows.Statement"):
       over an arm it never ran.
     * the parent is CONTRIBUTING -- a Credit or Cancelled parent's purchases
       are not money this account owes, and a soft-deleted one's are not money
-      at all (``settled_cash_leg`` and ``_events.settled_cash_facts`` both zero
-      the whole family for such a row).  Routed through the shared
+      at all (``movement_cash_leg`` and ``_events.settled_cash_facts`` both
+      zero the whole family for such a row).  Routed through the shared
       ``balance_contributing_clause`` so this filter and the plan loader cannot
       come to disagree about which parent rows exist at all -- the soft-delete
       half was a hand-written ``is_deleted.is_(False)`` until plan step X-f2-c2.
@@ -130,10 +130,13 @@ def _outstanding_scope(statement: "_rows.Statement"):
     premise that "the entry reservation prices only projected rows
     (``cash_ledger._amounts._entry_aware_amount``), so an entry on a settled
     parent is inert" -- and ruling **R-FM** had already falsified it one step
-    earlier: ``settled_cash_leg`` subtracts every POSTED purchase from a settled
-    row's close, so recording a posting day on such a purchase moves its cash
-    out of the close's day and onto the bank's.  Nothing is created or destroyed
-    by that -- the two terms always sum to the row's whole debit total -- but
+    earlier: the row's leg subtracted every POSTED purchase from a settled
+    row's close, so recording a posting day on such a purchase moved its cash
+    out of the close's day and onto the bank's (since plan step
+    ``balance:X-bi-4a`` the row books nothing and the same day moves the
+    purchase from in flight onto the bank's day, ruling **R-BAL77**).  Nothing
+    is created or destroyed by that -- the two terms always sum to the row's
+    whole debit total -- but
     the DAY is what a statement reconciles against, which is this panel's entire
     subject.  Measured on the 2026-08-17 production dump: 28 closed envelopes
     hold 61 debit purchases with no posting day, ``$4,360.07``, none of which
@@ -307,12 +310,12 @@ def _post_stamped_purchases(
     # WITHOUT touching its parent's own cash leg".
     #
     # Widening :func:`_outstanding_scope` to admit a SETTLED parent broke that
-    # precondition, because a settled row's confirmed effect is
-    # ``settled figure - Sigma(credit) - Sigma(POSTED purchases)``
-    # (``cash_ledger.settled_cash_leg``): recording the day SHRINKS the
-    # parent's own leg by exactly what the purchase's new leg books.  Posting
-    # the purchase alone left the parent's full leg standing beside it and the
-    # money was counted TWICE -- measured on a ``$30.00`` purchase under a
+    # precondition, because through ``X-bi-3e`` a settled row's confirmed
+    # effect was ``settled figure - Sigma(credit) - Sigma(POSTED purchases)``
+    # (the row's own leg): recording the day SHRANK the parent's own leg by
+    # exactly what the purchase's new leg booked.  Posting the purchase alone
+    # left the parent's full leg standing beside it and the money was counted
+    # TWICE -- measured on a ``$30.00`` purchase under a
     # settled envelope on a ``$1,000.00`` anchor, ledger ``970 -> 940`` while
     # its own sources still said ``970``, breaking the Build-Order Step-5
     # per-account invariant through an ordinary ``POST /accounts/<id>/reconcile``.

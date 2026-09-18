@@ -95,8 +95,8 @@ def purchase_posts(txn: Transaction, entry) -> bool:
     three are load-bearing and each is stated there in full:
 
     * the PARENT contributes to a balance at all (not soft-deleted, not Credit
-      or Cancelled) -- :func:`~app.services.cash_ledger.settled_cash_leg`'s
-      totality rule, extended to the family it now has;
+      or Cancelled) -- :func:`~app.services.cash_ledger.movement_cash_leg`'s
+      totality rule, the family's since ruling **R-FM**;
     * the purchase is a DEBIT -- a card purchase leaves through its own CC
       Payback sibling and never touches this account;
     * its bank posting day is RECORDED -- the trigger itself.
