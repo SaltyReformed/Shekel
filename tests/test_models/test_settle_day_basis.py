@@ -75,6 +75,7 @@ from tests._test_helpers import (
     an_entered_day,
     an_observed_day,
     append_balance_assertion,
+    bare_expense_template,
     figure_source_columns,
     last_covered_day,
     load_migration_module,
@@ -99,23 +100,36 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     Args:
         seed_user: The ``seed_user`` fixture payload.
         seed_periods: The ``seed_periods`` fixture list.
-        **overrides: Column values to set or replace.
+        **overrides: Column values to set or replace.  ``is_envelope`` is
+            the one that is NOT a column of the row: it is the definition's
+            setting, read for every row that names one, so it lands on the
+            definition minted here.
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
 
-    **BARE on purpose, and past the cutover.**  The subject here is a
-    CONSTRAINT of ``budget.transactions``, and a control that reached the
-    row through a door would grade the door; the shape 7d's pricing-link
-    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
-    builder (a pricing link on every row it stages) rather than any case
-    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    owner's** (plan step ``balance:X-bi-7d-1``).  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the row
+    through a door would grade the door -- so the row is still constructed by
+    hand.  What it stopped being is LINK-LESS: the family's cutover
+    (``X-bi-7d-2``) re-cuts ``ck_transactions_one_pricing_link`` to ``= 1``,
+    so every row staged here names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`) and carries the
+    paycheck's start as the day it is due and the occurrence it answers --
+    the shape ``one_off.place_row_of`` writes -- unless the case states
+    otherwise.  The link is never the subject.
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        db.session, seed_user, name="Day basis control definition",
+        is_envelope=overrides.pop("is_envelope", False),
+    )
     fields = {
         "user_id": seed_periods[0].user_id,
+        "template_id": definition.id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
@@ -124,6 +138,8 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
         "estimated_amount": Decimal("300.00"),
+        "due_date": seed_periods[0].start_date,
+        "occurs_on": seed_periods[0].start_date,
     }
     fields.update(overrides)
     # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the

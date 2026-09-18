@@ -32,6 +32,7 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db as _db
 from tests._test_helpers import (
+    bare_expense_template,
     one_off_row_of,
     load_migration_module,
     run_migration_callable as _run,
@@ -201,8 +202,17 @@ class TestTheUpgradeABORTSOnADisagreement:
         The row is written with the keys OFF -- which is the only way to write
         it, and is exactly the state a database this chain has not seen could
         be in.
+
+        **It names a rule-less definition of THIS owner's and is dated on its
+        paycheck's start** (plan step ``balance:X-bi-7d-1``): the family's
+        cutover makes a link-less row unstorable, and this revision's
+        downgrade drops the owner column and its three keys alone -- the
+        pricing-link CHECK, born long before it, still binds when this row is
+        written.  The link is the owner's whichever paycheck the row claims,
+        so it is no part of what the account key refuses.
         """
         _a_row(seed_user, seed_periods[0])
+        definition = bare_expense_template(db.session, seed_user)
         db.session.commit()
         _run(_M_C13A.downgrade, db.session)
 
@@ -210,13 +220,16 @@ class TestTheUpgradeABORTSOnADisagreement:
         # the OTHER owner's paycheck.
         db.session.execute(text("""
             INSERT INTO budget.transactions
-                (account_id, pay_period_id, scenario_id, status_id, name,
-                 transaction_type_id, estimated_amount, is_override,
-                 is_deleted, is_envelope, companion_visible, version_id,
-                 created_at, updated_at)
-            VALUES (:aid, :pid, :sid, :stid, 'Cross-owner', :ttid, 1.00,
+                (template_id, account_id, pay_period_id, scenario_id,
+                 status_id, name, transaction_type_id, estimated_amount,
+                 due_date, occurs_on, is_override, is_deleted, is_envelope,
+                 companion_visible, version_id, created_at, updated_at)
+            VALUES (:tid, :aid, :pid, :sid, :stid, 'Cross-owner', :ttid, 1.00,
+                    (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
+                    (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
                     FALSE, FALSE, FALSE, FALSE, 1, now(), now())
         """), {
+            "tid": definition.id,
             "aid": seed_user["account"].id,
             "pid": seed_second_user["bootstrap_period"].id,
             "sid": seed_user["scenario"].id,
@@ -236,22 +249,28 @@ class TestTheUpgradeABORTSOnADisagreement:
         """THE CONTROL for the abort above.
 
         Same fixtures, same downgrade, same INSERT -- with the account moved
-        to the paycheck's owner.  Without this case the abort would pass just
-        as well against a migration that could never be re-applied at all.
+        to the paycheck's owner, and the definition the SECOND owner's, so
+        every parent on the row agrees.  Without this case the abort would
+        pass just as well against a migration that could never be re-applied
+        at all.
         """
         _a_row(seed_user, seed_periods[0])
+        definition = bare_expense_template(db.session, seed_second_user)
         db.session.commit()
         _run(_M_C13A.downgrade, db.session)
 
         db.session.execute(text("""
             INSERT INTO budget.transactions
-                (account_id, pay_period_id, scenario_id, status_id, name,
-                 transaction_type_id, estimated_amount, is_override,
-                 is_deleted, is_envelope, companion_visible, version_id,
-                 created_at, updated_at)
-            VALUES (:aid, :pid, :sid, :stid, 'Consistent', :ttid, 1.00,
+                (template_id, account_id, pay_period_id, scenario_id,
+                 status_id, name, transaction_type_id, estimated_amount,
+                 due_date, occurs_on, is_override, is_deleted, is_envelope,
+                 companion_visible, version_id, created_at, updated_at)
+            VALUES (:tid, :aid, :pid, :sid, :stid, 'Consistent', :ttid, 1.00,
+                    (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
+                    (SELECT start_date FROM budget.pay_periods WHERE id = :pid),
                     FALSE, FALSE, FALSE, FALSE, 1, now(), now())
         """), {
+            "tid": definition.id,
             "aid": seed_second_user["account"].id,
             "pid": seed_second_user["bootstrap_period"].id,
             "sid": seed_second_user["scenario"].id,
