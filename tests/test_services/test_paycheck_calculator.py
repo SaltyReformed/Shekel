@@ -5236,6 +5236,41 @@ class TestEarningLines:
         )
         assert result.earnings.net_pay == Decimal("1862.35")
 
+    def test_a_lines_span_bounds_the_paychecks_it_is_taken_on(self, simple_tax_configs):
+        """A rule from the second paycheck for two occurrences is taken on the 2nd and 3rd only.
+
+        Plan step salary:R18-c (ruling **R-SAL38** (2)): a line's span is its
+        rule's own ``starts_on`` and closing bound, which the occurrence walk
+        the engine already reads has honoured for every definition; this
+        pins that a payroll line's earning rides only the paydays inside it.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+        rule = FakeRule(
+            unit=RecurrenceUnitEnum.PERIOD,
+            placement=PeriodPlacementEnum.CONTAINING_DATE,
+            starts_on=date(2026, 1, 16),
+        )
+        rule.max_occurrences = 2
+        line = FakeDeduction(
+            name="Stipend", amount="100", paycheck_line_kind="after_tax_earning",
+            recurrence_rule=rule,
+        )
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        periods = [
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=4),
+        ]
+        basis = payroll_basis(profile, periods)
+
+        results = [calculate_paycheck(basis, p, simple_tax_configs) for p in periods]
+
+        assert [r.earnings.total_after_tax for r in results] == [
+            Decimal("0.00"), Decimal("100.00"), Decimal("100.00"), Decimal("0.00"),
+        ]
+
     def test_an_earning_is_capped_and_deactivated_like_any_line(self, simple_tax_configs):
         """The shared pass: a $150 annual cap on a $100 after-tax line pays 100, 50, 0; an inactive line pays nothing."""
         capped = FakeDeduction(

@@ -108,7 +108,11 @@ class RecurrenceStart:
     door refuses, so it would be a 500 out of an ordinary edit.
 
     Attributes:
-        starts_on: The date the definition first happens.
+        starts_on: The date the definition first happens -- or ``None`` for a
+            box that opens BLANK, which only the payroll-line form renders
+            (plan step salary:R18-c): there blank means the owner's opening
+            payday and the route derives it, so the template forms' default
+            of today would be read as a stated start.
         nominal_day: The day it MEANS, when that date's own month was too short
             to hold it; ``None`` for every unambiguous date.
         day_choices: Which days *starts_on* leaves OPEN, from
@@ -127,7 +131,7 @@ class RecurrenceStart:
             (:data:`~app.routes._recurrence_form_refusals.LOAN_PAYMENT_BOUND_IS_DERIVED`).
     """
 
-    starts_on: date
+    starts_on: date | None
     nominal_day: int | None
     day_choices: tuple[int, ...] = ()
     locked: bool = False
