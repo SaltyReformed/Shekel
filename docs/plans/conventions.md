@@ -54,9 +54,11 @@ end.
    owner naming a TICKED step is a failure. **A finding is BORN with an owner**: the review or trace
    that records it assigns one in the SAME commit. **The ledger records defects in the CODE**
    (developer ruling 2026-08-28). A finding whose whole subject is a planning document -- its
-   length, its shape, the gate that grades it -- is not a row here and is not a paragraph in an arc
-   document either. Document upkeep is the assistant's standing job, raised with the developer when
-   it needs a decision.
+   length, its shape, its wording -- is not a row here and is not a paragraph in an arc document
+   either. **A defect in the gate's or the hooks' CODE (`tools/plan_gate/`, `scripts/hooks/`) is a
+   defect in code and takes a row** (developer 2026-09-18, filing **BAL-515**; until then this
+   sentence read "the gate that grades it" among what is not a row). Document upkeep is the
+   assistant's standing job, raised with the developer when it needs a decision.
 
 2. **A step that ships re-points every row that named it.** Ticking a box is the same edit as
    re-pointing its findings; the gate refuses the commit that does one without the other.
