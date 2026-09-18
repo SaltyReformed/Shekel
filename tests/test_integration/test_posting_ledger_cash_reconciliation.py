@@ -1453,6 +1453,14 @@ class TestRevertedTransactionReconcilesAtZero:
         $1000.00 opening, the reverted row is no longer ``is_settled`` so it
         drops from the source effect too, and two entries survive (the
         original is never edited).
+
+        **The pair's LINK assertion was re-expressed at plan step
+        ``balance:X-bi-3e-2``** under ruling **R-BAL61**'s clause "a revert
+        UN-DATES the covering movement and keeps it" and the ``X-bi-3e`` step
+        sentence that ruled it: the old assertion (``transaction_entry_id IS
+        NULL`` on both entries) pinned the SET NULL side effect of the
+        revert DELETING the movement, which is the behaviour that ruling
+        changed; the money assertions and the full sweep are unchanged.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1465,7 +1473,6 @@ class TestRevertedTransactionReconcilesAtZero:
                 category=seed_user["categories"]["Groceries"],
             )
             db.session.commit()
-            txn_id = txn.id
             groceries_counter = _counter_ledger_id(
                 user_id, LedgerAccountClassEnum.EXPENSE,
                 seed_user["categories"]["Groceries"].id,
@@ -1489,10 +1496,14 @@ class TestRevertedTransactionReconcilesAtZero:
                 groceries_counter, scenario_id,
             ) == Decimal("0.00")
             # Two entries survive (settle + reversal); neither was edited.
-            # They were the covering movement's (plan step X-bi-3a), and the
-            # revert deleted that mirror after reversing its legs, so the pair
-            # stands as unlinked PURCHASE-sourced history -- the reverse-
-            # before-delete discipline, seen from the ledger.
+            # They are the covering movement's (plan step X-bi-3a), and the
+            # revert KEEPS that mirror un-dated (plan step X-bi-3e-2, ruling
+            # R-BAL61) while the family reconcile reverses its legs -- so the
+            # pair stands as PURCHASE-sourced history still LINKED to the
+            # surviving movement, netting to zero.  (Through 3e-1 the revert
+            # deleted the mirror and the pair stood unlinked, SET NULL.)
+            (survivor,) = txn.covering_movements
+            assert survivor.settled_on is None
             assert (
                 _db.session.query(JournalEntry)
                 .filter(
@@ -1500,7 +1511,7 @@ class TestRevertedTransactionReconcilesAtZero:
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
                         PostingSourceEnum.PURCHASE,
                     ),
-                    JournalEntry.transaction_entry_id.is_(None),
+                    JournalEntry.transaction_entry_id == survivor.id,
                 )
                 .count()
             ) == 2

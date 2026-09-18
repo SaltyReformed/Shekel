@@ -33,7 +33,6 @@ from typing import Optional
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum, SettlementBasisEnum
 from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.services.row_valuation import recorded_figure
 from app.services.stated_figure import StatedFigure
 
@@ -197,25 +196,6 @@ class Settlement:
         return cls(amount=booked, source=MovementFigureSourceEnum.RESOLVED)
 
 
-def covering_movements(row: Transaction) -> list[TransactionEntry]:
-    """Return the covering movements *row* holds -- the settle's, not a person's.
-
-    By the mark the seam left (:mod:`._covering`'s module docstring); at most
-    one, by the partial unique index, and a list rather than an optional so a
-    caller that walks the family needs no branch.  It lives HERE rather than
-    beside the writer in :mod:`._covering` because the record's read
-    (:func:`recorded_settlement`) needs it and the writer imports this
-    module; the package re-exports it unchanged.
-
-    Args:
-        row: The transaction, with ``entries`` loaded or loadable.
-
-    Returns:
-        The covering movements, in ``entries`` order; empty when none.
-    """
-    return [entry for entry in row.entries if entry.covers_settlement]
-
-
 def _recorded_basis(row: Transaction) -> Optional[SettlementBasisEnum]:
     """Return HOW *row*'s recorded figure is known, or ``None`` for no record.
 
@@ -252,9 +232,10 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     covering movement's** (plan step **X-bi-3e-1**, ruling **R-BAL61**).  The
     row stores no writer -- it never did -- and the movement the seam wrote
     for the record is where that fact lives (``figure_source_id``, the
-    column that outlives ``X-bi-4``).  A row reverted out of the band holds
-    that movement undated from plan step ``X-bi-3e-2``; until then a revert
-    deletes it, and every reverted row reads by the mapping below.
+    column that outlives ``X-bi-4``).  A row reverted out of the band KEEPS
+    that movement, un-dated, since plan step ``X-bi-3e-2``
+    (:attr:`~app.models.transaction.Transaction.covering_movements`), so a
+    reverted row's source is read where it was written.
 
     **A record with NO covering movement reads by ruling R-BAL61's cutover
     mapping** (ruling **R-BAL70**): a ``derived`` record was the settle's own
@@ -264,9 +245,12 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     reach.  Two such records exist: a ``$0.00`` figure, which
     ``ck_transaction_entries_positive_amount`` lets no movement carry (so its
     writer is stored nowhere, and a re-settle writes none again), and a row
-    reverted on a tree that still deleted the movement.  It is a mapping over
-    the record's BASIS, never over the day beside it -- the inference R-BAL61
-    refutes -- and it retires with the row's columns at ``X-bi-4``.
+    reverted on production before ``X-bi-3e-2`` deployed, when a revert still
+    deleted the movement (0 such rows at the 2026-09-18 12:35 EDT deploy of
+    ``ad573b07bede``; the count is this leaf's to re-measure at its own).  It
+    is a mapping over the record's BASIS, never over the day beside it -- the
+    inference R-BAL61 refutes -- and it retires with the row's columns at
+    ``X-bi-4``.
 
     Args:
         row: The transaction to read, with ``entries`` loaded or loadable.
@@ -286,7 +270,7 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
         return None
     if basis is SettlementBasisEnum.PURCHASES:
         return Settlement(amount=None, source=None)
-    movements = covering_movements(row)
+    movements = row.covering_movements
     if movements:
         source = {
             ref_cache.movement_figure_source_id(member): member

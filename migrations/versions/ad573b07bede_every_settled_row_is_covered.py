@@ -102,8 +102,13 @@ row in the population holds exactly one covering movement -- none for a
 ``$0.00`` record -- agreeing with the row on the figure, the day, the day's
 basis, the link and the account; and no covering movement stands under any
 row OUTSIDE the population (a row out of the settled band, or on the
-``purchases`` basis), because the seam withdraws one on the way out of the
-band and a survivor was written around it.
+``purchases`` basis), because the seam withdrew one on the way out of the
+band on every tree this revision can meet, so a survivor was written around
+it.  (Plan step ``balance:X-bi-3e-2`` later made a revert KEEP the movement,
+un-dated -- ruling **R-BAL61** -- but that code runs only on a database
+already past this revision: the deploy migrates before the app boots, so the
+premise holds for every database this upgrade runs against.  Stated
+2026-09-18, after this revision had deployed at 12:35 EDT.)
 
 **Balance-neutral BY CONSTRUCTION, and measured.**  Ruling **R-FM**'s
 identity: ``cash_ledger.settled_cash_leg`` books a settled row's figure MINUS
@@ -400,8 +405,9 @@ def refuse_unless_total(bind) -> None:
         bind, _STRAY_SQL,
         "covering movement(s) stand under a row the total rule does not cover "
         "-- one out of the settled band or on the purchases basis.  The seam "
-        "withdraws a movement on the way out of the band, so each was written "
-        "around it; nothing was committed.",
+        "withdrew a movement on the way out of the band on every tree this "
+        "revision can meet, so each was written around it; nothing was "
+        "committed.",
     )
 
 

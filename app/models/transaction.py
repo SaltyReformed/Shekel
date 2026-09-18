@@ -605,6 +605,64 @@ class Transaction(
         order_by="TransactionEntry.purchased_on",
     )
 
+    @DerivedFlag
+    def purchases(self):
+        """Return the row's PURCHASES: its entries less the seam's covering mark.
+
+        **The ONE reading of "what did a person record against this row"**
+        (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  ``entries``
+        is the row's whole FAMILY of movements, and since plan step
+        ``X-bi-3a`` a settle writes one of them itself -- the covering
+        movement, the payment row that records a bill's, a paycheck's, a
+        transfer leg's or an empty envelope's money the way a purchase
+        records an envelope's (``status_seam._covering``).  Since ``X-bi-3e-2``
+        a revert KEEPS that movement, un-dated, so it sits in ``entries``
+        under a Projected row; every reader that means the purchases -- the
+        fold's reservation, the reconcile panel's offer, carry-forward's
+        leftover, the grid's sums and the settle's own booking -- reads THIS
+        and never the family.  Worked on a `$100.00` envelope reverted after
+        a typed `$120.00` close: over the family the projection would hold
+        `$120.00` where a reverted row is worth its PLAN, the panel would
+        offer a phantom `$120.00` purchase, carry-forward would roll
+        `$0.00` of the `$100.00`, and a re-settle after one real `$30.00`
+        purchase would offer `$150.00`; over the purchases each reads
+        `$100.00` / nothing / `$100.00` / `$30.00`.  Live before that step on
+        8 settled production envelopes (`$794.79`) whose purchase list showed
+        the movement as a purchase.
+
+        A derivation over the loaded collection, never a second relationship
+        on the same foreign key (a second write-capable path to one table was
+        rejected in the loop) -- so it costs no query where ``entries`` is
+        loaded, and ``status_seam.covering_clause()`` is its query-side twin
+        for a reader that filters in SQL.  A :class:`DerivedFlag` so the
+        class-level name refuses to key a query rather than silently
+        matching nothing.  Order is ``entries``' own: the day the purchase
+        was made.
+
+        Returns:
+            The purchases as a list, in ``entries`` order; empty when none.
+        """
+        return [entry for entry in self.entries if not entry.covers_settlement]
+
+    @DerivedFlag
+    def covering_movements(self):
+        """Return the row's covering movements: the seam's, not a person's.
+
+        :attr:`purchases`' complement, by the mark the seam leaves
+        (``transaction_entries.covers_settlement``); at most one, by the
+        partial unique index ``uq_transaction_entries_one_settlement_record``,
+        and a list rather than an optional so a caller that walks the family
+        needs no branch.  It lived in ``status_seam._record`` until plan step
+        ``balance:X-bi-3e-2`` moved both readings of the mark onto the model
+        (ruling **R-BAL68**), where every service and the model's own readers
+        reach it without an import.
+
+        Returns:
+            The covering movements as a list, in ``entries`` order; empty
+            when none.
+        """
+        return [entry for entry in self.entries if entry.covers_settlement]
+
     @hybrid_property
     def estimated_amount(self):
         """Return the figure this row states as its own, or ``None``.

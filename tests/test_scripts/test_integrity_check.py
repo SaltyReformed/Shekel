@@ -569,13 +569,13 @@ class TestDataConsistency:
     def test_clean_database_passes(self, app, db, seed_user, seed_periods):
         """All consistency checks pass on a properly seeded database.
 
-        DC-02 through DC-09: DC-01 was removed 2026-06-11 (settling
+        DC-02 through DC-10: DC-01 was removed 2026-06-11 (settling
         without a manual actual is a designed legal state -- see the
         ``check_data_consistency`` docstring); the remaining IDs keep
         their historical numbers.
         """
         results = check_data_consistency(db.session)
-        assert len(results) == 8
+        assert len(results) == 9
         # Critical checks must pass on clean data.
         critical_results = [r for r in results if r.severity == "critical"]
         assert all(r.passed for r in critical_results), (
@@ -1038,6 +1038,66 @@ class TestDataConsistency:
         assert not dc09.passed
         assert dc09.detail_count == 1  # 1 deduction targeting another user's account
 
+    def test_dc10_detects_an_un_dated_movement_holding_a_live_leg(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """DC-10 grades what a caller of the BARE status seam would leave.
+
+        Plan step ``balance:X-bi-3e-2``: a revert un-dates the covering
+        movement and keeps it, and the ledger is the DOOR's -- the family
+        reconcile after the seam reverses the movement's legs.  So the state
+        this arm exists for is planted by the seam ALONE: settle through the
+        verb (the movement posts), revert through ``apply_status_change``
+        with no reconcile.  The arm fires on that movement and passes once the
+        door's reconcile runs -- the same row, both directions, so the check
+        is graded firing and not merely quiet.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app import ref_cache
+        from app.services import posting_service, status_seam, transaction_service
+
+        txn = generate_row_of(
+            make_expense_template(
+                db.session, seed_user, amount="148.32",
+                name="Electric", category_key="Rent",
+            ),
+            seed_periods[0],
+        )
+        transaction_service.settle_transaction(txn)
+        db.session.flush()
+        (movement,) = txn.covering_movements
+        assert movement.settled_on is not None
+        dc10 = next(
+            r for r in check_data_consistency(db.session) if r.check_id == "DC-10"
+        )
+        assert dc10.passed, "a DATED movement's live leg is not a finding"
+
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        assert movement.settled_on is None
+
+        dc10 = next(
+            r for r in check_data_consistency(db.session) if r.check_id == "DC-10"
+        )
+        assert not dc10.passed
+        assert dc10.severity == "critical"
+        # One row per live ledger account: the cash leg and its category leg.
+        assert {row["entry_id"] for row in dc10.details} == {movement.id}
+        assert {row["net"] for row in dc10.details} == {
+            Decimal("-148.32"), Decimal("148.32"),
+        }
+        assert all(row["covers_settlement"] is True for row in dc10.details)
+
+        posting_service.sync_transaction_postings(txn, settled=False)
+        db.session.flush()
+        dc10 = next(
+            r for r in check_data_consistency(db.session) if r.check_id == "DC-10"
+        )
+        assert dc10.passed
+        assert movement.settled_on is None, "the movement is still un-dated and kept"
+
 
 # ── run_all_checks ───────────────────────────────────────────────
 
@@ -1097,8 +1157,11 @@ class TestRunAllChecks:
             f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
         )
         # Total check count should cover all 4 categories:
-        # 12 FK + 5 OR + 3 BA + 8 DC = 28 checks (DC-01 removed
-        # 2026-06-11 -- estimated-only settles are a legal state).
+        # 12 FK + 5 OR + 3 BA + 9 DC = 29 checks (DC-01 removed
+        # 2026-06-11 -- estimated-only settles are a legal state; DC-10
+        # added at plan step balance:X-bi-3e-2, where a revert began
+        # keeping the covering movement un-dated and its ledger legs became
+        # the door's to reverse).
         # It was 30 from plan step X-f1c3c, where FK-03 and BA-02 both
         # queried ``accounts.current_anchor_*`` and went with the columns;
         # BA-06 was added 2026-08-11 beside the deletion of pay_calendar
@@ -1111,4 +1174,4 @@ class TestRunAllChecks:
         # ``end_date`` and ``period_index`` and took BA-03, BA-04 and BA-07
         # with them -- an ordinal gap, a span overlap and an uncovered day are
         # all unexpressible once a period is one payday.
-        assert len(results) == 28
+        assert len(results) == 29

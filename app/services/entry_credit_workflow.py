@@ -129,8 +129,11 @@ def sync_entry_payback(
 
     # Partition via the shared helper so "which entries are credits" has
     # one definition (DH-#75); sum with an explicit Decimal("0") start to
-    # avoid integer 0 from sum() on an empty iterator.
-    _, credit_entries = partition_entries(txn.entries)
+    # avoid integer 0 from sum() on an empty iterator.  Over the row's
+    # PURCHASES (ruling R-BAL68): the seam's covering movement is never a
+    # credit, so the partition agrees either way, and the reading says
+    # what is being partitioned.
+    _, credit_entries = partition_entries(txn.purchases)
     total_credit = sum(
         (e.amount for e in credit_entries), Decimal("0"),
     )

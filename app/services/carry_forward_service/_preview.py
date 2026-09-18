@@ -284,7 +284,9 @@ def _build_envelope_plan(source_txn, target_period, basis, schedule):
     once -- making it harder for a future edit to forget a field
     on one branch.
     """
-    entries_sum = purchases_total(source_txn.entries)
+    # The PURCHASES, never the family (ruling R-BAL68): a reverted manual
+    # close's kept movement is not spend, so the whole budget rolls.
+    entries_sum = purchases_total(source_txn.purchases)
     # The source's BUDGET, resolved rather than read off the column, and the
     # SAME expression the mutating path uses (plan step X-au-c2b): a preview
     # that predicted a leftover from a different base than the execution rolls

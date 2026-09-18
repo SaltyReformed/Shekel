@@ -36,7 +36,6 @@ no index on ``template_id``), issued only for a rule-less definition's row.
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
-from app.services.status_seam import covering_movements
 from app.utils.archive_helpers import template_has_standing_rule
 
 
@@ -72,22 +71,24 @@ def settles_from_entries(txn: Transaction) -> bool:
     door would refuse a typed figure as one the verb ignores, and a re-settle
     would sum the mirror instead of re-pricing the plan.  So the entries this
     predicate counts are the row's PURCHASES -- its entries less the seam's
-    covering movements (``status_seam.covering_movements``, which the row's
-    retained record basis answers).  ``balance:X-bi-5`` deletes
+    covering movements, which since plan step ``balance:X-bi-3e-2`` a revert
+    KEEPS un-dated under the Projected row this predicate is most often asked
+    of (:attr:`~app.models.transaction.Transaction.purchases`, ruling
+    **R-BAL68**: the one reading, shared with every other purchase-meaning
+    reader rather than hand-rolled here).  ``balance:X-bi-5`` deletes
     ``tracks_purchases``, and this predicate with it.
 
     Args:
         txn: The row.  Reads ``tracks_purchases`` (a template lookup for a
-            template-linked row), the ``entries`` relationship and the
-            retained ``settled_basis_id``.
+            template-linked row) and the ``entries`` relationship through
+            ``purchases``.
 
     Returns:
-        True when a settle takes the ``sum(entries)`` branch.
+        True when a settle takes the ``sum(purchases)`` branch.
     """
     if not txn.tracks_purchases:
         return False
-    covering = covering_movements(txn)
-    return any(entry not in covering for entry in txn.entries)
+    return bool(txn.purchases)
 
 
 def repays_card_spend(txn: Transaction) -> bool:

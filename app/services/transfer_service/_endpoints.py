@@ -29,23 +29,21 @@ them is refused for, is one question and it is this module's.
 
 Flask-isolated like the rest of the package: plain data and ORM rows in,
 mutations applied in place, no ``request`` / ``session`` imports, no flush or
-commit of its own -- the caller owns the session boundary.  (Reading a settled
-leg's covering movements is a lazy load, which may autoflush pending writes;
-every refusal in the update runs before this module writes.)
+commit of its own -- the caller owns the session boundary.  (Reading a leg's
+covering movements is a lazy load, which may autoflush pending writes; every
+refusal in the update runs before this module writes.)
 """
 
 from typing import NamedTuple
 
 from app.exceptions import ValidationError
 from app.models.account import Account
-from app.services.status_seam import covering_movements
 from app.services.transfer_service._create import shadow_names
 from app.services.transfer_service._loan_posting import (
     _reject_transfer_out_of_loan,
 )
 from app.services.transfer_service._ownership import _get_owned_account
 from app.services.transfer_service._validation import TransferRows
-from app.utils.balance_predicates import settled_status_ids
 
 
 class _Endpoints(NamedTuple):
@@ -258,15 +256,20 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     (ledger row **BAL-503**), so the movement adds no failure its parent does
     not have.
 
-    **Read for a SETTLED leg only.**  A movement exists while its parent is in
-    the settled band and is released the moment it leaves
-    (``status_seam._covering``), so an unsettled leg's ``entries`` hold none
-    and reading them would cost the recurrence engine's maintain pass two lazy
-    loads and an autoflush per transfer it re-points (62 on one live
-    template).  The gate loses nothing if the seam's lifecycle ever changes:
-    the DATABASE moves the movement whether this assignment runs or not, and
-    what the assignment protects is the session's view of a row this request
-    has loaded.
+    **Read for EVERY leg, settled or not** (ruling **R-BAL72**, plan step
+    ``balance:X-bi-3e-2``).  It was read for a settled leg alone while a
+    movement existed only inside the settled band; since that step a revert
+    KEEPS the leg's movement un-dated (ruling **R-BAL61**), so a Projected
+    shadow can hold one, and a loaded survivor left saying the old account
+    would disagree with the row beneath it exactly as a settled leg's would.
+    One total rule, no derived tell for "may hold a movement" (a gate on the
+    row's retained record was rejected as a second spelling of the seam's
+    lifecycle that ``X-bi-4`` deletes; keeping the settled gate as an
+    "nothing reads it in-request" argument was rejected as one unenumerated
+    reader from wrong).  The cost is the read: a never-settled shadow's
+    ``entries`` lazy-load, two per transfer, in the one request that changes
+    a definition's account (62 transfers on one live template, measured when
+    the gate went in at ``X-bi-3c``) -- and nothing on any other request.
 
     Args:
         rows: The transfer and both shadows.
@@ -284,12 +287,9 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     rows.expense.name = expense_name
     rows.income.account = endpoints.to_account
     rows.income.name = income_name
-    settled_ids = settled_status_ids()
     for shadow, account in (
         (rows.expense, endpoints.from_account),
         (rows.income, endpoints.to_account),
     ):
-        if shadow.status_id not in settled_ids:
-            continue
-        for movement in covering_movements(shadow):
+        for movement in shadow.covering_movements:
             movement.account_id = account.id

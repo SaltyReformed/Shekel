@@ -415,8 +415,9 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     ``docs/carry-forward-aftermath-design.md``):
 
       1. Compute ``entries_sum`` as ``sum(e.amount for e in
-         source.entries)``.  Empty entries -> ``Decimal("0")`` so the
-         full estimated amount rolls forward.
+         source.purchases)`` -- the row's purchases, never a covering
+         movement a revert kept (ruling **R-BAL68**).  No purchases ->
+         ``Decimal("0")`` so the full estimated amount rolls forward.
       2. Compute ``leftover = max(Decimal("0"), <the source's RESOLVED
          amount> - entries_sum)``.  Overspend (``entries_sum > budget``)
          clamps to zero -- the actual overspend is recorded on the
@@ -501,8 +502,11 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     # validation failure leaves source.entries (and any pending
     # mutations on this row) untouched.  Reading entries triggers a
     # lazy-load SELECT inside no_autoflush, which is safe because
-    # this function never mutates entries.
-    entries_sum = purchases_total(source_txn.entries)
+    # this function never mutates entries.  The PURCHASES, never the
+    # family (ruling R-BAL68): a reverted manual close's kept movement is
+    # not spend, so the whole budget rolls -- and the settle below then
+    # withdraws that movement (a ``purchases`` record covers nothing).
+    entries_sum = purchases_total(source_txn.purchases)
     # The source's BUDGET, resolved rather than read off the column (plan step
     # X-au-c2b): ruling E-21 fixes an envelope's base on its own amount
     # unconditionally, and a derived row stores none.

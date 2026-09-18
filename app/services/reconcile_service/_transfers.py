@@ -224,9 +224,9 @@ def outstanding_transfers(
             attributed_on=_rows.attributed_on(statement, shadow),
             amount=transfer_service.settle_amount(shadow, basis),
             # Always the whole figure: a shadow can hold no PURCHASE (its one
-            # possible entry is the seam's covering movement, and only once it
-            # has settled), so there is no card half for the statement to
-            # disagree with (N-226).
+            # possible entry is the seam's covering movement, written when it
+            # settles and kept un-dated across a revert), so there is no card
+            # half for the statement to disagree with (N-226).
             cash_amount=None,
             is_correctable=True,
             is_income=shadow.is_income,

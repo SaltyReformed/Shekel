@@ -37,7 +37,7 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.services import balance_at, entry_service, statement_match, status_seam
+from app.services import balance_at, entry_service, statement_match
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
@@ -2099,7 +2099,7 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         # R-BAL61), graded end to end on the row's covering movement --
         # ``typed`` would also read CORRECTED on the row, so the row's basis
         # alone cannot tell the two writers apart.
-        (movement,) = status_seam.covering_movements(txn)
+        (movement,) = txn.covering_movements
         assert movement.amount == Decimal("178.29")
         assert movement.figure_source_id == ref_cache.movement_figure_source_id(
             MovementFigureSourceEnum.OBSERVED,
