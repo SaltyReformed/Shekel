@@ -43,7 +43,9 @@ from app.services import (
     status_seam,
     transaction_service,
 )
+from app.services._posting_write import emit_typed_source_deltas, ledger_class_of
 from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
+from app.services.posting_reads import _ledger_account_for
 from app.services.entry_service import EntryDetails
 from app.services.settle_day import SettleDay
 from tests._test_helpers import (
@@ -116,6 +118,36 @@ def _uncover(*rows):
     for row in rows:
         db.session.expire(row)
         assert row.covering_movements == []
+
+
+def _stage_legacy_row_leg(txn, cash_leg):
+    """Post the TRANSACTION-sourced entry production's ledger held for *txn*.
+
+    The row's own leg, ``{cash: cash_leg, category: -cash_leg}`` on the row's
+    period and settle day -- what ``posting_service._settled_target`` booked
+    through plan step ``X-bi-3e`` and nothing books since ``balance:X-bi-4a``
+    (ruling **R-BAL80**).  Written by the balanced-write leaf the writer
+    itself used, so the staged entry is shaped exactly as the legacy one.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import convention.
+    from app.services import ledger_account_service
+
+    cash = _ledger_account_for(txn.account_id)
+    category = ledger_account_service.get_or_create_category_ledger_account(
+        txn.user_id, txn.category_id, ledger_class_of(txn),
+    )
+    emit_typed_source_deltas(
+        txn,
+        targets={
+            (txn.pay_period_id, txn.settled_on): {
+                cash.id: cash_leg, category.id: -cash_leg,
+            },
+        },
+        source=PostingSourceEnum.TRANSACTION,
+        description=txn.name,
+        log_label=f"legacy row leg {txn.id}",
+        transaction_id=txn.id,
+    )
 
 
 def _cover():
@@ -418,10 +450,23 @@ class TestTheCutoverWritesNothingItShouldNot:
             assert survivor.settled_on is None
 
 
-class TestTheCutoverMovesNoBalance:
-    """Ruling R-FM's identity, graded across all three states of one row."""
+class TestTheCutoverWritesWhatTheFoldReads:
+    """The cutover's movement is the fold's fact, graded across the three states of one row.
 
-    def test_the_folds_per_day_sums_are_identical_across_the_cutover(
+    Through plan step ``X-bi-3e`` this class graded ruling R-FM's identity:
+    the fold's per-day sums were IDENTICAL across the cutover, because the
+    row's own leg carried the figure until the movement did.  On the tree
+    the migration shipped in that was its balance-neutrality claim, and its
+    docstring still states the measurement.  Since ``balance:X-bi-4a`` the
+    fold reads movements alone (ruling **R-BAL80**), so on THIS tree an
+    uncovered settled row is worth NOTHING to the fold and the cutover's
+    write is what makes its money visible -- which is what a database still
+    behind ``ad573b07bede`` meets when this image upgrades it.  The row leg
+    the matcher still prices (``settled_cash_leg``) reads the whole figure
+    uncovered and zero covered, exactly as before.
+    """
+
+    def test_the_fold_reads_nothing_uncovered_and_the_movement_covered(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -433,7 +478,7 @@ class TestTheCutoverMovesNoBalance:
 
             _uncover(txn)
             assert settled_cash_leg(txn) == Decimal("-148.32")
-            assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_seams
+            assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
             assert _cover() == 1
             assert settled_cash_leg(txn) == Decimal("0")
@@ -666,13 +711,19 @@ class TestTheProofIsGradedBothWays:
 class TestTheDeploysResyncMovesNoLedgerNet:
     """The half the deploy performs after the migration, staged as production holds it.
 
-    Production's ledger carries each settled row's whole figure on its
-    TRANSACTION-sourced entry and holds no purchase-sourced entry for it.  The
+    Production's ledger carried each settled row's whole figure on its
+    TRANSACTION-sourced entry and held no purchase-sourced entry for it.  The
     deploy's ``resync_all_cash_postings`` then reverses that entry to zero and
     posts the new movement's purchase-sourced one on the same day and period,
     against the same category account.  The net per ``(ledger account, day)``
     must not move by a cent; measured on the production clone, and graded here
     on a bill and a paycheck.
+
+    **The legacy leg is staged through the balanced-write leaf** since plan
+    step ``balance:X-bi-4a``: the writer posts nothing for a row any more
+    (ruling **R-BAL80**), so the pre-3a ledger can no longer be produced by
+    asking it -- :func:`_stage_legacy_row_leg` writes the one entry
+    production held, by the same primitive the writer once used.
     """
 
     @pytest.mark.parametrize(
@@ -689,11 +740,11 @@ class TestTheDeploysResyncMovesNoLedgerNet:
             txn = build(seed_user, seed_periods[0])
             _settle(txn)
             # Stage the PRE-3a ledger: reverse the mirror's legs through the
-            # door, delete the mirror, and let the parent's own leg carry the
-            # whole figure again.
+            # door, delete the mirror, and lay the parent's own leg carrying
+            # the whole figure, as production's ledger held it.
             posting_service.reverse_purchase_postings_before_delete(_only_movement(txn))
             _uncover(txn)
-            posting_service.sync_transaction_postings(txn, settled=True)
+            _stage_legacy_row_leg(txn, figure)
             db.session.flush()
             assert _net_by_source(txn.id, PostingSourceEnum.TRANSACTION) == figure
             assert _net_by_source(txn.id, PostingSourceEnum.PURCHASE) == Decimal("0")

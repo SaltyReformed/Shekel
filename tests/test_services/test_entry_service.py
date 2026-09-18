@@ -2105,21 +2105,22 @@ class TestASettledRowsPurchasesAreClosed:
             # call stages nothing -- which is the property being asserted.
             assert entry.amount == Decimal("50.00")
 
-    def test_delete_is_refused(self, app, db, seed_user, seed_entry_template):
-        """An UNDATED purchase cannot be removed from a settled row.
+    def test_delete_of_an_undated_purchase_is_admitted(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """An UNDATED purchase CAN be removed from a settled ``purchases`` row.
 
-        **The refusal's SENTENCE has moved twice.**  Plan step
-        ``bank_import:X-f6f`` gave the ARCHIVE one of its own, because the
-        shared message said the row *records a fixed figure* -- false for an
-        archived ``purchases`` row -- and told the owner to set it back to
-        Projected, which the state machine refused for a terminal status.  Plan
-        step **balance:X-am** then deleted the archive, and with it that
-        sentence: the remedy it could not offer is now available from every
-        settled row, so one message serves again.
-
-        What is left here is the arithmetic arm -- removing an UNDATED debit
-        purchase shrinks what the row recorded as costing, on a past day, with
-        no external evidence -- which is the case that was always band-wide.
+        **The refusal's SENTENCE moved twice and then its arm was lifted.**
+        Plan step ``bank_import:X-f6f`` gave the ARCHIVE one of its own; plan
+        step **balance:X-am** deleted the archive and that sentence; and plan
+        step ``balance:X-bi-4a`` lifted the arithmetic arm itself (ruling
+        **R-BAL77**): removing an UNDATED debit purchase used to shrink what
+        the row recorded as costing on a past day, because the row's own leg
+        booked it on the close day.  A plan row books nothing of its own
+        now, so the removal removes a movement in flight and nothing else --
+        the ordinary direction of every other removal.  The STORED-figure
+        refusal beside it stands (``test_a_PAID_row_refuses_a_late_purchase``
+        and its siblings).
         """
         with app.app_context():
             txn = db.session.get(
@@ -2129,12 +2130,9 @@ class TestASettledRowsPurchasesAreClosed:
             self._close(txn)
             entry_id = entry.id
 
-            with pytest.raises(ValidationError, match="has settled"):
-                entry_service.delete_entry(entry_id, seed_user["user"].id)
-
-            # No rollback: the guard runs BEFORE ``db.session.delete``, so a
-            # refused call stages nothing.
-            assert db.session.get(TransactionEntry, entry_id) is not None
+            entry_service.delete_entry(entry_id, seed_user["user"].id)
+            db.session.flush()
+            assert db.session.get(TransactionEntry, entry_id) is None
 
     def test_a_PAID_row_refuses_a_late_purchase(
         self, app, db, seed_user, seed_entry_template,
@@ -2544,21 +2542,21 @@ class TestASettledRowMayStillGAINAPurchase:
                 == Decimal("-500.00")
             )
 
-    def test_an_UNDATED_purchase_is_refused_on_a_closed_row(
+    def test_an_UNDATED_purchase_is_admitted_on_a_closed_row_and_is_in_flight(
         self, app, db, seed_user, seed_entry_template,
     ):
-        """The rule admits the case its argument supports, and no more.
+        """The un-dated arm is LIFTED (ruling R-BAL77, plan step balance:X-bi-4a).
 
-        "The envelope's own leg is unchanged" holds only for a POSTED
-        purchase.  An undated one is not in ``posted_purchase_sum``, so the
-        gross rises with nothing subtracting it and the row's own leg moves by
-        the purchase amount ON THE DAY THE ROW CLOSED -- a past day the owner
-        may already have checked against a statement, with no external evidence
-        for the movement.  The second assertion measures exactly that, past the
-        door, so the refusal is shown to prevent something.
-
-        Developer ruling 2026-08-19, after adversarial financial review found
-        the guard branching on the parent alone.
+        The developer's 2026-08-19 ruling refused an undated purchase on a
+        closed envelope because the row's own leg then booked it ON THE DAY
+        THE ROW CLOSED -- a past day the owner may already have checked
+        against a statement, with no external evidence for the movement.  A
+        plan row books nothing of its own now (ruling **R-BAL80**): the
+        purchase is a movement IN FLIGHT, held by the projection from
+        tomorrow and absent from the actual until the bank is seen to take
+        it, exactly as one under an open envelope is.  The second half
+        measures that: the settled stream reads nothing for it and the
+        in-flight tier reads its figure.
         """
         with app.app_context():
             txn = db.session.get(
@@ -2566,34 +2564,33 @@ class TestASettledRowMayStillGAINAPurchase:
             )
             _make_entry(txn, seed_user["user"], amount="50.00")
             self._close(txn)
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("-50.00")
 
-            with pytest.raises(ValidationError, match="when your bank took"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=seed_user["user"].id,
-                    details=entry_service.EntryDetails(
-                        figure=typed(Decimal("30.00")),
-                        description="Food Lion",
-                        purchased_on=display_today(),
-                    ),
-                )
+            entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    figure=typed(Decimal("30.00")),
+                    description="Food Lion",
+                    purchased_on=display_today(),
+                ),
+            )
+            db.session.flush()
             assert db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn.id,
-            ).count() == 1
+            ).count() == 2
 
-            # What the refusal prevents, built past the door: the closed row's
-            # OWN leg moves, on its own settle day.
-            db.session.add(TransactionEntry(
-                **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
-                user_id=seed_user["user"].id, amount=Decimal("30.00"),
-                description="Food Lion", purchased_on=display_today(),
-                **settle_day_columns(None), is_credit=False,
-            ))
-            db.session.flush()
-            db.session.expire(txn)
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("-80.00")
+            # Nothing dated on the row, so the settled stream holds nothing of
+            # it; both purchases are in flight at their own figures.
+            facts = cash_ledger.settled_cash_facts(txn.account_id, txn.scenario_id)
+            assert [fact for fact in facts if fact.transaction_id == txn.id] == []
+            in_flight = {
+                item.delta
+                for item in cash_ledger.in_flight_movements(
+                    txn.account_id, txn.scenario_id,
+                )
+                if item.transaction_id == txn.id
+            }
+            assert in_flight == {Decimal("-50.00"), Decimal("-30.00")}
 
 
 class TestAPurchaseMayBeBornCarryingItsPostingDay:

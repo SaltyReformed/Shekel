@@ -1248,8 +1248,8 @@ class TestApplyRequestedStatusTheDoorVerb:
             )
             assert len(entries) == 1
             # effective_amount == estimated_amount == 100.00, nothing credited,
-            # so the cash account's settled effect is a 100.00 outflow.
-            assert posting_service.settled_transaction_effect(
+            # so the cash account's movement effect is a 100.00 outflow.
+            assert posting_service.posted_purchase_effect(
                 seed_user["account"].id, seed_user["scenario"].id,
             ) == Decimal("-100.00")
 

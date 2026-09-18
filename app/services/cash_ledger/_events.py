@@ -8,14 +8,21 @@ that stream.  Two kinds of fact enter it, and nothing else:
   balance at its assertion instant.  The first row is the account's OPENING (the
   origination row ``account_service.create_account`` appends); every later row is
   a TRUE-UP.
-* an **ACTUAL** -- a SETTLED balance-contributing transaction row: the record
-  that cash really moved.  A SETTLED transfer's effect arrives here as its
-  shadow row (``transfer_id IS NOT NULL``), because that row is where plan
-  step X-au-c3 recorded what moved -- the RECORD half of Transfer Invariant 5
-  as restated at plan step X-bi-6a (ruling R-BAL13), which plan step X-bi-4
-  moves onto movements.  A still-PROJECTED transfer's legs are no longer rows
-  this leaf reads at all: they are derived from the parent
-  (:mod:`app.services.transfer_legs`) by the plan half below.
+* an **ACTUAL** -- a DATED MOVEMENT of a balance-contributing plan row: the
+  record that cash really moved, one ``budget.transaction_entries`` row on
+  the account its money moved through (ruling **R-BAL75**).  A purchase the
+  bank has been seen to take, the covering movement the status seam writes
+  when a bill, a paycheck or a transfer leg settles -- each is one fact, and
+  a plan row is never one (plan step ``balance:X-bi-4a``, ruling
+  **R-BAL80**).  Through ``X-bi-3e`` the settled ROW was a fact too, worth
+  its record less its own dated movements, and the two homes agreed by
+  ruling R-FM's identity because the seam mirrored one record into both;
+  the row's record is the stale cache ``X-bi-4b`` deletes.  A SETTLED
+  transfer's effect arrives as each shadow's covering movement -- the RECORD
+  half of Transfer Invariant 5 as restated at plan step X-bi-6a (ruling
+  R-BAL13) -- until ``X-bi-6`` re-parents those movements onto
+  ``budget.transfers``.  A still-PROJECTED transfer's legs are derived from
+  the parent (:mod:`app.services.transfer_legs`) by the plan half below.
 
 **PLANNED (still-Projected) rows are deliberately NOT here** (ruling R-G).  A
 plan cannot have already happened, so a projected row's effective date is
@@ -23,6 +30,11 @@ plan cannot have already happened, so a projected row's effective date is
 as-of, and this leaf reads no clock.  The projected tier therefore lives in the
 seam's fold, exactly as the loan plan's PLANNED tier lives in ``balance_at._plan``
 rather than in ``loan_ledger`` (plan step C6a's ruling, restated for cash).
+**Neither is a movement IN FLIGHT** -- a purchase recorded and not yet seen
+to leave (ruling **R-BAL77**): this module LOADS it (:func:`in_flight_movements`,
+the un-dated half of the one movement stream) and the plan half places it,
+because where it lands is ``max(the day it happened, as_of + 1)``, a
+function of the reader's as-of like every other plan item's.
 
 **Every fact enters the stream, whatever its date, and nothing here reads the
 clock.**  Deciding which facts have HAPPENED as of a date is a READER's job.  The
@@ -32,7 +44,7 @@ run, which is a corruption generator rather than a cache (plan step A3,
 ``4e46a0a8``).
 
 **ONE CIVIL DAY per fact, and it is the USER'S day** (ruling R-DH,
-``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A settled row
+``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A movement
 carries :attr:`CashSourceFact.settled_on` and an assertion carries
 :attr:`CashAnchorFact.observed_on`; both are resolved ONCE at construction, and
 every consumer -- the partition, the fold's sampling, the period bucketing, the
@@ -69,14 +81,14 @@ ONE bookkeeping session split across two UTC days -- the shape that would defeat
 the partition above.  Storage is unchanged; every instant is still stored UTC.
 
 **Nothing here DERIVES a day any more, and that is plan step X-f1** (ruling
-R-EC).  A settled row stores the civil day its money moved in
-``transactions.settled_on``, so this module reads a fact where it used to
-convert ``paid_at``'s instant into the display timezone and fall back to the pay
-period's ``start_date`` when the instant was NULL.  That fallback was a guess --
-8 live settled rows relied on it -- and it is gone with the derivation: a settled
-row with no recorded day is REFUSED by
-:func:`app.utils.balance_predicates.settled_day` rather than dated by this
-module's opinion.
+R-EC).  A movement stores the civil day its money moved in
+``transaction_entries.settled_on``, so this module reads a fact where it used
+to convert ``paid_at``'s instant into the display timezone and fall back to the
+pay period's ``start_date`` when the instant was NULL.  That fallback was a
+guess -- 8 live settled rows relied on it -- and it is gone with the
+derivation: the settled stream's query admits no NULL day, and an un-dated
+movement is a fact of a different kind (in flight) rather than one dated by
+this module's opinion.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclasses out; no Flask symbol, no writes.  All money is
@@ -101,15 +113,12 @@ from app.models.transaction_entry import TransactionEntry
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     owner_declared_clause,
-    settled_day,
-    settled_status_ids,
 )
 from app.utils.dates import utc_instant
 
 from ._amounts import ReconciledThrough
-from ._cash_leg import movement_cash_leg, settled_cash_leg
+from ._cash_leg import movement_cash_leg
 from ._clearing import StatementCoverage, statement_coverage
-from ._facts import _unwindowed_contributing_rows
 
 
 @dataclass(frozen=True)
@@ -291,139 +300,99 @@ class CashAnchorFact:
 
 @dataclass(frozen=True)
 class CashSourceFact:
-    """One cash movement's signed effect on the account, when, and whose column.
+    """One dated movement's signed effect on the account, when, and whose column.
 
-    The ACTUAL half of the event stream: cash that really moved.  TWO kinds of
-    row produce one, and ruling **R-FM** is why the second exists (plan step
-    X-f3b): a SETTLED TRANSACTION, and a PURCHASE whose bank posting day the
-    owner has recorded.  They are one record rather than two because the fold,
-    the period regrouping and the posted walk ask the same four questions of
-    both -- how much, on which day, in whose budget column, and which statement
-    showed it -- and a second record would be a second set of consumers that
-    could come to answer them differently.
+    The ACTUAL half of the event stream: cash that really moved.  ONE kind of
+    row produces one (plan step ``balance:X-bi-4a``, ruling **R-BAL80**): a
+    ``budget.transaction_entries`` row carrying a ``settled_on`` -- a purchase
+    the bank was seen to take (ruling **R-FM**, plan step X-f3b), or the
+    covering movement the status seam writes when a bill, a paycheck or a
+    transfer leg settles (rulings **R-BAL39**, **R-BAL41**).  Its delta is the
+    SHARED :func:`app.services.cash_ledger.movement_cash_leg` -- its whole
+    figure in its PARENT's direction (plan step X-bi-3b, ruling **R-BAL35**),
+    the same figure the posting writer books for it
+    (``_posting_purchases._purchase_target``) -- so the walk and the posted
+    ledger value one movement identically by construction, not by two rules
+    that happen to agree.
 
-    A transaction's delta is the SHARED
-    :func:`app.services.cash_ledger.settled_cash_leg` -- the same
-    ``settled_contribution - Sigma(credit entries) - Sigma(posted purchases)`` the
-    posting writer books -- so for an ORDINARY transaction the walk and the
-    posted ledger value one row identically by construction, not by two rules
-    that happen to agree.  A movement's is the SHARED
-    :func:`app.services.cash_ledger.movement_cash_leg` -- its whole amount, in
-    its PARENT's direction (plan step X-bi-3b, ruling **R-BAL35**): a purchase
-    against an envelope leaves the account, and the covering movement a settle
-    writes for a paycheck arrives, because the movement has no type of its own
-    and reads the plan row's.
+    **The settled ROW produced one of these through ``X-bi-3e``, and its
+    absence is the ruling.**  That fact was worth ``settled_cash_leg`` -- the
+    row's recorded figure less its own dated movements -- and it was ZERO for
+    every covered bill and paycheck by R-FM's identity, and for a
+    ``purchases``-basis envelope it was the envelope's un-dated purchases
+    booked on the close day.  Ruling **R-BAL77** reads those as movements in
+    flight (:class:`InFlightMovement`), so no row has a leg of its own and
+    the stream is movements alone.  A transfer's two legs are its two
+    shadows' covering movements, each on its own account and in its own
+    direction, until ``X-bi-6`` re-parents them; the posted ledger still
+    books the pair as ONE entry off the income shadow's record
+    (``posting_service.sync_transfer_postings``, ruling **R-BAL45**), and the
+    two agree because the seam mirrors one record into both homes -- the
+    interval that ends with the shadow rows.
 
     **It carries TWO clocks, and the second one is not decoration** (plan step
     X-c1).  :attr:`settled_on` is the CASH clock -- the day the money moved,
     which is what a balance is folded on -- while :attr:`pay_period_id` is the
-    BUDGET clock, the column the row was budgeted in.  They are the same period for 111
-    of the real Checking account's 130 settled rows and different for 19
-    (measured on the prod-shape clone 2026-07-25), and that difference IS the
-    grid's Reconciliation row: a row settled outside its own pay period moves the
-    balance in one column while its income / expense subtotal sits in another.
-    Carrying both here is what lets ONE valued row set be grouped on either
-    clock, rather than a second load answering the second question (ruling R-K).
-    :attr:`is_income` is the leg the budget clock sorts the row into, and it is
-    the row's TYPE rather than the sign of :attr:`delta` because the two can
-    disagree: a settled expense whose ``actual_amount`` was corrected below its
-    credit-card entries has a POSITIVE cash leg and is still an expense (one that
-    came back), while :func:`app.services.cash_ledger.settled_cash_leg` derives
-    that sign FROM the type in the first place -- reading it back off the sign is
-    inverting a lossy function.
-
-    **The scope of that "by construction" is ordinary transactions, and stating
-    the exception is part of the claim.**  A TRANSFER shadow is posted by
-    ``posting_service.sync_transfer_postings`` as ONE entry for the pair, whose
-    magnitude is ``_settle_effective`` -- the income shadow's settlement RECORD
-    through ``posting_reads.settled_figure_clause`` -- with no call to this
-    rule (``sync_transaction_postings`` returns ``[]`` for any row carrying a
-    ``transfer_id``).  Since plan step X-bi-3c a settled shadow carries a
-    covering movement, so the walk reads each leg as ``0 + movement`` while
-    the ledger reads the row's record: the two agree because the status seam
-    mirrors ONE record into both homes (the interval ruling **R-BAL40**
-    accepts for a bill, and rule 14's known instance), not because they share
-    a producer.  The ruled endpoint is one entry per movement on its own bank
-    day against a transfers-in-transit clearing account (ruling **R-BAL45**),
-    posted at ``X-bi-6`` when the shadow mirror and Transfer Invariant 3's
-    one-day-per-pair clause go; until then the exception is stated here rather
-    than left implicit.
-
-    **Why it is not simply the row's own figure, measured.**  An envelope's
-    CREDIT-card entries never leave checking: each is settled by its own CC
-    Payback sibling, so counting them here would debit the money twice.  On
-    production data 2026-07-25, valuing settled rows at their own figure
-    diverged from the posted ledger on 10 of the real Checking account's 130
-    settled rows -- by ``$181.58`` on one grocery envelope, and by the row's WHOLE
-    amount on three rows whose entries are all credit (their true checking effect
-    is ``$0.00`` and the ledger correctly posts nothing at all).
-
-    The projection's own read-time adjustment cannot reach a settled row and is
-    deliberately not applied: the entries-aware RESERVATION models money still
-    to leave, and this has left.  *A live OVERRIDE map used to be named here as
-    a second such adjustment; both its producers are deleted -- ``LoanPricing.live_cash``
-    at plan step X-au-g-2c-2 and ``income_service.live_projected_net`` at
-    X-au-d -- because a derived row stores no figure for one to supersede.*
+    BUDGET clock, the column the parent row was budgeted in.  They are the same
+    period for most movements and different for the rest, and that difference
+    IS the grid's Reconciliation row: a movement dated outside its parent's pay
+    period moves the balance in one column while its income / expense subtotal
+    sits in another.  Carrying both here is what lets ONE valued set be grouped
+    on either clock, rather than a second load answering the second question
+    (ruling R-K).  :attr:`is_income` is the leg the budget clock sorts the
+    movement into, and it is the parent's TYPE rather than the sign of
+    :attr:`delta` because the two can disagree: a REFUND (a negative purchase,
+    ruling **bank_import:R-II**) under an expense row has a POSITIVE delta and
+    is still an expense that came back, while
+    :func:`app.services.cash_ledger.movement_cash_leg` derives the sign FROM
+    the type in the first place -- reading it back off the sign is inverting a
+    lossy function.
 
     Attributes:
-        transaction_id: The source row's id -- the transaction itself, or for a
-            PURCHASE the envelope it was recorded against (identity for the
-            walk's output and for the posting writer's attribution at plan step
-            X-d).
-        entry_id: The ``budget.transaction_entries`` id when this fact is a
-            PURCHASE, else ``None``.  It is what makes the pair
-            ``(transaction_id, entry_id)`` the fact's identity: an envelope and
-            each of its posted purchases are distinct movements sharing one
-            parent, and the sort below breaks their tie with it.  REQUIRED at
-            construction rather than defaulted -- a fact built without saying
-            which kind it is would sort and attribute as the parent's.
+        transaction_id: The plan row the movement satisfies -- the envelope a
+            purchase was recorded against, the bill or paycheck a covering
+            movement records, the shadow of a transfer leg.  The parent is
+            what a movement's direction, budget column and type are read from
+            (ruling **R-BAL35**); it is never a fact of its own.
+        entry_id: The ``budget.transaction_entries`` row.  ``(transaction_id,
+            entry_id)`` is the fact's identity: an envelope's posted purchases
+            are distinct movements sharing one parent, and the sort breaks
+            their same-day tie with it.
         pay_period_id: The BUDGET clock -- the ``budget.pay_periods`` row the
-            transaction is attributed to (NOT NULL on the column).  A purchase
-            takes its PARENT's, because a purchase spends the envelope's budget
-            and has no column of its own; that is what keeps the budget-clock
+            PARENT is attributed to (NOT NULL on its column).  A movement
+            takes its parent's because it spends or receives in the parent's
+            column and has none of its own; that is what keeps the budget-clock
             regrouping (``balance_at._cash_periods._budget_legs``) reading a
-            partially-spent envelope at its whole cost -- the spent part as
-            movements and the rest as the reservation.  Never used to date the
-            event; the cash clock is :attr:`settled_on` alone.
-        is_income: Whether the source row is an INCOME transaction (its
+            partially-spent envelope at its whole cost -- the dated part as
+            these facts, the un-dated part as movements in flight, the rest as
+            the envelope's unspent budget.  Never used to date the event; the
+            cash clock is :attr:`settled_on` alone.
+        is_income: Whether the PARENT is an INCOME transaction (its
             ``transaction_type_id``), so a budget-clock reduction can split the
             income and expense legs by type rather than by the sign of
-            :attr:`delta`.  A MOVEMENT carries its PARENT's (plan step
-            X-bi-3b): it spends or receives in the parent's column, so the
-            regrouping files it under the parent's leg.
-        settled_on: The civil day this row's cash MOVED -- the one date the
-            assertion partition compares against, the fold samples on, and the
-            period index buckets by.  **Read from the stored
-            ``transactions.settled_on`` (or, for a purchase, from
-            ``transaction_entries.settled_on``), not derived** (plan step X-f1,
-            ruling R-EC), through the shared
-            :func:`app.utils.balance_predicates.settled_day` so a settled row
-            missing one fails loudly here rather than being dated by a fallback.
-            It was ``paid_at``'s display-timezone day with the pay period's
-            ``start_date`` as a NULL fallback until the column existed, and the
-            migration backfilled exactly that derivation -- so the switch moved
-            no figure and every row keeps the day the engine already gave it.
-            The partition now compares two real-world dates and guesses at
-            neither.
-        reconciled_by_id: WHICH statement was recorded as showing this row --
-            the ``account_anchor_history`` id its ``reconciled_by_id`` names, or
-            ``None`` when none has been (ruling **R-FL**).  It sits beside
-            :attr:`settled_on` rather than replacing it because the two are
-            different facts: one is when the money moved, the other is which
-            statement was seen to show it, and a statement legitimately shows a
-            line that moved days earlier.  What the walk does with the pair is
+            :attr:`delta`.
+        settled_on: The civil day this movement's cash MOVED -- the one date
+            the assertion partition compares against, the fold samples on, and
+            the period index buckets by.  Read from the stored
+            ``transaction_entries.settled_on``, never derived (plan step X-f1,
+            ruling R-EC); the query admits no NULL, so no fact is dated by a
+            fallback.
+        reconciled_by_id: WHICH statement was recorded as showing this
+            movement -- the ``account_anchor_history`` id its
+            ``reconciled_by_id`` names, or ``None`` when none has been (ruling
+            **R-FL**).  It sits beside :attr:`settled_on` rather than replacing
+            it because the two are different facts: one is when the money
+            moved, the other is which statement was seen to show it, and a
+            statement legitimately shows a line that moved days earlier.  What
+            the walk does with the pair is
             :class:`~._clearing.StatementCoverage`'s rule and not this record's.
-        delta: The signed confirmed cash effect
-            (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
-            income, negative for an expense, and ``0.00`` for a row whose entries
-            are entirely credit-card purchases or entirely already posted.  For
-            a MOVEMENT it is
-            :func:`app.services.cash_ledger.movement_cash_leg`: its whole
-            amount, signed by its PARENT's type -- ``-amount`` for a purchase
-            against an envelope or a bill's covering movement, ``+amount`` for
-            a paycheck's (plan step X-bi-3b).  It read ``-amount`` for every
-            movement until that step, which is why an income parent could not
-            be covered before it.
+        delta: The signed cash effect
+            (:func:`app.services.cash_ledger.movement_cash_leg`): ``-amount``
+            for a purchase against an envelope or a bill's covering movement,
+            ``+amount`` for a paycheck's or a transfer's incoming leg, and
+            ``0.00`` for a card purchase (which leaves through its CC Payback
+            sibling) or a movement under a non-contributing parent -- the two
+            the producer is total over, stated there.
 
     **There is no instant on this record, and its absence is the ruling** (R-DH).
     It carried ``occurred_at`` -- ``paid_at`` normalized to UTC -- until
@@ -438,7 +407,7 @@ class CashSourceFact:
     """
 
     transaction_id: int
-    entry_id: "int | None"
+    entry_id: int
     pay_period_id: int
     is_income: bool
     settled_on: date
@@ -691,71 +660,133 @@ def coverage_for(account_id: int) -> StatementCoverage:
     return statement_coverage(cash_anchor_facts(account_id))
 
 
-def _posted_purchase_facts(
-    account_id: int, scenario_id: int,
-) -> list[CashSourceFact]:
-    """Return an account's POSTED movements as dated facts -- ruling **R-FM**.
+def _movements_of(account_id: int, scenario_id: int, *narrowing):
+    """Return the account's movements WITH their parents, scoped once.
 
-    The second kind of ACTUAL event (plan step X-f3b): a purchase recorded
-    against an envelope whose bank posting day the owner has recorded is cash
-    that left the account on that day, whatever its envelope has or has not
-    done.  Until this step a purchase was never a cash movement -- it only shrank
-    its envelope's reservation, and the money left the book when the WHOLE
-    envelope closed, which is finding **N-274**.  Since plan step X-bi-3a the
-    same fact is how a settled bill's money is recorded (its COVERING
-    movement, ``status_seam``), and since X-bi-3b a settled paycheck's: each
-    movement is valued by :func:`~._cash_leg.movement_cash_leg`, its whole
-    figure in its PARENT's direction, and files under the parent's type.
+    The ONE statement of what the movement stream is scoped by -- shared by
+    the SETTLED tier (:func:`settled_cash_facts`, the dated movements) and
+    the IN-FLIGHT tier (:func:`in_flight_movements`, the un-dated ones) so
+    the two are a PARTITION of the same set rather than two filters that
+    could disagree about which movements exist at all (plan step
+    ``balance:X-bi-4a``).  Three clauses, each load-bearing:
 
-    Three narrowings, each load-bearing:
+    * ``TransactionEntry.account_id == account_id`` -- **the MOVEMENT's own
+      account, never its parent's** (ruling **R-BAL75**): a movement is
+      counted where its money moved, and its plan row's ``account_id`` is
+      where the row was EXPECTED to be paid from.  The two are held equal
+      today by ``fk_transaction_entries_parent_account``, which the card arc
+      drops at its first cross-account writer (ruling **R-BAL76**); the
+      posted ledger already attributes by the movement
+      (``_posting_purchases._purchase_target``), so the fold, the ledger and
+      the anchor self-heal read one predicate rather than agreeing by a key.
+    * the parent's ``scenario_id`` -- a movement's scenario is its plan row's,
+      read through ``transaction_id`` and never copied (ruling **R-BAL35**).
+    * the parent is BALANCE-CONTRIBUTING -- the shared
+      :func:`~app.utils.balance_predicates.balance_contributing_clause`, so a
+      soft-deleted or Credit / Cancelled parent's movements are worth nothing
+      here, as they post nothing (``_posting_purchases.purchase_posts``).
 
-    * ``settled_on IS NOT NULL`` -- the trigger itself (ruling R-FM as refined
-      by **R-FR**).  It is the same fact that makes a TRANSACTION an actual
-      event, asked of the row in front of it; whether a statement was recorded
-      as showing it is :class:`~._clearing.StatementCoverage`'s separate
-      question, asked identically of both kinds by the walk.
-    * ``is_credit IS FALSE`` -- a card purchase never touches checking; it
-      leaves later through its own CC Payback sibling, which is why
-      :func:`~._cash_leg.credit_entry_sum` removes it from the parent's leg too.
-    * the parent is BALANCE-CONTRIBUTING -- the same
-      :func:`~app.utils.balance_predicates.balance_contributing_clause` gate the
-      transaction half applies, so a soft-deleted or Credit / Cancelled envelope
-      contributes nothing and neither do its purchases.  That is
-      :func:`~._amounts.settled_cash_leg`'s totality rule extended to the family
-      it now has, and it is what a delete or a cancel reverses in the ledger.
+    Deliberately NOT narrowed by the parent's STATUS: a dated purchase
+    against a still-Projected envelope has left the bank exactly as one
+    against a closed envelope has, and an un-dated purchase against a closed
+    envelope is in flight exactly as one against an open envelope is
+    (ruling **R-BAL77**).
 
-    Deliberately NOT narrowed by the parent's STATUS: a purchase against a
-    still-Projected envelope has left the bank exactly as one against a closed
-    envelope has.  Measured on a production clone 2026-08-14: 2 of the 9 posted
-    purchases (``$45.85``) sit on a Projected row.
+    The parent rides along through ``contains_eager`` on the join that
+    already scopes the query, so no movement costs a second SELECT for its
+    direction, budget column or type.
 
     Args:
-        account_id: The account whose purchases to load.
+        account_id: The account the movements are ON.
         scenario_id: The budget scenario the parent rows live in.
+        *narrowing: The tier's own clauses over ``TransactionEntry``.
 
     Returns:
-        One :class:`CashSourceFact` per posted debit movement, unordered (the
-        caller sorts the merged set).
+        The matching ``TransactionEntry`` rows, each with ``.transaction``
+        populated, unordered.
     """
-    # The movement WITH its parent, in one statement: the parent is what a
-    # movement's direction, budget column and type are read from (ruling
-    # R-BAL35), and ``contains_eager`` makes the join that already scopes the
-    # query also populate ``entry.transaction``, so no row costs a second
-    # SELECT.  A parent the settled half loaded is the same object here.
-    rows = (
+    return (
         db.session.query(TransactionEntry)
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .options(contains_eager(TransactionEntry.transaction))
         .filter(
-            Transaction.account_id == account_id,
+            TransactionEntry.account_id == account_id,
             Transaction.scenario_id == scenario_id,
             balance_contributing_clause(),
-            TransactionEntry.settled_on.isnot(None),
             TransactionEntry.is_credit.is_(False),
+            *narrowing,
         )
         .all()
     )
-    return [
+
+
+def settled_cash_facts(
+    account_id: int, scenario_id: int,
+) -> list[CashSourceFact]:
+    """Return an account's cash movements as dated facts.
+
+    The ACTUAL events the walk folds: **every DATED movement on the account
+    whose parent contributes, and nothing else** (plan step
+    ``balance:X-bi-4a``, ruling **R-BAL80**).  A purchase the bank has been
+    seen to take, a bill's or a paycheck's covering movement, a transfer
+    leg's -- each is one fact, valued by
+    :func:`~._cash_leg.movement_cash_leg` (its whole figure in its PARENT's
+    direction, ruling **R-BAL35**), dated on its own ``settled_on``, filed
+    under its parent's budget column and type, and linked to the statement
+    that showed it.  ``opening + SUM(these)`` is the balance, and that
+    identity is provable against the pre-state rather than a second balance
+    semantics running beside the first.
+
+    **The settled ROW is no longer a fact.**  Through ``X-bi-3e`` this stream
+    carried one fact per settled row worth ``settled_cash_leg`` -- the row's
+    recorded figure less what its own dated movements already carried -- and
+    the two agreed by ruling **R-FM**'s identity because the status seam
+    mirrored one record into both homes.  That leg was ZERO for every covered
+    bill and paycheck, and for a ``purchases``-basis envelope it was the
+    envelope's UN-DATED purchases, booked on the day the row closed.  Ruling
+    **R-BAL77** says what those are: movements in flight, held in the
+    projection and absent from the actual until the bank is seen to take
+    them (:func:`in_flight_movements`).  So the row's own leg is nothing on
+    every kind of row, and this stream reads movements alone.  The row's
+    record columns are the stale cache ``X-bi-4b`` deletes.
+
+    **Three narrowings, each load-bearing** (:func:`_movements_of` holds the
+    account, scenario and contributing gate):
+
+    * ``settled_on IS NOT NULL`` -- the trigger itself (ruling R-FM as
+      refined by **R-FR**): the day the bank was seen to take the money.
+      Whether a STATEMENT was recorded as showing it is
+      :class:`~._clearing.StatementCoverage`'s separate question.
+    * ``is_credit IS FALSE`` -- a card purchase never touches this account;
+      it leaves later through its own CC Payback sibling (the card arc
+      retires the flag at CC-7, when a card purchase is a movement on the
+      card).
+    * the parent is BALANCE-CONTRIBUTING -- a soft-deleted or Credit /
+      Cancelled parent's movements are worth nothing, as they post nothing.
+
+    **It loads its own rows and takes no period window, deliberately.**  An
+    argument a caller can get wrong is a defect, not a contract (plan Section
+    8): the loan fold once TOOK the period list its visibility rule needed,
+    and the grid passing a WINDOW moved a balance by $150,000.00 (plan step
+    B1).  A fold over a windowed event stream is a fold over a different
+    account.
+
+    Args:
+        account_id: The account whose movements to load.
+        scenario_id: The budget scenario the parent rows live in.
+
+    Returns:
+        One :class:`CashSourceFact` per dated movement, ASCENDING by
+        ``(settled_on, transaction_id, entry_id)`` -- the order the walk
+        consumes them in, the ids breaking a same-day tie deterministically.
+        Order WITHIN a day is not observable: the walk only sums a day's
+        sources before its assertions close it (ruling R-DH), and the fold
+        reads a day's boundary after every step on it, so only the day's
+        total can be read back.  The sort is total anyway, because a
+        nondeterministic order in a financial replay is a reproducibility
+        defect even where it is arithmetically inert.
+    """
+    facts = [
         CashSourceFact(
             transaction_id=entry.transaction_id,
             entry_id=entry.id,
@@ -765,102 +796,94 @@ def _posted_purchase_facts(
             reconciled_by_id=entry.reconciled_by_id,
             delta=movement_cash_leg(entry.transaction, entry),
         )
-        for entry in rows
-    ]
-
-
-def settled_cash_facts(
-    account_id: int, scenario_id: int,
-) -> list[CashSourceFact]:
-    """Return an account's cash movements as dated facts.
-
-    The ACTUAL events the walk folds, and since plan step X-f3b there are TWO
-    kinds of them (ruling **R-FM**): every balance-contributing row for the
-    account in the scenario whose status is settled, and every POSTED PURCHASE
-    recorded against one of its rows (:func:`_posted_purchase_facts`).  Both are
-    valued and dated once, and both carry the budget column they were attributed
-    to, so the ONE valued row set can be grouped on either clock (see
-    :class:`CashSourceFact`).  For the transaction half both extra fields are
-    free: the budget column is the row's own ``pay_period_id`` and the
-    transaction TYPE is a column beside it, so neither costs a join.  *That
-    first clause read "the shared loader already joins ``pay_period``" until
-    pay-calendar plan step C4-a-1 deleted that eager load; the field this
-    carries was never the relationship, and saying it was made a stale
-    justification out of a true sentence.*
-
-    **It loads its own rows and takes no period window, deliberately.**  An
-    argument a caller can get wrong is a defect, not a contract (plan Section 8):
-    the loan fold once TOOK the period list its visibility rule needed, and the
-    grid passing a WINDOW moved a balance by $150,000.00 (plan step B1).  A fold
-    over a windowed event stream is a fold over a different account.
-
-    The rows come from the shared ``_facts._unwindowed_contributing_rows`` -- the
-    ONE load this and its PLAN twin
-    (:func:`app.services.cash_ledger.planned_cash_rows`) narrow, so the account /
-    scenario scope, the shared
-    :func:`~app.utils.balance_predicates.balance_contributing_clause` eligibility
-    gate (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) and
-    its ``selectinload(entries)`` are stated once for the two halves of the
-    event stream rather than copied per half.  One gate for both halves is what makes the
-    SETTLED and PLANNED tiers a partition of the contributing set rather than
-    two filters that could disagree about which rows exist at all.  *Since plan
-    step X-bi-6a the plan twin's ROW half also excludes transfer shadows and
-    its leg half derives them from the parents, so the partition of the
-    contributing set is: settled rows here, the account's own projected rows
-    and its projected transfer legs there.*
-
-    This half supplies the SETTLED narrowing, in SQL rather than as a Python
-    post-filter, and the difference is real work: the contributing gate alone
-    admits every PROJECTED row too -- roughly two years of forward projection --
-    so filtering afterwards would eager-load entries for the whole horizon to
-    keep ~130 rows.  :func:`~app.utils.balance_predicates.settled_status_ids` is
-    the same status set ``txn.status.is_settled`` tests, in its SQL form.
-
-    The shared loader's eager ``entries`` are load-bearing here rather than an
-    optimization: :func:`app.services.cash_ledger.settled_cash_leg` subtracts the
-    row's credit-card entries, so an unloaded relationship would issue one SELECT
-    per settled row (130 on the real Checking account) -- and the same
-    eager-loading discipline is what closed CRIT-01 / F-009 on the projection
-    side, where a caller's forgotten ``selectinload`` silently changed a balance.
-
-    Args:
-        account_id: The account whose settled rows to load.
-        scenario_id: The budget scenario the rows live in.
-
-    Returns:
-        One :class:`CashSourceFact` per settled row and per posted purchase,
-        ASCENDING by ``(settled_on, transaction_id, entry_id)`` -- the order the
-        walk consumes them in, with the ids breaking a same-day tie
-        deterministically and a parent sorting before its own purchases.  Order
-        WITHIN a day is not observable: the walk only sums a day's sources
-        before its assertions close it (ruling R-DH), and the fold reads a day's
-        boundary after every step on it, so only the day's total can be read
-        back.  The sort is total anyway, because a nondeterministic order in a
-        financial replay is a reproducibility defect even where it is
-        arithmetically inert.
-    """
-    rows = _unwindowed_contributing_rows(
-        account_id, scenario_id, Transaction.status_id.in_(settled_status_ids()),
-    )
-    facts = [
-        CashSourceFact(
-            transaction_id=txn.id,
-            entry_id=None,
-            pay_period_id=txn.pay_period_id,
-            is_income=txn.is_income,
-            settled_on=settled_day(txn.id, txn.settled_on),
-            reconciled_by_id=txn.reconciled_by_id,
-            delta=settled_cash_leg(txn),
+        for entry in _movements_of(
+            account_id, scenario_id, TransactionEntry.settled_on.isnot(None),
         )
-        for txn in rows
     ]
-    facts.extend(_posted_purchase_facts(account_id, scenario_id))
-    # ``entry_id or 0`` orders a parent's own leg before its purchases and keeps
-    # the key total: entry ids are positive, so ``0`` is unambiguously "the
-    # transaction itself" and no ``None`` reaches the comparison.
     facts.sort(
-        key=lambda fact: (
-            fact.settled_on, fact.transaction_id, fact.entry_id or 0,
-        )
+        key=lambda fact: (fact.settled_on, fact.transaction_id, fact.entry_id),
     )
     return facts
+
+
+@dataclass(frozen=True)
+class InFlightMovement:
+    """A movement the bank has not been seen to take: money on its way out.
+
+    The PLANNED tier's third item kind (plan step ``balance:X-bi-4a``, ruling
+    **R-BAL77**), beside a still-Projected row and a still-projected
+    transfer leg: a purchase recorded against a contributing envelope whose
+    ``settled_on`` is NULL.  It has HAPPENED (``purchased_on``, ruling R-M)
+    and has not been OBSERVED to leave, so it is in neither the actual (the
+    settled stream reads dated movements alone) nor the plan's unspent
+    budget; the projection holds it back on its own, whatever its parent's
+    status.  Through ``X-bi-3e`` a Projected envelope's reservation carried
+    it inside ``max(estimated - dated - card, undated)`` and a CLOSED
+    envelope's row leg booked it on the close day; the identity
+    ``max(a, b) = b + max(a - b, 0)`` splits the first into this item plus
+    the envelope's unspent budget (:func:`~._amounts._entry_checking_impact`),
+    and the ruling deletes the second.
+
+    Attributes:
+        transaction_id: The envelope the purchase was recorded against.
+        entry_id: The ``budget.transaction_entries`` row.
+        pay_period_id: The BUDGET clock -- the parent's column, as every
+            movement's is (:class:`CashSourceFact`).
+        is_income: The parent's type, so a budget-clock reduction files it on
+            the parent's leg.
+        purchased_on: The day it happened, the floor the plan's landing day is
+            clamped up from (``balance_at._cash_fold._cash_plan``).
+        delta: :func:`~._cash_leg.movement_cash_leg` -- its whole figure in
+            the parent's direction, signed as the settled stream would sign it
+            the day it is dated.
+    """
+
+    transaction_id: int
+    entry_id: int
+    pay_period_id: int
+    is_income: bool
+    purchased_on: date
+    delta: Decimal
+
+
+def in_flight_movements(
+    account_id: int, scenario_id: int,
+) -> list[InFlightMovement]:
+    """Return the account's movements in flight -- ruling **R-BAL77**.
+
+    The un-dated half of the movement stream :func:`settled_cash_facts` holds
+    the dated half of, scoped by the same :func:`_movements_of` so the two
+    partition one set; what this half adds is ``settled_on IS NULL`` and
+    ``NOT covers_settlement``: a row's own covering movement, kept un-dated
+    across a revert (ruling **R-BAL61**), is a retained RECORD and not a
+    purchase on its way out -- the ``purchases`` reading of ruling
+    **R-BAL68**, stated here through ``status_seam.covering_clause``'s twin
+    column rather than the model property because this is a query.
+
+    Args:
+        account_id: The account the movements are on.
+        scenario_id: The budget scenario the parent rows live in.
+
+    Returns:
+        One :class:`InFlightMovement` per un-dated non-card purchase of a
+        contributing parent, in ``entry_id`` order.
+    """
+    return [
+        InFlightMovement(
+            transaction_id=entry.transaction_id,
+            entry_id=entry.id,
+            pay_period_id=entry.transaction.pay_period_id,
+            is_income=entry.transaction.is_income,
+            purchased_on=entry.purchased_on,
+            delta=movement_cash_leg(entry.transaction, entry),
+        )
+        for entry in sorted(
+            _movements_of(
+                account_id,
+                scenario_id,
+                TransactionEntry.settled_on.is_(None),
+                TransactionEntry.covers_settlement.is_(False),
+            ),
+            key=lambda entry: entry.id,
+        )
+    ]

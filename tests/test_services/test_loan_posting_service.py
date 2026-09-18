@@ -1202,9 +1202,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
             entries_before = len(_correction_entries(shadow.id))
 
-            result = posting_service.sync_transaction_postings(
-                shadow, settled=True,
-            )
+            result = posting_service.sync_transaction_postings(shadow)
             db.session.commit()
 
             assert result == []

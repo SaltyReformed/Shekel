@@ -80,18 +80,22 @@ over the parent's derived leg (plan step **X-bi-6a**, ruling **R-BAL13**):
 the same figure rule 5 answered for the shadow row that leg replaces, read
 from the parent without the shadow in between.
 
-What a row is worth once it has SETTLED -- money that really moved -- is the
-other, and it is deliberately neither of the above:
+What money that really MOVED is worth is the other, and it is deliberately
+neither of the above:
 
-  * :func:`._cash_leg.settled_cash_leg` is ``settled_contribution - Sigma(credit entries) -
-    Sigma(posted purchases)``, signed by transaction type.  The reservation
-    above cannot reach a settled row (it filters to ``is_projected``), and one
-    would be meaningless for cash already gone.  It arrived
-    here at plan step X-a from ``posting_service``, so the ledger WRITER and the
-    cash WALK price one row through the same function.  Its third term is ruling
-    **R-FM** (plan step X-f3b): a purchase whose bank posting day is recorded
-    books its own cash leg on its own day, so the envelope's close books only
-    what its purchases did not.
+  * :func:`._cash_leg.movement_cash_leg` is a movement's whole figure in its
+    parent's direction, signed by the parent's transaction type (ruling
+    **R-BAL35**) -- what the cash WALK folds for every dated movement and the
+    ledger WRITER books for it, through one function.  A settled ROW is
+    worth nothing of its own since plan step ``balance:X-bi-4a`` (ruling
+    **R-BAL80**): its money is its movements'.  The reservation above cannot
+    reach a settled row (it filters to ``is_projected``), and an un-dated
+    purchase under one is a movement in flight, a plan item beside the
+    reservation rather than a leg of the row (ruling **R-BAL77**).
+    :func:`._cash_leg.settled_cash_leg` -- ``settled_contribution -
+    Sigma(credit entries) - Sigma(dated purchases)`` -- remains as the
+    statement matcher's pricing of a settled row (``bank_import``'s
+    question, stated there), read by neither the walk nor the writer.
 
 **Why they are one module (plan step D1c).**  They were split across two: the
 override map's producer sat in the cash event sources while the four rules that
@@ -407,7 +411,7 @@ def planned_leg_contribution(
 
 
 def _entry_checking_impact(entries, estimated_amount: Decimal) -> Decimal:
-    """Three-bucket checking reservation for a sequence of debit/credit entries.
+    """An envelope's UNSPENT BUDGET: what its plan still holds back.
 
     The core of the entry-aware reduction, with exactly ONE caller:
     :func:`_entry_aware_amount` below, which owns the empty-entries
@@ -423,155 +427,118 @@ def _entry_checking_impact(entries, estimated_amount: Decimal) -> Decimal:
     W9909 ruling -- structure doing what a fence entry was doing, which is the
     whole point of Phase D.
 
-    Partitions the supplied entries into three buckets and returns the portion
-    of the budget still held back against checking:
+    One expression::
 
-        posted_debit   = sum(debit amounts the bank has been seen to take)
-        unposted_debit = sum(debit amounts it has not)
-        sum_credit     = sum(amount where is_credit)
+        impact = max(estimated_amount - sum(entries), 0)
 
-        impact = max(estimated_amount - posted_debit - sum_credit,
-                     unposted_debit)
+    -- the budget less EVERY purchase recorded against it, debit or card,
+    posted or not, floored at zero.  A purchase already recorded is not
+    budget still to spend, whichever account its money leaves through and
+    whether or not the bank has been seen to take it.
 
-    A POSTED debit has already left the account and is already a cash movement
-    of its own in the ledger (ruling **R-FM**), so it is subtracted from the
-    reservation.  An UNPOSTED debit acts as a floor -- the reservation can never
-    be smaller than the checking hits nothing has recorded yet, which also
-    handles overspend.  A credit entry never hits checking directly (it flows
-    through a CC Payback sibling transaction), so it only reduces the
-    reservation and its own dates are irrelevant.
+    **This was a three-bucket reservation through plan step ``X-bi-3e``, and
+    ruling R-BAL77 is what reduced it** (plan step ``balance:X-bi-4a``).  It
+    read ``max(E - P - C, U)`` -- the budget less the POSTED debits (already
+    cash movements of their own, ruling **R-FM**) and the card purchases
+    (which leave through a CC Payback sibling), floored at the UNPOSTED
+    debits, so an envelope could never reserve less than the purchases nobody
+    had yet seen leave.  That floor was the projection's only home for an
+    un-dated purchase, and it lived inside the PROJECTED row's valuation --
+    which is why a purchase under a CLOSED envelope had to be booked by the
+    row's own leg on the close day instead, a second home for the same
+    dollars.  The identity this docstring already carried is what split
+    them::
 
-    **THE ``max`` SURVIVES A NEGATIVE ENTRY, and that is derived rather than
-    hoped** (plan step ``bank_import:X-gj-2b-3``).  Ruling **bank_import:R-II**
-    made a refund a NEGATIVE purchase, so ``unposted_debit`` can be negative and
-    an adversarial review read this as a floor that had stopped flooring.  The
-    expression is identically equal to *the movements already known, plus
-    whatever budget is left after everything recorded, floored at zero*::
+        max(E - P - C, U)  ==  U + max(E - P - C - U, 0)
+                           ==  U + max(E - sum(entries), 0)
 
-        max(E - P - C, U)  ==  U + max(0, E - P - C - U)
+    -- exact for EVERY sign of ``U`` (a refund is a negative purchase, ruling
+    **bank_import:R-II**), checked exhaustively over the four terms.  The
+    first term, ``U``, is now the account's movements IN FLIGHT
+    (:func:`~._events.in_flight_movements`), one plan item per un-dated
+    purchase whatever its parent's status; the second is this function.  So
+    an envelope budgeting `$100.00` with a `$120.00` posted purchase and a
+    `$40.00` refund not yet posted holds back ``max(100 - 80, 0) = 20.00``
+    here and ``-40.00`` in flight: the refund arrives (`+40.00`) and `$20.00`
+    of the budget is still expected to leave -- the same ``-20.00`` the
+    three-bucket form answered, in two items that each say what they are.
 
-    -- for EVERY sign of ``U``, checked exhaustively over the four terms.  So an
-    envelope budgeting `$100.00` with a `$120.00` posted purchase and a `$40.00`
-    refund not yet posted reserves ``-20.00``: the refund arrives (`+40.00`) and
-    `$20.00` of the budget is still expected to leave.  Reading ``-40.00`` as
-    the answer instead assumes the envelope will spend nothing further, which is
-    the opposite of what a reservation is for.
-
-    **Which bucket a debit falls in is whether it has POSTED, and that is
-    ruling R-FM** (plan step X-f3b).  Its history is the point, because this
-    bucket has been re-decided three times and each move was a narrowing.  It
-    was a stored ``is_cleared`` boolean, written by a bulk UPDATE at every
-    anchor true-up over "every entry dated on or before the SERVER's today" --
-    so a purchase recorded BEFORE the true-up was reconciled and the identical
-    purchase recorded after it never was, and the difference was which button
-    the user pressed first.  Ruling R-DH (d) deleted the boolean and derived it
-    from ``settled_on`` against the account's latest asserted day; ruling R-FL
-    replaced that derivation with the RECORDED fact of which statement showed
-    the line, because the developer's bank exports falsified the date compare on
-    70% of matched movements.
-
-    **R-FM ends the question here entirely**, and that is the simplification
-    rather than a fourth answer.  While a purchase was not a cash movement, the
-    reservation had to ask whether a declared balance already contained it --
-    because that was the only way its money could be in the book at all.  Now a
-    purchase carrying a posting day IS in the book, on its own day, and WHICH
-    statement cleared it is the walk's question about that movement
-    (:class:`~._clearing.StatementCoverage`) exactly as it is for a settled
-    transaction.  So this reduction asks one fact about the row in front of it
-    and no fact about the account, and it cannot come to disagree with the
-    clearing rule because it no longer states one.
-
-    A purchase whose posting day has never been recorded is UNPOSTED -- the
-    conservative arm: the envelope keeps holding its whole budget back until the
-    user confirms the money has actually left.  Nothing here guesses a posting
-    day on the user's behalf.
+    **What this does NOT ask, and why**: whether a purchase has POSTED.  That
+    question moved out of here twice before it left entirely -- a stored
+    ``is_cleared`` boolean written by a bulk UPDATE at every true-up, then a
+    derivation against the account's latest asserted day (ruling R-DH (d)),
+    then the RECORDED statement (ruling R-FL) -- and ruling R-FM made a
+    posted purchase a cash movement of its own in the walk, on its own day,
+    where :class:`~._clearing.StatementCoverage` asks which statement cleared
+    it.  A purchase not yet posted is a movement in flight, held by the plan
+    beside this.  So this reduction asks one fact about the row in front of
+    it -- what has been recorded against its budget -- and no fact about the
+    account or the bank.
 
     This function sees whatever entry set it is handed and applies the
-    bucketing to all of it.  Short-circuiting an empty set belongs to the
+    reduction to all of it.  Short-circuiting an empty set belongs to the
     caller, and there is exactly one, so that decision is made once rather than
     kept in step across two paths.
 
     Args:
-        entries: An iterable of entry rows, each exposing ``settled_on``
-            (``date | None``), ``amount`` (Decimal) and ``is_credit`` (bool).
-            The caller is responsible for short-circuiting an empty sequence
-            before calling.
+        entries: An iterable of entry rows, each exposing ``amount``
+            (Decimal).  The caller is responsible for short-circuiting an
+            empty sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
-            the reservation ceiling before debits and credits reduce it.
+            the ceiling the recorded purchases reduce.
 
     Returns:
-        Decimal -- the amount this transaction's entries hold back from
-        the checking balance.
+        Decimal -- the budget this envelope still holds back from the account,
+        never negative.
     """
-    posted_debit = Decimal("0")
-    unposted_debit = Decimal("0")
-    sum_credit = Decimal("0")
-    for entry in entries:
-        if entry.is_credit:
-            sum_credit += entry.amount
-        elif entry.settled_on is not None:
-            posted_debit += entry.amount
-        else:
-            unposted_debit += entry.amount
-
-    return max(
-        estimated_amount - posted_debit - sum_credit,
-        unposted_debit,
-    )
+    spent = sum((entry.amount for entry in entries), Decimal("0"))
+    return max(estimated_amount - spent, Decimal("0"))
 
 
 def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     """Compute the checking-balance impact for a single expense transaction.
 
-    For projected expenses with entries (loaded eagerly or
-    lazy-loaded on demand), the formula partitions debit entries into
-    posted and unposted buckets, then holds back only the portion
-    of the budget that has not already left the account:
+    For projected expenses with entries (loaded eagerly or lazy-loaded on
+    demand), the row is worth its UNSPENT BUDGET -- the plan less every
+    purchase recorded against it, floored at zero
+    (:func:`_entry_checking_impact`)::
 
-        posted_debit   = debits carrying a recorded bank posting day
-        unposted_debit = every other debit
-        sum_credit     = sum(entries where is_credit)
+        checking_impact = max(estimated_amount - sum(purchases), 0)
 
-        checking_impact = max(
-            estimated_amount - posted_debit - sum_credit,
-            unposted_debit,
-        )
-
-    Semantics:
-      - A POSTED debit has already left the account and is already a cash
-        movement of its own in the ledger (ruling **R-FM**, plan step
-        X-f3b), so it must not come out of the projection a second time --
-        we subtract it from the reservation.
-      - An UNPOSTED debit has not been seen to leave, so the full
-        estimated amount must still be held back (the max() floor
-        handles this and also handles overspend where unposted
-        debits exceed the remaining reservation).
-      - A credit entry never hits checking directly -- it flows through
-        a CC Payback sibling transaction -- so it only reduces the
-        reservation, whatever its dates say.
-      - With every ``settled_on`` NULL (the state a fresh purchase is in,
-        and the state migration ``d7c1f4a9e603`` left every existing row
-        in), posted_debit = 0 and the formula reduces to
-        max(estimated - sum_credit, unposted_debit) -- the whole budget
-        held back, which is the conservative arm and matches the
-        pre-cleared-flag behavior from scope doc section 4.2.
+    Semantics (plan step ``balance:X-bi-4a``, ruling **R-BAL77**):
+      - A purchase already recorded is not budget still to spend, whichever
+        account its money leaves through and whether or not the bank has
+        been seen to take it, so every purchase reduces the reservation.
+      - Where the purchase's money IS depends on one fact about the
+        purchase: a DATED one is a cash movement of its own in the settled
+        stream and the ledger, on its own day (ruling **R-FM**, plan step
+        X-f3b); an UN-DATED one is a movement in flight, a plan item of its
+        own that the projection holds from tomorrow
+        (:func:`~._events.in_flight_movements`).  Neither is this row's to
+        hold, so the row holds only what is unspent.
+      - A card purchase reduces the reservation like any other -- the
+        envelope's budget is spent -- and its money leaves later through
+        its CC Payback sibling, which is why the settled stream and the
+        in-flight tier both leave it out.
 
     Example (the user's grocery bug):
       est = 500, three debit purchases summing to 462.34, all confirmed
       against a statement whose balance the user then entered.
-      checking_impact = max(500 - 462.34 - 0, 0) = 37.66, which is the
-      remaining budget to hold back now that the ledger carries the
-      first three purchases as movements of their own.
+      checking_impact = max(500 - 462.34, 0) = 37.66, the remaining budget
+      to hold back now that the ledger carries the first three purchases as
+      movements of their own.
 
-    **The two halves always sum to what the row costs**, which is the
-    property ruling R-FM turns on: the posted debits are in the ledger at
-    their own days, this reservation holds the rest, and the envelope's
-    close books ``sum(entries) - credit - posted_debit``
-    (:func:`._cash_leg.settled_cash_leg`).  So recording a purchase and truing the
-    anchor up by the same amount still cannot move the projected end
-    balance (ruling R-DH (c)) -- and it stops depending on the anchor RESET
-    dropping the balance by exactly what the reservation released, which is
-    what finding **N-274** measured and what the cutover (X-f3c) removes.
+    **The three tiers always sum to what the row costs**, which is the
+    property ruling R-FM turns on: the dated purchases are in the ledger at
+    their own days, the un-dated ones are in flight, and this reservation
+    holds the rest; an envelope's CLOSE books nothing of its own (its row
+    leg was ``sum(entries) - credit - posted_debit`` through ``X-bi-3e``, the
+    un-dated purchases on the close day, and ruling R-BAL77 reads those as
+    in flight instead).  So recording a purchase and truing the anchor up by
+    the same amount still cannot move the projected end balance (ruling R-DH
+    (c)) -- and it stops depending on the anchor RESET dropping the balance
+    by exactly what the reservation released, which is what finding
+    **N-274** measured and what the cutover (X-f3c) removes.
 
     Seam removed (Commit 5 / CRIT-01 / F-009 / E-25): the pre-Commit-5
     implementation guarded the entry formula behind an
@@ -610,13 +577,13 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  A settled row's
     covering movement -- the payment row the status seam writes for the
     record -- sits in ``entries`` too, and since that step a revert KEEPS it
-    un-dated under a Projected row; read as a purchase it would be an
-    unposted debit and the ``max()`` floor would hold the CLOSE back in
-    place of the plan: a `$100.00` envelope reverted after a typed
-    `$120.00` close would reserve `$120.00`, where a reverted row is worth
-    its PLAN (developer, 2026-08-17).  :attr:`~app.models.transaction.
-    Transaction.purchases` is the entries less that mark, so the three
-    buckets below see what a person recorded and nothing the seam did.
+    un-dated under a Projected row; read as a purchase it would spend the
+    budget with a close the owner withdrew: a `$100.00` envelope reverted
+    after a typed `$120.00` close would reserve nothing, where a reverted
+    row is worth its PLAN (developer, 2026-08-17).  :attr:`~app.models.
+    transaction.Transaction.purchases` is the entries less that mark, so the
+    reduction below sees what a person recorded and nothing the seam did;
+    the in-flight tier leaves the mark out by the same reading.
 
     What is no longer possible: the same Projected envelope expense
     yielding two different values for two different consumers based
@@ -716,8 +683,7 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     if not is_projected(txn):
         return contribution_of(txn, basis)
 
-    # Partition the entries and hold back the unposted budget.  The
-    # bucketing rule and the reservation formula live once, in
+    # Hold back what is unspent.  The reservation formula lives once, in
     # ``_entry_checking_impact`` (E-27).
     return _entry_checking_impact(
         entries, resolve_transaction_amount(txn, basis),

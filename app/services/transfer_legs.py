@@ -16,10 +16,23 @@ SHADOW rows the transfer service writes beside each parent -- an expense
 to-account -- and priced each through amount rule 5 (*a shadow is worth its
 parent*).  The shadows still exist and the transfer service still maintains
 them, for the settle doors and the screens that render them; what changed is
-that no reader FOLDING a projection reads one.  Plan step ``X-bi-6`` deletes
-the rows once the settled half has moved onto movements (``X-bi-4``), at which
-point the maintenance contract that kept a shadow equal to its parent
-(Transfer Invariant 3) has nothing left to keep in step.
+that no reader FOLDING a projection reads one.  The settled half is each
+shadow's covering MOVEMENT since plan step ``balance:X-bi-4a``, and plan
+step ``X-bi-6`` deletes the rows, at which point the maintenance contract
+that kept a shadow equal to its parent (Transfer Invariant 3) has nothing
+left to keep in step.
+
+**A leg is planned exactly while its own DATED movement does not exist**
+(ruling **R-BAL79**, plan step ``balance:X-bi-4a``; ledger row
+**BAL-500**).  The settled half reads a leg as the dated covering movement
+under the transfer's shadow on that account, so the MOVEMENT -- not the
+parent's status -- is what decides which relation a leg is in, per side:
+a transfer whose parent is still Projected while one side's movement has
+been dated (a state no door writes today and Transfer Invariant 3 forbids;
+``X-bi-6``'s per-leg settle days make it the ordinary transitional state)
+is emitted here for the OTHER side alone, so no leg is counted by both
+halves.  Through ``X-bi-3e`` both legs were emitted off the parent's status
+and that state read ``-$500.00`` on a `$250.00` transfer.
 
 **A leg is DERIVED and carries its parent, deliberately.**  It stores no
 figure, no period and no date of its own: :attr:`~PlannedTransferLeg.due_date`
@@ -57,6 +70,8 @@ from sqlalchemy import or_
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
+from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.utils.balance_predicates import is_projected_clause
 
@@ -146,7 +161,7 @@ def leg_of(transfer: Transfer, account_id: int) -> PlannedTransferLeg:
 def planned_transfer_legs(
     account_id: int, scenario_id: int, *, options: tuple,
 ) -> list[PlannedTransferLeg]:
-    """Return every leg of a still-projected transfer that *account_id* is on.
+    """Return every still-planned leg of a projected transfer *account_id* is on.
 
     The plan-half loader behind the cash fold's plan
     (:func:`app.services.cash_ledger.planned_cash_rows`) and the loan
@@ -177,9 +192,26 @@ def planned_transfer_legs(
             :class:`~app.models.transfer.Transfer`.
 
     Returns:
-        One :class:`PlannedTransferLeg` per matching transfer, unordered;
-        ``[]`` for an account no still-projected transfer touches.
+        One :class:`PlannedTransferLeg` per matching transfer whose leg on
+        this account is not yet a dated movement, unordered; ``[]`` for an
+        account no still-projected transfer touches.
     """
+    # The leg's RECORD, when it exists: a dated covering movement on this
+    # account under one of the transfer's shadows (ruling **R-BAL79**).  A
+    # correlated EXISTS rather than a join, so a transfer is one row here
+    # whatever its shadows hold.
+    dated_leg = (
+        db.session.query(TransactionEntry.id)
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.transfer_id == Transfer.id,
+            TransactionEntry.account_id == account_id,
+            TransactionEntry.covers_settlement.is_(True),
+            TransactionEntry.settled_on.isnot(None),
+        )
+        .correlate(Transfer)
+        .exists()
+    )
     transfers = (
         db.session.query(Transfer)
         .options(*options)
@@ -191,6 +223,7 @@ def planned_transfer_legs(
                 Transfer.from_account_id == account_id,
                 Transfer.to_account_id == account_id,
             ),
+            ~dated_leg,
         )
         .all()
     )

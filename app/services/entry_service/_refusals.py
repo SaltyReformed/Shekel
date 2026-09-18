@@ -235,9 +235,7 @@ def _reject_settled_parent(
     )
 
 
-def _reject_settled_addition(
-    txn: Transaction, settled_on: "date | None",
-) -> None:
+def _reject_settled_addition(txn: Transaction) -> None:
     """Refuse a NEW purchase against a settled row that cannot record one.
 
     **The rule is about the row's FIGURE, not its status** (plan step
@@ -248,11 +246,13 @@ def _reject_settled_addition(
 
     * a ``purchases`` settlement stores NO figure -- the row's cost IS
       ``Sigma(entries)`` (:func:`app.services.row_valuation.settled_figure`), so
-      a new POSTED purchase raises that cost by its own amount while
-      ``settled_cash_leg`` subtracts the same amount, leaving the envelope's own
-      leg unchanged and the purchase booking its own cash on its own day.
-      Measured 2026-08-18: adding `$18.64` to the 2026-05-21 Groceries close
-      shrank that day's anchor true-up by exactly `$18.64`;
+      a new purchase raises that cost by its own amount and is a movement of
+      its own: a DATED one books its cash on its own day, an UN-DATED one is
+      in flight in the projection (ruling **R-BAL77**, plan step
+      ``balance:X-bi-4a``), and the row itself books nothing either way.
+      Measured 2026-08-18, under the row-leg fold of the time: adding
+      `$18.64` to the 2026-05-21 Groceries close shrank that day's anchor
+      true-up by exactly `$18.64`;
     * a ``derived`` or ``corrected`` settlement STORES its figure, fixed before
       the purchase existed, so the gross cannot rise and ``settled_cash_leg``'s
       third term subtracts money it never held.  Measured: adding `$367.62` to a
@@ -267,18 +267,22 @@ def _reject_settled_addition(
     settled rows carry a stored-figure settlement (8 of them envelopes on the
     developer's checking account) and every one holds ZERO purchases -- and a
     row that HAS purchases always settles on the ``purchases`` basis, because
-    ``settles_from_entries`` is ``tracks_purchases and txn.purchases`` and
+    ``settles_from_entries`` is ``bool(txn.purchases)`` (the flag's half
+    dropped under ruling **R-BAL78** at plan step ``balance:X-bi-4a``, which
+    also refuses a stated figure over purchases at the seam) and
     ``carry_forward``'s direct call writes that basis unconditionally.
 
-    **The purchase must state the day the BANK TOOK IT** (developer ruling,
-    2026-08-19), because the paragraph above holds only for a POSTED one: an
-    undated purchase is not in ``posted_purchase_sum``, so the gross rises with
-    nothing subtracting it and the row's own leg moves by the purchase amount
-    **on the row's original settle day** -- measured, `-50.00` to `-80.00`, on
-    a past day with no external evidence.  So the rule admits the case its
-    argument supports and no more.  The importer always supplies both days; the
-    add-purchase form has no posting-day field and keeps refusing exactly as it
-    does today.  Found by adversarial financial review 2026-08-19.
+    **The purchase no longer has to state the day the BANK TOOK IT** (ruling
+    **R-BAL77**, plan step ``balance:X-bi-4a``, lifting the developer's
+    2026-08-19 arm).  That arm existed because the row's own leg booked an
+    un-dated purchase **on the row's original settle day** -- measured,
+    `-50.00` to `-80.00`, on a past day with no external evidence.  A plan row
+    books nothing of its own now; an un-dated purchase under a closed
+    envelope is a movement in flight, held by the projection from tomorrow
+    and absent from the actual until the bank is seen to take it, exactly as
+    one under an open envelope is.  So the add-purchase form, which has no
+    posting-day field, reaches a closed envelope again, and the reconcile
+    panel offers the purchase it adds.
 
     **It does NOT answer the carry-forward double count, and it does not have
     to** (finding **N-249**, owner ``balance:X-ax``).  Every carried-forward
@@ -305,12 +309,10 @@ def _reject_settled_addition(
         txn: The parent transaction the new entry would belong to.  Its
             ``status`` relationship is read (``lazy="joined"``) and then its
             settlement record.
-        settled_on: The day the bank took the new purchase, or ``None`` when
-            the caller does not know it.
 
     Raises:
         ValidationError: When *txn* has settled and its recorded figure is not
-            its purchases, or when the purchase states no posting day.
+            its purchases.
     """
     if txn.status is None or not txn.status.is_settled:
         return
@@ -318,16 +320,7 @@ def _reject_settled_addition(
         SettlementBasisEnum.PURCHASES,
     )
     if txn.settled_basis_id == purchases_basis:
-        if settled_on is not None:
-            return
-        raise ValidationError(
-            f"Transaction {txn.id} has settled, so a purchase added to it has "
-            "to say when your bank took the money -- without that day its "
-            "amount comes out of this row on the day the row closed, which is "
-            "a day you may already have checked against a statement. Record "
-            "the purchase from your bank statement, or set the row back to "
-            "Projected, add it, and mark it paid again."
-        )
+        return
     raise ValidationError(
         f"Transaction {txn.id} has settled and records a fixed figure, so a "
         "new purchase cannot be added to it: the row's cost would not grow by "
@@ -337,8 +330,8 @@ def _reject_settled_addition(
         "from the purchases themselves."
     )
 
-def removal_refusal(txn: Transaction, entry) -> "str | None":
-    """Return why *entry* may not be REMOVED from *txn*, or ``None``.
+def removal_refusal(txn: Transaction) -> "str | None":
+    """Return why a purchase may not be REMOVED from *txn*, or ``None``.
 
     :func:`_reject_settled_addition`'s mirror, and it exists because the door
     it replaces had no mirror at all (plan step ``bank_import:X-f6f``, ruling
@@ -351,24 +344,27 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
     in ``app/`` that removes one.
 
     **The rule is the ARITHMETIC, and it was measured before it was written.**
-    ``cash_ledger.settled_cash_leg`` is ``settled figure - Sigma(credit
-    entries) - Sigma(posted debit purchases)``, and for a ``purchases``
-    settlement the figure IS ``Sigma(entries)``.  So a purchase that is CREDIT
-    or POSTED sits in the figure AND in a subtracted term, and removing it
-    moves both by the same amount: the row's own close books exactly what it
-    booked before, and what goes is the leg the purchase itself booked on its
-    own day.  Measured on an envelope closed at ``$120.00 + $57.96``, both
-    posted: the row's leg reads ``0.00`` before and ``0.00`` after, and the
-    account's posted total moves ``822.04 -> 880.00`` -- the removed purchase's
-    own ``$57.96``, reversed on its own day, and nothing else.
+    For a ``purchases`` settlement the figure IS ``Sigma(entries)`` and every
+    purchase is a movement of its own, so removing one moves exactly what
+    that purchase moved and nothing else: a DATED one's leg, reversed on its
+    own day, or an UN-DATED one's place in flight (ruling **R-BAL77**, plan
+    step ``balance:X-bi-4a``); the row's own close books nothing before or
+    after.  Measured under the row-leg fold of the time on an envelope closed
+    at ``$120.00 + $57.96``, both posted: the row's leg read ``0.00`` before
+    and ``0.00`` after, and the account's posted total moved ``822.04 ->
+    880.00`` -- the removed purchase's own ``$57.96``, reversed on its own
+    day, and nothing else.
 
-    **An UNPOSTED DEBIT purchase is the case that stays refused**, and the same
-    measurement is why: it is in the figure and in no subtracted term, so the
-    close books it.  On the same fixture with the ``$57.96`` left unposted the
-    row's leg reads ``-57.96`` before and ``0.00`` after -- the envelope's
-    recorded close shrinking on a past day with no external evidence, which is
-    already-spent money handed back to the projection.  That is exactly what
-    :func:`_reject_settled_parent` was written about.
+    **An UNPOSTED DEBIT purchase was the case that stayed refused, and ruling
+    R-BAL77 lifts it.**  Under the row-leg fold it sat in the figure and in no
+    subtracted term, so the close booked it; on the same fixture with the
+    ``$57.96`` left unposted the row's leg read ``-57.96`` before and ``0.00``
+    after -- the envelope's recorded close shrinking on a past day with no
+    external evidence, which is what :func:`_reject_settled_parent` was
+    written about.  A plan row books nothing of its own now: an un-dated
+    purchase under a closed envelope is held in the projection from tomorrow,
+    and removing it removes a movement in flight, which is the ordinary
+    direction of every other removal here.
 
     **A settled row recording a STORED figure is refused whatever the purchase
     is**, for :func:`_reject_settled_addition`'s own reason: a ``derived`` or
@@ -434,9 +430,6 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
         txn: The parent transaction the entry belongs to.  Its ``status``
             relationship is read (``lazy="joined"``) and then its settlement
             record.
-        entry: The purchase being removed.  Its ``is_credit`` flag and its
-            posting day are the two facts that decide, because they are the two
-            terms ``settled_cash_leg`` subtracts.
 
     Returns:
         The sentence explaining the refusal, or ``None`` where the removal is
@@ -461,34 +454,24 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
             "again -- that restates what it cost from the purchases "
             "themselves."
         )
-    if entry.is_credit or entry.settled_on is not None:
-        return None
-    return (
-        f"Transaction {txn.id} has settled, so a purchase removed from it has "
-        "to say when your bank took the money -- without that day its amount "
-        "comes out of this row on the day the row closed, which shrinks what "
-        "the row records as having cost on a day you may already have checked "
-        "against a statement. Record the day your bank took it first, or set "
-        "the row back to Projected, remove the purchase, and mark it paid "
-        "again."
-    )
+    return None
 
 
-def _reject_settled_removal(txn: Transaction, entry) -> None:
+def _reject_settled_removal(txn: Transaction) -> None:
     """Raise :func:`removal_refusal`'s answer, for the door that writes.
 
     The two are split so one rule can serve a caller that must ASK before it
     writes and a caller that simply refuses; see :func:`removal_refusal` for
-    the rule and for what the split is worth.
+    the rule and for what the split is worth.  Both took the purchase being
+    removed until ruling **R-BAL77** lifted the one arm that read it.
 
     Args:
         txn: The parent transaction the entry belongs to.
-        entry: The purchase being removed.
 
     Raises:
         ValidationError: When :func:`removal_refusal` names a reason.
     """
-    refusal = removal_refusal(txn, entry)
+    refusal = removal_refusal(txn)
     if refusal is not None:
         raise ValidationError(refusal)
 

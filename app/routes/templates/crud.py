@@ -617,9 +617,7 @@ def unarchive_template(template_id):
     # the bulk statement synchronised, so each row's ``is_deleted`` is the value
     # the reconcile must price it at.
     for txn in restored:
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(txn)
 
     # Regenerate to fill in any missing future periods, on the one read pass
     # this restore's generate runs in (plan step R7d-c-1).

@@ -27,7 +27,7 @@ The load-bearing wiring properties, each pinned by a test below:
 
 After each mutation the per-account reconciliation invariant is asserted in
 its Build-Order Step 5 ABSOLUTE form: ``account_posting_total == opening
-anchor + settled_transfer_effect + settled_transaction_effect``.  The seed
+anchor + settled_transfer_effect + posted_purchase_effect``.  The seed
 Checking carries its $1000.00 opening correction from fixture time, and every
 settle in this suite is stamped at SERVER now (the seam's ``db.func.now()``,
 including carry-forward's ``settle_from_entries`` default) -- after the
@@ -141,6 +141,22 @@ def _entries_for_transaction(transaction_id):
     )
 
 
+def _own_entries_for_transaction(transaction_id):
+    """Return the journal entries linked to the ROW itself, not its movements.
+
+    The transaction source's own legs -- EMPTY for every row since plan step
+    ``balance:X-bi-4a`` (ruling **R-BAL80**: a plan row posts nothing of its
+    own), which is what the two cases reading this assert.  The family read
+    (:func:`_entries_for_transaction`) sees every movement's legs beside it.
+    """
+    return (
+        db.session.query(JournalEntry)
+        .filter(JournalEntry.transaction_id == transaction_id)
+        .order_by(JournalEntry.id)
+        .all()
+    )
+
+
 def _entries_for_purchase(entry_id):
     """Return every journal entry linked to one PURCHASE, oldest first.
 
@@ -226,19 +242,18 @@ def _assert_reconciles(scenario_id, *accounts):
     ledger lands on the asserted balance rather than on opening + effect.  That
     test asserts the figure directly and says so at the call site.
 
-    **A THIRD term since plan step X-f3b** (ruling **R-FM**): a purchase whose
-    bank posting day is recorded books its own cash leg, and one on a
-    still-PROJECTED parent is money no settled row's ``effective`` figure
-    contains.  ``posted_purchase_effect`` is the term that covers exactly those
-    -- a purchase on a SETTLED parent is already inside
-    ``settled_transaction_effect``, whose ``effective - credit`` sum is what the
-    parent leg and its purchases' legs add up to.
+    **TWO terms since plan step ``balance:X-bi-4a``** (ruling **R-BAL80**): a
+    transfer's settled effect off the income shadow's record, and every DATED
+    movement of a contributing non-transfer parent (``posted_purchase_effect``,
+    keyed on the movement's own account).  A plan row posts nothing of its
+    own, so the transaction source's term (``settled_transaction_effect``,
+    whose ``effective - credit`` sum was what the parent's leg and its
+    purchases' legs added up to) went with the leg.
     """
     for account in accounts:
         posted = posting_service.account_posting_total(account.id, scenario_id)
         effect = (
             posting_service.settled_transfer_effect(account.id, scenario_id)
-            + posting_service.settled_transaction_effect(account.id, scenario_id)
             + posting_service.posted_purchase_effect(account.id, scenario_id)
         )
         opening = Decimal(str(cash_ledger.resolve_anchor(account).balance))
@@ -548,26 +563,32 @@ class TestEnvelopePostingLifecycle:
     def test_envelope_mark_done_posts_debit_only(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A 60 debit + 40 credit envelope posts -60 / +60 (credit excluded).
+        """A 60 debit + 40 credit envelope: the dated $60 posts -60 / +60, the close nothing.
 
-        Arithmetic (plan Section 1 / Decision D2): at settle ``actual_amount`` =
-        sum(all entries) = 60 + 40 = 100, and credit_sum = 40, so the effect is
-        100 - 40 = 60 -- the debit-only checking outflow.  cash -60.00 /
-        Groceries-Expense +60.00.  The $40 credit posts nothing here.
+        Arithmetic (plan Section 1 / Decision D2, re-expressed under ruling
+        **R-BAL77** at plan step ``balance:X-bi-4a``): the $60 debit purchase
+        the bank took posts its own leg when it is dated -- cash -60.00 /
+        Groceries-Expense +60.00 -- and the close books NOTHING: an un-dated
+        purchase is in flight, not the row's leg, and a plan row posts nothing
+        of its own (ruling **R-BAL80**).  The $40 credit posts nothing here.
+        Through ``X-bi-3e`` the close booked ``sum(entries) - credit = 60``
+        as the row's leg; the same family net, one writer fewer.
         """
         with app.app_context():
             checking = seed_user["account"]
             txn = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            _add_purchase(seed_user, txn, "60.00", is_credit=False)
+            self._posted_purchase(seed_user, txn, "60.00")
             _add_purchase(seed_user, txn, "40.00", is_credit=True)
             db.session.commit()
             txn_id = txn.id
+            assert len(_entries_for_transaction(txn_id)) == 1
 
             resp = auth_client.post(f"/transactions/{txn_id}/mark-done")
             assert resp.status_code == 200
 
+            # The close wrote nothing: the one entry is the dated purchase's.
             entries = _entries_for_transaction(txn_id)
             assert len(entries) == 1
             legs = _legs_by_ledger(entries[0].id)
@@ -795,13 +816,14 @@ class TestEnvelopePostingLifecycle:
             # The fact really was recorded -- otherwise "the total did not move"
             # would be true of a no-op and prove nothing.
             assert updated.settled_on == purchased_on
-            # The envelope's own leg nets to NOTHING and the purchase carries
-            # the money on the day the bank was seen to take it.  The old
-            # ordering reached the same place in two journal entries -- a close
-            # that posted the $40 and a re-date that reversed it -- where
-            # recording the day FIRST means the close has nothing left to post
-            # and emits none.  Same economics, one fewer entry.
-            assert len(_entries_for_transaction(txn_id)) == 0
+            # The envelope's own leg is NOTHING (a plan row posts nothing of
+            # its own, ruling **R-BAL80**) and the purchase carries the money
+            # on the day the bank was seen to take it.  The old ordering
+            # reached the same place in two journal entries -- a close that
+            # posted the $40 and a re-date that reversed it -- where recording
+            # the day FIRST meant the close had nothing left to post; since
+            # plan step ``balance:X-bi-4a`` a close never has.
+            assert len(_own_entries_for_transaction(txn_id)) == 0
             purchase_entries = _entries_for_purchase(entry_id)
             assert len(purchase_entries) == 1
             assert purchase_entries[0].entry_date == purchased_on
@@ -867,8 +889,8 @@ class TestAPurchaseIsAPostingSourceOfItsOwn:
             )
             db.session.commit()
 
-            assert not _entries_for_transaction(txn_id), (
-                "the envelope has not settled, so it books nothing of its own"
+            assert not _own_entries_for_transaction(txn_id), (
+                "a plan row books nothing of its own (ruling R-BAL80)"
             )
             posted, = _entries_for_purchase(entry_id)
             assert posted.entry_date == seed_periods[0].start_date
@@ -1069,12 +1091,14 @@ class TestDeleteReversesPostings:
     def test_soft_delete_template_settled_reverses(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Soft-deleting a Paid template row reverses its postings first.
+        """Soft-deleting a Paid template row reverses its family's postings first.
 
-        A template-linked envelope settles at $40 (posted -40 / +40).  The
-        delete soft-deletes it (template_id set), reversing first: the row
-        survives with ``is_deleted=True`` and its two ledger entries net to
-        zero, dropping it out of ``settled_transaction_effect`` too.
+        A template-linked envelope holds one $40 purchase the bank took
+        (posted -40 / +40 by its own leg -- the close books nothing, ruling
+        **R-BAL77**) and settles.  The delete soft-deletes it (template_id
+        set), reversing first: the row survives with ``is_deleted=True`` and
+        its two ledger entries net to zero, dropping it out of
+        ``posted_purchase_effect`` too.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1082,7 +1106,7 @@ class TestDeleteReversesPostings:
             txn = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            _add_purchase(seed_user, txn, "40.00", is_credit=False)
+            TestEnvelopePostingLifecycle._posted_purchase(seed_user, txn, "40.00")
             db.session.commit()
             txn_id = txn.id
             auth_client.post(f"/transactions/{txn_id}/mark-done")
@@ -1197,12 +1221,15 @@ class TestCarryForwardPostsSettledSources:
     def test_carry_forward_posts_partially_spent_envelope(
         self, app, db, seed_user, seed_periods,
     ):
-        """A partially-spent carried envelope posts its debit outflow.
+        """A partially-spent carried envelope's money is its dated purchase's leg.
 
-        Arithmetic: a $100 envelope in the source period holds one $30 debit.
-        Carry-forward settles it at sum(entries) = 30 and rolls the $70
-        leftover into the target.  The settled source posts -30 / +30; the
-        target row (Projected) posts nothing.
+        Arithmetic: a $100 envelope in the source period holds one $30 debit
+        the bank took (posted -30 / +30 by its own leg when it was dated).
+        Carry-forward settles the source at sum(entries) = 30 and rolls the
+        $70 leftover into the target.  The close books nothing (ruling
+        **R-BAL77**, plan step ``balance:X-bi-4a``; through ``X-bi-3e`` it
+        booked the -30 / +30 itself), so the family still holds exactly the
+        purchase's one entry; the target row (Projected) posts nothing.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1211,7 +1238,7 @@ class TestCarryForwardPostsSettledSources:
             source = create_envelope_txn(
                 seed_user, db.session, seed_periods[0], "Food", Decimal("100.00"),
             )
-            _add_purchase(seed_user, source, "30.00", is_credit=False)
+            TestEnvelopePostingLifecycle._posted_purchase(seed_user, source, "30.00")
             db.session.commit()
             source_id = source.id
 

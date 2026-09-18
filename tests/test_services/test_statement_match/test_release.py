@@ -60,6 +60,7 @@ from app.services.statement_match import (
     PurchaseCreation,
     Consent,
     ReviewedBatch,
+    RowKind,
 )
 
 # Pylint: protected-access -- ``MintedEnvelopes`` is an internal collaboration
@@ -611,10 +612,23 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
             _release(seed_user, created.match_id)
         assert str(caught.value) == group.removes.refusal
 
-    def test_a_container_put_BEYOND_the_purchase_door_refuses_before_writing(
+    def test_a_container_cannot_be_put_BEYOND_the_purchase_door(
         self, app, db, seed_user,
     ):
-        """Found in this step's OWN build, by driving the case rather than
+        """The state this case once drove is unrepresentable since ruling R-BAL78.
+
+        Through plan step ``X-bi-3e`` the owner could put the budget line this
+        act created beyond the purchase door -- a stored figure typed over a
+        row holding the act's purchase -- and this case graded that the undo
+        then refused BEFORE writing anything.  Plan step ``balance:X-bi-4a``
+        refuses the typed figure itself (ruling **R-BAL78**: the purchases
+        ARE the figure), at the settle verb and at the seam, so the container
+        stays on its purchases and the act stays removable; what this case
+        grades now is that the door holds and the release's arithmetic arm is
+        never reached.  The original account of the path follows, kept
+        because it is the record of how the arm was found.
+
+        Found in this step's OWN build, by driving the case rather than
         arguing it.
 
         The owner puts the budget line this act created beyond the purchase
@@ -664,28 +678,22 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         # the popover's control there), which is the act the card performs.
         envelope.template.is_envelope = False
         db.session.flush()
-        transaction_service.apply_requested_status(
-            envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
-        )
+        with pytest.raises(ValidationError, match="takes its figure from the purchases"):
+            transaction_service.apply_requested_status(
+                envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
+            )
         db.session.flush()
         assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.CORRECTED,
-        ), "the container is not beyond the purchase door -- this cannot fire"
+            SettlementBasisEnum.PURCHASES,
+        ), "the container stays on its purchases -- the door held"
 
+        # The undo still names both rows the act created -- the purchase and
+        # the container -- and refuses nothing.
         group = accepted_acts(seed_user)[0]
-        assert group.removes.refusal is not None
-        assert "records a fixed figure" in group.removes.refusal
-        # A refused act reports NOTHING to remove, so no reader can print a
-        # destruction the press will not perform.
-        assert group.removes.rows == ()
-        assert group.removes.cash_amount == Decimal("0.00")
-
-        with pytest.raises(ValidationError) as caught:
-            _release(seed_user, created.match_id)
-
-        assert str(caught.value) == group.removes.refusal
-        # Nothing was written: the act stands, and so do both rows.
-        assert accepted_acts(seed_user)
+        assert group.removes.refusal is None
+        assert {row.kind for row in group.removes.rows} == {
+            RowKind.PURCHASE, RowKind.TRANSACTION,
+        }
         assert db.session.get(TransactionEntry, created.entry_id) is not None
         assert db.session.get(Transaction, created.transaction_id) is not None
 
@@ -909,7 +917,7 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.flush()
         transaction_service.settle_from_entries(envelope)
         db.session.flush()
-        posting_service.sync_transaction_postings(envelope, settled=True)
+        posting_service.sync_transaction_postings(envelope)
         db.session.flush()
         return envelope, doomed
 
@@ -935,24 +943,30 @@ class TestTheSettledParentRuleIsTheArithmetic:
         assert settled_cash_leg(envelope) == Decimal("0.00")
         assert _posted_total(seed_user) == Decimal("880.00")
 
-    def test_an_UNPOSTED_purchase_is_still_refused(
+    def test_an_UNPOSTED_purchase_is_admitted_since_the_row_books_nothing(
         self, app, db, seed_user,
     ):
-        """The case the refusal was written about, and it still fires.
+        """The case the refusal was written about, and ruling R-BAL77 lifts it.
 
-        Removing it would move the envelope's own leg ``-57.96 -> 0.00`` --
-        the close shrinking on a past day with no external evidence, which is
-        already-spent money handed back to the projection.
+        Through plan step ``X-bi-3e`` removing it moved the envelope's own leg
+        ``-57.96 -> 0.00`` -- the close shrinking on a past day with no
+        external evidence, already-spent money handed back to the projection.
+        Since plan step ``balance:X-bi-4a`` a plan row books nothing of its
+        own (ruling **R-BAL80**): the un-dated purchase is a movement in
+        flight, and removing it removes that and nothing else.  The matcher's
+        row-leg producer still prices the row (``settled_cash_leg``, its one
+        reader) and reads the removal as ``-57.96 -> 0.00`` -- a figure the
+        fold and the ledger no longer book.
         """
         envelope, doomed = self._closed_holding(seed_user, posted=False)
         assert settled_cash_leg(envelope) == Decimal("-57.96")
 
-        with pytest.raises(ValidationError) as caught:
-            entry_service.delete_entry(doomed.id, seed_user["user"].id)
+        entry_service.delete_entry(doomed.id, seed_user["user"].id)
+        db.session.flush()
 
-        assert "when your bank took the money" in str(caught.value)
-        assert db.session.get(TransactionEntry, doomed.id) is not None
-        assert settled_cash_leg(envelope) == Decimal("-57.96")
+        assert db.session.get(TransactionEntry, doomed.id) is None
+        db.session.expire(envelope)
+        assert settled_cash_leg(envelope) == Decimal("0.00")
 
     def test_a_STORED_figure_settlement_is_still_refused(
         self, app, db, seed_user,
@@ -1027,7 +1041,7 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.flush()
         transaction_service.settle_from_entries(envelope)
         db.session.flush()
-        posting_service.sync_transaction_postings(envelope, settled=True)
+        posting_service.sync_transaction_postings(envelope)
         db.session.flush()
         before = settled_cash_leg(envelope)
         assert payback.estimated_amount == Decimal("57.96")

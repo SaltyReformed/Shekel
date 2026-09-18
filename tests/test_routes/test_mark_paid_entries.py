@@ -466,23 +466,30 @@ class TestPostPaidEntryMutation:
             # No purchase landed; the covering movement is not one (X-bi-3a).
             assert purchases_of(txn) == []
 
-    def test_entry_deleted_after_paid_is_refused(
+    def test_entry_deleted_after_paid_is_admitted_and_re_prices_the_record(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Removing a purchase from a Paid row is refused and changes nothing."""
+        """Removing an un-dated purchase from a Paid ``purchases`` row is admitted.
+
+        Refused through plan step ``X-bi-3e`` because the row's own leg
+        booked the un-dated purchase on the close day; since ``balance:X-bi-4a``
+        the purchase is a movement in flight and the row books nothing of its
+        own (rulings **R-BAL77**, **R-BAL80**), so the removal removes that
+        and the record -- the sum of what is left -- follows.
+        """
         with app.app_context():
             txn_id, entry_ids = self._paid_envelope_at_300(
                 auth_client, seed_user, seed_periods,
             )
 
-            with pytest.raises(ValidationError, match="has settled"):
-                entry_service.delete_entry(
-                    entry_id=entry_ids[0], user_id=seed_user["user"].id,
-                )
+            entry_service.delete_entry(
+                entry_id=entry_ids[0], user_id=seed_user["user"].id,
+            )
+            db.session.flush()
 
             txn = db.session.get(Transaction, txn_id)
-            assert settled_figure(txn) == Decimal("300.00")
-            assert db.session.get(TransactionEntry, entry_ids[0]) is not None
+            assert settled_figure(txn) == Decimal("150.00")
+            assert db.session.get(TransactionEntry, entry_ids[0]) is None
 
     def test_entry_updated_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,

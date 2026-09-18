@@ -5,40 +5,48 @@ The confirmed-cash-effect family, extracted from :mod:`._amounts` at plan step
 past its 1,000-line ceiling.  **The cut is a subject rather than a size**: its
 neighbour answers *what is this row worth* -- a valuation composing an amount
 with an entered actual, an excluded status, a soft delete and an envelope's
-purchases -- and these five answer the narrower question *how much of it
-actually crosses this bank account*, which is a different figure whenever a row
-carries entries.
+purchases -- and these answer the narrower question *how much of it actually
+crosses this bank account*.
 
-One rule, in one expression:
-
-    ``gross - Sigma(card entries) - Sigma(already-posted purchases)``,
-    signed ``+`` for income and ``-`` for an expense.
-
-The sign follows the transaction TYPE, never the account class, so the leg is
-correct whether the cash account is an asset (Checking) or a liability (a direct
-charge on a Credit Card account).
-
-**A MOVEMENT's leg is signed by the same rule, and since plan step
-``balance:X-bi-3b`` it is stated here ONCE** (:func:`movement_cash_leg`).  A
-purchase recorded against an envelope, and the covering movement a settle
-writes for a bill or a paycheck, moves its whole figure through the parent's
-account in the parent's direction -- ruling **R-BAL35**: a movement's
-category, type and scenario are its plan row's, read through
+**A MOVEMENT's leg is the one the balance and the ledger read, and since plan
+step ``balance:X-bi-3b`` it is stated here ONCE** (:func:`movement_cash_leg`).
+A purchase recorded against an envelope, and the covering movement a settle
+writes for a bill, a paycheck or a transfer leg, moves its whole figure
+through its account in the parent's direction -- ruling **R-BAL35**: a
+movement's category, type and scenario are its plan row's, read through
 ``transaction_id`` and never copied, so its direction is read the same way.
-Six readers spelled *a purchase is money leaving* for themselves before this
+Six readers spelled *a purchase is money leaving* for themselves before that
 step (the walk's fact producer, the ledger writer's target, the seam's family
 valuation, the statement matcher's offer, its accepted register and its undo
 dialog), every one of them correct for a purchase and every one of them
-``-figure`` for a covered paycheck, which is wrong by twice the figure.
+``-figure`` for a covered paycheck, which is wrong by twice the figure.  The
+sign follows the transaction TYPE, never the account class, so the leg is
+correct whether the cash account is an asset (Checking) or a liability (a
+direct charge on a Credit Card account).
 
-**The two subtracted terms are why the family exists at all.**  A card purchase
-leaves later through its own CC Payback sibling, and a purchase carrying a
-recorded bank posting day is already a cash movement of its own on its own day
-(ruling **R-FM**, plan step ``balance:X-f3b``) -- so an envelope's close books
-only the remainder, or the same dollars leave the account twice.  That was
-measured: entry 89 (`$12.79`, taken by the bank on 2026-08-12) was being taken a
-second time by its envelope's 08-13 close, reading the whole of that day
-`$12.79` low (finding **N-274**).
+**A ROW's own leg is read by the statement matcher alone since plan step
+``balance:X-bi-4a``** (rulings **R-BAL77**, **R-BAL80**).  The cash walk and
+the posting writer read a settled row's money as its MOVEMENTS and nothing
+else; through ``X-bi-3e`` both also read the row's leg, one rule in one
+expression -- ``gross - Sigma(card entries) - Sigma(already-dated
+purchases)``, signed by type -- which was zero for every covered bill and
+paycheck by ruling **R-FM**'s identity and, for a ``purchases``-basis
+envelope, its un-dated purchases booked on the close day.  Those are
+movements in flight now, and the row books nothing.  What remains of the
+row-leg family here (:func:`settled_cash_leg`, :func:`cash_leg_of`,
+:func:`off_statement_sum` and its two terms) is the matcher's pricing of a
+row against a bank line -- what the bank would see if the row it names
+settled, Projected or not -- and the reconcile panel's cash figure beside
+the booked one, both ``bank_import``'s questions.
+
+**The two subtracted terms are why the row-leg family existed at all.**  A
+card purchase leaves later through its own CC Payback sibling, and a purchase
+carrying a recorded bank posting day is already a cash movement of its own on
+its own day (ruling **R-FM**, plan step ``balance:X-f3b``) -- so an
+envelope's close booked only the remainder, or the same dollars left the
+account twice.  That was measured: entry 89 (`$12.79`, taken by the bank on
+2026-08-12) was being taken a second time by its envelope's 08-13 close,
+reading the whole of that day `$12.79` low (finding **N-274**).
 
 **Where ``gross`` comes from is the CALLER'S, and it must be.**  A settled row
 RECORDED its figure; a projected one is worth what settling it would book, which is
@@ -97,8 +105,8 @@ def posted_purchase_sum(txn: Transaction) -> Decimal:
     The ``Sigma(posted debit purchases)`` term ruling **R-FM** adds to the
     confirmed cash effect (plan step X-f3b).  A purchase carrying a recorded
     bank posting day books its OWN cash leg on its OWN day
-    (``posting_service.sync_purchase_postings``), so its envelope's close must
-    book only the remainder or the same dollars leave the account twice.
+    (``_posting_purchases.emit_purchase_deltas``), so a row's leg priced
+    beside it must leave it out or the same dollars are counted twice.
 
     A DEBIT purchase only: a card purchase never touches checking at all, and
     :func:`credit_entry_sum` is the term that removes it.  The two are disjoint
@@ -160,30 +168,19 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     was being taken a SECOND time by its envelope's 08-13 close, which read the
     whole of 08-13 ``$12.79`` low (finding **N-274**).
 
-    **This is why the rule lives HERE (plan step X-a), not in the posting
-    writer.**  It was ``posting_service._signed_cash_leg``, private to the
-    module that WRITES the ledger -- the same inversion plan step B0 corrected on
-    the loan side, where the payment split lived inside the posting package and
-    every other consumer had to reach through its privates for it.  Two
-    consumers need this rule now: the writer, which posts the effect, and the
-    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), whose facts fold
-    it.  A second copy would let the projection and the posted ledger disagree
-    about what a settled row was worth -- measured on production 2026-07-25
-    before this move, a ``effective_amount``-only walk diverged from the posted
-    ledger on 10 of 130 Checking rows and by up to ``$181.58`` on one, because
-    every one of them was an envelope carrying credit-card entries.
-
-    The bulk oracle reader ``posting_reads.settled_transaction_effect`` computes
-    the same sum in SQL and deliberately stays independent: it is the Step-3
-    reconciliation oracle's own window onto the ledger, and an oracle that
-    shared this implementation could not grade it.
-    **That independence narrowed at plan step X-au-c3** (adversarial review,
-    2026-08-17): this rule is the transaction writer's in Python and the
-    oracle's is in SQL, so those two still grade each other, but the transfer
-    writer (``posting_service._settle_effective``) spelled its figure inline and
-    now shares ``posting_reads.settled_figure_clause`` with its own oracle.
-    What was lost is a transcription check between two copies of one expression;
-    what was gained is one statement of a money rule.
+    **This rule lived here for the writer and the walk, and neither reads it
+    now** (plan step ``balance:X-bi-4a``, ruling **R-BAL80**).  It arrived at
+    plan step X-a from ``posting_service._signed_cash_leg``, private to the
+    module that WRITES the ledger -- the same inversion plan step B0 corrected
+    on the loan side -- so the writer and the cash WALK priced one row through
+    one function; measured on production 2026-07-25 before that move, an
+    ``effective_amount``-only walk diverged from the posted ledger on 10 of
+    130 Checking rows and by up to ``$181.58`` on one.  Since X-bi-4a both
+    read a settled row's money as its MOVEMENTS (:func:`movement_cash_leg`),
+    and this function's one reader is :func:`~app.services.status_seam.
+    settled_family_leg`, the statement matcher's pricing of a settled row:
+    the bulk SQL oracle that graded it (``posting_reads.
+    settled_transaction_effect``) went with the writer's use.
 
     **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
     Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
@@ -191,10 +188,10 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     ``0 - Sigma(credit) - Sigma(posted)`` negated for an expense returns a
     FABRICATED INFLOW: a deleted grocery envelope carrying an $80.00 credit
     purchase valued at ``+$80.00``, money the account never received.
-    Unreachable through today's
-    two callers (the walk pre-filters with
+    Unreachable through the two callers it had when the gate went in (the
+    walk pre-filtered with
     :func:`~app.utils.balance_predicates.balance_contributing_clause`, and the
-    writer resolves a target only on the settle side), which is exactly why it
+    writer resolved a target only on the settle side), which is exactly why it
     would have waited to be discovered by a third.  A function whose answer is
     correct only because every caller happens to pre-filter is a contract nobody
     can see; this gate is stated here instead.  **The same gate governs the row's
@@ -212,19 +209,16 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     movement that had not happened (finding **BAL-465**).  It refuses now.  The
     guard below reads ``is_balance_contributing``, which does NOT test status,
     so what makes this correct is the refusal one call down rather than a
-    pre-filter each caller remembers.  **Three of the six callers restrict the
-    row set**: the walk (:func:`~._events.settled_cash_facts`) loads settled
-    statuses in SQL; ``posting_service._settled_target`` is reached only when
-    ``sync_transaction_postings`` was passed ``settled=True``, and all FOURTEEN
-    of its call sites derive that flag from the row rather than assert it
-    (thirteen as ``txn.status.is_settled``, one as ``txn.status_id in
-    settled_ids``); and ``statement_match._candidates._price`` branches on
-    ``txn.status.is_settled``.  **The other three CATCH the refusal instead**
-    -- ``_accepted_view._accepted_row``, ``_release._subject_removal`` and
-    ``._container_removal`` -- because they render the review page, where a
-    raise would strand the account (finding **N-302**).  Catching is not
-    pre-filtering: on those three the refusal changes an ANSWER, and each is
-    graded by a case added at plan step X-bx.
+    pre-filter each caller remembers.  Every caller reaches this through
+    :func:`~app.services.status_seam.settled_family_leg` (the walk and the
+    writer, which once restricted the row set in SQL, no longer read it --
+    plan step ``balance:X-bi-4a``): ``statement_match._candidates._price``
+    branches on ``txn.status.is_settled``, and **the other three CATCH the
+    refusal instead** -- ``_accepted_view._accepted_row``,
+    ``_release._subject_removal`` and ``._container_removal`` -- because they
+    render the review page, where a raise would strand the account (finding
+    **N-302**).  Catching is not pre-filtering: on those three the refusal
+    changes an ANSWER, and each is graded by a case added at plan step X-bx.
 
     Args:
         txn: The transaction whose confirmed cash effect to value.  A
@@ -327,9 +321,10 @@ def movement_cash_leg(txn: Transaction, entry) -> Decimal:
 
     It does NOT read ``settled_on``: whether a movement has POSTED is a
     question about the event stream and the ledger (``_events.
-    _posted_purchase_facts``, ``_posting_purchases.purchase_posts``), while
-    the statement matcher prices an UNPOSTED purchase at what the bank would
-    show for it.  The one figure both want is this.
+    settled_cash_facts``, ``_posting_purchases.purchase_posts``), while the
+    plan holds an UNPOSTED one in flight at the same figure
+    (``_events.in_flight_movements``) and the statement matcher prices it at
+    what the bank would show for it.  The one figure all three want is this.
 
     Args:
         txn: The movement's parent row, contributing or not.

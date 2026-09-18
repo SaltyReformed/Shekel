@@ -326,11 +326,13 @@ def settle_transaction(
        that prices it -- so there is no cache to reconcile, no ordering between
        the refresh and the seam, and no way for the plan and the record to
        state one number twice.
-       **The ``and txn.purchases`` half is load-bearing**, and production says
-       so: ``Kayla's Spending Money`` carries no purchases at all, so settling
-       it from purchases unconditionally would book ``$0.00`` against its
-       ``$100.00`` estimate.  **Why the rule is HERE and not at each door**: it
-       decides money, three doors settle a row, and a door that picks its own
+       **The ``txn.purchases`` test is load-bearing** (and since plan step
+       ``balance:X-bi-4a`` it is the whole predicate, ruling **R-BAL78**),
+       and production says so: ``Kayla's Spending Money`` carries no
+       purchases at all, so settling it from purchases unconditionally
+       would book ``$0.00`` against its ``$100.00`` estimate.  **Why the
+       rule is HERE and not at each door**: it decides money, three doors
+       settle a row, and a door that picks its own
        figure is how one row comes to book two amounts depending on which
        control the user pressed.  **And why the plan and the record are two
        columns**: a machine's recompute and a human's correction are different
@@ -553,9 +555,7 @@ def settle_transaction(
             ),
         )
 
-    posting_service.sync_transaction_postings(
-        txn, settled=txn.status.is_settled,
-    )
+    posting_service.sync_transaction_postings(txn)
     return correction is not None
 
 
@@ -568,8 +568,9 @@ def settle_from_entries(
     ``status_id``, the settle day, and the settlement RECORD -- as a single
     source of truth.  It is reached two ways, and the split is
     :func:`settle_transaction`'s docstring: every DOOR settles through that
-    verb, which chooses this branch when the row is envelope-tracked and has
-    entries, while ``carry_forward_service._execute`` calls this directly
+    verb, which chooses this branch when the row holds purchases (ruling
+    **R-BAL78**: whatever its definition's flag says), while
+    ``carry_forward_service._execute`` calls this directly
     because it settles a batch and owes its ledger reconcile a different
     moment (see ``docs/carry-forward-aftermath-design.md`` Option F).
 
@@ -585,7 +586,7 @@ def settle_from_entries(
     record that no money left the account while marking the row Paid.  The
     discriminator is therefore the CALLER's act, not the row, which is why the
     rule cannot live in a shared branch and why :func:`settle_transaction` gates
-    its entries branch on ``and txn.purchases``.
+    its entries branch on ``txn.purchases``.
 
     Production carries both signatures, which is how the difference was found:
     of 9 settled entry-less envelopes, 8 were booked at their estimate

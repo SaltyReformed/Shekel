@@ -494,7 +494,7 @@ def check_data_consistency(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks DC-02 through DC-10.
+        List of CheckResult for checks DC-02 through DC-11.
 
     Note:
         DC-01 ("done/received transactions without actual_amount") was
@@ -711,6 +711,67 @@ def check_data_consistency(session):
                  p.ledger_account_id
         HAVING SUM(p.amount) <> 0
         ORDER BY e.id, p.ledger_account_id
+        """,
+    )))
+
+    # DC-11: A settled row whose money no reader can see (critical).
+    #
+    # Since plan step ``balance:X-bi-4a`` the cash fold and the posting
+    # writer read a settled row's money as its MOVEMENTS and nothing of the
+    # row (ruling **R-BAL80**), and the settled stream admits a movement by
+    # ITS OWN ``settled_on``.  So three states are money the balance silently
+    # omits: a row in the settled band with NO settle day; a stored figure
+    # (``derived`` / ``corrected``) with NO covering movement; and a covering
+    # movement that exists but carries NO ``settled_on`` under a settled row
+    # -- the fold's real input, which the row's own day (a mirror the seam
+    # keeps, the stale cache ``X-bi-4b`` deletes) does not stand in for.
+    # The first is the state the cash walk REFUSED loudly through
+    # ``X-bi-3e`` (``balance_predicates.settled_day`` raised on a dateless
+    # settled row the fold read) and can no longer meet.  None is a door's:
+    # the seam writes the status, the day and the mirror in one act and
+    # dates the mirror on the row's day, and the cutover migration
+    # ``ad573b07bede`` refused a dateless row and covered every other.  The
+    # ``purchases`` basis is exempt from the movement arms: its figure is
+    # its purchases, dated or in flight, and it holds no mirror by design; a
+    # ``$0.00`` record holds none either
+    # (``ck_transaction_entries_positive_amount``), so the missing-movement
+    # arm asks for a non-zero figure.
+    results.append(_run_check(session, CheckSpec(
+        "DC-11", "consistency", "critical",
+        "Settled rows the fold cannot see: no settle day, a stored non-zero "
+        "figure with no covering movement, or a covering movement with no day",
+        """
+        SELECT t.id AS transaction_id, t.account_id, s.name AS status,
+               t.settled_on, sb.name AS basis, t.settled_amount,
+               (SELECT COUNT(*) FROM budget.transaction_entries e
+                 WHERE e.transaction_id = t.id AND e.covers_settlement)
+                 AS covering_movements,
+               (SELECT COUNT(*) FROM budget.transaction_entries e
+                 WHERE e.transaction_id = t.id AND e.covers_settlement
+                   AND e.settled_on IS NULL)
+                 AS undated_covering_movements
+        FROM budget.transactions t
+        JOIN ref.statuses s ON s.id = t.status_id
+        LEFT JOIN ref.settlement_bases sb ON sb.id = t.settled_basis_id
+        WHERE s.is_settled
+          AND NOT t.is_deleted
+          AND (
+            t.settled_on IS NULL
+            OR (
+              sb.name IN ('derived', 'corrected')
+              AND COALESCE(t.settled_amount, 0) <> 0
+              AND NOT EXISTS (
+                SELECT 1 FROM budget.transaction_entries e
+                WHERE e.transaction_id = t.id AND e.covers_settlement
+              )
+            )
+            OR EXISTS (
+              SELECT 1 FROM budget.transaction_entries e
+              WHERE e.transaction_id = t.id AND e.covers_settlement
+                AND e.settled_on IS NULL
+            )
+          )
+        ORDER BY t.id
         """,
     )))
 

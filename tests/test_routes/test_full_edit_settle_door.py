@@ -56,7 +56,7 @@ from tests._test_helpers import (
     net_posted_by_day,
     settlement_basis_id,
 )
-from app.services import status_seam, transaction_service
+from app.services import entry_service, status_seam, transaction_service
 from app.services.cash_ledger import contribution_of, resolve_transaction_amount
 from app.services.row_valuation import settled_contribution, settled_figure
 
@@ -186,14 +186,18 @@ class TestTheDropdownBooksWhatTheRowCost:
     def test_the_dropdown_settles_at_the_entry_sum(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Picking Paid in the popover books $48.98, not the $80.00 budget.
+        """Picking Paid in the popover records $48.98, not the $80.00 budget.
 
         Shown to FIRE: routing this door back to ``status_seam`` books
-        ``$80.00`` and leaves ``actual_amount`` NULL.
+        ``$80.00`` -- a dated covering movement -- and leaves the record
+        stating the budget.
 
-        Arithmetic: one purchase of $48.98 against an $80.00 envelope, so
-        ``actual_amount`` is 48.98 and the checking leg is -48.98.  The $31.02
-        difference is budget that was never spent and must not be booked.
+        Arithmetic: one purchase of $48.98 against an $80.00 envelope, so the
+        record is 48.98 and the ledger holds NOTHING at the close (ruling
+        **R-BAL77**, plan step ``balance:X-bi-4a``: an un-dated purchase is
+        in flight, and the close books nothing of its own); dating the
+        purchase books its own -48.98.  The $31.02 difference is budget that
+        was never spent and must not be booked either way.
         """
         with app.app_context():
             txn = _gas_envelope(seed_user, seed_periods_today[3])
@@ -218,7 +222,15 @@ class TestTheDropdownBooksWhatTheRowCost:
             ) == Decimal("80.00")
             assert settled_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
-            # The ledger books what the row cost, not what it budgeted.
+            # The ledger books nothing at the close -- neither the budget nor
+            # the in-flight purchase -- and the purchase's own leg once dated.
+            assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0")
+            [purchase] = reloaded.purchases
+            entry_service.update_entry(
+                purchase.id, seed_user["user"].id,
+                settle_day=an_entered_day(display_today()),
+            )
+            db.session.commit()
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
                 "-48.98",
             )

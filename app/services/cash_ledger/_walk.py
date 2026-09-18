@@ -292,11 +292,12 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     ledger, in the same sign -- NOT their negatives.**  The loan twin says
     "negated" and is right to, because a loan walk tracks OWED against a
     credit-normal liability ledger; cash does not.
-    :func:`app.services.cash_ledger.settled_cash_leg` is debit-positive, so
+    :func:`app.services.cash_ledger.movement_cash_leg` is debit-positive, so
     these steps ARE the linked ledger's movements in one convention, for assets
     and liabilities alike.  Verified against the writer:
-    ``posting_service._settled_target`` books ``settled_cash_leg(txn)`` -- this
-    module's :attr:`~._events.CashSourceFact.delta` -- onto the linked ledger.
+    ``_posting_purchases._purchase_target`` books ``movement_cash_leg(txn,
+    entry)`` -- this module's :attr:`~._events.CashSourceFact.delta` -- onto
+    the linked ledger.
     The NEGATIVES are the counter legs (the category ledger, the anchor-equity
     account).  Getting this backwards is not a cosmetic error: plan step X-d
     wires the writer onto this walk, and a sign flip there still balances every

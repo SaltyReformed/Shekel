@@ -268,16 +268,16 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # no_autoflush block and its flush -- NOT inside settle_from_entries (which
     # runs inside that block) -- so _emit_balanced_entry's flush lands on the
     # batch's index-safe final state, never mid-loop where a partially-mutated
-    # partially-mutated row could violate a generation index.  The reconcile is idempotent and
-    # a no-op for the common empty-envelope rollover (effect 0); a
-    # partially-spent source posts its debit-only checking outflow.  Only
-    # envelope sources need a reconcile here: carry-forward moves only Projected
-    # rows, so the transfers relocated above are unsettled and
+    # partially-mutated row could violate a generation index.  The reconcile is
+    # idempotent and a no-op for the common empty-envelope rollover and for a
+    # source whose purchases are all still in flight: a source row books
+    # nothing of its own (plan step ``balance:X-bi-4a``, ruling **R-BAL80**),
+    # and its DATED purchases were posted when they were dated.  Only envelope
+    # sources need a reconcile here: carry-forward moves only Projected rows,
+    # so the transfers relocated above are unsettled and
     # transfer_service.update_transfer posted nothing for them.
     for source_txn in ctx.envelope_txns:
-        posting_service.sync_transaction_postings(
-            source_txn, settled=source_txn.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(source_txn)
     # **The DISCRETE rows need one too, since plan step X-f3b** (ruling
     # **R-FM**).  They are RELOCATED rather than settled -- the bulk UPDATEs
     # above set ``pay_period_id`` to the target -- and a posting carries the
@@ -291,9 +291,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # for.  Empty-handed for every row whose family never posted, which is every
     # bill and every plain expense in the batch.
     for moved_txn in ctx.discrete_txns:
-        posting_service.sync_transaction_postings(
-            moved_txn, settled=moved_txn.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(moved_txn)
 
     log_event(logger, logging.INFO, EVT_CARRY_FORWARD, BUSINESS,
               "Carried forward unpaid items",

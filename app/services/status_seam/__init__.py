@@ -93,6 +93,7 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_a_record,
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
+    reject_stated_figure_over_purchases,
 )
 from app.services.status_seam._covering import (
     covered_cash_leg,
@@ -124,5 +125,6 @@ __all__ = [
     "reject_settle_day_without_a_record",
     "reject_settle_day_without_settled_status",
     "reject_settlement_without_settled_status",
+    "reject_stated_figure_over_purchases",
     "settle_day_for_status",
 ]

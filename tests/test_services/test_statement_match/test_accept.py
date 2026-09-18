@@ -2032,6 +2032,18 @@ class TestAOneToOneMatchTakesTheBanksFigure:
     07-02 AND `-178.32` on 07-06, `$356.61` for one `$178.29` movement.
 
     A refusal is not neutral when the screen beside it offers to duplicate.
+
+    **A case left this class at plan step ``balance:X-bi-4a``**:
+    ``test_a_row_carrying_a_CARD_purchase_corrects_its_GROSS`` built a
+    ``derived`` bill holding a card purchase and graded that the bank's
+    figure corrected the row's GROSS with the card purchase still subtracted.
+    Ruling **R-BAL78** makes a stated figure beside purchases unrepresentable
+    (a row holding purchases records its money AS them; the settle verb and
+    the seam refuse a figure over them, and the entry doors refuse a purchase
+    on a stored-figure row -- ``test_entry_service`` grades both), so the
+    row that case corrected cannot exist and the case had no subject left.
+    What a card purchase does to a row's cash leg is the card arc's
+    (``credit_card:CC-5``), on the card's own account.
     """
 
     @staticmethod
@@ -2164,47 +2176,6 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         assert sum(posted.values()) == Decimal("-178.29"), (
             "the row must book what the BANK took, exactly once -- the whole "
             "of what N-335 measures the loss of"
-        )
-
-    def test_a_row_carrying_a_CARD_purchase_corrects_its_GROSS(
-        self, app, db, seed_user,
-    ):
-        """The bank constrains the CASH LEG, and the stored figure is GROSS.
-
-        A row whose card purchase never touches checking is worth
-        ``gross - that purchase`` in cash, so writing the bank's figure
-        STRAIGHT into ``settled_amount`` would book the card spend a second
-        time.  Every one of the developer's own 8 transaction near misses
-        carries no entries, so nothing on that data can tell the two apart --
-        which is exactly why this case is written.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        txn = a_transaction(
-            seed_user, name="Groceries", amount="180.00",
-            status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        a_purchase(
-            seed_user, txn, amount="30.00", is_credit=True,
-            purchased_on=bank_day,
-        )
-        db.session.flush()
-        # Cash leg is 180.00 - 30.00 = 150.00 out; the bank took 149.00.
-        line = a_bank_line(
-            seed_user, statement, amount="-149.00", posted_on=bank_day,
-        )
-
-        # Stating 1.00 is what -149.00 bank against a -150.00 cash leg comes to, and every
-        # match carries the difference it was reviewed against since
-        # plan step bank_import:X-gj-1b -- the near tier's own card
-        # renders it as a hidden field (the stated_difference filter).
-        _submit(
-            seed_user, lines=[line], transactions=[txn], residual="1.00",
-        )
-
-        assert txn.settled_amount == Decimal("179.00"), (
-            "the GROSS moves by the difference; the card purchase is still "
-            "subtracted from it"
         )
 
 

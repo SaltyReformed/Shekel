@@ -632,14 +632,16 @@ class TestSourceFactValuation:
         ``effective_amount`` walk diverged from the posted ledger on 10 of the
         real Checking account's 130 settled rows, by up to $181.58.
 
-        **The $120.00 is now TWO facts, and ruling R-FM is why** (plan step
-        X-f3b).  The debit purchase carries the day the bank took it (01-05), so
-        it is a movement of its own on THAT day; the envelope's close on 02-01
-        then books ``200 - 80 credit - 120 already posted = $0.00``.  The
-        account is $120.00 lighter either way -- what moved is WHEN, from the
-        day the owner finished the envelope to the day the money actually left,
-        which is the whole point of the step.  Both figures are asserted so a
-        regression that lost either half of the split fails as itself.
+        **The $120.00 is ONE fact, the purchase's, and ruling R-FM is why**
+        (plan step X-f3b).  The debit purchase carries the day the bank took
+        it (01-05), so it is a movement of its own on THAT day.  Through plan
+        step ``X-bi-3e`` the envelope's close on 02-01 was a second fact
+        worth ``200 - 80 credit - 120 already posted = $0.00``; since
+        ``balance:X-bi-4a`` a row is no fact at all (ruling **R-BAL80**), so
+        the stream holds the purchase and nothing else.  The account is
+        $120.00 lighter either way -- what moved is WHEN, from the day the
+        owner finished the envelope to the day the money actually left, which
+        is the whole point of the step.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
@@ -682,18 +684,14 @@ class TestSourceFactValuation:
         assert settled_figure(txn) == Decimal("200.00")
         assert purchases_total(list(txn.entries)) == Decimal("200.00")
         record_settle_day(txn, an_entered_day(date(2026, 2, 1)))
-        posting_service.sync_transaction_postings(txn, settled=True)
+        posting_service.sync_transaction_postings(txn)
         db.session.commit()
 
-        purchase_fact, close_fact = settled_cash_facts(account.id, scenario.id)
+        [purchase_fact] = settled_cash_facts(account.id, scenario.id)
         assert (purchase_fact.settled_on, purchase_fact.delta) == (
             date(2026, 1, 5), Decimal("-120.00"),
         )
         assert purchase_fact.entry_id is not None
-        assert (close_fact.settled_on, close_fact.delta) == (
-            date(2026, 2, 1), Decimal("0.00"),
-        )
-        assert close_fact.entry_id is None
         assert _running_balance(account, scenario) == Decimal("880.00")
         # The claim the whole ``settled_cash_leg`` move rests on: the walk's
         # delta IS the amount the writer booked on the linked ledger, in the
@@ -702,7 +700,7 @@ class TestSourceFactValuation:
         # every entry, so nothing else would catch it.
         assert _linked_ledger_net(
             account, scenario, transaction_id=txn.id,
-        ) == purchase_fact.delta + close_fact.delta
+        ) == purchase_fact.delta
 
     def test_a_transfer_shadow_participates_like_any_other_row(
         self, db, seed_user, seed_periods,
@@ -731,32 +729,33 @@ class TestSourceFactValuation:
 class TestAttributionIsOneKey:
     """One STORED day per fact; nothing here derives it (ruling R-EC)."""
 
-    def test_a_settled_row_with_no_day_is_REFUSED_not_dated(
+    def test_a_settled_row_with_no_day_is_INVISIBLE_to_the_walk_and_named_by_DC11(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The walk raises rather than inventing a day for a broken row.
+        """The walk reads nothing for a broken row; the integrity check names it.
 
-        **This test asserted the opposite until plan step X-f1**: the reader
-        derived the day from ``paid_at`` and fell back to the row's pay-period
-        ``start_date`` when the instant was NULL, and 8 of 146 production
-        settled rows took that fallback.  It was a GUESS the reader could not
-        see -- money placed on a day nothing recorded -- and the migration made
-        it a stored fact for exactly those 8 rows instead of leaving the engine
-        to re-invent it every read.
-
-        With the guess gone, an undated settled row is a broken invariant
-        (``status_seam.apply_status_change`` writes the status and the day in
-        one statement), and the honest response is to FAIL LOUD.  Silently
-        dating it would put real money on a fabricated day; silently dropping it
+        **This test asserted a REFUSAL through plan step ``X-bi-3e``**, and
+        the opposite of that until plan step X-f1: the reader derived the day
+        from ``paid_at`` and fell back to the row's pay-period ``start_date``
+        when the instant was NULL (8 of 146 production settled rows took that
+        fallback -- a GUESS the reader could not see), then, the guess gone,
+        REFUSED an undated settled row loudly, because silently dating it
+        would put real money on a fabricated day and silently dropping it
         would take money out of a balance without saying so.
 
-        The row is built by the BARE constructor helper with an explicit
-        ``settled_on=None``, which is the only way to construct the state now --
-        and that is the point.  Every write door refuses it: the seam writes the
-        day in the same statement as the status, and
-        ``create_settled_cash_transaction`` reconciles the ledger, which reaches
-        this same refusal before the fixture even returns.
+        Since plan step ``balance:X-bi-4a`` the walk reads MOVEMENTS and no
+        row (ruling **R-BAL80**), so it has nothing to refuse: a settled row
+        with no day, built bare with ``settled_on=None`` (the only way to
+        construct the state -- every write door refuses it), carries no
+        dated movement and is simply absent from the stream.  That absence
+        is the "silently dropping it" the old refusal forbade, and the alarm
+        moved with the read: ``scripts/integrity_check.py``'s **DC-11** names
+        every settled row the fold cannot see, this one included.
         """
+        # pylint: disable=import-outside-toplevel  -- the script is not a
+        # package; the integrity suite imports it the same way.
+        from scripts.integrity_check import check_data_consistency
+
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[3]
         _opened_at(account, _instant(2026, 1, 1))
@@ -766,12 +765,13 @@ class TestAttributionIsOneKey:
         )
         db.session.commit()
 
-        with pytest.raises(UndatedSettleError) as exc:
-            settled_cash_facts(account.id, scenario.id)
-        assert str(txn.id) in str(exc.value), (
-            "the refusal must name the row so a broken row is identifiable "
-            f"without re-querying; got: {exc.value}"
+        facts = settled_cash_facts(account.id, scenario.id)
+        assert [fact for fact in facts if fact.transaction_id == txn.id] == []
+        dc11 = next(
+            r for r in check_data_consistency(db.session) if r.check_id == "DC-11"
         )
+        assert not dc11.passed
+        assert txn.id in {row["transaction_id"] for row in dc11.details}
 
     def test_an_evening_eastern_settle_counts_from_the_users_day(
         self, db, seed_user, seed_periods, monkeypatch,

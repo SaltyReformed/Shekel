@@ -261,6 +261,13 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # method is left for this set to rule on.  A day is not a balance.
     "cash_anchor_facts",
     "settled_cash_facts",
+    # ``in_flight_movements`` (plan step ``balance:X-bi-4a``, ruling
+    # **R-BAL77**) -- the UN-DATED half of the one movement stream
+    # ``settled_cash_facts`` loads the dated half of: a LOADER of stored
+    # purchases the bank has not been seen to take, each valued by the same
+    # per-movement leg.  Where one lands and what the plan holds at time T
+    # are ``balance_at._cash_fold``'s, exactly as for ``planned_cash_rows``.
+    "in_flight_movements",
     # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
     # ``account_openings`` row: returning a recorded balance is not
     # computing one.  The FOLD seeds from it.

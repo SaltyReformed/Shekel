@@ -79,6 +79,7 @@ from tests._test_helpers import (
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
+    cover_bare_settled_row,
     settlement_columns,
 )
 from tests._test_helpers import make_every_period_rule
@@ -135,6 +136,8 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     for _column, _value in settlement_columns(_settle_day, amount, settled_amount).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    if _settle_day is not None:
+        cover_bare_settled_row(db.session, txn, amount, settled_amount)
     return txn
 
 
@@ -2651,14 +2654,22 @@ class TestCarryForwardEnvelopeBalanceInvariant:
     def test_post_carry_balance_matches_subtotal(
         self, app, db, seed_user, seed_periods,
     ):
-        """Source settled excludes from balance; target bumped reduces by full new estimate.
+        """The source's in-flight purchase holds in period 0; the bumped target reduces period 1.
 
         Setup: $100 envelope, $65 entries, target rule-generated.
 
         Post-carry expected balance trajectory (anchor period 0,
-        starting balance $1000 from seed_user):
-          period 0: source DONE excluded -> end_balance = 1000
-          period 1: target $135 expense -> end_balance = 1000 - 135 = 865
+        starting balance $1000 from seed_user, ``as_of`` pinned to period 0's
+        start):
+          period 0: the source is settled, and its $65 purchase -- made in
+                    period 0, not yet seen to leave -- is IN FLIGHT from
+                    ``as_of + 1`` (ruling **R-BAL77**, plan step
+                    ``balance:X-bi-4a``) -> end_balance = 1000 - 65 = 935
+          period 1: target $135 expense -> end_balance = 935 - 135 = 800
+
+        Through ``X-bi-3e`` the close booked the $65 as the row's own leg on
+        the close day -- TODAY, two years past the window -- so period 0 read
+        $1,000.00 and money spent in period 0 never showed in it.
 
         Period 1 subtotal: $135 (just the bumped canonical).
         Both subtotal and balance reduction agree at $135.
@@ -2701,12 +2712,11 @@ class TestCarryForwardEnvelopeBalanceInvariant:
                 ),
             )
 
-            # Anchor balance from seed_user is $1000; settled source
-            # is excluded (effective_amount returns 0 for is_settled
-            # statuses on the projected-only filter).
-            assert balances[seed_periods[0].id] == Decimal("1000.00")
+            # Anchor balance from seed_user is $1000; the settled source's
+            # un-dated $65 purchase is in flight inside period 0.
+            assert balances[seed_periods[0].id] == Decimal("935.00")
             # Target now $135; balance drops by exactly that amount.
-            assert balances[seed_periods[1].id] == Decimal("865.00")
+            assert balances[seed_periods[1].id] == Decimal("800.00")
             # Forward cash flow matches the bumped envelope exactly.
             assert (
                 balances[seed_periods[0].id]

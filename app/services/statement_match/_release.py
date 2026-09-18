@@ -574,7 +574,7 @@ def _subject_removal(
             f"Nothing was changed."
         )
     blocked = (
-        entry_service.removal_refusal(subject.transaction, subject)
+        entry_service.removal_refusal(subject.transaction)
         if is_purchase else None
     )
     if blocked is not None:

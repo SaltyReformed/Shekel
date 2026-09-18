@@ -46,7 +46,7 @@ import pytest
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger
+from app.services import cash_ledger, transaction_service
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services.balance_at._cash_periods import (
@@ -58,6 +58,7 @@ from tests._test_helpers import (
     figure_source_columns,
     add_entry,
     add_txn,
+    an_entered_day,
     append_balance_assertion,
     basis_for,
     create_envelope_txn,
@@ -234,38 +235,41 @@ class TestTheSubtotalsCountEveryAttributedRow:
         assert unpaid_only_expense == Decimal("75.00")
         assert figures.expense - unpaid_only_expense == Decimal("200.00")
 
-    def test_a_settled_envelope_counts_its_confirmed_cash_leg(
+    def test_a_settled_envelope_counts_its_dated_debit_purchases(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
         """Credit-card purchases never left checking, so they are not expense.
 
-        A ``$200.00`` envelope settled 2026-02-05 in period 2, whose entries are
-        a ``$120.00`` DEBIT purchase and an ``$80.00`` CREDIT purchase.
+        A ``$200.00`` envelope in period 2 settled from its purchases: a
+        ``$120.00`` DEBIT purchase the bank took on 2026-02-05 and an
+        ``$80.00`` CREDIT purchase.
 
-        Hand-computed: the confirmed cash leg is
-        ``effective_amount - Sigma(credit) = 200.00 - 80.00 = $120.00``, because
-        the credit purchase leaves through its own CC Payback sibling.  So the
-        column's expense row reads ``$120.00``, not the envelope's ``$200.00``
-        actual, and the balance reads ``1000 - 120 = $880.00`` -- the subtotal
-        and the balance priced the row through ONE rule.
+        Hand-computed: the dated debit movement is the ``$120.00`` of expense;
+        the credit purchase leaves through its own CC Payback sibling and
+        the row books nothing of its own (ruling **R-BAL80**, plan step
+        ``balance:X-bi-4a``).  So the column's expense row reads ``$120.00``,
+        not the envelope's ``$200.00`` record, and the balance reads
+        ``1000 - 120 = $880.00`` -- the subtotal and the balance priced the
+        family through ONE rule.  Through ``X-bi-3e`` this case laid a stored
+        ``$200.00`` figure beside the purchases, a shape ruling **R-BAL78**
+        refuses at the door.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        txn = create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[2], Decimal("200.00"),
-            settled_on=date(2026, 2, 5), name="Groceries",
+        txn = create_envelope_txn(
+            seed_user, db.session, seed_periods[2], "Groceries",
+            Decimal("200.00"),
         )
-        for amount, is_credit in (
-            (Decimal("120.00"), False), (Decimal("80.00"), True),
-        ):
-            db.session.add(TransactionEntry(
-                **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
-                user_id=seed_user["user"].id,
-                amount=amount,
-                description="purchase",
-                purchased_on=date(2026, 2, 4),
-                is_credit=is_credit,
-            ))
+        add_entry(
+            db.session, seed_user, txn, Decimal("120.00"), date(2026, 2, 4),
+            settled_on=date(2026, 2, 5),
+        )
+        add_entry(
+            db.session, seed_user, txn, Decimal("80.00"), date(2026, 2, 4),
+            is_credit=True,
+        )
+        transaction_service.settle_transaction(
+            txn, settle_day=an_entered_day(date(2026, 2, 5)),
+        )
         db.session.commit()
 
         figures = _view(account, scenario, seed_periods)[seed_periods[2].id]
@@ -280,36 +284,35 @@ class TestTheSubtotalsCountEveryAttributedRow:
     ):  # pylint: disable=unused-argument
         """The one shape where the leg's SIGN and the row's TYPE disagree.
 
-        A Groceries envelope in period 2 whose only purchase was an ``$80.00``
-        credit-card one, settled at that ``$80.00``, and whose ``actual_amount``
-        the user then corrects down to ``$50.00`` (the transaction edit route
-        honours a manual actual and does not re-derive it from the entries --
-        only an ENTRY mutation does that).
+        A Groceries envelope in period 2 whose only purchase is a ``$30.00``
+        REFUND the bank returned on 2026-02-05 -- a negative purchase (ruling
+        **bank_import:R-II**), a merchant credit filed against the envelope --
+        settled from its purchases.
 
-        Hand-computed: the confirmed cash leg is
-        ``-(50.00 - 80.00) = +$30.00`` -- a settled EXPENSE that nets money INTO
-        checking.  It belongs on the expense row as ``-$30.00``, not on the
-        income row as ``+$30.00``: an expense that came back is not income.  The
-        net (``+$30.00``) and the balance are the same either way, which is
-        exactly why this shape has to be pinned -- it is the only one that can
-        tell a TYPE classification from a sign test, and without it the fact's
-        ``is_income`` would be carrying an untested claim.
+        Hand-computed: the movement's cash leg is ``-(-30.00) = +$30.00`` -- a
+        settled EXPENSE that nets money INTO checking.  It belongs on the
+        expense row as ``-$30.00``, not on the income row as ``+$30.00``: an
+        expense that came back is not income.  The net (``+$30.00``) and the
+        balance are the same either way, which is exactly why this shape has
+        to be pinned -- it is the only one that can tell a TYPE classification
+        from a sign test, and without it the fact's ``is_income`` would be
+        carrying an untested claim.  Through ``X-bi-3e`` the inversion was
+        built from a ``$50.00`` figure typed over an ``$80.00`` card purchase,
+        a shape ruling **R-BAL78** refuses at the door; the refund is the
+        representable one.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        txn = create_settled_cash_transaction(
-            seed_user, db.session, seed_periods[2], Decimal("80.00"),
-            settled_amount=Decimal("50.00"),
-            settled_on=date(2026, 2, 5), name="Groceries",
+        txn = create_envelope_txn(
+            seed_user, db.session, seed_periods[2], "Groceries",
+            Decimal("80.00"),
         )
-        db.session.add(TransactionEntry(
-            **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
-            user_id=seed_user["user"].id,
-            amount=Decimal("80.00"),
-            description="credit purchase",
-            purchased_on=date(2026, 2, 4),
-            is_credit=True,
-        ))
+        add_entry(
+            db.session, seed_user, txn, Decimal("-30.00"), date(2026, 2, 4),
+            settled_on=date(2026, 2, 5), description="refund",
+        )
+        transaction_service.settle_transaction(
+            txn, settle_day=an_entered_day(date(2026, 2, 5)),
+        )
         db.session.commit()
 
         figures = _view(account, scenario, seed_periods)[seed_periods[2].id]

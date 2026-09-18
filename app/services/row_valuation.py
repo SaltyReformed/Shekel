@@ -404,11 +404,12 @@ def settled_contribution(txn) -> Decimal:
     building an amount basis for them would run the paycheck engine to
     re-derive a figure the row already recorded.  The seventh is
     :func:`~app.services.cash_ledger.settled_cash_leg`, which issues no query of
-    its own; of ITS six callers, three restrict the row set -- the walk loads
-    settled statuses in SQL, the posting writer reaches its settled target only
-    under ``settled=True`` (all fourteen ``sync_transaction_postings`` call
-    sites derive that flag from the row rather than asserting it), and
-    ``statement_match._candidates._price`` branches on ``txn.status.is_settled``.
+    its own and is read through ``status_seam.settled_family_leg`` alone since
+    plan step ``balance:X-bi-4a`` (the walk and the posting writer, which
+    once restricted the row set in SQL, read a settled row's money as its
+    movements now); of ITS four callers, one restricts the row set --
+    ``statement_match._candidates._price`` branches on
+    ``txn.status.is_settled``.
 
     **THE OTHER THREE DO NOT RESTRICT ANYTHING, AND THAT IS DELIBERATE.**
     ``statement_match``'s ``_accepted_view._accepted_row``, ``_release

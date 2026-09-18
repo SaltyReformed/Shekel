@@ -111,11 +111,12 @@ def _resync_after_entry_change(txn: Transaction) -> None:
         fact -- finally holds on this path too.
 
     What remains is the ledger reconcile (Build-Order Step 3).  An entry mutation
-    changes the row's confirmed cash effect (``settled figure - Sigma(credit
-    entries) - Sigma(posted purchases)``): adding a debit purchase grows the
-    checking outflow, flipping an entry to or from credit moves the
-    credit-excluded portion, deleting one shrinks it, and recording a posting day
-    moves that purchase's amount out of the close and into its own dated leg.
+    changes what the row's family has posted: recording a posting day makes
+    that purchase a dated leg of its own, clearing one reverses it, flipping
+    an entry to or from credit posts or reverses its leg, and an amount edit
+    re-prices a dated one.  The row itself books nothing (plan step
+    ``balance:X-bi-4a``, ruling **R-BAL80**), so a purchase with no day moves
+    nothing in the ledger -- it is in flight in the projection instead.
 
     **It is UNGATED since plan step X-f3b, and that is ruling R-FM.**  It ran
     only on the settled band, on the premise that "a Projected envelope has no
@@ -129,26 +130,19 @@ def _resync_after_entry_change(txn: Transaction) -> None:
     (the reconcile flushes but does not commit, matching this module's
     contract).
 
-    **``settled`` is read off the ROW rather than passed as ``False``, and that
-    choice has already paid for itself.**  The reconcile's parameter is a
-    question about the row -- does its own cash leg belong in the ledger -- and
-    the row is the one thing that answers it.  While ``_reject_settled_parent``
-    refused every mutation on a settled row the constant would have been
-    correct, and hardcoding it would have moved that guard's guarantee into a
-    second module; the developer's 2026-08-17 ruling then widened the door to
-    admit a posting-day edit, so ``True`` reaches here now and a hardcoded
-    ``False`` would have silently stopped booking those rows' own cash legs --
-    exactly the lie no test could see.  Reading it costs an already-joined
-    relationship.
+    **The reconcile takes no ``settled`` flag since plan step
+    ``balance:X-bi-4a``.**  It took one through ``X-bi-3e``, read off the ROW
+    rather than hardcoded ``False`` -- a choice that paid for itself when the
+    developer's 2026-08-17 ruling widened this door to admit a posting-day
+    edit on a settled row, whose own leg a hardcoded ``False`` would have
+    silently stopped booking.  The flag chose the row's OWN target, and a row
+    has none now: a movement posts iff it is dated under a contributing
+    parent, which the reconcile reads off each movement.
 
     Args:
-        txn: The parent envelope transaction whose entries changed.  Its
-            ``status`` relationship is read to tell the reconcile whether the
-            row's OWN cash leg belongs in the ledger.
+        txn: The parent envelope transaction whose entries changed.
     """
-    posting_service.sync_transaction_postings(
-        txn, settled=txn.status.is_settled,
-    )
+    posting_service.sync_transaction_postings(txn)
 
 
 def resolve_owner_id(user_id: int) -> int:
@@ -347,7 +341,7 @@ def create_entry(
     # **Its own rule since plan step X-f6a-3b**: a new purchase against a row
     # whose figure IS its purchases is what a bank statement evidences, where a
     # row storing a fixed figure cannot record one at all.
-    _reject_settled_addition(txn, posting_day)
+    _reject_settled_addition(txn)
 
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
@@ -727,7 +721,7 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # The row's own payment record is withdrawn by a REVERT, never here (plan
     # step **X-bi-3a**); named first, so the refusal says which act owns it.
     _reject_settlement_record(entry)
-    _reject_settled_removal(entry.transaction, entry)
+    _reject_settled_removal(entry.transaction)
 
     txn = entry.transaction
     transaction_id = entry.transaction_id

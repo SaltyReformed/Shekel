@@ -8,10 +8,11 @@ of money that moved.  Every settle now records its money the envelope's way: the
 MANUAL branch's settlement is mirrored as ONE covering movement, a
 ``budget.transaction_entries`` row carrying the figure the settle booked, who
 wrote it, the day the money moved and how that day is known, and the statement
-that showed it.  ``X-bi-3d`` cuts every already-settled row over to this shape
-and ``X-bi-4`` re-points the fold onto movements; until then the bill row keeps
-its own record and this module keeps the two in step -- the interval ruling
-**R-BAL40** accepts, and the stale cache ``X-bi-4`` deletes.
+that showed it.  ``X-bi-3d`` cut every already-settled row over to this shape
+and ``X-bi-4a`` re-pointed the fold and the posting writer onto movements
+(ruling **R-BAL80**); the bill row still keeps its own record and this module
+keeps the two in step -- the interval ruling **R-BAL40** accepts, and the
+stale cache ``X-bi-4b`` deletes.
 
 **Why the seam, and not the settle verb.**  ``apply_status_change`` is the ONE
 writer of the settlement record (plan step X-au-c3), reached by every settle
@@ -22,22 +23,23 @@ record is: a second call site in each verb would be the maintenance contract
 rule 14 deletes, and a verb added later would inherit the write with none of
 the seam's refusals.
 
-**Balance-neutral by construction** (ruling **R-FM**'s identity, plan step
-X-f3b): ``cash_ledger.settled_cash_leg`` books a settled row's figure MINUS its
-posted purchases, and ``cash_ledger._events._posted_purchase_facts`` books each
-posted purchase at its own day -- so a bill whose covering movement carries its
-whole figure has a leg of exactly zero and the movement carries the money on
-the same day.  The fold's fact producer reads the same family
-(``_posted_purchase_facts``, every POSTED movement), the posting writer posts
-it (``posting_service.sync_transaction_postings`` walks ``txn.entries``), and
-the statement matcher drops a zero-effect row from its offer
-(``_candidates.transaction_candidate``) and offers the ROW priced at its
-family instead (``_candidates._price`` reads :func:`settled_family_leg`; the
-mirror itself is kept out of the purchase candidates by
-:func:`covering_clause`).  None of those readers branches on the row's
-kind; the one place a kind branch stands is the POSTING doors, which return
-for a transfer shadow's entries, and that branch is ruling **R-BAL45**'s
-interval rather than a reader deciding for itself (below).
+**The movement IS the money** (plan step ``balance:X-bi-4a``, ruling
+**R-BAL80**).  The fold's fact producer reads every dated movement and no row
+(``cash_ledger._events.settled_cash_facts``), the posting writer posts each
+one and nothing for the row (``posting_service.sync_transaction_postings``
+walks ``txn.entries``), and the statement matcher drops a zero-effect row
+from its offer (``_candidates.transaction_candidate``) and offers the ROW
+priced at its family instead (``_candidates._price`` reads
+:func:`settled_family_leg`; the mirror itself is kept out of the purchase
+candidates by :func:`covering_clause`).  Through ``X-bi-3e`` the first two
+also read the row's own leg, ``cash_ledger.settled_cash_leg`` -- the
+recorded figure MINUS its posted purchases, exactly zero for a covered bill
+by ruling **R-FM**'s identity -- so the write here was balance-neutral by
+construction; that leg is the matcher's alone now.  None of those readers
+branches on the row's kind; the one place a kind branch stands is the
+POSTING doors, which return for a transfer shadow's entries, and that branch
+is ruling **R-BAL45**'s interval rather than a reader deciding for itself
+(below).
 
 **A revert UN-DATES the covering movement and KEEPS it** (ruling
 **R-BAL61**, plan step ``X-bi-3e-2``).  Leaving the settled band releases
@@ -169,15 +171,16 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     covered, ``cash_ledger.settled_cash_leg`` answers zero for it and its
     movement carries the money; the statement matcher prices a row by what
     the bank would see for it (``_candidates._price``), which is the family:
-    the row's leg plus this.  The ROW stays the matcher's subject until plan
-    step ``X-bi-4`` re-points the fold onto movements -- its mirror is
-    excluded from the purchase candidates by :func:`covering_clause` -- so a
-    bill is offered, matched and re-dated as one thing, and the seam's mirror
-    carries the bank's day down to the movement.  An UN-DATED movement -- a
-    reverted row's, kept since plan step ``X-bi-3e-2`` -- is worth nothing
-    here, as it posts nothing (``purchase_posts``) and folds to nothing
-    (``_posted_purchase_facts``): the same three-way agreement, stated by
-    the day rather than by the row's status.
+    the row's leg plus this.  The ROW is the matcher's subject -- its mirror
+    is excluded from the purchase candidates by :func:`covering_clause` --
+    so a bill is offered, matched and re-dated as one thing, and the seam's
+    mirror carries the bank's day down to the movement; whether the MOVEMENT
+    becomes the subject now that the fold reads movements alone (plan step
+    ``balance:X-bi-4a``) is ``bank_import``'s question.  An UN-DATED movement
+    -- a reverted row's, kept since plan step ``X-bi-3e-2`` -- is worth
+    nothing here, as it posts nothing (``purchase_posts``) and folds to
+    nothing (``_events.settled_cash_facts``): the same three-way agreement,
+    stated by the day rather than by the row's status.
 
     Each posted covering movement is worth
     :func:`app.services.cash_ledger.movement_cash_leg` -- the ONE valuation
@@ -191,7 +194,7 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     **TOTAL over the parent's contributing gate, as every reader of a
     purchase is** (ruling **R-FM**): a soft-deleted or Credit / Cancelled
     parent's purchases post nothing and fold to nothing
-    (``_posted_purchase_facts``, ``purchase_posts``), so its covering
+    (``_events.settled_cash_facts``, ``purchase_posts``), so its covering
     movement is worth nothing here too -- the producer's own gate, and this
     module's ``is_balance_contributing`` guard went with the spelling.  The
     first cut summed the movement regardless and the accepted register read a
@@ -224,6 +227,11 @@ def settled_family_leg(row: Transaction) -> Decimal:
     its accepted register (``_accepted_view``) and its undo dialog
     (``_release``).  ``cash_ledger.settled_cash_leg`` answers zero for a
     covered bill by ruling **R-FM**'s identity; this adds the movement back.
+    Since plan step ``balance:X-bi-4a`` these three are the row leg's ONLY
+    readers: the fold and the ledger read movements alone (ruling
+    **R-BAL80**), and an envelope's un-dated purchases -- the one thing the
+    row's leg still prices here -- are in flight there (ruling **R-BAL77**),
+    a difference stated in ``bank_import``'s register rather than hidden.
     Three readers spelled ``settled_cash_leg`` alone after X-bi-3a's first
     cut and two of them read every accepted bill as a match that stopped
     holding and every undo as moving no money (adversarial review,

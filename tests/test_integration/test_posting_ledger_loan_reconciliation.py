@@ -1110,7 +1110,7 @@ class TestSupersedesCashInvariantForLoans:
             cash_effect = posting_service.settled_transfer_effect(
                 loan.id, scenario_id,
             )
-            txn_effect = posting_service.settled_transaction_effect(
+            txn_effect = posting_service.posted_purchase_effect(
                 loan.id, scenario_id,
             )
             non_principal = _per_loan_correction_net(loan.id, scenario_id)
@@ -2201,7 +2201,7 @@ class TestResolverIsLedgerFree:
             for target in (
                 "app.services.posting_service.account_posting_total",
                 "app.services.posting_service.settled_transfer_effect",
-                "app.services.posting_service.settled_transaction_effect",
+                "app.services.posting_service.posted_purchase_effect",
             ):
                 monkeypatch.setattr(target, _forbid_ledger_read)
 

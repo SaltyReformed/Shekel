@@ -300,10 +300,11 @@ def _post_stamped_purchases(
     )
     # **The FAMILY is reconciled, not the purchase**, and that is a defect fixed
     # rather than a tidier spelling (plan step X-au-c3, second pass).  This
-    # loop called ``posting_service.sync_purchase_postings`` per entry, whose
-    # own docstring states the precondition it was written under: it is "for
-    # the write paths that change a purchase WITHOUT touching its parent's own
-    # cash leg".
+    # loop called ``posting_service.sync_purchase_postings`` per entry (a door
+    # deleted at plan step ``balance:X-bi-4a`` with zero callers left, ledger
+    # row **BAL-507**), whose own docstring stated the precondition it was
+    # written under: it was "for the write paths that change a purchase
+    # WITHOUT touching its parent's own cash leg".
     #
     # Widening :func:`_outstanding_scope` to admit a SETTLED parent broke that
     # precondition, because a settled row's confirmed effect is
@@ -317,20 +318,19 @@ def _post_stamped_purchases(
     # per-account invariant through an ordinary ``POST /accounts/<id>/reconcile``.
     #
     # ``sync_transaction_postings`` is the door for a caller that changed the
-    # parent, and it reconciles the parent's leg AND one leg per posted
-    # purchase in a single idempotent pass -- so it replaces the per-entry call
-    # outright rather than being added beside it.  It is correct for a
-    # PROJECTED parent too: ``settled=False`` leaves the parent booking nothing
-    # and still posts each purchase's own leg, which is ruling **R-FM**.
+    # parent, and it reconciles one leg per dated purchase in a single
+    # idempotent pass -- so it replaces the per-entry call outright rather
+    # than being added beside it.  The parent's status is not its question:
+    # a purchase posts iff it is dated under a contributing parent, which is
+    # ruling **R-FM**, and the row books nothing of its own (plan step
+    # ``balance:X-bi-4a``).
     #
     # Grouped so a statement that ticks four purchases of one envelope
     # reconciles that family ONCE; ``dict`` preserves insertion order, so the
     # pass stays deterministic.
     families = {entry.transaction_id: entry.transaction for entry in stamped}
     for txn in families.values():
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(txn)
 
 
 def record_settled_days(

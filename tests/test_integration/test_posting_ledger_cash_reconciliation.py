@@ -800,7 +800,7 @@ class TestPerLinkedAccountReconciliation:
                     posting_service.settled_transfer_effect(
                         account_id, scenario_id,
                     )
-                    + posting_service.settled_transaction_effect(
+                    + posting_service.posted_purchase_effect(
                         account_id, scenario_id,
                     )
                 ) == want_effect
@@ -809,7 +809,7 @@ class TestPerLinkedAccountReconciliation:
             assert posting_service.settled_transfer_effect(
                 checking.id, scenario_id,
             ) == Decimal("-350.00")
-            assert posting_service.settled_transaction_effect(
+            assert posting_service.posted_purchase_effect(
                 checking.id, scenario_id,
             ) == Decimal("1950.00")
 
@@ -1486,7 +1486,7 @@ class TestRevertedTransactionReconcilesAtZero:
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.PROJECTED)),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             assert _independent_ledger_sum(
@@ -1584,7 +1584,7 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
             )
             _db.session.add(entry)
             _db.session.flush()
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             groceries_counter = _counter_ledger_id(
