@@ -20,6 +20,7 @@ from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.transaction_template import TransactionTemplate
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app import ref_cache
@@ -45,24 +46,26 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
-    family_journal_filter,
-    figure_source_columns,
     all_periods,
     an_entered_day,
     append_balance_assertion,
     create_hysa_account,
     current_pay_period,
     derived_span,
+    family_journal_filter,
     field_is_disabled,
+    figure_source_columns,
     freeze_today,
     generate_row_of,
     last_covered_day,
+    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     make_investment_account,
     make_salary_profile,
     mark_purchase_settled,
     net_posted_by_day,
+    one_off_row_of,
     posted_loan_balance_at,
     record_paydays_across_a_hole,
     resolved_amount,
@@ -75,7 +78,6 @@ from tests._test_helpers import (
 )
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
 
 #: Where the grid route's source lives, for the three STATIC guards below.
 #: It was the single file ``app/routes/grid.py`` until plan step C2-f2b split
@@ -163,25 +165,20 @@ class TestGridRowScoping:
     def _make_oneoff(
         self, seed_user, period, name, amount="42.00",
     ):
-        """Create one standalone expense in the given period."""
-        projected = db.session.query(Status).filter_by(
-            name="Projected",
-        ).one()
+        """Place one one-off expense in the given period."""
         expense_type = db.session.query(TransactionType).filter_by(
             name="Expense",
         ).one()
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            period,
             name=name,
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal(amount),
+            user_id=period.user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            category_id=seed_user["categories"]["Rent"].id,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 
@@ -488,44 +485,39 @@ class TestSubtotalRowsEndpoint:
     rendered rows.
     """
 
-    def _seed_income_expense(self, seed_user, period_id, income, expense):
-        """Seed one projected income + one projected expense in a period.
+    def _seed_income_expense(self, seed_user, period, income, expense):
+        """Seed one projected income + one projected expense in *period*.
 
         Returns nothing; the caller asserts the rendered subtotals.  Uses
         the Salary/Rent seed categories so the rows render under the
         income and expense sections respectively.
         """
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = (
             db.session.query(TransactionType).filter_by(name="Income").one()
         )
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
-        db.session.add_all([
-            Transaction(
-                user_id=seed_user['account'].user_id,
-                pay_period_id=period_id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(income),
-            ),
-            Transaction(
-                user_id=seed_user['account'].user_id,
-                pay_period_id=period_id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(expense),
-            ),
-        ])
+        one_off_row_of(
+            period,
+            name="Paycheck",
+            amount=income,
+            user_id=seed_user['account'].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=income_type.id,
+            category_id=seed_user["categories"]["Salary"].id,
+        )
+        one_off_row_of(
+            period,
+            name="Rent",
+            amount=expense,
+            user_id=seed_user['account'].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=expense_type.id,
+            category_id=seed_user["categories"]["Rent"].id,
+        )
         db.session.commit()
 
     def test_one_response_carries_both_sections(
@@ -546,7 +538,7 @@ class TestSubtotalRowsEndpoint:
                 seed_user["user"].id,
             )
             self._seed_income_expense(
-                seed_user, current.id, Decimal("2000.00"), Decimal("1400.00"),
+                seed_user, current, Decimal("2000.00"), Decimal("1400.00"),
             )
 
             resp = auth_client.get(
@@ -671,9 +663,6 @@ class TestSubtotalRowsEndpoint:
         account.
         """
         with app.app_context():
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             income_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
@@ -683,22 +672,21 @@ class TestSubtotalRowsEndpoint:
             )
             # First user's own income -- shown via the fallback.
             self._seed_income_expense(
-                seed_user, current.id,
+                seed_user, current,
                 Decimal("2000.00"), Decimal("0.00"),
             )
             # Second user's income on the second user's account/period --
             # must NOT leak into the first user's subtotal response.
-            db.session.add(Transaction(
-                user_id=seed_second_user['bootstrap_period'].user_id,
-                pay_period_id=seed_second_user["bootstrap_period"].id,
-                scenario_id=seed_second_user["scenario"].id,
-                account_id=seed_second_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                seed_second_user["bootstrap_period"],
                 name="Other Paycheck",
-                category_id=seed_second_user["categories"]["Salary"].id,
+                amount=Decimal("9999.00"),
+                user_id=seed_second_user['bootstrap_period'].user_id,
+                account_id=seed_second_user["account"].id,
+                scenario_id=seed_second_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("9999.00")),
-            ))
+                category_id=seed_second_user["categories"]["Salary"].id,
+            )
             db.session.commit()
 
             resp = auth_client.get(
@@ -737,23 +725,20 @@ def _generate_first_row(template, seed_user, periods):
 class TestTransactionCRUD:
     """Tests for transaction create, update, delete, and status changes."""
 
-    def _create_test_txn(self, seed_user, seed_periods_today):
-        """Helper: create and return a projected expense."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
+    def _create_test_txn(self, seed_user, seed_periods_today, *, name="Test Expense"):
+        """Helper: place and return a projected one-off called *name*."""
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-        txn = Transaction(
+        txn = one_off_row_of(
+            seed_periods_today[0],
+            name=name,
+            amount=Decimal("123.45"),
             user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
             account_id=seed_user["account"].id,
-            status_id=projected.id,
-            name="Test Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("123.45")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.commit()
         return txn
 
@@ -893,7 +878,7 @@ class TestTransactionCRUD:
             assert "Mark as paid" not in settled_html
 
     def test_create_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions creates a new ad-hoc transaction."""
+        """POST /transactions creates a new one-off (a rule-less definition and its row)."""
         with app.app_context():
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
@@ -951,21 +936,18 @@ class TestTransactionCRUD:
     def test_mark_income_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets status to received for income."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
-            txn = Transaction(
-                user_id=seed_periods_today[0].user_id,
-                pay_period_id=seed_periods_today[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods_today[0],
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.post(
@@ -994,17 +976,30 @@ class TestTransactionCRUD:
             db.session.refresh(txn)
             assert txn.is_deleted is True
 
-    def test_hard_delete_adhoc_transaction(self, app, auth_client, seed_user, seed_periods_today):
-        """DELETE /transactions/<id> hard-deletes ad-hoc (no template) items."""
+    def test_hard_delete_one_off_transaction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """DELETE /transactions/<id> hard-deletes a one-off, and its definition with it.
+
+        The fork is ``recurs`` (``_delete._leaves_the_table``): a row that
+        does not recur leaves the table, and a rule-less definition with no
+        row defines nothing, so it goes in the same act (ruling R-BAL27).
+        Re-aimed at plan step balance:X-bi-7c: the hand-built link-less row
+        this graded took the same arm, and the disposal in full (the price
+        series with the definition) is ``test_one_off_row_doors``' delete
+        cases'.
+        """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             txn_id = txn.id
+            definition_id = txn.template_id
 
             response = auth_client.delete(f"/transactions/{txn_id}")
             assert response.status_code == 200
 
-            # Ad-hoc transaction should be fully deleted.
+            # The row is gone from the table, and so is its definition.
             assert db.session.get(Transaction, txn_id) is None
+            assert db.session.get(TransactionTemplate, definition_id) is None
 
     def test_a_zero_row_still_draws_a_click_target(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1030,9 +1025,20 @@ class TestTransactionCRUD:
         this case grades is unchanged -- that the span has CONTENT.
         """
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            state_own_amount(txn, Decimal("0.00"))
-            txn.is_envelope = True
+            # A one-off ENVELOPE priced at $0.00 by its definition: the
+            # producer's own state (the flag and the figure are the
+            # definition's, R-BAL36 / R-BAL29), not a row-cell write.
+            txn = one_off_row_of(
+                seed_periods_today[0],
+                name="Test Expense",
+                amount=Decimal("0.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                is_envelope=True,
+            )
             db.session.commit()
 
             html = auth_client.get(f"/transactions/{txn.id}/cell").data.decode()
@@ -1066,9 +1072,19 @@ class TestTransactionCRUD:
         drops both currency marks.
         """
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            state_own_amount(txn, Decimal("100.00"))
-            txn.is_envelope = True
+            # A one-off ENVELOPE priced at $100.00 by its definition (the
+            # producer's own state, R-BAL36 / R-BAL29).
+            txn = one_off_row_of(
+                seed_periods_today[0],
+                name="Test Expense",
+                amount=Decimal("100.00"),
+                user_id=seed_periods_today[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                is_envelope=True,
+            )
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
                 transaction_id=txn.id,
@@ -1155,8 +1171,11 @@ class TestTransactionCRUD:
         it permanent.
         """
         with app.app_context():
-            txn = self._create_test_txn(seed_user, seed_periods_today)
-            txn.name = 'Kayla\'s "Fun" Money'
+            # The name is the DEFINITION's (a placed row reads it), so it is
+            # given to the producer rather than written on the row.
+            txn = self._create_test_txn(
+                seed_user, seed_periods_today, name='Kayla\'s "Fun" Money',
+            )
             db.session.commit()
 
             html = auth_client.get(
@@ -1244,12 +1263,14 @@ class TestTransactionCRUD:
         states the figure it booked and how that figure is known: ``derived``,
         because the app resolved it and no human corrected it.
 
-        The figure is the row's own amount, which is what the old fall-back
-        answered for it, so no balance moves.
+        The figure is the row's resolved plan -- its definition's price,
+        read through the resolver because a one-off's row stores none
+        (ruling R-BAL60) -- which is what the old fall-back answered for it,
+        so no balance moves.
         """
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            planned = txn.estimated_amount
+            planned = resolved_amount(txn)
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert response.status_code == 200
@@ -1321,7 +1342,7 @@ class TestTransactionCRUD:
     def test_hard_delete_credit_source_deletes_payback(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """DELETE on an ad-hoc Credit source removes the live payback too.
+        """DELETE on a one-off Credit source removes the live payback too.
 
         Without the delete-side cleanup the ``SET NULL`` FK keeps the
         payback alive with its link nulled, silently inflating the next
@@ -1339,7 +1360,7 @@ class TestTransactionCRUD:
             response = auth_client.delete(f"/transactions/{txn_id}")
             assert response.status_code == 200
 
-            # Source hard-deleted (ad-hoc) and the payback with it.
+            # Source hard-deleted (a one-off does not recur) and the payback with it.
             assert db.session.get(Transaction, txn_id) is None
             assert db.session.get(Transaction, payback_id) is None
 
@@ -1796,21 +1817,18 @@ class TestTransactionNegativePaths:
 
     def _create_test_txn(self, seed_user, seed_periods_today):
         """Helper: create and return a projected expense."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-        txn = Transaction(
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            seed_periods_today[0],
             name="Test Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("123.45"),
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("123.45")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.commit()
         return txn
 
@@ -2028,10 +2046,12 @@ class TestTransactionNegativePaths:
             )
             assert resp.status_code == 422
 
-            # Verify the transaction's amount was NOT changed.
+            # Verify the transaction's amount was NOT changed -- read through
+            # the resolver: the row is a ONE-OFF, priced by its definition,
+            # so the raw column is None (ruling R-BAL60).
             db.session.expire_all()
             txn_after = db.session.get(Transaction, txn_id)
-            assert txn_after.estimated_amount == Decimal("123.45")
+            assert resolved_amount(txn_after) == Decimal("123.45")
 
     # ── State transition edge cases ───────────────────────────────
 
@@ -2414,22 +2434,19 @@ class TestAccountIdColumn:
 
     def test_transaction_model_has_account_id(self, app, db, seed_user, seed_periods_today):
         """Create a Transaction with account_id. Verify it saves and the relationship resolves."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         account = seed_user["account"]
 
-        txn = Transaction(
-            account_id=account.id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            seed_periods_today[0],
             name="Account Test",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("50.00"),
+            user_id=seed_periods_today[0].user_id,
+            account_id=account.id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.commit()
 
         assert txn.account_id == account.id
@@ -2440,7 +2457,19 @@ class TestAccountIdColumn:
     def test_transaction_without_account_id_raises_integrity_error(
         self, app, db, seed_user, seed_periods_today
     ):
-        """Attempting to create a Transaction without account_id raises IntegrityError."""
+        """Attempting to create a Transaction without account_id raises IntegrityError.
+
+        A BARE row on purpose: the subject is the TABLE's ``NOT NULL`` on
+        ``account_id``, which no builder can be asked for (the producer
+        requires the account), so this site stays hand-built through the
+        cutover (plan step balance:X-bi-7c, handoff s.3).  Matched on the
+        NOT NULL sentence itself so the case cannot pass on some OTHER
+        refusal of a bare link-less row -- 7d's pricing-link CHECK would
+        refuse this row too, and a bare ``match="account_id"`` is vacuous:
+        SQLAlchemy appends the INSERT's column list to the message, so every
+        IntegrityError on this table names the column (found by 7c-4's
+        adversarial review).
+        """
         from sqlalchemy.exc import IntegrityError
 
         projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -2457,7 +2486,10 @@ class TestAccountIdColumn:
             amount_ownership=AmountOwnership.own(Decimal("50.00")),
         )
         db.session.add(txn)
-        with pytest.raises(IntegrityError):
+        with pytest.raises(
+            IntegrityError,
+            match=r'null value in column "account_id" of relation "transactions"',
+        ):
             db.session.flush()
         db.session.rollback()
 
@@ -2484,22 +2516,19 @@ class TestAccountIdColumn:
         """The payback transaction created by mark_as_credit inherits account_id."""
         from app.services import credit_workflow
 
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         account = seed_user["account"]
 
-        txn = Transaction(
-            account_id=account.id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            seed_periods_today[0],
             name="Test Expense for Credit",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("75.00"),
+            user_id=seed_periods_today[0].user_id,
+            account_id=account.id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("75.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.commit()
 
         payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
@@ -2512,8 +2541,6 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -2536,13 +2563,12 @@ class TestAccountIdColumn:
         """A typed quick-create name wins over the category default.
 
         Grid audit A5 (closeout plan session 4): the Tier-1 entry point
-        accepts an optional name so an ad-hoc row does not need the
-        full form just to be named.
+        accepts an optional name so a one-off does not need the full form
+        just to be named.
         """
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -2574,7 +2600,6 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -2600,7 +2625,6 @@ class TestAccountIdColumn:
         """POST /transactions/inline without account_id returns validation error."""
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -2619,7 +2643,6 @@ class TestAccountIdColumn:
         other_account = second_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -2658,22 +2681,26 @@ class TestAccountScopedGrid:
         return savings
 
     def _create_txn(self, account, period, scenario, name, amount,
-                    txn_type_name="Expense", status_name="Projected", category=None):
-        """Helper: create a transaction on the given account."""
-        status = db.session.query(Status).filter_by(name=status_name).one()
+                    txn_type_name="Expense", status_name=None, category=None):
+        """Helper: place a one-off on the given account.
+
+        Projected -- the producer's only state -- unless *status_name* names
+        another, laid on BARE as the hand-built row's was (the one caller is
+        the cancelled-cell case).
+        """
         txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
-        txn = Transaction(
-            account_id=account.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            status_id=status.id,
+        txn = one_off_row_of(
+            period,
             name=name,
-            category_id=category.id if category else None,
+            amount=Decimal(str(amount)),
+            user_id=period.user_id,
+            account_id=account.id,
+            scenario_id=scenario.id,
             transaction_type_id=txn_type.id,
-            amount_ownership=AmountOwnership.own(Decimal(str(amount))),
+            category_id=category.id if category else None,
         )
-        db.session.add(txn)
+        if status_name is not None:
+            txn.status_id = db.session.query(Status).filter_by(name=status_name).one().id
         return txn
 
     # --- Core filtering tests ---
@@ -2684,7 +2711,6 @@ class TestAccountScopedGrid:
         """Default grid (checking) shows only checking transactions, not savings."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2712,7 +2738,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
@@ -2776,7 +2801,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 500,
@@ -2796,7 +2820,6 @@ class TestAccountScopedGrid:
         """GET /grid/balance-row with account_id returns that account's balances."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Expense on Checking", 300,
@@ -2833,7 +2856,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
@@ -2889,7 +2911,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2939,7 +2960,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         current = current_pay_period(seed_user["user"].id)
 
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
@@ -2962,7 +2982,6 @@ class TestAccountScopedGrid:
         """Soft-deleted transactions (is_deleted=True) do not appear."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
 
         txn = self._create_txn(checking, seed_periods_today[0], scenario, "Deleted Expense", 999,
                                category=seed_user["categories"]["Rent"])
@@ -2985,7 +3004,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Create projected transactions on both accounts in period 0.
@@ -3024,7 +3042,6 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         category = seed_user["categories"]["Salary"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         db.session.commit()
 
@@ -3064,7 +3081,6 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
-        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         current = current_pay_period(seed_user["user"].id)
@@ -3134,36 +3150,32 @@ class TestInlineSubtotalRows:
         with app.app_context():
             # Create transactions so the sections render.
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
-            txn_inc = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Salary",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-            )
-            txn_exp = Transaction(
+                amount=Decimal("2000.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add_all([txn_inc, txn_exp])
+            one_off_row_of(
+                current,
+                name="Rent",
+                amount=Decimal("1200.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Rent"].id,
+            )
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -3176,7 +3188,6 @@ class TestInlineSubtotalRows:
         """Subtotal rows show correct per-period totals."""
         with app.app_context():
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = current_pay_period(seed_user["user"].id)
@@ -3189,18 +3200,16 @@ class TestInlineSubtotalRows:
                 ("Rent", "Rent", expense_type.id, "1200.00"),
                 ("Food", "Groceries", expense_type.id, "400.00"),
             ]:
-                txn = Transaction(
-                    user_id=current.user_id,
-                    pay_period_id=current.id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    current,
                     name=name,
-                    category_id=seed_user["categories"][cat].id,
+                    amount=Decimal(amt),
+                    user_id=current.user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=typ,
-                    amount_ownership=AmountOwnership.own(Decimal(amt)),
+                    category_id=seed_user["categories"][cat].id,
                 )
-                db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -3215,36 +3224,33 @@ class TestInlineSubtotalRows:
         """Cancelled transactions are excluded from subtotals."""
         with app.app_context():
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
-            txn_ok = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Good Pay",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            )
-            txn_bad = Transaction(
+                amount=Decimal("1000.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=cancelled.id,
-                name="Cancelled Pay",
-                category_id=seed_user["categories"]["Salary"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add_all([txn_ok, txn_bad])
+            txn_bad = one_off_row_of(
+                current,
+                name="Cancelled Pay",
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=seed_user["categories"]["Salary"].id,
+            )
+            txn_bad.status_id = cancelled.id
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -3274,39 +3280,34 @@ class TestNetCashFlowRow:
     def _seed_txns(self, seed_user, seed_periods_today, income_amt, expense_amt):
         """Helper: create income + expense in the current/first visible period."""
         from app.models.ref import TransactionType
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         current = current_pay_period(seed_user["user"].id)
         if not current:
             current = seed_periods_today[0]
 
-        txns = []
         if income_amt:
-            txns.append(Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Income",
-                category_id=seed_user["categories"]["Salary"].id,
-                transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal(income_amt)),
-            ))
-        if expense_amt:
-            txns.append(Transaction(
+                amount=Decimal(income_amt),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=income_type.id,
+                category_id=seed_user["categories"]["Salary"].id,
+            )
+        if expense_amt:
+            one_off_row_of(
+                current,
                 name="Expense",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal(expense_amt),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal(expense_amt)),
-            ))
-        db.session.add_all(txns)
+                category_id=seed_user["categories"]["Rent"].id,
+            )
         db.session.commit()
 
     def test_net_cash_flow_row_present(self, app, db, auth_client, seed_user, seed_periods_today):
@@ -3399,24 +3400,21 @@ class TestFooterCondensation:
         """Tbody subtotal and net cash flow rows survive footer condensation."""
         with app.app_context():
             from app.models.ref import TransactionType
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Pay",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -3633,23 +3631,20 @@ class TestPeriodHeaderDateFormat:
             start = today - timedelta(days=56)
             periods = self._make_periods(db, seed_user, start)
 
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
             first_cat = list(seed_user["categories"].values())[0]
-            txn = Transaction(
-                user_id=periods[0].user_id,
-                pay_period_id=periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                periods[0],
                 name="Test Bill",
-                category_id=first_cat.id,
+                amount=Decimal("100.00"),
+                user_id=periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=first_cat.id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             current_period = current_pay_period(
@@ -3821,26 +3816,23 @@ class TestTransactionNameRows:
     def test_grid_one_time_transaction_gets_own_row(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A one-time transaction (no template) produces its own row with
+        """A one-off (a rule-less definition's row) produces its own row with
         the transaction name in the row header.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Car Repair",
-                category_id=seed_user["categories"]["Car Payment"].id,
+                amount=Decimal("450.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("450.00")),
+                category_id=seed_user["categories"]["Car Payment"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -3862,11 +3854,9 @@ class TestTransactionNameRows:
         """
         with app.app_context():
             from app.models.transfer import Transfer
-            from app.models.transfer_template import TransferTemplate
 
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = self._get_current_period(seed_user)
 
             # Create a savings account for the transfer destination.
@@ -3939,24 +3929,21 @@ class TestTransactionNameRows:
         matching the row key's category.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
             # Create a transaction only in the current period so adjacent
             # periods have empty cells for this row key.
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Electric Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("120.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("120.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -3974,34 +3961,30 @@ class TestTransactionNameRows:
         with the group-header-row CSS class.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
             # Create expenses in two different groups.
-            txn_home = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Rent Payment",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            )
-            txn_auto = Transaction(
+                amount=Decimal("1000.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Car Loan",
-                category_id=seed_user["categories"]["Car Payment"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("400.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add_all([txn_home, txn_auto])
+            one_off_row_of(
+                current,
+                name="Car Loan",
+                amount=Decimal("400.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Car Payment"].id,
+            )
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4021,22 +4004,19 @@ class TestTransactionNameRows:
         the cell, and HX-Trigger fires balanceChanged.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Phone Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("80.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("80.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # GI-1: GET quick edit form.
@@ -4061,24 +4041,21 @@ class TestTransactionNameRows:
     ):
         """GI-9 regression: clicking an empty cell loads the quick-create form."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
             # Create a transaction so a row key exists with empty cells
             # in adjacent periods.
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Internet Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("60.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("60.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # Extract the quick-create URL from an empty cell.
@@ -4115,37 +4092,33 @@ class TestTransactionNameRows:
         so its header is not suppressed.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = self._get_current_period(seed_user)
 
-            income_txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
             # Expense in the "Home" group so a real (non-suppressed) group
             # header renders -- the "Income" group header is dropped as
             # redundant with the INCOME banner.
-            expense_txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("1500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1500.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add_all([income_txn, expense_txn])
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4187,45 +4160,40 @@ class TestTransactionNameRows:
         Total Income shows $2,000, Total Expenses shows $1,500, Net shows $500.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = self._get_current_period(seed_user)
 
-            income = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            expense1 = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-            )
-            expense2 = Transaction(
+                amount=Decimal("1000.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add_all([income, expense1, expense2])
+            one_off_row_of(
+                current,
+                name="Groceries",
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4245,7 +4213,6 @@ class TestTransactionNameRows:
         Identical to C-0-7 from regression suite.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             account = seed_user["account"]
@@ -4257,51 +4224,46 @@ class TestTransactionNameRows:
             )
 
             # Setup: past expense, current income + 2 expenses.
-            past_exp = Transaction(
-                user_id=past.user_id,
-                pay_period_id=past.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            one_off_row_of(
+                past,
                 name="Past Rent",
+                amount=Decimal("150.00"),
+                user_id=past.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
                 category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
             )
-            income_txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            income_txn = one_off_row_of(
+                current,
                 name="Paycheck",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("2000.00"),
+                user_id=current.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+                category_id=seed_user["categories"]["Salary"].id,
             )
-            exp_done = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=account.id,
-                status_id=projected.id,
+            exp_done = one_off_row_of(
+                current,
                 name="Electric Bill",
-                category_id=seed_user["categories"]["Car Payment"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-            )
-            exp_credit = Transaction(
+                amount=Decimal("500.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=account.id,
-                status_id=projected.id,
-                name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
+                category_id=seed_user["categories"]["Car Payment"].id,
             )
-            db.session.add_all([past_exp, income_txn, exp_done, exp_credit])
+            exp_credit = one_off_row_of(
+                current,
+                name="Groceries",
+                amount=Decimal("300.00"),
+                user_id=current.user_id,
+                account_id=account.id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type.id,
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             db.session.commit()
 
             # Step 1: True-up.
@@ -4364,59 +4326,27 @@ class TestTransactionNameRows:
         row label sequences.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             current = self._get_current_period(seed_user)
 
             # Create multiple transactions across categories.
-            txns = [
-                Transaction(
+            for name, category_key, type_id, amount in [
+                ("Paycheck", "Salary", income_type.id, "2000.00"),
+                ("Rent", "Rent", expense_type.id, "1000.00"),
+                ("Groceries", "Groceries", expense_type.id, "200.00"),
+                ("Car Loan", "Car Payment", expense_type.id, "400.00"),
+            ]:
+                one_off_row_of(
+                    current,
+                    name=name,
+                    amount=Decimal(amount),
                     user_id=current.user_id,
-                    pay_period_id=current.id,
-                    scenario_id=seed_user["scenario"].id,
                     account_id=seed_user["account"].id,
-                    status_id=projected.id,
-                    name="Paycheck",
-                    category_id=seed_user["categories"]["Salary"].id,
-                    transaction_type_id=income_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("2000.00")),
-                ),
-                Transaction(
-                    user_id=current.user_id,
-                    pay_period_id=current.id,
                     scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
-                    name="Rent",
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("1000.00")),
-                ),
-                Transaction(
-                    user_id=current.user_id,
-                    pay_period_id=current.id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
-                    name="Groceries",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                    transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("200.00")),
-                ),
-                Transaction(
-                    user_id=current.user_id,
-                    pay_period_id=current.id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
-                    name="Car Loan",
-                    category_id=seed_user["categories"]["Car Payment"].id,
-                    transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(Decimal("400.00")),
-                ),
-            ]
-            db.session.add_all(txns)
+                    transaction_type_id=type_id,
+                    category_id=seed_user["categories"][category_key].id,
+                )
             db.session.commit()
 
             import re
@@ -4444,22 +4374,19 @@ class TestTransactionNameRows:
         in their own row with 'CC Payback: ...' in the row header.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Restaurant",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # Mark as credit -- generates payback in next period.
@@ -4490,22 +4417,19 @@ class TestTransactionNameRows:
         generate row keys and do not appear as cells.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Cancelled Item",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # Cancel it.
@@ -4559,22 +4483,19 @@ class TestTooltipContent:
         including comma-separated thousands (e.g. $1,234.56).
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Test Tooltip Amount",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("1234.56"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("1234.56")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4599,24 +4520,23 @@ class TestTooltipContent:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=paid.id,
-                # A settled row carries the day its money moved; this fixture
-                # is bare (no seam), so it states the day the readers would
-                # otherwise refuse to guess (plan step X-f1).
-                **settle_day_columns(current.start_date),
+            txn = one_off_row_of(
+                current,
                 name="Test Est Comparison",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                settled_amount=Decimal("487.32"),
-                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = paid.id
+            txn.settled_amount = Decimal("487.32")
+            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4637,24 +4557,23 @@ class TestTooltipContent:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=paid.id,
-                # A settled row carries the day its money moved; this fixture
-                # is bare (no seam), so it states the day the readers would
-                # otherwise refuse to guess (plan step X-f1).
-                **settle_day_columns(current.start_date),
+            txn = one_off_row_of(
+                current,
                 name="Test Equal Amounts",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                settled_amount=Decimal("500.00"),
-                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = paid.id
+            txn.settled_amount = Decimal("500.00")
+            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4676,24 +4595,23 @@ class TestTooltipContent:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=paid.id,
-                # A settled row carries the day its money moved; this fixture
-                # is bare (no seam), so it states the day the readers would
-                # otherwise refuse to guess (plan step X-f1).
-                **settle_day_columns(current.start_date),
+            txn = one_off_row_of(
+                current,
                 name="Test Paid Status",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("100.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                settled_amount=Decimal("100.00"),
-                settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = paid.id
+            txn.settled_amount = Decimal("100.00")
+            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4708,22 +4626,19 @@ class TestTooltipContent:
     ):
         """Tooltip includes '-- Projected' for projected transactions."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Test Projected Status",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("75.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4738,23 +4653,20 @@ class TestTooltipContent:
     ):
         """Tooltip includes notes when present on the transaction."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Test Notes Tooltip",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("50.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-                notes="Auto-pay on the 15th",
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
+            txn.notes = "Auto-pay on the 15th"
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4771,22 +4683,19 @@ class TestTooltipContent:
         '-- ' separator with nothing after it.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Test No Trailing Sep",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("200.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4808,22 +4717,19 @@ class TestTooltipContent:
     ):
         """Tooltip renders $0.00 correctly for a zero-amount transaction."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Test Zero Amount",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("0.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("0.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4838,22 +4744,19 @@ class TestTooltipContent:
     ):
         """Tooltip formats large amounts with comma-separated thousands."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="Test Large Amount",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("12345.67"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("12345.67")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4874,18 +4777,17 @@ class TestTooltipContent:
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=credit.id,
+            txn = one_off_row_of(
+                current,
                 name="Test Credit Tooltip",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("200.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("200.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            txn.status_id = credit.id
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4908,22 +4810,19 @@ class TestTooltipContent:
         a title attribute with the updated amount (server-side rendering).
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Test HTMX Update",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("80.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("80.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             # PATCH the amount.
@@ -4949,22 +4848,19 @@ class TestTooltipContent:
         the row header in Commit #15).
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             current = self._get_current_period(seed_user)
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            one_off_row_of(
+                current,
                 name="State Farm",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("150.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("150.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4990,7 +4886,6 @@ class TestSubtotalDecimalPrecision:
         subtotals and the balance row agree within $0.01.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             period = current_pay_period(seed_user["user"].id)
@@ -5001,36 +4896,32 @@ class TestSubtotalDecimalPrecision:
             expected_expense = Decimal("0")
             for i in range(20):
                 amt = Decimal("33.33")
-                txn = Transaction(
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    period,
                     name=f"Expense {i}",
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=amt,
+                    user_id=period.user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=expense_type.id,
-                    amount_ownership=AmountOwnership.own(amt),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
                 expected_expense += amt
 
             # Create 5 income transactions.
             expected_income = Decimal("0")
             for i in range(5):
                 amt = Decimal("777.77")
-                txn = Transaction(
-                    user_id=period.user_id,
-                    pay_period_id=period.id,
-                    scenario_id=seed_user["scenario"].id,
-                    account_id=seed_user["account"].id,
-                    status_id=projected.id,
+                one_off_row_of(
+                    period,
                     name=f"Income {i}",
-                    category_id=seed_user["categories"]["Groceries"].id,
+                    amount=amt,
+                    user_id=period.user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
                     transaction_type_id=income_type.id,
-                    amount_ownership=AmountOwnership.own(amt),
+                    category_id=seed_user["categories"]["Groceries"].id,
                 )
-                db.session.add(txn)
                 expected_income += amt
 
             db.session.commit()
@@ -5085,7 +4976,6 @@ class TestGridSubtotalsRegressionBaseline:
         """
         with app.app_context():
             scenario = seed_user["scenario"]
-            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
 
             received = db.session.query(Status).filter_by(
@@ -5103,23 +4993,26 @@ class TestGridSubtotalsRegressionBaseline:
             if not current:
                 current = seed_periods_today[0]
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=scenario.id,
-                account_id=account.id,
-                status_id=received.id,
+            txn = one_off_row_of(
+                current,
                 name="Regression Subtotal Income",
-                category_id=seed_user["categories"]["Salary"].id,
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=account.id,
+                scenario_id=scenario.id,
                 transaction_type_id=income_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
-                **settle_day_columns(current.start_date),
-                **settlement_columns(
+                category_id=seed_user["categories"]["Salary"].id,
+            )
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = received.id
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
+            for _column, _value in settlement_columns(
                     current.start_date, Decimal("500.00"),
                     submitted=Decimal("400.00"),
-                ),
-            )
-            db.session.add(txn)
+                ).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -5182,9 +5075,6 @@ class TestGridPeriodSubtotalCanonical:
         $500 the raw-estimate defect, $0 the reservation-only answer.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
@@ -5195,18 +5085,16 @@ class TestGridPeriodSubtotalCanonical:
                 "seed_periods_today must produce a current period"
             )
 
-            txn = Transaction(
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                current,
                 name="Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             # The user read their bank balance on the day they shopped, so
@@ -5326,9 +5214,6 @@ class TestGridPeriodSubtotalCanonical:
         from app.models.transaction_entry import TransactionEntry
 
         with app.app_context():
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
@@ -5347,18 +5232,16 @@ class TestGridPeriodSubtotalCanonical:
                 "to difference against"
             )
 
-            txn = Transaction(
-                user_id=target_period.user_id,
-                pay_period_id=target_period.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                target_period,
                 name="Groceries window",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("300.00"),
+                user_id=target_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("300.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
             # $750.00 is what the RECORDS say that day -- the $1,000.00
             # opening less the $250.00 of purchases the bank has taken -- so
@@ -5559,8 +5442,9 @@ class TestGridMatchedByRowPeriod:
     rendered context, its keys are 4-tuples, its values are non-empty
     lists of ``Transaction`` ORM objects, and its contents mirror the
     Jinja predicate text-for-text (category match, income/expense per
-    section, not-deleted, not-cancelled, template-id-match-takes-
-    precedence with name-match fallback).
+    section, not-deleted, not-cancelled, a recurring definition's row
+    matched by the definition and every other row by name -- ruling
+    R-BAL34's fork on ``recurs``).
     """
 
     @staticmethod
@@ -5628,25 +5512,23 @@ class TestGridMatchedByRowPeriod:
         ORM objects.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                current,
                 name="Weekly Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("123.45"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("123.45")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             _, context = self._capture_grid_context(app, auth_client)
@@ -5690,8 +5572,9 @@ class TestGridMatchedByRowPeriod:
         Seeds four transactions exercising each predicate branch:
           (a) a template-linked income (Salary template) in the
               current period -- must match via the template-id branch.
-          (b) a standalone expense in Groceries by name -- must match
-              via the name-match fallback.
+          (b) a one-off in Groceries -- must match via the name arm
+              (its definition does not recur, so its key carries no
+              template_id although the row has one).
           (c) a cancelled expense in Groceries -- must NOT appear (the
               ``status_id != STATUS_CANCELLED`` guard).
           (d) a soft-deleted expense in Groceries -- must NOT appear
@@ -5709,7 +5592,6 @@ class TestGridMatchedByRowPeriod:
                 seed_user["user"].id,
             )
             assert current is not None
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             salary_cat = seed_user["categories"]["Salary"]
@@ -5722,44 +5604,41 @@ class TestGridMatchedByRowPeriod:
                 name="Biweekly Salary", category_key="Salary",
             )
             txn_a = generate_row_of(salary_template, current)
-            # (b) Standalone expense.
-            txn_b = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected_id,
+            # (b) A one-off (a rule-less definition's row).
+            txn_b = one_off_row_of(
+                current,
                 name="Adhoc Groceries",
-                category_id=groceries_cat.id,
+                amount=Decimal("85.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("85.00")),
+                category_id=groceries_cat.id,
             )
             # (c) Cancelled expense.
-            txn_c = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=cancelled_id,
+            txn_c = one_off_row_of(
+                current,
                 name="Cancelled Groceries",
-                category_id=groceries_cat.id,
-                transaction_type_id=expense_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-            )
-            # (d) Soft-deleted expense.
-            txn_d = Transaction(
-                account_id=seed_user["account"].id,
+                amount=Decimal("50.00"),
                 user_id=current.user_id,
-                pay_period_id=current.id,
+                account_id=seed_user["account"].id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=projected_id,
-                name="Deleted Groceries",
-                category_id=groceries_cat.id,
                 transaction_type_id=expense_type_id,
-                amount_ownership=AmountOwnership.own(Decimal("60.00")),
-                is_deleted=True,
+                category_id=groceries_cat.id,
             )
-            db.session.add_all([txn_b, txn_c, txn_d])
+            txn_c.status_id = cancelled_id
+            # (d) Soft-deleted expense.
+            txn_d = one_off_row_of(
+                current,
+                name="Deleted Groceries",
+                amount=Decimal("60.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=expense_type_id,
+                category_id=groceries_cat.id,
+            )
+            txn_d.is_deleted = True
             db.session.commit()
             txn_a_id = txn_a.id
             txn_b_id = txn_b.id
@@ -5785,17 +5664,18 @@ class TestGridMatchedByRowPeriod:
                 f"{[t.id for t in matched[key_a]]!r}"
             )
 
-            # (b) Standalone: key uses template_id=None, txn_name from
-            # row key is the instance name; matched list contains txn_b.
+            # (b) The one-off: key uses template_id=None (the name arm),
+            # txn_name from row key is the instance name; matched list
+            # contains txn_b.
             key_b = (
                 groceries_cat.id, None, "Adhoc Groceries", current.id,
             )
             assert key_b in matched, (
-                f"Standalone match missing; expected key {key_b!r} "
+                f"One-off match missing; expected key {key_b!r} "
                 f"in dict; got keys {list(matched.keys())!r}"
             )
             assert [t.id for t in matched[key_b]] == [txn_b_id], (
-                "Standalone match must contain only txn_b "
+                "One-off match must contain only txn_b "
                 f"(id={txn_b_id}); got "
                 f"{[t.id for t in matched[key_b]]!r}"
             )
@@ -5996,10 +5876,12 @@ class TestTheGridGroupsAOneOffsRowsByName:
         The placed-row case above leaves the legacy arm ungraded -- restoring
         the old ``rk.template_id is not None and txn.template_id is not
         None`` survived it (adversarial review) -- so this is the control
-        that fails on that revert.
+        that fails on that revert.  The row is the LEGACY shape on its one
+        transitional home (plan step balance:X-bi-7c, ruling R-BAL59); the
+        cutover (X-bi-7d) retires this case with the shape.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             template = make_expense_template(
@@ -6008,19 +5890,16 @@ class TestTheGridGroupsAOneOffsRowsByName:
             )
             gen_4 = generate_row_of(template, seed_periods_today[4])
             gen_5 = generate_row_of(template, seed_periods_today[5])
-            legacy = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_user["user"].id,
-                pay_period_id=seed_periods_today[4].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            legacy = legacy_link_less_row_of(
+                seed_periods_today[4],
                 name="Streaming",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("12.00"),
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("12.00")),
-                template_id=None,
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(legacy)
             db.session.commit()
 
             _, matched = self._expense_rows(app, auth_client)
@@ -6038,24 +5917,26 @@ class TestTheGridGroupsAOneOffsRowsByName:
     def test_a_legacy_link_less_row_still_groups_by_name(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """THE CONTROL: a link-less row keys as it always did, beside a one-off of its name."""
+        """THE CONTROL: a link-less row keys as it always did, beside a one-off of its name.
+
+        The row is the LEGACY shape on its one transitional home (plan step
+        balance:X-bi-7c, ruling R-BAL59); the cutover (X-bi-7d) retires this
+        case with the shape.
+        """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            legacy = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=seed_user["user"].id,
-                pay_period_id=seed_periods_today[4].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            legacy = legacy_link_less_row_of(
+                seed_periods_today[4],
                 name="Coffee",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("3.00"),
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("3.00")),
-                template_id=None,
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(legacy)
             placed = self._place(seed_user, seed_periods_today[5], "Coffee")
             db.session.commit()
 
@@ -6079,48 +5960,42 @@ class TestSettleDayLifecycle:
     def _create_test_txn(self, seed_user, seed_periods_today):
         """Create a projected expense transaction for testing."""
         from app import ref_cache
-        from app.enums import StatusEnum, TxnTypeEnum
+        from app.enums import TxnTypeEnum
 
-        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
         expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected_id,
+        txn = one_off_row_of(
+            seed_periods_today[0],
             name="Test Expense",
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal("100.00"),
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("100.00")),
+            category_id=seed_user["categories"]["Rent"].id,
             due_date=seed_periods_today[0].start_date,
         )
-        db.session.add(txn)
         db.session.commit()
         return txn
 
     def _create_income_txn(self, seed_user, seed_periods_today):
         """Create a projected income transaction for testing."""
         from app import ref_cache
-        from app.enums import StatusEnum, TxnTypeEnum
+        from app.enums import TxnTypeEnum
 
-        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
         income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=seed_periods_today[0].user_id,
-            pay_period_id=seed_periods_today[0].id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=projected_id,
+        txn = one_off_row_of(
+            seed_periods_today[0],
             name="Test Income",
-            category_id=seed_user["categories"]["Salary"].id,
+            amount=Decimal("2000.00"),
+            user_id=seed_periods_today[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=income_type_id,
-            amount_ownership=AmountOwnership.own(Decimal("2000.00")),
+            category_id=seed_user["categories"]["Salary"].id,
             due_date=seed_periods_today[0].start_date,
         )
-        db.session.add(txn)
         db.session.commit()
         return txn
 
@@ -6494,8 +6369,6 @@ class TestSettleDayLifecycle:
         clause, and carrying two copies is the duplication R0801 cannot see
         because it does not run on ``tests/``.
         """
-        from app.models.journal_entry import JournalEntry
-
         return net_posted_by_day(family_journal_filter(txn_id))
 
     def test_reverting_to_projected_ignores_the_submitted_settle_day(
@@ -7221,7 +7094,6 @@ class TestMobileThisPeriodPartial:
 
             response = auth_client.get("/grid")
             assert response.status_code == 200
-            body = response.data.decode("utf-8")
 
             # The partial's header div is followed by the period
             # label inside a fw-bold div.  Encode the label so non-ASCII
@@ -7414,25 +7286,23 @@ class TestMobileCardActionBar:
         ``transactions.mark_done`` plus the visible button label.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn = one_off_row_of(
+                current,
                 name="C7-3 Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("42.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("42.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=True)
@@ -7464,23 +7334,25 @@ class TestMobileCardActionBar:
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
+            txn = one_off_row_of(
+                current,
                 name="C7-4 Paid Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("42.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("42.00")),
-                # A settled row carries the day its money moved and a RECORD
-                # of what moved (plan step X-au-c3); a bare fixture states both
-                # through the one door, ``settlement_columns``.
-                **settle_day_columns(current.start_date),
-                **settlement_columns(current.start_date, Decimal("42.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
+            for _column, _value in settlement_columns(
+                    current.start_date, Decimal("42.00"),
+                ).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=True)
@@ -7505,23 +7377,25 @@ class TestMobileCardActionBar:
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
+            txn = one_off_row_of(
+                current,
                 name="C7-4b Done Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("42.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("42.00")),
-                # A settled row carries the day its money moved and a RECORD
-                # of what moved (plan step X-au-c3); a bare fixture states both
-                # through the one door, ``settlement_columns``.
-                **settle_day_columns(current.start_date),
-                **settlement_columns(current.start_date, Decimal("42.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
+            for _column, _value in settlement_columns(
+                    current.start_date, Decimal("42.00"),
+                ).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=True)
@@ -7557,23 +7431,25 @@ class TestMobileCardActionBar:
             )
             assert current is not None
             salary_cat = seed_user["categories"]["Salary"]
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
+            txn = one_off_row_of(
+                current,
                 name="C7-4c Received Salary",
-                category_id=salary_cat.id,
+                amount=Decimal("2500.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("2500.00")),
-                # A settled row carries the day its money moved and a RECORD
-                # of what moved (plan step X-au-c3); a bare fixture states both
-                # through the one door, ``settlement_columns``.
-                **settle_day_columns(current.start_date),
-                **settlement_columns(current.start_date, Decimal("2500.00")),
+                category_id=salary_cat.id,
             )
-            db.session.add(txn)
+            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            txn.status_id = ref_cache.status_id(StatusEnum.RECEIVED)
+            for _column, _value in settle_day_columns(current.start_date).items():
+                setattr(txn, _column, _value)
+            for _column, _value in settlement_columns(
+                    current.start_date, Decimal("2500.00"),
+                ).items():
+                setattr(txn, _column, _value)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=True)
@@ -7597,25 +7473,23 @@ class TestMobileCardActionBar:
         table), so its absence is now unconditional.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn = one_off_row_of(
+                current,
                 name="C7-5 Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("99.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("99.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=False)
@@ -7648,25 +7522,23 @@ class TestMobileCardActionBar:
         change.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn = one_off_row_of(
+                current,
                 name="C7-6 Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("42.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("42.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             rendered = self._render_action_bar(app, txn, can_edit=True)
@@ -7693,25 +7565,23 @@ class TestMobileCardActionBar:
         the rendered page.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn = one_off_row_of(
+                current,
                 name="C7-integration Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("31.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("31.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
             txn_id = txn.id
 
@@ -7759,25 +7629,23 @@ class TestMobileCardActionBar:
         from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
 
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            txn = one_off_row_of(
+                current,
                 name="C7-prefix Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("17.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("17.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             rk = SimpleNamespace(
@@ -7933,25 +7801,23 @@ class TestMobileNoSwipeAffordances:
         revert that re-enables the affordance.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                current,
                 name="No-swipe Projected Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("23.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("23.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.get("/grid")
@@ -8148,7 +8014,6 @@ class TestMobilePlanTab:
         controlled ``plan_columns`` balances.  No database setup --
         the partial is template logic only for the class assignment.
         """
-        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
         from datetime import date as _date  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
@@ -8245,27 +8110,25 @@ class TestMobilePlanTab:
         all interactive markers.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=current.user_id,
-                pay_period_id=current.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                current,
                 name="Plan-readonly Groceries",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("88.00"),
+                user_id=current.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(
                     TxnTypeEnum.EXPENSE,
                 ),
-                amount_ownership=AmountOwnership.own(Decimal("88.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             response = auth_client.get("/grid")
@@ -9785,7 +9648,6 @@ class TestGridInterestAccrual:
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
-        scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
         current = current_pay_period(user_id)
@@ -10039,23 +9901,19 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
     def _envelope_txn(seed_user, period):
         """A Projected envelope row, so the card renders the entries block."""
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import (  # pylint: disable=import-outside-toplevel
-            StatusEnum, TxnTypeEnum,
-        )
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        txn = one_off_row_of(
+            period,
             name="Two-clock Groceries",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("500.00"),
+            user_id=period.user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
             is_envelope=True,
         )
-        db.session.add(txn)
         db.session.commit()
         return txn
 
@@ -10135,18 +9993,16 @@ class TestARevertedRowShowsWhatARePayWillBook:
     @staticmethod
     def _reverted_corrected_row(seed_user, period):
         """Settle a bill at a human's figure, then revert it -- through the doors."""
-        txn = Transaction(
-            account_id=seed_user["account"].id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        txn = one_off_row_of(
+            period,
             name="Reverted Bill",
-            category_id=seed_user["categories"]["Rent"].id,
+            amount=Decimal("500.00"),
+            user_id=period.user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
+            category_id=seed_user["categories"]["Rent"].id,
         )
-        db.session.add(txn)
         db.session.flush()
         transaction_service.settle_transaction(
             txn, submitted=Decimal("245.32"),
@@ -10225,18 +10081,16 @@ class TestARevertedRowShowsWhatARePayWillBook:
             period = current_pay_period(
                 seed_user["user"].id,
             )
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=period.user_id,
-                pay_period_id=period.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                period,
                 name="Ordinary Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("500.00"),
+                user_id=period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                amount_ownership=AmountOwnership.own(Decimal("500.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
         html = auth_client.get("/grid").data.decode()
