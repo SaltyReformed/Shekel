@@ -592,7 +592,7 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     which issues ``selectinload(Transaction.entries)`` for both halves
     of the event stream, so this function never sees an unloaded
     relationship from a routed caller.  The remaining
-    ``getattr(txn, "entries", ())`` access below covers two safe cases:
+    ``getattr(txn, "purchases", ())`` access below covers two safe cases:
 
       * **Not-yet-routed ORM callers** (savings/accounts/calendar/
         year-end/investment/retirement, fixed in Commits 6-9): the
@@ -600,11 +600,23 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
         caller now gets the CORRECT entries-aware value with one
         extra SELECT per transaction (acceptable for the transition;
         the producer routing eliminates the extra query).
-      * **Non-ORM test fakes** with no ``entries`` attribute:
+      * **Non-ORM test fakes** with no ``purchases`` attribute:
         ``getattr`` returns the default ``()``, the empty-entries
         early return fires, and the function returns
         ``effective_amount`` -- the same behavior pre-Commit-5 had
         for test fakes.
+
+    **The reservation is over the row's PURCHASES, never its whole family**
+    (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  A settled row's
+    covering movement -- the payment row the status seam writes for the
+    record -- sits in ``entries`` too, and since that step a revert KEEPS it
+    un-dated under a Projected row; read as a purchase it would be an
+    unposted debit and the ``max()`` floor would hold the CLOSE back in
+    place of the plan: a `$100.00` envelope reverted after a typed
+    `$120.00` close would reserve `$120.00`, where a reverted row is worth
+    its PLAN (developer, 2026-08-17).  :attr:`~app.models.transaction.
+    Transaction.purchases` is the entries less that mark, so the three
+    buckets below see what a person recorded and nothing the seam did.
 
     What is no longer possible: the same Projected envelope expense
     yielding two different values for two different consumers based
@@ -674,11 +686,11 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
         balance.
     """
     # ``getattr`` with a default of ``()`` handles both unloaded ORM
-    # relationships (descriptor lazy-loads via the session) and
-    # non-ORM fakes (no attribute defined).  The empty-tuple default
+    # relationships (the derivation lazy-loads ``entries`` via the session)
+    # and non-ORM fakes (no attribute defined).  The empty-tuple default
     # passes the falsy check below, mirroring the original empty-list
     # short-circuit and keeping non-ORM tests stable.
-    entries = getattr(txn, "entries", ())
+    entries = getattr(txn, "purchases", ())
     # This check stays AHEAD of ``is_projected`` and that ordering is
     # load-bearing, not stylistic: ``is_projected`` resolves a ``ref_cache`` id,
     # which is work an entry-less row has no reason to pay for.

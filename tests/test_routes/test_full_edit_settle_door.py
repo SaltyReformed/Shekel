@@ -857,7 +857,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             # WHO WROTE it: the popover is a person's door, and the route
             # states ``typed`` with the figure (plan step X-bi-3e-1, ruling
             # R-BAL61) -- graded on the covering movement, the source's home.
-            (movement,) = status_seam.covering_movements(reloaded)
+            (movement,) = reloaded.covering_movements
             assert movement.amount == Decimal("245.32")
             assert movement.figure_source_id == ref_cache.movement_figure_source_id(
                 MovementFigureSourceEnum.TYPED,

@@ -487,8 +487,9 @@ def apply_status_change(
         )
 
     verify_transition(row, new_status_id)
-    # Read BEFORE the assignment, for the covering movement below: leaving the
-    # settled band is a question about the status the row is LEAVING.
+    # Read BEFORE the assignment, for the covering movement below: whether
+    # this act moves the row's assertion at all is a question about the
+    # status the row is LEAVING as well as the one it enters.
     was_settled = row.status_id in settled_status_ids()
     row.status_id = new_status_id
 
@@ -591,10 +592,12 @@ def apply_status_change(
         # **The record's other home** (plan step **X-bi-3a**, ruling
         # **R-BAL39**): a settle on the manual branch is mirrored as ONE
         # covering movement, the payment row that records a bill's money the
-        # way a purchase records an envelope's, and leaving the band releases
-        # it.  Written LAST so every value it mirrors -- the day pair, the
-        # link, the figure and its basis -- is the row's final one for this
-        # act.  The rule and the lifecycle are
+        # way a purchase records an envelope's, and leaving the band un-dates
+        # it and keeps it (plan step X-bi-3e-2, ruling R-BAL61: the mirror
+        # follows the row's released assertion exactly as ``settled_amount``
+        # is retained above).  Written LAST so every value it mirrors -- the
+        # day pair, the link, the figure and its basis -- is the row's final
+        # one for this act.  The rule and the lifecycle are
         # :mod:`app.services.status_seam._covering`'s; it covers every kind
         # of row, a transfer shadow included since plan step X-bi-3c (the
         # kind gate went in three leaves: expense at 3a, income at 3b,

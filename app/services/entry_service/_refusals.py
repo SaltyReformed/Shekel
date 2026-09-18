@@ -267,7 +267,7 @@ def _reject_settled_addition(
     settled rows carry a stored-figure settlement (8 of them envelopes on the
     developer's checking account) and every one holds ZERO purchases -- and a
     row that HAS purchases always settles on the ``purchases`` basis, because
-    ``settles_from_entries`` is ``tracks_purchases and txn.entries`` and
+    ``settles_from_entries`` is ``tracks_purchases and txn.purchases`` and
     ``carry_forward``'s direct call writes that basis unconditionally.
 
     **The purchase must state the day the BANK TOOK IT** (developer ruling,
@@ -686,12 +686,15 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
     Plan step **X-bi-3a**, ruling **R-BAL39**: a bill (or an envelope closed
     empty) settling on the MANUAL branch has its figure mirrored as ONE
     covering movement, written and kept in step by the status seam alone --
-    the settle re-prices it, a revert deletes it, a day correction on the row
-    re-dates it.  The purchase doors reach it only through the entries list
-    an empty-closed envelope renders, and an edit or delete there would move
-    the row's money out from under its own record: the day the money moved
-    is the ROW's to state (its settle day), and withdrawing the record is a
-    revert.  Refused by name, with the door that owns the act.
+    the settle re-prices it, a revert un-dates it and keeps it (plan step
+    **X-bi-3e-2**, ruling **R-BAL61**), a day correction on the row re-dates
+    it, and only a ``$0.00`` or a ``purchases`` record withdraws it.  Since
+    that step no purchase list renders it (every purchase-meaning reader
+    asks ``Transaction.purchases``, ruling **R-BAL68**), so a door reaches it
+    by a crafted id alone; an edit or delete would still move the row's
+    money out from under its own record: the day the money moved is the
+    ROW's to state (its settle day), and the figure is the settle's.
+    Refused by name, with the door that owns the act.
 
     Args:
         entry: The purchase the door was asked to write.
@@ -704,6 +707,8 @@ def _reject_settlement_record(entry: TransactionEntry) -> None:
             f"Entry {entry.id} is the payment record of transaction "
             f"{entry.transaction_id}, written when that row was marked paid. "
             "It is not a purchase: to change the day its money moved, edit "
-            "the row's settle day; to change the figure, revert the row and "
-            "mark it paid again; to remove it, revert the row."
+            "the row's settle day; to change the figure, correct the row's "
+            "actual or revert it and mark it paid again. It is withdrawn "
+            "only by a $0.00 actual, or by closing the row from its own "
+            "purchases."
         )

@@ -771,7 +771,9 @@ def _row_still_due(
         The row's still-due ``Decimal`` contribution (>= 0).
     """
     if txn.tracks_purchases:
-        remaining = compute_remaining(budget, txn.entries)
+        # The row's PURCHASES, never the family (ruling R-BAL68): the seam's
+        # covering movement is not spend against the budget.
+        remaining = compute_remaining(budget, txn.purchases)
         return remaining if remaining > _ZERO else _ZERO
     return contribution
 

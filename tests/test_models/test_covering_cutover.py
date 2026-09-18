@@ -46,7 +46,6 @@ from app.services import (
 from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
 from app.services.entry_service import EntryDetails
 from app.services.settle_day import SettleDay
-from app.services.status_seam._covering import covering_movements
 from tests._test_helpers import (
     typed,
     create_savings_account,
@@ -98,8 +97,10 @@ def _uncover(*rows):
 
     The row's own record stands and no movement mirrors it, which is every
     production row settled before X-bi-3a.  By SQL rather than through the
-    seam, because no door produces this state: the seam withdraws a mirror
-    only on the way out of the settled band.  **It does not stage the
+    seam, because no door produces this state: the seam keeps a mirror across
+    a revert (plan step X-bi-3e-2) and withdraws one only for a ``$0.00`` or
+    a ``purchases`` record, neither of which leaves a stored figure to
+    cover.  **It does not stage the
     LEDGER**: the deleted mirror's purchase-sourced journal entry is orphaned
     (``ON DELETE SET NULL``) rather than reversed, and the parent's
     transaction-sourced entry stays at zero, where production's carries the
@@ -114,7 +115,7 @@ def _uncover(*rows):
     ), {"ids": ids})
     for row in rows:
         db.session.expire(row)
-        assert covering_movements(row) == []
+        assert row.covering_movements == []
 
 
 def _cover():
@@ -126,7 +127,7 @@ def _cover():
 
 def _only_movement(txn):
     """Return the row's one covering movement, asserting there is exactly one."""
-    movements = covering_movements(txn)
+    movements = txn.covering_movements
     assert len(movements) == 1, f"expected one covering movement, got {len(movements)}"
     return movements[0]
 
@@ -357,9 +358,9 @@ class TestTheCutoverWritesNothingItShouldNot:
             txn = _bill(seed_user, seed_periods[0], "0.00")
             _settle(txn)
             assert txn.settled_amount == Decimal("0.00")
-            assert covering_movements(txn) == []
+            assert txn.covering_movements == []
             assert _cover() == 0
-            assert covering_movements(txn) == []
+            assert txn.covering_movements == []
             _MIGRATION.refuse_unless_total(db.session.connection())
 
     def test_a_purchases_basis_envelope_is_not_covered(
@@ -382,7 +383,7 @@ class TestTheCutoverWritesNothingItShouldNot:
             )
             assert _cover() == 0
             assert len(envelope.entries) == 1
-            assert covering_movements(envelope) == []
+            assert envelope.covering_movements == []
 
     def test_a_row_already_covered_is_left_alone(self, app, seed_user, seed_periods):
         """Idempotent: a database that ran the seam before the cutover."""
@@ -396,7 +397,12 @@ class TestTheCutoverWritesNothingItShouldNot:
             assert (after.id, after.figure_source_id) == (before_id, before_source)
 
     def test_a_reverted_row_is_not_covered(self, app, seed_user, seed_periods):
-        """Out of the band the retained record is not money; nothing mirrors it."""
+        """Out of the band the retained record is not money; the cutover writes nothing.
+
+        Since plan step ``X-bi-3e-2`` (ruling **R-BAL61**) the revert KEEPS
+        the mirror, un-dated -- so a reverted row already holds one, and the
+        cutover, which writes for settled rows alone, still writes none.
+        """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0], "100.00")
             _settle(txn, submitted=typed(Decimal("90.00")))
@@ -405,9 +411,11 @@ class TestTheCutoverWritesNothingItShouldNot:
             )
             db.session.flush()
             assert txn.settled_amount == Decimal("90.00")
-            assert covering_movements(txn) == []
+            (survivor,) = txn.covering_movements
+            assert survivor.settled_on is None
             assert _cover() == 0
-            assert covering_movements(txn) == []
+            assert [m.id for m in txn.covering_movements] == [survivor.id]
+            assert survivor.settled_on is None
 
 
 class TestTheCutoverMovesNoBalance:
@@ -633,7 +641,7 @@ class TestTheProofIsGradedBothWays:
                 "settled_on = NULL, settled_day_basis_id = NULL WHERE id = :id"
             ), {"id": txn.id, "projected": ref_cache.status_id(StatusEnum.PROJECTED)})
             db.session.expire(txn)
-            assert len(covering_movements(txn)) == 1
+            assert len(txn.covering_movements) == 1
             with pytest.raises(RuntimeError, match=r"^1 covering movement"):
                 _MIGRATION.refuse_unless_total(db.session.connection())
 
