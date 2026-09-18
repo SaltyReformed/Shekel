@@ -380,11 +380,19 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
       the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5. The five leaves'
       records: `archive/shipped_steps_archived_2026-09-18.md`.
-    * [ ] **X-bi-7d** the cutover migration (a definition per link-less row, a date for each undated
-      one -- 34 and 26 on the 2026-09-12 restore -- and that date in `occurs_on` (**R-BAL25**),
-      `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
-      RESTRICT since a nulled link is a zero-link row; downgrade per 10.8), the accessors' branch
-      gone; the residue rows re-attached (**R-BAL37**); graded by EQUALITY across the cutover. Closes **BAL-484**.
+    * [ ] **X-bi-7d** the cutover -- the DECOMPOSED parent, split 2026-09-18 into the suite's bare
+      CHECK builders and the migration; ticks with 7d-2.
+      * [x] **X-bi-7d-1** `08230752` -- six bare CHECK builders and seven Core / raw-SQL writers
+        (outside 7c's constructor census) take a rule-less definition each, dated on the paycheck's
+        start; tests only; the two link-less controls in `test_template_row_needs_due_date.py` stay
+        bare for 7d-2.
+      * [ ] **X-bi-7d-2** the migration (a definition per link-less row, a date for each undated one
+        -- 34 and 26 on the 2026-09-18 restore -- and that date in `occurs_on` (**R-BAL25**),
+        `TEMPLATE` declared, both columns dropped, the CHECK `= 1` with both `SET NULL` link keys
+        RESTRICT since a nulled link is a zero-link row; the downgrade schema-only, folding nothing,
+        **R-BAL67**), the accessors' cell-reading arm and `legacy_link_less_row_of` gone; the residue
+        rows re-attached (**R-BAL37**, 0 on the restore); graded by EQUALITY across the cutover.
+        MOVES MONEY, own PR; discloses **CC-352**'s window. Closes **BAL-484**.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes

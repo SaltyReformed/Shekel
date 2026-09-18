@@ -47,9 +47,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.extensions import db as _db
 from app.models.amount_ownership import AmountOwnership
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from tests._test_helpers import bare_expense_template
 
 #: The three keys this step installs, spelled once.  Every assertion reads the
 #: DATABASE for them rather than the model, because the model and the migration
@@ -67,20 +69,30 @@ def _txn_kwargs(seed_user, period, **overrides):
     states only the axis it is about -- and the control that must succeed is
     this dict with nothing overridden.
 
-    **BARE on purpose, and past the cutover.**  The subject is the three
-    owner keys on ``budget.transactions``, every negative asserts a key BY
-    NAME, and the control that must succeed is this dict with nothing
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    seeded owner's** (plan step ``balance:X-bi-7d-1``).  The subject is the
+    three owner keys on ``budget.transactions``, every negative asserts a key
+    BY NAME, and the control that must succeed is this dict with nothing
     overridden -- so a door cannot stand in (the producer refuses a
     stranger's paycheck one tier ABOVE the key, and R-BAL59 (3) names this
-    file as where the key is graded on a bare row).  7d re-cuts THIS dict
-    with a pricing link when its CHECK binds, and re-measures the one
-    assertion that names WHICH constraint PostgreSQL reports first
-    (``test_a_user_holding_transactions_cannot_be_deleted``: a definition on
-    the row adds a second RI trigger to that order) (plan step
-    ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    file as where the key is graded on a bare row).  What the row stopped
+    being is LINK-LESS: the family's cutover (``X-bi-7d-2``) re-cuts
+    ``ck_transactions_one_pricing_link`` to ``= 1``, so every row built from
+    this dict names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`, always the SEEDED
+    owner's, whichever owner a case then claims) and carries the paycheck's
+    start as the day it is due and the occurrence it answers.  No composite
+    key names ``template_id``, so the definition's single-column key is
+    satisfied on every cross-owner row and never the one reported -- measured
+    at 7d-1: every by-name assertion below, ``_USER_KEY`` on the user delete
+    included, names the key it named before the link.
     """
+    definition = bare_expense_template(
+        _db.session, seed_user, name="Owner key control definition",
+    )
     fields = {
         "user_id": period.user_id,
+        "template_id": definition.id,
         "account_id": seed_user["account"].id,
         "pay_period_id": period.id,
         "scenario_id": seed_user["scenario"].id,
@@ -89,6 +101,8 @@ def _txn_kwargs(seed_user, period, **overrides):
         "category_id": seed_user["categories"]["Groceries"].id,
         "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         "amount_ownership": AmountOwnership.own(Decimal("25.00")),
+        "due_date": period.start_date,
+        "occurs_on": period.start_date,
     }
     fields.update(overrides)
     return fields
@@ -580,7 +594,6 @@ class TestTheOwnerTravelsWithTheRowThroughItsWriters:
             })
             assert resp.status_code == 201, resp.data[:400]
 
-            from app.extensions import db as _db  # noqa: PLC0415
             # Found by the NAME the door defaulted, not by a figure: the row
             # states none since plan step balance:X-bi-7b (its definition
             # prices it, R-BAL21).  The definition takes the same owner.

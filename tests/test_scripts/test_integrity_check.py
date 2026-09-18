@@ -17,6 +17,7 @@ from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     account_never_asserted,
     add_txn,
+    bare_expense_template,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_expense_template,
@@ -119,6 +120,7 @@ class TestReferentialIntegrity:
         self, app, db, seed_user, seed_periods
     ):
         """FK-05 detects a transaction referencing a nonexistent pay period."""
+        definition = bare_expense_template(db.session, seed_user)
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
@@ -126,9 +128,11 @@ class TestReferentialIntegrity:
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         db.session.execute(db.text("""
             INSERT INTO budget.transactions
-                (pay_period_id, user_id, scenario_id, account_id, status_id,
-                 name, transaction_type_id, estimated_amount)
-            VALUES (99999, :uid, :sid, :aid, :stid, 'Ghost Txn', :ttid, 50.00)
+                (template_id, pay_period_id, user_id, scenario_id, account_id,
+                 status_id, name, transaction_type_id, estimated_amount,
+                 due_date, occurs_on)
+            VALUES (:tid, 99999, :uid, :sid, :aid, :stid, 'Ghost Txn', :ttid,
+                    50.00, :due, :due)
         """), {
             # ``session_replication_role = 'replica'`` suppresses referential
             # TRIGGERS, which is what lets ``pay_period_id`` dangle -- it does
@@ -136,6 +140,14 @@ class TestReferentialIntegrity:
             # ``pay_calendar:C13-a`` added is stated like every other column
             # here.  It is the seeded owner's: the row is forged in its PARENT
             # POINTER, which is what FK-05 is about, and nowhere else.
+            # Nor does it suppress a CHECK: the row names a rule-less
+            # definition of the owner's and a day (plan step
+            # ``balance:X-bi-7d-1``), because the family's cutover makes a
+            # link-less row unstorable and a linked row must be dated.  The
+            # period whose start the day would be does not exist, so the
+            # seeded first paycheck's stands in; FK-05 reads neither column.
+            "tid": definition.id,
+            "due": seed_periods[0].start_date,
             "uid": seed_user["user"].id,
             "sid": seed_user["scenario"].id,
             "aid": seed_user["account"].id,

@@ -39,6 +39,7 @@ from app.models.amount_ownership import AmountOwnership, from_columns
 from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from tests._test_helpers import bare_expense_template
 
 
 def _row(seed_user, seed_periods, ownership=None, **overrides):
@@ -54,18 +55,27 @@ def _row(seed_user, seed_periods, ownership=None, **overrides):
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
 
-    **BARE on purpose, and past the cutover.**  The subject here is a
-    CONSTRAINT of ``budget.transactions``, and a control that reached the
-    row through a door would grade the door; the shape 7d's pricing-link
-    CHECK refuses is the one this builder writes, so 7d re-cuts THIS
-    builder (a pricing link on every row it stages) rather than any case
-    (plan step ``balance:X-bi-7c``, handoff s.3's judgment per site).
+    **BARE on purpose; its pricing link is a rule-less definition of the
+    owner's** (plan step ``balance:X-bi-7d-1``).  The subject here is a
+    CONSTRAINT of ``budget.transactions``, and a control that reached the row
+    through a door would grade the door -- so the row is still constructed by
+    hand.  What it stopped being is LINK-LESS: the family's cutover
+    (``X-bi-7d-2``) re-cuts ``ck_transactions_one_pricing_link`` to ``= 1``,
+    so every row staged here names its own definition
+    (:func:`~tests._test_helpers.bare_expense_template`) and carries the
+    paycheck's start as the day it is due and the occurrence it answers --
+    the shape ``one_off.place_row_of`` writes -- unless the case states
+    otherwise.  The link is never the subject.
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
+    definition = bare_expense_template(
+        db.session, seed_user, name="Attribute control definition",
+    )
     fields = {
         "user_id": seed_periods[0].user_id,
+        "template_id": definition.id,
         "pay_period_id": seed_periods[0].id,
         "scenario_id": seed_user["scenario"].id,
         "account_id": seed_user["account"].id,
@@ -73,6 +83,8 @@ def _row(seed_user, seed_periods, ownership=None, **overrides):
         "name": "Attribute control",
         "category_id": seed_user["categories"]["Rent"].id,
         "transaction_type_id": expense_type.id,
+        "due_date": seed_periods[0].start_date,
+        "occurs_on": seed_periods[0].start_date,
     }
     if ownership is not None:
         fields["amount_ownership"] = ownership
