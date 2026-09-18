@@ -1,3 +1,7 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
 # Phase 7 -- Test Coverage Gaps for Financial Assertions
 
 Output of Phase 7 per `financial_calculation_audit_plan.md:677-704` and

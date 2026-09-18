@@ -1,5 +1,5 @@
 {% from "_money_macros.html" import money %}
-{% from "_recurrence_fields.html" import recurrence_cadence_controls with context %}
+{% from "_recurrence_fields.html" import recurrence_cadence_controls, recurrence_end_bound, recurrence_starts_on with context %}
 {# The profile's PAYROLL LINES (plan step salary:R18-b, ruling R-SAL38): a
    paycheck is base pay plus a list of lines, and a line's KIND is its
    position in the waterfall -- a taxable earning joins gross, a pre-tax
@@ -79,6 +79,12 @@
                the script sets "Does not repeat" and lets recurrence_form.js
                hide the rest. #}
             {% set cadence = selected_cadences[d.id] %}
+            {% set span = selected_spans[d.id] %}
+            {# The SPAN attributes (plan step salary:R18-c): the rule's own
+               start and nominal day, blank for a line with no rule (blank
+               means the opening payday), and the closing bound as its token
+               plus the one value its shape needs -- exactly what the shared
+               partial's controls post back. #}
             <button type="button" class="btn btn-sm btn-outline-secondary me-1" title="Edit"
                     data-line-edit="{{ d.id }}"
                     data-line-name="{{ d.name }}"
@@ -89,6 +95,11 @@
                     data-line-interval="{{ cadence.interval_n if cadence else '' }}"
                     data-line-placement-id="{{ cadence.placement_id if cadence else '' }}"
                     data-line-max-per-month="{{ cadence.max_per_month if cadence and cadence.max_per_month is not none else '' }}"
+                    data-line-starts-on="{{ span.starts_on.isoformat() if span.starts_on is not none else '' }}"
+                    data-line-nominal-day="{{ span.nominal_day if span.nominal_day is not none else '' }}"
+                    data-line-end-mode="{{ span.end.token }}"
+                    data-line-end-date="{{ span.end.end_date.isoformat() if span.end.end_date is not none else '' }}"
+                    data-line-max-occurrences="{{ span.end.max_occurrences if span.end.max_occurrences is not none else '' }}"
                     data-line-cap="{{ '%.2f'|format(d.annual_cap) if d.annual_cap else '' }}"
                     data-line-target-account="{{ d.target_account_id or '' }}"
                     data-line-inflation-enabled="{{ 'true' if d.inflation_enabled else 'false' }}"
@@ -199,18 +210,28 @@
            offer set (ruling R-SAL37: the whole set) as the recurring-
            transaction and transfer forms.  "Does not repeat" here means
            every paycheck (ruling R-SAL3), and so does "Paychecks, every 1"
-           with no ceiling, which the route canonicalises to no rule
-           (R-SAL29).  Deliberately NOTHING else of the partial: no "Starts
-           on" (a payroll line's first occurrence is the owner's opening
-           payday, rulings R-SAL30 / R-SAL36), no due day, no end bound, no
-           preview.  recurrence_form.js links these controls exactly as it
-           does on the two template forms; it is loaded by salary/form.html
-           and re-initialises itself after the HTMX swap that re-renders this
-           section.  ``selected`` is none: the ADD form opens unset, and an
-           EDIT is filled by app.js from the row's data-line-* attributes. #}
+           with no ceiling and no span, which the route canonicalises to no
+           rule (R-SAL29).  Since plan step salary:R18-c (ruling R-SAL38 (2),
+           amending R-SAL30 / R-SAL31) the partial's SPAN rows are placed too,
+           inside the #recurrence-fields container the script shows when a
+           cadence is chosen: "Starts on", which may be left BLANK -- blank is
+           the owner's opening payday, the unit's zero there (R-SAL36), derived
+           by the route -- and the closing bound.  Still no due day (a payroll
+           line has no servicer) and no preview.  recurrence_form.js links
+           these controls exactly as it does on the two template forms; it is
+           loaded by salary/form.html and re-initialises itself after the HTMX
+           swap that re-renders this section.  ``selected`` is none: the ADD
+           form opens unset, and an EDIT is filled by app.js from the row's
+           data-line-* attributes. #}
         <div class="row g-2 mb-2">
           <div class="col-12">
             {{ recurrence_cadence_controls(recurrence_picker, none) }}
+            <div id="recurrence-fields" class="d-none">
+              {{ recurrence_starts_on(recurrence_picker, add_form_start,
+                                       starts_on_min, starts_on_max,
+                                       open_help="Leave blank to start from your first paycheck. A date starts it there instead; nothing is taken before it.") }}
+              {{ recurrence_end_bound(recurrence_picker, add_form_end) }}
+            </div>
           </div>
         </div>
         {# Row 5: Schedule #}
