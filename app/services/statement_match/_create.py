@@ -74,7 +74,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from app.enums import SettledDayBasisEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
@@ -83,6 +83,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service
 from app.services.cash_ledger import movement_figure_for
 from app.services.settle_day import SettleDay
+from app.services.stated_figure import StatedFigure
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_LINE_RECORDED,
@@ -347,7 +348,16 @@ def _born_purchase(
             # ``bank_import:X-gj-2b-2`` is what lets a refund reach this line,
             # and it needed nothing added here to file one.  It was spelled
             # ``-line.amount`` here, the expense arm alone, until X-bi-3b.
-            amount=movement_figure_for(envelope, Decimal(str(line.amount))),
+            # The BANK wrote this figure -- the line IS why the purchase
+            # exists -- and the builder says so with the figure itself (plan
+            # step X-bi-3e-1, ruling R-BAL61) rather than leaving the door to
+            # read it off the ``observed`` day beside it.
+            figure=StatedFigure(
+                amount=movement_figure_for(
+                    envelope, Decimal(str(line.amount)),
+                ),
+                source=MovementFigureSourceEnum.OBSERVED,
+            ),
             # What the BANK NAMES the merchant, not the whole line
             # (:func:`~._offers.merchant_label`).  The app's own purchases are
             # named "Walmart" and "Food Lion", and a purchase called

@@ -19,7 +19,12 @@ import pytest
 from unittest.mock import patch
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    MovementFigureSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -849,7 +854,7 @@ class TestASettleDayNeedsARecord:
                 txn, txn.status_id, settle_day=an_entered_day(display_today()),
                 settlement=status_seam.Settlement(
                     amount=Decimal("50.00"),
-                    basis=SettlementBasisEnum.CORRECTED,
+                    source=MovementFigureSourceEnum.TYPED,
                 ),
             )
             db.session.flush()
@@ -874,7 +879,7 @@ class TestASettleDayNeedsARecord:
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=status_seam.Settlement(
                     amount=Decimal("50.00"),
-                    basis=SettlementBasisEnum.DERIVED,
+                    source=MovementFigureSourceEnum.RESOLVED,
                 ),
             )
             db.session.flush()

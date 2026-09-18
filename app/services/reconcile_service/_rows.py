@@ -54,10 +54,11 @@ from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
-from app.enums import SettledDayBasisEnum
+from app.enums import MovementFigureSourceEnum, SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.cash_ledger import AnchorPoint
+from app.services.stated_figure import StatedFigure
 from app.services.pay_calendar import FiledRow, PayCalendar
 from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
@@ -291,8 +292,12 @@ class Arm:
             and a default would be a third place for that partition to be
             stated.
         settle: ``(row, submitted, statement) -> bool`` -- settles one row
-            through the arm's own service verb and returns whether a HUMAN's
-            figure was booked.  The bool is asked of the verb's own published
+            through the arm's own service verb, *submitted* being the panel's
+            figure and who wrote it
+            (:class:`~app.services.stated_figure.StatedFigure`, always
+            ``typed``: the amount boxes are a person's word) or ``None``, and
+            returns whether a HUMAN's figure was booked.  The bool is asked of
+            the verb's own published
             predicate rather than read off the column afterwards, which is
             finding **N-231**: an envelope's close always writes
             ``actual_amount``, so a column reading counts machine writes as
@@ -684,7 +689,16 @@ def record_settled(
     rows = outstanding_rows(arm, statement, transaction_ids=transaction_ids)
     corrected = 0
     for row in rows:
-        if arm.settle(row, corrections.get(row.id), statement):
+        # A figure out of the panel's amount box is a PERSON's statement of
+        # what the bank took, and the writer says so ONCE here for both arms
+        # (plan step X-bi-3e-1, ruling R-BAL61): the verbs take the figure and
+        # its writer as one value, and the panel is never the bank.
+        amount = corrections.get(row.id)
+        submitted = (
+            None if amount is None
+            else StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
+        )
+        if arm.settle(row, submitted, statement):
             corrected += 1
 
     if rows:

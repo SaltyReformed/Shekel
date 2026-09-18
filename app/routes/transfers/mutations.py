@@ -38,6 +38,7 @@ from app.utils.error_fragments import (
     flatten_schema_errors,
 )
 from app.routes._authored_figure import figure_was_authored
+from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import render_transfer_cell
 from app.utils.rendered_figure import as_rendered_field
 from app.routes.transfers._bp import transfers_bp
@@ -715,6 +716,16 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     figure = data.pop("amount", None)
     if amount_authored and figure is not None:
         data["amount_ownership"] = AmountOwnership.own(figure)
+    # **The Actual box's figure is a PERSON's statement of what the bank
+    # took**, and the route says so with the figure (plan step X-bi-3e-1,
+    # ruling R-BAL61): the service takes the amount and who wrote it as one
+    # ``figure`` value, the way it takes the day as ``settle_day``.  The key
+    # is REPLACED for the reason ``_grade_submitted_settle_day`` gives: the
+    # service would silently ignore a ``settled_amount`` kwarg.  An empty box
+    # loads as ``None`` and is no statement, so no key.
+    actual = typed_figure(data.pop("settled_amount", None))
+    if actual is not None:
+        data["figure"] = actual
     try:
         transfer_service.update_transfer(
             xfer.id, current_user.id, **data,

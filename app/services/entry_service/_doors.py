@@ -25,16 +25,16 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import MovementFigureSourceEnum, RoleEnum
+from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.settle_day import (
-    figure_source_of,
     SettleDay,
     record_settle_day,
     recorded_settle_day,
 )
+from app.services.stated_figure import StatedFigure
 from app.services.entry_service._refusals import (
     _reject_future_posting_day,
     _reject_future_purchase_date,
@@ -64,9 +64,12 @@ from app.utils.log_events import (
 
 logger = logging.getLogger(__name__)
 
-# Fields that can be updated on an entry via update_entry().
+# Fields that can be updated on an entry via update_entry().  Two of them are
+# VALUES rather than columns -- ``figure`` (the amount and who wrote it) and
+# ``settle_day`` (the day and how it is known) -- and the door writes each
+# through the one writer of its pair.
 _UPDATABLE_FIELDS = frozenset({
-    "amount", "description", "purchased_on", "settle_day", "is_credit",
+    "figure", "description", "purchased_on", "settle_day", "is_credit",
 })
 
 
@@ -194,16 +197,20 @@ class EntryDetails:
     routing/ownership context (the parent transaction and the acting user).
 
     Fields:
-        amount:      What the purchase cost, as a SIGNED ``Decimal`` --
+        figure:      What the purchase cost and WHO WROTE the figure, as one
+            :class:`~app.services.stated_figure.StatedFigure` (plan step
+            **X-bi-3e-1**, ruling **R-BAL69**): ``typed`` from the add-purchase
+            form, ``observed`` from ``statement_match._create._born_purchase``,
+            where the bank line IS the figure.  Its amount is SIGNED --
             POSITIVE for a charge and NEGATIVE for a REFUND (ruling
             **bank_import:R-II**).  **It said *Positive* until plan step
             ``bank_import:X-gj-2b-3``, and its own caller contradicted it**:
-            ``statement_match._create._born_purchase`` builds one of these with
-            ``amount=-Decimal(str(line.amount))``, which for a merchant credit
-            is negative.  What refuses a negative is the hand-entry FORM
-            (``EntryCreateSchema``'s ``Range(min=0.01)``), where a typed
-            negative is a typo -- not this value, and not the table, whose only
-            rule is ``<> 0`` (:func:`~._refusals._reject_zero_amount`).
+            the born-purchase builder passes ``-Decimal(str(line.amount))``,
+            which for a merchant credit is negative.  What refuses a negative
+            is the hand-entry FORM (``EntryCreateSchema``'s ``Range(min=0.01)``),
+            where a typed negative is a typo -- not this value, and not the
+            table, whose only rule is ``<> 0``
+            (:func:`~._refusals._reject_zero_amount`).
         description: Store name or brief note (1--200 chars).
         purchased_on: Date the purchase HAPPENED.  Backdating is ordinary; a
             date after the user's today is refused (ruling R-M, see
@@ -234,7 +241,7 @@ class EntryDetails:
     it would leave that state committed if anything after it refused.
     """
 
-    amount: Decimal
+    figure: StatedFigure
     description: str
     purchased_on: date
     is_credit: bool = False
@@ -257,10 +264,10 @@ def create_entry(
     Args:
         transaction_id: Parent transaction ID.
         user_id: The creating user's ID (owner or companion).
-        details: :class:`EntryDetails` -- the purchase content (amount,
-            description, purchased_on, is_credit, and the posting day --
-            with the basis that says how it is known -- where the caller
-            already has one).
+        details: :class:`EntryDetails` -- the purchase content (the figure
+            with who wrote it, description, purchased_on, is_credit, and the
+            posting day -- with the basis that says how it is known -- where
+            the caller already has one).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -346,7 +353,7 @@ def create_entry(
     # non-owner still gets the 404 rather than a validation message that
     # confirms the row exists (ruling R-M; see
     # _reject_future_purchase_date).
-    _reject_zero_amount(details.amount)
+    _reject_zero_amount(details.figure.amount)
     _reject_future_purchase_date(details.purchased_on)
     # The posting day's two bounds, the SAME pair :func:`update_entry` applies
     # and for the same reasons -- a day the bank has not reached yet (ruling
@@ -368,16 +375,18 @@ def create_entry(
         # and absent is a NOT NULL violation.
         account_id=txn.account_id,
         user_id=user_id,
-        amount=details.amount,
+        amount=details.figure.amount,
         description=details.description,
         purchased_on=details.purchased_on,
         is_credit=details.is_credit,
-        # WHO WROTE the figure, stated by the door that wrote it (plan step
-        # **X-bi-3a**): the bank's when the day it arrives with is the bank's,
-        # a person's otherwise.  NOT NULL and no default on the column, so a
-        # writer that says nothing is refused at flush rather than guessed for.
+        # WHO WROTE the figure, stated by the caller with the figure itself
+        # (plan step **X-bi-3e-1**, ruling **R-BAL61**): the form says a
+        # person did, the born-purchase builder says the bank did.  It was
+        # inferred from the day beside the figure until that step.  NOT NULL
+        # and no default on the column, so a writer that says nothing is
+        # refused at flush rather than guessed for.
         figure_source_id=ref_cache.movement_figure_source_id(
-            figure_source_of(details.settle_day),
+            details.figure.source,
         ),
     )
     # The posting day and the basis that says how it is known, written as
@@ -396,7 +405,7 @@ def create_entry(
         owner_id=owner_id,
         transaction_id=transaction_id,
         entry_id=entry.id,
-        amount=str(details.amount),
+        amount=str(details.figure.amount),
         is_credit=details.is_credit,
         # The posting day is logged because a purchase BORN with one has
         # already moved money: it books its own dated cash leg at the reconcile
@@ -419,7 +428,7 @@ def create_entry(
     # (finding **N-323**); a debit purchase, or a zero-amount one, cannot.
     sync_entry_payback(
         transaction_id, owner_id,
-        moves_credit_total=bool(details.is_credit and details.amount),
+        moves_credit_total=bool(details.is_credit and details.figure.amount),
     )
     _resync_after_entry_change(txn)
 
@@ -429,8 +438,15 @@ def create_entry(
 def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     """Update an existing entry.
 
-    Allowed fields: amount, description, purchased_on, settle_day, is_credit.
+    Allowed fields: figure, description, purchased_on, settle_day, is_credit.
     Re-validates ownership through the entry's parent transaction.
+
+    **``figure`` is the figure AND who wrote it** (plan step **X-bi-3e-1**,
+    ruling **R-BAL69**): a :class:`~app.services.stated_figure.StatedFigure`,
+    written to ``amount`` and ``figure_source_id`` together.  Two callers
+    write one -- the entry PATCH says a person did (``typed``), the statement
+    matcher says the bank's line did (``observed``) -- and the source is the
+    caller's word, never read off the day beside it (ruling **R-BAL61**).
 
     **``settle_day`` is the PAIR, not the column** (plan step **X-az**): a
     :class:`app.services.settle_day.SettleDay` carrying the day AND how that day
@@ -498,9 +514,10 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # message confirming the row exists, exactly as the create door orders its
     # guards.
     # **Ruling R-GE**: a statement's evidence may re-cost a settled
-    # purchase, and what bounds the permission is the settle day's own
-    # BASIS rather than a flag -- stated once, beside the constant it
-    # narrows (:func:`cost_fields_changing`).
+    # purchase, and what bounds the permission is the FIGURE's own stated
+    # source rather than a flag (it was the settle day's basis beside the
+    # figure until plan step X-bi-3e-1) -- stated once, beside the constant
+    # it narrows (:func:`cost_fields_changing`).
     _reject_settled_parent(
         entry.transaction, cost_fields_changing(valid_updates),
     )
@@ -511,10 +528,11 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
     # alone must not be refused for a value it is not setting (ruling R-M).
-    # Narrowed to a submission that actually SETS the amount, for the reason
-    # the date rule below is: a partial update leaving ``amount`` alone must
+    # Narrowed to a submission that actually SETS the figure, for the reason
+    # the date rule below is: a partial update leaving ``figure`` alone must
     # not be refused for a value it is not writing.
-    _reject_zero_amount(valid_updates.get("amount"))
+    if "figure" in valid_updates:
+        _reject_zero_amount(valid_updates["figure"].amount)
     if "purchased_on" in valid_updates:
         _reject_future_purchase_date(valid_updates["purchased_on"])
     # Both date rules are checked on the RESULT, not the submission: a
@@ -558,15 +576,20 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # cannot reach the credit sum at all.  Read BEFORE the loop below, because
     # the loop is what makes ``entry`` the after-state.
     credit_before = entry.amount if entry.is_credit else Decimal("0")
+    amount_after = (
+        valid_updates["figure"].amount if "figure" in valid_updates
+        else entry.amount
+    )
     credit_after = (
-        valid_updates.get("amount", entry.amount)
+        amount_after
         if valid_updates.get("is_credit", entry.is_credit) else Decimal("0")
     )
     for field, value in valid_updates.items():
-        # ``settle_day`` is the ONE key that is not a column: it is the day AND
-        # the basis that says how the day is known, and
-        # :func:`app.services.settle_day.record_settle_day` is what writes both
-        # (plan step **X-az**).  A ``setattr`` here would put a
+        # Two keys are VALUES rather than columns, and each is written through
+        # the one writer of its pair.  ``settle_day`` is the day AND the basis
+        # that says how the day is known, and
+        # :func:`app.services.settle_day.record_settle_day` writes both (plan
+        # step **X-az**).  A ``setattr`` here would put a
         # :class:`~app.services.settle_day.SettleDay` into ``settled_on`` and
         # leave the basis unwritten, which the table's own
         # ``ck_transaction_entries_settle_day_basis_pairing`` would then refuse
@@ -575,29 +598,23 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         if field == "settle_day":
             record_settle_day(entry, value)
             continue
+        # ``figure`` is the amount AND who wrote it (plan step **X-bi-3e-1**,
+        # ruling **R-BAL61**): the source moves exactly when the figure is
+        # written, and it is the caller's statement -- the PATCH's ``typed``,
+        # the matcher's ``observed``.  This door used to RAISE a typed figure
+        # to ``observed`` whenever a submission carried an ``observed`` day,
+        # figure written or not; ruling R-BAL61 measured that premise false
+        # (every bank-observed day ever written onto a settled row was a
+        # day-only confirmation), so a day-only edit -- on the owner's word or
+        # the bank's -- leaves the source alone: nothing about who wrote the
+        # figure changed.
+        if field == "figure":
+            entry.amount = value.amount
+            entry.figure_source_id = ref_cache.movement_figure_source_id(
+                value.source,
+            )
+            continue
         setattr(entry, field, value)
-    # **WHO WROTE the figure moves only when the figure is written** (plan step
-    # **X-bi-3a**, ruling **R-BAL39**).  This door has two callers that write
-    # an amount: the bank's mover (``statement_match._moving``), which always
-    # sends the line's ``observed`` day beside any figure it reprices, and the
-    # human PATCH, whose day -- when it sends one -- is ``entered``.  So a
-    # submission carrying an ``observed`` day is the bank stating the figure
-    # (a confirmation RAISES a typed figure to observed, as it raises an
-    # ``asserted`` day), and any other submission that sets ``amount`` is a
-    # person stating it.  A day-only edit on the owner's word leaves the source
-    # alone: the figure was not written, so nothing about who wrote it changed.
-    if (
-        "settle_day" in valid_updates
-        and figure_source_of(valid_updates["settle_day"])
-        is MovementFigureSourceEnum.OBSERVED
-    ):
-        entry.figure_source_id = ref_cache.movement_figure_source_id(
-            MovementFigureSourceEnum.OBSERVED,
-        )
-    elif "amount" in valid_updates:
-        entry.figure_source_id = ref_cache.movement_figure_source_id(
-            MovementFigureSourceEnum.TYPED,
-        )
     # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
     # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
     # seen to show this purchase ON that day; a user moving the day is

@@ -40,6 +40,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    typed,
     record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
@@ -1855,7 +1856,7 @@ class TestTransferMaintain:
             figure: The settled amount to record.
         """
         transfer_service.settle_transfer(
-            xfer.id, seed_user["user"].id, submitted=figure,
+            xfer.id, seed_user["user"].id, submitted=typed(figure),
             settle_day=an_entered_day(display_today()),
         )
         transfer_service.update_transfer(

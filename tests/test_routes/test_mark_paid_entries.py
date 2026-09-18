@@ -24,6 +24,7 @@ from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    typed,
     an_entered_day,
     figure_source_columns,
     freeze_today,
@@ -412,7 +413,7 @@ class TestPostPaidEntryMutation:
                 transaction_id=txn_id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                     description="Late purchase",
                     purchased_on=date(2026, 1, 10),
                     settle_day=an_entered_day(date(2026, 1, 12)),
@@ -453,7 +454,7 @@ class TestPostPaidEntryMutation:
                     transaction_id=txn_id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("600.00"),
+                        figure=typed(Decimal("600.00")),
                         description="Late purchase",
                         purchased_on=date(2026, 1, 10),
                         settle_day=an_entered_day(date(2026, 1, 12)),
@@ -496,7 +497,7 @@ class TestPostPaidEntryMutation:
                 entry_service.update_entry(
                     entry_id=entry_ids[0],
                     user_id=seed_user["user"].id,
-                    amount=Decimal("250.00"),
+                    figure=typed(Decimal("250.00")),
                 )
 
             txn = db.session.get(Transaction, txn_id)
@@ -526,7 +527,7 @@ class TestPostPaidEntryMutation:
                 transaction_id=txn_id,
                 user_id=user_id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("100.00"),
+                    figure=typed(Decimal("100.00")),
                     description="Projected period purchase",
                     purchased_on=date(2026, 1, 5),
                 ),

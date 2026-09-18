@@ -3547,7 +3547,12 @@ def create_settled_transfer(
             else SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED)
         )
     if settled_amount is not None:
-        update_kwargs["settled_amount"] = settled_amount
+        # The service's key is the VALUE -- the figure and who wrote it, a
+        # person's here as the popover's would be (plan step X-bi-3e-1) --
+        # under the name the door reads; ``update_transfer`` ignores a key it
+        # does not know, so the old column-named key would settle at the plan
+        # and say nothing.
+        update_kwargs["figure"] = typed(settled_amount)
     transfer_service.update_transfer(
         transfer.id, seed_user["user"].id, **update_kwargs
     )
@@ -4101,6 +4106,47 @@ def default_settle_day(period, status_id):
     return period.start_date if status_id in settled_status_ids() else None
 
 
+def typed(amount):
+    """Return *amount* as a figure a PERSON stated.
+
+    The :class:`~app.services.stated_figure.StatedFigure` every human door
+    builds (plan step **X-bi-3e-1**, ruling **R-BAL69**), for a fixture that
+    plays one: the add-purchase form, the entry PATCH, the popovers, the
+    reconcile panel.  A test that means the BANK stated the figure says
+    :func:`observed`; the two names keep the writer visible at every call
+    site, which is the fact the step exists to record.
+
+    Args:
+        amount: The figure, a ``Decimal``.
+
+    Returns:
+        The ``typed`` :class:`~app.services.stated_figure.StatedFigure`.
+    """
+    from app.enums import MovementFigureSourceEnum
+    from app.services.stated_figure import StatedFigure
+    return StatedFigure(amount=amount, source=MovementFigureSourceEnum.TYPED)
+
+
+def observed(amount):
+    """Return *amount* as a figure the BANK's line stated.
+
+    :func:`typed`'s twin for a fixture that plays the statement matcher, the
+    one writer that states ``observed`` (plan step **X-bi-3e-1**, ruling
+    **R-BAL61**).
+
+    Args:
+        amount: The figure, a ``Decimal``.
+
+    Returns:
+        The ``observed`` :class:`~app.services.stated_figure.StatedFigure`.
+    """
+    from app.enums import MovementFigureSourceEnum
+    from app.services.stated_figure import StatedFigure
+    return StatedFigure(
+        amount=amount, source=MovementFigureSourceEnum.OBSERVED,
+    )
+
+
 def settlement_if_settling(txn, new_status_id, submitted=None):
     """Return the :class:`Settlement` a fixture owes the seam, or ``None``.
 
@@ -4139,7 +4185,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     their plan, so the two agree" -- true while a generated row stored a figure
     and false the moment one stopped.  A generated row is DERIVED now and its
     column is NULL, so the old spelling handed the seam
-    ``Settlement(amount=None, basis=derived)`` and every fixture that settles a
+    ``Settlement(amount=None, source=None)`` and every fixture that settles a
     generated row died on the record's own refusal: *a 'derived' settlement
     must state the figure that moved*.  Reading the rule instead is what makes
     this helper's promise -- that it answers ARM FOR ARM the way the real verbs
@@ -4156,7 +4202,6 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     """
     # pylint: disable=import-outside-toplevel  -- the lazy-app-import
     # convention every helper in this module follows.
-    from app.enums import SettlementBasisEnum
     from app.services.status_seam import Settlement, recorded_settlement
     from app.services.cash_ledger import derived_amount_basis
     from app.services.transaction_service import (
@@ -4168,7 +4213,7 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     if not enters_settled_band(txn, new_status_id):
         return None
     if settles_from_entries(txn):
-        return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
+        return Settlement(amount=None, source=None)
     # ONE basis for the whole act, exactly as ``settle_transaction`` builds it,
     # and ``settle_amount``'s second arm IS the retained correction -- so this
     # asks the same rule once rather than re-branching on
@@ -4176,8 +4221,11 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     booked = settle_amount(
         txn, derived_amount_basis(txn.account.user_id, txn.scenario_id),
     )
+    # A fixture's figure is a PERSON's, stated as such (plan step X-bi-3e-1,
+    # ruling R-BAL69): the verbs take the figure and its writer as one value.
     correction = (
-        submitted if submitted is not None and submitted != booked else None
+        typed(submitted) if submitted is not None and submitted != booked
+        else None
     )
     return Settlement.from_settle(booked, correction, recorded_settlement(txn))
 

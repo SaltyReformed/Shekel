@@ -219,10 +219,13 @@ def a_purchase(
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.
     """
     entry = TransactionEntry(
-        # WHO WROTE the figure follows WHO stated the day (plan step
-        # **X-bi-3a**): a purchase the bank observed carries the bank's figure,
-        # every other one a person's -- the purchase doors' own rule
-        # (``entry_service.figure_source_of``) stated for a bare builder.
+        # WHO WROTE the figure, for a bare builder that bypasses the doors: a
+        # purchase this builder dates ``observed`` stands for one the matcher
+        # wrote, so it carries the bank's figure, and every other one a
+        # person's.  The DOORS no longer infer this from the day -- the writer
+        # states it with the figure (plan step **X-bi-3e-1**, ruling
+        # **R-BAL61**) -- so the pairing here is the builder's own modelling
+        # choice, not a rule of the code under test.
         **figure_source_columns(
             MovementFigureSourceEnum.OBSERVED
             if settle_day_basis is SettledDayBasisEnum.OBSERVED else None

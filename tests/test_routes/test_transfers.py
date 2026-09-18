@@ -34,6 +34,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    typed,
     record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
@@ -3797,7 +3798,7 @@ class TestOneTimeTransfer:
             xfer = db.session.query(Transfer).filter_by(
                 transfer_template_id=tmpl.id).one()
             transfer_service.settle_transfer(
-                xfer.id, seed_user["user"].id, submitted=Decimal("412.90"),
+                xfer.id, seed_user["user"].id, submitted=typed(Decimal("412.90")),
                 settle_day=an_entered_day(display_today()),
             )
             transfer_service.update_transfer(
@@ -5194,7 +5195,7 @@ class TestTransferActualBox:
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_amount=Decimal("214.37"),
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("214.37")),
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -5369,7 +5370,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             xfer = self._settled(seed_user, seed_periods_today)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settled_amount=Decimal("214.37"),
+                figure=typed(Decimal("214.37")),
             )
             db.session.commit()
             db.session.expire_all()

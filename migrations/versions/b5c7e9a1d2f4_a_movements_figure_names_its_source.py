@@ -51,7 +51,15 @@ table has had.  No purchase on this table is ``resolved`` before X-bi-3a's
 seam writes the first covering movement, so that arm is empty by construction
 here and is not stated.  The parent's ``settled_basis_id`` is deliberately NOT
 consulted: an envelope's basis is ``purchases``, which says nothing about how
-any one of its purchases was priced.
+any one of its purchases was priced.  **Ruling R-BAL61 (2026-09-18) amended
+the LIVE rule this predicate was the backfill of** -- the writer states the
+source and nothing infers it from the day (plan step X-bi-3e-1) -- and the
+backfill stands as it ran.  Measured 2026-09-18 on the 02:01 EDT production
+dump the cutover ``ad573b07bede`` was rehearsed on (rows to 2026-09-16, one
+import open with 0 purchases matched): 112 purchases, 0 with an ``observed``
+day (79 ``asserted``, 10 ``entered``, 23 undated), every one ``typed`` --
+so on production no row's label rests on the amended premise.  The dev
+snapshot's 39 below are that database's own matching sessions.
 
 Measured 2026-09-15 on the developer's dev snapshot (rows to 2026-09-06): 100
 purchases -- 39 with an ``observed`` day, 36 ``asserted``, 7 ``entered``, 18
