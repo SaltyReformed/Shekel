@@ -92,6 +92,18 @@ def _make_transaction(seed_user, seed_periods, **overrides):
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
+
+    **BARE on purpose, and the file 7d re-cuts CASE BY CASE.**  The subject
+    is ``ck_transactions_template_row_needs_due_date`` on
+    ``budget.transactions``, and a control that reached the row through a
+    door would grade the door.  Two cases here NEED the link-less shape the
+    cutover deletes -- ``test_an_undated_row_that_names_no_definition_is_
+    accepted`` (the control against over-refusal: the admitted arm IS that
+    shape) and ``test_linking_an_undated_row_to_a_definition_is_refused`` (a
+    link-less row is what receives the link) -- so a pricing link on this
+    builder would not keep them meaningful: 7d retires those two with the
+    arm and re-cuts the rest (plan step ``balance:X-bi-7c``, handoff s.3's
+    judgment per site).
     """
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()

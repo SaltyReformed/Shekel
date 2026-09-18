@@ -14,12 +14,14 @@ import pytest
 
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
-    rhythm_of,
     default_settle_day,
     freeze_today,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
+    record_paydays_across_a_hole,
+    resolved_amount,
+    rhythm_of,
     settle_day_columns,
     settlement_basis_id,
     settlement_columns,
@@ -51,13 +53,11 @@ from app.services.balance_at import BalanceContext
 from app.services import (
     carry_forward_service,
     credit_workflow,
-    pay_period_write,
     status_seam,
 )
 from app.services import account_service
 from app.services.cash_ledger import contribution_of
 from app.services.row_valuation import settled_contribution, settled_figure
-from app.models.amount_ownership import AmountOwnership
 from tests._test_helpers import amount_basis_for
 
 
@@ -92,23 +92,29 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
     ``corrected``; with none the record is ``derived`` at the row's own plan.
     """
     status = db.session.query(Status).filter_by(name=status_name).one()
-    txn_type = db.session.query(TransactionType).filter_by(name=txn_type_name).one()
     planned = Decimal(amount)
     settled_on = default_settle_day(seed_periods[period_index], status.id)
-    txn = Transaction(
-        user_id=seed_periods[period_index].user_id,
-        pay_period_id=seed_periods[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
+    txn = one_off_row_of(
+        seed_periods[period_index],
         name=name,
+        amount=planned,
+        user_id=seed_periods[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
+        transaction_type_id=(
+            db.session.query(TransactionType).filter_by(name=txn_type_name).one().id
+        ),
         category_id=seed_user["categories"][category_key].id,
-        transaction_type_id=txn_type.id,
-        amount_ownership=AmountOwnership.own(planned),
+    )
+    # The status and the settle state laid on BARE, as ``add_txn`` lays them:
+    # the row is the producer's (plan step balance:X-bi-7c), the state on top
+    # is this builder's purpose.
+    txn.status_id = status.id
+    for _column, _value in {
         **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
-    )
-    db.session.add(txn)
+    }.items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 
@@ -225,7 +231,10 @@ class TestStateMachineViolations:
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
             db.session.commit()
-            original_amount = txn.estimated_amount  # Decimal("100.00")
+            # Through the resolver: a one-off's row stores no figure, its
+            # definition prices it (ruling R-BAL60).
+            original_amount = resolved_amount(txn)
+            assert original_amount == Decimal("100.00")
 
             # Verify initial effective_amount.
             assert _worth(txn) == original_amount
@@ -603,7 +612,7 @@ class TestReferentialIntegrity:
         before allowing deletion.
         """
         with app.app_context():
-            txn = _make_transaction(seed_user, seed_periods, category_key="Rent")
+            _make_transaction(seed_user, seed_periods, category_key="Rent")
             db.session.commit()
 
             rent_cat = seed_user["categories"]["Rent"]
@@ -910,7 +919,9 @@ class TestNumericEdgeCases:
     def test_transaction_amount_at_db_max(self, app, auth_client, seed_user, seed_periods):
         """Decimal("9999999999.99") -- at the Numeric(12,2) max.
 
-        Should store OK: 10 digits before decimal + 2 after = 12 total.
+        Should store OK: 10 digits before decimal + 2 after = 12 total.  The
+        figure is stored on the one-off's definition (its price version,
+        ``Numeric(12,2)`` too) and read back through the resolver (R-BAL60).
         """
         with app.app_context():
             txn = _make_transaction(
@@ -918,36 +929,36 @@ class TestNumericEdgeCases:
             )
             db.session.commit()
             db.session.refresh(txn)
-            assert txn.estimated_amount == Decimal("9999999999.99")
+            assert resolved_amount(txn) == Decimal("9999999999.99")
 
     def test_transaction_amount_exceeds_db_max(self, app, auth_client, seed_user, seed_periods):
         """Decimal("99999999999.99") -- exceeds Numeric(12,2).
 
         Bug: No application-level guard.  PostgreSQL raises a
-        NumericValueOutOfRange (DataError) on flush.
+        NumericValueOutOfRange (DataError) on flush.  The figure lands on
+        the one-off's DEFINITION first (``transaction_templates.default_
+        amount``, ``Numeric(12,2)`` too) and the producer flushes, so the
+        refusal fires inside the placement, before the price series is
+        opened (plan step balance:X-bi-7c).
         """
         with app.app_context():
             from sqlalchemy.exc import DataError
 
-            status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
-                name="Overflow Test",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=txn_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("99999999999.99")),
-            )
-            db.session.add(txn)
 
             # Current behavior: DB raises DataError on flush/commit.
             # Ideal: schema-level max value check would catch this first.
             with pytest.raises(DataError):
-                db.session.flush()
+                one_off_row_of(
+                    seed_periods[0],
+                    name="Overflow Test",
+                    amount=Decimal("99999999999.99"),
+                    user_id=seed_periods[0].user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
+                    transaction_type_id=txn_type.id,
+                    category_id=seed_user["categories"]["Rent"].id,
+                )
             db.session.rollback()
 
     def test_schema_rejects_negative_amount(self, app, seed_user, seed_periods):
@@ -960,7 +971,6 @@ class TestNumericEdgeCases:
             schema = TransactionCreateSchema()
 
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            projected = db.session.query(Status).filter_by(name="Projected").one()
 
             errors = schema.validate({
                 "name": "Bad Item",
@@ -1001,21 +1011,18 @@ class TestAuthEdgeCases:
             db.session.flush()
 
             # Create a transaction for user 2.
-            status = db.session.query(Status).filter_by(name="Projected").one()
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-            txn2 = Transaction(
-                user_id=periods2[0].user_id,
-                pay_period_id=periods2[0].id,
-                scenario_id=second_user["scenario"].id,
-                account_id=second_user["account"].id,
-                status_id=status.id,
+            txn2 = one_off_row_of(
+                periods2[0],
                 name="Other's Expense",
-                category_id=second_user["categories"]["Rent"].id,
+                amount=Decimal("99.99"),
+                user_id=periods2[0].user_id,
+                account_id=second_user["account"].id,
+                scenario_id=second_user["scenario"].id,
                 transaction_type_id=txn_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("99.99")),
+                category_id=second_user["categories"]["Rent"].id,
             )
-            db.session.add(txn2)
             db.session.commit()
 
             # Auth client is logged in as user 1 -- try to access user 2's txn.
@@ -1028,9 +1035,11 @@ class TestAuthEdgeCases:
             )
             assert resp.status_code == 404
 
-            # Verify DB state unchanged after IDOR PATCH attempt.
+            # Verify DB state unchanged after IDOR PATCH attempt -- through
+            # the resolver: the victim's row is a one-off, priced by its
+            # definition (ruling R-BAL60).
             db.session.refresh(txn2)
-            assert txn2.estimated_amount == Decimal("99.99"), \
+            assert resolved_amount(txn2) == Decimal("99.99"), \
                 "IDOR PATCH should not have modified the victim's amount"
             assert txn2.status.name == "Projected", \
                 "IDOR PATCH should not have modified the victim's status"
@@ -1129,7 +1138,11 @@ class TestSQLInjectionPrevention:
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
             db.session.commit()
-            original_amount = txn.estimated_amount
+            # Through the resolver on both sides (ruling R-BAL60): a one-off's
+            # row stores no figure, so the raw column read None == None and
+            # the "unchanged" half graded nothing (found by 7c-5's review).
+            original_amount = resolved_amount(txn)
+            assert original_amount == Decimal("100.00")
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
@@ -1138,7 +1151,7 @@ class TestSQLInjectionPrevention:
             assert resp.status_code == 422
 
             db.session.refresh(txn)
-            assert txn.estimated_amount == original_amount
+            assert resolved_amount(txn) == original_amount
 
             # Verify the table still exists.
             count = db.session.execute(
