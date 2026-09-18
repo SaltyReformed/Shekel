@@ -84,7 +84,7 @@ def _contribution_inputs_for_accounts(
     The single loading point shared by the single-account entry
     (:func:`_contribution_inputs_for_account`, called by
     :func:`~app.services.balance_at.balance_map`,
-    :func:`~app.services.balance_at._kind_correct._modelled_scalar`,
+    :func:`~app.services.balance_at._kind_correct._modelled_balances`,
     :func:`~app.services.balance_at.investment_growth_since_anchor` and
     :func:`~app.services.balance_at.grid_balance_view`) and the
     batch one (:func:`~app.services.balance_at.build_maps`), so single- and
