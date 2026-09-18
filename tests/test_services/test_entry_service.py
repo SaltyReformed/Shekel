@@ -30,6 +30,7 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    typed,
     account_never_asserted,
     an_entered_day,
     create_savings_account,
@@ -90,7 +91,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("50.00"),
+                    figure=typed(Decimal("50.00")),
                     description="Kroger",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -114,7 +115,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("75.00"),
+                    figure=typed(Decimal("75.00")),
                     description="Amazon order",
                     purchased_on=date(2026, 1, 6),
                     is_credit=True,
@@ -134,7 +135,7 @@ class TestCreateEntry:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description="Test",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -159,7 +160,7 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -203,7 +204,7 @@ class TestCreateEntry:
                     transaction_id=shadow.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -227,7 +228,7 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -247,7 +248,7 @@ class TestCreateEntry:
                     transaction_id=txn.id,
                     user_id=other_user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -263,7 +264,7 @@ class TestCreateEntry:
                     transaction_id=999999,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -290,7 +291,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -319,7 +320,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Test",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -359,7 +360,7 @@ class TestCreateEntry:
                     transaction_id=txn_id,
                     user_id=user_id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("42.50"),
+                        figure=typed(Decimal("42.50")),
                         description="Late posting purchase",
                         purchased_on=date(2026, 1, 10),
                     ),
@@ -377,7 +378,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("0.01"),
+                    figure=typed(Decimal("0.01")),
                     description="Penny item",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -393,7 +394,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("9999999999.99"),
+                    figure=typed(Decimal("9999999999.99")),
                     description="Expensive item",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -410,7 +411,7 @@ class TestCreateEntry:
                 transaction_id=seed_entry_template["transaction"].id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description=desc,
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -436,7 +437,7 @@ class TestCompanionAccess:
                 transaction_id=txn.id,
                 user_id=companion.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("35.00"),
+                    figure=typed(Decimal("35.00")),
                     description="Companion purchase",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -476,7 +477,7 @@ class TestCompanionAccess:
                     transaction_id=txn.id,
                     user_id=companion.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Unauthorized",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -547,7 +548,7 @@ class TestUpdateEntry:
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
 
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("75.00"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("75.00")),
             )
 
             assert updated.amount == Decimal("75.00")
@@ -606,7 +607,7 @@ class TestUpdateEntry:
 
             updated = entry_service.update_entry(
                 entry.id, seed_user["user"].id,
-                amount=Decimal("99.99"),
+                figure=typed(Decimal("99.99")),
                 description="Updated",
                 is_credit=True,
             )
@@ -651,7 +652,7 @@ class TestUpdateEntry:
             with pytest.raises(NotFoundError):
                 entry_service.update_entry(
                     entry.id, seed_second_user["user"].id,
-                    amount=Decimal("99.00"),
+                    figure=typed(Decimal("99.00")),
                 )
 
     def test_update_entry_nonexistent(self, app, db, seed_user):
@@ -659,7 +660,7 @@ class TestUpdateEntry:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 entry_service.update_entry(
-                    999999, seed_user["user"].id, amount=Decimal("10.00"),
+                    999999, seed_user["user"].id, figure=typed(Decimal("10.00")),
                 )
 
 
@@ -697,7 +698,7 @@ class TestAFutureEntryDateIsRefused:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("150.00"),
+                        figure=typed(Decimal("150.00")),
                         description="Costco run I have not made",
                         purchased_on=tomorrow,
                     ),
@@ -730,7 +731,7 @@ class TestAFutureEntryDateIsRefused:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("42.87"),
+                    figure=typed(Decimal("42.87")),
                     description="Walmart",
                     purchased_on=today,
                 ),
@@ -754,7 +755,7 @@ class TestAFutureEntryDateIsRefused:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("101.06"),
+                    figure=typed(Decimal("101.06")),
                     description="Walmart, logged late",
                     purchased_on=long_ago,
                 ),
@@ -819,7 +820,7 @@ class TestAFutureEntryDateIsRefused:
             )
 
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("75.00"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("75.00")),
             )
 
             assert updated.amount == Decimal("75.00")
@@ -1611,7 +1612,7 @@ class TestNeitherHandDoorTakesATypedSign:
                     transaction_id=txn.id,
                     user_id=user.id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("0.00"),
+                        figure=typed(Decimal("0.00")),
                         description="Nothing",
                         purchased_on=date(2026, 1, 5),
                     ),
@@ -1621,7 +1622,7 @@ class TestNeitherHandDoorTakesATypedSign:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("10.00"),
+                    figure=typed(Decimal("10.00")),
                     description="Real purchase",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -1630,7 +1631,7 @@ class TestNeitherHandDoorTakesATypedSign:
 
             with pytest.raises(ValidationError, match="cannot be zero"):
                 entry_service.update_entry(
-                    entry.id, user.id, amount=Decimal("0.00"),
+                    entry.id, user.id, figure=typed(Decimal("0.00")),
                 )
 
     def test_a_refund_round_trips_through_the_service_door(
@@ -1650,7 +1651,7 @@ class TestNeitherHandDoorTakesATypedSign:
                 transaction_id=txn.id,
                 user_id=user.id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("-28.29"),
+                    figure=typed(Decimal("-28.29")),
                     description="Amazon refund",
                     purchased_on=date(2026, 1, 5),
                 ),
@@ -2008,7 +2009,7 @@ class TestASettledRowsPurchasesAreClosed:
 
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
-                    entry.id, seed_user["user"].id, amount=Decimal("500.00"),
+                    entry.id, seed_user["user"].id, figure=typed(Decimal("500.00")),
                 )
 
             # No rollback: the guard runs BEFORE the setattr loop, so a refused
@@ -2077,7 +2078,7 @@ class TestASettledRowsPurchasesAreClosed:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        figure=typed(Decimal("50.00")),
                         description="Late purchase",
                         purchased_on=display_today(),
                     ),
@@ -2160,7 +2161,7 @@ class TestASettledRowsPurchasesAreClosed:
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id,
                     settle_day=an_entered_day(display_today()),
-                    amount=Decimal("500.00"),
+                    figure=typed(Decimal("500.00")),
                 )
 
             # The guard runs BEFORE the setattr loop, so nothing is staged.
@@ -2311,7 +2312,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                     settle_day=an_entered_day(display_today()),
@@ -2353,7 +2354,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                     settle_day=an_entered_day(display_today()),
@@ -2388,7 +2389,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("600.00"),
+                        figure=typed(Decimal("600.00")),
                         description="BJs",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today()),
@@ -2483,7 +2484,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                     ),
@@ -2538,7 +2539,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=posted - timedelta(days=2),
                     settle_day=an_entered_day(posted),
@@ -2561,7 +2562,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("30.00"),
+                    figure=typed(Decimal("30.00")),
                     description="Food Lion",
                     purchased_on=display_today(),
                 ),
@@ -2591,7 +2592,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today() - timedelta(days=1)),
@@ -2618,7 +2619,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
+                        figure=typed(Decimal("30.00")),
                         description="Food Lion",
                         purchased_on=display_today(),
                         settle_day=an_entered_day(display_today() + timedelta(days=1)),

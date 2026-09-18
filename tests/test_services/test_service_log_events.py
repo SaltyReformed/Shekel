@@ -83,6 +83,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_UPDATED,
 )
 from tests._test_helpers import (
+    typed,
     generate_row_of,
     make_every_period_rule,
     make_expense_template,
@@ -450,7 +451,7 @@ class TestEntryServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Coffee",
                     purchased_on=date(2026, 1, 15),
                     is_credit=False,
@@ -473,7 +474,7 @@ class TestEntryServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Coffee",
                     purchased_on=date(2026, 1, 15),
                 ),
@@ -482,14 +483,16 @@ class TestEntryServiceLogging:
             with _LogCapture("app.services.entry_service") as cap:
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id,
-                    amount=Decimal("15.00"),
+                    figure=typed(Decimal("15.00")),
                     description="Coffee + tip",
                 )
 
         record = cap.find(EVT_ENTRY_UPDATED)
         assert record is not None
         assert record.entry_id == entry.id
-        assert record.fields_changed == ["amount", "description"]
+        # The door's own keys, as ``settle_day`` already logs for the day:
+        # ``figure`` is the amount and who wrote it (plan step X-bi-3e-1).
+        assert record.fields_changed == ["description", "figure"]
 
     def test_delete_entry_emits_event(self, app, db, seed_user, _envelope_transaction):
         """delete_entry emits ``entry_deleted``."""
@@ -498,7 +501,7 @@ class TestEntryServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Coffee",
                     purchased_on=date(2026, 1, 15),
                 ),
@@ -545,7 +548,7 @@ class TestReconcileServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Coffee",
                     purchased_on=date(2026, 1, 1),
                 ),
@@ -594,7 +597,7 @@ class TestReconcileServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("12.50"),
+                    figure=typed(Decimal("12.50")),
                     description="Coffee",
                     purchased_on=date(2026, 1, 15),
                 ),
@@ -636,7 +639,7 @@ class TestEntryCreditWorkflowLogging:
                     transaction_id=_envelope_transaction.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("25.00"),
+                        figure=typed(Decimal("25.00")),
                         description="Card 1",
                         purchased_on=date(2026, 1, 10),
                         is_credit=True,
@@ -652,7 +655,7 @@ class TestEntryCreditWorkflowLogging:
                     transaction_id=_envelope_transaction.id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("10.00"),
+                        figure=typed(Decimal("10.00")),
                         description="Card 2",
                         purchased_on=date(2026, 1, 11),
                         is_credit=True,
@@ -1040,7 +1043,7 @@ class TestTransactionServiceLogging:
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
-                    amount=Decimal("33.00"),
+                    figure=typed(Decimal("33.00")),
                     description="Test entry",
                     purchased_on=date(2026, 1, 10),
                 ),

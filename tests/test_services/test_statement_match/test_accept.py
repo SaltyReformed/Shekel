@@ -25,6 +25,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
+    MovementFigureSourceEnum,
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
@@ -36,11 +37,13 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.services import balance_at, entry_service, statement_match
+from app.services import balance_at, entry_service, statement_match, status_seam
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
 from tests._test_helpers import (
+    observed,
+    typed,
     family_journal_filter,
     an_entered_day,
     create_settled_cash_transaction,
@@ -2091,6 +2094,16 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         assert txn.settled_basis_id == ref_cache.settlement_basis_id(
             SettlementBasisEnum.CORRECTED,
         )
+        # And WHO wrote it: the matcher's transaction arm is the one door
+        # that states a figure as the BANK's (plan step X-bi-3e-1, ruling
+        # R-BAL61), graded end to end on the row's covering movement --
+        # ``typed`` would also read CORRECTED on the row, so the row's basis
+        # alone cannot tell the two writers apart.
+        (movement,) = status_seam.covering_movements(txn)
+        assert movement.amount == Decimal("178.29")
+        assert movement.figure_source_id == ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.OBSERVED,
+        )
 
     def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
         """The control, and it is what makes the test above mean anything.
@@ -2294,7 +2307,9 @@ class TestASettledPurchaseTakesTheBanksFigure:
     -- `Groceries: Walmart`, `$121.12` against the bank's `$121.16`.
 
     **The BOUND is the door, not the row**, and the second test is its firing
-    control: the permission rides on the settle day's own basis, so a caller
+    control: the permission rides on the figure's own stated SOURCE -- the
+    matcher states ``observed`` with the figure (plan step X-bi-3e-1, ruling
+    **R-BAL69**; it rode on the settle day's basis until then) -- so a caller
     without a statement cannot reach it.
     """
 
@@ -2337,17 +2352,18 @@ class TestASettledPurchaseTakesTheBanksFigure:
     def test_the_HAND_EDIT_door_still_refuses(self, app, db, seed_user):
         """R-GE's bound, as a firing control.
 
-        Delete the basis test in ``entry_service.update_entry`` and this passes
-        -- which is what makes it worth writing.  The permission must be
-        reachable ONLY with a statement's own ``observed`` day; an owner typing
-        into the popover still meets N-229's refusal, unchanged.
+        Delete the source test in ``entry_service._refusals.cost_fields_changing``
+        and this passes -- which is what makes it worth writing.  The
+        permission must be reachable ONLY with a figure the bank's line
+        stated; an owner typing into the popover still meets N-229's refusal,
+        unchanged.
         """
         day = seed_user["bootstrap_period"].start_date
         _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
 
         with pytest.raises(ValidationError):
             entry_service.update_entry(
-                purchase.id, seed_user["user"].id, amount=Decimal("121.16"),
+                purchase.id, seed_user["user"].id, figure=typed(Decimal("121.16")),
             )
 
         assert purchase.amount == Decimal("121.12")
@@ -2355,11 +2371,12 @@ class TestASettledPurchaseTakesTheBanksFigure:
     def test_an_ENTERED_day_does_not_buy_the_permission(
         self, app, db, seed_user,
     ):
-        """The narrower control: it is the BASIS that permits, not the pairing.
+        """The narrower control: it is the figure's SOURCE that permits.
 
-        A caller submitting a settle day beside the amount must not inherit the
-        permission just for having submitted one -- only an ``observed`` day
-        carries the evidence, and ``entered`` is what every hand door writes.
+        A caller submitting a settle day beside the figure must not inherit the
+        permission just for having submitted one -- only a figure the bank's
+        line stated carries the evidence, and ``typed`` is what every hand
+        door states.
         """
         day = seed_user["bootstrap_period"].start_date
         _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
@@ -2367,7 +2384,55 @@ class TestASettledPurchaseTakesTheBanksFigure:
         with pytest.raises(ValidationError):
             entry_service.update_entry(
                 purchase.id, seed_user["user"].id,
-                amount=Decimal("121.16"), settle_day=an_entered_day(day),
+                figure=typed(Decimal("121.16")), settle_day=an_entered_day(day),
             )
 
         assert purchase.amount == Decimal("121.12")
+
+    def test_an_OBSERVED_day_beside_a_typed_figure_does_not_buy_it_either(
+        self, app, db, seed_user,
+    ):
+        """The direction the re-spelling changed (plan step X-bi-3e-1).
+
+        Until this step the permission was read off the DAY: an ``observed``
+        settle day in the call released ``amount`` whoever wrote the figure.
+        The figure states its own writer now (ruling **R-BAL69**), and a
+        person's figure beside the bank's day is still a person's -- the
+        BAL-508 shape, and the one a day-based predicate lets through.  Put
+        the predicate back on the day and this passes.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
+
+        with pytest.raises(ValidationError):
+            entry_service.update_entry(
+                purchase.id, seed_user["user"].id,
+                figure=typed(Decimal("121.16")),
+                settle_day=SettleDay(
+                    day=day, basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+
+        assert purchase.amount == Decimal("121.12")
+
+    def test_the_banks_figure_alone_buys_it(self, app, db, seed_user):
+        """The accepting arm, at the door the matcher reaches.
+
+        Without it the two refusals above prove nothing about the release:
+        a figure the bank's line stated re-costs the settled purchase, which
+        is exactly R-GE's rule with the evidence read off the figure.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
+
+        # The figure ALONE: no settle day in the call, so the old day-based
+        # predicate would refuse this and the source-based one admits it.
+        entry_service.update_entry(
+            purchase.id, seed_user["user"].id,
+            figure=observed(Decimal("121.16")),
+        )
+
+        assert purchase.amount == Decimal("121.16")
+        assert purchase.figure_source_id == ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.OBSERVED,
+        )

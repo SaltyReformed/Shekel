@@ -84,7 +84,7 @@ from app.services.transfer_service._loan_posting import (
 # explicitly in :func:`_reconcile_postings_after_update`.
 _POSTING_RELEVANT_FIELDS = frozenset(
     {
-        "status_id", "amount_ownership", "settled_amount", "pay_period_id",
+        "status_id", "amount_ownership", "figure", "pay_period_id",
         "due_date",
         "from_account_id", "to_account_id",
     }

@@ -836,10 +836,15 @@ class MovementFigureSourceEnum(enum.Enum):
                      ``status_seam.Settlement.from_settle`` honours a retained
                      ``corrected`` record.
         observed  -- the bank's own line stated it: a purchase born from a
-                     statement line, or one a bank line was matched to.  A
-                     match asserts the line and the purchase are one movement
-                     at one figure, so a confirmation RAISES a typed figure to
-                     observed the way it raises an ``asserted`` day.
+                     statement line, or a figure the statement matcher took
+                     from a line onto a matched row.  A match that confirms a
+                     DAY alone writes no figure and so changes nothing about
+                     who wrote it: the label follows the WRITER of the figure,
+                     never the evidence beside it (ruling **R-BAL61**, which
+                     measured the older "a confirmation raises a typed figure
+                     to observed" rule false on every row kind -- every
+                     bank-observed day ever written onto a settled row was a
+                     day-only confirmation).
 
     **A reader needs it, which is why it is a column and not a label.**
     ``Settlement.from_settle`` re-prices a ``derived`` record and honours a
@@ -851,13 +856,16 @@ class MovementFigureSourceEnum(enum.Enum):
     movement IS a purchase) and its ``corrected`` member is defined as *a
     human typed it*, which a bank-born purchase would have to claim falsely.
 
-    **It records the strongest statement made, and a withdrawal does not
+    **It records who last WROTE the figure, and a withdrawal does not
     launder it**: releasing a match leaves a purchase's ``observed`` day in
     place (finding **N-333**, *the days an accepted match wrote are the APP's
     own record*), and the figure's source stays with it.  A day-only edit
     leaves the source alone; the source changes only when someone WRITES the
     figure -- the human PATCH makes it ``typed``, a bank line ``observed``, a
-    settle ``resolved`` or ``typed``.
+    settle ``resolved``, ``typed`` or (through the matcher's transaction arm)
+    ``observed``.  Every writer STATES it with the figure, as one value
+    (:class:`app.services.stated_figure.StatedFigure`; plan step
+    **X-bi-3e-1**, ruling **R-BAL69**); nothing infers it from the day.
 
     Application code resolves these via ``ref_cache.movement_figure_source_id``
     and compares against the integer ID -- never the string ``name`` -- matching

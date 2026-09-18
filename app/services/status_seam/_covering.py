@@ -36,22 +36,22 @@ kind; the one place a kind branch stands is the POSTING doors, which return
 for a transfer shadow's entries, and that branch is ruling **R-BAL45**'s
 interval rather than a reader deciding for itself (below).
 
-**A revert DELETES the covering movement, and the row's retained record is
-what carries the figure across.**  Leaving the settled band releases the
-row's assertion and keeps what moved (plan step X-au-c3: ``settled_amount``
-and ``settled_basis_id`` outlive a revert), and the next settle honours a
-retained ``corrected`` record or re-prices a ``derived`` one
-(``Settlement.from_settle``).  The movement is that record's mirror, so it is
-rebuilt from the record at the re-settle -- ``typed`` again for a honoured
-correction, ``resolved`` again for a re-priced derivation -- and nothing the
-row does not also hold is lost: a revert releases the row's own bank-observed
-day and link today, and the movement's go with it the same way.  Keeping a
-movement undated across the revert was considered and rejected: an envelope
-closed EMPTY at the door and then given real purchases would sum the stale
-close into them on its next settle (``settles_from_entries`` is
-``tracks_purchases and entries``), and a re-settle would have to tell the
-mirror from a purchase by a source both can share, since an empty envelope's
-manual-branch close may take a typed correction.
+**A revert DELETES the covering movement through this leaf, and plan step
+``X-bi-3e-2`` keeps it, un-dated** (ruling **R-BAL61**).  Leaving the
+settled band releases the row's assertion and keeps what moved (plan step
+X-au-c3: ``settled_amount`` and ``settled_basis_id`` outlive a revert), and
+the next settle honours a retained ``corrected`` record or re-prices a
+``derived`` one (``Settlement.from_settle``).  The movement is that record's
+mirror, rebuilt at the re-settle -- and since plan step ``X-bi-3e-1`` it is
+also the record's only home for WHO WROTE the figure, which the row's
+columns never held: deleting it across a revert therefore loses that one
+fact, and the retained read answers by R-BAL61's cutover mapping
+(``_record.recorded_settlement``, ruling **R-BAL70**) until ``X-bi-3e-2``
+lands.  This paragraph used to argue for deleting -- an envelope closed
+EMPTY at the door and then given real purchases would sum the stale close
+into them -- and the mark already answers that (``settles_from_entries``
+excludes covering movements); ruling **R-BAL68** gives every purchase-meaning
+reader the same exclusion at that leaf.
 
 **Which entry is the covering movement is a STORED fact of the movement**
 (``transaction_entries.covers_settlement``), never a derivation over the
@@ -116,46 +116,17 @@ from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
-from app.enums import (
-    MovementFigureSourceEnum,
-    SettledDayBasisEnum,
-    SettlementBasisEnum,
-)
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
 from app.services.cash_ledger import movement_cash_leg, settled_cash_leg
-from app.services.settle_day import (
-    figure_source_of,
-    record_settle_day,
-    recorded_settle_day,
-)
-from app.services.status_seam._record import Settlement
-
-#: The settlement bases whose record a covering movement mirrors.  A
-#: ``purchases`` settlement stores no figure because the row's own purchases ARE
-#: the record, so there is nothing to cover.
-_COVERED_BASES = frozenset({
-    SettlementBasisEnum.DERIVED, SettlementBasisEnum.CORRECTED,
-})
-
-
-
-def _source_of(row: Transaction, settlement: Settlement) -> MovementFigureSourceEnum:
-    """Return WHO WROTE the figure a settle records.
-
-    A ``derived`` record is the settle's own resolution of the plan
-    (``resolved``); a ``corrected`` one was STATED, and who stated it is the
-    day's basis question ``settle_day.figure_source_of`` answers -- the bank,
-    when the statement matcher settled the row on an ``observed`` day with
-    the line's figure (``_moving``), else a person.  One rule with the
-    purchase doors and the migration's backfill, so the cutover
-    (``X-bi-3d``) classifies a row exactly as the seam would have.
-    """
-    if settlement.basis is SettlementBasisEnum.DERIVED:
-        return MovementFigureSourceEnum.RESOLVED
-    return figure_source_of(recorded_settle_day(row))
+from app.services.settle_day import record_settle_day, recorded_settle_day
+# ``covering_movements`` is defined beside the record's READ (plan step
+# X-bi-3e-1: ``recorded_settlement`` takes a retained figure's source off the
+# movement) and re-exported by the package from here unchanged.
+from app.services.status_seam._record import Settlement, covering_movements
 
 
 def covering_clause():
@@ -171,22 +142,6 @@ def covering_clause():
         A SQLAlchemy boolean expression over ``TransactionEntry``.
     """
     return TransactionEntry.covers_settlement.is_(True)
-
-
-def covering_movements(row: Transaction) -> list[TransactionEntry]:
-    """Return the covering movements *row* holds -- the settle's, not a person's.
-
-    By the mark the seam left (module docstring); at most one, by the partial
-    unique index, and a list rather than an optional so a caller that walks
-    the family needs no branch.
-
-    Args:
-        row: The transaction, with ``entries`` loaded or loadable.
-
-    Returns:
-        The covering movements, in ``entries`` order; empty when none.
-    """
-    return [entry for entry in row.entries if entry.covers_settlement]
 
 
 def covered_cash_leg(row: Transaction) -> Decimal:
@@ -314,10 +269,18 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
 def _record_onto(
     row: Transaction, movement: TransactionEntry, settlement: Settlement,
 ) -> None:
-    """Write what a settle RECORDS onto *movement*: figure, source, name, day."""
+    """Write what a settle RECORDS onto *movement*: figure, source, name, day.
+
+    The source is the record's own -- WHO WROTE the figure, stated by the
+    door that handed the verb a :class:`~app.services.stated_figure.
+    StatedFigure` or by the verb's own ``resolved`` arm (ruling **R-BAL61**,
+    plan step X-bi-3e-1).  It was inferred here from the day's basis beside
+    the figure until that step, and the premise was measured false: a figure
+    a person typed over a standing bank-observed day was labelled the bank's.
+    """
     movement.amount = settlement.amount
     movement.figure_source_id = ref_cache.movement_figure_source_id(
-        _source_of(row, settlement),
+        settlement.source,
     )
     # The plan's name as it reads at the settle -- the movement's OWN fact
     # (ruling R-BAL39): a bill's payment has no receipt text, and a later
@@ -451,7 +414,10 @@ def sync_covering_movement(
         return
     if not now_settled:
         return
-    if settlement is not None and settlement.basis in _COVERED_BASES:
+    # A record that STATES a figure names who wrote it (``Settlement`` refuses
+    # one without the other), and only such a record has anything to mirror:
+    # a ``purchases`` record has neither.
+    if settlement is not None and settlement.source is not None:
         _cover(row, settlement)
         return
     if settlement is not None:

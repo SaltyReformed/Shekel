@@ -60,6 +60,7 @@ from app.services import (
 from app.services.entry_service import EntryDetails
 from app.services.posting_reads import _ledger_account_for
 from tests._test_helpers import (
+    typed,
     family_journal_filter,
     figure_source_columns,
     add_txn,
@@ -630,7 +631,7 @@ class TestEnvelopePostingLifecycle:
             late = entry_service.create_entry(
                 txn_id, user_id,
                 EntryDetails(
-                    amount=Decimal("30.00"), description="late",
+                    figure=typed(Decimal("30.00")), description="late",
                     purchased_on=seed_periods[0].start_date, is_credit=False,
                 ),
             )

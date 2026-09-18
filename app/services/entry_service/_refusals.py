@@ -25,7 +25,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettledDayBasisEnum, SettlementBasisEnum
+from app.enums import MovementFigureSourceEnum, SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -78,7 +78,7 @@ from app.utils.dates import display_today
 #: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
 #: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
 #: down, on the purchase instead of on the row.
-_COST_BEARING_FIELDS = frozenset({"amount", "is_credit"})
+_COST_BEARING_FIELDS = frozenset({"figure", "is_credit"})
 
 
 def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
@@ -88,15 +88,19 @@ def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
     a settled purchase, and the EVIDENCE IS IN THE CALL.**
     :data:`_COST_BEARING_FIELDS` exists for a human's second thoughts -- a typed
     figure with nothing behind it -- and a statement is the opposite of one.  So
-    ``amount`` leaves the refused set exactly when the same submission records a
-    settle day whose basis is ``observed``.
+    ``figure`` leaves the refused set exactly when the figure submitted says
+    the bank's line wrote it.
 
-    **What bounds the permission is the BASIS, not a flag a caller asserts**, and
-    that is the whole design: ``observed`` means *the bank showed this money
-    move*, and the statement matcher is its only writer -- the entry PATCH door
-    writes ``entered`` and the reconcile panel ``asserted`` through its own bulk
-    UPDATE.  A caller holding an ``observed`` day HAS the evidence, so the rule
-    needs no second channel and no ordinary edit form can reach it.
+    **What bounds the permission is the figure's own stated SOURCE, not a flag
+    a caller asserts**, and that is the whole design: ``observed`` means *the
+    bank's line stated this figure*, and the statement matcher is its only
+    writer -- the entry PATCH door states ``typed`` and no other door writes a
+    figure here at all.  A caller holding an ``observed`` figure HAS the
+    evidence, so the rule needs no second channel and no ordinary edit form
+    can reach it.  Until plan step **X-bi-3e-1** the evidence was read off the
+    DAY beside the figure (an ``observed`` settle day in the same call); the
+    figure now states its writer itself (ruling **R-BAL69**), and the day is
+    left to say what it is about, which is when the money moved.
 
     ``is_credit`` is NOT released with it: which side of the card a purchase sat
     on is not a figure a statement states.
@@ -105,13 +109,13 @@ def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
         valid_updates: The submission, already narrowed to updatable fields.
 
     Returns:
-        The field names to weigh -- every changing field, less ``amount`` where
-        the call carries the bank's own observation.
+        The field names to weigh -- every changing field, less ``figure`` where
+        the figure carries the bank's own statement.
     """
     changing = frozenset(valid_updates)
-    evidence = valid_updates.get("settle_day")
-    if getattr(evidence, "basis", None) is SettledDayBasisEnum.OBSERVED:
-        return changing - {"amount"}
+    evidence = valid_updates.get("figure")
+    if getattr(evidence, "source", None) is MovementFigureSourceEnum.OBSERVED:
+        return changing - {"figure"}
     return changing
 
 

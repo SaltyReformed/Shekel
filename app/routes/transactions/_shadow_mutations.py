@@ -36,6 +36,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 from app.routes._authored_figure import figure_was_authored
+from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _error_transaction_response,
@@ -106,8 +107,12 @@ def _apply_shadow_update(txn, txn_id, data):
         svc_kwargs["amount_ownership"] = AmountOwnership.own(
             data["estimated_amount"],
         )
-    if "settled_amount" in data:
-        svc_kwargs["settled_amount"] = data["settled_amount"]
+    if data.get("settled_amount") is not None:
+        # The shadow popover's Actual box: a PERSON's figure, stated as such
+        # with the figure itself (plan step X-bi-3e-1, ruling R-BAL61) under
+        # the key the service reads for the value, as ``settle_day`` is for
+        # the day.  An empty box is no statement, so no key.
+        svc_kwargs["figure"] = typed_figure(data["settled_amount"])
     if "status_id" in data:
         # No ``settled_on`` companion: the seam CLEARS the day on entering a
         # non-settled status, so the explicit ``None`` this used to add was a
@@ -230,7 +235,9 @@ def _mark_done_shadow(txn, txn_id, submitted, target):
     Args:
         txn: The shadow Transaction being settled.
         txn_id: The shadow's id, for stale-conflict logging / re-fetch.
-        submitted: The figure a human typed for what moved, or ``None``
+        submitted: The figure a human typed for what moved and the
+            ``typed`` source the route stated with it
+            (:class:`~app.services.stated_figure.StatedFigure`), or ``None``
             when nobody typed one.
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).

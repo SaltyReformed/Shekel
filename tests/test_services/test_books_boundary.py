@@ -317,7 +317,7 @@ class TestTheOneOrmWriter:
                     row, done,
                     settle_day=_entered(_books_open_on(account)),
                     settlement=status_seam.Settlement.from_settle(
-                        row, Decimal("10.00"),
+                        Decimal("10.00"), None,
                     ),
                 )
 

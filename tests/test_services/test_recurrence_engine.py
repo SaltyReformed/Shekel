@@ -69,6 +69,7 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
+    typed,
     record_paydays_across_a_hole,
     all_periods,
     an_entered_day,
@@ -2204,7 +2205,7 @@ class TestRegenerateForTemplate:
             txn.id,
             seed_user["user"].id,
             entry_service.EntryDetails(
-                amount=Decimal(amount),
+                figure=typed(Decimal(amount)),
                 description="Kroger",
                 purchased_on=txn.pay_period.start_date,
             ),

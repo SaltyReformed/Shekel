@@ -48,6 +48,7 @@ from app.services.entry_service import EntryDetails
 from app.services.settle_day import SettleDay
 from app.services.status_seam._covering import covering_movements
 from tests._test_helpers import (
+    typed,
     create_savings_account,
     create_settled_transfer,
     generate_row_of,
@@ -220,7 +221,7 @@ class TestTheCutoverMirrorsTheRowsOwnRecord:
     def test_a_corrected_bill_is_covered_typed(self, app, seed_user, seed_periods):
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             assert txn.settled_basis_id == ref_cache.settlement_basis_id(
                 SettlementBasisEnum.CORRECTED,
             )
@@ -235,25 +236,27 @@ class TestTheCutoverMirrorsTheRowsOwnRecord:
     ):
         """Ruling R-BAL61's firing control: the writer, never the day.
 
-        The seam labels this shape ``observed`` today (its re-record infers
-        the source from the day; leaf X-bi-3e retires that); the cutover
-        classifies by the record's basis alone, because on production every
-        ``corrected`` figure was typed by a person and the day beside it says
-        only that the bank confirmed the day.  Under R-BAL40's old arm this
-        case read ``observed`` and this assertion fails.
+        The cutover classifies by the record's basis alone, because on
+        production every ``corrected`` figure was typed by a person and the
+        day beside it says only that the bank confirmed the day.  Under
+        R-BAL40's old arm this case read ``observed`` and this assertion
+        fails.  The seam labelled this shape ``observed`` too when this test
+        was written (its re-record inferred the source from the day); leaf
+        X-bi-3e-1 retired that, so the seam's own label and the cutover's
+        now agree, which the first assertion pins.
         """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
             _settle(
-                txn, submitted=Decimal("148.40"),
+                txn, submitted=typed(Decimal("148.40")),
                 settle_day=SettleDay(
                     day=seed_periods[0].start_date,
                     basis=SettledDayBasisEnum.OBSERVED,
                 ),
             )
             assert _only_movement(txn).figure_source_id == _source(
-                MovementFigureSourceEnum.OBSERVED,
-            )
+                MovementFigureSourceEnum.TYPED,
+            ), "the seam labels the person's figure a person's (X-bi-3e-1)"
             _uncover(txn)
             assert _cover() == 1
             movement = _only_movement(txn)
@@ -368,7 +371,7 @@ class TestTheCutoverWritesNothingItShouldNot:
             entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("60.00"), description="Kroger",
+                    figure=typed(Decimal("60.00")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -396,7 +399,7 @@ class TestTheCutoverWritesNothingItShouldNot:
         """Out of the band the retained record is not money; nothing mirrors it."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0], "100.00")
-            _settle(txn, submitted=Decimal("90.00"))
+            _settle(txn, submitted=typed(Decimal("90.00")))
             transaction_service.apply_requested_status(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )

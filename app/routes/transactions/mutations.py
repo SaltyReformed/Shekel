@@ -53,6 +53,7 @@ from app.routes.transactions._gates import (
     _resolve_status_change,
 )
 from app.routes._authored_figure import figure_was_authored
+from app.routes._typed_figure import typed_figure
 from app.utils.rendered_figure import as_rendered_field
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
@@ -76,6 +77,7 @@ from app.routes.transactions._shadow_mutations import (
 from app.utils.error_fragments import flatten_schema_errors
 
 logger = logging.getLogger(__name__)
+
 
 # The PATCH fields whose change can alter a transaction's posted double-entry
 # ledger effect, so a change to any triggers a posting reconcile (Build-Order
@@ -434,7 +436,11 @@ def _apply_status_or_postings(txn, data, new_status_id):
     # it called ``settled_amount_for_status``, which read the STATUS alone
     # and so could not tell an untouched prefill from a number the user had
     # just retyped.  That rule needs the row, and the door has it.
-    submitted_figure = data.get("settled_amount")
+    # **A figure out of the Actual box is a PERSON's statement**, and the
+    # route says so with the figure (plan step X-bi-3e-1, ruling R-BAL61):
+    # the door takes the amount and who wrote it as one value, and this is
+    # the full-edit popover, never the bank.
+    submitted_figure = typed_figure(data.get("settled_amount"))
     if (
         "status_id" in data
         or settle_day is not None
@@ -825,7 +831,9 @@ def mark_done(txn_id):
         return _error_transaction_response(
             txn.id, flatten_schema_errors(exc.messages), target, status=422,
         )
-    submitted = mark_done_data.get("settled_amount")
+    # The Mark Paid form's optional figure is a PERSON's (plan step
+    # X-bi-3e-1, ruling R-BAL61), stated once here for both branches below.
+    submitted = typed_figure(mark_done_data.get("settled_amount"))
 
     # The income/expense status pick is NOT made here.  It used to be, and
     # ``transaction_service.settle_from_entries`` re-derived the same id from

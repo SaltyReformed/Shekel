@@ -84,10 +84,12 @@ from app.services import (
 from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
 from app.services.cash_ledger._amounts import _entry_aware_amount
 from app.services.entry_service import EntryDetails
-from app.services.settle_day import SettleDay
+from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.status_seam._covering import covering_movements
 from app.services.transaction_service._settle import settle_from_entries
 from tests._test_helpers import (
+    observed,
+    typed,
     create_loan_account,
     create_savings_account,
     create_settled_transfer,
@@ -192,7 +194,7 @@ class TestASettleWritesTheMovementItRecords:
     ):
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
 
             movement = _only_movement(txn)
@@ -297,7 +299,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
         """The movement goes; what moved stays where X-au-c3 keeps it."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             movement_id = _only_movement(txn).id
 
@@ -317,7 +319,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
         """The projection reads the plan again: no movement, no reservation split."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             _revert(txn)
             db.session.flush()
@@ -330,7 +332,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
         """Revert, re-settle with nothing typed: the honoured figure, mirrored again."""
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
-            _settle(txn, submitted=Decimal("150.00"))
+            _settle(txn, submitted=typed(Decimal("150.00")))
             db.session.flush()
             first_id = _only_movement(txn).id
             _revert(txn)
@@ -388,7 +390,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
             entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("60.00"), description="Kroger",
+                    figure=typed(Decimal("60.00")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -410,7 +412,7 @@ class TestARevertDeletesAndAReSettleRebuilds:
             entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("60.00"), description="Kroger",
+                    figure=typed(Decimal("60.00")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -453,7 +455,7 @@ class TestAZeroSettlementWritesNoMovement:
             status_seam.apply_status_change(
                 txn, txn.status_id,
                 settlement=status_seam.Settlement.from_settle(
-                    Decimal("148.32"), Decimal("0.00"),
+                    Decimal("148.32"), typed(Decimal("0.00")),
                     status_seam.recorded_settlement(txn),
                 ),
             )
@@ -463,23 +465,29 @@ class TestAZeroSettlementWritesNoMovement:
 
 
 class TestTheSourceFollowsWhoStatedTheFigure:
-    """A corrected figure on a bank-observed day is the BANK's, not a person's."""
+    """A corrected figure is labelled by WHO STATED it, never by the day.
+
+    Ruling **R-BAL61** (plan step X-bi-3e-1): the seam used to infer the
+    writer from the day's basis beside the figure -- an ``observed`` day made
+    the figure the bank's -- and the premise was measured false on every row
+    kind.  The writer states it now, as one value with the figure
+    (:class:`~app.services.stated_figure.StatedFigure`, ruling **R-BAL69**).
+    """
 
     def test_a_bank_repriced_bill_is_observed(
         self, app, seed_user, seed_periods,
     ):
-        """The matcher's shape: the line's figure with the line's day.
+        """The matcher's shape: the line's figure, stated as the bank's.
 
         The seam mapped ``corrected`` to ``typed`` regardless of the day, so
         a bill the matcher repriced from a bank line carried a figure stamped
-        as a person's while the migration's backfill and the purchase doors
-        call the same fact ``observed`` (adversarial review, 2026-09-16).
-        One rule now: ``settle_day.figure_source_of``.
+        as a person's (adversarial review, 2026-09-16); then it inferred
+        ``observed`` from the day.  The matcher STATES it now.
         """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
             _settle(
-                txn, submitted=Decimal("148.40"),
+                txn, submitted=observed(Decimal("148.40")),
                 settle_day=SettleDay(
                     day=seed_periods[0].start_date,
                     basis=SettledDayBasisEnum.OBSERVED,
@@ -491,6 +499,78 @@ class TestTheSourceFollowsWhoStatedTheFigure:
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.OBSERVED,
             )
+
+    def test_a_figure_typed_over_a_bank_observed_day_is_typed(
+        self, app, seed_user, seed_periods,
+    ):
+        """BAL-508's class on a bill: the person's figure beside the bank's day.
+
+        The reconcile-then-correct shape ruling R-BAL61 measured (5 settled
+        rows on the 2026-09-18 restore): the matcher confirmed the DAY, and
+        a person later typed the figure through the popover.  The old
+        inference (``_source_of`` over the day's basis) labelled that figure
+        the bank's; delete this leaf's change and this fails.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(
+                txn,
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            db.session.flush()
+            assert _only_movement(txn).figure_source_id == _source(
+                MovementFigureSourceEnum.RESOLVED,
+            )
+            transaction_service.apply_requested_status(
+                txn, txn.status_id, submitted=typed(Decimal("148.40")),
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40")
+            assert movement.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            ), "the bank's day still stands; only the figure's writer changed"
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.TYPED,
+            )
+
+    def test_the_matchers_transaction_arm_reprice_is_observed(
+        self, app, seed_user, seed_periods,
+    ):
+        """Through the ONE door the matcher's transaction arm reaches.
+
+        ``statement_match._moving._apply_day`` re-prices a settled bill by an
+        identity transition through ``apply_requested_status`` with the
+        bank's figure stated ``observed``; the record it makes is the
+        bank's on the movement and ``corrected`` on the row.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            transaction_service.apply_requested_status(
+                txn, txn.status_id,
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+                submitted=observed(Decimal("148.40")),
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40")
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            )
+            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
+                SettlementBasisEnum.CORRECTED,
+            )
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.OBSERVED
+            ), "the retained read takes the source off the movement"
 
 
 class TestTheMirrorNeverLowersEvidence:
@@ -1084,7 +1164,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="Kroger",
+                    figure=typed(Decimal("12.79")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -1093,12 +1173,13 @@ class TestThePurchaseDoorsStateTheSource:
     def test_a_purchase_born_from_a_bank_line_is_observed(
         self, app, seed_user, seed_periods,
     ):
+        """The born-purchase builder STATES the bank wrote it (R-BAL61)."""
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1116,7 +1197,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1126,19 +1207,27 @@ class TestThePurchaseDoorsStateTheSource:
             )
             db.session.flush()
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, amount=Decimal("12.97"),
+                entry.id, seed_user["user"].id, figure=typed(Decimal("12.97")),
             )
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
 
-    def test_a_bank_confirmation_raises_a_typed_figure_to_observed(
+    def test_a_bank_confirmation_of_the_day_alone_leaves_a_typed_figure_typed(
         self, app, seed_user, seed_periods,
     ):
+        """INVERTED at plan step X-bi-3e-1 (ruling R-BAL61).
+
+        This door RAISED a typed figure to ``observed`` whenever a submission
+        carried an ``observed`` day, figure written or not -- and every
+        bank-observed day ever written onto a settled row on production was
+        exactly this, a day-only confirmation.  A match that confirms the day
+        writes no figure, so nothing about who wrote it changed.
+        """
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="Kroger",
+                    figure=typed(Decimal("12.79")), description="Kroger",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -1150,6 +1239,70 @@ class TestThePurchaseDoorsStateTheSource:
                     basis=SettledDayBasisEnum.OBSERVED,
                 ),
             )
+            assert entry.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            ), "the day IS confirmed; the figure's writer is not the question"
+            assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
+
+    def test_a_figure_typed_over_a_standing_observed_day_is_typed(
+        self, app, seed_user, seed_periods,
+    ):
+        """BAL-508's class on a purchase, through the PATCH's own shape.
+
+        The entry PATCH re-submits the whole form, so a person re-pricing a
+        bank-confirmed purchase sends the recorded ``observed`` day back
+        unchanged beside the new figure (``submitted_settle_day``'s echo).
+        Under ``figure_source_of`` that echo made the person's figure the
+        bank's; the figure says ``typed`` itself now.
+        """
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry = entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
+                    purchased_on=seed_periods[0].start_date,
+                    settle_day=SettleDay(
+                        day=seed_periods[0].start_date,
+                        basis=SettledDayBasisEnum.OBSERVED,
+                    ),
+                ),
+            )
+            db.session.flush()
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id,
+                figure=typed(Decimal("13.00")),
+                settle_day=recorded_settle_day(entry),
+            )
+            assert entry.amount == Decimal("13.00")
+            assert entry.settled_day_basis_id == ref_cache.settled_day_basis_id(
+                SettledDayBasisEnum.OBSERVED,
+            )
+            assert entry.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
+
+    def test_the_matchers_reprice_of_a_purchase_is_observed(
+        self, app, seed_user, seed_periods,
+    ):
+        """The matcher's purchase arm: the bank's figure, stated as such."""
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry = entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=typed(Decimal("12.79")), description="Kroger",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            db.session.flush()
+            entry_service.update_entry(
+                entry.id, seed_user["user"].id,
+                figure=observed(Decimal("12.97")),
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            assert entry.amount == Decimal("12.97")
             assert entry.figure_source_id == _source(MovementFigureSourceEnum.OBSERVED)
 
     def test_a_day_only_edit_on_the_owners_word_leaves_the_source_alone(
@@ -1160,7 +1313,7 @@ class TestThePurchaseDoorsStateTheSource:
             entry = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("12.79"), description="KROGER #123",
+                    figure=observed(Decimal("12.79")), description="KROGER #123",
                     purchased_on=seed_periods[0].start_date,
                     settle_day=SettleDay(
                         day=seed_periods[0].start_date,
@@ -1258,7 +1411,7 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             purchase = entry_service.create_entry(
                 envelope.id, seed_user["user"].id,
                 EntryDetails(
-                    amount=Decimal("57.96"), description="Walmart",
+                    figure=typed(Decimal("57.96")), description="Walmart",
                     purchased_on=seed_periods[0].start_date,
                 ),
             )
@@ -1270,7 +1423,7 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             db.session.flush()
             assert envelope.tracks_purchases is False
             transaction_service.apply_requested_status(
-                envelope, envelope.status_id, submitted=Decimal("999.99"),
+                envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
             )
             db.session.flush()
 
@@ -1309,3 +1462,144 @@ class TestTheCatalogueIsSeededAndResolvable:
                 db.session.flush()
             assert "figure_source_id" in str(exc.value)
             db.session.rollback()
+
+
+class TestTheRetainedReadTakesTheSourceOffTheMovement:
+    """``recorded_settlement`` reads WHO WROTE the figure off the covering
+    movement, and by ruling R-BAL70's mapping where none survives.
+
+    Plan step X-bi-3e-1 (rulings **R-BAL61**, **R-BAL70**): the row stores
+    no writer, so the retained record's source is the movement's; a record
+    with no movement -- a ``$0.00`` figure, or a row reverted on a tree that
+    deletes the movement -- reads ``derived`` as ``resolved`` and
+    ``corrected`` as ``typed``, the cutover's own classification.
+    """
+
+    def test_a_typed_correction_reads_typed_off_its_movement(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn, submitted=typed(Decimal("150.00")))
+            db.session.flush()
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("150.00")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+            assert retained.basis is SettlementBasisEnum.CORRECTED
+
+    def test_a_typed_zero_record_reads_typed_by_the_mapping(
+        self, app, seed_user, seed_periods,
+    ):
+        """A ``$0.00`` figure holds no movement, so the mapping answers.
+
+        ``ck_transaction_entries_positive_amount`` admits no movement of
+        nothing (``TestAZeroSettlementWritesNoMovement``), so the writer of a
+        ``$0.00`` correction is stored nowhere; ``corrected`` reads ``typed``.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            transaction_service.apply_requested_status(
+                txn, txn.status_id, submitted=typed(Decimal("0.00")),
+            )
+            db.session.flush()
+            assert covering_movements(txn) == []
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("0.00")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+            assert retained.basis is SettlementBasisEnum.CORRECTED
+
+    def test_a_derived_zero_record_reads_resolved_by_the_mapping(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0], "0.00")
+            _settle(txn)
+            db.session.flush()
+            assert covering_movements(txn) == []
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("0.00")
+            assert retained.source is MovementFigureSourceEnum.RESOLVED
+            assert retained.basis is SettlementBasisEnum.DERIVED
+
+    def test_a_purchases_record_reads_no_source(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
+            entry_service.create_entry(
+                envelope.id, seed_user["user"].id,
+                EntryDetails(
+                    figure=typed(Decimal("12.79")), description="Kroger",
+                    purchased_on=seed_periods[0].start_date,
+                ),
+            )
+            _settle(envelope)
+            db.session.flush()
+            retained = status_seam.recorded_settlement(envelope)
+            assert retained.amount is None
+            assert retained.source is None
+            assert retained.basis is SettlementBasisEnum.PURCHASES
+
+    def test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements(
+        self, app, seed_user, seed_periods,
+    ):
+        """The pair repair's read (``apply_status_to_all_three``) off a leg."""
+        with app.app_context():
+            xfer, expense, income = _settled_pair(seed_user, seed_periods[0])
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, figure=typed(Decimal("480.00")),
+            )
+            db.session.flush()
+            for leg in (expense, income):
+                movement = _only_movement(leg)
+                assert movement.amount == Decimal("480.00")
+                assert movement.figure_source_id == _source(
+                    MovementFigureSourceEnum.TYPED,
+                )
+                retained = status_seam.recorded_settlement(leg)
+                assert retained.amount == Decimal("480.00")
+                assert retained.source is MovementFigureSourceEnum.TYPED
+
+
+class TestTheRetainedReadUntilTheMovementSurvivesARevert:
+    """THE INTERVAL PIN for leaf X-bi-3e-2, in the shape 3b's gate took.
+
+    Until that leaf keeps the covering movement across a revert (un-dated),
+    a revert DELETES it and the retained record reads by ruling R-BAL70's
+    mapping alone -- so a figure the BANK stated, reverted and re-settled,
+    reads ``typed``.  Production holds 0 ``observed`` figures (measured
+    2026-09-18), so no row reads wrong today; 3e-2 inverts this test to
+    ``observed`` and asserts the movement's id survives.
+    """
+
+    def test_a_reverted_bank_figure_re_settles_typed_by_the_mapping(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(
+                txn, submitted=observed(Decimal("148.40")),
+                settle_day=SettleDay(
+                    day=seed_periods[0].start_date,
+                    basis=SettledDayBasisEnum.OBSERVED,
+                ),
+            )
+            db.session.flush()
+            assert _only_movement(txn).figure_source_id == _source(
+                MovementFigureSourceEnum.OBSERVED,
+            )
+            _revert(txn)
+            db.session.flush()
+            assert covering_movements(txn) == [], "3e-1: the revert still deletes"
+            retained = status_seam.recorded_settlement(txn)
+            assert retained.amount == Decimal("148.40")
+            assert retained.source is MovementFigureSourceEnum.TYPED
+            _settle(txn)
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.amount == Decimal("148.40"), "the figure is honoured"
+            assert movement.figure_source_id == _source(
+                MovementFigureSourceEnum.TYPED,
+            ), "3e-2 inverts this to OBSERVED off the surviving movement"

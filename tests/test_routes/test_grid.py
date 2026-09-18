@@ -46,6 +46,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    typed as typed_figure,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -9919,7 +9920,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         )
         db.session.flush()
         transaction_service.settle_transaction(
-            txn, submitted=Decimal("245.32"),
+            txn, submitted=typed_figure(Decimal("245.32")),
         )
         status_seam.apply_status_change(
             txn, ref_cache.status_id(StatusEnum.PROJECTED),

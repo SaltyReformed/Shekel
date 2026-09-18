@@ -50,8 +50,6 @@ Architecture (``CLAUDE.md``):
     boundary.
 """
 
-from decimal import Decimal
-
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -62,12 +60,13 @@ from app.services.reconcile_service._offers import (
     OfferKind,
     OutstandingTransaction,
 )
+from app.services.stated_figure import StatedFigure
 from app.utils.log_events import EVT_TRANSFERS_RECONCILED
 
 
 def _settle_one(
     shadow: Transaction,
-    submitted: Decimal | None,
+    submitted: StatedFigure | None,
     statement: _rows.Statement,
 ) -> bool:
     """Settle one transfer through the service; say if a human's figure won.
