@@ -42,8 +42,8 @@ from app.models.ref import PeriodPlacement, RecurrenceUnit
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from app.schemas.validation.salary import (
-    DeductionCreateSchema,
-    DeductionUpdateSchema,
+    PaycheckLineCreateSchema,
+    PaycheckLineUpdateSchema,
 )
 from app.schemas.validation.transfers import (
     TransferTemplateCreateSchema,
@@ -82,8 +82,8 @@ _SCHEMAS = (
 #: ``starts_on`` and no ``nominal_day``, and the one sweep that states the
 #: pair stays on :data:`_SCHEMAS`.
 _CADENCE_SCHEMAS = _SCHEMAS + (
-    ("DeductionCreateSchema", DeductionCreateSchema),
-    ("DeductionUpdateSchema", DeductionUpdateSchema),
+    ("PaycheckLineCreateSchema", PaycheckLineCreateSchema),
+    ("PaycheckLineUpdateSchema", PaycheckLineUpdateSchema),
 )
 
 #: The two axes, each with the field name it posts under, the enum whose members
@@ -441,8 +441,8 @@ class TestTheTripleMustBeStorable:
         [
             ("create", TemplateCreateSchema),
             ("update", TemplateUpdateSchema),
-            ("deduction create", DeductionCreateSchema),
-            ("deduction update", DeductionUpdateSchema),
+            ("deduction create", PaycheckLineCreateSchema),
+            ("deduction update", PaycheckLineUpdateSchema),
         ],
     )
     def test_a_unit_with_no_interval_is_refused(self, app, label, schema_cls):
@@ -895,50 +895,57 @@ class TestTheTransactionSchemasRequireACadence:
 
 
 
-class TestTheDeductionSchemasTakeTheCadenceAlone:
-    """The third recurrence form declares four of the mixin's nine (R15-c).
+class TestTheLineSchemasTakeTheCadenceAndTheSpan:
+    """The third recurrence form declares eight of the mixin's nine (R15-c, then R18-c).
 
-    A payroll deduction's rule has a DERIVED first occurrence (rulings
-    R-SAL30, R-SAL36), no due day and no closing bound, so
-    :class:`~app.schemas.validation.salary.DeductionCreateSchema` inherits
-    ``RecurrenceCadenceFieldsMixin`` and not the fuller mixin.  What that
-    buys is asserted here: a crafted POST stating any of the five undeclared
-    controls meets ``BaseSchema``'s ``unknown = EXCLUDE`` and never reaches
-    the route, so the route's derived ``starts_on`` cannot be overridden from
-    the wire.
+    Plan step salary:R15-c gave a payroll line the four cadence controls and
+    withheld the other five, because a line's first occurrence was DERIVED
+    and it carried no closing bound (rulings R-SAL30, R-SAL31).  Ruling
+    **R-SAL38** (2) (plan step salary:R18-c) amended both: every line carries
+    a start -- blank meaning the opening payday -- and an optional end, so
+    :class:`~app.schemas.validation.salary.PaycheckLineCreateSchema` inherits
+    the fuller ``RecurrenceFormFieldsMixin`` with the start not required.
+    What is STILL undeclared is the one control a payroll line has no use
+    for, ``due_day_of_month`` (a servicer's date), which a crafted POST
+    stating meets ``BaseSchema``'s ``unknown = EXCLUDE``.
     """
 
     _THE_FOUR = frozenset({
         "recurrence_unit", "recurrence_placement", "interval_n", "max_per_month",
     })
-    _THE_UNDECLARED_FIVE = frozenset({
+    _THE_SPAN_FIVE = frozenset({
         "starts_on", "nominal_day", "recurrence_end_mode", "end_date",
         "max_occurrences",
     })
 
     @pytest.mark.parametrize(
         ("label", "schema_cls"),
-        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+        [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
-    def test_the_four_are_declared_and_the_five_are_not(self, app, label, schema_cls):
-        """Exactly the cadence, on both deduction schemas."""
+    def test_the_cadence_and_the_span_are_declared_and_the_due_day_is_not(
+        self, app, label, schema_cls,
+    ):
+        """Eight of the mixin's nine, on both line schemas; the ninth is the template's alone."""
         with app.app_context():
             declared = set(schema_cls().fields)
-        assert self._THE_FOUR <= declared, label
-        assert not (self._THE_UNDECLARED_FIVE & declared), label
-        # The premise of the split: the fuller mixin declares all nine.
-        with app.app_context():
             template_declared = set(TemplateCreateSchema().fields)
-        assert (self._THE_FOUR | self._THE_UNDECLARED_FIVE) <= template_declared
+        assert (self._THE_FOUR | self._THE_SPAN_FIVE) <= declared, label
+        assert "due_day_of_month" not in declared, label
+        assert "due_day_of_month" in template_declared
+        assert not schema_cls.recurrence_start_is_required, label
+        assert TemplateCreateSchema.recurrence_start_is_required
 
     @pytest.mark.parametrize(
         ("label", "schema_cls"),
-        [("create", DeductionCreateSchema), ("update", DeductionUpdateSchema)],
+        [("create", PaycheckLineCreateSchema), ("update", PaycheckLineUpdateSchema)],
     )
-    def test_a_crafted_calendar_coordinate_is_dropped_not_loaded(
+    def test_a_stated_span_is_loaded_as_one_bound_and_a_due_day_is_dropped(
         self, app, label, schema_cls,
     ):
-        """``starts_on`` and the closing bound stated on the wire never reach the route."""
+        """``starts_on`` loads; the bound's three controls load as ONE value; the due day never does."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.recurrence import EndsOnDate
+
         with app.app_context():
             loaded = schema_cls().load(
                 {
@@ -951,8 +958,8 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
                         ),
                     ),
                     "interval_n": "1",
-                    "starts_on": "2026-04-15",
-                    "nominal_day": "30",
+                    "starts_on": "2026-04-01",
+                    "due_day_of_month": "20",
                     "recurrence_end_mode": "on_date",
                     "end_date": "2027-01-01",
                     "max_occurrences": "3",
@@ -961,7 +968,11 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
             )
         assert loaded["recurrence_unit"] is RecurrenceUnitEnum.MONTH, label
         assert loaded["interval_n"] == 1, label
-        assert not (self._THE_UNDECLARED_FIVE & set(loaded)), label
+        assert loaded["starts_on"] == date(2026, 4, 1), label
+        assert loaded["recurrence_end_mode"] == EndsOnDate(on=date(2027, 1, 1)), label
+        # The compose consumed both inputs; the shape kept the one it needed.
+        assert "end_date" not in loaded and "max_occurrences" not in loaded, label
+        assert "due_day_of_month" not in loaded, label
 
     def test_the_deduction_schema_hears_its_cadence_refusals(self, app):
         """The two refusals the four controls can raise reach the deduction form verbatim.
@@ -1011,7 +1022,7 @@ class TestTheDeductionSchemasTakeTheCadenceAlone:
             )
             for expected, payload in cases:
                 with pytest.raises(ValidationError) as exc_info:
-                    DeductionCreateSchema().load(payload, partial=True)
+                    PaycheckLineCreateSchema().load(payload, partial=True)
                 assert flash_message_for_errors(
                     exc_info.value.normalized_messages(),
                 ) == expected

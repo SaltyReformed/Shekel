@@ -22,7 +22,7 @@ from app.models.salary_raise import SalaryRaise
 from app.services.paycheck_calculator import (
     calculate_paycheck,
     project_salary,
-    DeductionLine,
+    PricedLine,
     DeductionBreakdown,
     Earnings,
     PaycheckBreakdown,
@@ -36,14 +36,14 @@ from app.services.paycheck_calculator._calendar_questions import (
     _is_third_paycheck,
     _month_ordinal,
 )
-from app.services.paycheck_calculator._deductions import (
-    _calculate_deductions,
-    _DeductionContext,
+from app.services.paycheck_calculator._lines import (
     _inflation_years,
+    _LineContext,
+    _priced_lines,
 )
 from app.utils.money import ZERO
 from app import ref_cache
-from app.enums import DeductionTimingEnum
+from app.enums import PaycheckLineKindEnum
 from app.services.salary_raises import RaiseTerms, apply_raises, terms_of
 from app.services.pay_calendar import (
     DerivedPeriod,
@@ -65,9 +65,9 @@ TWO_PLACES = Decimal("0.01")
 
 
 def _timing_id(name):
-    """Resolve a deduction timing name (e.g. 'pre_tax') to its integer ID."""
-    _map = {e.value: e for e in DeductionTimingEnum}
-    return ref_cache.deduction_timing_id(_map[name])
+    """Resolve a payroll line kind name (e.g. 'pre_tax_deduction') to its integer ID."""
+    _map = {e.value: e for e in PaycheckLineKindEnum}
+    return ref_cache.paycheck_line_kind_id(_map[name])
 
 
 # ── Fake Objects ─────────────────────────────────────────────────
@@ -120,8 +120,8 @@ def _period(start_date, period_id=1):
     )
 
 
-class FakeDeductionTiming:
-    def __init__(self, name="pre_tax"):
+class FakeLineKind:
+    def __init__(self, name="pre_tax_deduction"):
         self.name = name
 
 
@@ -179,10 +179,10 @@ def twelve_rule(starts_on, **kwargs):
 
 
 class FakeDeduction:
-    """Minimal stand-in for a PaycheckDeduction ORM object."""
+    """Minimal stand-in for a PaycheckLine ORM object."""
 
     def __init__(self, name="401k", amount="200", recurrence_rule=None,
-                 calc_method="flat", deduction_timing="pre_tax",
+                 calc_method="flat", paycheck_line_kind="pre_tax_deduction",
                  inflation_enabled=False, inflation_rate=None,
                  inflation_effective_month=None, is_active=True,
                  annual_cap=None):
@@ -192,20 +192,20 @@ class FakeDeduction:
         # or ``None`` for every paycheck, as the real column pair reads.
         self.recurrence_rule = recurrence_rule
         self.calc_method = FakeCalcMethod(calc_method)
-        self.deduction_timing = FakeDeductionTiming(deduction_timing)
+        self.paycheck_line_kind = FakeLineKind(paycheck_line_kind)
         self.inflation_enabled = inflation_enabled
         self.inflation_rate = Decimal(str(inflation_rate)) if inflation_rate else None
         self.inflation_effective_month = inflation_effective_month
         self.is_active = is_active
-        # Calendar-year dollar ceiling (PaycheckDeduction.annual_cap); None =
+        # Calendar-year dollar ceiling (PaycheckLine.annual_cap); None =
         # uncapped.  Mirrors the real model column the calculator clamps on.
         self.annual_cap = Decimal(str(annual_cap)) if annual_cap is not None else None
         # Resolve integer IDs from the ref_cache for ID-based comparisons.
         from app import ref_cache  # pylint: disable=import-outside-toplevel
-        from app.enums import CalcMethodEnum, DeductionTimingEnum  # pylint: disable=import-outside-toplevel
-        _timing_map = {e.value: e for e in DeductionTimingEnum}
+        from app.enums import CalcMethodEnum, PaycheckLineKindEnum  # pylint: disable=import-outside-toplevel
+        _timing_map = {e.value: e for e in PaycheckLineKindEnum}
         _method_map = {e.value: e for e in CalcMethodEnum}
-        self.deduction_timing_id = ref_cache.deduction_timing_id(_timing_map[deduction_timing])
+        self.paycheck_line_kind_id = ref_cache.paycheck_line_kind_id(_timing_map[paycheck_line_kind])
         self.calc_method_id = ref_cache.calc_method_id(_method_map[calc_method])
 
 
@@ -264,14 +264,14 @@ class FakeProfile:
     every call here builds through the shared ``payroll_basis`` helper.
     """
 
-    def __init__(self, annual_salary, raises=None, deductions=None,
+    def __init__(self, annual_salary, raises=None, lines=None,
                  created_at=None,
                  additional_income=0, additional_deductions=0,
                  extra_withholding=0, qualifying_children=0,
                  other_dependents=0):
         self.annual_salary = Decimal(str(annual_salary))
         self.raises = raises or []
-        self.deductions = deductions or []
+        self.lines = lines or []
         self.created_at = created_at
         self.additional_income = Decimal(str(additional_income))
         self.additional_deductions = Decimal(str(additional_deductions))
@@ -738,12 +738,13 @@ class TestPaycheckBreakdownProperties:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
+                base_biweekly=Decimal("2307.69"),
                 gross_biweekly=Decimal("2307.69"),
             ),
             deductions=DeductionBreakdown(
                 pre_tax=[
-                    DeductionLine("401k", Decimal("200.00")),
-                    DeductionLine("HSA", Decimal("50.00")),
+                    PricedLine("401k", Decimal("200.00")),
+                    PricedLine("HSA", Decimal("50.00")),
                 ],
             ),
         )
@@ -754,12 +755,13 @@ class TestPaycheckBreakdownProperties:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
+                base_biweekly=Decimal("2307.69"),
                 gross_biweekly=Decimal("2307.69"),
             ),
             deductions=DeductionBreakdown(
                 post_tax=[
-                    DeductionLine("Roth IRA", Decimal("100.00")),
-                    DeductionLine("Life Ins", Decimal("25.00")),
+                    PricedLine("Roth IRA", Decimal("100.00")),
+                    PricedLine("Life Ins", Decimal("25.00")),
                 ],
             ),
         )
@@ -770,6 +772,7 @@ class TestPaycheckBreakdownProperties:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
+                base_biweekly=Decimal("2307.69"),
                 gross_biweekly=Decimal("2307.69"),
             ),
             taxes=TaxLines(
@@ -786,6 +789,7 @@ class TestPaycheckBreakdownProperties:
             period=PeriodInfo(date(2026, 1, 2), period_id=1),
             earnings=Earnings(
                 annual_salary=Decimal("60000"),
+                base_biweekly=Decimal("2307.69"),
                 gross_biweekly=Decimal("2307.69"),
             ),
         )
@@ -910,9 +914,9 @@ class TestCalculatePaycheckPipeline:
         """When pre_tax deductions > gross, taxable income should be 0."""
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(name="Mega401k", amount="3000",
-                              deduction_timing="pre_tax"),
+                              paycheck_line_kind="pre_tax_deduction"),
             ],
             created_at=date(2026, 1, 1),
         )
@@ -1041,12 +1045,12 @@ class TestCalculatePaycheckPipeline:
 
 
 class TestDeductionCalculation:
-    """Tests for _calculate_deductions and deduction behavior in pipeline."""
+    """Tests for _priced_lines and deduction behavior in pipeline."""
 
     def test_flat_pre_tax_deduction(self, base_profile, simple_tax_configs):
         """Flat amount subtracted before taxes."""
-        base_profile.deductions = [
-            FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
+        base_profile.lines = [
+            FakeDeduction(name="401k", amount="200", paycheck_line_kind="pre_tax_deduction"),
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
@@ -1060,8 +1064,8 @@ class TestDeductionCalculation:
 
     def test_flat_post_tax_deduction(self, base_profile, simple_tax_configs):
         """Flat amount subtracted after taxes."""
-        base_profile.deductions = [
-            FakeDeduction(name="Roth", amount="150", deduction_timing="post_tax"),
+        base_profile.lines = [
+            FakeDeduction(name="Roth", amount="150", paycheck_line_kind="post_tax_deduction"),
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
@@ -1074,9 +1078,9 @@ class TestDeductionCalculation:
 
     def test_percentage_deduction(self, base_profile, simple_tax_configs):
         """Percentage of gross_biweekly."""
-        base_profile.deductions = [
+        base_profile.lines = [
             FakeDeduction(name="401k", amount="0.06", calc_method="percentage",
-                          deduction_timing="pre_tax"),
+                          paycheck_line_kind="pre_tax_deduction"),
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
@@ -1091,7 +1095,7 @@ class TestDeductionCalculation:
 
     def test_inactive_deduction_skipped(self, base_profile, simple_tax_configs):
         """is_active=False excluded."""
-        base_profile.deductions = [
+        base_profile.lines = [
             FakeDeduction(name="Old Plan", amount="200", is_active=False),
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
@@ -1104,9 +1108,9 @@ class TestDeductionCalculation:
 
     def test_timing_filter(self, base_profile, simple_tax_configs):
         """Pre-tax deduction not in post-tax list and vice versa."""
-        base_profile.deductions = [
-            FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
-            FakeDeduction(name="Roth", amount="100", deduction_timing="post_tax"),
+        base_profile.lines = [
+            FakeDeduction(name="401k", amount="200", paycheck_line_kind="pre_tax_deduction"),
+            FakeDeduction(name="Roth", amount="100", paycheck_line_kind="post_tax_deduction"),
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
@@ -1131,7 +1135,7 @@ class TestDeductionCalculation:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Health", amount="100",
                               recurrence_rule=twenty_four_rule(date(2026, 1, 2))),
             ],
@@ -1146,8 +1150,8 @@ class TestDeductionCalculation:
                                                  rounding=ROUND_HALF_UP)
         basis = payroll_basis(profile, all_periods)
         taken = [
-            len(_calculate_deductions(
-                _DeductionContext(basis, p, gross), _timing_id("pre_tax"),
+            len(_priced_lines(
+                _LineContext(basis, p.start_date, gross), _timing_id("pre_tax_deduction"),
             ))
             for p in all_periods
         ]
@@ -1162,7 +1166,7 @@ class TestDeductionCalculation:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Life", amount="50",
                               recurrence_rule=twelve_rule(date(2026, 2, 1))),
             ],
@@ -1173,9 +1177,9 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(
-            _DeductionContext(payroll_basis(profile, all_periods), p1, gross),
-            _timing_id("pre_tax"),
+        result = _priced_lines(
+            _LineContext(payroll_basis(profile, all_periods), p1.start_date, gross),
+            _timing_id("pre_tax_deduction"),
         )
         assert len(result) == 1
         assert result[0].amount == Decimal("50")
@@ -1184,7 +1188,7 @@ class TestDeductionCalculation:
         """The monthly rule is not taken on the month's second paycheck."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Life", amount="50",
                               recurrence_rule=twelve_rule(date(2026, 2, 1))),
             ],
@@ -1195,9 +1199,9 @@ class TestDeductionCalculation:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(
-            _DeductionContext(payroll_basis(profile, all_periods), p2, gross),
-            _timing_id("pre_tax"),
+        result = _priced_lines(
+            _LineContext(payroll_basis(profile, all_periods), p2.start_date, gross),
+            _timing_id("pre_tax_deduction"),
         )
         assert len(result) == 0
 
@@ -1217,19 +1221,19 @@ class TestDeductionCalculation:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="401k", amount="0.06",
                               calc_method="percentage",
-                              deduction_timing="pre_tax"),
+                              paycheck_line_kind="pre_tax_deduction"),
             ],
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("0.00"),
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, Decimal("0.00"),
             ),
-            _timing_id("pre_tax"),
+            _timing_id("pre_tax_deduction"),
         )
         assert len(result) == 1
         assert result[0].name == "401k"
@@ -1247,19 +1251,19 @@ class TestDeductionCalculation:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Roth", amount="0.04",
                               calc_method="percentage",
-                              deduction_timing="post_tax"),
+                              paycheck_line_kind="post_tax_deduction"),
             ],
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("0.00"),
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, Decimal("0.00"),
             ),
-            _timing_id("post_tax"),
+            _timing_id("post_tax_deduction"),
         )
         assert len(result) == 1
         assert result[0].name == "Roth"
@@ -1269,7 +1273,7 @@ class TestDeductionCalculation:
 
 
 class TestDeductionAnnualCap:
-    """``PaycheckDeduction.annual_cap`` throttles a deduction once its
+    """``PaycheckLine.annual_cap`` throttles a deduction once its
     calendar-year total reaches the cap, then resumes the next January
     (deep-hunt #2 -- the cap was stored/validated/rendered but never
     enforced).  Each test would fail with the cap unenforced (the old
@@ -1280,7 +1284,7 @@ class TestDeductionAnnualCap:
     def _gross(annual="60000"):
         return (Decimal(annual) / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
 
-    def _amounts_over(self, profile, periods, *, timing="pre_tax",
+    def _amounts_over(self, profile, periods, *, timing="pre_tax_deduction",
                       history_opens_on=None):
         """Per-period deduction amount for the single deduction on ``profile``.
 
@@ -1299,12 +1303,12 @@ class TestDeductionAnnualCap:
         gross = self._gross(str(profile.annual_salary))
         amounts = []
         for p in periods:
-            lines = _calculate_deductions(
-                _DeductionContext(
+            lines = _priced_lines(
+                _LineContext(
                     payroll_basis(
                         profile, periods, history_opens_on=history_opens_on,
                     ),
-                    p, gross,
+                    p.start_date, gross,
                 ),
                 _timing_id(timing),
             )
@@ -1315,7 +1319,7 @@ class TestDeductionAnnualCap:
         """$600/period under a $1000 cap applies 600, 400, 0, 0."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="HSA", amount="600",
+            lines=[FakeDeduction(name="HSA", amount="600",
                                       annual_cap="1000")],
         )
         # Four 2026 periods; the line has no rule (every paycheck, no cadence
@@ -1336,7 +1340,7 @@ class TestDeductionAnnualCap:
         """A cap above the annual total leaves every period at full amount."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="401k", amount="200",
+            lines=[FakeDeduction(name="401k", amount="200",
                                       annual_cap="100000")],
         )
         periods = [
@@ -1352,7 +1356,7 @@ class TestDeductionAnnualCap:
         """A $600 deduction under a $1,000 cap, on a December-opening set."""
         return FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="HSA", amount="600",
+            lines=[FakeDeduction(name="HSA", amount="600",
                                       annual_cap="1000")],
         ), [
             _period(start_date=date(2026, 12, 4), period_id=1),
@@ -1406,7 +1410,7 @@ class TestDeductionAnnualCap:
         """A percentage deduction is clamped on its cumulative dollar amount."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="401k", amount="0.10",
+            lines=[FakeDeduction(name="401k", amount="0.10",
                                       calc_method="percentage",
                                       annual_cap="400")],
         )
@@ -1429,8 +1433,8 @@ class TestDeductionAnnualCap:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(name="HSA", amount="600",
-                                      deduction_timing="post_tax",
+            lines=[FakeDeduction(name="HSA", amount="600",
+                                      paycheck_line_kind="post_tax_deduction",
                                       annual_cap="1000")],
         )
         periods = [
@@ -1647,7 +1651,7 @@ class TestTheEngineRefusesAPaycheckItCannotPlace:
         """
         profile = FakeProfile(
             annual_salary=91675, created_at=date(2026, 1, 1),
-            deductions=[FakeDeduction(
+            lines=[FakeDeduction(
                 name="Health", amount="500",
                 recurrence_rule=twenty_four_rule(date(2026, 3, 12)),
             )],
@@ -1790,7 +1794,7 @@ class TestInflationAdjustment:
         """amount * (1 + rate)^1."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2025, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Health", amount="100",
                               inflation_enabled=True, inflation_rate="0.03",
                               inflation_effective_month=1),
@@ -1804,11 +1808,11 @@ class TestInflationAdjustment:
         # Verify in deduction calculation
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, gross,
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, gross,
             ),
-            _timing_id("pre_tax"),
+            _timing_id("pre_tax_deduction"),
         )
         expected = (Decimal("100") * Decimal("1.03")).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
@@ -1819,7 +1823,7 @@ class TestInflationAdjustment:
         """amount * (1 + rate)^2."""
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2024, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="Health", amount="100",
                               inflation_enabled=True, inflation_rate="0.03",
                               inflation_effective_month=1),
@@ -1832,11 +1836,11 @@ class TestInflationAdjustment:
 
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, gross,
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, gross,
             ),
-            _timing_id("pre_tax"),
+            _timing_id("pre_tax_deduction"),
         )
         expected = (Decimal("100") * Decimal("1.03") ** 2).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
@@ -1857,7 +1861,7 @@ class TestInflationAdjustment:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2025, 1, 1),
-            deductions=[
+            lines=[
                 FakeDeduction(name="401k", amount="0.05",
                               calc_method="percentage",
                               inflation_enabled=True, inflation_rate="0.03",
@@ -1865,11 +1869,11 @@ class TestInflationAdjustment:
             ],
         )
         period = _period(start_date=date(2026, 6, 1), period_id=1)
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("1000.49"),
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, Decimal("1000.49"),
             ),
-            _timing_id("pre_tax"),
+            _timing_id("pre_tax_deduction"),
         )
         assert result[0].amount == Decimal("51.53")
 
@@ -1885,14 +1889,14 @@ class TestInflationAdjustment:
         """
         profile = FakeProfile(
             annual_salary=60000, created_at=date(2025, 1, 1),
-            deductions=[FakeDeduction(name="HSA", amount="500.1234")],
+            lines=[FakeDeduction(name="HSA", amount="500.1234")],
         )
         period = _period(start_date=date(2026, 6, 1), period_id=1)
-        result = _calculate_deductions(
-            _DeductionContext(
-                payroll_basis(profile, [period]), period, Decimal("2307.69"),
+        result = _priced_lines(
+            _LineContext(
+                payroll_basis(profile, [period]), period.start_date, Decimal("2307.69"),
             ),
-            _timing_id("pre_tax"),
+            _timing_id("pre_tax_deduction"),
         )
         assert result[0].amount == Decimal("500.12")
 
@@ -2718,11 +2722,11 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=30000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="Excessive Post Tax",
                     amount="2000",
-                    deduction_timing="post_tax",
+                    paycheck_line_kind="post_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -2789,11 +2793,11 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=52000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="Mega Pre Tax",
                     amount="2500",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -2888,10 +2892,10 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -2965,10 +2969,10 @@ class TestPreTaxDeductionTaxImpact:
         )
         with_ded_profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3037,11 +3041,11 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="0.06",
                     calc_method="percentage",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3116,11 +3120,11 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="Health Insurance", amount="100",
                     recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3220,14 +3224,14 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
                 FakeDeduction(
                     name="Health", amount="100",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3291,10 +3295,10 @@ class TestPreTaxDeductionTaxImpact:
         )
         post_ded_profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="Roth IRA", amount="200",
-                    deduction_timing="post_tax",
+                    paycheck_line_kind="post_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3357,14 +3361,14 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
                 FakeDeduction(
                     name="Roth IRA", amount="150",
-                    deduction_timing="post_tax",
+                    paycheck_line_kind="post_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3437,10 +3441,10 @@ class TestPreTaxDeductionTaxImpact:
         )
         with_ded_profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3490,10 +3494,10 @@ class TestPreTaxDeductionTaxImpact:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3568,10 +3572,10 @@ class TestPreTaxDeductionTaxImpact:
         )
         with_ded_profile = FakeProfile(
             annual_salary=120000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="500",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3726,28 +3730,28 @@ class TestCalibrationIntegration:
         )
 
         deductions = [
-            FakeDeduction(name="FSA", amount="133.33", deduction_timing="pre_tax"),
-            FakeDeduction(name="Vision", amount="12.06", deduction_timing="pre_tax"),
-            FakeDeduction(name="Dental", amount="40.00", deduction_timing="pre_tax"),
-            FakeDeduction(name="Health", amount="310.00", deduction_timing="pre_tax"),
+            FakeDeduction(name="FSA", amount="133.33", paycheck_line_kind="pre_tax_deduction"),
+            FakeDeduction(name="Vision", amount="12.06", paycheck_line_kind="pre_tax_deduction"),
+            FakeDeduction(name="Dental", amount="40.00", paycheck_line_kind="pre_tax_deduction"),
+            FakeDeduction(name="Health", amount="310.00", paycheck_line_kind="pre_tax_deduction"),
             FakeDeduction(
                 name="State Retirement", amount="211.56",
-                deduction_timing="pre_tax",
+                paycheck_line_kind="pre_tax_deduction",
             ),
-            FakeDeduction(name="Child AD&D", amount="0.13", deduction_timing="post_tax"),
-            FakeDeduction(name="Spouse VTL", amount="2.16", deduction_timing="post_tax"),
-            FakeDeduction(name="Child VTL", amount="1.50", deduction_timing="post_tax"),
-            FakeDeduction(name="EE AD&D", amount="5.40", deduction_timing="post_tax"),
-            FakeDeduction(name="Spouse AD&D", amount="1.08", deduction_timing="post_tax"),
-            FakeDeduction(name="EE VTL", amount="10.80", deduction_timing="post_tax"),
+            FakeDeduction(name="Child AD&D", amount="0.13", paycheck_line_kind="post_tax_deduction"),
+            FakeDeduction(name="Spouse VTL", amount="2.16", paycheck_line_kind="post_tax_deduction"),
+            FakeDeduction(name="Child VTL", amount="1.50", paycheck_line_kind="post_tax_deduction"),
+            FakeDeduction(name="EE AD&D", amount="5.40", paycheck_line_kind="post_tax_deduction"),
+            FakeDeduction(name="Spouse AD&D", amount="1.08", paycheck_line_kind="post_tax_deduction"),
+            FakeDeduction(name="EE VTL", amount="10.80", paycheck_line_kind="post_tax_deduction"),
             FakeDeduction(
                 name="Dependent Basic Term Life", amount="0.75",
-                deduction_timing="post_tax",
+                paycheck_line_kind="post_tax_deduction",
             ),
         ]
         profile = FakeProfile(
             annual_salary=91675,
-            deductions=deductions,
+            lines=deductions,
             created_at=date(2026, 1, 1),
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
@@ -3877,10 +3881,10 @@ class TestCalibrationIntegration:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3915,10 +3919,10 @@ class TestCalibrationIntegration:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="Roth", amount="150",
-                    deduction_timing="post_tax",
+                    paycheck_line_kind="post_tax_deduction",
                 ),
             ],
             created_at=date(2026, 1, 1),
@@ -3970,9 +3974,9 @@ class TestCalibrationIntegration:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
-                FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
-                FakeDeduction(name="Roth", amount="150", deduction_timing="post_tax"),
+            lines=[
+                FakeDeduction(name="401k", amount="200", paycheck_line_kind="pre_tax_deduction"),
+                FakeDeduction(name="Roth", amount="150", paycheck_line_kind="post_tax_deduction"),
             ],
             created_at=date(2026, 1, 1),
         )
@@ -4019,10 +4023,10 @@ class TestCalibrationIntegration:
         """
         profile = FakeProfile(
             annual_salary=60000,
-            deductions=[
+            lines=[
                 FakeDeduction(
                     name="401k", amount="200",
-                    deduction_timing="pre_tax",
+                    paycheck_line_kind="pre_tax_deduction",
                     recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
                 ),
             ],
@@ -4080,8 +4084,8 @@ class TestCalibrationIntegration:
                 FakeRaise(percentage="0.03", effective_month=1,
                           effective_year=2026),
             ],
-            deductions=[
-                FakeDeduction(name="401k", amount="200", deduction_timing="pre_tax"),
+            lines=[
+                FakeDeduction(name="401k", amount="200", paycheck_line_kind="pre_tax_deduction"),
             ],
             created_at=date(2026, 1, 1),
         )
@@ -4804,7 +4808,7 @@ class TestTheBasisNamesItsRaiseSet:
         replay's raise set and not merely the paycheck's.
         """
         profile, terms = self._rows_and_terms()
-        profile.deductions = [FakeDeduction(
+        profile.lines = [FakeDeduction(
             name="HSA", amount="0.10", calc_method="percentage",
             annual_cap="2500",
         )]
@@ -4814,15 +4818,15 @@ class TestTheBasisNamesItsRaiseSet:
         believed = replace(stored, raise_terms=terms)
 
         def line_under(basis):
-            return _calculate_deductions(
-                _DeductionContext(
-                    basis, eleventh,
+            return _priced_lines(
+                _LineContext(
+                    basis, eleventh.start_date,
                     gross_per_paycheck(
                         basis.annual_salary_on(eleventh.start_date),
                         basis.periods_per_year,
                     ),
                 ),
-                _timing_id("pre_tax"),
+                _timing_id("pre_tax_deduction"),
             )[0].amount
 
         assert line_under(stored) == ZERO
@@ -4839,7 +4843,7 @@ class TestTheBasisReadsEachLinesCadence:
     """A line's frequency is its recurrence rule's answer, read once per basis.
 
     Plan step **salary:R15-b** (rulings **R-SAL3**, **R-SAL29**).  Both
-    deduction passes ask :meth:`PayrollBasis.deduction_applies_on`, which
+    deduction passes ask :meth:`PayrollBasis.line_applies_on`, which
     resolves each line's rule ONCE and walks it ONCE through the occurrence
     walk every recurring definition is generated by; a line with no rule is
     every paycheck.  The retired ``deductions_per_year`` compared a stored
@@ -4859,15 +4863,15 @@ class TestTheBasisReadsEachLinesCadence:
     def test_a_line_with_no_rule_is_every_paycheck(self):
         """R-SAL3's NULL: no rule, taken on every payday the calendar names."""
         line = FakeDeduction(name="401k", amount="200")
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
-        assert all(basis.deduction_applies_on(line, p.start_date) for p in self._january())
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
+        assert all(basis.line_applies_on(line, p.start_date) for p in self._january())
 
     def test_a_fake_with_no_rule_attribute_at_all_is_every_paycheck(self):
         """A duck-typed line that never heard of rules reads as the column's old 26."""
         line = FakeDeduction(name="401k", amount="200")
         del line.recurrence_rule
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
-        assert basis.deduction_applies_on(line, date(2026, 1, 30))
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
+        assert basis.line_applies_on(line, date(2026, 1, 30))
 
     def test_the_rule_is_resolved_and_walked_once_per_basis(self, monkeypatch):
         """Twenty asks, one resolution, one walk: the memo is per basis, not per ask."""
@@ -4877,7 +4881,7 @@ class TestTheBasisReadsEachLinesCadence:
         line = FakeDeduction(
             name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
         )
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
         resolves, walks = [], []
         real_resolve, real_walk = module.resolve, module.projected_occurrence_placements
 
@@ -4892,7 +4896,7 @@ class TestTheBasisReadsEachLinesCadence:
         monkeypatch.setattr(module, "resolve", counted_resolve)
         monkeypatch.setattr(module, "projected_occurrence_placements", counted_walk)
         answers = [
-            basis.deduction_applies_on(line, p.start_date)
+            basis.line_applies_on(line, p.start_date)
             for p in self._january() * 5
         ]
         assert answers[:4] == [True, True, False, True]
@@ -4910,14 +4914,14 @@ class TestTheBasisReadsEachLinesCadence:
         line = FakeDeduction(
             name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
         )
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
         rhythm = [date(2026, 1, 2) + timedelta(days=14 * k) for k in range(80)]
         june_2028 = [d for d in rhythm if (d.year, d.month) == (2028, 6)]
         assert len(june_2028) == 3, june_2028
-        assert [basis.deduction_applies_on(line, d) for d in june_2028] == [True, True, False]
+        assert [basis.line_applies_on(line, d) for d in june_2028] == [True, True, False]
         may_2028 = [d for d in rhythm if (d.year, d.month) == (2028, 5)]
         assert len(may_2028) == 2, may_2028
-        assert all(basis.deduction_applies_on(line, d) for d in may_2028)
+        assert all(basis.line_applies_on(line, d) for d in may_2028)
 
     def test_lines_with_one_cadence_share_one_walk(self, monkeypatch):
         """Eleven 24-per-year lines resolve to one cadence and are walked ONCE.
@@ -4936,7 +4940,7 @@ class TestTheBasisReadsEachLinesCadence:
             )
             for n in range(11)
         ]
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=lines), self._january())
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=lines), self._january())
         walks = []
         real_walk = module.projected_occurrence_placements
         monkeypatch.setattr(
@@ -4945,7 +4949,7 @@ class TestTheBasisReadsEachLinesCadence:
         )
         for line in lines:
             for p in self._january():
-                basis.deduction_applies_on(line, p.start_date)
+                basis.line_applies_on(line, p.start_date)
         assert len(walks) == 1
         assert len({id(c) for c in basis._line_cadences.values()}) == 1  # pylint: disable=protected-access
 
@@ -4965,20 +4969,20 @@ class TestTheBasisReadsEachLinesCadence:
         line = FakeDeduction(
             name="Health", amount="100", recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
         )
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
         reaches = []
         real_walk = module.projected_occurrence_placements
         monkeypatch.setattr(
             module, "projected_occurrence_placements",
             lambda *a, **k: reaches.append(k["through"]) or real_walk(*a, **k),
         )
-        basis.deduction_applies_on(line, date(2026, 1, 2))
-        basis.deduction_applies_on(line, date(2026, 12, 18))
+        basis.line_applies_on(line, date(2026, 1, 2))
+        basis.line_applies_on(line, date(2026, 12, 18))
         assert reaches == [date(2027, 1, 3)]
-        basis.deduction_applies_on(line, date(2028, 6, 16))
+        basis.line_applies_on(line, date(2028, 6, 16))
         assert reaches == [date(2027, 1, 3), date(2029, 6, 17)]
-        assert basis.deduction_applies_on(line, date(2028, 6, 2)) is True
-        assert basis.deduction_applies_on(line, date(2028, 6, 30)) is False  # June's third
+        assert basis.line_applies_on(line, date(2028, 6, 2)) is True
+        assert basis.line_applies_on(line, date(2028, 6, 30)) is False  # June's third
         assert reaches == [date(2027, 1, 3), date(2029, 6, 17)]
 
     def test_a_containing_date_occurrence_after_the_payday_is_admitted_at_the_reach(self):
@@ -5006,27 +5010,28 @@ class TestTheBasisReadsEachLinesCadence:
             starts_on=date(2026, 1, 15),
         )
         line = FakeDeduction(name="Union dues", amount="25", recurrence_rule=fifteenth)
-        basis = payroll_basis(FakeProfile(annual_salary=60000, deductions=[line]), self._january())
-        assert basis.deduction_applies_on(line, date(2026, 1, 2)) is True   # Jan 2-15 holds the 15th
+        basis = payroll_basis(FakeProfile(annual_salary=60000, lines=[line]), self._january())
+        assert basis.line_applies_on(line, date(2026, 1, 2)) is True   # Jan 2-15 holds the 15th
         # A far ask, then the same payday asked again: both must be True.
-        assert basis.deduction_applies_on(line, date(2028, 1, 14)) is True  # Jan 14-27 holds the 15th
-        assert basis.deduction_applies_on(line, date(2028, 1, 14)) is True
-        assert basis.deduction_applies_on(line, date(2028, 1, 28)) is False
+        assert basis.line_applies_on(line, date(2028, 1, 14)) is True  # Jan 14-27 holds the 15th
+        assert basis.line_applies_on(line, date(2028, 1, 14)) is True
+        assert basis.line_applies_on(line, date(2028, 1, 28)) is False
 
     def test_the_cumulative_asks_no_month_ordinal(self):
         """The capped line's year-to-date replays membership, not the month (SAL-556).
 
-        Structural: the deduction module no longer imports the ordinal
-        reader at all, so the per-prior-payday month derivation the ledger
-        row measured cannot be reintroduced without this line noticing.
+        Structural: the lines module (``_deductions`` until plan step
+        salary:R18-b) no longer imports the ordinal reader at all, so the
+        per-prior-payday month derivation the ledger row measured cannot be
+        reintroduced without this line noticing.
         """
         # pylint: disable=import-outside-toplevel
         import inspect
-        from app.services.paycheck_calculator import _deductions as module
+        from app.services.paycheck_calculator import _lines as module
 
         source = inspect.getsource(module)
         assert "_month_ordinal" not in source
-        assert "deduction_applies_on" in source
+        assert "line_applies_on" in source
 
     def test_a_capped_twenty_four_line_caps_over_the_paydays_it_is_taken_on(self):
         """The year-to-date sums only admitted paydays: the cap lands one paycheck later than it would at 26."""
@@ -5035,15 +5040,261 @@ class TestTheBasisReadsEachLinesCadence:
             recurrence_rule=twenty_four_rule(date(2026, 1, 2)),
         )
         periods = self._january()
-        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), deductions=[line])
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
         basis = payroll_basis(profile, periods)
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES, rounding=ROUND_HALF_UP)
         amounts = [
-            [l.amount for l in _calculate_deductions(
-                _DeductionContext(basis, p, gross), _timing_id("pre_tax"),
+            [l.amount for l in _priced_lines(
+                _LineContext(basis, p.start_date, gross), _timing_id("pre_tax_deduction"),
             )]
             for p in periods
         ]
         # Jan 2 and Jan 16 taken (600, 600 -> 1200 of the 1500 cap); Jan 30 is
         # the third paycheck, skipped; Feb 13 takes the remaining 300.
         assert amounts == [[Decimal("600.00")], [Decimal("600.00")], [], [Decimal("300.00")]]
+
+
+# ── Earning lines (plan step salary:R18-b, ruling R-SAL38) ──────────────
+
+
+class TestEarningLines:
+    """A paycheck is base pay plus a list of lines: the two EARNING kinds, hand-computed.
+
+    Every figure here is derived by hand from the same rules the deduction
+    cases above state ($60k over 26; 10% to $50k, 22% above, $15k standard
+    deduction; NC 4.5%; FICA 6.2% / 1.45%) and asserted as a constant, so the
+    engine is graded against arithmetic done outside it.  Base pay is
+    ``60000 / 26 = 2307.69``; the base case with no line nets ``1854.22``
+    (``test_basic_paycheck_no_deductions``).
+    """
+
+    @staticmethod
+    def _one(period_date=date(2026, 1, 16)):
+        return _period(start_date=period_date, period_id=1)
+
+    def test_a_taxable_earning_joins_gross_fica_and_withholding(self, simple_tax_configs):
+        """+$100 taxable every paycheck: gross 2407.69, every tax line moves, net 1932.07.
+
+          gross    = 2307.69 + 100.00 = 2407.69     (base stays 2307.69)
+          federal  : annual 62599.94 - 15000 = 47599.94; 10% -> 4759.99; /26 = 183.08
+          state    : 62599.94 * 0.045 = 2817.00; /26 = 108.35
+          SS       : 2407.69 * 0.062 = 149.28
+          Medicare : 2407.69 * 0.0145 = 34.91
+          net      = 2407.69 - 183.08 - 108.35 - 149.28 - 34.91 = 1932.07
+        """
+        line = FakeDeduction(name="Phone Allowance", amount="100", paycheck_line_kind="taxable_earning")
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        period = self._one()
+
+        result = calculate_paycheck(payroll_basis(profile, [period]), period, simple_tax_configs)
+
+        assert result.earnings.base_biweekly == Decimal("2307.69")
+        assert result.earnings.gross_biweekly == Decimal("2407.69")
+        assert result.earnings.total_taxable == Decimal("100.00")
+        assert [(l.name, l.amount, l.target_account_id) for l in result.earnings.taxable] == [
+            ("Phone Allowance", Decimal("100.00"), None),
+        ]
+        assert result.earnings.after_tax == []
+        assert result.earnings.taxable_income == Decimal("2407.69")
+        assert result.taxes.federal == Decimal("183.08")
+        assert result.taxes.state == Decimal("108.35")
+        assert result.taxes.social_security == Decimal("149.28")
+        assert result.taxes.medicare == Decimal("34.91")
+        assert result.earnings.net_pay == Decimal("1932.07")
+        # The pass shares the deduction lists' shape and leaves them empty.
+        assert result.deductions.pre_tax == [] and result.deductions.post_tax == []
+
+    def test_an_after_tax_earning_joins_net_and_nothing_else(self, simple_tax_configs):
+        """+$100 after tax: gross, taxable income and every tax line as the base case; net + 100."""
+        line = FakeDeduction(name="Reimbursement", amount="100", paycheck_line_kind="after_tax_earning")
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        period = self._one()
+
+        result = calculate_paycheck(payroll_basis(profile, [period]), period, simple_tax_configs)
+
+        assert result.earnings.base_biweekly == Decimal("2307.69")
+        assert result.earnings.gross_biweekly == Decimal("2307.69")
+        assert result.earnings.taxable_income == Decimal("2307.69")
+        assert result.earnings.taxable == []
+        assert [(l.name, l.amount) for l in result.earnings.after_tax] == [
+            ("Reimbursement", Decimal("100.00")),
+        ]
+        assert result.earnings.total_after_tax == Decimal("100.00")
+        assert (result.taxes.federal, result.taxes.state,
+                result.taxes.social_security, result.taxes.medicare) == (
+            Decimal("173.08"), Decimal("103.85"), Decimal("143.08"), Decimal("33.46"),
+        )
+        assert result.earnings.net_pay == Decimal("1954.22")
+
+    def test_a_percentage_deduction_is_a_percentage_of_base_not_of_gross(self, simple_tax_configs):
+        """6% pre-tax beside a $100 taxable earning: 6% x 2307.69 = 138.46, not 6% x 2407.69 = 144.46.
+
+        Ruling R-SAL38 (3).  With the line taken from base:
+          taxable income = 2407.69 - 138.46 = 2269.23
+          federal : annual 62599.94 - 3599.96 (138.46 x 26) - 15000 = 43999.98; 10% -> 4400.00; /26 = 169.23
+          state   : 2269.23 x 26 = 58999.98 x 0.045 = 2655.00; /26 = 102.12
+          SS / Medicare on gross: 149.28 / 34.91
+          net     = 2407.69 - 138.46 - 169.23 - 102.12 - 149.28 - 34.91 = 1813.69
+        """
+        lines = [
+            FakeDeduction(name="Phone Allowance", amount="100", paycheck_line_kind="taxable_earning"),
+            FakeDeduction(name="State Retirement", amount="0.06", calc_method="percentage",
+                          paycheck_line_kind="pre_tax_deduction"),
+        ]
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=lines)
+        period = self._one()
+
+        result = calculate_paycheck(payroll_basis(profile, [period]), period, simple_tax_configs)
+
+        assert result.deductions.pre_tax[0].amount == Decimal("138.46")
+        assert result.earnings.gross_biweekly == Decimal("2407.69")
+        assert result.earnings.taxable_income == Decimal("2269.23")
+        assert result.taxes.federal == Decimal("169.23")
+        assert result.taxes.state == Decimal("102.12")
+        assert result.earnings.net_pay == Decimal("1813.69")
+
+    def test_a_taxable_earnings_cadence_places_it_on_the_first_paycheck_of_the_month(
+        self, simple_tax_configs,
+    ):
+        """The developer's phone allowance: $45 taxable on the month's first paycheck only.
+
+        Jan 2 is January's first paycheck (gross 2352.69); Jan 16 its second
+        (gross 2307.69, no line); the year-to-date wages before Jan 16 carry
+        the $45 -- the one gross producer, replayed.
+        """
+        line = FakeDeduction(
+            name="Phone Allowance", amount="45", paycheck_line_kind="taxable_earning",
+            recurrence_rule=twelve_rule(date(2026, 1, 1)),
+        )
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        jan2 = _period(start_date=date(2026, 1, 2), period_id=1)
+        jan16 = _period(start_date=date(2026, 1, 16), period_id=2)
+        basis = payroll_basis(profile, [jan2, jan16])
+
+        first = calculate_paycheck(basis, jan2, simple_tax_configs)
+        second = calculate_paycheck(basis, jan16, simple_tax_configs)
+
+        assert first.earnings.gross_biweekly == Decimal("2352.69")
+        assert [l.amount for l in first.earnings.taxable] == [Decimal("45.00")]
+        assert second.earnings.gross_biweekly == Decimal("2307.69")
+        assert second.earnings.taxable == []
+        assert _get_cumulative_wages(basis, jan16) == Decimal("2352.69")
+
+    def test_the_year_to_date_wages_carry_the_taxable_earning_into_the_ss_cap(self):
+        """A $100 taxable line reaches a $4,700 wage base one paycheck earlier.
+
+        statutory max = 0.062 x 4700 = 291.40.  Without the line the third
+        paycheck (cumulative 4615.38) owes the remainder, 5.25; with it the
+        second paycheck (cumulative 2407.69) owes 142.12 and the third
+        (cumulative 4815.38) owes nothing -- which is what a cumulative that
+        left the earning out would get wrong.
+        """
+        configs = {
+            "bracket_set": None,
+            "state_config": None,
+            "fica_config": FakeFicaConfig(ss_wage_base="4700"),
+        }
+        periods = [
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        plain = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        with_line = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1),
+            lines=[FakeDeduction(name="Bonus", amount="100", paycheck_line_kind="taxable_earning")],
+        )
+
+        plain_ss = [
+            calculate_paycheck(payroll_basis(plain, periods), p, configs).taxes.social_security
+            for p in periods
+        ]
+        line_ss = [
+            calculate_paycheck(payroll_basis(with_line, periods), p, configs).taxes.social_security
+            for p in periods
+        ]
+
+        assert plain_ss == [Decimal("143.08"), Decimal("143.08"), Decimal("5.25")]
+        assert line_ss == [Decimal("149.28"), Decimal("142.12"), Decimal("0.00")]
+        assert _get_cumulative_wages(payroll_basis(with_line, periods), periods[2]) == Decimal("4815.38")
+
+    def test_the_calibrated_path_taxes_the_earning_at_the_stubs_rates(self, simple_tax_configs):
+        """Calibrated 10% / 5% / 6.2% / 1.45% on a $2,407.69 gross: 240.77 / 120.38 / 149.28 / 34.91; net 1862.35."""
+        line = FakeDeduction(name="Phone Allowance", amount="100", paycheck_line_kind="taxable_earning")
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        period = self._one()
+        cal = FakeCalibration(federal_rate="0.10000", state_rate="0.05000",
+                              ss_rate="0.06200", medicare_rate="0.01450")
+
+        result = calculate_paycheck(
+            payroll_basis(profile, [period]), period, simple_tax_configs, calibration=cal,
+        )
+
+        assert (result.taxes.federal, result.taxes.state,
+                result.taxes.social_security, result.taxes.medicare) == (
+            Decimal("240.77"), Decimal("120.38"), Decimal("149.28"), Decimal("34.91"),
+        )
+        assert result.earnings.net_pay == Decimal("1862.35")
+
+    def test_a_lines_span_bounds_the_paychecks_it_is_taken_on(self, simple_tax_configs):
+        """A rule from the second paycheck for two occurrences is taken on the 2nd and 3rd only.
+
+        Plan step salary:R18-c (ruling **R-SAL38** (2)): a line's span is its
+        rule's own ``starts_on`` and closing bound, which the occurrence walk
+        the engine already reads has honoured for every definition; this
+        pins that a payroll line's earning rides only the paydays inside it.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+        rule = FakeRule(
+            unit=RecurrenceUnitEnum.PERIOD,
+            placement=PeriodPlacementEnum.CONTAINING_DATE,
+            starts_on=date(2026, 1, 16),
+        )
+        rule.max_occurrences = 2
+        line = FakeDeduction(
+            name="Stipend", amount="100", paycheck_line_kind="after_tax_earning",
+            recurrence_rule=rule,
+        )
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1), lines=[line])
+        periods = [
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+            _period(start_date=date(2026, 2, 13), period_id=4),
+        ]
+        basis = payroll_basis(profile, periods)
+
+        results = [calculate_paycheck(basis, p, simple_tax_configs) for p in periods]
+
+        assert [r.earnings.total_after_tax for r in results] == [
+            Decimal("0.00"), Decimal("100.00"), Decimal("100.00"), Decimal("0.00"),
+        ]
+
+    def test_an_earning_is_capped_and_deactivated_like_any_line(self, simple_tax_configs):
+        """The shared pass: a $150 annual cap on a $100 after-tax line pays 100, 50, 0; an inactive line pays nothing."""
+        capped = FakeDeduction(
+            name="Stipend", amount="100", annual_cap="150", paycheck_line_kind="after_tax_earning",
+        )
+        inactive = FakeDeduction(
+            name="Old Allowance", amount="500", paycheck_line_kind="taxable_earning", is_active=False,
+        )
+        profile = FakeProfile(
+            annual_salary=60000, created_at=date(2026, 1, 1), lines=[capped, inactive],
+        )
+        periods = [
+            _period(start_date=date(2026, 1, 2), period_id=1),
+            _period(start_date=date(2026, 1, 16), period_id=2),
+            _period(start_date=date(2026, 1, 30), period_id=3),
+        ]
+        basis = payroll_basis(profile, periods)
+
+        results = [calculate_paycheck(basis, p, simple_tax_configs) for p in periods]
+
+        assert [r.earnings.total_after_tax for r in results] == [
+            Decimal("100.00"), Decimal("50.00"), Decimal("0.00"),
+        ]
+        assert [r.earnings.net_pay for r in results] == [
+            Decimal("1954.22"), Decimal("1904.22"), Decimal("1854.22"),
+        ]
+        assert all(r.earnings.gross_biweekly == Decimal("2307.69") for r in results)

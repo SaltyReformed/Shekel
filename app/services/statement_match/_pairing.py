@@ -138,8 +138,9 @@ def within_window(row: CandidateRow, line: BankLine) -> bool:
     window = row.expected_window
     if window is None:
         # A row the app can date no way at all is not offerable.  It is
-        # unconstructible through either candidate arm -- both fill
-        # ``expected_on`` from a NOT NULL column -- and the answer is stated
+        # unconstructible through either candidate arm -- a purchase's day is
+        # a NOT NULL column and a transaction's constructor declines a row
+        # whose period the calendar lacks -- and the answer is stated
         # rather than left to a default because the OTHER reading, "no window
         # means no bound", is finding N-312 itself.  :func:`_day_buckets`
         # declines the same row for the same reason, so the two passes cannot
@@ -216,12 +217,16 @@ def exactly_matched_but_outside_the_window(
     return declined
 
 
-def days_outside(window: "tuple[date, date]", day: date) -> int:
-    """Return how far *day* falls OUTSIDE *window*, in days.
+def signed_days_outside(window: "tuple[date, date]", day: date) -> int:
+    """Return how far *day* falls outside *window*, and on WHICH side.
 
-    ``0`` when it falls inside, which is what makes this a distance rather
-    than a signed offset: a row whose own paycheck covers the bank's day is
-    not "near", it is right, and every such row ties.
+    Negative when *day* PRECEDES the window, positive when it FOLLOWS it,
+    ``0`` inside.  **The one arithmetic under two readers** (plan step
+    ``bank_import:X-gz``): the matcher scores a pairing by the magnitude
+    (:func:`days_outside`) and the MATCH pane tells the reviewer the direction
+    -- *the bank posted it 2 days after that pay period* -- and a second
+    subtraction spelled for the sentence could disagree with the one that
+    ranked the row.
 
     **Total over its declared domain**, which is why it takes the window
     rather than the row: a row that has none is refused by
@@ -230,15 +235,35 @@ def days_outside(window: "tuple[date, date]", day: date) -> int:
     see.
 
     Args:
+        window: A ``(first, last)`` span of days, both ends inclusive -- a
+            row's :attr:`~._offers.CandidateRow.expected_window`, or the
+            budget clock the pane prints.
+        day: The day the bank posted the line.
+
+    Returns:
+        The signed distance in days, ``0`` inside.
+    """
+    first, last = window
+    if day < first:
+        return -(first - day).days
+    if day > last:
+        return (day - last).days
+    return 0
+
+
+def days_outside(window: "tuple[date, date]", day: date) -> int:
+    """Return how far *day* falls OUTSIDE *window*, in days.
+
+    ``0`` when it falls inside, which is what makes this a distance rather
+    than a signed offset: a row whose own paycheck covers the bank's day is
+    not "near", it is right, and every such row ties.  The magnitude of
+    :func:`signed_days_outside`, which holds the arithmetic.
+
+    Args:
         window: The row's :attr:`~._offers.CandidateRow.expected_window`.
         day: The day the bank posted the line.
 
     Returns:
         The distance in days, ``0`` inside.
     """
-    first, last = window
-    if day < first:
-        return (first - day).days
-    if day > last:
-        return (day - last).days
-    return 0
+    return abs(signed_days_outside(window, day))

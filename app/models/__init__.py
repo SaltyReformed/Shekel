@@ -12,7 +12,7 @@ from app.models.ref import (
     AmountSource,
     BusinessDayShift,
     CalcMethod,
-    DeductionTiming,
+    PaycheckLineKind,
     FilingStatus,
     GoalMode,
     IncomeUnit,
@@ -46,6 +46,10 @@ from app.models.account import (
 from app.models.account_opening import (
     AccountOpening,
     AccountOpeningImmutableError,
+)
+from app.models.anchor_release import (
+    AnchorRelease,
+    AnchorReleaseImmutableError,
 )
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
@@ -86,7 +90,7 @@ from app.models.statement_line_skip import StatementLineSkip
 # Salary domain
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.pension_profile import PensionProfile
 from app.models.calibration_override import CalibrationOverride
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
@@ -109,7 +113,7 @@ __all__ = [
     "AmountSource",
     "BusinessDayShift",
     "CalcMethod",
-    "DeductionTiming",
+    "PaycheckLineKind",
     "FilingStatus",
     "GoalMode",
     "IncomeUnit",
@@ -139,6 +143,8 @@ __all__ = [
     "AccountAnchorHistoryImmutableError",
     "AccountOpening",
     "AccountOpeningImmutableError",
+    "AnchorRelease",
+    "AnchorReleaseImmutableError",
     "Category",
     "RecurrenceRule",
     "RecurrenceWeekdayAnchor",
@@ -173,7 +179,7 @@ __all__ = [
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",
-    "PaycheckDeduction",
+    "PaycheckLine",
     "PensionProfile",
     "CalibrationOverride",
     "YtdTaxCheckpoint",

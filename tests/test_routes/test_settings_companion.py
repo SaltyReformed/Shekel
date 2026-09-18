@@ -19,7 +19,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services.auth_service import authenticate, verify_password
 from app.exceptions import AuthError
-from tests._test_helpers import generate_row_of, make_expense_template
+from tests._test_helpers import figure_source_columns, generate_row_of, make_expense_template
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -531,6 +531,7 @@ class TestDeactivateCompanion:
         txn = generate_row_of(template, seed_periods_today[0])
 
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=comp.id,
             amount=Decimal("42.50"),

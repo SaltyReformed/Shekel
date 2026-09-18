@@ -20,7 +20,8 @@ calculator already computed onto each breakdown's
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.enums import DeductionTimingEnum
+from app.enums import PaycheckLineKindEnum
+from app.services import paycheck_line_kinds
 from app.services.pay_calendar import DerivedPeriod
 from app.services.paycheck_calculator import PaycheckBreakdown
 from app.utils.money import HUNDRED, ZERO
@@ -374,29 +375,48 @@ def build_composition(
     All figures are Decimals; the four segment percentages (of gross) are
     precomputed to one decimal place so the template performs no math.
 
+    **The spine is a disposition of GROSS, and the earning lines sit on
+    either side of it** (plan step salary:R18-b, ruling **R-SAL38**).  A
+    TAXABLE earning is inside the gross already (``gross = base + taxable
+    earnings``), so the spine needs nothing new for it and the footer states
+    the split.  An AFTER-TAX earning is outside the gross: the deposit is
+    ``kept_from_gross + after_tax_total``, so the net SEGMENT is the part of
+    gross kept (``kept_from_gross``) and the after-tax total is stated
+    beside it -- otherwise the four segments would not sum to the bar, and
+    the legend's percentage would disagree with its figure.  With no earning
+    line every added key is ``$0.00`` / equals ``net``, and the card renders
+    exactly as before.
+
     Args:
         breakdown: The focused period's breakdown.
         calibration_active: Whether the profile's calibration is active.
 
     Returns:
-        A dict with the gross/taxable/net/pre_tax_total/taxes_total/
-        post_tax_total Decimals, the ``pct_net`` / ``pct_pre_tax`` /
-        ``pct_taxes`` / ``pct_post_tax`` one-decimal percentages, and the
-        ``federal_zero_calibrated`` flag.
+        A dict with the gross/base/taxable/net/pre_tax_total/taxes_total/
+        post_tax_total/taxable_earnings_total/after_tax_total/kept_from_gross
+        Decimals, the ``pct_net`` (of ``kept_from_gross``) / ``pct_pre_tax``
+        / ``pct_taxes`` / ``pct_post_tax`` one-decimal percentages of gross,
+        and the ``federal_zero_calibrated`` flag.
     """
     gross = breakdown.earnings.gross_biweekly
     pre_tax_total = breakdown.deductions.total_pre_tax
     taxes_total = breakdown.taxes.total
     post_tax_total = breakdown.deductions.total_post_tax
     net = breakdown.earnings.net_pay
+    after_tax_total = breakdown.earnings.total_after_tax
+    kept_from_gross = net - after_tax_total
     return {
         "gross": gross,
+        "base": breakdown.earnings.base_biweekly,
+        "taxable_earnings_total": breakdown.earnings.total_taxable,
         "taxable": breakdown.earnings.taxable_income,
         "net": net,
+        "kept_from_gross": kept_from_gross,
+        "after_tax_total": after_tax_total,
         "pre_tax_total": pre_tax_total,
         "taxes_total": taxes_total,
         "post_tax_total": post_tax_total,
-        "pct_net": _pct_of_gross(net, gross),
+        "pct_net": _pct_of_gross(kept_from_gross, gross),
         "pct_pre_tax": _pct_of_gross(pre_tax_total, gross),
         "pct_taxes": _pct_of_gross(taxes_total, gross),
         "pct_post_tax": _pct_of_gross(post_tax_total, gross),
@@ -404,41 +424,46 @@ def build_composition(
     }
 
 
-def build_deduction_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]]:
-    """Build the proportional deduction bar-list for the focused period.
+def build_line_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]]:
+    """Build the proportional payroll-line bar-list for the focused period.
 
-    Includes both timings, ordered for the locked bar-list design: the
-    pre-tax group first, then post-tax, each sorted by amount DESCENDING
-    (largest-first per group; equal amounts keep the calculator's stable
-    order).  ``bar_pct`` is scaled so the largest single line across both
-    groups renders at 100.0 (route-computed so the template does no math).
+    Every line of every kind, grouped in WATERFALL order -- taxable
+    earnings, pre-tax deductions, post-tax deductions, after-tax earnings
+    (plan step salary:R18-b, ruling **R-SAL38**; ``build_deduction_rows``
+    over the two deduction groups until then) -- each group sorted by amount
+    DESCENDING (largest-first per group; equal amounts keep the calculator's
+    stable order).  ``bar_pct`` is scaled so the largest single line across
+    every group renders at 100.0 (route-computed so the template does no
+    math).
 
     Args:
         breakdown: The focused period's breakdown.
 
     Returns:
         A list of dicts, one per line item, each with ``name`` (str),
-        ``amount`` (Decimal), ``timing`` (the DeductionTiming enum value,
-        display grouping only), and ``bar_pct`` (Decimal, one decimal).
-        Empty when the period has no deduction lines.
+        ``amount`` (Decimal), ``kind`` (the PaycheckLineKind enum value, the
+        template's CSS suffix and group key), ``kind_label`` (the group's
+        words, from the kind vocabulary's one producer) and ``bar_pct``
+        (Decimal, one decimal).  Empty when the period has no lines.
     """
+    groups = (
+        (PaycheckLineKindEnum.TAXABLE_EARNING, breakdown.earnings.taxable),
+        (PaycheckLineKindEnum.PRE_TAX_DEDUCTION, breakdown.deductions.pre_tax),
+        (PaycheckLineKindEnum.POST_TAX_DEDUCTION, breakdown.deductions.post_tax),
+        (PaycheckLineKindEnum.AFTER_TAX_EARNING, breakdown.earnings.after_tax),
+    )
     # ``sorted`` is stable, so equal amounts retain the calculator's
-    # original line order within each timing group.
-    pre_sorted = sorted(
-        breakdown.deductions.pre_tax, key=lambda line: line.amount, reverse=True,
-    )
-    post_sorted = sorted(
-        breakdown.deductions.post_tax, key=lambda line: line.amount, reverse=True,
-    )
-    lines = (
-        [(line, DeductionTimingEnum.PRE_TAX.value) for line in pre_sorted]
-        + [(line, DeductionTimingEnum.POST_TAX.value) for line in post_sorted]
-    )
+    # original line order within each group.
+    lines = [
+        (line, kind)
+        for kind, group in groups
+        for line in sorted(group, key=lambda line: line.amount, reverse=True)
+    ]
     if not lines:
         return []
-    max_amount = max(line.amount for line, _timing in lines)
+    max_amount = max(line.amount for line, _kind in lines)
     rows: list[dict[str, object]] = []
-    for line, timing in lines:
+    for line, kind in lines:
         if max_amount > ZERO:
             bar_pct = (line.amount / max_amount * HUNDRED).quantize(
                 _PCT_QUANTUM, rounding=ROUND_HALF_UP,
@@ -448,7 +473,8 @@ def build_deduction_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]
         rows.append({
             "name": line.name,
             "amount": line.amount,
-            "timing": timing,
+            "kind": kind.value,
+            "kind_label": paycheck_line_kinds.LABELS[kind],
             "bar_pct": bar_pct,
         })
     return rows

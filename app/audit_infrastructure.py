@@ -73,6 +73,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "account_openings"),
     ("budget", "account_postings"),
     ("budget", "accounts"),
+    ("budget", "anchor_releases"),
     ("budget", "asset_appreciation_params"),
     ("budget", "bank_statement_lines"),
     ("budget", "categories"),
@@ -116,7 +117,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     # ── salary schema ────────────────────────────────────────────────
     ("salary", "calibration_overrides"),
     ("salary", "fica_configs"),
-    ("salary", "paycheck_deductions"),
+    ("salary", "paycheck_lines"),
     ("salary", "pension_profiles"),
     ("salary", "salary_profiles"),
     ("salary", "salary_raises"),

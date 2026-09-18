@@ -52,6 +52,7 @@ from app.services.anchor_service import (
 from app.services.balance_at import BalanceContext, cash_balance_at
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    figure_source_columns,
     create_settled_cash_transaction,
     current_pay_period,
     freeze_today,
@@ -130,6 +131,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
     txn = generate_row_of(template, period)
 
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
@@ -1077,15 +1079,31 @@ _ANCHOR_UNIQUE_INDEX_SQL = """
 """
 
 
-def _content_keys_on_anchor_tables(session):
-    """Return the anchor tables' unique indexes that key on VALUES.
+#: The columns an ASSERTION is made of -- ruling R-ES's ``(account, day,
+#: balance)`` -- which are the values a transport retry and a deliberate
+#: re-assertion SHARE, and so the only columns a unique key may not be built
+#: over.  The loan twin's are its own three.
+_OBSERVATION_COLUMNS = frozenset({
+    "account_id", "observed_on", "anchor_balance",
+    "anchor_date",
+})
 
-    Ruling **R-EQ**'s predicate, and the whole of it: an index that OMITS the
-    primary key can refuse an INSERT whose values match a row already there --
-    which is what a transport retry and a deliberate re-assertion look like to
-    each other.  One that CONTAINS the primary key cannot refuse anything, so it
-    is not a guard whatever else it is; the clearing links' target
-    ``uq_anchor_history_account_id`` is that shape.
+
+def _content_keys_on_anchor_tables(session):
+    """Return the anchor tables' unique indexes that key on OBSERVATION values.
+
+    Ruling **R-EQ**'s predicate, and the whole of it: an index over the
+    values a transport retry and a deliberate re-assertion SHARE can refuse
+    the correction, because the two are byte-identical by construction.  Two
+    shapes are therefore NOT content keys, and each is named rather than
+    excused: one that CONTAINS the primary key cannot refuse anything (the
+    clearing links' target ``uq_anchor_history_account_id``), and one over a
+    foreign key to the row's SOURCE keys an identity rather than a value --
+    ``uq_anchor_history_statement_import`` says an import places its figure
+    on at most one day, and a re-import is a NEW import row with its own id,
+    so no legitimate act can collide on it (plan step ``balance:X-bj-1``,
+    developer ruling 2026-09-16).  What R-EQ forbids is exactly a key built
+    from :data:`_OBSERVATION_COLUMNS` and nothing else.
 
     Args:
         session: The test session, inside an app context.
@@ -1097,7 +1115,7 @@ def _content_keys_on_anchor_tables(session):
     return {
         (row.tablename, row.indexname)
         for row in session.execute(sa.text(_ANCHOR_UNIQUE_INDEX_SQL))
-        if "id" not in row.columns
+        if set(row.columns) <= _OBSERVATION_COLUMNS
     }
 
 
@@ -1147,7 +1165,13 @@ class TestApplyAnchorTrueUpModuleContract:
         over values a transport retry and a deliberate correction SHARE, which
         is exactly a key that OMITS the primary key.
         :func:`_content_keys_on_anchor_tables` is that predicate, and the test
-        below plants the deleted index to show it still fires.
+        below plants the deleted index to show it still fires.  **A second
+        narrowing at plan step ``balance:X-bj-1``** (developer, 2026-09-16):
+        a key over a foreign key to the row's SOURCE
+        (``uq_anchor_history_statement_import``) is identity, not content --
+        a re-import is a new import row -- so the predicate names the
+        observation columns R-EQ is about rather than "anything without the
+        primary key".
         """
         with app.app_context():
             offenders = _content_keys_on_anchor_tables(db.session)

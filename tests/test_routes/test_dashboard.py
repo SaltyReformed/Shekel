@@ -36,9 +36,10 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.transaction import Transaction
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
+    one_off_row_of,
+    figure_source_columns,
     last_covered_day,
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
@@ -202,6 +203,7 @@ class TestDashboardPulseRendering:
             )
             envelope = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=envelope.id, account_id=envelope.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
@@ -306,6 +308,7 @@ class TestDashboardPulseRendering:
             )
             tracked = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=tracked.id, account_id=tracked.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),
@@ -403,17 +406,15 @@ class TestDashboardPulseRendering:
             assert cur.start_date <= date.today() <= last_covered_day(cur)
             nxt = seed_periods_today[5]
             peak_period = seed_periods_today[6]
-            income = Transaction(
-                account_id=seed_user["account"].id,
-                user_id=peak_period.user_id,
-                pay_period_id=peak_period.id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            one_off_row_of(
+                peak_period,
                 name="Windfall",
+                amount=Decimal("1200.00"),
+                user_id=peak_period.user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
-                amount_ownership=AmountOwnership.own(Decimal("1200.00")),
             )
-            db.session.add(income)
             db.session.commit()
 
             resp = auth_client.get("/dashboard")

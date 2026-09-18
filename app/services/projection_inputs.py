@@ -28,7 +28,11 @@ means a session -- so the PRICING happens at this loader and the pure module
 receives a finished
 :class:`~app.services.investment_projection.AccountPayrollFeed`.  It is the
 same split ``PricedContribution`` and ``ShadowContributions`` already sit on,
-applied to the third and last input that was still arriving raw.
+applied to the third and last input that was still arriving raw.  **The
+contribution feed itself lives one module over since plan step
+balance:X-bi-6a** (:mod:`app.services.recorded_contributions`): that step's
+edit carried this module past the 1000-line ceiling, and a feed with a
+valuation rule of its own moved out rather than this module shaving.
 """
 
 import logging
@@ -38,31 +42,23 @@ from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, subqueryload
 
-from app import ref_cache
-from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
-from app.models.transaction import Transaction
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 from app.services.income_service import PaycheckPricing, ProfilePaychecks
-from app.services.cash_ledger import AmountBasis, contributions_by_id
 from app.services.investment_projection import (
     AccountPayrollFeed,
     InvestmentInputs,
-    PricedContribution,
-    ShadowContributions,
     calculate_investment_inputs,
 )
 from app.services.pay_calendar import DerivedPeriod
 from app.utils.money import ZERO
-from app.utils.balance_predicates import status_contributes_to_balance
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +92,7 @@ def load_active_salary_profiles(
         db.session.query(SalaryProfile)
         .options(
             subqueryload(SalaryProfile.raises),
-            subqueryload(SalaryProfile.deductions),
+            subqueryload(SalaryProfile.lines),
         )
         .filter(
             SalaryProfile.user_id == user_id,
@@ -137,7 +133,7 @@ def load_active_accounts_with_types(user_id: int) -> list[Account]:
 
 def load_active_deductions_for_account(
     user_id: int, account_id: int,
-) -> list[PaycheckDeduction]:
+) -> list[PaycheckLine]:
     """Return active paycheck deductions targeting a single account.
 
     The single-account variant of :func:`load_active_deductions_for_accounts`
@@ -154,14 +150,14 @@ def load_active_deductions_for_account(
             deductions target.
 
     Returns:
-        A list of :class:`PaycheckDeduction` rows (possibly empty).
+        A list of :class:`PaycheckLine` rows (possibly empty).
     """
     return _active_deductions_query(user_id, [account_id]).all()
 
 
 def load_active_deductions_for_accounts(
     user_id: int, account_ids: list[int],
-) -> dict[int, list[PaycheckDeduction]]:
+) -> dict[int, list[PaycheckLine]]:
     """Return active paycheck deductions keyed by target account id.
 
     Batch variant used by the savings / retirement / year-end services
@@ -181,12 +177,12 @@ def load_active_deductions_for_accounts(
 
     Returns:
         Dict mapping ``target_account_id`` -> list of
-        :class:`PaycheckDeduction`.  Accounts with no deductions are
+        :class:`PaycheckLine`.  Accounts with no deductions are
         absent from the dict; callers should use ``dict.get(id, [])``.
     """
     if not account_ids:
         return {}
-    grouped: dict[int, list[PaycheckDeduction]] = {}
+    grouped: dict[int, list[PaycheckLine]] = {}
     for ded in _active_deductions_query(user_id, account_ids).all():
         grouped.setdefault(ded.target_account_id, []).append(ded)
     return grouped
@@ -198,8 +194,8 @@ def _active_deductions_query(user_id: int, account_ids: list[int]):
     Owns the filter shape duplicated three times pre-Commit-18:
     ``SalaryProfile.user_id == user_id``,
     ``SalaryProfile.is_active.is_(True)``,
-    ``PaycheckDeduction.target_account_id.in_(...)``, and
-    ``PaycheckDeduction.is_active.is_(True)``.  ``.in_(...)`` works
+    ``PaycheckLine.target_account_id.in_(...)``, and
+    ``PaycheckLine.is_active.is_(True)``.  ``.in_(...)`` works
     for both single-id and multi-id call sites, so both public
     loaders route through this builder.
 
@@ -212,13 +208,13 @@ def _active_deductions_query(user_id: int, account_ids: list[int]):
         vs ``.scalar()`` etc.
     """
     return (
-        db.session.query(PaycheckDeduction)
+        db.session.query(PaycheckLine)
         .join(SalaryProfile)
         .filter(
             SalaryProfile.user_id == user_id,
             SalaryProfile.is_active.is_(True),
-            PaycheckDeduction.target_account_id.in_(account_ids),
-            PaycheckDeduction.is_active.is_(True),
+            PaycheckLine.target_account_id.in_(account_ids),
+            PaycheckLine.is_active.is_(True),
         )
     )
 
@@ -275,161 +271,6 @@ def load_investment_params_for_accounts(
     return params_map
 
 
-def load_shadow_income_contributions_for_accounts(
-    basis: AmountBasis,
-    account_ids: list[int], period_ids: list[int],
-) -> ShadowContributions:
-    """Return PRICED shadow-income contributions across many accounts.
-
-    Batch variant used by services that classify many accounts in one
-    pass.  Returned records carry their original ``account_id`` so callers
-    can group / partition downstream.  Returns an empty list when
-    either ``account_ids`` or ``period_ids`` is empty so callers do
-    not issue ``IN ()`` queries against PostgreSQL.
-
-    **This is the BOUNDARY where a contribution is valued** (plan step
-    X-au-c2, a developer ruling of 2026-08-12).  It used to return ORM rows and
-    four readers in :mod:`app.services.investment_projection` each asked them
-    for ``effective_amount`` behind its own copy of the
-    ``status_contributes_to_balance`` screen.  That property cannot answer for
-    a row whose amount is DERIVED -- such a row stores no figure -- and a module
-    whose docstring promises no database access can never resolve one.  So the
-    resolution happens HERE, where the session is: ONE
-    :func:`~app.services.cash_ledger.contributions_by_id` call over the whole
-    cross-account row set, which is also one paycheck-engine run rather than
-    one per account (finding **N-228**, and what re-keying the basis on the
-    OWNER rather than an ``Account`` bought).
-
-    **It is also where a contribution is DATED, since plan step C2-f2c**, and
-    that is the same argument applied to the same record's other derived fact.
-    Every reader downstream buckets contributions by pay period and then needs
-    that period's PAYDAY -- the YTD windows to compare it against the current
-    period's, the timeline to stamp it on a
-    :class:`~app.services.growth_engine.ContributionRecord`.  Carrying the id
-    alone made each of them take the owner's whole period list as a lookup
-    table, so three public signatures held a join this query can do in one
-    ``JOIN``.  ``PayPeriod.start_date`` is the paydays' own column and the one
-    plan step **C4** keeps, so this reads a fact rather than a derivation; the
-    join is INNER, which drops nothing, because the filter below already
-    excludes a ``NULL`` ``pay_period_id``.
-
-    **Rows that contribute nothing are DROPPED rather than priced at zero.**
-    :func:`~app.services.investment_projection._inputs._average_transfer_contribution`
-    divides by the number of distinct pay periods it sees, so a Cancelled
-    contribution carried through as ``$0.00`` would enlarge that denominator and
-    silently lower the average.  The screen is applied before the pricing for
-    the same reason the valuation gates before it resolves: an excluded row has
-    no derived answer to give.
-
-    The ``eager_status`` switch is gone with them.  It defaulted to ``False``
-    while every consumer needed the status, so the retirement chain lazy-loaded
-    it per row; the status is now read exactly once here, under a ``joinedload``
-    that is no longer optional.
-
-    Args:
-        basis: The read pass's
-            :class:`~app.services.cash_ledger.AmountBasis` -- the owner and the
-            scenario these amounts resolve under, and the derivations they
-            resolve through.  Taken rather than built here since plan step
-            X-au-c2b, so a caller that also prices its own rows pays for the
-            paycheck engine once (findings **N-268**, **N-269**).
-        account_ids: Investment / retirement account ids to scope to.
-        period_ids: Pay-period ids to scope the contribution window
-            against.
-
-    Returns:
-        A :class:`~app.services.investment_projection.ShadowContributions` --
-        the priced ``records`` (callers partition by ``account_id``
-        themselves, typically a comprehension inside a per-account loop) and
-        the ``linked_account_ids`` of every account that had a contribution
-        shadow WHATEVER its status.  The second field is not decoration: an
-        adversarial review found that screening the records alone flipped
-        ``retirement_projection``'s ``none_linked`` for an account whose
-        contributions were all Cancelled, telling the owner to link a
-        contribution that already exists.
-
-    Raises:
-        AmountUnresolvable: From the amount model, for a contribution whose
-            rule cannot price it.  A refusal is never a fallback.
-    """
-    if not account_ids or not period_ids:
-        return ShadowContributions(records=[], linked_account_ids=frozenset())
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    rows = (
-        db.session.query(Transaction, PayPeriod.start_date)
-        .join(PayPeriod, PayPeriod.id == Transaction.pay_period_id)
-        .options(joinedload(Transaction.status))
-        .filter(
-            Transaction.account_id.in_(account_ids),
-            Transaction.transfer_id.isnot(None),
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.pay_period_id.in_(period_ids),
-            # The BASIS's scenario, and closing finding **N-271** is what this
-            # line is (plan step X-au-c2b, after an adversarial review).  The
-            # query scoped by account, transfer, income type, period and soft
-            # delete only, so one batch could straddle scenarios while every
-            # row in it was priced against a single baseline basis.  That was
-            # `$0.00` while every row is OWN and becomes a wrong figure at the
-            # first cutover that makes a contribution shadow derived.  Scoping
-            # the query is the remedy the row named, and it is the one that
-            # keeps this batch's rows and its pricing in agreement by
-            # construction rather than by the caller's care.
-            Transaction.scenario_id == basis.scenario_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-    counted = [
-        (row, payday) for row, payday in rows
-        if status_contributes_to_balance(row)
-    ]
-    amounts = contributions_by_id([row for row, _ in counted], basis)
-    return ShadowContributions(
-        records=[
-            PricedContribution(
-                account_id=row.account_id,
-                payday=payday,
-                amount=amounts[row.id],
-                is_confirmed=row.status.is_settled,
-            )
-            for row, payday in counted
-        ],
-        # Taken from the UNSCREENED rows: a Cancelled contribution counts
-        # nothing but is still a LINK, and the consumer asking whether an
-        # account has one is asking a different question from the consumers
-        # that sum amounts.
-        linked_account_ids=frozenset(row.account_id for row, _ in rows),
-    )
-
-
-def load_shadow_income_contributions_for_account(
-    basis: AmountBasis,
-    account_id: int, period_ids: list[int],
-) -> ShadowContributions:
-    """Return PRICED shadow-income contributions into a single account.
-
-    Used by the investment-detail dashboard.  Filters to
-    transfer-shadow income rows in the supplied period window so
-    :func:`calculate_investment_inputs` can derive the YTD contribution
-    total and the contribution timeline can layer historical receipts.
-    Returns an empty list when ``period_ids`` is empty so callers do
-    not issue an ``IN ()`` query against PostgreSQL.
-
-    Args:
-        basis: The read pass's amount basis (see the batch variant).
-        account_id: ID of the investment / retirement account.
-        period_ids: Pay-period ids to scope the contribution window
-            against.
-
-    Returns:
-        A list of :class:`~app.services.investment_projection.PricedContribution`
-        records (see the batch variant for what pricing at this boundary buys).
-    """
-    return load_shadow_income_contributions_for_accounts(
-        basis, [account_id], period_ids,
-    )
-
-
 @dataclass(frozen=True)
 class PayrollWiring:
     """WHICH payroll funds WHICH account, loaded once and priced by nobody.
@@ -446,7 +287,7 @@ class PayrollWiring:
 
     Attributes:
         account_ids: The accounts a feed is built for, in the order asked.
-        deductions_by_account: ``{account_id: [PaycheckDeduction]}`` -- each
+        deductions_by_account: ``{account_id: [PaycheckLine]}`` -- each
             account's active deductions, from
             :func:`load_active_deductions_for_accounts`; an account with none
             is absent.
@@ -458,7 +299,7 @@ class PayrollWiring:
     """
 
     account_ids: "tuple[int, ...]"
-    deductions_by_account: "dict[int, list[PaycheckDeduction]]"
+    deductions_by_account: "dict[int, list[PaycheckLine]]"
     profiles: "dict[int, SalaryProfile]"
     params_by_account: "dict[int, InvestmentParams]"
 
@@ -488,7 +329,7 @@ def load_payroll_feeds(
     ONE spelling of a profile's projection since ``salary:R14-a`` -- and hands
     each account two RESOLVERS closed over the pricers of the profiles that
     fund it, each folding the
-    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    :class:`~app.services.paycheck_calculator.PricedLine`\\ s of the
     paycheck priced for the period it is asked about by the
     ``target_account_id`` they already carry.
 
@@ -796,7 +637,7 @@ def _load_funding_profiles(
         db.session.query(SalaryProfile)
         .options(
             subqueryload(SalaryProfile.raises),
-            subqueryload(SalaryProfile.deductions),
+            subqueryload(SalaryProfile.lines),
         )
         .filter(
             SalaryProfile.id.in_(profile_ids),
@@ -810,13 +651,13 @@ def _load_funding_profiles(
 
 def _employee_resolver(
     account_id: int,
-    deductions: list[PaycheckDeduction],
+    deductions: list[PaycheckLine],
     pricers: dict[int, ProfilePaychecks],
 ) -> Callable[[DerivedPeriod], Decimal] | None:
     """Build ONE account's ``period -> employee amount`` resolver, or ``None``.
 
     The resolver reads the amount off the
-    :class:`~app.services.paycheck_calculator.DeductionLine`\\ s of the
+    :class:`~app.services.paycheck_calculator.PricedLine`\\ s of the
     paycheck the engine prices for the period it is asked about -- raise-aware,
     inflation-escalated, cadence-placed and clamped to the line's own
     calendar-year cap -- rather than pricing anything itself.  Pre- and
@@ -871,9 +712,15 @@ def _gross_resolver(
 ) -> Callable[[DerivedPeriod], Decimal] | None:
     """Build the FUNDING profile's ``period -> gross`` resolver, or ``None``.
 
-    The employer contribution's basis (**R-SAL5**): the gross of the paycheck
-    the profile named by ``budget.investment_params.salary_profile_id`` is
-    paid on the period asked about.  ``None`` when that profile is unknown --
+    The employer contribution's basis (**R-SAL5**): the BASE pay of the
+    paycheck the profile named by ``budget.investment_params.salary_profile_id``
+    is paid on the period asked about -- ``earnings.base_biweekly``, the
+    salary rate, which ruling **R-SAL38** (plan step salary:R18-b) makes the
+    base of every percentage figure in payroll: an employer match is a
+    percentage of the salary, not of the gross a taxable allowance joins, and
+    reading the base here is what keeps this feed and the engine's own
+    percentage lines on one figure.  (``gross_biweekly`` until R18-b, which
+    WAS the base rate then.)  ``None`` when that profile is unknown --
     absent, archived, or not this owner's, the three states
     :func:`_load_funding_profiles` has already collapsed into "not in the
     map" -- which is the developer's 2026-09-04 ruling that such an account
@@ -894,7 +741,7 @@ def _gross_resolver(
         return None
 
     def _gross(period: DerivedPeriod) -> Decimal:
-        return pricer.at(period).earnings.gross_biweekly
+        return pricer.at(period).earnings.base_biweekly
 
     return _gross
 
@@ -918,7 +765,8 @@ def build_investment_projection_inputs(
     the ``too-many-arguments`` disable that justified six went with it.  The
     list served the wrapped function's two YTD windows alone, as a lookup from
     a contribution's pay period to that period's payday;
-    :func:`load_shadow_income_contributions_for_accounts` dates each
+    :func:`~app.services.recorded_contributions.load_shadow_income_contributions_for_accounts`
+    dates each
     contribution now, so there is nothing left to look up.
 
     Callers supply the ``feed`` (from :func:`load_payroll_feeds`) and
@@ -989,6 +837,4 @@ __all__ = [
     "load_investment_params_for_accounts",
     "load_payroll_feeds",
     "load_payroll_wiring",
-    "load_shadow_income_contributions_for_account",
-    "load_shadow_income_contributions_for_accounts",
 ]

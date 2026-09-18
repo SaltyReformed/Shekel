@@ -83,10 +83,11 @@ from app.utils.log_events import (
     EVT_TRANSFER_UPDATED,
 )
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
     generate_row_of,
     make_every_period_rule,
     make_expense_template,
+    one_off_row_of,
+    record_paydays_across_a_hole,
     rhythm_of,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -352,7 +353,6 @@ class TestTransferServiceLogging:
 @pytest.fixture
 def _projected_expense(app, db, seed_user, seed_periods):
     """Build a Projected expense in the first seeded period."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense = db.session.query(
         # The TransactionType import lives in app.models.ref; lookup
         # by name is cheaper than another import.
@@ -363,18 +363,16 @@ def _projected_expense(app, db, seed_user, seed_periods):
         TransactionType,
     ).filter_by(name="Expense").one()
 
-    txn = Transaction(
-        user_id=seed_periods[0].user_id,
-        pay_period_id=seed_periods[0].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods[0],
         name="Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal("50.00"),
+        user_id=seed_periods[0].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("50.00")),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.flush()
     db.session.commit()
     return txn
@@ -896,9 +894,6 @@ class TestRecurrenceEngineLogging:
         expense_type = db.session.query(
             TransactionType,
         ).filter_by(name="Expense").one()
-        projected = db.session.query(Status).filter_by(
-            name="Projected",
-        ).one()
 
         # Build a transaction owned by the second user.
         # Years past the second owner's 2024 opening payday: a hole, written
@@ -908,19 +903,17 @@ class TestRecurrenceEngineLogging:
         )
         db.session.flush()
 
-        s2_txn = Transaction(
-            user_id=s2_periods[0].user_id,
-            pay_period_id=s2_periods[0].id,
-            scenario_id=seed_second_user["scenario"].id,
-            account_id=seed_second_user["account"].id,
-            status_id=projected.id,
+        s2_txn = one_off_row_of(
+            s2_periods[0],
             name="Other Owner Txn",
-            category_id=seed_second_user["categories"]["Rent"].id,
+            amount=Decimal("75.00"),
+            user_id=s2_periods[0].user_id,
+            account_id=seed_second_user["account"].id,
+            scenario_id=seed_second_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("75.00")),
-            is_override=True,
+            category_id=seed_second_user["categories"]["Rent"].id,
         )
-        db.session.add(s2_txn)
+        s2_txn.is_override = True
         db.session.commit()
 
         with app.app_context(), _LogCapture(
@@ -952,21 +945,18 @@ class TestCarryForwardLogging:
         expense_type = db.session.query(
             TransactionType,
         ).filter_by(name="Expense").one()
-        projected = db.session.query(Status).filter_by(name="Projected").one()
 
-        # One ad-hoc projected expense in period 0 -- discrete partition.
-        txn = Transaction(
-            user_id=seed_periods[0].user_id,
-            pay_period_id=seed_periods[0].id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
+        # One projected one-off in period 0 -- the discrete partition.
+        one_off_row_of(
+            seed_periods[0],
             name="Ad-hoc Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("50.00"),
+            user_id=seed_periods[0].user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.commit()
 
         with app.app_context(), _LogCapture(

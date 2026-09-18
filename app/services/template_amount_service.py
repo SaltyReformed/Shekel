@@ -32,7 +32,11 @@ docstring holds the supersession argument and this one holds the rules.
    is a no-op on the series when the series ALREADY answers that amount on that
    date, so a rename or a cadence edit appends nothing, and a version already
    standing on that exact date is CORRECTED in place rather than joined by a
-   second (the escrow model's same-day rule).
+   second (the escrow model's same-day rule).  **A ONE-OFF's price is
+   corrected in place through a second door** (:func:`restate_in_effect`,
+   plan step ``balance:X-bi-7b``, ruling **R-BAL29**): its series holds one
+   version and a typed figure corrects the version the row's date reads,
+   so the series never grows past one.
 
 4. **How a mis-dated version is withdrawn** (:func:`delete_amount_version`).  A
    restatement writes a version at the date it NAMES, so it cannot fix one
@@ -198,12 +202,36 @@ def amount_as_of(template, on_date: date) -> Decimal | None:
         The stated amount on ``on_date``, or ``None`` when the template holds no
         version.
     """
+    resolved = _version_in_effect(template, on_date)
+    if resolved is None:
+        return None
+    return Decimal(str(resolved.amount))
+
+
+def _version_in_effect(template, on_date: date) -> TemplateAmountVersion | None:
+    """Return the version that answers ``on_date``, or ``None`` for an empty series.
+
+    **The ONE walk behind rule 2**, shared by :func:`amount_as_of` (which
+    reads its amount) and :func:`restate_in_effect` (which corrects it in
+    place, **R-BAL29**), so what a row is priced at and what a restatement
+    corrects cannot be two different versions.  The version with the
+    greatest ``effective_date`` at or before ``on_date``; before the earliest
+    version, the earliest -- the series holds FLAT there, which is what makes
+    the resolver total (see :func:`amount_as_of`).
+
+    Args:
+        template: The transaction or transfer template to resolve.
+        on_date: The date to resolve for.
+
+    Returns:
+        The :class:`~app.models.template_amount_version.TemplateAmountVersion`
+        in effect, or ``None`` when the template holds no version.
+    """
     versions = amount_versions(template)
     if not versions:
         return None
     in_effect = [v for v in versions if v.effective_date <= on_date]
-    resolved = in_effect[-1] if in_effect else versions[0]
-    return Decimal(str(resolved.amount))
+    return in_effect[-1] if in_effect else versions[0]
 
 
 def _states_something_new(template, amount: Decimal, effective_on: date) -> bool:
@@ -398,6 +426,65 @@ def set_amount(template, amount: Decimal, *, effective_on: date) -> None:
                     effective_date=effective_on, amount=amount,
                 ),
             )
+        _resync_scalar(template)
+
+
+def restate_in_effect(template, amount: Decimal, *, on: date) -> None:
+    """Correct, IN PLACE, the version of *template*'s series that ``on`` reads.
+
+    **A ONE-OFF's price is restated in place, never appended** (rulings
+    **R-BAL21** and **R-BAL29**, plan step ``balance:X-bi-7b``).  A one-off
+    is a rule-less definition whose series holds ONE version dated on its
+    row's due date, and the row is priced through amount rule 3 by that
+    series as of its own due date.  A figure typed for such a row at the
+    grid is a correction of the one price the definition states, so the
+    version the row's date READS takes the figure and the series stays one
+    version -- whatever the date has done since.  :func:`set_amount` cannot
+    say this: with ``effective_on=today`` it APPENDS and leaves the row on
+    the old figure (R-BAL21's rejected crossing); with
+    ``effective_on=row.due_date`` it corrects in place only while a version
+    stands on that EXACT date, so once the owner has moved the date from
+    05-07 to 05-10 it appends ``{05-07: 162.25, 05-10: 170.00}`` and moving
+    the date back silently re-reads ``$162.25``.  This door finds the
+    version :func:`amount_as_of` answers for ``on`` -- the same walk,
+    :func:`_version_in_effect` -- and corrects THAT one, so the series
+    stays ``{05-07: 170.00}`` and one version stays one.
+
+    A no-op when the version already states *amount*; the scalar is re-read
+    off the series afterwards exactly as :func:`set_amount` does, and under
+    the same ``no_autoflush`` for the same reason (the optimistic-lock
+    counter must bump once per edit, not once per read).
+
+    Not an arm inside :func:`set_amount`: exact-date semantics behind a flag
+    is the override-parameter shape rule 1 forbids, and the two answer
+    different questions -- one STATES a price from a date, this CORRECTS the
+    price a date already reads.  Both are the series' own write doors,
+    which is why this lives here and not in the one-off module (a door
+    across modules would need this module's private helpers).
+
+    Args:
+        template: The :class:`~app.models.transaction_template.TransactionTemplate`
+            whose series is corrected -- a rule-less definition's at the one
+            door that calls this today.
+        amount: The corrected figure.
+        on: The date whose version is corrected -- the row's own due date,
+            AFTER whatever this same edit did to it.
+
+    Raises:
+        ValueError: *template* holds no version, so no date reads anything.
+            A definition reaches here only through the one-off producer or
+            the template form, both of which open the series, so this names
+            a state the app does not write rather than handling one.
+    """
+    with db.session.no_autoflush:
+        in_effect = _version_in_effect(template, on)
+        if in_effect is None:
+            raise ValueError(
+                f"Template {template.id} holds no amount version, so there is "
+                f"nothing in effect on {on} to restate."
+            )
+        if Decimal(str(in_effect.amount)) != amount:
+            in_effect.amount = amount
         _resync_scalar(template)
 
 
@@ -618,5 +705,6 @@ __all__ = [
     "delete_amount_version",
     "is_salary_linked_template",
     "owns_its_amount",
+    "restate_in_effect",
     "set_amount",
 ]

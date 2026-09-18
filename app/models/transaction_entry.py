@@ -92,6 +92,50 @@ class TransactionEntry(
                            :class:`app.enums.SettledDayBasisEnum`.
         credit_payback_id -- FK to the CC Payback transaction created for
                              this entry (SET NULL on payback deletion).
+        covers_settlement -- Whether this movement IS its parent's settlement
+                           record: the covering movement the status seam
+                           writes when a bill, a paycheck, a transfer leg or
+                           an envelope closed empty settles on the MANUAL
+                           branch, as against a purchase a person or the bank
+                           recorded.  Set by the seam
+                           alone; the entry doors refuse to edit or delete one
+                           (``entry_service._reject_settlement_record``); at
+                           most one per row
+                           (``uq_transaction_entries_one_settlement_record``).
+                           Plan step **X-bi-3a**, ruling **R-BAL39**.
+        figure_source_id -- WHO WROTE ``amount``: the settle priced it from the
+                           plan (``resolved``), a person stated it (``typed``)
+                           or the bank's own line stated it (``observed``).
+                           NOT NULL, no default: both writers of a movement
+                           state it.  Plan step **X-bi-3a**, ruling
+                           **R-BAL39**, :class:`app.enums.MovementFigureSourceEnum`.
+
+    **A row of this table is a MOVEMENT, and since plan step X-bi-3a a settle
+    writes one for a bill too -- since X-bi-3b for a paycheck, and since
+    X-bi-3c for each leg of a transfer** (ruling **R-BAL39**): the COVERING
+    MOVEMENT, the payment row that records a bill's, a paycheck's or a
+    transfer leg's money the way a purchase records an envelope's, in the
+    parent's direction (``cash_ledger.movement_cash_leg``, ruling
+    **R-BAL35**).  It is an ordinary row here -- its ``amount`` is the figure
+    the settle booked, its ``purchased_on`` the settle day (the only day a
+    bill's payment has, so
+    ``ck_transaction_entries_settled_not_before_purchase`` holds as
+    equality), its ``description`` the plan's name as it read at the settle,
+    and its day pair and statement link the row's own assertion.  The
+    status seam is its ONE writer (``status_seam._covering``), and
+    ``covers_settlement`` is how the seam finds its own mirror again: a
+    settled row may legitimately hold BOTH -- *Track individual purchases*
+    unticked on a settled envelope and a figure typed over it leaves a
+    stored-figure row holding real purchases -- so which entry is the record
+    is a stored fact of the movement, never a derivation over the row.
+    Every reader of this table -- the fold, the projection, the statement
+    matcher -- is kind-blind and sums by ruling **R-FM**'s identity, so a
+    covered bill's own leg nets to zero and the movement carries the money;
+    the posting writer alone branches, returning for a transfer shadow's
+    entries, because a shadow's movement posts nowhere until the ledger takes
+    its ruled shape (ruling **R-BAL45**, plan step **X-bi-6**).
+    ``balance:X-bi-5`` dissolves the bill / envelope distinction and the flag
+    with it.
 
     **The stored ``is_cleared`` boolean this replaced is DELETED** (ruling
     R-DH (d), migration ``d7c1f4a9e603``).  It was written as a side effect of
@@ -171,11 +215,26 @@ class TransactionEntry(
         # key is about the PARENT'S EXISTENCE and this one is about AGREEMENT,
         # and two keys over the same column cascading differently would make a
         # delete's outcome depend on which PostgreSQL evaluated.
+        #
+        # ``ON UPDATE CASCADE`` since plan step **X-bi-3c** (ruling
+        # **R-BAL46**, migration ``c4e8a2d7f1b3``): the one parent whose
+        # account can move is a transfer shadow (``transfer_service.
+        # _endpoints._apply_endpoint_move``), and since that step a settled
+        # shadow carries a covering movement -- so the database moves the
+        # movement with its parent, and no writer can move a parent without
+        # its movements.  The applier assigns the movements' account too, for
+        # the session's sake alone: the ORM never learns what a cascade wrote.
+        # The trade: the NO ACTION rule refused ANY parent-account move that
+        # left an entry behind, an envelope's purchases included; no writer
+        # makes that move (the maintain pass retains such a row), the shadow
+        # is the cascade's one beneficiary, and ``X-bi-6`` restores NO ACTION
+        # with the shadow rows it deletes.
         db.ForeignKeyConstraint(
             ["transaction_id", "account_id"],
             ["budget.transactions.id", "budget.transactions.account_id"],
             name="fk_transaction_entries_parent_account",
             ondelete="CASCADE",
+            onupdate="CASCADE",
         ),
         # WHICH STATEMENT showed this purchase, as a COMPOSITE key over the
         # account (ruling **R-FL**).  The transaction twin of
@@ -225,6 +284,16 @@ class TransactionEntry(
         db.CheckConstraint(
             "reconciled_by_id IS NULL OR is_credit IS FALSE",
             name="ck_transaction_entries_card_purchase_clears_nowhere",
+        ),
+        # AT MOST ONE settlement record per row (plan step **X-bi-3a**): the
+        # seam writes exactly one covering movement per manual-branch settle,
+        # and a second could only reach the table around it.  A partial
+        # unique index rather than a CHECK because the rule is a count.
+        db.Index(
+            "uq_transaction_entries_one_settlement_record",
+            "transaction_id",
+            unique=True,
+            postgresql_where=db.text("covers_settlement = true"),
         ),
         {"schema": "budget"},
     )
@@ -277,6 +346,31 @@ class TransactionEntry(
     credit_payback_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.transactions.id", ondelete="SET NULL"),
+    )
+    # WHETHER THIS MOVEMENT IS ITS PARENT'S SETTLEMENT RECORD (plan step
+    # **X-bi-3a**).  Server default false: every existing row is a purchase,
+    # and a purchase door never states it -- only the status seam writes true.
+    covers_settlement = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false",
+    )
+    # WHO WROTE ``amount`` (plan step **X-bi-3a**, ruling **R-BAL39**).
+    # RESTRICT rather than SET NULL: a vanishing catalogue row would leave a
+    # figure with no source, which the NOT NULL exists to forbid.  No default,
+    # server-side or ORM-side: the two writers of a movement (the purchase
+    # doors and the status seam) each state it, and a default would answer for
+    # a writer that forgot -- the stored guess ruling **R-IY** deletes.  No
+    # index: nothing queries it, and ``user_id``'s comment on
+    # :class:`~app.models.transaction.Transaction` states the predicate for the
+    # first reader that does.  Resolved through
+    # ``ref_cache.movement_figure_source_id``.
+    figure_source_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.movement_figure_sources.id",
+            name="fk_transaction_entries_figure_source_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
     )
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 

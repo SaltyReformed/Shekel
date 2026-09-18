@@ -18,7 +18,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import (
@@ -36,6 +36,8 @@ from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_account,
     load_payroll_feeds,
+)
+from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_account,
 )
 
@@ -117,7 +119,7 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
             A field because the chart needs it directly: the growth engine's
             per-period employer basis is :meth:`AccountPayrollFeed.gross_at`,
             where it was one frozen ``employer_params["gross_biweekly"]``.
-        deductions: The raw :class:`PaycheckDeduction` rows targeting
+        deductions: The raw :class:`PaycheckLine` rows targeting
             this account; drives the contribution-prompt decision.
         salary_profiles: The user's active :class:`SalaryProfile` rows,
             primary first.  Two readers: the funding-job selector on the
@@ -157,7 +159,7 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
     inputs: InvestmentInputs
     shadow_contributions: list[PricedContribution]
     feed: AccountPayrollFeed
-    deductions: list[PaycheckDeduction]
+    deductions: list[PaycheckLine]
     salary_profiles: list[SalaryProfile]
     balance_ctx: BalanceContext
     anchor_as_of: date | None

@@ -1,8 +1,9 @@
 """
-Shekel Budget App -- Salary route package: line items (raises + deductions).
+Shekel Budget App -- Salary route package: line items (raises + payroll lines).
 
 Add, edit, and delete the two parallel families of salary line item -- pay
-raises and paycheck deductions -- both of which regenerate the linked
+raises and payroll LINES (deductions and, since plan step salary:R18-b,
+earnings; ruling **R-SAL38**) -- both of which regenerate the linked
 salary transactions on every change.  The two families are deliberately
 co-located and kept as explicit parallel implementations: they differ on
 the model, schema, percentage conversion, unique constraint, user-facing
@@ -33,7 +34,7 @@ from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.account import Account
 from app import ref_cache
 from app.enums import CalcMethodEnum
@@ -47,30 +48,33 @@ from app.routes._commit_helpers import (
 )
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._recurrence_form_helpers import (
+    author_recurrence_for_create,
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
+    RECURRENCE_END_BOUND_KEY,
     RECURRENCE_MAX_PER_MONTH_KEY,
+    RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
 )
-from app.services import deduction_cadence
+from app.services import paycheck_line_kinds, payroll_line_cadence
 from app.services.balance_at import BalanceContext
-from app.services.recurrence import author_rule
+from app.services.recurrence import NeverEnds, end_bound_from_columns
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
-    _DEDUCTION_UPDATE_FIELDS,
-    _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT,
+    _LINE_UPDATE_FIELDS,
+    _PAYCHECK_LINES_UNIQUE_CONSTRAINT,
     _RAISE_UPDATE_FIELDS,
     _SALARY_RAISES_UNIQUE_CONSTRAINT,
-    _deduction_schema,
-    _deduction_update_schema,
+    _line_schema,
+    _line_update_schema,
     _raise_schema,
     _raise_update_schema,
     _regenerate_salary_transactions,
-    _respond_after_deduction_change,
+    _respond_after_line_change,
     _respond_after_raise_change,
 )
 
@@ -330,42 +334,60 @@ def update_raise(raise_id):
     return _respond_after_raise_change(profile)
 
 
-# ── Deductions ─────────────────────────────────────────────────────
+# ── Payroll lines (deductions and earnings) ────────────────────────
 
 
 
 
-def _settle_deduction_cadence(
+def _settle_line_cadence(
     data: dict[str, Any], ctx: BalanceContext, *, stored: RecurrenceRule | None,
 ) -> None:
-    """Write into the payload what the deduction form does not collect about its rule.
+    """Write into the payload what the line form leaves to the app about its rule.
 
-    The deduction form authors a cadence through the shared recurrence
-    controls (plan step salary:R15-c, ruling **R-SAL31**) and NOTHING else
-    about the rule -- so before the recurrence seam reads the payload the way
-    it reads a template form's, the two facts a payroll line's rule derives
-    are written in, exactly as ``_loan_destination.settle_first_occurrence``
-    writes a loan payment's derived start into a transfer form's payload:
+    The line form authors a cadence through the shared recurrence controls
+    (plan step salary:R15-c, ruling **R-SAL31**) and, since plan step
+    salary:R18-c (ruling **R-SAL38** (2), amending R-SAL30 and R-SAL31), a
+    SPAN: a "Starts on" that may be left blank and an optional closing bound.
+    Before the recurrence seam reads the payload the way it reads a template
+    form's, the two facts a payroll line's rule derives are written in,
+    exactly as ``_loan_destination.settle_first_occurrence`` writes a loan
+    payment's derived start into a transfer form's payload:
 
-    * ``starts_on`` -- the STORED unit's zero at the owner's opening payday
-      (rulings **R-SAL30**, **R-SAL36**;
-      :func:`~app.services.deduction_cadence.first_occurrence`, which reads
+    * a BLANK ``starts_on`` -- the STORED unit's zero at the owner's opening
+      payday (rulings **R-SAL30**, **R-SAL36**;
+      :func:`~app.services.payroll_line_cadence.first_occurrence`, which reads
       the unit the door canonicalises to, so "every 12 months" and the
-      ``YEAR`` its edit form reads back derive one day), so the seam's own
-      start handling applies unchanged: a create authors it, an update
-      re-points the rule onto it (PRESENT replaces), and a rule's first
-      occurrence is always the derived one -- the same one, on every
-      re-save of the same cadence.
-    * the every-paycheck spelling -- ``every 1 paycheck, no ceiling`` -- is
-      rewritten as NO cadence (ruling **R-SAL29**;
-      :func:`~app.services.deduction_cadence.is_every_paycheck`), which the
+      ``YEAR`` its edit form reads back derive one day).  A STATED start is
+      the user's and passes through untouched, so the seam's own start
+      handling applies unchanged: a create authors it, an update re-points
+      the rule onto it (PRESENT replaces), and a cleared box on an edit is
+      back to the default.
+    * the every-paycheck spelling -- ``every 1 paycheck, no ceiling``, with
+      NO SPAN -- is rewritten as NO cadence (ruling **R-SAL29**;
+      :func:`~app.services.payroll_line_cadence.is_every_paycheck`), which the
       seam reads as *author nothing* on a create and *delete the rule this
-      line had* on an update.  The ceiling is read the way the seam's update
-      door reads it: a PRESENT key (an enabled control, possibly cleared) is
-      what the form said, an ABSENT one (a control the form disabled, or a
-      crafted POST) leaves the STORED ceiling standing -- so a 24 line
-      re-saved with the key missing is still the 24 shape and not silently
-      an every-paycheck line.
+      line had* on an update.  A span is ANY stated start, or a closing bound
+      other than *never*: an every-paycheck line that begins or ends
+      mid-employment IS a rule, and keeps one.  A stated start is a span
+      even when it names the opening payday, and an adversarial review of
+      this leaf is why: below a STATED ``history_opens_on`` the engine
+      replays backdated paydays for a capped line's year-to-date and the FICA
+      cumulative, and there a line with NO rule answers *taken* while a rule
+      from the opening answers *not taken* (the rule's walk runs forward from
+      its start) -- so two spellings a first draft called equivalent price
+      differently, and a typed date must not pick the side silently.  What
+      *every paycheck* means below the opening is the developer's question,
+      not this door's.  The ceiling and the bound are read the way the seam's
+      update door reads them: a PRESENT key (an enabled control, possibly
+      cleared) is what the form said, an ABSENT one (a control the form
+      disabled, or a crafted POST) leaves the STORED value standing -- so a
+      24 line re-saved with the key missing is still the 24 shape, and a
+      bounded line re-saved with the bound's keys missing keeps its stop
+      rather than losing its rule.
+    * a derived start carries NO nominal day: the derived zero -- a payday,
+      the 1st, January 1st -- never clamps, and a nominal day posted beside a
+      blank start (a crafted POST; the script disables the control) would
+      otherwise reach the spec as a pair it refuses as a broken invariant.
 
     A submission that names no cadence is left alone: ``None`` is the form's
     "Does not repeat", and an ABSENT unit is a form that said nothing about
@@ -391,18 +413,40 @@ def _settle_deduction_cadence(
         if RECURRENCE_MAX_PER_MONTH_KEY in data
         else (stored.max_per_month if stored is not None else None)
     )
-    if deduction_cadence.is_every_paycheck(unit, data["interval_n"], ceiling):
+    bound = (
+        data[RECURRENCE_END_BOUND_KEY]
+        if RECURRENCE_END_BOUND_KEY in data
+        else (
+            end_bound_from_columns(stored.end_date, stored.max_occurrences)
+            if stored is not None else None
+        )
+    )
+    stated_start = data.get(RECURRENCE_STARTS_ON_KEY)
+    spans = stated_start is not None or (
+        bound is not None and not isinstance(bound, NeverEnds)
+    )
+    if (
+        not spans
+        and payroll_line_cadence.is_every_paycheck(unit, data["interval_n"], ceiling)
+    ):
         data["recurrence_unit"] = None
         return
-    data[RECURRENCE_STARTS_ON_KEY] = deduction_cadence.first_occurrence(
-        unit, data["interval_n"], ctx.calendar(),
-    )
+    if stated_start is None:
+        data[RECURRENCE_STARTS_ON_KEY] = payroll_line_cadence.first_occurrence(
+            unit, data["interval_n"], ctx.calendar(),
+        )
+        data[RECURRENCE_NOMINAL_DAY_KEY] = None
 
 
-@salary_bp.route("/salary/<int:profile_id>/deductions", methods=["POST"])
+@salary_bp.route("/salary/<int:profile_id>/lines", methods=["POST"])
 @require_owner
-def add_deduction(profile_id):
-    """Add a deduction to a salary profile.
+def add_line(profile_id):
+    """Add a payroll line -- a deduction or an earning -- to a salary profile.
+
+    ``add_deduction`` on ``/salary/<id>/deductions`` until plan step
+    salary:R18-b (ruling **R-SAL38**): the one door authors a line of any of
+    the four kinds, and the schema refuses the one field that differs by
+    side (a target account on an earning).
 
     **The line's cadence is a recurrence rule authored onto it** (plan step
     salary:R15-c, rulings **R-SAL31**, **R-SAL35**): the payload is loaded
@@ -410,7 +454,7 @@ def add_deduction(profile_id):
     (:func:`~app.routes._form_errors.load_form_or_redirect`, so a refused
     cadence is heard in its own words rather than as the generic prompt),
     the derived facts are settled into it
-    (:func:`_settle_deduction_cadence`), the create preamble every recurrence
+    (:func:`_settle_line_cadence`), the create preamble every recurrence
     form runs reads the spec out
     (:func:`~app.routes._recurrence_form_helpers.recurrence_spec_for_create`),
     and the rule is written onto the flushed line through the write door
@@ -423,7 +467,7 @@ def add_deduction(profile_id):
         abort(404)
 
     payload = load_form_or_redirect(
-        _deduction_schema, _edit_page(profile_id),
+        _line_schema, _edit_page(profile_id),
     )
     if isinstance(payload, Response):
         return payload
@@ -440,7 +484,7 @@ def add_deduction(profile_id):
     # derived from and authored against.  Regeneration afterwards builds its
     # own, as a writer must.
     ctx = BalanceContext.build(current_user.id)
-    _settle_deduction_cadence(data, ctx, stored=None)
+    _settle_line_cadence(data, ctx, stored=None)
     spec = recurrence_spec_for_create(
         data,
         user_id=current_user.id,
@@ -455,7 +499,7 @@ def add_deduction(profile_id):
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     # Through the RELATIONSHIP, not the FK column (plan step salary:R15-c):
-    # the regeneration below prices ``profile.deductions``, and a line added
+    # the regeneration below prices ``profile.lines``, and a line added
     # by id joins that collection only if nothing has loaded it yet in this
     # session, while a line added through the relationship joins it either
     # way.  The write door's owner check reads ``deduction.user_id`` through
@@ -463,7 +507,7 @@ def add_deduction(profile_id):
     # this leaf's regeneration test, which prices the paycheck BEFORE the
     # add in the session the request shares: by id, the regeneration
     # re-stated the net WITHOUT the line.
-    deduction = PaycheckDeduction(salary_profile=profile, **data)
+    deduction = PaycheckLine(salary_profile=profile, **data)
     db.session.add(deduction)
 
     # Capture the requester id on the clean session up front; the failure
@@ -477,13 +521,22 @@ def add_deduction(profile_id):
         # name-collision ``IntegrityError`` below surfaces from, as it was
         # when the regeneration's own flush was the first.
         db.session.flush()
-        if spec is not None:
-            author_rule(spec, ctx.calendar(), deduction)
+        # Through the create helper every template form uses, for its ONE
+        # refusal (plan step salary:R18-c): a stated stop before the first
+        # occurrence the rule would actually have -- an end date under a
+        # blank start's derived opening, or under the payday a stated start
+        # normalises onto -- is the write door's EmptyAuthoredWindowError,
+        # worded in the schema's sentence and rolled back, not a 500.
+        authored = author_recurrence_for_create(
+            spec, deduction, redirect=_edit_page(profile_id), calendar=ctx.calendar(),
+        )
+        if isinstance(authored, Response):
+            return authored
         _regenerate_salary_transactions(profile)
         db.session.commit()
     except IntegrityError as exc:
         # Duplicate-deduction double-submit (F-052 / C-23): the
-        # composite unique ``uq_paycheck_deductions_profile_name``
+        # composite unique ``uq_paycheck_lines_profile_name``
         # rejects the second INSERT when the user clicks Save
         # twice in a row, the browser retries on a flaky network,
         # or a deactivated deduction with the same name still
@@ -492,27 +545,27 @@ def add_deduction(profile_id):
         # the deduction they intended to create regardless of
         # which request reached the database first.
         db.session.rollback()
-        if not is_unique_violation(exc, _PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT):
+        if not is_unique_violation(exc, _PAYCHECK_LINES_UNIQUE_CONSTRAINT):
             logger.exception(
-                "user_id=%d failed to add deduction to profile %d "
+                "user_id=%d failed to add payroll line to profile %d "
                 "(unexpected IntegrityError)",
                 user_id, profile_id,
             )
-            flash("Failed to add deduction. Please try again.", "danger")
+            flash("Failed to add payroll line. Please try again.", "danger")
             return redirect(url_for("salary.edit_profile", profile_id=profile_id))
         attempted_name = data.get("name", "")
         logger.info(
-            "Duplicate paycheck deduction prevented on profile %d "
+            "Duplicate payroll line prevented on profile %d "
             "(name=%r, idempotent success)",
             profile_id, attempted_name,
         )
         flash(
-            f"A deduction named '{attempted_name}' already exists "
+            f"A payroll line named '{attempted_name}' already exists "
             f"on this profile.  Edit or reactivate it instead of "
             f"creating a duplicate.",
             "info",
         )
-        return _respond_after_deduction_change(profile)
+        return _respond_after_line_change(profile)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): the IntegrityError branch
         # above covers unique-constraint and other constraint
@@ -522,22 +575,22 @@ def add_deduction(profile_id):
         # to the 500 handler.
         return handle_db_error(DbErrorContext(
             logger=logger,
-            log_message="user_id=%d failed to add deduction to profile %d",
+            log_message="user_id=%d failed to add payroll line to profile %d",
             log_args=(user_id, profile_id),
-            flash_message="Failed to add deduction. Please try again.",
+            flash_message="Failed to add payroll line. Please try again.",
             redirect=_edit_page(profile_id),
         ))
 
-    logger.info("user_id=%d added deduction to profile %d", current_user.id, profile_id)
-    flash(f"Deduction '{deduction.name}' added.", "success")
+    logger.info("user_id=%d added payroll line to profile %d", current_user.id, profile_id)
+    flash(f"Payroll line '{deduction.name}' added.", "success")
 
-    return _respond_after_deduction_change(profile)
+    return _respond_after_line_change(profile)
 
 
-@salary_bp.route("/salary/deductions/<int:ded_id>/delete", methods=["POST"])
+@salary_bp.route("/salary/lines/<int:line_id>/delete", methods=["POST"])
 @require_owner
-def delete_deduction(ded_id):
-    """Remove a deduction from a salary profile.
+def delete_line(line_id):
+    """Remove a payroll line from a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the DELETE statement is
     version-pinned by SQLAlchemy; a concurrent edit raises
@@ -545,7 +598,7 @@ def delete_deduction(ded_id):
     canonical :func:`regenerate_commit_or_report` guard.
     """
     deduction = get_owned_via_parent(
-        PaycheckDeduction, ded_id, "salary_profile",
+        PaycheckLine, line_id, "salary_profile",
     )
     if deduction is None:
         abort(404)
@@ -561,19 +614,19 @@ def delete_deduction(ded_id):
         lambda: _regenerate_salary_transactions(profile),
         stale_ctx=StaleConflictContext(
             logger=logger,
-            log_label="delete_deduction",
-            log_id=ded_id,
+            log_label="delete_line",
+            log_id=line_id,
             flash_message=(
-                "This deduction was changed by another action.  "
+                "This payroll line was changed by another action.  "
                 "Please reload and try again."
             ),
             redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
-            log_message="user_id=%d failed to delete deduction %d from profile %d",
-            log_args=(current_user.id, ded_id, profile.id),
-            flash_message="Failed to remove deduction. Please try again.",
+            log_message="user_id=%d failed to delete payroll line %d from profile %d",
+            log_args=(current_user.id, line_id, profile.id),
+            flash_message="Failed to remove payroll line. Please try again.",
             redirect=_edit_page(profile.id),
         ),
     )
@@ -581,18 +634,18 @@ def delete_deduction(ded_id):
         return response
 
     logger.info(
-        "user_id=%d deleted deduction %d from profile %d",
-        current_user.id, ded_id, profile.id,
+        "user_id=%d deleted payroll line %d from profile %d",
+        current_user.id, line_id, profile.id,
     )
-    flash("Deduction removed.", "info")
+    flash("Payroll line removed.", "info")
 
-    return _respond_after_deduction_change(profile)
+    return _respond_after_line_change(profile)
 
 
-@salary_bp.route("/salary/deductions/<int:ded_id>/edit", methods=["POST"])
+@salary_bp.route("/salary/lines/<int:line_id>/edit", methods=["POST"])
 @require_owner
-def update_deduction(ded_id):
-    """Update an existing deduction on a salary profile.
+def update_line(line_id):
+    """Update an existing payroll line on a salary profile.
 
     Optimistic locking (commit C-18 / F-010): the edit form ships
     ``version_id`` as a hidden input populated by app.js.  A stale
@@ -610,10 +663,10 @@ def update_deduction(ded_id):
     clauses -- and, since plan step salary:R15-c, the cadence dispatch: the
     line's rule is re-pointed, authored or cleared from the shared recurrence
     controls before the field loop, the way every recurrence form's update
-    does it (see :func:`add_deduction` for the create half).
+    does it (see :func:`add_line` for the create half).
     """
     deduction = get_owned_via_parent(
-        PaycheckDeduction, ded_id, "salary_profile",
+        PaycheckLine, line_id, "salary_profile",
     )
     if deduction is None:
         abort(404)
@@ -621,7 +674,7 @@ def update_deduction(ded_id):
     profile = deduction.salary_profile
 
     payload = load_form_or_redirect(
-        _deduction_update_schema, _edit_page(profile.id),
+        _line_update_schema, _edit_page(profile.id),
     )
     if isinstance(payload, Response):
         return payload
@@ -633,6 +686,22 @@ def update_deduction(ded_id):
     # here, or one owner points a payroll deduction at another owner's account.
     require_owned_fk(Account, data, "target_account_id")
     data["inflation_enabled"] = request.form.get("inflation_enabled") == "on"
+
+    # The earning-kind target rule over the EFFECTIVE pair (plan step
+    # salary:R18-b, an adversarial review of it).  The schema refuses a
+    # POSTED target beside an earning kind; this door writes only the keys
+    # the payload carries (an absent key leaves the stored value alone, the
+    # cadence keys' contract), so a payload that flips a stored deduction's
+    # kind to an earning and omits the target would have left the stored
+    # target standing on an earning -- which the contribution feed reads as a
+    # payroll contribution nobody makes.  The target the row WILL carry is
+    # the posted one when the key is present, else the stored one.
+    effective_target = data.get("target_account_id", deduction.target_account_id)
+    if effective_target is not None and not paycheck_line_kinds.is_deduction(
+        data["paycheck_line_kind_id"],
+    ):
+        flash(paycheck_line_kinds.EARNING_TARGET_REFUSAL, "danger")
+        return _edit_page(profile.id).to_response()
 
     # Stale-form check (commit C-18 / F-010).
     #
@@ -648,12 +717,12 @@ def update_deduction(ded_id):
     submitted_version = data.pop("version_id", None)
     if submitted_version is not None and submitted_version != deduction.version_id:
         logger.info(
-            "Stale-form conflict on update_deduction id=%d "
+            "Stale-form conflict on update_line id=%d "
             "(submitted=%d, current=%d)",
-            ded_id, submitted_version, deduction.version_id,
+            line_id, submitted_version, deduction.version_id,
         )
         flash(
-            "This deduction was changed by another action while you "
+            "This payroll line was changed by another action while you "
             "were editing.  Please reload and try again.",
             "warning",
         )
@@ -663,18 +732,21 @@ def update_deduction(ded_id):
     # (plan step salary:R15-c), through the dispatcher every recurrence
     # form's update runs
     # (:func:`~app.routes._recurrence_form_helpers.resolve_recurrence_rule_for_update`)
-    # once the derived facts are settled in (:func:`_settle_deduction_cadence`).
+    # once the derived facts are settled in (:func:`_settle_line_cadence`).
     # The pass is the PRE-WRITE one its refusals read (plan step R7d-f) and
     # the calendar the re-author resolves against; regeneration below builds
     # its own after the write.  The dispatcher pops every recurrence key, so
     # the field loop below sees none.
     ctx = BalanceContext.build(current_user.id)
-    _settle_deduction_cadence(data, ctx, stored=deduction.recurrence_rule)
+    _settle_line_cadence(data, ctx, stored=deduction.recurrence_rule)
     refusal = resolve_recurrence_rule_for_update(
         deduction,
         data,
         ctx=RecurrenceFormContext(
-            end_bound=None,
+            # The closing bound the form stated, composed by the schema
+            # (plan step salary:R18-c); ``None`` when it stated nothing,
+            # which leaves the stored bound alone.
+            end_bound=data.pop(RECURRENCE_END_BOUND_KEY, None),
             redirect=_edit_page(profile.id),
             include_due_day_of_month=False,
         ),
@@ -690,26 +762,26 @@ def update_deduction(ded_id):
         data["inflation_rate"] = Decimal(str(data["inflation_rate"])) / Decimal("100")
 
     for field_name, value in data.items():
-        if field_name in _DEDUCTION_UPDATE_FIELDS:
+        if field_name in _LINE_UPDATE_FIELDS:
             setattr(deduction, field_name, value)
 
     response = regenerate_commit_or_report(
         lambda: _regenerate_salary_transactions(profile),
         stale_ctx=StaleConflictContext(
             logger=logger,
-            log_label="update_deduction",
-            log_id=ded_id,
+            log_label="update_line",
+            log_id=line_id,
             flash_message=(
-                "This deduction was changed by another action while you "
+                "This payroll line was changed by another action while you "
                 "were editing.  Please reload and try again."
             ),
             redirect=_edit_page(profile.id),
         ),
         error_ctx=DbErrorContext(
             logger=logger,
-            log_message="user_id=%d failed to update deduction %d on profile %d",
-            log_args=(current_user.id, ded_id, profile.id),
-            flash_message="Failed to update deduction. Please try again.",
+            log_message="user_id=%d failed to update payroll line %d on profile %d",
+            log_args=(current_user.id, line_id, profile.id),
+            flash_message="Failed to update payroll line. Please try again.",
             redirect=_edit_page(profile.id),
         ),
         # Name-collision rename (F-052 / C-23): the user renamed this
@@ -718,16 +790,16 @@ def update_deduction(ded_id):
         # Any other IntegrityError falls through to error_ctx.
         on_integrity=UniqueViolationContext(
             logger=logger,
-            constraint=_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT,
+            constraint=_PAYCHECK_LINES_UNIQUE_CONSTRAINT,
             log_message=(
-                "Duplicate-name conflict on update_deduction id=%d "
-                "(another deduction with this name exists on the profile)"
+                "Duplicate-name conflict on update_line id=%d "
+                "(another payroll line with this name exists on the profile)"
             ),
-            log_args=(ded_id,),
+            log_args=(line_id,),
             flash_message=(
-                "Another deduction on this profile already uses that "
+                "Another payroll line on this profile already uses that "
                 "name.  Choose a different name or remove the existing "
-                "deduction first."
+                "line first."
             ),
             redirect=_edit_page(profile.id),
         ),
@@ -736,9 +808,9 @@ def update_deduction(ded_id):
         return response
 
     logger.info(
-        "user_id=%d updated deduction %d on profile %d",
-        current_user.id, ded_id, profile.id,
+        "user_id=%d updated payroll line %d on profile %d",
+        current_user.id, line_id, profile.id,
     )
-    flash(f"Deduction '{deduction.name}' updated.", "success")
+    flash(f"Payroll line '{deduction.name}' updated.", "success")
 
-    return _respond_after_deduction_change(profile)
+    return _respond_after_line_change(profile)

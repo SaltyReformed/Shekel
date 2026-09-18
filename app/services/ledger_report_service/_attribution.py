@@ -23,6 +23,16 @@ from its pay period, which is what the derivation this replaced did:
   shadow's ``settled_on`` (Transfer Invariant 3 mirrors the day onto both
   shadows, and ``posting_service._entry_date`` dates the entry off exactly this
   shadow), so a transfer's two legs land on one date;
+* purchase-linked entries (``transaction_entry_id`` set, both other FKs NULL):
+  by the PURCHASE's own ``transaction_entries.settled_on`` -- the fourth source
+  the write-side walk has partitioned since plan step X-f3b (ruling **R-FM**:
+  a purchase whose bank posting day is recorded is a cash movement of its own,
+  posted at its own day).  **This reader had no bucket for it until plan step
+  X-bi-3a**, so every posted purchase's legs were dropped from both statements
+  -- measured on the developer's 2026-09-06 snapshot at 148 journal entries and
+  `$6,224.21` of Expense-class net, a third of the recorded spending -- and the
+  covering movements X-bi-3a writes for every settled bill would have taken the
+  rest with them (finding **BAL-502**);
 * sourceless corrections (``loan_opening`` / ``loan_trueup`` / ``account_opening``
   / ``account_trueup``, both concrete FKs NULL): by the stored ``entry_date`` (a
   correction is an anchor fact dated by the anchor's observed civil day, and
@@ -72,6 +82,7 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services.posting_reads import PostingError
 from app.utils.balance_predicates import settled_day
@@ -310,13 +321,14 @@ def dated_account_nets(
 ) -> dict[tuple[int, date], Decimal]:
     """Return every posting's net keyed by (ledger account, attribution date).
 
-    The shared attribution core: the union of the three source buckets
-    (transaction-linked, transfer-linked, sourceless corrections; residue
-    dropped), each posting's net placed on its source's attribution date per the
-    module docstring's C-3 rule.  Sources landing on the same (ledger account,
-    date) are summed, so a caller folds the map by a date bound (as-of for the
-    balance sheet, a calendar window for the income statement) with no
-    per-account query.  Every entry's legs share one attribution date (all of a
+    The shared attribution core: the union of the four source buckets
+    (transaction-linked, transfer-linked, purchase-linked, sourceless
+    corrections; residue dropped), each posting's net placed on its source's
+    attribution date per the module docstring's C-3 rule.  Sources landing on
+    the same (ledger account, date) are summed, so a caller folds the map by a
+    date bound (as-of for the balance sheet, a calendar window for the income
+    statement) with no per-account query.  Every entry's legs share one
+    attribution date (all of a
     source's legs attribute together), so folding by date always includes whole
     entries -- the reader-contract C-1 guarantee that keeps the trial balance
     closed over any window.
@@ -339,6 +351,7 @@ def dated_account_nets(
     contributions = (
         _transaction_dated_nets(user_id, scenario_id)
         + _transfer_dated_nets(user_id, scenario_id)
+        + _purchase_dated_nets(user_id, scenario_id)
         + _correction_dated_nets(user_id, scenario_id)
     )
     nets: dict[tuple[int, date], Decimal] = defaultdict(lambda: _ZERO_MONEY)
@@ -473,6 +486,94 @@ def _transaction_attribution_dates(
             f"Ledger holds a nonzero net for transaction ids {sorted(missing)} "
             f"but no such transaction rows exist; the SET NULL linkage "
             f"invariant is broken."
+        )
+    return dates
+
+
+def _purchase_dated_nets(
+    user_id: int, scenario_id: int,
+) -> list[tuple[int, date, Decimal]]:
+    """Return purchase-linked nets, each dated by the purchase's own posting day.
+
+    The purchase-linked bucket (module docstring; the reader's twin of the
+    walk's ``_purchase_source_days``): entries carrying
+    ``transaction_entry_id`` with both other FKs NULL, grouped by (ledger
+    account, purchase) and attributed to the purchase's stored ``settled_on``.
+    A purchase's legs are NOT grouped under its parent's ``transaction_id``,
+    for the reason the walk states: that would date them at the parent's
+    settle day, which a still-projected envelope does not have, and the day
+    a purchase left the bank is its own fact.
+
+    Args:
+        user_id: The owner whose ledger to read.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        ``[(ledger_account_id, attribution_date, net), ...]``; empty when no
+        purchase-linked source is posted.
+
+    Raises:
+        PostingError: If a nonzero net's ``transaction_entry_id`` resolves no
+            purchase, or one carrying no ``settled_on`` (a leg posted for a
+            purchase never seen to move) -- either must fail loudly rather
+            than mis-attribute money.
+    """
+    nets = _grouped_source_nets(
+        user_id, scenario_id, JournalEntry.transaction_entry_id,
+        [
+            JournalEntry.transaction_entry_id.isnot(None),
+            JournalEntry.transaction_id.is_(None),
+            JournalEntry.transfer_id.is_(None),
+        ],
+    )
+    if not nets:
+        return []
+    dates = _purchase_attribution_dates({entry_id for _, entry_id, _ in nets})
+    return [
+        (ledger_account_id, dates[entry_id], net)
+        for ledger_account_id, entry_id, net in nets
+    ]
+
+
+def _purchase_attribution_dates(entry_ids: set[int]) -> dict[int, date]:
+    """Return each purchase's stored posting day, keyed by id.
+
+    One batched load of ``(id, settled_on)``.  No shared ``settled_day``
+    accessor here, for the reason the walk gives: that one refuses a settled
+    TRANSACTION with no day, while a purchase with no day is an ordinary
+    outstanding purchase that simply posts nothing -- so a nonzero net against
+    a dayless purchase is the broken state, refused below with the missing-
+    linkage case.
+
+    Args:
+        entry_ids: The purchase ids whose posting days to resolve.
+
+    Returns:
+        ``{transaction_entry_id: attribution_date}`` over every id.
+
+    Raises:
+        PostingError: If any id resolves no purchase row, or one with no
+            ``settled_on``.
+    """
+    rows = (
+        db.session.query(TransactionEntry.id, TransactionEntry.settled_on)
+        .filter(TransactionEntry.id.in_(entry_ids))
+        .all()
+    )
+    dates = dict(rows)
+    missing = entry_ids - set(dates)
+    if missing:
+        raise PostingError(
+            f"Ledger holds a nonzero net for purchase ids {sorted(missing)} "
+            f"but no such purchase rows exist; the reverse-before-delete "
+            f"discipline was violated."
+        )
+    dayless = sorted(entry_id for entry_id, day in dates.items() if day is None)
+    if dayless:
+        raise PostingError(
+            f"Ledger holds a nonzero net for purchase ids {dayless} that "
+            f"carry no settled_on; a leg was posted for a purchase never seen "
+            f"to move."
         )
     return dates
 

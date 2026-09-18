@@ -8,7 +8,7 @@ remediation plan:
   - F-011: ``RaiseCreateSchema.percentage`` and ``flat_amount`` are
     bounded to a positive, column-fitting range that rejects pay-cut
     values and absurd typos.
-  - F-012: ``DeductionCreateSchema.amount`` carries a wide
+  - F-012: ``PaycheckLineCreateSchema.amount`` carries a wide
     field-level Range plus the
     ``validate_amount_against_calc_method`` cross-field rule that
     caps percent-method deductions at 100%.
@@ -50,16 +50,16 @@ from app.models.account import Account
 from app.models.calibration_override import CalibrationOverride
 from app.models.interest_params import InterestParams
 from app.models.loan_features import RateHistory
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming,
+    AccountType, CalcMethod, PaycheckLineKind,
     FilingStatus, RaiseType, TaxType,
 )
 from app.models.salary_profile import SalaryProfile
 from app.models.user import UserSettings
 from app.services import account_service
 from app.schemas.validation import (
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     FicaConfigSchema,
     InvestmentParamsCreateSchema,
     InvestmentParamsUpdateSchema,
@@ -88,8 +88,8 @@ CK_INVEST_CAP = "ck_investment_params_valid_employer_match_cap"
 CK_RATE_HISTORY = "ck_rate_history_valid_interest_rate"
 CK_USER_SWR = "ck_user_settings_valid_safe_withdrawal"
 CK_USER_TAX_RATE = "ck_user_settings_valid_estimated_tax_rate"
-CK_DEDUCTION_INFL_RATE = "ck_paycheck_deductions_valid_inflation_rate"
-CK_DEDUCTION_INFL_MONTH = "ck_paycheck_deductions_valid_inflation_month"
+CK_DEDUCTION_INFL_RATE = "ck_paycheck_lines_valid_inflation_rate"
+CK_DEDUCTION_INFL_MONTH = "ck_paycheck_lines_valid_inflation_month"
 CK_RAISE_YEAR = "ck_salary_raises_valid_effective_year"
 CK_STATE_TAX_DEDUCTION = "ck_state_tax_configs_nonneg_standard_deduction"
 CK_STATE_TAX_YEAR = "ck_state_tax_configs_valid_tax_year"
@@ -194,18 +194,18 @@ class TestRaiseSchemaBounds:
         assert "flat_amount" in info.value.messages
 
 
-# ── F-012: DeductionCreateSchema bounds + cross-field ─────────────
+# ── F-012: PaycheckLineCreateSchema bounds + cross-field ─────────────
 
 
 class TestDeductionSchemaBounds:
-    """Schema-layer bound checks on ``DeductionCreateSchema`` (F-012 / C-24)."""
+    """Schema-layer bound checks on ``PaycheckLineCreateSchema`` (F-012 / C-24)."""
 
     def _payload(self, app, **overrides):
         """Build a baseline deduction payload with valid FK ids."""
         with app.app_context():
             timing_id = (
-                db.session.query(DeductionTiming)
-                .filter_by(name="pre_tax").one().id
+                db.session.query(PaycheckLineKind)
+                .filter_by(name="pre_tax_deduction").one().id
             )
             flat_id = (
                 db.session.query(CalcMethod)
@@ -213,7 +213,7 @@ class TestDeductionSchemaBounds:
             )
         base = {
             "name": "401k",
-            "deduction_timing_id": str(timing_id),
+            "paycheck_line_kind_id": str(timing_id),
             "calc_method_id": str(flat_id),
             "amount": "500.00",
         }
@@ -222,26 +222,26 @@ class TestDeductionSchemaBounds:
 
     def test_minimum_amount_accepted(self, app):
         """4-decimal precision min (0.0001) is accepted."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(app, amount="0.0001"))
         assert data["amount"] == Decimal("0.0001")
 
     def test_zero_amount_rejected(self, app):
         """A zero deduction has no effect; rejected at the schema."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, amount="0"))
         assert "amount" in info.value.messages
 
     def test_dollar_amount_at_upper_accepted(self, app):
         """$1M is the wide ceiling for the flat-dollar form."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(app, amount="1000000"))
         assert data["amount"] == Decimal("1000000")
 
     def test_dollar_amount_above_upper_rejected(self, app):
         """An obvious extra-digit typo on a flat deduction is rejected."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, amount="1000001"))
         assert "amount" in info.value.messages
@@ -253,7 +253,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         payload = self._payload(
             app, calc_method_id=str(pct_id), amount="150",
         )
@@ -268,7 +268,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         payload = self._payload(
             app, calc_method_id=str(pct_id), amount="100",
         )
@@ -282,7 +282,7 @@ class TestDeductionSchemaBounds:
                 db.session.query(CalcMethod)
                 .filter_by(name="percentage").one().id
             )
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(
             app, calc_method_id=str(pct_id), amount="6",
         ))
@@ -290,7 +290,7 @@ class TestDeductionSchemaBounds:
 
     def test_inflation_rate_percent_input_accepted(self, app):
         """3% inflation input passes; the route divides by 100 later."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         data = schema.load(self._payload(
             app, inflation_enabled="true", inflation_rate="3",
         ))
@@ -298,7 +298,7 @@ class TestDeductionSchemaBounds:
 
     def test_inflation_rate_above_100_rejected(self, app):
         """A 150% per-year escalation is a typo, not a rate."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(
                 app, inflation_enabled="true", inflation_rate="150",
@@ -307,7 +307,7 @@ class TestDeductionSchemaBounds:
 
     def test_annual_cap_zero_rejected(self, app):
         """``annual_cap`` must be positive when present (DB CHECK > 0)."""
-        schema = DeductionCreateSchema()
+        schema = PaycheckLineCreateSchema()
         with pytest.raises(ValidationError) as info:
             schema.load(self._payload(app, annual_cap="0"))
         assert "annual_cap" in info.value.messages
@@ -876,8 +876,8 @@ class TestUserSettingsCheck:
             assert _constraint_name_from(info.value) == CK_USER_TAX_RATE
 
 
-class TestPaycheckDeductionCheck:
-    """``salary.paycheck_deductions`` CHECK constraints (F-077)."""
+class TestPaycheckLineCheck:
+    """``salary.paycheck_lines`` CHECK constraints (F-077)."""
 
     def _make_profile(self, seed_user):
         single_id = (
@@ -897,15 +897,15 @@ class TestPaycheckDeductionCheck:
 
     def _make_deduction_kwargs(self):
         timing_id = (
-            db.session.query(DeductionTiming)
-            .filter_by(name="pre_tax").one().id
+            db.session.query(PaycheckLineKind)
+            .filter_by(name="pre_tax_deduction").one().id
         )
         flat_id = (
             db.session.query(CalcMethod)
             .filter_by(name="flat").one().id
         )
         return {
-            "deduction_timing_id": timing_id,
+            "paycheck_line_kind_id": timing_id,
             "calc_method_id": flat_id,
         }
 
@@ -913,7 +913,7 @@ class TestPaycheckDeductionCheck:
         with app.app_context():
             profile = self._make_profile(seed_user)
             kwargs = self._make_deduction_kwargs()
-            ded = PaycheckDeduction(
+            ded = PaycheckLine(
                 salary_profile_id=profile.id,
                 name="401k",
                 amount=Decimal("500.00"),
@@ -924,7 +924,7 @@ class TestPaycheckDeductionCheck:
             with pytest.raises(IntegrityError) as info:
                 db.session.execute(
                     text(
-                        "UPDATE salary.paycheck_deductions "
+                        "UPDATE salary.paycheck_lines "
                         "SET inflation_rate = 1.5 WHERE id = :did"
                     ),
                     {"did": ded.id},
@@ -937,7 +937,7 @@ class TestPaycheckDeductionCheck:
         with app.app_context():
             profile = self._make_profile(seed_user)
             kwargs = self._make_deduction_kwargs()
-            ded = PaycheckDeduction(
+            ded = PaycheckLine(
                 salary_profile_id=profile.id,
                 name="HSA",
                 amount=Decimal("100.00"),
@@ -948,7 +948,7 @@ class TestPaycheckDeductionCheck:
             with pytest.raises(IntegrityError) as info:
                 db.session.execute(
                     text(
-                        "UPDATE salary.paycheck_deductions "
+                        "UPDATE salary.paycheck_lines "
                         "SET inflation_effective_month = 13 "
                         "WHERE id = :did"
                     ),

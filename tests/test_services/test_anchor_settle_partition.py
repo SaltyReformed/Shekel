@@ -40,6 +40,7 @@ from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    family_journal_filter,
     add_entry,
     add_txn,
     create_account_of_type,
@@ -640,7 +641,7 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
 
             posted_day = (
                 _db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn.id)
+                .filter(family_journal_filter(txn))
                 .one()
             ).entry_date
             # Move the SOURCE's settle instant behind the ledger's back, so the
@@ -649,10 +650,22 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
             # when the derivation moved zones.  Raw UPDATE because routing it
             # through the service would re-post it, which is the thing under
             # test.  The journal entry itself is append-only and is not touched.
+            # The row AND its covering movement (plan step X-bi-3a): the
+            # settle mirrored the day onto the movement that now carries the
+            # money, so the stale state under test is the family's, moved
+            # together as the seam would have moved it.
             _db.session.execute(
                 _db.text(
                     "UPDATE budget.transactions SET settled_on = :day "
                     "WHERE id = :id"
+                ),
+                {"day": posted_day - timedelta(days=1), "id": txn.id},
+            )
+            _db.session.execute(
+                _db.text(
+                    "UPDATE budget.transaction_entries "
+                    "SET settled_on = :day, purchased_on = :day "
+                    "WHERE transaction_id = :id"
                 ),
                 {"day": posted_day - timedelta(days=1), "id": txn.id},
             )

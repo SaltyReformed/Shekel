@@ -184,8 +184,12 @@ def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
     was a paragraph naming seven relationships that every routed loader had to
     remember; plan step X-au-g-2c-2 made it a function, because
     that step is what made the ``Transaction.transfer`` chain load-bearing --
-    a transfer shadow is DERIVED now, so the grid, the cash fold and the loan
-    payment feed each walk to a parent per row without it.  It lives one tier
+    a transfer shadow is DERIVED now, so a surface that loads projected shadows
+    walks to a parent per row without it (the grid, since plan step X-bi-6a;
+    the cash fold and the loan payment feed read projected transfers as legs of
+    the PARENT and take
+    :func:`~app.utils.amount_relationships.transfer_pricing_load_options`
+    instead).  It lives one tier
     DOWN because ``loan_loaders`` needs it and this package imports
     ``loan_loaders``; that module states the argument.
 

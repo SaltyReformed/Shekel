@@ -10,7 +10,7 @@ later (:func:`_is_third_paycheck`), and the
 gross this owner has already been paid this calendar year
 (:func:`_get_cumulative_wages`, the FICA wage-base cumulative).  The fourth
 question, a capped deduction's own year-to-date, is
-:func:`~._deductions._cumulative_deduction_before`, which walks the same
+:func:`~._lines._cumulative_line_before`, which walks the same
 producer this leaf does and so lives beside the lines it caps.
 
 All three answer from :class:`~app.services.pay_calendar.PayCalendar` through
@@ -22,8 +22,10 @@ from a caller-supplied SEQUENCE cost (plan step **balance:X-bh-1**, ledger row
 
 Split out of the one-module engine at plan step **salary:C12** (ledger row
 **P64**).  This leaf imports the calendar and basis modules below the engine
-and nothing of the package, so :mod:`._deductions` may import it without a
-cycle.
+and, since plan step salary:R18-b, :mod:`._lines` -- whose
+:func:`~._lines.priced_gross` is the one producer of a payday's gross, which
+the wage cumulative here replays; :mod:`._lines` imports nothing of the
+package above :mod:`._breakdown`, so there is no cycle.
 """
 
 from app.services.pay_calendar import (
@@ -33,6 +35,8 @@ from app.services.pay_calendar import (
 )
 from app.services.payroll_basis import gross_per_paycheck
 from app.utils.money import ZERO
+
+from ._lines import _LineContext, priced_gross
 
 
 def _month_ordinal(calendar, payday):
@@ -159,10 +163,21 @@ def _get_cumulative_wages(basis, period):
     nothing is summed from the record exactly as before, which is the ruling's
     2026-08-31 amendment and the conservative direction.
 
+    **Each earlier payday's gross is base pay PLUS its taxable earning lines,
+    since plan step salary:R18-b** (ruling **R-SAL38**): a taxable allowance
+    paid on a March paycheck is in the year's wages from then on, so the
+    wage-base cap is reached when the wages reach it.  The figure comes from
+    :func:`~._lines.priced_gross`, the SAME producer
+    :func:`~._pricing.calculate_paycheck` prices the live paycheck with, so
+    the earlier grosses summed here match each period's ``gross_biweekly``
+    by construction rather than by two expressions happening to agree
+    (``CLAUDE.md`` rule 14, one walk).  Until R18-b the term was the base
+    rate alone, which a taxable line would have left out of the cap.
+
     Args:
         basis: The :class:`~app.services.payroll_basis.PayrollBasis` -- its
-            salary and raise set price each earlier paycheck and its calendar
-            supplies the paydays.
+            salary, raise set and lines price each earlier paycheck and its
+            calendar supplies the paydays.
         period: The period being priced.  Its payday bounds the sum, which is
             STRICTLY before it, and its year is the window.
 
@@ -172,10 +187,8 @@ def _get_cumulative_wages(basis, period):
     cumulative = ZERO
 
     for payday in paydays_in_year_before(basis.calendar, period.start_date):
-        # The SAME producer ``_pricing.calculate_paycheck`` prices a paycheck
-        # with, so the earlier grosses summed here match the per-period
-        # ``gross_biweekly`` by construction rather than by two expressions
-        # happening to agree.
-        cumulative += gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
+        base = gross_per_paycheck(basis.annual_salary_on(payday), basis.periods_per_year)
+        _taxable, gross = priced_gross(_LineContext(basis, payday, base))
+        cumulative += gross
 
     return cumulative

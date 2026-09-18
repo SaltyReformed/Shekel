@@ -21,11 +21,11 @@ from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER, RETARGET_HEADER
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.models.investment_params import InvestmentParams
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus,
     TransactionType,
 )
 from app.utils.dates import display_today
@@ -790,14 +790,14 @@ class TestRetirementProjections:
         settings.planned_retirement_date = date(2046, 1, 1)
 
         # Create a paycheck deduction targeting the retirement account.
-        pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
         flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
             target_account_id=account.id,
             name="401k Contribution",
             amount=Decimal("500.00"),
-            deduction_timing_id=pre_tax.id,
+            paycheck_line_kind_id=pre_tax.id,
             calc_method_id=flat_method.id,
         )
         db.session.add(deduction)

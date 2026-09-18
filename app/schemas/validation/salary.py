@@ -16,6 +16,7 @@ from marshmallow import (
 
 from app import ref_cache
 from app.enums import CalcMethodEnum
+from app.services import paycheck_line_kinds
 from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
@@ -24,7 +25,7 @@ from app.schemas.validation._helpers import (
     _RAISE_YEAR_RANGE,
     _normalize_empty_inputs,
 )
-from app.schemas.validation._recurrence import RecurrenceCadenceFieldsMixin
+from app.schemas.validation._recurrence import RecurrenceFormFieldsMixin
 from app.services.salary_raises import (
     RAISE_END_MODES,
     EndYearError,
@@ -338,38 +339,51 @@ class RaiseUpdateSchema(RaiseCreateSchema):
     version_id = RowId(validate=validate.Range(min=1))
 
 
-class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
-    """Validates POST data for adding a paycheck deduction.
+class PaycheckLineCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
+    """Validates POST data for adding a payroll line to a salary profile.
+
+    **A line of any of the four kinds since plan step salary:R18-b** (ruling
+    **R-SAL38**): ``paycheck_line_kind_id`` names its position in the
+    paycheck's waterfall, and the one rule that differs by side --
+    ``target_account_id``, the account a DEDUCTION funds -- is
+    :meth:`validate_target_account_is_a_deduction`.  ``DeductionCreateSchema``
+    until then.
 
     **The line's CADENCE arrives through the shared recurrence controls since
-    plan step salary:R15-c** (ruling **R-SAL31**): the four fields
-    :class:`~app.schemas.validation._recurrence.RecurrenceCadenceFieldsMixin`
-    declares -- ``recurrence_unit``, ``interval_n``, ``recurrence_placement``,
-    ``max_per_month`` -- and its two cross-field rules, exactly as the two
-    template forms submit them, replacing the 26 / 24 / 12 ``select`` the
-    column plan step R15-b dropped stood behind.  The mixin's other five
-    (``starts_on``, ``nominal_day``, the closing bound's three) are NOT
-    declared here, and their absence is the point: a payroll line's first
-    occurrence is DERIVED from the owner's schedule (rulings **R-SAL30**,
-    **R-SAL36**; ``app.routes.salary.items`` writes it into the payload
-    before the recurrence seam reads it), it carries no due day and no
-    closing bound, so a crafted POST stating any of them meets
-    ``BaseSchema``'s ``unknown = EXCLUDE`` rather than a field the door would
-    honour.  An empty unit (the form's "Does not repeat") arrives as a present
-    ``None`` -- every paycheck, ruling **R-SAL3** -- and an ABSENT unit is a
-    submission that said nothing about the cadence, which the update route
-    reads as "leave the stored rule alone".
+    plan step salary:R15-c** (ruling **R-SAL31**): ``recurrence_unit``,
+    ``interval_n``, ``recurrence_placement``, ``max_per_month`` and their
+    cross-field rules, exactly as the two template forms submit them,
+    replacing the 26 / 24 / 12 ``select`` the column plan step R15-b dropped
+    stood behind.  **And its SPAN, since plan step salary:R18-c** (ruling
+    **R-SAL38** (2), amending R-SAL30 and R-SAL31): the whole
+    :class:`~app.schemas.validation._recurrence.RecurrenceFormFieldsMixin`
+    -- ``starts_on`` with its ``nominal_day``, and the closing bound's three
+    controls composed into one :class:`~app.services.recurrence.EndBound`
+    -- because a line that began mid-employment or ended (the developer's
+    `$100` allowance ran 2026-03-26 to 2026-06-30) is otherwise
+    unrepresentable.  Two things differ from a template's form.  A BLANK
+    start is legal and means the opening payday (R-SAL30's default survives
+    as the default; :attr:`recurrence_start_is_required` is off, and
+    ``app.routes.salary.items`` derives the unit's zero at the opening,
+    ruling **R-SAL36**, before the recurrence seam reads the payload).  And
+    ``due_day_of_month`` is still not declared: a payroll line has no
+    servicer's due day, so a crafted POST stating one meets ``BaseSchema``'s
+    ``unknown = EXCLUDE``.  An empty unit (the form's "Does not repeat")
+    arrives as a present ``None`` -- every paycheck, ruling **R-SAL3** -- and
+    an ABSENT unit is a submission that said nothing about the cadence, which
+    the update route reads as "leave the stored rule alone".
 
     The ``amount`` field carries dual semantics keyed off
     ``calc_method_id``:
 
       - ``CalcMethodEnum.FLAT`` -- the user enters a per-paycheck
         dollar amount (e.g. "500.00") that is persisted as-is in
-        ``salary.paycheck_deductions.amount`` (``Numeric(12, 4)``).
+        ``salary.paycheck_lines.amount`` (``Numeric(12, 4)``).
       - ``CalcMethodEnum.PERCENTAGE`` -- the user enters a percent
-        of gross pay (e.g. "6" for 6%); the route divides by 100
-        before persistence so the storage value is the decimal
-        fraction.
+        of BASE pay (e.g. "6" for 6%; ruling **R-SAL38**: the salary
+        rate, never the gross a taxable earning joins); the route
+        divides by 100 before persistence so the storage value is
+        the decimal fraction.
 
     The wide field-level ``Range`` accommodates the dollar case;
     the cross-field validator ``validate_amount_against_calc_method``
@@ -377,13 +391,18 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
     deduction is a typo, not a deduction) per F-012 / C-24.
     """
 
+    #: A blank "Starts on" is the opening payday (ruling R-SAL38 (2), keeping
+    #: R-SAL30's default as the default), so a chosen cadence with no start
+    #: beside it is not refused here: the route derives the start.
+    recurrence_start_is_required = False
+
     @pre_load
     def strip_empty_strings(self, data, **kwargs):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    deduction_timing_id = RowId(required=True)
+    paycheck_line_kind_id = RowId(required=True)
     calc_method_id = RowId(required=True)
     # F-012 / C-24: Added explicit positive Range to backstop the DB
     # CHECK (``amount > 0``).  Column is ``Numeric(12, 4)``; min
@@ -462,21 +481,56 @@ class DeductionCreateSchema(RecurrenceCadenceFieldsMixin, BaseSchema):
             return
         if amount > Decimal("100"):
             raise ValidationError(
-                "Percentage deductions must be at most 100%.",
+                "Percentage lines must be at most 100%.",
                 field_name="amount",
             )
 
+    @validates_schema
+    def validate_target_account_is_a_deduction(self, data, **kwargs):
+        """Refuse a target account on an EARNING kind.
 
-class DeductionUpdateSchema(DeductionCreateSchema):
-    """Validates POST data for updating an existing paycheck deduction.
+        A deduction may name the account it funds -- the contribution feed
+        (``app.services.projection_inputs``) reads every active line's
+        ``target_account_id`` as a payroll contribution INTO that account.  An
+        earning is money the paycheck pays OUT to the owner and funds nothing,
+        so a target on one would feed the investment projection a
+        contribution nobody makes; the door refuses it here, which is the
+        one place the pair is authored (plan step salary:R18-b, ruling
+        **R-SAL38**).  The side is read through
+        :func:`app.services.paycheck_line_kinds.is_deduction`, IDs for logic.
 
-    Inherits the required-field rules and the
-    ``validate_amount_against_calc_method`` cross-field rule from
-    :class:`DeductionCreateSchema` (the salary edit form submits the
+        Raises:
+            ValidationError: When ``target_account_id`` is set and
+                ``paycheck_line_kind_id`` is an earning kind.
+        """
+        kind_id = data.get("paycheck_line_kind_id")
+        if kind_id is None or data.get("target_account_id") is None:
+            return
+        if not paycheck_line_kinds.is_deduction(kind_id):
+            raise ValidationError(
+                paycheck_line_kinds.EARNING_TARGET_REFUSAL,
+                field_name="target_account_id",
+            )
+
+
+class PaycheckLineUpdateSchema(PaycheckLineCreateSchema):
+    """Validates POST data for updating an existing payroll line.
+
+    Inherits the required-field rules and the two cross-field rules from
+    :class:`PaycheckLineCreateSchema` (the salary edit form submits the
     full record on every save), and adds the optimistic-locking
     ``version_id`` pin; see :class:`TransactionUpdateSchema` for the
     contract.  Commit C-18 of the 2026-04-15 security remediation
     plan.
+
+    **The earning-kind target rule is only half answered here** (plan step
+    salary:R18-b, an adversarial review of it): the cross-field rule below
+    reads the POSTED pair, and this door treats an absent key as *leave the
+    stored value alone* (the cadence keys' contract), so a payload that
+    flips a stored deduction's kind to an earning and omits the target
+    passes it.  :func:`app.routes.salary.items.update_line` judges the
+    EFFECTIVE pair -- the posted kind beside the target the row will carry
+    -- with the same sentence.
     """
 
     version_id = RowId(validate=validate.Range(min=1))

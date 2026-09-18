@@ -232,7 +232,7 @@ class PayrollBasis:
 
         The paycheck engine's one read of a deduction's FREQUENCY (plan step
         salary:R15-b, rulings **R-SAL3** and **R-SAL29**): a line's
-        :attr:`~app.models.paycheck_deduction.PaycheckDeduction
+        :attr:`~app.models.paycheck_line.PaycheckLine
         .recurrence_rule` is read through :func:`~app.services.recurrence
         .recurrence_spec`, resolved against THIS calendar, and its
         occurrences placed on saved and projected paychecks alike through
@@ -261,7 +261,7 @@ class PayrollBasis:
         """
         walks: dict[ResolvedRecurrence, _WalkedCadence] = {}
         cadences: dict[Any, _WalkedCadence | None] = {}
-        for deduction in self.profile.deductions:
+        for deduction in self.profile.lines:
             # ``getattr`` for the reason the engine reads ``annual_cap`` and
             # ``target_account_id`` that way: a deduction-like duck type (a
             # test fake) may omit the optional attribute.
@@ -273,11 +273,15 @@ class PayrollBasis:
             cadences[deduction] = walks.setdefault(resolved, _WalkedCadence(resolved))
         return cadences
 
-    def deduction_applies_on(self, deduction, payday: date) -> bool:
-        """Whether *deduction* is taken on the paycheck of *payday*.
+    def line_applies_on(self, line, payday: date) -> bool:
+        """Whether *line* is taken on the paycheck of *payday*.
+
+        ``deduction_applies_on`` until plan step salary:R18-b, when the
+        earning kinds began asking it too (ruling **R-SAL38**); a line of any
+        kind is placed by its rule the same way.
 
         Args:
-            deduction: One of this profile's deductions.
+            line: One of this profile's payroll lines.
             payday: The day the paycheck arrives -- a payday on this calendar,
                 saved or projected.
 
@@ -285,7 +289,7 @@ class PayrollBasis:
             ``True`` when the line has no rule (every paycheck) or when its
             rule's walk placed an occurrence on this paycheck.
         """
-        cadence = self._line_cadences[deduction]
+        cadence = self._line_cadences[line]
         return cadence is None or cadence.admits(self.calendar, payday)
 
     def annual_salary_on(self, payday: date) -> Decimal:

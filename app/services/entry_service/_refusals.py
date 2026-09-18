@@ -28,6 +28,7 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.utils.dates import display_today
 
 #: The purchase facts that change what its PARENT ROW COST, named by what
@@ -48,7 +49,10 @@ from app.utils.dates import display_today
 #:   WARNING (:func:`._sums.entry_list_view`), the reconcile panel's sort and
 #:   its two OFFER predicates
 #:   (``reconcile_service._rows.lands_on_or_before``,
-#:   ``_purchases._outstanding_scope``), the matcher's ``expected_on``, three
+#:   ``_purchases._outstanding_scope``), the matcher's
+#:   ``CandidateRow.purchased_on`` (its ``expected_on`` derives from it, and
+#:   the Reconcile MATCH pane prints it as the *purchased* fact since plan
+#:   step ``bank_import:X-gz``), three
 #:   template fields.  **No valuation reads it.**  ``_outstanding_scope`` does
 #:   admit a SETTLED parent, so this day gates which purchases the reconcile
 #:   panel offers and a tick there writes ``settled_on`` -- admitted knowingly:
@@ -669,4 +673,33 @@ def _reject_settled_before_purchase(
             f"{settled_on.isoformat()} is earlier than the purchase date "
             f"({purchased_on.isoformat()}).  Correct whichever of the two is "
             f"wrong."
+        )
+
+
+def _reject_settlement_record(entry: TransactionEntry) -> None:
+    """Refuse an entry-door write to a row's own SETTLEMENT RECORD.
+
+    Plan step **X-bi-3a**, ruling **R-BAL39**: a bill (or an envelope closed
+    empty) settling on the MANUAL branch has its figure mirrored as ONE
+    covering movement, written and kept in step by the status seam alone --
+    the settle re-prices it, a revert deletes it, a day correction on the row
+    re-dates it.  The purchase doors reach it only through the entries list
+    an empty-closed envelope renders, and an edit or delete there would move
+    the row's money out from under its own record: the day the money moved
+    is the ROW's to state (its settle day), and withdrawing the record is a
+    revert.  Refused by name, with the door that owns the act.
+
+    Args:
+        entry: The purchase the door was asked to write.
+
+    Raises:
+        ValidationError: When *entry* is its parent's settlement record.
+    """
+    if entry.covers_settlement:
+        raise ValidationError(
+            f"Entry {entry.id} is the payment record of transaction "
+            f"{entry.transaction_id}, written when that row was marked paid. "
+            "It is not a purchase: to change the day its money moved, edit "
+            "the row's settle day; to change the figure, revert the row and "
+            "mark it paid again; to remove it, revert the row."
         )

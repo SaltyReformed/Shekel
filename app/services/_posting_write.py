@@ -2,7 +2,9 @@
 
 The pieces every ledger WRITER composes -- the leg record
 (:class:`_PostingLeg`), the single balanced-write path
-(:func:`_emit_balanced_entry`) and the description width -- in a LEAF module
+(:func:`_emit_balanced_entry`), the description width, and since plan step
+``balance:X-bi-3b`` the two derivations a source's TYPE decides
+(:func:`ledger_class_of`, :func:`posting_kind_of`) -- in a LEAF module
 below every writer, so the correction packages can import them without
 importing :mod:`app.services.posting_service` itself.  It also held the entry's
 civil-date rule as ``_utc_civil_date`` until ruling R-DH (2026-07-31) moved that
@@ -34,6 +36,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import LedgerAccountClassEnum, PostingKindEnum, PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_reads import PostingError
@@ -51,6 +55,58 @@ _MIN_POSTING_LEGS = 2
 # so the go-forward and backfilled entries carry identically-shaped
 # descriptions.
 _MAX_DESCRIPTION_LENGTH = 200
+
+# The two ``journal_entries`` source links whose legs a TRANSACTION types
+# (:func:`emit_typed_source_deltas`): the row's own leg and its movements'.
+# A transfer's legs link by ``transfer_id`` and carry the ``transfer`` kind
+# through ``posting_service.sync_transfer_postings``, never through here.
+_TYPED_SOURCE_LINKS = frozenset({"transaction_id", "transaction_entry_id"})
+
+
+def ledger_class_of(txn) -> LedgerAccountClassEnum:
+    """Return the chart class *txn*'s counter leg books to, by its TYPE.
+
+    An income row's counter account is an INCOME-class category account and
+    an expense row's an EXPENSE-class one -- the one mapping the transaction
+    writer (``posting_service._settled_target``) and the movement writer
+    (``_posting_purchases._purchase_target``) share since plan step
+    ``balance:X-bi-3b``, when a movement's class became its PARENT's (ruling
+    **R-BAL35**) and the second writer would otherwise have spelled the
+    mapping again.  ``transaction_type_id`` is immutable, so the class is
+    stable across the row's life.
+
+    Args:
+        txn: The transaction, income or expense.
+
+    Returns:
+        :attr:`LedgerAccountClassEnum.INCOME` or ``.EXPENSE``.
+    """
+    return (
+        LedgerAccountClassEnum.INCOME if txn.is_income
+        else LedgerAccountClassEnum.EXPENSE
+    )
+
+
+def posting_kind_of(txn) -> int:
+    """Return the ``ref.posting_kinds`` id every leg of *txn*'s money carries.
+
+    Both legs of an ordinary-transaction entry carry the same kind, by the
+    transaction type (mirroring the transfer path, where both legs are
+    ``transfer``); no Step-3 reader differentiates per-leg kind.  A MOVEMENT's
+    legs carry its PARENT's kind (plan step ``balance:X-bi-3b``): a purchase
+    against an envelope is an ``expense`` posting and a paycheck's covering
+    movement an ``income`` one, for the one reason :func:`ledger_class_of`
+    gives.
+
+    Args:
+        txn: The transaction, income or expense.
+
+    Returns:
+        The stored id of :attr:`PostingKindEnum.INCOME` or ``.EXPENSE``.
+    """
+    return ref_cache.posting_kind_id(
+        PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
+    )
 
 
 @dataclass(frozen=True)
@@ -341,6 +397,75 @@ def source_entry_builder(
         )
 
     return build
+
+
+def emit_typed_source_deltas(
+    txn,
+    *,
+    targets: "dict[tuple[int, date], dict[int, Decimal]]",
+    source: PostingSourceEnum,
+    description: str,
+    log_label: str,
+    **linkage: int,
+) -> "list[JournalEntry]":
+    """Reconcile ONE source whose money is TYPED by *txn* to *targets*.
+
+    :func:`emit_source_deltas` for the two sources a transaction row types --
+    its OWN cash leg (``posting_service._emit_transaction_deltas``) and each
+    of its MOVEMENTS (``_posting_purchases.emit_purchase_deltas``) -- stated
+    once since plan step ``balance:X-bi-3b``, when a movement's legs took its
+    parent's kind (:func:`posting_kind_of`) and the two emits came to differ
+    in nothing but WHICH source they name.  Everything the parent decides --
+    the kind, the owner (``txn.user_id``, the one home ruling
+    ``pay_calendar:C13-b`` gave a row's owner), the scenario -- is read off
+    *txn* here; everything the source decides arrives by argument.
+
+    Args:
+        txn: The transaction whose type, owner, scenario and kind the legs
+            carry.
+        targets: What the ledger should net to, per ``(pay period, entry
+            date)``; EMPTY to reverse the source to zero.
+        source: The ``ref.posting_sources`` kind this source posts under.
+        description: The human label, already truncated to
+            :data:`_MAX_DESCRIPTION_LENGTH` where it was composed (the rule
+            :func:`source_entry_builder` states).
+        log_label: Names the source in the per-entry INFO line.
+        **linkage: The ONE concrete source FK, by keyword -- ``transaction_id``
+            or ``transaction_entry_id`` -- which is both the entry header's
+            link and the filter that reads the source's posted legs back, so
+            the two cannot name different rows.
+
+    Returns:
+        The emitted delta entries; ``[]`` when the ledger is already at target.
+
+    Raises:
+        ValueError: If *linkage* names other than exactly one of the two
+            typed sources' FKs.  A header carrying two links lands in NONE of
+            the ledger report's buckets (each is keyed on one FK with the
+            others NULL), and a ``transfer_id`` header carries the
+            ``transfer`` kind and never a transaction's, so the mistake is
+            refused where it is made rather than read as missing money.
+    """
+    if len(linkage) != 1 or not linkage.keys() <= _TYPED_SOURCE_LINKS:
+        raise ValueError(
+            f"emit_typed_source_deltas: exactly one of "
+            f"{sorted(_TYPED_SOURCE_LINKS)} as the source link, got "
+            f"{sorted(linkage)}"
+        )
+    link_column, link_id = next(iter(linkage.items()))
+    return emit_source_deltas(
+        targets=targets,
+        source_filter=getattr(JournalEntry, link_column) == link_id,
+        kind_id=posting_kind_of(txn),
+        build_entry=source_entry_builder(
+            user_id=txn.user_id,
+            scenario_id=txn.scenario_id,
+            source_kind_id=ref_cache.posting_source_id(source),
+            description=description,
+            **linkage,
+        ),
+        log_label=log_label,
+    )
 
 
 def emit_keyed_delta_entries(

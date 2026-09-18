@@ -28,6 +28,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
+from app.services import status_seam
 from app.services.cash_ledger import (
     ReconciledThrough,
     cash_anchor_facts,
@@ -44,22 +45,23 @@ from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError, ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
-    open_books_before_the_first_assertion,
     account_never_asserted,
     add_txn,
     an_entered_day,
     append_balance_assertion,
-    read_pass,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    figure_source_columns,
     freeze_today,
+    one_off_row_of,
+    open_books_before_the_first_assertion,
+    read_pass,
     reassert_balance_on,
     restate_account_opening,
     settle_day_columns,
 )
 from app.services.settle_day import record_settle_day
-from app.models.amount_ownership import AmountOwnership
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
@@ -131,6 +133,25 @@ def _assert_balance(account, balance, at, recorded_at=None):
     return append_balance_assertion(
         db.session, account, balance, at, recorded_at=recorded_at,
     )
+
+
+def _money_facts(facts):
+    """Return the facts that CARRY money -- a covered row's own fact is zero.
+
+    Plan step **X-bi-3a**: a settled bill's money sits on the covering
+    movement the seam writes for it, so the fold emits the bill's own fact at
+    ``0.00`` beside the movement's fact carrying the figure on the same day.
+    Every day and every delta a case below asserts is unchanged; what the
+    shape assertions read is the steps that move the balance.
+    ``balance:X-bi-4`` re-points the fold onto movements and the zero step
+    goes with the row's leg.
+    """
+    return [fact for fact in facts if fact.delta]
+
+
+def _money_steps(walk):
+    """The walk's ``(day, delta)`` steps that carry money -- see :func:`_money_facts`."""
+    return [(day, delta) for day, delta in dated_deltas(walk) if delta]
 
 
 def _corrections(account, scenario):
@@ -518,7 +539,7 @@ class TestEveryAssertionIsReplayed:
         # which the prefix-sum this replaced did see.  The count and the total
         # are what restore it.
         walk = walk_cash_ledger(account.id, scenario.id)
-        assert len(dated_deltas(walk)) + len(assertion_corrections(walk)) == 5
+        assert len(_money_steps(walk)) + len(assertion_corrections(walk)) == 5
         assert _running_balance(account, scenario) == Decimal("500.00")
 
 
@@ -576,21 +597,19 @@ class TestSourceFactValuation:
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
-        from app.models.transaction import Transaction  # pylint: disable=import-outside-toplevel
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
         _opened_at(account, _instant(2026, 1, 1))
-        db.session.add(Transaction(
-            account_id=account.id,
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        one_off_row_of(
+            period,
             name="unpaid bill",
+            amount=Decimal("500.00"),
+            user_id=period.user_id,
+            account_id=account.id,
+            scenario_id=scenario.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            amount_ownership=AmountOwnership.own(Decimal("500.00")),
-        ))
+        )
         db.session.commit()
 
         assert settled_cash_facts(account.id, scenario.id) == []
@@ -641,6 +660,7 @@ class TestSourceFactValuation:
             (Decimal("80.00"), True, date(2026, 1, 6)),
         ):
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=amount,
@@ -790,7 +810,7 @@ class TestAttributionIsOneKey:
         db.session.commit()
 
         assert txn.settled_on == date(2026, 3, 3)
-        fact, = settled_cash_facts(account.id, scenario.id)
+        fact, = _money_facts(settled_cash_facts(account.id, scenario.id))
         assert fact.settled_on == date(2026, 3, 3)
 
 
@@ -820,6 +840,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
             settled_on=date(2026, 2, 1), name="deleted envelope",
         )
         db.session.add(TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
@@ -1009,7 +1030,7 @@ class TestASourceCannotPredateTheBooks:
         walk = walk_cash_ledger(account.id, scenario.id)
         assert walk.opening.opened_on == date(2026, 1, 31)
         assert sorted(
-            (fact.settled_on, fact.delta) for fact in walk.source_facts
+            (fact.settled_on, fact.delta) for fact in _money_facts(walk.source_facts)
         ) == [
             (date(2026, 2, 5), Decimal("-500.00")),
             (date(2026, 2, 20), Decimal("-120.00")),
@@ -1202,7 +1223,7 @@ class TestTheStepsReconstructTheReplay:
         walk = walk_cash_ledger(account.id, scenario.id)
         shared = date(2026, 3, 1)
         assert [
-            delta for day, delta in dated_deltas(walk) if day == shared
+            delta for day, delta in _money_steps(walk) if day == shared
         ] == [Decimal("-30.00")]
         # The assertion's correction on the same day: 5000.00 - 970.00.
         assert [
@@ -1559,7 +1580,10 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
         assert control[second_at][0] == Decimal("2000.00")
         control_balance = _fold_at(account, scenario, date(2026, 2, 15))
 
-        txn.reconciled_by_id = governing.id
+        # Through the panel's own writer (plan step X-bi-3a): the link has to
+        # reach the covering movement whose fact carries the money, which a
+        # bare assignment on the row no longer does.
+        status_seam.record_clearing(txn, governing.id)
         db.session.commit()
 
         corrections = _corrections(account, scenario)
@@ -1612,6 +1636,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
             Decimal("500.00"),
         )
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=Decimal("100.00"),
@@ -1748,6 +1773,6 @@ class TestTheSourceOrderIsLoadBearing:
         # property.
         assert before == Decimal("900.00")
         # The facts themselves arrive in DAY order, id breaking a same-day tie.
-        assert [fact.settled_on for fact in settled_cash_facts(
+        assert [fact.settled_on for fact in _money_facts(settled_cash_facts(
             account.id, scenario.id,
-        )] == [date(2026, 2, 10), date(2026, 2, 20)]
+        ))] == [date(2026, 2, 10), date(2026, 2, 20)]

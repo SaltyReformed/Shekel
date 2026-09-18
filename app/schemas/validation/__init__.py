@@ -146,8 +146,8 @@ from app.schemas.validation.retirement import (
 from app.schemas.validation.salary import (
     CalibrationConfirmSchema,
     CalibrationSchema,
-    DeductionCreateSchema,
-    DeductionUpdateSchema,
+    PaycheckLineCreateSchema,
+    PaycheckLineUpdateSchema,
     FicaConfigSchema,
     RaiseCreateSchema,
     RaiseUpdateSchema,
@@ -170,6 +170,7 @@ from app.schemas.validation.transactions import (
     InlineTransactionCreateSchema,
     MarkDoneSchema,
     TransactionCreateSchema,
+    TransactionItemUpdateSchema,
     TransactionUpdateSchema,
 )
 from app.schemas.validation.transfers import (
@@ -205,8 +206,8 @@ __all__ = [
     "CompanionCreateSchema",
     "CompanionEditSchema",
     "DebtStrategyCalculateSchema",
-    "DeductionCreateSchema",
-    "DeductionUpdateSchema",
+    "PaycheckLineCreateSchema",
+    "PaycheckLineUpdateSchema",
     "EntryCreateSchema",
     "EntryUpdateSchema",
     "EscrowComponentSchema",
@@ -257,6 +258,7 @@ __all__ = [
     "TemplateCreateSchema",
     "TemplateUpdateSchema",
     "TransactionCreateSchema",
+    "TransactionItemUpdateSchema",
     "TransactionUpdateSchema",
     "TransferCreateSchema",
     "TransferTemplateCreateSchema",

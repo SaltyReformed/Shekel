@@ -83,8 +83,10 @@ class ArrivalsAlreadyHeld:
     NAME IS A DEBT plan step ``bank_import:X-gj-2b-3`` OWNS.**  The filter is
     ``cash_amount > 0`` over :attr:`~._reads.ReviewSet.unmatched_rows`, which
     holds PURCHASE rows beside transaction rows -- and
-    :func:`~._candidates.purchase_candidate` sets ``cash_amount`` to
-    ``-entry.amount``, so a stored REFUND is a positive-cash row here.  That is
+    :func:`~._candidates.purchase_candidate` sets ``cash_amount`` to the
+    stored figure in the parent's direction
+    (:func:`~app.services.cash_ledger.movement_cash_leg`), so a stored REFUND
+    under an expense row is a positive-cash row here.  That is
     the right SET: the question is *could this money already be in the books*,
     and a refund the books already hold is money that already arrived.  It is
     the wrong WORD, and the NAME is what plan step ``bank_import:X-gj-2b-3``
@@ -173,8 +175,12 @@ def arrivals_already_held(
     disagree about what the books already hold.
 
     **The period is tested by the row's own SPAN** (``expected_on`` ..
-    ``expected_through``) rather than by a pay-period id the row does not
-    publish.  The span IS the period.
+    ``expected_through``), which for a transaction IS its period and for a
+    refund purchase is the day it was made.  *The row carries its ``period``
+    whole since plan step ``bank_import:X-gz``*, and this test is
+    deliberately left on the span: asking ``period.covers`` here would widen
+    a refund's test from its day to its whole paycheck, which changes what the
+    safeguard counts and is nobody's ruling.
 
     Args:
         unmatched_rows: The candidate rows no bank line explains.

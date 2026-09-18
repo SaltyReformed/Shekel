@@ -36,6 +36,7 @@ no index on ``template_id``), issued only for a rule-less definition's row.
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
+from app.services.status_seam import covering_movements
 from app.utils.archive_helpers import template_has_standing_rule
 
 
@@ -62,14 +63,31 @@ def settles_from_entries(txn: Transaction) -> bool:
     exist, settling it at `$0.00` and refusing the user the box that would have
     corrected it.
 
+    **The row's own payment record is not a purchase** (plan step **X-bi-3a**,
+    ruling **R-BAL39**).  ``Kayla's Spending Money`` closed EMPTY at the door
+    settles on the MANUAL branch, and the status seam then mirrors that
+    settlement as one covering movement -- an entry.  Counting it here would
+    flip the row onto the entries branch while it stands settled: the popover
+    would hide the correction box the case above exists to keep, the PATCH
+    door would refuse a typed figure as one the verb ignores, and a re-settle
+    would sum the mirror instead of re-pricing the plan.  So the entries this
+    predicate counts are the row's PURCHASES -- its entries less the seam's
+    covering movements (``status_seam.covering_movements``, which the row's
+    retained record basis answers).  ``balance:X-bi-5`` deletes
+    ``tracks_purchases``, and this predicate with it.
+
     Args:
         txn: The row.  Reads ``tracks_purchases`` (a template lookup for a
-            template-linked row) and the ``entries`` relationship.
+            template-linked row), the ``entries`` relationship and the
+            retained ``settled_basis_id``.
 
     Returns:
         True when a settle takes the ``sum(entries)`` branch.
     """
-    return bool(txn.tracks_purchases and txn.entries)
+    if not txn.tracks_purchases:
+        return False
+    covering = covering_movements(txn)
+    return any(entry not in covering for entry in txn.entries)
 
 
 def repays_card_spend(txn: Transaction) -> bool:

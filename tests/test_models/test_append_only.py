@@ -197,7 +197,7 @@ class TestTheDatabaseRefusesEverySpelling:
             ).count() >= 1
 
     def test_every_named_table_carries_every_arm(self, app, db, seed_user):
-        """The census: three tables x three arms, none assumed.
+        """The census: every table x three arms, none assumed.
 
         Asserted against ``pg_trigger`` rather than against the module's own
         constants, so a table added to
@@ -256,7 +256,7 @@ class TestTheDatabaseRefusesEverySpelling:
             }
 
     def test_the_two_sibling_tables_are_refused_too(self, app, db, seed_user):
-        """One rule, three tables, asserted on the other two.
+        """One rule, four tables, asserted on the sibling two.
 
         ``account_openings`` and ``loan_anchor_events`` carried an ORM listener
         before this step; what is new for them is the spelling below.

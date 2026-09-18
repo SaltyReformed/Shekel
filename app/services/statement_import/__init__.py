@@ -28,7 +28,9 @@ The public surface, and what each piece is for:
 * :func:`verify_running_balance` -- the self-check a source with a running
   balance affords, and the reason the CSV was chosen over the OFX.
 * :func:`record_statement` -- the one write door, returning
-  :class:`ImportOutcome`.
+  :class:`ImportOutcome`.  A placed figure is a LEVEL row naming the import
+  (plan step ``balance:X-bj-1``), and :func:`bank_levels` is the one read of
+  which levels stand and which a release has withdrawn.
 * :func:`delete_import` -- the one UNDO door, returning
   :class:`ImportRemoval`, and the only thing in this package that destroys.
   It is what finding **N-302** says a refusal owes (plan step
@@ -63,6 +65,7 @@ from ._balance import (
     BankBalances,
     bank_balance_on,
     bank_daily_movements,
+    bank_levels,
     covered_runs,
     fold_bank_balances,
 )
@@ -111,6 +114,7 @@ __all__ = [
     "available_sources",
     "bank_balance_on",
     "bank_daily_movements",
+    "bank_levels",
     "carries_running_balance",
     "covered_runs",
     "delete_import",

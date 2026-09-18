@@ -37,16 +37,16 @@ removed with that producer (a sanctioned removal, not test-gaming).
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType
-from app.models.transaction import Transaction
+from app.models.ref import TransactionType
 from app.models.transaction_entry import TransactionEntry
 
 from tests._test_helpers import (
     current_pay_period,
+    figure_source_columns,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # -- Helpers ---------------------------------------------------------
@@ -84,29 +84,27 @@ def _create_tracked_txn_in_period(
 def _create_plain_txn_in_period(
     seed_user, period, name="Rent", estimated=Decimal("1200.00"),
 ):
-    """Create a non-tracked ad-hoc projected expense in the period.
+    """Create a non-tracked one-off projected expense in the period.
 
-    No template, so is_envelope is implicitly absent -- the row renders
-    with the standard single-amount display (no progress indicator).
+    A rule-less definition's placed row whose ``is_envelope`` the producer
+    leaves False -- the row renders with the standard single-amount display
+    (no progress indicator).
     """
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    projected = db.session.query(Status).filter_by(name="Projected").one()
 
     category_key = name if name in seed_user["categories"] else "Rent"
 
-    txn = Transaction(
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        period,
         name=name,
-        category_id=seed_user["categories"][category_key].id,
+        amount=estimated,
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(estimated),
+        category_id=seed_user["categories"][category_key].id,
         due_date=period.start_date,
     )
-    db.session.add(txn)
     db.session.flush()
     return txn
 
@@ -116,6 +114,7 @@ def _add_entry(
 ):
     """Add a purchase entry to a transaction (dated inside the period)."""
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,

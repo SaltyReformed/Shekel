@@ -14,32 +14,32 @@ import pytest
 from app.extensions import db
 from app.models.category import Category
 from app.models.scenario import Scenario
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.ref import AccountType, Status, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app.models.user import User, UserSettings
-from app.services import pay_period_write
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
-    record_paydays_across_a_hole,
-    rhythm_of,
     an_asserted_day,
     an_entered_day,
     append_balance_assertion,
+    figure_source_columns,
     freeze_today,
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
+    record_paydays_across_a_hole,
+    rhythm_of,
     settle_instant_on,
 )
 from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
 )
+from app.services.pay_calendar import calendar_for
 from app.services.statement_match._candidates import purchase_candidate
-from app.models.amount_ownership import AmountOwnership
 
 # The three days the derived reconciled indicator turns on.  FIXED rather
 # than today-relative: the indicator compares two STORED days, so nothing
@@ -80,6 +80,7 @@ def _add_entry(txn, user, amount, description,
     """
     uid = user["user"].id if isinstance(user, dict) else user.id
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=uid,
         amount=Decimal(str(amount)),
@@ -142,10 +143,10 @@ def _login_companion(app):
 
 
 def _create_other_user_txn():
-    """Create a second owner with a pay period and an ad-hoc transaction.
+    """Create a second owner with a pay period and a one-off of their own.
 
-    Used for cross-user isolation tests.  The transaction has no
-    template and is not entry-capable.
+    Used for cross-user isolation tests.  The row is a rule-less
+    definition's whose ``is_envelope`` is False, so it is not entry-capable.
 
     Returns:
         dict with keys: user, transaction.
@@ -205,23 +206,20 @@ def _create_other_user_txn():
     )
     db.session.flush()
 
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(
         name="Expense",
     ).one()
 
-    txn = Transaction(
-        user_id=periods[0].user_id,
-        pay_period_id=periods[0].id,
-        scenario_id=scenario.id,
-        account_id=account.id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        periods[0],
         name="Other Groceries",
-        category_id=category.id,
+        amount=Decimal("300.00"),
+        user_id=periods[0].user_id,
+        account_id=account.id,
+        scenario_id=scenario.id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal("300.00")),
+        category_id=category.id,
     )
-    db.session.add(txn)
     db.session.commit()
 
     return {"user": other_user, "transaction": txn}
@@ -518,26 +516,21 @@ class TestCreateEntry:
     ):
         """POST on a non-tracked transaction returns 400 (service ValidationError)."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
 
-            # Ad-hoc transaction (no template, not entry-capable).
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            # A one-off whose definition is no envelope (not entry-capable).
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Phone Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("80.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("80.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.post(
@@ -1520,6 +1513,7 @@ class TestTheSettledOnEditPath:
         with app.app_context():
             other = _create_other_user_txn()
             other_entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=other["transaction"].id,
                 account_id=other["transaction"].account_id,
                 user_id=other["user"].id,
@@ -2094,25 +2088,20 @@ class TestPopoverIntegration:
     ):
         """Full edit popover for non-tracked transaction has no entries section."""
         with app.app_context():
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Phone Bill",
-                category_id=seed_user["categories"]["Rent"].id,
+                amount=Decimal("80.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("80.00")),
+                category_id=seed_user["categories"]["Rent"].id,
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
@@ -2206,7 +2195,9 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
 
             db.session.expire_all()
             saved = db.session.get(TransactionEntry, entry.id)
-            assert purchase_candidate(saved).expected_window == (
+            assert purchase_candidate(
+                saved, calendar_for(seed_user["user"].id),
+            ).expected_window == (
                 self._MADE_ON, self._ASSERTED_FOR,
             )
 

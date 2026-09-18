@@ -45,6 +45,8 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     all_periods,
     an_entered_day,
     append_balance_assertion,
@@ -1068,6 +1070,7 @@ class TestTransactionCRUD:
             state_own_amount(txn, Decimal("100.00"))
             txn.is_envelope = True
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id,
                 account_id=txn.account_id,
                 user_id=seed_user["user"].id,
@@ -5224,6 +5227,7 @@ class TestGridPeriodSubtotalCanonical:
                 Decimal("100.00"),
             ):
                 entry = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
@@ -5368,6 +5372,7 @@ class TestGridPeriodSubtotalCanonical:
             )
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
@@ -5878,6 +5883,196 @@ class TestGridMatchedByRowPeriod:
         )
 
 
+class TestTheGridGroupsAOneOffsRowsByName:
+    """Ruling **R-BAL34** (plan step ``balance:X-bi-7b``, leaf 7b-2).
+
+    Every one-off carries a definition since leaf 7b-1, and keyed on the
+    LINK ``build_row_keys`` made two same-named one-offs -- one grid row
+    with two cells before -- two rows both labelled by the name.  The grid
+    keeps the grouping the owner had: a rule-less definition's rows group by
+    ``(category_id, name)``, a recurring definition's by the definition, and
+    the two arms exclude each other's rows (the six-cell double-display of
+    ``from_scratch_architecture.md`` 10.4 trace 5 stays fixed).  Graded on
+    the CONTEXT the grid route renders, so the real producers over the real
+    row set are what is measured -- in paychecks 4 and 5, the current one
+    and the next, which the grid's default window draws.
+    """
+
+    @staticmethod
+    def _place(seed_user, period, name, **spec):
+        """Place a one-off called *name* in *period* through the producer."""
+        from app.services.one_off import OneOffToPlace, place_one_off  # pylint: disable=import-outside-toplevel
+        from app.enums import TxnTypeEnum  # pylint: disable=import-outside-toplevel
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+        fields = {
+            "user_id": seed_user["user"].id,
+            "account_id": seed_user["account"].id,
+            "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            "name": name,
+            "amount": Decimal("4.50"),
+            "category_id": seed_user["categories"]["Groceries"].id,
+        }
+        fields.update(spec)
+        return place_one_off(
+            OneOffToPlace(**fields), derived_span(period),
+            scenario_id=seed_user["scenario"].id,
+        )
+
+    @staticmethod
+    def _expense_rows(app, auth_client):
+        """Return ``(expense_row_keys, matched_by_row_period)`` off ``/grid``."""
+        _, context = TestGridMatchedByRowPeriod._capture_grid_context(  # pylint: disable=protected-access
+            app, auth_client,
+        )
+        return context["expense_row_keys"], context["matched_by_row_period"]
+
+    def test_two_same_named_one_offs_are_one_row_with_two_cells(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Two "Coffee" one-offs, one category, two paychecks: ONE row."""
+        with app.app_context():
+            first = self._place(seed_user, seed_periods_today[4], "Coffee")
+            second = self._place(seed_user, seed_periods_today[5], "Coffee")
+            db.session.commit()
+            assert first.template_id != second.template_id
+
+            row_keys, matched = self._expense_rows(app, auth_client)
+            coffee = [rk for rk in row_keys if rk.txn_name == "Coffee"]
+            assert len(coffee) == 1
+            rk = coffee[0]
+            assert rk.template_id is None
+            cells = {
+                period_id: [t.id for t in txns]
+                for (cat, tid, name, period_id), txns in matched.items()
+                if (cat, tid, name) == (rk.category_id, None, "Coffee")
+            }
+            assert cells == {
+                seed_periods_today[4].id: [first.id],
+                seed_periods_today[5].id: [second.id],
+            }
+
+    def test_a_one_off_sharing_a_recurring_definitions_name_is_its_own_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Trace 5's six cells: the recurring row matches by template, the one-off by name.
+
+        One-off "Streaming" in paycheck 4 beside recurring "Streaming" with a
+        row in paychecks 4 and 5, same category.  Two row keys; the recurring
+        row's cells hold ITS rows only, the one-off's cell holds the one-off
+        only -- where the name-match fallback drew each into the other's.
+        """
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="15.00", name="Streaming",
+                category_key="Groceries",
+            )
+            gen_0 = generate_row_of(template, seed_periods_today[4])
+            gen_1 = generate_row_of(template, seed_periods_today[5])
+            one_off = self._place(seed_user, seed_periods_today[4], "Streaming")
+            db.session.commit()
+
+            row_keys, matched = self._expense_rows(app, auth_client)
+            streaming = [rk for rk in row_keys if rk.txn_name == "Streaming"]
+            assert sorted((rk.template_id for rk in streaming), key=str) == (
+                sorted([template.id, None], key=str)
+            )
+            by_key = {
+                (tid, period_id): [t.id for t in txns]
+                for (cat, tid, name, period_id), txns in matched.items()
+                if name == "Streaming"
+            }
+            assert by_key == {
+                (template.id, seed_periods_today[4].id): [gen_0.id],
+                (template.id, seed_periods_today[5].id): [gen_1.id],
+                (None, seed_periods_today[4].id): [one_off.id],
+            }
+
+    def test_a_legacy_link_less_row_sharing_a_recurring_definitions_name_is_its_own_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Trace 5's OWN shape: rows 2584 / 2581 on production are link-less.
+
+        The placed-row case above leaves the legacy arm ungraded -- restoring
+        the old ``rk.template_id is not None and txn.template_id is not
+        None`` survived it (adversarial review) -- so this is the control
+        that fails on that revert.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="15.00", name="Streaming",
+                category_key="Groceries",
+            )
+            gen_4 = generate_row_of(template, seed_periods_today[4])
+            gen_5 = generate_row_of(template, seed_periods_today[5])
+            legacy = Transaction(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                pay_period_id=seed_periods_today[4].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Streaming",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                amount_ownership=AmountOwnership.own(Decimal("12.00")),
+                template_id=None,
+            )
+            db.session.add(legacy)
+            db.session.commit()
+
+            _, matched = self._expense_rows(app, auth_client)
+            by_key = {
+                (tid, period_id): [t.id for t in txns]
+                for (cat, tid, name, period_id), txns in matched.items()
+                if name == "Streaming"
+            }
+            assert by_key == {
+                (template.id, seed_periods_today[4].id): [gen_4.id],
+                (template.id, seed_periods_today[5].id): [gen_5.id],
+                (None, seed_periods_today[4].id): [legacy.id],
+            }
+
+    def test_a_legacy_link_less_row_still_groups_by_name(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: a link-less row keys as it always did, beside a one-off of its name."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            legacy = Transaction(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                pay_period_id=seed_periods_today[4].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Coffee",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                amount_ownership=AmountOwnership.own(Decimal("3.00")),
+                template_id=None,
+            )
+            db.session.add(legacy)
+            placed = self._place(seed_user, seed_periods_today[5], "Coffee")
+            db.session.commit()
+
+            row_keys, matched = self._expense_rows(app, auth_client)
+            coffee = [rk for rk in row_keys if rk.txn_name == "Coffee"]
+            assert len(coffee) == 1 and coffee[0].template_id is None
+            cells = {
+                period_id: [t.id for t in txns]
+                for (cat, tid, name, period_id), txns in matched.items()
+                if name == "Coffee"
+            }
+            assert cells == {
+                seed_periods_today[4].id: [legacy.id],
+                seed_periods_today[5].id: [placed.id],
+            }
+
+
 class TestSettleDayLifecycle:
     """Tests for settled_on management during status changes, at the route."""
 
@@ -6081,10 +6276,11 @@ class TestSettleDayLifecycle:
             db.session.commit()
 
             def _ledger_days():
+                # The row's family, as ``_ledger_days_for`` reads it.
                 return sorted(
                     entry.entry_date
                     for entry in db.session.query(JournalEntry)
-                    .filter(JournalEntry.transaction_id == txn.id)
+                    .filter(family_journal_filter(txn))
                     .all()
                 )
 
@@ -6165,10 +6361,11 @@ class TestSettleDayLifecycle:
             db.session.commit()
 
             def _ledger_days():
+                # The row's family, as ``_ledger_days_for`` reads it.
                 return sorted(
                     entry.entry_date
                     for entry in db.session.query(JournalEntry)
-                    .filter(JournalEntry.transaction_id == txn.id)
+                    .filter(family_journal_filter(txn))
                     .all()
                 )
 
@@ -6202,10 +6399,13 @@ class TestSettleDayLifecycle:
         """
         from app.models.journal_entry import JournalEntry
 
+        # The row's FAMILY (plan step X-bi-3a): a settled bill's money is
+        # posted under its covering movement, so the ledger half reads the
+        # row and its mirror together -- every day asserted below is unchanged.
         return sorted(
             entry.entry_date
             for entry in db.session.query(JournalEntry)
-            .filter(JournalEntry.transaction_id == txn_id)
+            .filter(family_journal_filter(txn_id))
             .all()
         )
 
@@ -6296,7 +6496,7 @@ class TestSettleDayLifecycle:
         """
         from app.models.journal_entry import JournalEntry
 
-        return net_posted_by_day(JournalEntry.transaction_id == txn_id)
+        return net_posted_by_day(family_journal_filter(txn_id))
 
     def test_reverting_to_projected_ignores_the_submitted_settle_day(
         self, app, auth_client, seed_user, seed_periods_today

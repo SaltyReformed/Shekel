@@ -44,6 +44,7 @@ from app.services.pay_rhythm import FixedDays
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from app.services.salary_raises import terms_of
 from tests._test_helpers import (
+    figure_source_columns,
     record_paydays_across_a_hole,
     rhythm_of,
     all_periods,
@@ -274,6 +275,7 @@ def _current_paycheck(net_pay, gross_biweekly, annual_salary):
         period=paycheck_calculator.PeriodInfo(date(2026, 1, 2), period_id=1),
         earnings=paycheck_calculator.Earnings(
             annual_salary=annual_salary,
+            base_biweekly=gross_biweekly,
             gross_biweekly=gross_biweekly,
             net_pay=net_pay,
         ),
@@ -827,6 +829,7 @@ def _add_envelope_expense_with_settled_entries_ret(
     observed_on = cash_ledger.reconciled_through(account.id).observed_day
     for amt in settled_amounts:
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=seed_user["user"].id,
             amount=amt,

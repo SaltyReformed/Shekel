@@ -103,14 +103,42 @@ import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
+from tests._test_helpers import rewind_paycheck_lines_rename
+
 from app.extensions import SHEKEL_NAMING_CONVENTION
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.ref import AccountType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
 from app.models.savings_goal import SavingsGoal
 from app.models.tax_config import StateTaxConfig, TaxBracketSet
 from app.models.transfer import Transfer
+
+
+# ---------------------------------------------------------------------------
+# The schema this revision was written against
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _c43_schema(app, db):
+    """Run every case here under plan step ``salary:R18-a``'s downgrade.
+
+    Two of C-43's ``REF_FK_SPECS`` live on ``salary.paycheck_deductions``,
+    which head renamed to ``salary.paycheck_lines`` with the kind FK's name
+    (ruling **R-SAL38**); the specs are read straight off the migration
+    module, so the DB-shape cases would look for names the head template
+    no longer carries and ``upgrade()`` would alter a table that is not
+    there.  :func:`~tests._test_helpers.rewind_paycheck_lines_rename` puts
+    the old names back first (the stacked, newest-first shape of
+    :func:`~tests._test_helpers.rewind_pay_schedule_rhythm`); every case
+    then reads and drives C-43 against the schema it was written for.  The
+    model-contract cases read metadata only and are unaffected.  Nothing
+    is replayed: the ``db`` fixture re-clones the per-worker database for
+    every test, and no case here reads a line through the models.
+    """
+    with app.app_context():
+        rewind_paycheck_lines_rename(db.session)
 
 
 # ---------------------------------------------------------------------------
@@ -151,21 +179,37 @@ _M_C43 = _load_migration(
 # ``name=`` argument.  Keyed by the same string the post-upgrade DB
 # carries so the test can also report the matching DB constraint
 # name on failure.
-MODEL_FK_NAME_CONTRACT: tuple[tuple[type, str, str], ...] = (
-    (AccountType, "category_id", "fk_account_types_category_id"),
-    (SavingsGoal, "goal_mode_id", "fk_savings_goals_goal_mode_id"),
-    (SavingsGoal, "income_unit_id", "fk_savings_goals_income_unit_id"),
-    (PaycheckDeduction, "calc_method_id",
+#
+# Since plan step ``salary:R18-a`` (ruling **R-SAL38**) two of the FKs C-43
+# named live on a table it renamed -- ``salary.paycheck_deductions`` is
+# ``salary.paycheck_lines`` and its kind column ``paycheck_line_kind_id`` --
+# so each row carries a FOURTH element: the name C-43's ``REF_FK_SPECS``
+# wrote, which is the model's own name for every row but those two.
+MODEL_FK_NAME_CONTRACT: tuple[tuple[type, str, str, str], ...] = (
+    (AccountType, "category_id",
+     "fk_account_types_category_id", "fk_account_types_category_id"),
+    (SavingsGoal, "goal_mode_id",
+     "fk_savings_goals_goal_mode_id", "fk_savings_goals_goal_mode_id"),
+    (SavingsGoal, "income_unit_id",
+     "fk_savings_goals_income_unit_id", "fk_savings_goals_income_unit_id"),
+    (PaycheckLine, "calc_method_id",
+     "fk_paycheck_lines_calc_method_id",
      "fk_paycheck_deductions_calc_method_id"),
-    (PaycheckDeduction, "deduction_timing_id",
+    (PaycheckLine, "paycheck_line_kind_id",
+     "fk_paycheck_lines_paycheck_line_kind_id",
      "fk_paycheck_deductions_deduction_timing_id"),
     (SalaryProfile, "filing_status_id",
+     "fk_salary_profiles_filing_status_id",
      "fk_salary_profiles_filing_status_id"),
-    (SalaryRaise, "raise_type_id", "fk_salary_raises_raise_type_id"),
-    (StateTaxConfig, "tax_type_id", "fk_state_tax_configs_tax_type_id"),
+    (SalaryRaise, "raise_type_id",
+     "fk_salary_raises_raise_type_id", "fk_salary_raises_raise_type_id"),
+    (StateTaxConfig, "tax_type_id",
+     "fk_state_tax_configs_tax_type_id", "fk_state_tax_configs_tax_type_id"),
     (TaxBracketSet, "filing_status_id",
+     "fk_tax_bracket_sets_filing_status_id",
      "fk_tax_bracket_sets_filing_status_id"),
-    (Transfer, "pay_period_id", "fk_transfers_pay_period_id"),
+    (Transfer, "pay_period_id",
+     "fk_transfers_pay_period_id", "fk_transfers_pay_period_id"),
 )
 
 
@@ -992,8 +1036,8 @@ class TestNamingConventionContract:
 
     @pytest.mark.parametrize(
         "model_cls, column_name, expected_fk_name",
-        list(MODEL_FK_NAME_CONTRACT),
-        ids=[name for _cls, _col, name in MODEL_FK_NAME_CONTRACT],
+        [(cls, col, name) for cls, col, name, _c43 in MODEL_FK_NAME_CONTRACT],
+        ids=[name for _cls, _col, name, _c43 in MODEL_FK_NAME_CONTRACT],
     )
     def test_model_fk_has_explicit_convention_name(
         self, model_cls, column_name, expected_fk_name,
@@ -1034,17 +1078,18 @@ class TestNamingConventionContract:
         """
         for spec in _M_C43.REF_FK_SPECS:
             _src_schema, _src_table, _src_col, _, _, _, _, new_name, _ondelete = spec
-            # Look up the model + column from MODEL_FK_NAME_CONTRACT.
+            # Look up the model + column from MODEL_FK_NAME_CONTRACT, by the
+            # name C-43 wrote (its fourth element).
             matching = [
                 entry for entry in MODEL_FK_NAME_CONTRACT
-                if entry[2] == new_name
+                if entry[3] == new_name
             ]
             assert len(matching) == 1, (
                 f"REF_FK_SPECS entry {new_name!r} has no matching "
                 f"MODEL_FK_NAME_CONTRACT row; update the contract "
                 f"table when adding/removing C-43 FKs."
             )
-            model_cls, column_name, _ = matching[0]
+            model_cls, column_name, _, _ = matching[0]
             column = model_cls.__table__.columns[column_name]
             fk = next(iter(column.foreign_keys))
             assert fk.ondelete == "RESTRICT", (

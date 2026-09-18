@@ -58,7 +58,12 @@ from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, transaction_service, transfer_service
+from app.services import (
+    cash_ledger,
+    status_seam,
+    transaction_service,
+    transfer_service,
+)
 from app.services.settle_day import recorded_settle_day
 from app.utils.balance_predicates import balance_contributing_clause
 
@@ -295,7 +300,13 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     )
     try:
         if txn.status.is_settled:
-            return cash_ledger.settled_cash_leg(txn)
+            # **A settled row is worth its FAMILY** (plan step **X-bi-3a**,
+            # ruling **R-BAL39**): the settle mirrors the figure as a covering
+            # movement, so the row's own leg reads zero and the money sits one
+            # row down.  The bank sees one line for the pair, and the row is
+            # the subject the owner matches it to; its mirror is kept out of
+            # the purchase candidates by ``status_seam.covering_clause``.
+            return status_seam.settled_family_leg(txn)
         return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
@@ -358,7 +369,9 @@ def _day_basis(row) -> SettledDayBasisEnum | None:
     return None if recorded is None else recorded.basis
 
 
-def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
+def purchase_candidate(
+    entry: TransactionEntry, calendar: "PayCalendar",
+) -> CandidateRow:
     """Return one purchase as the candidate value every consumer here shares.
 
     **ONE construction, because two callers build it and one of them writes
@@ -370,15 +383,35 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     purchase is worth and when the app believes it moved, on the two sides of a
     single match.
 
-    A purchase's cash is the NEGATION of its stored figure -- a conversion,
-    total over both signs, not a direction.  It read *"always money LEAVING"*
-    until plan step ``bank_import:X-gj-2b-3``; ruling **bank_import:R-II**
-    ended that, and a stored refund of ``-28.29`` is a ``+28.29`` cash
-    candidate here, which is why :mod:`._already_held`'s positive-cash set need
-    not be income.
+    A purchase's cash is :func:`app.services.cash_ledger.movement_cash_leg`
+    -- its stored figure in its PARENT's direction, the one valuation every
+    reader of a movement shares since plan step ``balance:X-bi-3b`` (ruling
+    **R-BAL35**).  This spelled ``-entry.amount`` for itself before that
+    step, total over both signs of the figure (it read *"always money
+    LEAVING"* until plan step ``bank_import:X-gj-2b-3``; ruling
+    **bank_import:R-II** ended that, and a stored refund of ``-28.29`` is a
+    ``+28.29`` cash candidate here, which is why :mod:`._already_held`'s
+    positive-cash set need not be income) but wrong in direction for a
+    movement under an income row.  Every purchase offered here is a DEBIT
+    under a CONTRIBUTING expense row (:func:`_purchase_candidates`'s filter;
+    ``create_entry`` refuses an income parent), so on that set the two agree
+    to the cent; the producer is also total where this was not.
+
+    **It takes the calendar since plan step ``bank_import:X-gz``**, for the
+    reason its twin always has: the row states the paycheck it is budgeted in
+    (ruling **R-BI9**), and a purchase's is its ENVELOPE's --
+    ``entry.transaction.pay_period_id``, which every caller already has loaded
+    beside the name this label reads.  Unlike the twin it never declines a row
+    whose period the calendar lacks: a purchase is dated by its own day, and
+    the offer set's period filter is what keeps such a row out of it
+    (``TestTheCalendarIsTheOwnershipSCOPE``), so the placement is ``None``
+    there and the row is otherwise what it was.
 
     Args:
         entry: The purchase, with its parent transaction loaded.
+        calendar: The pass's
+            :class:`~app.services.pay_calendar.PayCalendar`, which the
+            envelope's period is read from.
 
     Returns:
         Its :class:`~._offers.CandidateRow`.
@@ -387,7 +420,7 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         kind=RowKind.PURCHASE,
         row_id=entry.id,
         label=f"{entry.transaction.name}: {entry.description}",
-        cash_amount=-Decimal(str(entry.amount)),
+        cash_amount=cash_ledger.movement_cash_leg(entry.transaction, entry),
         settled_on=entry.settled_on,
         is_settled=entry.settled_on is not None,
         # **A purchase always states its own figure.**  The two shapes whose
@@ -400,11 +433,14 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         # :attr:`~._offers.CandidateRow.figure_is_correctable`.
         states_own_figure=True,
         parent_id=entry.transaction_id,
+        # WHERE it is budgeted: its envelope's paycheck, read off the parent
+        # this label already reads (plan step ``bank_import:X-gz``).
+        period=calendar.period_by_id(entry.transaction.pay_period_id),
         # A purchase's budget clock is ONE day, so both ends of its window are
         # that day: it is not undated, it is dated on a clock the cash column
-        # does not hold (ruling **R-FW**).
-        expected_on=entry.purchased_on,
-        expected_through=entry.purchased_on,
+        # does not hold (ruling **R-FW**).  ``expected_on`` and
+        # ``expected_through`` derive from it.
+        purchased_on=entry.purchased_on,
         # WHICH KIND of day ``settled_on`` is, READ rather than inferred (plan
         # step **X-az**, finding **N-332**).  It tested ``reconciled_by_id`` --
         # a different question, WHICH statement was seen to show this money --
@@ -496,8 +532,9 @@ def transaction_candidate(
             or transaction_service.settles_from_entries(txn)
         ),
         transfer_id=txn.transfer_id,
-        expected_on=period.start_date,
-        expected_through=period.end_date,
+        # Its own paycheck, whole: ``expected_on`` / ``expected_through`` are
+        # its two ends, derived.
+        period=period,
         # The same fact its twin carries, from the same column and for the same
         # reason.  A transaction settled through the reconcile panel takes the
         # assertion's day (``reconcile_service._transactions`` for a bill,
@@ -571,7 +608,7 @@ def repriced(
         entry = db.session.get(TransactionEntry, row.row_id)
         if entry is None or not entry.amount:
             return None
-        return purchase_candidate(entry)
+        return purchase_candidate(entry, calendar)
     txn = db.session.get(Transaction, row.row_id)
     if txn is None:
         return None
@@ -701,7 +738,7 @@ def _transaction_candidates(
 
 
 def _purchase_candidates(
-    account_id: int, period_ids: "Collection[int]",
+    account_id: int, calendar: "PayCalendar", period_ids: "Collection[int]",
 ) -> "list[CandidateRow]":
     """Return the purchases on *account_id* a statement could be showing.
 
@@ -735,6 +772,9 @@ def _purchase_candidates(
 
     Args:
         account_id: The cash account the statement is for.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            which each purchase's envelope period is read from (plan step
+            ``bank_import:X-gz``) -- threaded for the reason *period_ids* is.
         period_ids: The owner's saved pay-period ids -- the SAME scope
             :func:`_transaction_candidates` applies, written once and threaded
             so the two arms cannot drift about whose rows may be offered.
@@ -752,11 +792,20 @@ def _purchase_candidates(
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
+            # NOT the row's own payment record (plan step **X-bi-3a**): a
+            # covering movement is the settle's mirror of its parent's figure,
+            # and the parent is what this screen offers for it -- priced at
+            # the family by :func:`_price`.  Offering both would put one bank
+            # line against two rows.
+            ~status_seam.covering_clause(),
         )
         .all()
     )
     return sorted(
-        (purchase_candidate(entry) for entry in rows if entry.amount),
+        (
+            purchase_candidate(entry, calendar)
+            for entry in rows if entry.amount
+        ),
         key=lambda row: (row.settled_on is None, row.settled_on, row.row_id),
     )
 
@@ -834,6 +883,8 @@ def candidates_for(
         account_id, calendar, period_ids, basis,
     )
     return Candidates(
-        rows=transactions + _purchase_candidates(account_id, period_ids),
+        rows=transactions + _purchase_candidates(
+            account_id, calendar, period_ids,
+        ),
         unpriceable_ids=tuple(unpriceable),
     )

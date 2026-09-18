@@ -25,7 +25,7 @@ Called from two places:
 
 The audit follow-up Commit 6 (F-7) extracted this helper after
 verification showed the conftest copy of the registration list was
-missing eight entries (``TIMING_PRE_TAX``, ``TIMING_POST_TAX``,
+missing eight entries (``LINE_KIND_PRE_TAX_DEDUCTION``, ``LINE_KIND_POST_TAX_DEDUCTION``,
 ``CALC_PERCENTAGE``, ``CALC_FLAT``, ``GOAL_MODE_FIXED``,
 ``GOAL_MODE_INCOME_RELATIVE``, ``INCOME_UNIT_PAYCHECKS``,
 ``INCOME_UNIT_MONTHS``).  Folding both call sites through one
@@ -44,7 +44,7 @@ from app.enums import (
     AcctTypeEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
@@ -121,9 +121,9 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
         "ACCT_CAT_RETIREMENT": AcctCategoryEnum.RETIREMENT,
         "ACCT_CAT_INVESTMENT": AcctCategoryEnum.INVESTMENT,
     }),
-    (ref_cache.deduction_timing_id, {
-        "TIMING_PRE_TAX": DeductionTimingEnum.PRE_TAX,
-        "TIMING_POST_TAX": DeductionTimingEnum.POST_TAX,
+    (ref_cache.paycheck_line_kind_id, {
+        "LINE_KIND_PRE_TAX_DEDUCTION": PaycheckLineKindEnum.PRE_TAX_DEDUCTION,
+        "LINE_KIND_POST_TAX_DEDUCTION": PaycheckLineKindEnum.POST_TAX_DEDUCTION,
     }),
     (ref_cache.calc_method_id, {
         "CALC_PERCENTAGE": CalcMethodEnum.PERCENTAGE,

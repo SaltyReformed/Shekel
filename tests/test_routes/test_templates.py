@@ -75,6 +75,7 @@ from tests._test_helpers import (
     make_income_template,
     make_loan_payment_template,
     make_transfer_template,
+    one_off_row_of,
     repriced_by_the_owner,
     resolved_amount,
     settlement_if_settling,
@@ -85,7 +86,6 @@ from tests.oracles.recurrence_baseline import (
     EVERY_N_PERIODS,
     MONTHLY,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     edit collides with it.  Returns the committed override Transaction
     (is_override=True, carrying its own ``amount``).
     """
-    from app.services import recurrence_engine, pay_period_service
+    from app.services import recurrence_engine
     scenario = seed_user["scenario"]
     periods = all_periods(seed_user["user"].id)
     recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -585,7 +585,7 @@ class TestTemplateUpdate:
         Those columns are owned by the archive / unarchive routes (which
         pair the flag flip with the projected-transaction soft-delete this
         route does not perform).  They are absent from both
-        ``TemplateUpdateSchema`` and ``_TEMPLATE_UPDATE_FIELDS``, so even a
+        ``TemplateUpdateSchema`` and ``definition_edit.EDITABLE_FIELDS``, so even a
         crafted form that submits them must leave the stored values
         untouched while a legitimate field still updates.
         """
@@ -869,7 +869,7 @@ class TestTemplateUpdate:
         amount AND with the edit's new name.  The rename now reaches
         soft-deleted rows, so a restored instance is never stale-named."""
         with app.app_context():
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             template = _create_template(
                 seed_user, name="Rent", cadence=EVERY_PERIOD,
                 amount="1200.00",
@@ -923,8 +923,7 @@ class TestTemplateUpdate:
         """
         with app.app_context():
             from app.services import (
-                account_service, entry_service, pay_period_service,
-                recurrence_engine,
+                account_service, entry_service, recurrence_engine,
             )
             template = _create_template(
                 seed_user, name="Groceries", cadence=EVERY_PERIOD,
@@ -1021,7 +1020,7 @@ class TestTemplateUpdate:
                 seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
@@ -1072,7 +1071,7 @@ class TestTemplateUpdate:
                 seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
@@ -1112,7 +1111,7 @@ class TestTemplateUpdate:
                 seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
@@ -1164,7 +1163,7 @@ class TestGridRowKeyBuilder:
                 seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
@@ -1206,60 +1205,76 @@ class TestGridRowKeyBuilder:
     def test_row_key_keeps_standalone_txns_separate_by_name(
         self, app, seed_user, seed_periods_today,
     ):
-        """Non-template transactions still dedupe by (category, name)."""
+        """Rows that do not RECUR (one-offs) dedupe by (category, name), not by the link.
+
+        ``build_row_keys`` forks on ``recurs``, not on the link (ruling
+        R-BAL34): every one-off carries a definition of its own, so keyed
+        on the link two SAME-named one-offs would split into two rows.
+        Three one-offs in one category -- "One-off A" twice, in two
+        paychecks, and "One-off B" -- are two rows: the twin folds into A's
+        (the half that discriminates the fork; on placed rows a
+        different-name pair alone is two rows under either key) and B
+        stays its own.
+        """
         from app.services.grid_view_service import build_row_keys
         from app.models.category import Category
-        from app.models.ref import Status as StatusModel
 
         with app.app_context():
             rent_cat = seed_user["categories"]["Rent"]
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
-            projected = db.session.query(StatusModel).filter_by(
-                name="Projected",
-            ).one()
             period = seed_periods_today[0]
             account = seed_user["account"]
             scenario = seed_user["scenario"]
 
-            # Two standalone expenses in the same category but different
-            # names -- these must remain distinct rows.
-            txn_a = Transaction(
-                account_id=account.id,
-                user_id=period.user_id,
-                pay_period_id=period.id,
-                scenario_id=scenario.id,
-                status_id=projected.id,
+            # Two one-offs in the same category but different names --
+            # these must remain distinct rows -- and A's same-named twin in
+            # the next paycheck, which must NOT.
+            txn_a = one_off_row_of(
+                period,
                 name="One-off A",
-                category_id=rent_cat.id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
-            )
-            txn_b = Transaction(
-                account_id=account.id,
+                amount=Decimal("50.00"),
                 user_id=period.user_id,
-                pay_period_id=period.id,
+                account_id=account.id,
                 scenario_id=scenario.id,
-                status_id=projected.id,
-                name="One-off B",
-                category_id=rent_cat.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=rent_cat.id,
             )
-            db.session.add_all([txn_a, txn_b])
+            txn_b = one_off_row_of(
+                period,
+                name="One-off B",
+                amount=Decimal("75.00"),
+                user_id=period.user_id,
+                account_id=account.id,
+                scenario_id=scenario.id,
+                transaction_type_id=expense_type.id,
+                category_id=rent_cat.id,
+            )
+            twin = one_off_row_of(
+                seed_periods_today[1],
+                name="One-off A",
+                amount=Decimal("60.00"),
+                user_id=period.user_id,
+                account_id=account.id,
+                scenario_id=scenario.id,
+                transaction_type_id=expense_type.id,
+                category_id=rent_cat.id,
+            )
             db.session.flush()
+            assert twin.template_id != txn_a.template_id
 
             all_cats = db.session.query(Category).filter_by(
                 user_id=seed_user["user"].id,
             ).all()
 
             row_keys = build_row_keys(
-                [txn_a, txn_b], all_cats, is_income_section=False,
+                [txn_a, txn_b, twin], all_cats, is_income_section=False,
             )
 
             labels = sorted(rk.txn_name for rk in row_keys)
             assert labels == ["One-off A", "One-off B"]
+            assert all(rk.template_id is None for rk in row_keys)
 
 
 # ── Archive Tests ────────────────────────────────────────────────────
@@ -1274,7 +1289,7 @@ class TestTemplateArchive:
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate projected transactions.
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -1341,7 +1356,7 @@ class TestTemplateUnarchive:
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate and then delete.
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -2137,7 +2152,7 @@ class TestTemplateHardDelete:
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate projected transactions.
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -2340,7 +2355,7 @@ class TestTemplateHardDelete:
         with app.app_context():
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -2396,7 +2411,7 @@ class TestTemplateHardDelete:
         with app.app_context():
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -2438,7 +2453,7 @@ class TestTemplateHardDelete:
         with app.app_context():
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -2628,10 +2643,10 @@ class TestTemplateHardDelete:
     def test_list_separates_active_and_archived(self, app, auth_client, seed_user):
         """C-5A.5-15: List page shows active and archived in separate sections."""
         with app.app_context():
-            active_1 = _create_template(
+            _create_template(
                 seed_user, name="Active One", amount="100.00", cadence=EVERY_PERIOD,
             )
-            active_2 = _create_template(
+            _create_template(
                 seed_user, name="Active Two", amount="200.00", cadence=EVERY_PERIOD,
             )
             archived = _create_template(
@@ -2657,7 +2672,7 @@ class TestTemplateHardDelete:
         with app.app_context():
             template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
-            from app.services import recurrence_engine, pay_period_service
+            from app.services import recurrence_engine
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
@@ -3497,7 +3512,7 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
     db.session.flush()
     state_template_price(template)
     # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_cadence_rule(
+    make_cadence_rule(
         template, EVERY_PERIOD, starts_on=starts_on,
     )
     return template
@@ -3544,7 +3559,7 @@ def _loan_payment_template(seed_user):
     template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.commit()
     # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_cadence_rule(
+    make_cadence_rule(
         template, MONTHLY,
         fires_on_day=1, end_date=date(2030, 1, 1),
     )

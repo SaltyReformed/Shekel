@@ -15,13 +15,14 @@ and a scope is exactly the kind of clause a hand-built value cannot exercise.
 """
 
 from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
+from app.models.transaction import Transaction
 from app.services import pay_calendar
 from app.services.statement_match import (
     ReviewedRow,
@@ -40,6 +41,7 @@ from ._builders import (
 )
 from tests._test_helpers import (
     last_covered_day,
+    payback_row_of,
     rhythm_of,
 )
 
@@ -125,16 +127,14 @@ class TestEachRowSaysWhetherItsFigureIsItsOwn:
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
-        db.session.flush()
-        # No template: ``ck_transactions_one_pricing_link`` admits a recurring
-        # definition OR a payback link, never both -- a payback is priced by
-        # the row it repays.
-        payback = a_transaction(
-            seed_user, name="CC Payback: Groceries", amount="60.00",
-            template=False,
+        a_later_period(seed_user)
+        # Through the app's own producer: a payback carries the payback link
+        # as its ONE pricing link (``ck_transactions_one_pricing_link``) and
+        # is priced by the row it repays, in the paycheck after it.
+        payback = payback_row_of(
+            db.session, seed_user, envelope, Decimal("60.00"),
+            seed_user["bootstrap_period"].start_date,
         )
-        payback.credit_payback_for_id = envelope.id
-        db.session.flush()
 
         row = _candidate(seed_user, payback.id, RowKind.TRANSACTION)
 
@@ -185,13 +185,11 @@ class TestWhichRowsTheBankNeverShowsByThemselves:
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
-        db.session.flush()
-        payback = a_transaction(
-            seed_user, name="CC Payback: Groceries", amount="60.00",
-            template=False,
+        a_later_period(seed_user)
+        payback = payback_row_of(
+            db.session, seed_user, envelope, Decimal("60.00"),
+            seed_user["bootstrap_period"].start_date,
         )
-        payback.credit_payback_for_id = envelope.id
-        db.session.flush()
 
         row = _candidate(seed_user, payback.id, RowKind.TRANSACTION)
 
@@ -336,6 +334,75 @@ class TestTheWindowEachRowCarries:
             row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
 
             assert row is not None
+            assert row.expected_window == (made_on, made_on)
+
+
+class TestEveryRowCarriesThePaycheckItIsBUDGETEDIn:
+    """A candidate names the paycheck it is budgeted in, whichever table it is from.
+
+    Plan step ``bank_import:X-gz``, ruling **R-BI9**.  The MATCH pane prints
+    every row's budgeted placement, and a PURCHASE's was on no field: the row
+    carried its purchase day and nothing about its envelope's paycheck, so the
+    only day the pane could print for it was the settle stamp.  These grade
+    the PRODUCER -- a hand-built row cannot show a constructor that fills the
+    field from the wrong parent, or not at all.
+    """
+
+    def test_a_transaction_carries_its_OWN_period(self, app, seed_user):
+        """The same period its window is read from, whole."""
+        with app.app_context():
+            period = seed_user["bootstrap_period"]
+            txn = a_transaction(seed_user, name="Electricity")
+            db.session.commit()
+
+            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+
+            assert row is not None
+            assert row.period is not None
+            assert row.period.period_id == period.id
+            assert row.purchased_on is None
+            # The window is still the period's two ends, DERIVED from it.
+            assert row.expected_window == (
+                row.period.start_date, row.period.end_date,
+            )
+
+    def test_a_purchase_carries_its_ENVELOPE_s_period_and_its_own_day(
+        self, app, seed_user,
+    ):
+        """The worked case: bought BEFORE the paycheck it is budgeted in opened.
+
+        Entry 68 on the developer's own books -- ``Gas: Bjs``, `$47.61`,
+        purchased 2026-07-13, in the ``Gas`` envelope of the paycheck opening
+        2026-07-16 -- against the 2026-07-14 bank line.  The pane needs BOTH
+        facts, and they are two: the purchase day is the window and the
+        placement is the envelope's paycheck, which here starts three days
+        after the money was spent.
+        """
+        with app.app_context():
+            later = a_later_period(seed_user)
+            made_on = later.start_date - timedelta(days=3)
+            envelope = a_transaction(
+                seed_user, name="Gas", is_envelope=True, period=later,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="47.61", purchased_on=made_on,
+            )
+            db.session.commit()
+
+            row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
+
+            assert row is not None
+            assert row.purchased_on == made_on
+            assert row.period is not None
+            assert row.period.period_id == later.id, (
+                "the purchase's placement must be its ENVELOPE's paycheck, "
+                f"not {row.period.period_id} -- the pane would print the "
+                "wrong paycheck beside a correct purchase day"
+            )
+            assert row.period.start_date == later.start_date
+            # Its window is still the day it was MADE, not the paycheck: a
+            # purchase made three days before its paycheck opened is dated by
+            # the day it was made.
             assert row.expected_window == (made_on, made_on)
 
 
@@ -557,8 +624,11 @@ class TestTheCalendarIsTheOwnershipSCOPE:
     ``_purchase_candidates``.  ``_transaction_candidates`` also holds a Python
     guard (``if period is None: return None``), so for that arm the filter is
     defence in depth; ``_purchase_candidates`` has none, because
-    ``purchase_candidate`` never sees the calendar, so there the filter is the
-    only thing keeping an undatable row out of a money-offering set.
+    ``purchase_candidate`` declines no row (it reads the calendar for the
+    envelope's period since plan step ``bank_import:X-gz``, and a purchase is
+    dated by its own day whether or not that lookup answers), so there the
+    filter is the only thing keeping an undatable row out of a money-offering
+    set.
 
     **The scope is a PERIOD SET, not an owner comparison**, and it has been
     since pay-calendar plan step C4-a-4.  A first version of this docstring
@@ -601,12 +671,15 @@ class TestTheCalendarIsTheOwnershipSCOPE:
         below, which this step added for exactly that reason: without it,
         deleting either arm's filter leaves this suite green.
 
-        **The row is AD-HOC** (``template=False``) since plan step
-        balance:X-cf, because a row of a definition is generated by the
-        engine now and the engine refuses a period outside the owner's
-        calendar before any INSERT (``RecurrenceWindowError``) -- one tier
-        above the key this case grades.  The key is over ``(pay_period_id,
-        user_id)`` on every row, so the ad-hoc arm reaches it unchanged.
+        **The row is a ONE-OFF** (``template=False``, the producer's row since
+        plan step balance:X-bi-7c) and the builder refuses another owner's
+        paycheck BEFORE any write, as the engine's builder does for a row of
+        a recurring definition (``RecurrenceWindowError``) -- one tier above
+        the key.  The key itself, ``fk_transactions_owner_period`` over
+        ``(pay_period_id, user_id)`` on every row, is graded on a bare row by
+        ``test_models/test_c13a_transaction_owner_key.py``; this case grades
+        that the one-off builder cannot even ask for the trespasser (ruling
+        **R-BAL59**, X-bi-7c's rule-5 batch).
         """
         with app.app_context():
             theirs = PayPeriod(
@@ -615,12 +688,13 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             )
             db.session.add(theirs)
             db.session.flush()
-            with pytest.raises(IntegrityError) as exc:
+            with pytest.raises(AssertionError, match="not in user"):
                 a_transaction(
                     seed_user, name="Not yours", period=theirs, template=False,
                 )
-            assert "fk_transactions_owner_period" in str(exc.value)
-            db.session.rollback()
+            assert db.session.query(Transaction).filter_by(
+                pay_period_id=theirs.id,
+            ).count() == 0
 
     def test_a_row_in_a_period_the_CALENDAR_LACKS_is_not_offered(
         self, app, seed_user,
@@ -643,10 +717,12 @@ class TestTheCalendarIsTheOwnershipSCOPE:
         each filter deleted in turn):
 
         * ``_purchase_candidates``' filter -- **this case FAILS.**  That arm
-          has no guard behind it: ``purchase_candidate`` never sees the
-          calendar, so the filter is the only thing keeping an undatable
-          purchase out of a money-offering set.  This is the arm that was
-          uncovered.
+          has no guard behind it: ``purchase_candidate`` declines no row
+          (since plan step ``bank_import:X-gz`` it reads the calendar for
+          the envelope's period, but a purchase is dated by its own day and
+          the constructor stays total), so the filter is the only thing
+          keeping an undatable purchase out of a money-offering set.  This is
+          the arm that was uncovered.
         * ``_transaction_candidates``' filter -- this case still passes, and
           so does every other.  The guard at ``if period is None: return None``
           declines the row anyway, so that filter is defence in depth and

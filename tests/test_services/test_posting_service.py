@@ -89,15 +89,22 @@ from app.services import (
     status_seam,
     transfer_service,
 )
-from app.services._posting_write import _emit_balanced_entry, _PostingLeg
+from app.services._posting_write import (
+    _emit_balanced_entry,
+    _PostingLeg,
+    emit_typed_source_deltas,
+)
 from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     add_txn,
     an_entered_day,
     create_account_of_type,
     create_envelope_txn,
+    create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
     settlement_if_settling,
@@ -143,10 +150,16 @@ def _scenario_id(seed_user):
 
 
 def _entries_for_transaction(transaction_id):
-    """Return every journal entry for *transaction_id*, oldest first."""
+    """Return every journal entry for the row's FAMILY, oldest first.
+
+    The row and its covering movement (plan step **X-bi-3a**): a settle
+    through the seam mirrors the row's money onto a movement whose entries
+    link by ``transaction_entry_id``, so a read keyed on ``transaction_id``
+    alone misses the money.  Every figure asserted through this is unchanged.
+    """
     return (
         _db.session.query(JournalEntry)
-        .filter_by(transaction_id=transaction_id)
+        .filter(family_journal_filter(transaction_id))
         .order_by(JournalEntry.id)
         .all()
     )
@@ -211,6 +224,7 @@ def _add_txn_entry(seed_user, txn, amount, *, is_credit):
     ``effective - Sigma(credit)`` formula, so this sets it directly.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
@@ -748,6 +762,36 @@ class TestReconciliationHelpers:
 
 class TestFailLoud:
     """Broken invariants raise PostingError rather than posting silently."""
+
+    @pytest.mark.parametrize(
+        "linkage",
+        [
+            {},
+            {"transaction_id": 1, "transaction_entry_id": 2},
+            {"transfer_id": 1},
+        ],
+        ids=["no link", "two links", "a transfer link"],
+    )
+    def test_a_typed_source_names_exactly_one_typed_link(
+        self, app, db, seed_user, linkage,
+    ):
+        """``emit_typed_source_deltas`` refuses any link set but one typed FK.
+
+        Plan step X-bi-3b: a header carrying two links lands in NONE of the
+        ledger report's buckets, and a ``transfer_id`` header carries the
+        ``transfer`` kind and never a transaction's -- so the refusal fires
+        before a target is read, whatever *linkage* the caller spelled.
+        """
+        with app.app_context():
+            txn = create_settled_cash_transaction(
+                seed_user, _db.session, seed_user["bootstrap_period"],
+                Decimal("10.00"),
+            )
+            with pytest.raises(ValueError, match="exactly one of"):
+                emit_typed_source_deltas(
+                    txn, targets={}, source=PostingSourceEnum.TRANSACTION,
+                    description="x", log_label="x", **linkage,
+                )
 
     def test_account_posting_total_none_scenario_fails_loud(
         self, app, db, seed_user,
@@ -1705,8 +1749,10 @@ class TestPeriodAttribution:
 
     The 2026-07-02 adversarial review's R2 rule (fixing H1): the supported
     revert-and-move PATCH applies the new ``pay_period_id`` BEFORE the
-    end-of-handler reconcile, so a reversal stamped with the source row's
-    CURRENT period would land in the NEW period -- leaving the original entry
+    end-of-handler reconcile (and, since ruling **R-BAL58**, the revert's own
+    reconcile runs before the move and the handler reconciles again after
+    it), so a reversal stamped with the source row's CURRENT period would
+    land in the NEW period -- leaving the original entry
     and its reversal straddling two periods, where a later truncate of the new
     period CASCADE-deletes one half and permanently strands the other
     (``transaction_id`` SET NULL, unhealable).  The reconcile instead reads

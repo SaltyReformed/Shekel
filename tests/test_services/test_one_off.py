@@ -37,12 +37,16 @@ from app.models.template_amount_version import TemplateAmountVersion
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.one_off import (
-    OneOffToPlace,
+    due_date_after_move,
     due_date_for,
+    OneOffToPlace,
     place_one_off,
     place_row_of,
+    restate_price,
+    state_due_date,
 )
 from app.services.pay_calendar import calendar_for
+from app.services.amount_ownership import state_own_amount
 from app.services.recurrence_engine import unruled_row_fields
 from app.services.template_amount_service import amount_as_of, amount_versions
 from tests._test_helpers import resolved_amount
@@ -316,6 +320,123 @@ class TestTheDueDateRule:
             assert due_date_for(None, period) == period.start_date
             stated = period.start_date + timedelta(days=3)
             assert due_date_for(stated, period) == stated
+
+
+class TestAMovedRowIsRePlaced:
+    """``due_date_after_move``: R-BAL33, the R-BAL22 default following the placement."""
+
+    def test_the_default_follows_and_a_stated_day_stays(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Both arms, on derived periods; the miss the ruling names is benign."""
+        with app.app_context():
+            source = _period(seed_user, seed_periods_today, 2)
+            target = _period(seed_user, seed_periods_today, 3)
+            assert due_date_after_move(
+                source.start_date, source_start=source.start_date, target=target,
+            ) == target.start_date
+            stated = source.start_date + timedelta(days=6)
+            assert due_date_after_move(
+                stated, source_start=source.start_date, target=target,
+            ) == stated
+            # A stated day that happens to BE the source's start reads as
+            # the default and moves -- read by position, since R-BAL25
+            # rejected a stored marker.
+            assert due_date_after_move(
+                source.start_date, source_start=source.start_date, target=target,
+            ) != source.start_date
+
+
+class TestTheOneWriterOfAPlacedRowsDate:
+    """``state_due_date``: ``occurs_on = due_date`` as one act (R-BAL25)."""
+
+    def test_both_columns_take_the_day(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """One call, two columns, one value."""
+        with app.app_context():
+            period = _period(seed_user, seed_periods_today, 4)
+            row = place_one_off(
+                _spec(seed_user), period, scenario_id=seed_user["scenario"].id,
+            )
+            moved_to = period.start_date + timedelta(days=9)
+            state_due_date(row, moved_to)
+            db.session.commit()
+            db.session.refresh(row)
+            assert row.due_date == moved_to
+            assert row.occurs_on == moved_to
+
+
+class TestRestatePrice:
+    """``restate_price``: the definition takes the figure, the row reads it (R-BAL29 / R-BAL37)."""
+
+    def test_the_definitions_one_version_takes_the_figure_and_the_row_stays_derived(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """Kayla's Kindle `$162.25` -> `$170.00`: one version, TEMPLATE-priced, no flag."""
+        with app.app_context():
+            period = _period(seed_user, seed_periods_today, 4)
+            row = place_one_off(
+                _spec(seed_user), period, scenario_id=seed_user["scenario"].id,
+            )
+            restate_price(row, Decimal("170.00"))
+            db.session.commit()
+            db.session.refresh(row)
+            assert [(v.effective_date, v.amount) for v in amount_versions(row.template)] == [
+                (row.due_date, Decimal("170.00")),
+            ]
+            assert row.template.default_amount == Decimal("170.00")
+            assert row.estimated_amount is None
+            assert row.amount_source_id == ref_cache.amount_source_id(
+                AmountSourceEnum.TEMPLATE,
+            )
+            assert row.is_override is False
+            assert resolved_amount(row) == Decimal("170.00")
+
+    def test_a_detached_row_is_re_attached(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """R-BAL37: the interim's OWN + flag row goes back to its definition."""
+        with app.app_context():
+            period = _period(seed_user, seed_periods_today, 4)
+            row = place_one_off(
+                _spec(seed_user), period, scenario_id=seed_user["scenario"].id,
+            )
+            state_own_amount(row, Decimal("170.00"))
+            row.is_override = True
+            db.session.commit()
+
+            restate_price(row, Decimal("180.00"))
+            db.session.commit()
+            db.session.refresh(row)
+            assert row.estimated_amount is None
+            assert row.is_override is False
+            assert resolved_amount(row) == Decimal("180.00")
+            assert row.template.default_amount == Decimal("180.00")
+
+    def test_the_version_the_rows_own_date_reads_is_the_one_corrected(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A cleared cadence's several versions: the row's date picks the version."""
+        with app.app_context():
+            period = _period(seed_user, seed_periods_today, 4)
+            row = place_one_off(
+                _spec(seed_user), period, scenario_id=seed_user["scenario"].id,
+            )
+            later = row.due_date + timedelta(days=30)
+            row.template.amount_versions.append(TemplateAmountVersion(
+                effective_date=later, amount=Decimal("200.00"),
+            ))
+            db.session.commit()
+
+            restate_price(row, Decimal("170.00"))
+            db.session.commit()
+            db.session.refresh(row)
+            assert [(v.effective_date, v.amount) for v in amount_versions(row.template)] == [
+                (row.due_date, Decimal("170.00")),
+                (later, Decimal("200.00")),
+            ]
+            assert resolved_amount(row) == Decimal("170.00")
 
 
 class TestTheSeriesRowIsTheDefinitions:

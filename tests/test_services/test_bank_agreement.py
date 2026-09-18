@@ -28,6 +28,8 @@ disagreement.
 from datetime import date, timedelta
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     StatementBalanceEvidenceEnum,
@@ -39,19 +41,27 @@ from app.models.statement_match import (
     StatementMatch,
     StatementMatchMember,
 )
-from app.models.transaction import Transaction
-from app.services import bank_agreement, cash_ledger
+from app.services import (
+    bank_agreement,
+    cash_ledger,
+    status_seam,
+    transaction_service,
+)
 from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     add_entry,
+    an_entered_day,
     append_balance_assertion,
+    generate_row_of,
+    make_expense_template,
+    make_income_template,
+    one_off_row_of,
     settle_day_columns,
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
 from tests.test_services.test_statement_import.test_anchor import _seed_import
-from app.models.amount_ownership import AmountOwnership
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
 _UNCORROBORATED = StatementBalanceEvidenceEnum.UNCORROBORATED
@@ -61,21 +71,24 @@ _ZERO = Decimal("0.00")
 def _settled(db, seed_user, period, name, amount, day, *, is_income=False):
     """Insert one SETTLED row whose cash moved on *day*."""
     status_id = ref_cache.status_id(StatusEnum.DONE)
-    txn = Transaction(
-        account_id=seed_user["account"].id,
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        status_id=status_id,
+    txn = one_off_row_of(
+        period,
         name=name,
+        amount=Decimal(str(amount)),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(
             TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
         ),
-        amount_ownership=AmountOwnership.own(Decimal(str(amount))),
-        **settlement_columns(day, amount, amount),
-        **settle_day_columns(day),
     )
-    db.session.add(txn)
+    txn.status_id = status_id
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settlement_columns(day, amount, amount).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settle_day_columns(day).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
 
@@ -725,6 +738,69 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
             )
 
             assert [line.matched for line in detail.lines] == [True]
+            assert [row.matched for row in detail.rows] == [True]
+
+    @pytest.mark.parametrize(
+        ("is_income", "amount", "line_amount"),
+        [(False, "40.00", "-40.00"), (True, "2572.78", "2572.78")],
+        ids=["a covered bill", "a covered paycheck"],
+    )
+    def test_a_COVERED_row_matched_by_ROW_reads_matched(
+        self, app, seed_user, seed_periods, db, is_income, amount, line_amount,
+    ):
+        """The mirror's match state is its PARENT's.
+
+        Settled through the seam, a bill's (X-bi-3a) or a paycheck's
+        (X-bi-3b) money walks as its covering movement's fact, while the
+        match names the ROW -- the matcher's subject, its mirror kept out of
+        the purchase candidates.  The case above builds its row around the
+        seam and so never met this; with the entry's own claim asked, every
+        matched bill and paycheck read as unexplained here (adversarial review
+        of X-bi-3b, 2026-09-16).
+        """
+        with app.app_context():
+            _seed_import(
+                db, seed_user["account"], stated="1000.00",
+                effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+                lines=[(date(2026, 3, 3), line_amount)],
+            )
+            make = make_income_template if is_income else make_expense_template
+            txn = generate_row_of(
+                make(db.session, seed_user, amount=amount, name="Row"),
+                seed_periods[4],
+            )
+            transaction_service.settle_transaction(
+                txn, settle_day=an_entered_day(date(2026, 3, 3)),
+            )
+            db.session.flush()
+            assert len(status_seam.covering_movements(txn)) == 1
+            line = db.session.query(BankStatementLine).filter(
+                BankStatementLine.account_id == seed_user["account"].id,
+            ).one()
+            match = StatementMatch(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                applied_by_rule=False,
+            )
+            db.session.add(match)
+            db.session.flush()
+            db.session.add(StatementMatchMember(
+                match_id=match.id, account_id=seed_user["account"].id,
+                bank_statement_line_id=line.id,
+            ))
+            db.session.add(StatementMatchMember(
+                match_id=match.id, account_id=seed_user["account"].id,
+                transaction_id=txn.id,
+            ))
+            db.session.commit()
+
+            detail = bank_agreement.day_detail(
+                seed_user["account"],
+                BalanceContext.build(seed_user["user"].id),
+                date(2026, 3, 3),
+            )
+
+            assert [row.amount for row in detail.rows] == [Decimal(line_amount)]
             assert [row.matched for row in detail.rows] == [True]
 
     def test_an_ENVELOPE_PURCHASE_is_named_from_its_ENTRY(

@@ -25,11 +25,12 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum
+from app.enums import MovementFigureSourceEnum, RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.settle_day import (
+    figure_source_of,
     SettleDay,
     record_settle_day,
     recorded_settle_day,
@@ -42,6 +43,7 @@ from app.services.entry_service._refusals import (
     _reject_settled_before_purchase,
     _reject_settled_parent,
     _reject_settled_removal,
+    _reject_settlement_record,
     cost_fields_changing,
 )
 from app.utils.balance_predicates import is_cancelled
@@ -66,7 +68,6 @@ logger = logging.getLogger(__name__)
 _UPDATABLE_FIELDS = frozenset({
     "amount", "description", "purchased_on", "settle_day", "is_credit",
 })
-
 
 
 def _resync_after_entry_change(txn: Transaction) -> None:
@@ -371,6 +372,13 @@ def create_entry(
         description=details.description,
         purchased_on=details.purchased_on,
         is_credit=details.is_credit,
+        # WHO WROTE the figure, stated by the door that wrote it (plan step
+        # **X-bi-3a**): the bank's when the day it arrives with is the bank's,
+        # a person's otherwise.  NOT NULL and no default on the column, so a
+        # writer that says nothing is refused at flush rather than guessed for.
+        figure_source_id=ref_cache.movement_figure_source_id(
+            figure_source_of(details.settle_day),
+        ),
     )
     # The posting day and the basis that says how it is known, written as
     # ONE pair (plan step **X-az**).  Assigned through the shared writer
@@ -496,6 +504,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     _reject_settled_parent(
         entry.transaction, cost_fields_changing(valid_updates),
     )
+    # The row's own payment record is the status seam's to write (plan step
+    # **X-bi-3a**); checked after ownership for the same 404 reason.
+    _reject_settlement_record(entry)
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
@@ -565,6 +576,28 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
             record_settle_day(entry, value)
             continue
         setattr(entry, field, value)
+    # **WHO WROTE the figure moves only when the figure is written** (plan step
+    # **X-bi-3a**, ruling **R-BAL39**).  This door has two callers that write
+    # an amount: the bank's mover (``statement_match._moving``), which always
+    # sends the line's ``observed`` day beside any figure it reprices, and the
+    # human PATCH, whose day -- when it sends one -- is ``entered``.  So a
+    # submission carrying an ``observed`` day is the bank stating the figure
+    # (a confirmation RAISES a typed figure to observed, as it raises an
+    # ``asserted`` day), and any other submission that sets ``amount`` is a
+    # person stating it.  A day-only edit on the owner's word leaves the source
+    # alone: the figure was not written, so nothing about who wrote it changed.
+    if (
+        "settle_day" in valid_updates
+        and figure_source_of(valid_updates["settle_day"])
+        is MovementFigureSourceEnum.OBSERVED
+    ):
+        entry.figure_source_id = ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.OBSERVED,
+        )
+    elif "amount" in valid_updates:
+        entry.figure_source_id = ref_cache.movement_figure_source_id(
+            MovementFigureSourceEnum.TYPED,
+        )
     # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
     # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
     # seen to show this purchase ON that day; a user moving the day is
@@ -674,6 +707,9 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # purchases a statement pass created in error had no door that removes
     # one (finding **N-333**).  ``_reject_settled_removal`` weighs what the
     # close actually booked instead.
+    # The row's own payment record is withdrawn by a REVERT, never here (plan
+    # step **X-bi-3a**); named first, so the refusal says which act owns it.
+    _reject_settlement_record(entry)
     _reject_settled_removal(entry.transaction, entry)
 
     txn = entry.transaction

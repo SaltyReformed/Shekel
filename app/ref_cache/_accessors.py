@@ -27,13 +27,14 @@ from app.enums import (
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
-    DeductionTimingEnum,
+    PaycheckLineKindEnum,
     EmployerContributionTypeEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
+    MovementFigureSourceEnum,
     PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -328,10 +329,28 @@ def acct_type_max_term(type_id):
     return meta.get("max_term_months")
 
 
-def deduction_timing_id(member):
-    """Return the integer primary key for a DeductionTimingEnum member."""
+def paycheck_line_kind_id(member):
+    """Return the integer primary key for a PaycheckLineKindEnum member."""
     require_init()
-    return cache().enum_ids[DeductionTimingEnum][member]
+    return cache().enum_ids[PaycheckLineKindEnum][member]
+
+
+def paycheck_line_kind_member(kind_id):
+    """Return the PaycheckLineKindEnum member a stored ``paycheck_line_kind_id`` names.
+
+    :func:`paycheck_line_kind_id`'s inverse (plan step salary:R18-b): the
+    salary page and the cockpit read a stored line's kind back to word it and
+    to tell the deduction side from the earning side, and the schema refuses
+    a target account on an earning kind -- IDs for logic, strings for display.
+
+    Args:
+        kind_id: The ``ref.paycheck_line_kinds`` primary key.
+
+    Returns:
+        The member, or ``None`` for an id the cache does not hold.
+    """
+    require_init()
+    return cache().enum_members[PaycheckLineKindEnum].get(kind_id)
 
 
 def calc_method_id(member):
@@ -804,14 +823,45 @@ def settled_day_basis_id(member):
     return cache().enum_ids[SettledDayBasisEnum][member]
 
 
+def movement_figure_source_id(member):
+    """Return the integer primary key for a MovementFigureSourceEnum member.
+
+    WHO WROTE a movement's FIGURE (plan step **X-bi-3a**, ruling **R-BAL39**):
+    the settle pricing it from the plan (``resolved``), a person (``typed``) or
+    the bank's own line (``observed``).  Stamped on
+    ``budget.transaction_entries.figure_source_id`` by the two writers of a
+    movement -- ``entry_service``'s purchase doors and the status seam's
+    covering-movement writer -- and read by the seam when a settle is reverted
+    or repeated: a ``resolved`` figure is re-priced, a stated one is honoured.
+    Always via the integer ID, never the string ``name``.
+
+    There is no accessor for an ABSENT source because there is no absent state:
+    the column is NOT NULL with no default, so a movement that states no source
+    is unstorable rather than conventionally "typed".
+
+    Args:
+        member: A ``MovementFigureSourceEnum`` member
+                (e.g. ``MovementFigureSourceEnum.RESOLVED``).
+
+    Returns:
+        int -- the ``ref.movement_figure_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid MovementFigureSourceEnum member.
+    """
+    require_init()
+    return cache().enum_ids[MovementFigureSourceEnum][member]
+
+
 def statement_balance_evidence_member(evidence_id):
     """Return the StatementBalanceEvidenceEnum member for a stored id, or None.
 
     :func:`statement_balance_evidence_id`'s inverse, and the reason it exists
     is the project's own rule rather than convenience: a reader holding
-    ``budget.statement_imports.balance_evidence_id`` needs the MEMBER to
+    ``budget.account_anchor_history.evidence_id`` needs the MEMBER to
     dispatch on, and the only other way to get one is
-    ``StatementBalanceEvidenceEnum(row.balance_evidence.name)`` -- constructing
+    ``StatementBalanceEvidenceEnum(<ref row>.name)`` -- constructing
     logic out of a column whose strings are for display.  That is the subtler
     half of the IDs-for-logic rule, the half ``shekel-refname-compare`` cannot
     see because it is a constructor rather than a comparison, and it moves
@@ -832,11 +882,12 @@ def statement_balance_evidence_member(evidence_id):
 def statement_balance_evidence_id(member):
     """Return the integer primary key for a StatementBalanceEvidenceEnum member.
 
-    An imported statement's opening-balance discriminator (plan step
-    **X-f6e-1**, ruling **R-GF**).  Stamped on
-    ``budget.statement_imports.balance_evidence_id`` by the one import door, via
-    the integer ID and never the string ``name``.  What the three members MEAN
-    is :class:`app.enums.StatementBalanceEvidenceEnum`'s to say and is not
+    The level relation's evidence rank (plan step **X-f6e-1**, ruling
+    **R-GF**; the column moved to ``budget.account_anchor_history.evidence_id``
+    at ``balance:X-bj-1``).  Stamped by the import door for a bank level and
+    by the column's own default for an owner's, via the integer ID and never
+    the string ``name``.  What the three members MEAN is
+    :class:`app.enums.StatementBalanceEvidenceEnum`'s to say and is not
     restated here.
     """
     require_init()

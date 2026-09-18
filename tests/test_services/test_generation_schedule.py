@@ -67,8 +67,8 @@ from app.exceptions import RecurrenceWindowError
 from app import ref_cache
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
+from app.models.paycheck_line import PaycheckLine
+from app.models.ref import CalcMethod, PaycheckLineKind, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -93,7 +93,7 @@ from tests._test_helpers import (
     derived_span,
     last_covered_day,
     make_cadence_rule,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_transfer_template,
     payroll_basis,
     populate_in_a_fresh_pass,
@@ -607,10 +607,10 @@ class TestThePaycheckSeesTheWholeSchedule:
         db.session.add(profile)
         db.session.flush()
 
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=db.session.query(DeductionTiming)
-            .filter_by(name="pre_tax").one().id,
+            paycheck_line_kind_id=db.session.query(PaycheckLineKind)
+            .filter_by(name="pre_tax_deduction").one().id,
             calc_method_id=db.session.query(CalcMethod)
             .filter_by(name="flat").one().id,
             name="Health Insurance",
@@ -618,7 +618,7 @@ class TestThePaycheckSeesTheWholeSchedule:
         )
         db.session.add(deduction)
         db.session.flush()
-        make_deduction_cadence_rule(db.session, deduction, 24)
+        make_line_cadence_rule(db.session, deduction, 24)
         seed_tax_bracket_set(seed_user["user"].id)
         seed_state_tax_config(seed_user["user"].id, Decimal("0.0399"))
         seed_fica_config(seed_user["user"].id)

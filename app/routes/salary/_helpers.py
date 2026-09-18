@@ -10,6 +10,7 @@ instances, preserving the pre-split monolith's behaviour.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -22,21 +23,32 @@ from app.models.salary_profile import SalaryProfile
 from app.models.account import Account
 from app.models.ref import (
     CalcMethod,
-    DeductionTiming,
     RaiseType,
 )
 from app.routes._recurrence_conflict_chooser import flash_retained_notice
-from app.routes._recurrence_form_render import edit_form_cadence
-from app.services import account_service, deduction_cadence, salary_regeneration
+from app.routes._recurrence_form_render import (
+    RecurrenceEnd,
+    RecurrenceStart,
+    edit_form_cadence,
+    edit_form_end,
+)
+from app.services import (
+    account_service,
+    paycheck_line_kinds,
+    payroll_line_cadence,
+    salary_regeneration,
+)
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import picker_model
+from app.services.recurrence import NEVER_ENDS, EndBound, picker_model
 from app.schemas.validation import (
     CalibrationConfirmSchema,
     CalibrationSchema,
-    DeductionCreateSchema,
-    DeductionUpdateSchema,
+    EFFECTIVE_DATE_MAX,
+    EFFECTIVE_DATE_MIN,
     FicaConfigSchema,
+    PaycheckLineCreateSchema,
+    PaycheckLineUpdateSchema,
     RaiseCreateSchema,
     RaiseUpdateSchema,
     SalaryProfileCreateSchema,
@@ -62,8 +74,8 @@ _RAISE_UPDATE_FIELDS = {
 # ``deductions_per_year`` left this set at plan step salary:R15-b: a
 # deduction's cadence is a recurrence rule on the row, authored through the
 # recurrence seam (R15-c's form), never a column written by name.
-_DEDUCTION_UPDATE_FIELDS = {
-    "name", "deduction_timing_id", "calc_method_id", "amount",
+_LINE_UPDATE_FIELDS = {
+    "name", "paycheck_line_kind_id", "calc_method_id", "amount",
     "annual_cap", "inflation_enabled",
     "inflation_rate", "inflation_effective_month", "target_account_id",
 }
@@ -72,18 +84,18 @@ _DEDUCTION_UPDATE_FIELDS = {
 # raise / deduction double-submit fixes (F-051 + F-052 / C-23).
 # Each literal mirrors the model declaration in
 # ``app/models/salary_raise.py`` and
-# ``app/models/paycheck_deduction.py`` and the migration revision
+# ``app/models/paycheck_line.py`` and the migration revision
 # ``a3b9c2d40e15``; renaming a constraint requires a coordinated
 # edit across all three sites.
 _SALARY_RAISES_UNIQUE_CONSTRAINT = "uq_salary_raises_profile_type_year_month"
-_PAYCHECK_DEDUCTIONS_UNIQUE_CONSTRAINT = "uq_paycheck_deductions_profile_name"
+_PAYCHECK_LINES_UNIQUE_CONSTRAINT = "uq_paycheck_lines_profile_name"
 
 _create_schema = SalaryProfileCreateSchema()
 _update_schema = SalaryProfileUpdateSchema()
 _raise_schema = RaiseCreateSchema()
 _raise_update_schema = RaiseUpdateSchema()
-_deduction_schema = DeductionCreateSchema()
-_deduction_update_schema = DeductionUpdateSchema()
+_line_schema = PaycheckLineCreateSchema()
+_line_update_schema = PaycheckLineUpdateSchema()
 _fica_schema = FicaConfigSchema()
 _calibration_schema = CalibrationSchema()
 _calibration_confirm_schema = CalibrationConfirmSchema()
@@ -292,7 +304,7 @@ def _respond_after_raise_change(profile):
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 
-def _deduction_cadence_phrases(profile) -> dict[int, str]:
+def _line_cadence_phrases(profile) -> dict[int, str]:
     """How often each of *profile*'s deductions is taken, worded for the page.
 
     The Frequency cell's one source since plan step salary:R15-b: each
@@ -313,19 +325,26 @@ def _deduction_cadence_phrases(profile) -> dict[int, str]:
     """
     calendar = (
         calendar_for(profile.user_id)
-        if any(d.recurrence_rule is not None for d in profile.deductions)
+        if any(d.recurrence_rule is not None for d in profile.lines)
         else None
     )
-    return deduction_cadence.cadence_phrases(profile.deductions, calendar)
+    return payroll_line_cadence.cadence_phrases(profile.lines, calendar)
 
 
-def _deduction_cadence_context(profile) -> dict:
-    """The context the deductions section renders each line's cadence from.
+def _line_cadence_context(profile) -> dict:
+    """The context the lines section renders each line's cadence and kind from.
 
-    ONE producer for the two renders of ``salary/_deductions_section.html``
+    ONE producer for the two renders of ``salary/_lines_section.html``
     -- the edit page and the HTMX fragment -- so the section cannot read a
     line's cadence one way on a full load and another after a swap (plan
-    step salary:R15-c, ruling **R-SAL31**):
+    step salary:R15-c, ruling **R-SAL31**), and since plan step salary:R18-b
+    (ruling **R-SAL38**) the kind vocabulary rides with it:
+
+    * ``kind_options`` -- the four kinds as ``(id, label)`` in waterfall
+      order, the form's select; ``kind_labels`` -- ``{id: label}``, the row
+      chip's words.  Both from :mod:`app.services.paycheck_line_kinds`, the
+      one producer of a kind's label, so the ref row's NAME is never worded
+      by a template;
 
     * ``cadence_phrases`` -- the Frequency cell's words, R15-b's;
     * ``recurrence_picker`` -- the offer set the shared cadence controls
@@ -338,52 +357,112 @@ def _deduction_cadence_context(profile) -> dict:
       (:func:`~app.routes._recurrence_form_render.edit_form_cadence`:
       ``None`` for a line with no rule, and ``None`` with a flashed
       explanation for a stored cadence the application no longer models).
-      The section emits each as ``data-ded-*`` attributes on the row's edit
+      The section emits each as ``data-line-*`` attributes on the row's edit
       button, and ``app.js`` fills the one inline form from them the way it
       fills every other field of that form.
+    * ``selected_spans`` -- ``{line id: LineSpan}``, the row's start, nominal
+      day and closing bound for the same edit prefill (plan step
+      salary:R18-c, ruling **R-SAL38** (2)); ``add_form_start`` /
+      ``add_form_end`` -- what the ADD form's span rows open on: a BLANK
+      start (blank is the opening payday) and *never*; ``starts_on_min`` /
+      ``starts_on_max`` -- the schema's own date window, so the browser hint
+      and the refusal state one range.
 
     Args:
-        profile: The salary profile whose deductions the section lists.
+        profile: The salary profile whose lines the section lists.
 
     Returns:
-        The three context keys.
+        The nine context keys.
     """
+    options = paycheck_line_kinds.kind_options()
+    picker = picker_model()
     return {
-        "cadence_phrases": _deduction_cadence_phrases(profile),
-        "recurrence_picker": picker_model(),
+        "kind_options": options,
+        "kind_labels": dict(options),
+        "cadence_phrases": _line_cadence_phrases(profile),
+        "recurrence_picker": picker,
         "selected_cadences": {
-            deduction.id: edit_form_cadence(deduction)
-            for deduction in profile.deductions
+            line.id: edit_form_cadence(line)
+            for line in profile.lines
         },
+        "selected_spans": {line.id: _line_span(line, picker) for line in profile.lines},
+        "add_form_start": RecurrenceStart(starts_on=None, nominal_day=None),
+        "add_form_end": RecurrenceEnd(selected=NEVER_ENDS),
+        "starts_on_min": EFFECTIVE_DATE_MIN,
+        "starts_on_max": EFFECTIVE_DATE_MAX,
     }
 
 
-def _render_deductions_partial(profile):
-    """Return the deductions table partial for HTMX updates."""
-    db.session.refresh(profile)
-    deduction_timings = db.session.query(DeductionTiming).all()
-    calc_methods = db.session.query(CalcMethod).all()
-    investment_accounts = _get_investment_accounts(profile.user_id)
-    return render_template(
-        "salary/_deductions_section.html",
-        profile=profile,
-        deduction_timings=deduction_timings,
-        calc_methods=calc_methods,
-        investment_accounts=investment_accounts,
-        **_deduction_cadence_context(profile),
+@dataclass(frozen=True)
+class LineSpan:
+    """What a stored line's SPAN controls prefill with on an edit.
+
+    Attributes:
+        starts_on: The rule's own first occurrence, or ``None`` for a line
+            with no rule -- rendered as a BLANK box, because blank is what the
+            form means by "from the opening payday" and a re-save of a blank
+            box derives the same default again (plan step salary:R18-c).
+        nominal_day: The rule's nominal day, or ``None``.
+        end: The closing bound as the ONE value the form's three controls
+            compose to (:class:`~app.services.recurrence.EndBound`): *never*
+            for a line with no rule.
+    """
+    starts_on: date | None
+    nominal_day: int | None
+    end: EndBound
+
+
+def _line_span(line, picker) -> LineSpan:
+    """Return *line*'s span for the edit prefill, through the render-side readers.
+
+    The bound comes from :func:`~app.routes._recurrence_form_render.edit_form_end`
+    -- the same reader the template forms use, so the three stored shapes are
+    discriminated in one place; a payroll line's bounds are never the loan's,
+    so the row is never locked.  The start is read off the rule rather than
+    through ``edit_form_starts_on``, which opens a rule-less definition on
+    TODAY -- the template forms' default, and the wrong one here, where a
+    blank box is the opening payday and today would be read as a stated
+    start.
+
+    Args:
+        line: One of the profile's lines.
+        picker: The form's offer sets.
+
+    Returns:
+        The :class:`LineSpan`.
+    """
+    rule = line.recurrence_rule
+    return LineSpan(
+        starts_on=None if rule is None else rule.starts_on,
+        nominal_day=None if rule is None else rule.nominal_day,
+        end=edit_form_end(line, None, picker, locked=False).selected,
     )
 
 
-def _respond_after_deduction_change(profile):
+def _render_lines_partial(profile):
+    """Return the payroll-lines section partial for HTMX updates."""
+    db.session.refresh(profile)
+    calc_methods = db.session.query(CalcMethod).all()
+    investment_accounts = _get_investment_accounts(profile.user_id)
+    return render_template(
+        "salary/_lines_section.html",
+        profile=profile,
+        calc_methods=calc_methods,
+        investment_accounts=investment_accounts,
+        **_line_cadence_context(profile),
+    )
+
+
+def _respond_after_line_change(profile):
     """Respond after a deduction mutation succeeds (or is idempotently absorbed).
 
-    Returns the deductions-section partial for an in-page HTMX swap, or a
+    Returns the lines-section partial for an in-page HTMX swap, or a
     full-page redirect to the profile edit view for a normal form post.
     Counterpart to :func:`_respond_after_raise_change` for the add/update/
     delete deduction handlers.
     """
     if request.headers.get("HX-Request"):
-        return _render_deductions_partial(profile)
+        return _render_lines_partial(profile)
     return redirect(url_for("salary.edit_profile", profile_id=profile.id))
 
 

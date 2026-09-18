@@ -65,6 +65,17 @@ down_revision = "d3b6f1c8a274"
 branch_labels = None
 depends_on = None
 
+#: The three tables this revision was written for, named LITERALLY rather
+#: than read from ``APPEND_ONLY_TABLES``: that constant grew a fourth table at
+#: ``balance:X-bj-1`` (``d2e9f4a17c63``) which does not exist at this point
+#: of the chain, and a replay from the start must install what this revision
+#: installed.  The ``opening_infrastructure`` ``arms`` precedent.
+_TABLES = (
+    "budget.account_anchor_history",
+    "budget.account_openings",
+    "budget.loan_anchor_events",
+)
+
 
 def upgrade():
     """Install ``budget.refuse_append_only_change`` on the three tables.
@@ -72,7 +83,7 @@ def upgrade():
     Idempotent; see the module docstring and
     :func:`app.append_only_infrastructure.apply_append_only_infrastructure`.
     """
-    apply_append_only_infrastructure(op.execute)
+    apply_append_only_infrastructure(op.execute, tables=_TABLES)
 
 
 def downgrade():
@@ -80,4 +91,4 @@ def downgrade():
 
     Idempotent and a clean no-op on a database that never carried them.
     """
-    remove_append_only_infrastructure(op.execute)
+    remove_append_only_infrastructure(op.execute, tables=_TABLES)

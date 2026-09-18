@@ -64,6 +64,10 @@
         <th scope="col" class="text-end">Pre-Tax Ded.</th>
         <th scope="col" class="text-end">Taxes</th>
         <th scope="col" class="text-end">Post-Tax Ded.</th>
+        {# After-tax EARNINGS join the deposit outside the gross (plan step
+           salary:R18-b), so the row adds up only with them shown; a taxable
+           earning is already inside Gross. #}
+        <th scope="col" class="text-end">After-Tax Earn.</th>
         <th scope="col" class="text-end">Net</th>
         <th scope="col">3rd</th>
       </tr>
@@ -91,6 +95,9 @@
         <td class="text-end font-mono text-danger">-{{ money(bd.taxes.total) }}</td>
         <td class="text-end font-mono text-danger">
           {% if bd.deductions.total_post_tax > 0 %}-{{ money(bd.deductions.total_post_tax) }}{% else %}--{% endif %}
+        </td>
+        <td class="text-end font-mono text-success">
+          {% if bd.earnings.total_after_tax > 0 %}+{{ money(bd.earnings.total_after_tax) }}{% else %}--{% endif %}
         </td>
         <td class="text-end font-mono fw-bold text-success">{{ money(bd.earnings.net_pay) }}</td>
         <td>

@@ -9,7 +9,7 @@ user_id column (Account, TransactionTemplate, SavingsGoal, etc.).
 
 Pattern B (indirect via parent): Use get_owned_via_parent() for
 models scoped through a FK parent (SalaryRaise via SalaryProfile,
-PaycheckDeduction via SalaryProfile).  It named Transaction via
+PaycheckLine via SalaryProfile).  It named Transaction via
 PayPeriod as its first example until plan step ``pay_calendar:C13-b``;
 ``budget.transactions`` carries its own ``user_id`` now, so that row is
 Pattern A and the example was pointing new code at the wrong one.
@@ -324,8 +324,8 @@ def get_owned_via_parent(model, pk, parent_attr,
         # SalaryRaise -> SalaryProfile.user_id
         get_owned_via_parent(SalaryRaise, raise_id, "salary_profile")
 
-        # PaycheckDeduction -> SalaryProfile.user_id
-        get_owned_via_parent(PaycheckDeduction, ded_id, "salary_profile")
+        # PaycheckLine -> SalaryProfile.user_id
+        get_owned_via_parent(PaycheckLine, ded_id, "salary_profile")
     """
     record = db.session.get(model, pk)
     if record is None:

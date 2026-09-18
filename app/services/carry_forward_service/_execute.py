@@ -1,13 +1,15 @@
 """Mutating carry-forward execution.
 
 ``carry_forward_unpaid`` applies the three-way partition's semantics --
-settle-and-roll for envelope rows, move-whole for discrete rows, and
+settle-and-roll for a definition's envelope rows (recurring or rule-less,
+ruling **R-BAL44**), move-whole for discrete rows, and
 ``transfer_service.update_transfer`` for shadows -- as one atomic batch.
 The caller owns the surrounding commit; a ``ValidationError`` from the
 envelope branch must roll the whole batch back.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -20,6 +22,12 @@ from app.models.transaction import Transaction
 from app.services import posting_service, transfer_service
 from app.services.amount_ownership import state_own_amount
 from app.services.cash_ledger import resolve_transaction_amount
+from app.services.one_off import (
+    due_date_after_move,
+    due_date_for,
+    holds_a_row_in,
+    place_row_of,
+)
 from app.services.recurrence import compute_due_date
 from app.services.row_valuation import purchases_total
 from app.utils.balance_predicates import is_projected_clause
@@ -75,13 +83,18 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     Raises:
         NotFoundError: If either period is not in *balance_ctx*'s calendar --
             it does not exist, or it is not this owner's.
-        ValidationError: On two conditions, either of which fails the WHOLE
+        ValidationError: On four conditions, any of which fails the WHOLE
             batch -- the caller must rollback the session before issuing any
             follow-up writes.  (a) The envelope branch's ``AMBIGUOUS`` guard: a
             destination period with more than one mutable row for the same
             (template, scenario), a corrupt pre-existing state.  All other
             former block conditions (inactive template, finalised or
             soft-deleted destination) now create a fresh override row instead.
+            (c) The envelope branch's ``CLOSED`` guard and (d) the discrete
+            branch's twin of it (ruling **R-BAL44**, leaf 7b-3): a rule-less
+            definition's row carried into a paycheck that already holds a
+            row of it, or whose leftover would answer a day a row of it
+            answers.
             (b) Since plan step C9b, a carried TRANSFER that is a loan payment
             whose destination period would place its installment at or before
             the loan's origination (``transfer_service.update_transfer``
@@ -133,28 +146,19 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # (D6-09 / MED-02) so this re-check shares one definition with
         # the source-period SELECT above.
         #
-        # Two passes are required because a row of a RECURRING definition
-        # must flip ``is_override = TRUE`` as part of the same SQL UPDATE:
-        # the flag is what keeps the maintain and generate passes off a row
-        # the owner placed elsewhere, and flipping it with the period leaves
-        # no transient state for the undated generation index (which excludes
-        # override rows) to collide on with the rule's own row in the target.
-        # A row NO RULE generated -- ad-hoc, or a rule-less definition's --
-        # only needs the period flip: no pass will ever write over it, and a
-        # flag there would hide it from
+        # THREE passes, because the rows differ in what the move writes.  A
+        # row of a RECURRING definition must flip ``is_override = TRUE`` as
+        # part of the same SQL UPDATE: the flag is what keeps the maintain
+        # and generate passes off a row the owner placed elsewhere, and
+        # flipping it with the period leaves no transient state for the
+        # undated generation index (which excludes override rows) to collide
+        # on with the rule's own row in the target.  A row NO RULE generated
+        # -- ad-hoc, or a rule-less definition's -- takes no flag: no pass
+        # will ever write over it, and a flag there would hide it from
         # ``recurrence_engine.propagate_to_unruled_definition`` (the twin's
         # defect **BAL-493** on this table) and from a rule added later
         # (R-BAL25).  **The split is ``recurs`` since plan step
-        # balance:X-bi-7a**, not the link (ruling R-BAL20).  A rule-less
-        # definition's row keeps its ``occurs_on`` where it has one, so the
-        # occurrence index is indifferent to the move.  Its UNDATED
-        # non-override shape -- a pre-R17 row the ``occurs_on`` backfill left
-        # NULL (6 on production 2026-09-13, all immutable, so none this
-        # branch can move) -- is still keyed on its paycheck by the undated
-        # index, and two such rows of one cleared cadence would collide on a
-        # move; ``recurrence:R19-b`` (``occurs_on`` NOT NULL) is what deletes
-        # that shape, and the flip this branch used to make there was the
-        # one thing keeping it out of the index.
+        # balance:X-bi-7a**, not the link (ruling R-BAL20).
         #
         # The ``Transaction.version_id: + 1`` assignment honors the
         # optimistic-lock contract from C-17 / F-009: every UPDATE
@@ -168,14 +172,13 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         # ``no_autoflush`` invariant that the in-memory state never
         # diverges from the database while the loop runs.
         if ctx.discrete_txns:
-            recurring_ids = [t.id for t in ctx.discrete_txns if t.recurs]
-            unruled_ids = [t.id for t in ctx.discrete_txns if not t.recurs]
+            moved = _partition_discrete(ctx, target_period_id)
 
-            if recurring_ids:
+            if moved.recurring_ids:
                 count += (
                     db.session.query(Transaction)
                     .filter(
-                        Transaction.id.in_(recurring_ids),
+                        Transaction.id.in_(moved.recurring_ids),
                         is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
@@ -189,11 +192,30 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
                     )
                 )
 
-            if unruled_ids:
+            if moved.re_placed_ids:
                 count += (
                     db.session.query(Transaction)
                     .filter(
-                        Transaction.id.in_(unruled_ids),
+                        Transaction.id.in_(moved.re_placed_ids),
+                        is_projected_clause(Transaction),
+                        Transaction.is_deleted.is_(False),
+                    )
+                    .update(
+                        {
+                            Transaction.pay_period_id: target_period_id,
+                            Transaction.due_date: moved.re_placed_due,
+                            Transaction.occurs_on: moved.re_placed_due,
+                            Transaction.version_id: Transaction.version_id + 1,
+                        },
+                        synchronize_session="fetch",
+                    )
+                )
+
+            if moved.unruled_ids:
+                count += (
+                    db.session.query(Transaction)
+                    .filter(
+                        Transaction.id.in_(moved.unruled_ids),
                         is_projected_clause(Transaction),
                         Transaction.is_deleted.is_(False),
                     )
@@ -257,12 +279,12 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             source_txn, settled=source_txn.status.is_settled,
         )
     # **The DISCRETE rows need one too, since plan step X-f3b** (ruling
-    # **R-FM**).  They are RELOCATED rather than settled -- two bulk UPDATEs
+    # **R-FM**).  They are RELOCATED rather than settled -- the bulk UPDATEs
     # above set ``pay_period_id`` to the target -- and a posting carries the
-    # BUDGET column its source row is attributed to, so an ENVELOPE no rule
-    # generated (ad-hoc, or a rule-less definition's, which ``_context``
-    # routes here deliberately, "moves whole, carrying its entries") would leave its
-    # purchases' legs filed under the period it left.  The comment above used to
+    # BUDGET column its source row is attributed to, so a LEGACY link-less
+    # envelope (which ``_context`` routes here, moving whole with its
+    # entries, until the family's cutover mints it a definition) would
+    # leave its purchases' legs filed under the period it left.  The comment above used to
     # justify skipping them with "carry-forward moves only Projected rows",
     # which was sound while only a settled row held postings and is the same
     # premise ``routes/transactions/mutations`` re-listed ``pay_period_id``
@@ -282,6 +304,107 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
               discrete_count=len(ctx.discrete_txns),
               transfer_count=len(moved_transfer_ids))
     return count
+
+
+@dataclass(frozen=True)
+class _DiscretePartition:
+    """The discrete branch's three passes, and the date the re-placed take.
+
+    Attributes:
+        recurring_ids: Rows of a RECURRING definition -- moved with
+            ``is_override`` flipped.
+        re_placed_ids: PLACED rows whose due date the move changes -- moved
+            with ``due_date`` and ``occurs_on`` re-placed on
+            :attr:`re_placed_due`.
+        re_placed_due: The target paycheck's start (ruling **R-BAL22**).
+        unruled_ids: Every other row -- moved, and nothing else written.
+    """
+
+    recurring_ids: "list[int]"
+    re_placed_ids: "list[int]"
+    re_placed_due: date
+    unruled_ids: "list[int]"
+
+
+def _partition_discrete(ctx, target_period_id: int) -> _DiscretePartition:
+    """Sort the discrete rows into the three UPDATEs the move writes.
+
+    **A PLACED row -- a rule-less definition's -- is RE-PLACED by the
+    move** (ruling **R-BAL33**, plan step balance:X-bi-7b): due on
+    its placed paycheck's start unless the owner stated a day
+    (R-BAL22), so the default follows the placement and an
+    owner-stated day, read by position, stays.  ``one_off.
+    due_date_after_move`` is the one statement of that rule for both
+    doors that move a row; here the rows whose answer moved are
+    collected under it and written in one UPDATE, ``occurs_on``
+    beside ``due_date`` because a placed row answers its own due date
+    (R-BAL25).  The function's only other answer is the row's own
+    date, so every re-placed row takes the target's start.  Found by
+    7b-1's adversarial review: a one-off is dated at birth since that
+    leaf, and this arm moved the period alone, so a one-off rolled to
+    the next paycheck read OVERDUE on the dashboard pulse and late in
+    ``payment_timeliness`` where the undated row it replaced sat on
+    the "anytime this period" shelf.  The balance is identical under
+    either date (a one-off's series is flat, R-BAL21).
+
+    A NON-ENVELOPE placed row reaches this branch since ruling
+    **R-BAL44** (an envelope of a definition takes the rollover), and
+    its definition holds ONE row in almost every case -- the grid's
+    one-off, ``mint_uncategorized``'s row -- but not every: an owner
+    who unticks *Track individual purchases* on a bank-born envelope
+    (the definition's flag, R-BAL36) leaves its rows plain, one per
+    paycheck, and one carried INTO a paycheck holding its sibling met
+    the occurrence index (found by 7b-3's adversarial review; finding
+    **BAL-496**'s last case).  So the re-placing REFUSES, as the
+    envelope branch's CLOSED does, where the target already holds a row
+    of the definition (``one_off.holds_a_row_in``).  A linked row
+    always carries a due date
+    (``ck_transactions_template_row_needs_due_date``), so the rule
+    above always has one to read; the 6 pre-R17 rows the ``occurs_on``
+    backfill left NULL (production 2026-09-13) are undated in THAT
+    column alone, all immutable, so none reaches this branch, and
+    ``recurrence:R19-b`` (``occurs_on`` NOT NULL) deletes the shape.
+
+    Args:
+        ctx: The batch's context (:func:`_build_carry_forward_context`).
+        target_period_id: The pay_period.id the batch carries INTO.
+
+    Returns:
+        The three id lists and the re-placed date.
+
+    Raises:
+        ValidationError: A placed row carried into a paycheck that already
+            holds a row of its definition.
+    """
+    re_placed_due = due_date_for(None, ctx.target_period)
+    re_placed_ids = [
+        t.id for t in ctx.discrete_txns
+        if t.is_placed and due_date_after_move(
+            t.due_date,
+            source_start=ctx.source_period.start_date,
+            target=ctx.target_period,
+        ) != t.due_date
+    ]
+    for t in ctx.discrete_txns:
+        if t.is_placed and holds_a_row_in(
+            t.template_id, t.scenario_id, target_period_id,
+            except_row_id=t.id,
+        ):
+            raise ValidationError(
+                f"Carry forward refused for source transaction "
+                f"{t.id} ('{t.name}'): the next paycheck already "
+                f"holds a row of that item, and an item holds one "
+                f"row per paycheck."
+            )
+    return _DiscretePartition(
+        recurring_ids=[t.id for t in ctx.discrete_txns if t.recurs],
+        re_placed_ids=re_placed_ids,
+        re_placed_due=re_placed_due,
+        unruled_ids=[
+            t.id for t in ctx.discrete_txns
+            if not t.recurs and t.id not in re_placed_ids
+        ],
+    )
 
 
 def _settle_source_and_roll_leftover(source_txn, target_period, basis,
@@ -327,17 +450,21 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
          ``carry_forward_unpaid``.
 
     Mutations land on ``source_txn`` and the target row in place; the
-    caller owns the session/commit lifecycle.  No flush happens here
-    except as a side effect of ``recurrence_engine.generate_for_template``
-    when it has to create a canonical (the ``CREATE`` branch only
-    ``db.session.add``s, which is acceptable inside the surrounding
-    ``no_autoflush`` block because an ``is_override`` row is index-safe
-    in every intermediate state).
+    caller owns the session/commit lifecycle.  Two flushes can happen here:
+    ``recurrence_engine.generate_for_template``'s, when it has to create a
+    canonical, and ``one_off.place_row_of``'s, when a rule-less
+    definition's leftover row is placed (ruling **R-BAL44**) -- the
+    recurring ``CREATE`` branch only ``db.session.add``s.  Both are
+    acceptable inside the surrounding ``no_autoflush`` block: an
+    ``is_override`` row is index-safe in every intermediate state, and a
+    placed row is written only after ``CLOSED`` has refused the states it
+    could collide with.
 
     Args:
-        source_txn: A Projected, non-deleted, envelope-tracked
-            transaction in the source period.  Partitioning in
-            ``carry_forward_unpaid`` guarantees the preconditions.
+        source_txn: A Projected, non-deleted, envelope-tracked transaction of
+            a DEFINITION (recurring, or rule-less since ruling **R-BAL44**) in
+            the source period.  Partitioning in ``carry_forward_unpaid``
+            guarantees the preconditions.
         target_period: The target
             :class:`~app.services.pay_calendar.DerivedPeriod`.
         schedule: The request's
@@ -351,10 +478,11 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
             touched, and it prices both ends of the rollover.
 
     Raises:
-        ValidationError: Only on the ``AMBIGUOUS`` guard -- more than one
-            mutable destination row for ``(template, period, scenario)``,
-            a corrupt pre-existing state the user must resolve manually.
-            The error names the source row and target period.
+        ValidationError: On the ``AMBIGUOUS`` guard -- more than one mutable
+            destination row for ``(template, period, scenario)``, a corrupt
+            pre-existing state the user must resolve manually -- and on
+            ``CLOSED`` (a rule-less definition whose target already answers
+            the occurrence, ruling **R-BAL44**).  Each names the source row.
     """
     # Pylint: ``import-outside-toplevel`` -- defer the recurrence-engine
     # import to avoid a circular dependency at module load time:
@@ -439,7 +567,11 @@ def _resolve_or_create_target_row(source_txn, target_period,
         ``CREATE`` rather than failing the batch.
       * ``CREATE`` -- no usable row and the engine will not generate one
         (inactive template, or a destination whose only row is finalised
-        or soft-deleted); create a fresh override row.
+        or soft-deleted); create a fresh override row -- or, for a
+        rule-less definition, place a row of it (ruling **R-BAL44**).
+      * ``CLOSED`` -- a rule-less definition whose row in the target has
+        finalised; refused, since a second row there would answer the same
+        occurrence.
       * ``AMBIGUOUS`` -- more than one mutable row for the same
         ``(template, period, scenario)`` that ``_leftover_recipient``
         cannot choose between: they answer the same occurrence, or one
@@ -479,7 +611,8 @@ def _resolve_or_create_target_row(source_txn, target_period,
         The Transaction row to bump.
 
     Raises:
-        ValidationError: On the ``AMBIGUOUS`` corrupt-state guard.
+        ValidationError: On the ``AMBIGUOUS`` corrupt-state guard, and on
+            ``CLOSED``.
     """
     resolution = _classify_leftover_target(
         source_txn, target_period, basis, schedule,
@@ -492,6 +625,30 @@ def _resolve_or_create_target_row(source_txn, target_period,
             f"{target_period.period_id} has more than one open row for "
             f"template {source_txn.template_id}.  Resolve the duplicate "
             f"rows manually before retrying."
+        )
+    if resolution.kind is _TargetKind.CLOSED:
+        # A rule-less definition's one row in the target has closed, or a
+        # row of it elsewhere -- the source itself, dated by its owner into
+        # the target -- already answers the target's start; a placed row
+        # would answer the same occurrence (ruling **R-BAL44**'s one
+        # refusal; ``_TargetKind.CLOSED`` carries the argument, and its
+        # ``row`` says which arm).
+        if resolution.row is not None:
+            raise ValidationError(
+                f"Carry forward refused for source transaction "
+                f"{source_txn.id} ('{source_txn.name}'): its envelope in the "
+                f"next paycheck has already closed, so the unspent "
+                f"{source_txn.name} budget has nowhere to roll.  Add the "
+                f"unspent amount to a later paycheck's envelope yourself."
+            )
+        raise ValidationError(
+            f"Carry forward refused for source transaction "
+            f"{source_txn.id} ('{source_txn.name}'): a row of "
+            f"{source_txn.name} is already due on "
+            f"{due_date_for(None, target_period).isoformat()}, the day the "
+            f"unspent budget would be placed on, so it has nowhere to roll.  "
+            f"Move that row's due date, or add the unspent amount to a later "
+            f"paycheck's envelope yourself."
         )
 
     if resolution.kind is _TargetKind.TOP_UP:
@@ -515,8 +672,29 @@ def _resolve_or_create_target_row(source_txn, target_period,
         if generated is not None:
             return generated
 
-    # CREATE (or a GENERATE race that produced nothing): build a fresh
-    # override row carrying the leftover.
+    # CREATE (or a GENERATE race that produced nothing).  A RULE-LESS
+    # definition's row is PLACED, through the one producer of such a row
+    # (ruling **R-BAL44**): dated at the target paycheck's start and
+    # answering that day.  **It starts at ``Decimal("0")``, OWN, exactly as
+    # the override row does**, so the caller's bump lands it on the leftover
+    # alone (**R-BAL43**: one occurrence among many): no rule budgets this
+    # definition in the target, so the row exists only to carry what rolled
+    # -- the CREATE arm's ``base`` the preview already promises.  Left
+    # priced by the definition, the bump read its standing price and wrote
+    # price PLUS leftover, `$170.00` where the preview said `$70.00`
+    # (measured by this leaf's own test before this line existed).  It
+    # flushes, and that is index-safe here because CLOSED above refused
+    # both states a placed row could collide with: a live row of the
+    # definition in the target, and a row of it -- the source dated there
+    # by its owner, or any sibling -- answering the target's start.  A
+    # RECURRING definition's row is the fresh override row it always was.
+    if not source_txn.recurs:
+        placed = place_row_of(
+            source_txn.template, target_period,
+            scenario_id=basis.scenario_id,
+        )
+        state_own_amount(placed, Decimal("0"))
+        return placed
     return _create_target_override_row(
         source_txn, target_period, basis.scenario_id,
     )
@@ -628,10 +806,12 @@ def _leftover_due_date(template, target_period) -> date:
 def _create_target_override_row(source_txn, target_period, scenario_id):
     """Create a fresh override row in *target_period* for the leftover.
 
-    Used when no mutable destination row exists to top up and the
-    recurrence engine will not generate one -- e.g. a yearly Father's Day
-    envelope rolling into an off-anniversary period, or a destination
-    whose only row is finalised or soft-deleted.  The row is created at
+    Used for a RECURRING definition when no mutable destination row exists
+    to top up and the recurrence engine will not generate one -- e.g. a
+    yearly Father's Day envelope rolling into an off-anniversary period, or
+    a destination whose only row is finalised or soft-deleted (a RULE-LESS
+    definition's leftover row is placed by ``one_off.place_row_of`` instead,
+    ruling **R-BAL44**).  The row is created at
     ``Decimal("0")``; the caller folds the leftover on top via the same
     bump every branch uses, so the row ends at exactly the leftover
     amount.

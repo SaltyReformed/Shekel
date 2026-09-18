@@ -53,6 +53,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import (
     generate_row_of,
     make_expense_template,
+    one_off_row_of,
     open_owner_calendar,
     record_paydays_across_a_hole,
     rhythm_of,
@@ -75,22 +76,19 @@ UNIQUE_INDEX_NAME = "uq_transactions_credit_payback_unique"
 
 def _make_projected_expense(seed_user, seed_periods, amount="100.00", period_index=0):
     """Insert a projected expense in ``seed_periods[period_index]``."""
-    projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    txn = Transaction(
-        user_id=seed_periods[period_index].user_id,
-        pay_period_id=seed_periods[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=projected.id,
+    txn = one_off_row_of(
+        seed_periods[period_index],
         name="Test Expense",
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal(amount),
+        user_id=seed_periods[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
     db.session.flush()
     return txn
 

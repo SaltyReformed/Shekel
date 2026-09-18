@@ -8,9 +8,11 @@ and nothing that folds them:
     ASSERTION, read from the dated ``AccountAnchorHistory`` source of truth
     (E-19).  A stored fact, not a computed projection.
   * :func:`planned_cash_rows` -- the account's still-PROJECTED
-    balance-contributing rows, unwindowed: the PLAN, which the seam's cash fold
-    dates and values (ruling R-G) because a plan's effective date depends on the
-    reader's as-of and this leaf reads no clock.
+    balance-contributing rows, unwindowed, plus one derived LEG per
+    still-projected transfer the account is on (plan step X-bi-6a, ruling
+    R-BAL13): the PLAN, which the seam's cash fold dates and values (ruling
+    R-G) because a plan's effective date depends on the reader's as-of and
+    this leaf reads no clock.
 
 The loan analog is :mod:`app.services.loan_ledger._events`: both answer "what
 happened, and in what order", never "what is the balance at T" -- which is the
@@ -37,13 +39,23 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from sqlalchemy import and_
+
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.utils.amount_relationships import valuation_load_options
+from app.services.transfer_legs import (
+    PlannedTransferLeg,
+    planned_transfer_legs,
+)
+from app.utils.amount_relationships import (
+    transfer_pricing_load_options,
+    valuation_load_options,
+)
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
+    owner_declared_clause,
 )
 
 from ._amounts import ReconciledThrough
@@ -114,6 +126,15 @@ def _governing_row(
     implementation: two queries that "agree by reading" is the defect this
     package's own history is made of.
 
+    **Over the OWNER's levels only, until the flip** (plan step
+    ``balance:X-bj-1``, ruling **R-JN**).  The level relation holds the bank's
+    statement placements too since that step, and what this answers is
+    "which assertion RESETS the fold" -- the grid header, the reconcile panel
+    and the write door's did-this-change compare all mean that -- so it
+    composes :func:`~app.utils.balance_predicates.owner_declared_clause`,
+    the one spelling of that narrowing, which ``X-f3c-5`` deletes with the
+    reset.
+
     Args:
         account_id: The account whose assertions to search.
         on_or_before: The civil day to answer as of, or ``None`` for the
@@ -125,6 +146,7 @@ def _governing_row(
     """
     query = db.session.query(AccountAnchorHistory).filter(
         AccountAnchorHistory.account_id == account_id,
+        owner_declared_clause(),
     )
     if on_or_before is not None:
         query = query.filter(AccountAnchorHistory.observed_on <= on_or_before)
@@ -351,22 +373,52 @@ def reconciled_through(account_id: int) -> ReconciledThrough:
     """
     return ReconciledThrough(
         db.session.query(db.func.max(AccountAnchorHistory.observed_on))
-        .filter(AccountAnchorHistory.account_id == account_id)
+        .filter(
+            AccountAnchorHistory.account_id == account_id,
+            # The owner's declarations bound clearing, not the bank's
+            # placements: the same interim narrowing ``_governing_row``
+            # composes, for the same reason (plan step ``balance:X-bj-1``).
+            owner_declared_clause(),
+        )
         .scalar()
     )
 
 
 def planned_cash_rows(
     account_id: int, scenario_id: int,
-) -> list[Transaction]:
-    """Return an account's still-PROJECTED balance-contributing rows.
+) -> list[Transaction | PlannedTransferLeg]:
+    """Return an account's still-PROJECTED plan: its own rows and its transfer legs.
 
-    The PLAN half of the cash event stream, and the exact structural twin of
+    The PLAN half of the cash event stream, and the structural twin of
     :func:`app.services.cash_ledger.settled_cash_facts` beside it: same account /
     scenario scope, same shared eligibility gate, same eager load, same absence
     of a period window.  The two differ in their status narrowing (settled there,
-    Projected here) and in what they RETURN, and that second difference is the
-    ruling:
+    Projected here), in what they RETURN, and -- since plan step **X-bi-6a** --
+    in WHERE a transfer's leg comes from, and each of those is a ruling:
+
+    **A still-projected transfer's leg is DERIVED from the parent row, not read
+    off its shadow** (ruling **R-BAL13**).  The two shadow ``Transaction`` rows
+    the transfer service writes beside each parent are that parent's
+    projection onto its two accounts, and until this step this loader was
+    kind-blind on ``transfer_id``: it loaded the shadow on this account and
+    the valuation walked it to the parent (amount rule 5).  Now the row half
+    of the plan EXCLUDES shadows -- the one place this loader narrows on
+    ``transfer_id``, and the narrowing plan step ``X-bi-6`` deletes with the
+    rows -- and the leg half is
+    :func:`app.services.transfer_legs.planned_transfer_legs` over
+    ``budget.transfers``: one :class:`~app.services.transfer_legs.PlannedTransferLeg`
+    per live still-projected transfer the account is on either side of, worth
+    the parent's resolved amount.  The settled twin still reads a SETTLED
+    shadow's record from the shadow row, because that is where plan step
+    ``X-au-c3`` recorded it; plan step ``X-bi-4`` moves that half onto
+    movements.  Both halves loaded, byte-identical wherever Transfer
+    Invariants 1-3 hold (0 of 350 shadow rows drifted from their parent on the
+    2026-09-15 production snapshot).  Where a pair has drifted on period, due
+    date, deletion or scenario the plan follows the PARENT, which is ruling
+    **R-JA**'s direction; where it has drifted on STATUS the two halves
+    disagree about which relation the row is in, and a settled shadow under a
+    still-Projected parent is counted by both -- the package docstring states
+    the figures, and ``X-bi-4`` is the step that re-keys the record half.
 
     * a SETTLED row can be dated by this leaf -- its ``settled_on`` is a
       STORED fact and nothing derives it (plan step X-f1, ruling R-EC; it was
@@ -411,26 +463,36 @@ def planned_cash_rows(
         scenario_id: The budget scenario the rows live in.
 
     Returns:
-        ``list[Transaction]`` -- every still-Projected contributing row for the
-        account in the scenario, unordered (the fold groups them by day), with
-        ``entries`` populated.
+        Every still-Projected contributing row of the account's OWN (no
+        shadow), with ``entries`` populated, followed by one
+        :class:`~app.services.transfer_legs.PlannedTransferLeg` per live
+        still-projected transfer the account is on, its parent's pricing
+        relationships populated.  Unordered: the fold groups them by day.
     """
-    return _unwindowed_contributing_rows(
-        account_id, scenario_id, is_projected_clause(Transaction),
+    rows: list[Transaction | PlannedTransferLeg] = _unwindowed_contributing_rows(
+        account_id, scenario_id,
+        and_(is_projected_clause(Transaction), Transaction.transfer_id.is_(None)),
     )
+    rows.extend(planned_transfer_legs(
+        account_id, scenario_id, options=transfer_pricing_load_options(),
+    ))
+    return rows
 
 
 def _unwindowed_contributing_rows(
-    account_id: int, scenario_id: int, status_clause,
+    account_id: int, scenario_id: int, narrowing,
 ) -> list[Transaction]:
-    """Return an account's contributing rows in one scenario, narrowed by status.
+    """Return an account's contributing rows in one scenario, narrowed by the caller.
 
     The ONE unwindowed row load behind both halves of the cash event stream --
-    :func:`planned_cash_rows` above (still-Projected) and
+    :func:`planned_cash_rows` above (still-Projected, and since plan step
+    X-bi-6a no transfer shadow) and
     :func:`app.services.cash_ledger.settled_cash_facts` (settled).  The two halves
     partition the contributing set exactly: ``balance_contributing_clause``
     admits Projected, Paid and Received, and the two callers narrow to
-    the first and the last three respectively.
+    the first and the last three respectively -- the plan half then leaves its
+    shadows to :func:`app.services.transfer_legs.planned_transfer_legs`, which
+    derives the same legs from their parents.
 
     Extracted when the second half was written and ``duplicate-code`` reported
     the eight shared lines.  PRIVATE, and imported across sibling modules exactly
@@ -473,12 +535,13 @@ def _unwindowed_contributing_rows(
     Args:
         account_id: The account whose rows to load.
         scenario_id: The budget scenario the rows live in.
-        status_clause: The caller's status narrowing as a SQLAlchemy boolean
-            expression over ``Transaction`` -- one of the shared builders in
+        narrowing: The caller's narrowing as a SQLAlchemy boolean expression
+            over ``Transaction``, built from the shared builders in
             :mod:`app.utils.balance_predicates`
-            (:func:`~app.utils.balance_predicates.is_projected_clause` for the
-            plan, ``status_id.in_(settled_status_ids())`` for the settled half),
-            never a literal written at the call site.
+            (:func:`~app.utils.balance_predicates.is_projected_clause` composed
+            with ``transfer_id IS NULL`` for the plan,
+            ``status_id.in_(settled_status_ids())`` for the settled half),
+            never a status literal written at the call site.
 
     Returns:
         ``list[Transaction]`` -- the matching rows, unordered, with ``entries``
@@ -487,16 +550,16 @@ def _unwindowed_contributing_rows(
     return (
         db.session.query(Transaction)
         # What a CONTRIBUTION pass reads, stated by the valuation rather than
-        # copied here (plan step X-au-g-2c-2).  Every transfer SHADOW in this
-        # set is DERIVED now, so pricing one walks to its parent transfer and
-        # that definition's settings -- roughly two years of forward projection
-        # on the Projected arm, so the per-row load this replaces is the
-        # largest N+1 the cutover could have introduced.
+        # copied here (plan step X-au-g-2c-2).  The Projected arm carries no
+        # transfer shadow since plan step X-bi-6a -- its legs are derived from
+        # the parents, loaded with their own pricing set -- so the parent chain
+        # in this set now serves the SETTLED arm's shadows alone, which are
+        # valued from their record and reach it only off the settled path.
         .options(*valuation_load_options())
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
-            status_clause,
+            narrowing,
             balance_contributing_clause(),
         )
         .all()

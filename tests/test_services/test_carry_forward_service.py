@@ -16,6 +16,7 @@ test_idempotency.py.  Focuses on:
     period) so cell == subtotal == balance.
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -26,6 +27,7 @@ from app.enums import (
     SettledDayBasisEnum,
     SettlementBasisEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -53,6 +55,7 @@ from app.services.cash_ledger import (
     contribution_of,
     resolve_transaction_amount,
 )
+from app.services.one_off import OneOffToPlace, place_one_off, state_due_date
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     amount_basis_for,
@@ -60,15 +63,19 @@ from tests._test_helpers import (
     default_settle_day,
     definition_firing_twice_in_a_paycheck,
     derived_span,
+    figure_source_columns,
     generate_row_of,
     generate_transfer_of,
+    legacy_link_less_row_of,
     make_cadence_rule,
     make_expense_template,
     make_income_template,
     make_transfer_template,
     moved_by_the_owner,
+    one_off_row_of,
     populate_in_a_fresh_pass,
     repriced_by_the_owner,
+    resolved_amount,
     settle_day_columns,
     settled_day_basis_id,
     settlement_basis_id,
@@ -83,11 +90,14 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
                         status_name="Projected",
                         is_deleted=False, name="Test Expense",
                         amount="100.00", settled_amount=None):
-    """Create an AD-HOC test transaction in the given period.
+    """Create a ONE-OFF test transaction in the given period.
 
     It took a ``template_id`` until plan step balance:X-cf-3; a row of a
-    definition is the engine's (:func:`generate_row_of`) and this builder
-    can no longer spell one.
+    RECURRING definition is the engine's (:func:`generate_row_of`), and since
+    plan step balance:X-bi-7c this builder places a one-off through the
+    producer (:func:`one_off_row_of`: a rule-less definition plus its row).
+    A case that means the LEGACY link-less shape builds
+    :func:`legacy_link_less_row_of` itself.  It    can no longer spell one.
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -106,27 +116,191 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
     _settle_day = default_settle_day(seed_periods[period_index], status.id)
 
-    txn = Transaction(
-        user_id=seed_periods[period_index].user_id,
-        pay_period_id=seed_periods[period_index].id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=status.id,
+    txn = one_off_row_of(
+        seed_periods[period_index],
         name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
+        amount=Decimal(amount),
+        user_id=seed_periods[period_index].user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=expense_type.id,
-        amount_ownership=AmountOwnership.own(Decimal(amount)),
-        # A settled row carries the day its money moved AND the record of what
-        # moved, or it carries neither -- the pair is one fact in three columns
-        # (plan step X-au-c3), resolved by the shared helper rather than spelled
-        # out here.
-        **settle_day_columns(_settle_day),
-        **settlement_columns(_settle_day, amount, settled_amount),
-        is_deleted=is_deleted,
+        category_id=seed_user["categories"]["Groceries"].id,
     )
-    db.session.add(txn)
+    txn.status_id = status.id
+    txn.is_deleted = is_deleted
+    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
+    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    for _column, _value in settle_day_columns(_settle_day).items():
+        setattr(txn, _column, _value)
+    for _column, _value in settlement_columns(_settle_day, amount, settled_amount).items():
+        setattr(txn, _column, _value)
     db.session.flush()
     return txn
+
+
+def _place_kindle(seed_user, period, *, due_date=None, amount="162.25"):
+    """Place Kayla's Kindle in *period* through the one producer (plan step X-bi-7b).
+
+    A one-off is a rule-less definition plus its placed row (ruling
+    **R-BAL20**); the app has exactly one way to make one, so these cases
+    take it rather than hand-building the shape.
+
+    Args:
+        seed_user: The seed_user fixture dict.
+        period: The ORM ``PayPeriod`` to place the row in.
+        due_date: The owner's stated day, or ``None`` for the paycheck's
+            start (ruling **R-BAL22**).
+        amount: The definition's one price.
+
+    Returns:
+        The placed, committed :class:`Transaction`.
+    """
+    row = place_one_off(
+        OneOffToPlace(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            name="Kayla's Kindle",
+            amount=Decimal(amount),
+            category_id=seed_user["categories"]["Groceries"].id,
+        ),
+        derived_span(period),
+        scenario_id=seed_user["scenario"].id,
+        due_date=due_date,
+    )
+    db.session.commit()
+    return row
+
+
+class TestAPeriodMoveRePlacesAOneOff:
+    """Ruling **R-BAL33** at carry-forward's move-whole arm (plan step X-bi-7b).
+
+    A one-off is due on its PLACED paycheck's start unless the owner stated a
+    day (R-BAL22), so the default follows the placement: a placed row carried
+    forward takes the target's start, an owner-stated day -- any date other
+    than the source paycheck's start, read by position -- stays, and
+    ``occurs_on`` follows the date either way (R-BAL25).  Found by leaf
+    7b-1's adversarial review: a one-off rolled to the next paycheck read
+    OVERDUE on the dashboard pulse and late in ``payment_timeliness`` where
+    the undated row it replaced sat on the *anytime this period* shelf.
+    """
+
+    def test_a_default_dated_one_off_takes_the_target_paychecks_start(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The Kindle walk: born 09-04, carried to 09-18, due 09-18.
+
+        And the balance is IDENTICAL under either date -- a one-off's series
+        is flat (R-BAL21) and ``attribution_day`` budgets the row to its
+        paycheck -- so the target period's balance moves by the row's
+        figure and nothing else, exactly as the date it left behind gave.
+        """
+        with app.app_context():
+            row = _place_kindle(seed_user, seed_periods[0])
+            source_start = derived_span(seed_periods[0]).start_date
+            target_start = derived_span(seed_periods[1]).start_date
+            assert row.due_date == source_start
+            assert row.occurs_on == source_start
+            account = seed_user["account"]
+            before = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+            )
+
+            count = carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(row)
+            assert count == 1
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.template_id is not None
+            assert row.is_override is False
+            assert row.due_date == target_start
+            assert row.occurs_on == target_start
+            assert resolve_transaction_amount(
+                row, amount_basis_for(row),
+            ) == Decimal("162.25")
+            after = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+            )
+            # The row left period 0 and landed in period 1: the running
+            # balance at period 0's end recovers the $162.25 and period 1's
+            # end is where it was, because the row's whole figure is
+            # budgeted to whichever paycheck holds it, on any day inside.
+            assert after[seed_periods[0].id] - before[seed_periods[0].id] == Decimal("162.25")
+            assert after[seed_periods[1].id] == before[seed_periods[1].id]
+
+    def test_an_owner_dated_one_off_keeps_its_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE CONTROL: a date other than the source's start is the owner's."""
+        with app.app_context():
+            source_start = derived_span(seed_periods[0]).start_date
+            stated = source_start + timedelta(days=6)
+            row = _place_kindle(seed_user, seed_periods[0], due_date=stated)
+            assert row.due_date == stated
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(row)
+            assert row.pay_period_id == seed_periods[1].id
+            assert row.due_date == stated
+            assert row.occurs_on == stated
+            assert row.is_override is False
+
+    def test_a_legacy_link_less_row_is_not_re_dated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """THE CONTROL: the re-placing is a PLACED row's; a link-less row keeps its branch.
+
+        A legacy one-off (``template_id IS NULL`` until the family's cutover
+        dates and links it) dated at its paycheck's start is moved and left
+        dated as it was -- its date is its own optional note, and the
+        cutover is what brings it under R-BAL22.  Built on the shape's one
+        transitional home (plan step balance:X-bi-7c, ruling R-BAL59); 7d
+        retires this case with the shape.
+        """
+        with app.app_context():
+            source_start = derived_span(seed_periods[0]).start_date
+            legacy = legacy_link_less_row_of(
+                seed_periods[0], name="Legacy", amount="100.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+                due_date=source_start,
+            )
+            db.session.commit()
+            assert legacy.template_id is None
+            assert legacy.is_placed is False
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            db.session.refresh(legacy)
+            assert legacy.pay_period_id == seed_periods[1].id
+            assert legacy.due_date == source_start
+            assert legacy.occurs_on is None
+            assert legacy.is_override is False
 
 
 class TestCarryForwardUnpaid:
@@ -135,14 +309,25 @@ class TestCarryForwardUnpaid:
     def test_non_template_transaction_preserves_is_override_false(
         self, app, db, seed_user, seed_periods
     ):
-        """A non-template transaction retains is_override=False after carry forward.
+        """A LEGACY link-less transaction retains is_override=False after carry forward.
 
         Existing tests verify template-linked items ARE flagged is_override=True.
-        This test verifies the inverse: ad-hoc transactions (template_id=None)
-        must NOT have is_override set to True.
+        This test verifies the inverse on the pre-7b shape: a link-less row
+        (``template_id=None``, production's until the cutover) must NOT have
+        is_override set to True.  A one-off placed today is
+        ``test_a_rule_less_definitions_row_moves_without_the_flip``'s subject;
+        this one is built on the shape's one transitional home (plan step
+        balance:X-bi-7c, ruling R-BAL59) and 7d retires it with the shape.
         """
         with app.app_context():
-            txn = _create_transaction(seed_user, seed_periods, name="Ad-hoc Expense")
+            txn = legacy_link_less_row_of(
+                seed_periods[0], name="Ad-hoc Expense", amount="100.00",
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
             assert txn.template_id is None
             assert txn.is_override is False
 
@@ -313,32 +498,30 @@ class TestCarryForwardUnpaid:
             ).one()
 
             # Baseline projected transaction.
-            baseline_txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=baseline_scenario.id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
+            baseline_txn = one_off_row_of(
+                seed_periods[0],
                 name="Baseline Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("50.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=baseline_scenario.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(baseline_txn)
+            baseline_txn.status_id = status.id
 
             # Alternative scenario projected transaction.
-            alt_txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=alt_scenario.id,
-                account_id=seed_user["account"].id,
-                status_id=status.id,
+            alt_txn = one_off_row_of(
+                seed_periods[0],
                 name="Alt Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("75.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=alt_scenario.id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("75.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(alt_txn)
+            alt_txn.status_id = status.id
             db.session.flush()
 
             # Carry forward only the baseline scenario.
@@ -407,6 +590,11 @@ class TestCarryForwardStatusRecheck:
             db.session.commit()
             loser_id = txn_loser.id
             winner_id = txn_winner.id
+            # What the loser is WORTH, resolved before the race: a one-off
+            # is priced by its definition (plan step balance:X-bi-7c), so the
+            # raw UPDATE below cannot read the figure off the row's own
+            # column as it did while the row owned one.
+            loser_figure = resolved_amount(txn_loser)
 
             paid_status_id = ref_cache.status_id(StatusEnum.DONE)
 
@@ -440,7 +628,7 @@ class TestCarryForwardStatusRecheck:
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
                         "    settled_day_basis_id = :day_basis, "
-                        "    settled_amount = estimated_amount, "
+                        "    settled_amount = :figure, "
                         "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
                         "WHERE id = :tid"
@@ -458,6 +646,7 @@ class TestCarryForwardStatusRecheck:
                             SettledDayBasisEnum.ENTERED,
                         ),
                         "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
+                        "figure": loser_figure,
                         "tid": loser_id,
                     },
                 )
@@ -585,14 +774,20 @@ class TestCarryForwardStatusRecheck:
     ):
         """A row of a definition with NO rule moves as an ad-hoc row does.
 
-        Plan step balance:X-bi-7a (ruling **R-BAL20**): the two bulk UPDATEs
+        Plan step balance:X-bi-7a (ruling **R-BAL20**): the bulk UPDATEs
         split on ``Transaction.recurs``, not on the link.  A cleared cadence
         leaves its rows template-linked, and until this step the discrete
         branch flagged them ``is_override`` on the move -- a flag whose only
         effect on a rule-less definition's row is to hide it from
         ``propagate_to_unruled_definition`` for good (the twin's defect
         **BAL-493**).  The recurring sibling above keeps its flip; this row
-        keeps its link, its date and ``is_override = False``.
+        keeps its link and ``is_override = False``.
+
+        **Its DATE moves with it since plan step balance:X-bi-7b** (ruling
+        **R-BAL33**): the engine dated this row from its paycheck's start (a
+        cadence naming no day of the month), which reads as the R-BAL22
+        default, so the move re-places it on the target's start.  This case
+        asserted ``due_date == generated_due`` until then.
         """
         with app.app_context():
             template = _create_template(
@@ -601,7 +796,7 @@ class TestCarryForwardStatusRecheck:
             txn = generate_row_of(template, seed_periods[0])
             template.recurrence_rule = None
             db.session.commit()
-            generated_due = txn.due_date
+            assert txn.due_date == derived_span(seed_periods[0]).start_date
             assert txn.is_override is False
             assert txn.recurs is False
 
@@ -617,7 +812,8 @@ class TestCarryForwardStatusRecheck:
             assert txn.pay_period_id == seed_periods[1].id
             assert txn.template_id == template.id
             assert txn.is_override is False
-            assert txn.due_date == generated_due
+            assert txn.due_date == derived_span(seed_periods[1]).start_date
+            assert txn.occurs_on == txn.due_date
 
     def test_version_id_bumped_by_bulk_update(
         self, app, db, seed_user, seed_periods,
@@ -1399,6 +1595,7 @@ def _add_entry(txn, seed_user, amount, *, description="Test purchase",
     from datetime import date as _date  # local import keeps top clean
 
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
@@ -3655,37 +3852,39 @@ class TestACarriedForwardLeftoverRowIsDated:
             assert fresh.due_date.day == 15
             assert fresh.due_date != derived_span(target_period).start_date
 
-    def test_a_rule_less_definitions_envelope_moves_whole_and_keeps_its_date(
+    def test_a_rule_less_definitions_envelope_takes_the_rollover(
         self, app, db, seed_user, seed_periods,
     ):
-        """A CLEARED cadence's envelope row is a one-off: it MOVES, whole.
+        """A CLEARED cadence's envelope row settles at its purchases; the leftover is PLACED.
 
-        **The behaviour this case pinned was REPLACED at plan step
-        balance:X-bi-7a** (ruling **R-BAL20**; ``from_scratch_architecture.md``
-        10.4 trace 4, option (i), confirmed by the developer 2026-09-13).
-        Until then a rule-less definition's envelope row took the ROLLOVER:
-        the source settled at its purchases and a second row of the same
-        definition -- answering no occurrence, dated from the paycheck's
-        start by a ``rule is None`` arm of ``_leftover_due_date`` -- took the
-        leftover, giving a definition that places ONE row two.  The envelope
-        branch is gated on ``Transaction.recurs`` now, so the row falls
-        through to the discrete bucket like an ad-hoc envelope: it is
-        RELOCATED with its purchases, keeps the date it was generated with,
-        is not settled, and -- unlike a recurring definition's row -- is NOT
-        flagged ``is_override``, because no pass would ever write over it and
-        the flag would only stop its definition speaking to it.  That arm of
-        ``_leftover_due_date`` is deleted as unreachable.
+        **This case has pinned THREE behaviours in turn.**  Until plan step
+        balance:X-bi-7a a rule-less definition's envelope row took the
+        rollover through a ``rule is None`` arm of ``_leftover_due_date``,
+        giving a definition that places ONE row two -- and R-BAL20's *one
+        placed occurrence* made that a defect, so X-bi-7a moved such a row
+        WHOLE (option (i) of ``from_scratch_architecture.md`` 10.4 trace 4)
+        and this case asserted *one row of the definition, the same one, now
+        in the target*.  R-BAL24 then amended the premise -- a rule-less
+        definition holds *its placed rows*, one per paycheck -- and a row
+        moved whole into a paycheck already holding its sibling collided on
+        the occurrence index (finding **BAL-496**).  **Ruling R-BAL44**
+        (developer 2026-09-16, leaf 7b-3): a rule-less ENVELOPE takes the
+        rollover like a recurring one.  The source settles at its purchases
+        (`$30.00`, which is what happened) and the unspent `$70.00` rolls into
+        a row of the definition PLACED in the target through
+        ``one_off.place_row_of`` -- dated at the target's start, answering it,
+        and OWN with the flag (R-BAL43: one occurrence among many).
         """
         with app.app_context():
             template = _create_envelope_template(
                 seed_user, name="Father's Day",
             )
             source = generate_row_of(template, seed_periods[0])
-            generated_due = source.due_date
             template.recurrence_rule = None
             _add_entry(source, seed_user, "30.00")
             db.session.commit()
             source_id = source.id
+            assert source.is_placed is True
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id,
@@ -3701,20 +3900,196 @@ class TestACarriedForwardLeftoverRowIsDated:
                     template_id=template.id,
                     scenario_id=seed_user["scenario"].id,
                     is_deleted=False,
-                ).all()
+                )
+                .order_by(Transaction.id)
+                .all()
             )
-            # ONE row of the definition, the same one, now in the target.
-            assert [row.id for row in rows] == [source_id]
-            moved = rows[0]
-            assert moved.pay_period_id == seed_periods[1].id
-            assert moved.is_override is False
-            assert moved.due_date == generated_due
-            assert moved.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            # Its purchase travelled with it, and it is still the definition's
-            # to price: no figure of its own, no settlement.
-            assert [entry.amount for entry in moved.entries] == [Decimal("30.00")]
-            assert moved.estimated_amount is None
-            assert moved.settled_basis_id is None
+            assert [row.id for row in rows][0] == source_id and len(rows) == 2
+            source, placed = rows
+            # The source stayed put, settled at what was spent, purchase kept.
+            assert source.pay_period_id == seed_periods[0].id
+            assert source.status.is_settled is True
+            assert settled_figure(source) == Decimal("30.00")
+            assert [entry.amount for entry in source.entries] == [Decimal("30.00")]
+            # The leftover's row: the definition's, placed on the target's
+            # start, answering it, OWN at exactly the leftover.
+            target_start = derived_span(seed_periods[1]).start_date
+            assert placed.pay_period_id == seed_periods[1].id
+            assert placed.template_id == template.id
+            assert placed.due_date == target_start
+            assert placed.occurs_on == target_start
+            assert placed.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert placed.is_override is True
+            assert placed.estimated_amount == Decimal("70.00")
+            assert placed.amount_source_id is None
+            assert placed.entries == []
+
+    def test_a_rule_less_envelopes_leftover_tops_up_a_projected_sibling(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """R-BAL44's TOP_UP arm: the target already holds the definition's row, open."""
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day",
+            )
+            source = generate_row_of(template, seed_periods[0])
+            sibling = generate_row_of(template, seed_periods[1])
+            template.recurrence_rule = None
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+            sibling_id = sibling.id
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            db.session.commit()
+
+            db.session.expire_all()
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id, is_deleted=False)
+                .order_by(Transaction.id).all()
+            )
+            assert [row.id for row in rows] == [source.id, sibling_id]
+            sibling = rows[1]
+            # `$100.00` of its own budget plus the `$70.00` leftover, OWN.
+            assert sibling.estimated_amount == Decimal("170.00")
+            assert sibling.is_override is True
+            assert rows[0].status.is_settled is True
+
+    def test_a_rule_less_envelope_whose_sibling_has_closed_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """R-BAL44's one refusal: the target's row of the definition has finalised.
+
+        A second row there would answer the occurrence the closed one does
+        (R-BAL25: a placed row answers its paycheck's start), and the
+        occurrence index refuses it -- so the door refuses first, in its own
+        words, and the preview blocks with the same code.  A recurring
+        definition in this state takes a fresh override row instead, which
+        answers no occurrence; that arm is graded by its own cases above.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day",
+            )
+            source = generate_row_of(template, seed_periods[0])
+            sibling = generate_row_of(template, seed_periods[1])
+            template.recurrence_rule = None
+            _add_entry(source, seed_user, "30.00")
+            _add_entry(sibling, seed_user, "5.00")
+            db.session.commit()
+            transaction_service.settle_transaction(sibling, submitted=None)
+            db.session.commit()
+            assert sibling.status.is_settled is True
+
+            plan = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            blocked = [
+                item for item in plan.plans
+                if item.block_reason_code == carry_forward_service.BLOCK_CLOSED_TARGET
+            ]
+            assert len(blocked) == 1 and plan.any_blocked
+
+            with pytest.raises(ValidationError, match="already closed"):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
+                )
+            db.session.rollback()
+            db.session.refresh(source)
+            assert source.pay_period_id == seed_periods[0].id
+            assert source.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+
+    def test_a_source_the_owner_dated_on_the_targets_start_is_refused_too(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """CLOSED's second arm (found by 7b-3's adversarial review).
+
+        No row of the definition sits in the target, so the first build
+        took CREATE and placed the leftover on the target's start -- the
+        day the SOURCE, dated there by its owner, already answers, and the
+        occurrence index failed the batch.  The refusal names the day.
+        """
+        with app.app_context():
+            template = _create_envelope_template(
+                seed_user, name="Father's Day",
+            )
+            source = generate_row_of(template, seed_periods[0])
+            template.recurrence_rule = None
+            _add_entry(source, seed_user, "30.00")
+            target_start = derived_span(seed_periods[1]).start_date
+            state_due_date(source, target_start)
+            db.session.commit()
+            assert source.occurs_on == target_start
+
+            plan = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+            blocked = [
+                item for item in plan.plans
+                if item.block_reason_code == carry_forward_service.BLOCK_CLOSED_TARGET
+            ]
+            assert len(blocked) == 1
+            assert target_start.isoformat() in blocked[0].block_reason
+
+            with pytest.raises(
+                ValidationError, match=f"already due on {target_start.isoformat()}",
+            ):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
+                )
+            db.session.rollback()
+            assert (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id, is_deleted=False)
+                .count()
+            ) == 1
+
+    def test_a_plain_placed_row_carried_onto_its_siblings_paycheck_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The discrete branch's twin of CLOSED (found by 7b-3's adversarial review).
+
+        A bank-born envelope whose *Track individual purchases* the owner
+        unticked (the definition's flag, R-BAL36) leaves plain rows, one
+        per paycheck, and a plain row moves WHOLE (R-BAL44): re-placed on
+        the target's start, it met the occurrence index beside its sibling
+        there.  The move refuses in its own words, and nothing moved.
+        """
+        with app.app_context():
+            template = make_expense_template(
+                db.session, seed_user, amount="0.00", name="Amazon",
+                category_key="Groceries", is_envelope=True,
+            )
+            source = generate_row_of(template, seed_periods[0])
+            sibling = generate_row_of(template, seed_periods[1])
+            template.recurrence_rule = None
+            template.is_envelope = False
+            db.session.commit()
+            assert source.is_placed and not source.tracks_purchases
+
+            with pytest.raises(ValidationError, match="already holds a row"):
+                carry_forward_service.carry_forward_unpaid(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
+                )
+            db.session.rollback()
+            db.session.refresh(source)
+            db.session.refresh(sibling)
+            assert source.pay_period_id == seed_periods[0].id
+            assert sibling.pay_period_id == seed_periods[1].id
 
     def test_handing_the_leftover_back_to_its_definition_leaves_it_priceable(
         self, app, db, seed_user, seed_periods,

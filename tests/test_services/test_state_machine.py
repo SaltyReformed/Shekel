@@ -70,6 +70,11 @@ def _txn(status_id):
     the entity-label string these tests used to pass beside a bare id (plan
     step X-aj1, ruling R-DN): the workflow is the row's own now, so a test can
     no longer assert a transaction id against the transfer map or the reverse.
+
+    **Not a row** -- never added to a session -- so it is outside plan step
+    balance:X-bi-7c's move of the suite's hand-built rows onto the one-off
+    producer: an instance used as a type token names no link because it
+    names no identity columns, and the cutover's CHECK never sees it.
     """
     return Transaction(status_id=status_id)
 

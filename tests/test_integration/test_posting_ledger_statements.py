@@ -64,6 +64,8 @@ from app.enums import (
     LedgerAccountClassEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    StatusEnum,
+    TxnTypeEnum,
 )
 from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
@@ -76,15 +78,19 @@ from app.services import (
     account_posting_service,
     ledger_report_service,
     posting_service,
+    status_seam,
 )
 from app.services.ledger_report_service import StatementWindow
 from app.services.pay_calendar import calendar_for
 import pytest
 
 from tests._test_helpers import (
+    family_journal_filter,
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
+    legacy_link_less_row_of,
+    settle_cash_row,
     create_settled_transfer,
     freeze_today,
     linked_ledger_account,
@@ -1017,6 +1023,11 @@ class TestRevertAndResidueDropped:
             )
             assert before.expense.total == Decimal("400.00")
 
+            # Through the seam first (plan step X-bi-3a; see
+            # ``_expense_ledger_for_category``).
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             db.session.commit()
 
@@ -1108,14 +1119,20 @@ class TestRevertAndResidueDropped:
             .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
             .join(LedgerAccount, Posting.ledger_account_id == LedgerAccount.id)
             .filter(
-                JournalEntry.transaction_id == txn.id,
+                family_journal_filter(txn),
                 LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                     LedgerAccountClassEnum.EXPENSE,
                 ),
             )
             .scalar()
         )
-        # Revert the seeding settle so only the residue remains.
+        # Revert the seeding settle so only the residue remains -- through the
+        # ONE status door first (plan step X-bi-3a): a settle now writes a
+        # covering movement that carries the money, and only the seam's
+        # revert releases it; the primitive alone reconciles what is left.
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
         posting_service.sync_transaction_postings(txn, settled=False)
         db.session.flush()
         assert ledger_id is not None
@@ -1366,13 +1383,25 @@ class TestDisplayLabels:
         budget category SET-NULLs the account's ``category_id`` (its ``kind_id``
         stays ``category``), so the line falls back to the account's own
         "Family: Groceries" snapshot and the amount is untouched.
+
+        **On the LEGACY link-less row, until the cutover** (plan step
+        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
+        definition references the category, ``transaction_templates.
+        category_id`` is RESTRICT, and the delete this case reproduces cannot
+        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
+        or retires this case with it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            create_settled_cash_transaction(
-                seed_user, db.session, seed_user["bootstrap_period"],
-                Decimal("100.00"), account=seed_user["account"],
-                category=seed_user["categories"]["Groceries"],
+            settle_cash_row(
+                legacy_link_less_row_of(
+                    seed_user["bootstrap_period"], name="Cash Txn",
+                    amount="100.00", user_id=user_id,
+                    account_id=seed_user["account"].id,
+                    scenario_id=seed_user["scenario"].id,
+                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                    category_id=seed_user["categories"]["Groceries"].id,
+                ),
                 settled_on=date(_Y, 3, 15),
             )
             db.session.commit()

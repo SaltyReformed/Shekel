@@ -45,6 +45,7 @@ from app import ref_cache
 from app.enums import StatementSourceEnum
 from app.exceptions import StatementLineConflict
 from app.extensions import db
+from app.models.account import AccountAnchorHistory
 from app.models.statement_import import BankStatementLine, StatementImport
 
 from ._adapters import parse_statement
@@ -551,18 +552,13 @@ def record_statement(
         period_end=period_end,
         line_count=len(parsed.lines),
         recorded_count=len(reconciled.fresh),
-        # The bank's OWN claim, verbatim, beside what this import worked out
-        # about it.  The claim and the day it is FOR are two facts (ruling
-        # **R-GF**): SECU writes the figure as of the export INSTANT and
-        # labels it with the export's day, so on the developer's 2026-08-16
-        # file these two columns read 08-16 and the anchor reads 08-13.
+        # The bank's OWN claim, verbatim.  The claim and the day it is FOR
+        # are two facts (ruling **R-GF**): SECU writes the figure as of the
+        # export INSTANT and labels it with the export's day, so on the
+        # developer's 2026-08-16 file these two columns read 08-16 and the
+        # level below reads 08-13.
         stated_balance=parsed.stated_balance,
         stated_balance_on=parsed.stated_balance_on,
-        balance_effective_on=balance.effective_on if balance else None,
-        balance_evidence_id=(
-            ref_cache.statement_balance_evidence_id(balance.evidence)
-            if balance is not None and balance.is_anchored else None
-        ),
     )
     db.session.add(statement_import)
     # The lines carry the import's id in a composite key, so the import row
@@ -570,6 +566,24 @@ def record_statement(
     db.session.flush()
 
     _write_records(account_id, statement_import.id, reconciled)
+    # **What the import made of the claim is a LEVEL** (plan step
+    # ``balance:X-bj-1``, ruling **R-IS**): the day the figure is the balance
+    # for and how firmly it is held, as a row in the same relation the
+    # owner's true-ups occupy, naming this import.  Its amount is the claim
+    # -- the key ``fk_anchor_history_statement_import_claim`` would refuse
+    # anything else -- and its evidence is what the solve above worked out.
+    # Written after the lines because it is a conclusion drawn from them,
+    # and inside the file's own span by ``budget.level_lies_within_file``.
+    if balance is not None and balance.is_anchored:
+        db.session.add(AccountAnchorHistory(
+            account_id=account_id,
+            anchor_balance=balance.stated,
+            observed_on=balance.effective_on,
+            evidence_id=ref_cache.statement_balance_evidence_id(
+                balance.evidence,
+            ),
+            statement_import_id=statement_import.id,
+        ))
     # **Every anchor these fresh lines undercut is RELEASED**, and it happens
     # after the staging so the earliest fresh day is known.  An anchor solved
     # before a line at or before its own day was recorded was solved without
@@ -585,7 +599,7 @@ def record_statement(
         release_anchors_from(
             account_id,
             min(keyed.line.posted_on for keyed in reconciled.fresh),
-            except_import_id=statement_import.id,
+            statement_import.id,
         )
         if reconciled.fresh else 0
     )

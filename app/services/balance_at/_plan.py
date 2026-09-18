@@ -17,13 +17,16 @@ other.
 
 The PAYMENTS come in two tiers:
 
-* **PLANNED** -- the loan's PROJECTED transfer shadows
-  (:func:`app.services.loan_loaders.projected_income_shadows`), each at what
-  the amount model resolves for it (:func:`app.services.cash_ledger.amounts_by_id`,
-  the SAME cash the checking side shows leaving).  A record is the evidence a
-  payment will happen; where the record's due date has already passed but it
-  has not settled, it is clamped forward to ``as_of + 1d`` -- "a plan cannot
-  have already happened" (ruling D1).
+* **PLANNED** -- the loan's PROJECTED transfers, each as the leg of its parent
+  row INTO the loan (:func:`app.services.loan_loaders.projected_income_legs`;
+  plan step **balance:X-bi-6a**, ruling **R-BAL13** -- a projected payment is
+  derived from its parent transfer, not read off a shadow row), each at what
+  the amount model resolves the PARENT to
+  (:func:`app.services.cash_ledger.planned_leg_contribution`, the SAME cash the
+  checking side shows leaving).  A record is the evidence a payment will
+  happen; where the record's due date has already passed but it has not
+  settled, it is clamped forward to ``as_of + 1d`` -- "a plan cannot have
+  already happened" (ruling D1).
 * **ESTIMATED** -- **what a generate pass over the owner's whole schedule
   would write, priced as those rows would be priced** (plan step **R16-b-2**).
   EVERY active recurring transfer into the loan is walked on its OWN cadence
@@ -191,11 +194,15 @@ from app.services.loan_ledger import (
     charges_for_due_dates,
     installment_slot,
 )
-from app.services.cash_ledger import amounts_by_id
+from app.services.cash_ledger import (
+    AmountBasis,
+    planned_leg_contribution,
+    transfer_pricing_load_options,
+)
 from app.services.loan_ledger import anchor_visible_on, confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import due_after_anchor, period_for_date
-from app.utils.amount_relationships import pricing_load_options
+from app.services.transfer_legs import PlannedTransferLeg
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -257,17 +264,22 @@ class _ForwardInputs:
     as_of: date
 
 
-def _planned_from_shadows(
-    projected_shadows: list,
-    priced: dict[int, Decimal],
+def _planned_from_legs(
+    legs: list[PlannedTransferLeg],
+    basis: AmountBasis,
     fwd: _ForwardInputs,
 ) -> list[PlannedPayment]:
-    """Build the PLANNED tier: one record per projected transfer shadow.
+    """Build the PLANNED tier: one record per projected transfer into the loan.
 
-    Each projected loan-side income shadow becomes a :class:`PlannedPayment` at
-    what a SCREEN would show for it, which since plan step X-au-d is simply
-    what the amount model RESOLVES for it
-    (:func:`~app.services.cash_ledger.amounts_by_id`).
+    Each still-projected transfer into the loan -- as the
+    :class:`~app.services.transfer_legs.PlannedTransferLeg` of its parent row
+    (plan step **balance:X-bi-6a**, ruling **R-BAL13**) -- becomes a
+    :class:`PlannedPayment` at what a SCREEN would show for it, which is what
+    the amount model RESOLVES the parent to
+    (:func:`~app.services.cash_ledger.planned_leg_contribution`).  It was
+    ``_planned_from_shadows`` until that step, taking the projected shadow rows
+    and a map priced over their ids; a shadow's answer was its parent's (rule
+    5), so the figure is the same and the walk is one row shorter.
 
     **It read ``settled_contribution`` with the live map laid over it by hand
     until plan step X-au-g-2c-1**, and that was the SECOND unrouted reader of a
@@ -369,33 +381,29 @@ def _planned_from_shadows(
     dates.
 
     Args:
-        projected_shadows: The loan's projected income shadows
-            (:func:`app.services.loan_loaders.projected_income_shadows`).
-        priced: ``{transaction_id: the figure a screen shows}``
-            (:func:`app.services.cash_ledger.amounts_by_id` over the
-            pass's own basis).  Indexed with ``[]``: it covers every row it was
-            built over, so a shadow it forgot raises where it is read rather
-            than defaulting to a fabricated figure.
+        legs: The loan's projected payments as legs of their parents
+            (:func:`app.services.loan_loaders.projected_income_legs`).
+        basis: The pass's own :class:`~app.services.cash_ledger.AmountBasis`,
+            which a derive-mode loan payment's parent prices through.
         fwd: The resolved :class:`_ForwardInputs`.
 
     Returns:
-        One :class:`PlannedPayment` per projected shadow (``is_estimated=False``).
+        One :class:`PlannedPayment` per projected leg (``is_estimated=False``).
     """
     planned: list[PlannedPayment] = []
     clamp_floor = fwd.as_of + _ONE_DAY
-    for shadow in projected_shadows:
-        due = loan_payment_due_date(shadow, fwd.payment_day)
-        # ONE map, no fallback.  The ``is None`` dance this replaced existed
-        # because a live cash of ``Decimal("0")`` is a real answer (a waived
-        # payment) and truthiness would have priced the shadow off the column
-        # the loan superseded.  There is no column left to fall back to and no
-        # override left to choose between: the shadow is DERIVED (plan step
-        # X-au-g-2c-2) and the resolver is its only answer.
-        cash = priced[shadow.id]
+    for leg in legs:
+        due = loan_payment_due_date(leg, fwd.payment_day)
+        # ONE producer, no fallback.  The ``is None`` dance this replaced
+        # existed because a live cash of ``Decimal("0")`` is a real answer (a
+        # waived payment) and truthiness would have priced the shadow off the
+        # column the loan superseded.  There is no column left to fall back to
+        # and no override left to choose between: the parent's resolved amount
+        # is the leg's only answer.
         planned.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
-            cash=cash,
+            cash=planned_leg_contribution(leg, basis),
             is_estimated=False,
         ))
     return planned
@@ -431,7 +439,7 @@ def _estimated_from_contract(
     payment exactly as the C3c interest merge does (``_loan_interest`` excludes the
     same slots):
 
-    * a **PLANNED** record's slot -- a projected shadow this pass will fold forward;
+    * a **PLANNED** record's slot -- a projected transfer this pass will fold forward;
     * a **settled** payment's slot that is ALREADY inside the fold's seed -- a
       payment settled by ``as_of`` (so counted in the confirmed present) whose
       contractual installment is due AT OR AFTER ``as_of`` (an early- or
@@ -701,7 +709,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     """Return *account*'s forward model -- what it will be CHARGED and what it PAYS.
 
     The unified forward record stream a loan's projected balance folds (see the
-    module docstring): every projected transfer shadow at its resolved cash,
+    module docstring): every projected transfer into the loan at its resolved cash,
     plus what every definition paying into the loan would generate that no row
     answers yet -- or, for a loan with no definition, the contract's own
     installments -- out to payoff and the post-contractual extension, LESS
@@ -715,7 +723,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         account: The amortizing loan account (the caller owns the ownership
             check).
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            -- its scenario scopes the shadows and the resolution, its
+            -- its scenario scopes the projected transfers and the resolution, its
             calendar places the definitions' occurrences, and its ``as_of`` is
             the clamp floor and the past/future boundary.
 
@@ -745,17 +753,17 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         as_of=ctx.as_of,
     )
 
-    projected_shadows = loan_loaders.projected_income_shadows(
-        account.id, ctx.scenario_id, options=pricing_load_options(),
-    )
     # The pass's OWN loan derivation, not a second one built here: this line
     # called ``live_loan_transfer_amounts`` directly while the cash fold built a
     # basis that called it again, so one request resolved the same loan twice
     # (finding **N-268**'s shape).  Plan step X-au-c2b made the derivation a
     # read-pass value, so both readers ask the same one.
-    planned = _planned_from_shadows(
-        projected_shadows,
-        amounts_by_id(projected_shadows, ctx.amounts()),
+    planned = _planned_from_legs(
+        loan_loaders.projected_income_legs(
+            account.id, ctx.scenario_id,
+            options=transfer_pricing_load_options(),
+        ),
+        ctx.amounts(),
         fwd,
     )
 

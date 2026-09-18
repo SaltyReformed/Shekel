@@ -117,7 +117,7 @@ class EscrowComponentVersion(TimestampMixin, db.Model):
         ),
         # ``inflation_rate`` is nullable (NULL = no escalation) and persisted as
         # a decimal fraction; the CHECK pins it to ``[0, 1]`` when present, as
-        # ``escrow_components`` / ``paycheck_deductions`` do.
+        # ``escrow_components`` / ``paycheck_lines`` do.
         db.CheckConstraint(
             "inflation_rate IS NULL OR "
             "(inflation_rate >= 0 AND inflation_rate <= 1)",

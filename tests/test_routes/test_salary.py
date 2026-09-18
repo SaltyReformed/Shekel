@@ -12,7 +12,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
 from app.services import pay_period_write
@@ -25,11 +25,12 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import (
-    AccountType, CalcMethod, DeductionTiming, FilingStatus,
+    AccountType, CalcMethod, PaycheckLineKind, FilingStatus,
     RaiseType, TransactionType,
 )
 from app import ref_cache
-from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
+from app.enums import PaycheckLineKindEnum, PeriodPlacementEnum, RecurrenceUnitEnum
+from app.schemas.validation import end_bound_before_start_message
 from app.services.pay_calendar import calendar_for
 from app.services.payroll_basis import PayrollBasis
 from app.services.auth_service import hash_password
@@ -44,7 +45,7 @@ from tests._test_helpers import (
     all_periods,
     create_loan_account,
     freeze_today,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_every_period_rule,
     open_owner_calendar,
     rebuild_calendar,
@@ -1345,17 +1346,17 @@ class TestDeductions:
     """Tests for deduction add/delete endpoints."""
 
     def test_add_deduction(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/<id>/deductions adds a deduction."""
+        """POST /salary/<id>/lines adds a deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                 },
@@ -1366,15 +1367,15 @@ class TestDeductions:
             assert b"401k" in response.data
 
     def test_delete_deduction(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/deductions/<id>/delete removes a deduction."""
+        """POST /salary/lines/<id>/delete removes a deduction."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Health Insurance",
                 amount=Decimal("150.00"),
@@ -1383,12 +1384,12 @@ class TestDeductions:
             db.session.commit()
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/delete",
+                f"/salary/lines/{deduction.id}/delete",
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
-            assert b"Deduction removed." in response.data
+            assert b"Payroll line removed." in response.data
 
     def test_delete_deduction_takes_its_cadence_rule_with_it(
         self, app, auth_client, seed_user, seed_periods,
@@ -1402,29 +1403,29 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Health Insurance",
                 amount=Decimal("150.00"),
             )
             db.session.add(deduction)
             db.session.flush()
-            rule = make_deduction_cadence_rule(db.session, deduction, 24)
+            rule = make_line_cadence_rule(db.session, deduction, 24)
             db.session.commit()
             rule_id, ded_id = rule.id, deduction.id
-            assert db.session.get(RecurrenceRule, rule_id).paycheck_deduction_id == ded_id
+            assert db.session.get(RecurrenceRule, rule_id).paycheck_line_id == ded_id
 
             response = auth_client.post(
-                f"/salary/deductions/{ded_id}/delete", follow_redirects=True,
+                f"/salary/lines/{ded_id}/delete", follow_redirects=True,
             )
 
             assert response.status_code == 200
             db.session.expire_all()
-            assert db.session.get(PaycheckDeduction, ded_id) is None
+            assert db.session.get(PaycheckLine, ded_id) is None
             assert db.session.get(RecurrenceRule, rule_id) is None, (
                 "the deduction's rule survived its owner"
             )
@@ -1438,35 +1439,35 @@ class TestDeductions:
 
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Transit",
                 amount=Decimal("50.00"),
             )
             db.session.add(deduction)
             db.session.flush()
-            rule = make_deduction_cadence_rule(db.session, deduction, 12)
+            rule = make_line_cadence_rule(db.session, deduction, 12)
             db.session.commit()
             rule_id, ded_id = rule.id, deduction.id
 
             db.session.execute(
-                text("DELETE FROM salary.paycheck_deductions WHERE id = :id"), {"id": ded_id},
+                text("DELETE FROM salary.paycheck_lines WHERE id = :id"), {"id": ded_id},
             )
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(RecurrenceRule, rule_id) is None
 
     def test_add_deduction_validation_error(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/<id>/deductions with missing fields shows a validation error."""
+        """POST /salary/<id>/lines with missing fields shows a validation error."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={"name": ""},
                 follow_redirects=True,
             )
@@ -1477,15 +1478,15 @@ class TestDeductions:
     def test_delete_other_users_deduction_redirects(
         self, app, auth_client, seed_user
     ):
-        """POST /salary/deductions/<id>/delete for another user's deduction returns 404 (security)."""
+        """POST /salary/lines/<id>/delete for another user's deduction returns 404 (security)."""
         with app.app_context():
             other = _create_other_user_profile()
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=other["profile"].id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.00"),
@@ -1494,7 +1495,7 @@ class TestDeductions:
             db.session.commit()
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/delete",
+                f"/salary/lines/{deduction.id}/delete",
                 follow_redirects=True,
             )
 
@@ -1503,17 +1504,17 @@ class TestDeductions:
     def test_add_deduction_htmx_returns_partial(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /salary/<id>/deductions with HX-Request returns a partial."""
+        """POST /salary/<id>/lines with HX-Request returns a partial."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            post_tax = db.session.query(DeductionTiming).filter_by(name="post_tax").one()
+            post_tax = db.session.query(PaycheckLineKind).filter_by(name="post_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "Roth IRA",
-                    "deduction_timing_id": post_tax.id,
+                    "paycheck_line_kind_id": post_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "300.00",
                 },
@@ -1525,7 +1526,7 @@ class TestDeductions:
             assert b"300" in response.data
 
     def test_update_deduction(self, app, auth_client, seed_user, seed_periods):
-        """POST /salary/deductions/<id>/edit updates an existing deduction, cadence included.
+        """POST /salary/lines/<id>/edit updates an existing deduction, cadence included.
 
         The edit form posts the whole record, the cadence controls among it
         since plan step salary:R15-c: a line taken every paycheck edited to
@@ -1535,12 +1536,12 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.00"),
@@ -1550,10 +1551,10 @@ class TestDeductions:
             assert deduction.recurrence_rule is None
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/edit",
+                f"/salary/lines/{deduction.id}/edit",
                 data={
                     "name": "401k Updated",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "350.00",
                     **_cadence_payload(
@@ -1566,7 +1567,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
-            assert b"Deduction &#39;401k Updated&#39; updated." in response.data
+            assert b"Payroll line &#39;401k Updated&#39; updated." in response.data
 
             db.session.refresh(deduction)
             assert deduction.name == "401k Updated"
@@ -1591,12 +1592,12 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k Linked",
                 amount=Decimal("200.00"),
@@ -1607,10 +1608,10 @@ class TestDeductions:
             db.session.commit()
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/edit",
+                f"/salary/lines/{deduction.id}/edit",
                 data={
                     "name": "401k Linked",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": "",
@@ -1637,15 +1638,15 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             victim_account_id = seed_second_user["account"].id
 
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "Forged Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(victim_account_id),
@@ -1653,7 +1654,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 404
-            assert db.session.query(PaycheckDeduction).filter_by(
+            assert db.session.query(PaycheckLine).filter_by(
                 name="Forged Feed",
             ).one_or_none() is None
 
@@ -1670,14 +1671,14 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "Own Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(seed_user["account"].id),
@@ -1686,7 +1687,7 @@ class TestDeductions:
             )
 
             assert response.status_code == 200
-            saved = db.session.query(PaycheckDeduction).filter_by(
+            saved = db.session.query(PaycheckLine).filter_by(
                 name="Own Feed",
             ).one()
             assert saved.target_account_id == seed_user["account"].id
@@ -1697,20 +1698,20 @@ class TestDeductions:
         """The EDIT door refuses a forged re-point too, and keeps the old link.
 
         The create and update doors load through different schemas
-        (``_deduction_schema`` / ``_deduction_update_schema``) and the update
-        one writes through the ``_DEDUCTION_UPDATE_FIELDS`` allowlist, so
+        (``_line_schema`` / ``_line_update_schema``) and the update
+        one writes through the ``_LINE_UPDATE_FIELDS`` allowlist, so
         guarding only the create door would leave the same forged FK reachable
         one route over -- which is how this class of defect survives a fix.
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             own_account_id = seed_user["account"].id
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Retirement Feed",
                 amount=Decimal("200.00"),
@@ -1720,10 +1721,10 @@ class TestDeductions:
             db.session.commit()
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/edit",
+                f"/salary/lines/{deduction.id}/edit",
                 data={
                     "name": "Retirement Feed",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     "target_account_id": str(seed_second_user["account"].id),
@@ -1740,12 +1741,12 @@ class TestDeductions:
         """Editing a percentage deduction correctly converts input to decimal."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=pct_method.id,
                 name="401k Pct",
                 amount=Decimal("0.06"),
@@ -1754,10 +1755,10 @@ class TestDeductions:
             db.session.commit()
 
             response = auth_client.post(
-                f"/salary/deductions/{deduction.id}/edit",
+                f"/salary/lines/{deduction.id}/edit",
                 data={
                     "name": "401k Pct",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": pct_method.id,
                     "amount": "8",
                 },
@@ -1774,15 +1775,15 @@ class TestDeductions:
     def test_update_deduction_other_user_blocked(
         self, app, auth_client, seed_user, seed_periods
     ):
-        """POST /salary/deductions/<id>/edit on another user's deduction is rejected."""
+        """POST /salary/lines/<id>/edit on another user's deduction is rejected."""
         with app.app_context():
             other = _create_other_user_profile()
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            other_ded = PaycheckDeduction(
+            other_ded = PaycheckLine(
                 salary_profile_id=other["profile"].id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.00"),
@@ -1792,10 +1793,10 @@ class TestDeductions:
             orig_amount = other_ded.amount
 
             response = auth_client.post(
-                f"/salary/deductions/{other_ded.id}/edit",
+                f"/salary/lines/{other_ded.id}/edit",
                 data={
                     "name": "Hacked",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "9999.00",
                 },
@@ -1805,7 +1806,7 @@ class TestDeductions:
             assert response.status_code == 404
 
             db.session.expire_all()
-            after = db.session.get(PaycheckDeduction, other_ded.id)
+            after = db.session.get(PaycheckLine, other_ded.id)
             assert after.amount == orig_amount, (
                 "IDOR attack modified another user's deduction!"
             )
@@ -1819,14 +1820,14 @@ class TestDeductions:
         """Percentage input (6) is converted to decimal (0.06) for storage."""
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             pct_method = db.session.query(CalcMethod).filter_by(name="percentage").one()
 
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "401k Match",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": pct_method.id,
                     "amount": "6",
                 },
@@ -1834,7 +1835,7 @@ class TestDeductions:
             )
 
             ded = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="401k Match")
                 .one()
             )
@@ -1851,14 +1852,14 @@ class TestDeductions:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "HSA",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "100.00",
                     "inflation_enabled": "on",
@@ -1868,7 +1869,7 @@ class TestDeductions:
             )
 
             ded = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="HSA")
                 .one()
             )
@@ -1910,16 +1911,24 @@ def _cadence_payload(unit, placement, interval="1", ceiling=""):
 
 
 def _prefill_attributes(html, deduction_id):
-    """The four ``data-ded-*`` cadence attributes on one row's edit button."""
+    """The nine ``data-line-*`` cadence and span attributes on one row's edit button.
+
+    The four cadence attributes since plan step salary:R15-c; the five span
+    ones (the start, its nominal day, the bound's mode and its two values)
+    since salary:R18-c.
+    """
     match = re.search(
-        r'<button[^>]*data-ded-edit="%d"[^>]*>' % deduction_id, html, re.S,
+        r'<button[^>]*data-line-edit="%d"[^>]*>' % deduction_id, html, re.S,
     )
     assert match, f"no edit button for deduction {deduction_id}"
     button = match.group(0)
     found = {}
-    for key in ("unit-id", "interval", "placement-id", "max-per-month"):
-        value = re.search(r'data-ded-%s="([^"]*)"' % key, button)
-        assert value, f"the edit button carries no data-ded-{key}"
+    for key in (
+        "unit-id", "interval", "placement-id", "max-per-month",
+        "starts-on", "nominal-day", "end-mode", "end-date", "max-occurrences",
+    ):
+        value = re.search(r'data-line-%s="([^"]*)"' % key, button)
+        assert value, f"the edit button carries no data-line-{key}"
         found[key] = value.group(1)
     return found
 
@@ -1942,11 +1951,11 @@ def _authored_columns(rule):
 
 def _a_line(profile, name, per_year=26):
     """A flat pre-tax line on *profile*, with the migrated rule for a 24 / 12."""
-    pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+    pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-    deduction = PaycheckDeduction(
+    deduction = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=pre_tax.id,
+        paycheck_line_kind_id=pre_tax.id,
         calc_method_id=flat_method.id,
         name=name,
         amount=Decimal("100.00"),
@@ -1954,33 +1963,238 @@ def _a_line(profile, name, per_year=26):
     db.session.add(deduction)
     db.session.flush()
     if per_year != 26:
-        make_deduction_cadence_rule(db.session, deduction, per_year)
+        make_line_cadence_rule(db.session, deduction, per_year)
     db.session.commit()
     return deduction
 
 
 def _line_form(name, amount="100.00", **cadence):
-    """Every non-cadence control the deduction form renders, plus *cadence*.
+    """Every non-cadence control the line form renders, plus *cadence*.
 
     Built to the FORM's control list rather than hand-picked: a browser posts
     every enabled control the template renders, empties included, and
     ``TestDeductionCadenceForm.test_the_payload_is_what_the_form_renders``
-    pins this helper's keys to the rendered form in both directions.
+    pins this helper's keys to the rendered form in both directions.  The
+    SPAN controls (plan step salary:R18-c) post what the rendered form posts
+    beside a cadence: a BLANK start (the opening payday), the bound's select
+    on its rendered ``never`` (it has no empty option), and the bound's two
+    value boxes empty; a case that states a span passes it in *cadence*.
     """
-    pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+    pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
     flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
     return {
         "version_id": "",
         "name": name,
-        "deduction_timing_id": str(pre_tax.id),
+        "paycheck_line_kind_id": str(pre_tax.id),
         "target_account_id": "",
         "calc_method_id": str(flat_method.id),
         "amount": amount,
         "annual_cap": "",
         "inflation_rate": "",
         "inflation_effective_month": "",
+        "starts_on": "",
+        "nominal_day": "",
+        "recurrence_end_mode": "never",
+        "end_date": "",
+        "max_occurrences": "",
         **cadence,
     }
+
+
+class TestEarningLinesThroughTheDoor:
+    """The one line door authors an EARNING kind (plan step salary:R18-b, ruling R-SAL38).
+
+    The engine's arithmetic for the two earning kinds is graded in
+    ``tests/test_services/test_paycheck_calculator.py``; what is graded HERE
+    is the door: that the section offers the four kinds under the
+    vocabulary's labels, that a taxable earning added through the form
+    reaches the regeneration and raises the paycheck template's amount (the
+    one stored figure, ``balance:X-au-e``), and that the one rule which
+    differs by side -- a target account -- is refused for an earning and
+    nothing is written.
+    """
+
+    def test_the_section_offers_the_four_kinds_under_their_labels(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The kind select renders every kind in waterfall order, labelled by the vocabulary."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            html = auth_client.get(f"/salary/{profile.id}/edit").data.decode()
+            select = re.search(
+                r'<select name="paycheck_line_kind_id".*?</select>', html, re.S,
+            ).group(0)
+            options = re.findall(r'<option value="(\d+)">([^<]+)</option>', select)
+            assert [label for _id, label in options] == [
+                "Taxable earning", "Pre-tax deduction",
+                "Post-tax deduction", "After-tax earning",
+            ]
+            assert [int(kind_id) for kind_id, _label in options] == [
+                ref_cache.paycheck_line_kind_id(member) for member in PaycheckLineKindEnum
+            ]
+            assert "Payroll lines" in html and "Deductions</h6>" not in html
+
+    def test_a_taxable_earning_added_by_the_form_raises_the_regenerated_paycheck(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A $45 taxable line: the section labels it, the priced gross carries it, the template's amount rises.
+
+        The developer's own line (R-SAL38's facts): ``$45.00`` gross, taxable,
+        on the first paycheck of every month.  Today is frozen at 2026-03-20
+        in this module and the paycheck of Mar 13 is March's first payday,
+        so the current paycheck carries it: gross rises by exactly ``$45.00``
+        and the net by less (it is taxed), and the regeneration's stored net
+        is the priced one.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            ctx = BalanceContext.build(seed_user["user"].id)
+            current = ctx.calendar().period_containing(date(2026, 3, 20))
+            before = ctx.paychecks().for_profile(profile).at(current)
+            taxable_kind = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.TAXABLE_EARNING)
+
+            payload = _line_form(
+                "Phone Allowance", amount="45.00",
+                **_cadence_payload(
+                    RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                ),
+            )
+            payload["paycheck_line_kind_id"] = str(taxable_kind)
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines", data=payload, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert "Phone Allowance" in html
+            assert "Taxable earning" in html
+
+            db.session.expire_all()
+            profile = db.session.get(SalaryProfile, profile.id)
+            saved = db.session.query(PaycheckLine).filter_by(name="Phone Allowance").one()
+            assert saved.paycheck_line_kind_id == taxable_kind
+            ctx = BalanceContext.build(seed_user["user"].id)
+            priced = ctx.paychecks().for_profile(profile).at(current)
+            assert priced.earnings.base_biweekly == before.earnings.gross_biweekly
+            assert priced.earnings.gross_biweekly == before.earnings.gross_biweekly + Decimal("45.00")
+            assert [(l.name, l.amount) for l in priced.earnings.taxable] == [
+                ("Phone Allowance", Decimal("45.00")),
+            ]
+            # The deposit rises by the line less what it is taxed (this module's
+            # seeded profile carries no tax configs, so here the two are equal;
+            # the taxed figures are the engine suite's to grade).
+            assert priced.earnings.net_pay - before.earnings.net_pay == (
+                Decimal("45.00") - (priced.taxes.total - before.taxes.total)
+            )
+            assert profile.template.default_amount == priced.earnings.net_pay, (
+                "the regeneration stated a net that did not carry the earning line"
+            )
+
+    def test_a_target_account_on_an_earning_is_refused_and_nothing_is_written(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """An earning funds no account: the door refuses the pair and writes no line.
+
+        The contribution feed reads every active line's ``target_account_id``
+        as a payroll contribution into that account; an earning with a target
+        would feed it money nobody contributes, so the schema refuses the
+        pair (IDs for logic: the side is read through the kind vocabulary).
+        The same payload with a deduction kind is the positive control.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            after_tax_kind = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.AFTER_TAX_EARNING)
+            payload = _line_form("Stipend", amount="50.00")
+            payload["paycheck_line_kind_id"] = str(after_tax_kind)
+            payload["target_account_id"] = str(seed_user["account"].id)
+
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines", data=payload, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            assert b"Only a deduction can fund an account" in response.data
+            assert db.session.query(PaycheckLine).filter_by(name="Stipend").count() == 0
+
+            # Positive control: the identical payload as a post-tax deduction is written.
+            payload["paycheck_line_kind_id"] = str(
+                ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.POST_TAX_DEDUCTION),
+            )
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines", data=payload, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            saved = db.session.query(PaycheckLine).filter_by(name="Stipend").one()
+            assert saved.target_account_id == seed_user["account"].id
+
+
+    @pytest.mark.parametrize(
+        "earning_kind",
+        [PaycheckLineKindEnum.TAXABLE_EARNING, PaycheckLineKindEnum.AFTER_TAX_EARNING],
+        ids=lambda member: member.value,
+    )
+    def test_flipping_a_funded_deduction_to_an_earning_is_refused_at_the_update_door(
+        self, app, auth_client, seed_user, seed_periods, earning_kind,
+    ):
+        """A stored deduction WITH a target cannot become an earning that keeps it -- posted or omitted.
+
+        The update route writes only the keys the payload carries (an absent
+        key leaves the stored value alone), so the crafted shape -- the kind
+        flipped, the target key OMITTED -- passes the schema's posted-pair
+        rule and would have left the stored target on an earning; the route
+        judges the EFFECTIVE pair, posted kind beside the target the row will
+        carry, with the same sentence (an adversarial review of plan step
+        salary:R18-b).  Both shapes are driven and both leave the row exactly
+        as it was.  The positive control: the same edit with the target
+        CLEARED is accepted and the row becomes an earning with no target.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            pre_tax = ref_cache.paycheck_line_kind_id(PaycheckLineKindEnum.PRE_TAX_DEDUCTION)
+            flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
+            line = PaycheckLine(
+                salary_profile_id=profile.id, paycheck_line_kind_id=pre_tax,
+                calc_method_id=flat_method.id, name="Retirement Feed",
+                amount=Decimal("200.00"), target_account_id=seed_user["account"].id,
+            )
+            db.session.add(line)
+            db.session.commit()
+            line_id, version = line.id, line.version_id
+            payload = _line_form("Retirement Feed", amount="200.00")
+            payload["version_id"] = str(version)
+            payload["paycheck_line_kind_id"] = str(ref_cache.paycheck_line_kind_id(earning_kind))
+
+            # (1) the target posted with the flipped kind: the cross-field rule.
+            posted = {**payload, "target_account_id": str(seed_user["account"].id)}
+            response = auth_client.post(
+                f"/salary/lines/{line_id}/edit", data=posted, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            assert b"Only a deduction can fund an account" in response.data
+
+            # (2) the target key OMITTED with the flipped kind: the route's
+            # effective-pair rule, worded identically.
+            omitted = {k: v for k, v in payload.items() if k != "target_account_id"}
+            response = auth_client.post(
+                f"/salary/lines/{line_id}/edit", data=omitted, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            assert b"Only a deduction can fund an account" in response.data
+
+            db.session.expire_all()
+            stored = db.session.get(PaycheckLine, line_id)
+            assert stored.paycheck_line_kind_id == pre_tax
+            assert stored.target_account_id == seed_user["account"].id
+            assert stored.version_id == version
+
+            # Positive control: the target cleared, the flip is accepted.
+            cleared = {**payload, "target_account_id": ""}
+            response = auth_client.post(
+                f"/salary/lines/{line_id}/edit", data=cleared, follow_redirects=True,
+            )
+            assert response.status_code == 200
+            db.session.expire_all()
+            stored = db.session.get(PaycheckLine, line_id)
+            assert stored.paycheck_line_kind_id == ref_cache.paycheck_line_kind_id(earning_kind)
+            assert stored.target_account_id is None
 
 
 class TestDeductionCadenceForm:
@@ -1997,28 +2211,38 @@ class TestDeductionCadenceForm:
     derived first occurrence differs per unit.
     """
 
-    def test_the_form_renders_the_cadence_controls_and_nothing_else_of_the_partial(
+    def test_the_form_renders_the_cadence_and_span_controls_and_nothing_else_of_the_partial(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """The four controls and their script; no start, due day, end bound or preview."""
+        """The four cadence controls, the span rows and their script; no due day or preview.
+
+        Until plan step salary:R18-c this pinned the ABSENCE of the start and
+        the end bound (rulings R-SAL30 / R-SAL31); ruling **R-SAL38** (2)
+        amended both, so the same pin now holds them PRESENT -- the "Starts
+        on" box BLANK, since blank is the opening payday -- and keeps holding
+        the due day and the preview absent.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.get(f"/salary/{profile.id}/edit")
             assert response.status_code == 200
             html = response.data.decode()
             form = re.search(
-                r'<form method="POST" id="deduction-form".*?</form>', html, re.S,
+                r'<form method="POST" id="line-form".*?</form>', html, re.S,
             ).group(0)
             for present in (
                 'id="cadence-controls"', 'name="recurrence_unit"',
                 'name="interval_n"', 'name="max_per_month"',
                 'name="recurrence_placement"', "data-cadence-options=",
+                'id="recurrence-fields"', 'name="starts_on"', 'name="nominal_day"',
+                'name="recurrence_end_mode"', 'name="end_date"',
+                'name="max_occurrences"', "Leave blank to start from your first paycheck",
             ):
                 assert present in form, present
+            starts_on = re.search(r'<input type="date" id="starts_on"[^>]*>', form).group(0)
+            assert 'value=""' in starts_on, "the ADD form's start opens blank"
             for absent in (
-                'name="starts_on"', 'id="recurrence-fields"',
-                'name="recurrence_end_mode"', 'name="due_day_of_month"',
-                'id="recurrence-preview"', 'name="nominal_day"',
+                'name="due_day_of_month"', 'id="recurrence-preview"',
                 'name="deductions_per_year"',
             ):
                 assert absent not in form, absent
@@ -2039,7 +2263,7 @@ class TestDeductionCadenceForm:
             profile = _create_profile(seed_user)
             html = auth_client.get(f"/salary/{profile.id}/edit").data.decode()
             form = re.search(
-                r'<form method="POST" id="deduction-form".*?</form>', html, re.S,
+                r'<form method="POST" id="line-form".*?</form>', html, re.S,
             ).group(0)
             # ``\sname=`` and not ``name=``: the calc-method options carry a
             # ``data-name`` attribute that is not a control.
@@ -2062,7 +2286,7 @@ class TestDeductionCadenceForm:
             profile = _create_profile(seed_user)
             migrated = _a_line(profile, "Migrated", 24)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Authored",
                     **_cadence_payload(
@@ -2075,7 +2299,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Authored").one()
             )
             assert authored.recurrence_rule is not None
@@ -2092,8 +2316,8 @@ class TestDeductionCadenceForm:
                 (date(2026, 1, 30), False), (date(2026, 2, 13), True),
                 (date(2026, 2, 27), True),
             ):
-                assert basis.deduction_applies_on(authored, payday) is taken, payday
-                assert basis.deduction_applies_on(migrated, payday) is taken, payday
+                assert basis.line_applies_on(authored, payday) is taken, payday
+                assert basis.line_applies_on(migrated, payday) is taken, payday
 
     def test_add_monthly_first_paycheck_is_the_migrated_twelve(
         self, app, auth_client, seed_user, seed_periods,
@@ -2103,7 +2327,7 @@ class TestDeductionCadenceForm:
             profile = _create_profile(seed_user)
             migrated = _a_line(profile, "Migrated", 12)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Authored",
                     **_cadence_payload(
@@ -2116,7 +2340,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Authored").one()
             )
             assert _authored_columns(authored.recurrence_rule) == (
@@ -2129,7 +2353,7 @@ class TestDeductionCadenceForm:
                 (date(2026, 1, 30), False), (date(2026, 2, 13), True),
                 (date(2026, 2, 27), False), (date(2026, 3, 13), True),
             ):
-                assert basis.deduction_applies_on(authored, payday) is taken, payday
+                assert basis.line_applies_on(authored, payday) is taken, payday
 
     def test_add_yearly_starts_on_january_first_of_the_opening_year(
         self, app, auth_client, seed_user, seed_periods,
@@ -2138,7 +2362,7 @@ class TestDeductionCadenceForm:
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Dues",
                     **_cadence_payload(
@@ -2151,7 +2375,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             authored = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Dues").one()
             )
             rule = authored.recurrence_rule
@@ -2161,8 +2385,8 @@ class TestDeductionCadenceForm:
             assert rule.starts_on == date(2026, 1, 1)
             assert rule.max_per_month is None
             basis = PayrollBasis(profile, calendar_for(seed_user["user"].id))
-            assert basis.deduction_applies_on(authored, date(2026, 1, 2)) is True
-            assert basis.deduction_applies_on(authored, date(2026, 1, 16)) is False
+            assert basis.line_applies_on(authored, date(2026, 1, 2)) is True
+            assert basis.line_applies_on(authored, date(2026, 1, 16)) is False
 
     def test_add_does_not_repeat_authors_no_rule(
         self, app, auth_client, seed_user, seed_periods,
@@ -2171,7 +2395,7 @@ class TestDeductionCadenceForm:
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Every",
                     **_cadence_payload(
@@ -2183,12 +2407,12 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Every").one()
             )
             assert added.recurrence_rule is None
             assert db.session.query(RecurrenceRule).filter_by(
-                paycheck_deduction_id=added.id,
+                paycheck_line_id=added.id,
             ).count() == 0
 
     def test_add_every_paycheck_with_no_ceiling_is_no_rule(
@@ -2198,7 +2422,7 @@ class TestDeductionCadenceForm:
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Every",
                     **_cadence_payload(
@@ -2210,7 +2434,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Every").one()
             )
             assert added.recurrence_rule is None
@@ -2222,7 +2446,7 @@ class TestDeductionCadenceForm:
         with app.app_context():
             profile = _create_profile(seed_user)
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Alternate",
                     **_cadence_payload(
@@ -2233,16 +2457,16 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Alternate").one()
             )
             assert added.recurrence_rule is not None
             assert added.recurrence_rule.interval_n == 2
             assert added.recurrence_rule.max_per_month is None
             basis = PayrollBasis(profile, calendar_for(seed_user["user"].id))
-            assert basis.deduction_applies_on(added, date(2026, 1, 2)) is True
-            assert basis.deduction_applies_on(added, date(2026, 1, 16)) is False
-            assert basis.deduction_applies_on(added, date(2026, 1, 30)) is True
+            assert basis.line_applies_on(added, date(2026, 1, 2)) is True
+            assert basis.line_applies_on(added, date(2026, 1, 16)) is False
+            assert basis.line_applies_on(added, date(2026, 1, 30)) is True
 
     def test_edit_twenty_four_to_twelve_reauthors_the_same_rule(
         self, app, auth_client, seed_user, seed_periods,
@@ -2254,7 +2478,7 @@ class TestDeductionCadenceForm:
             twelve = _a_line(profile, "Reference", 12)
             rule_id = line.recurrence_rule.id
             response = auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(
@@ -2267,7 +2491,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == (
                 _authored_columns(twelve.recurrence_rule)
@@ -2283,7 +2507,7 @@ class TestDeductionCadenceForm:
             twenty_four = _a_line(profile, "Reference", 24)
             rule_id = line.recurrence_rule.id
             auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Transit",
                     **_cadence_payload(
@@ -2294,7 +2518,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == (
                 _authored_columns(twenty_four.recurrence_rule)
@@ -2309,7 +2533,7 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             rule_id = line.recurrence_rule.id
             response = auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(None, PeriodPlacementEnum.CONTAINING_DATE),
@@ -2319,7 +2543,7 @@ class TestDeductionCadenceForm:
             assert response.status_code == 200
             db.session.expire_all()
             assert db.session.get(RecurrenceRule, rule_id) is None
-            assert db.session.get(PaycheckDeduction, line.id).recurrence_rule is None
+            assert db.session.get(PaycheckLine, line.id).recurrence_rule is None
 
     def test_edit_to_every_paycheck_with_no_ceiling_deletes_the_rule(
         self, app, auth_client, seed_user, seed_periods,
@@ -2330,7 +2554,7 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             rule_id = line.recurrence_rule.id
             auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(
@@ -2342,7 +2566,7 @@ class TestDeductionCadenceForm:
             )
             db.session.expire_all()
             assert db.session.get(RecurrenceRule, rule_id) is None
-            assert db.session.get(PaycheckDeduction, line.id).recurrence_rule is None
+            assert db.session.get(PaycheckLine, line.id).recurrence_rule is None
 
     def test_edit_with_the_ceiling_key_absent_keeps_the_stored_ceiling(
         self, app, auth_client, seed_user, seed_periods,
@@ -2359,7 +2583,7 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             rule_id = line.recurrence_rule.id
             auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(
@@ -2383,20 +2607,20 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             before = _authored_columns(line.recurrence_rule)
             rule_id = line.recurrence_rule.id
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data={
                     "name": "Health",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "125.00",
                 },
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.amount == Decimal("125.00")
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == before
@@ -2404,13 +2628,25 @@ class TestDeductionCadenceForm:
     def test_the_edit_page_emits_each_lines_cadence_for_the_prefill(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Four data attributes per row: the migrated shapes' values, empties for no rule."""
+        """Nine data attributes per row: the migrated shapes' values, empties for no rule.
+
+        The migrated rules start on their unit's zero at the opening and never
+        end, so their span attributes carry that start (a 24's the opening
+        payday, a 12's the 1st of its month), no nominal day, the bound's
+        ``never`` and empty values (plan step salary:R18-c).  A line with no
+        rule carries a BLANK start -- not today, the template forms' default,
+        which a re-save would read as a stated start -- and ``never``.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
             twenty_four = _a_line(profile, "Health", 24)
             twelve = _a_line(profile, "Transit", 12)
             every = _a_line(profile, "401k", 26)
             html = auth_client.get(f"/salary/{profile.id}/edit").data.decode()
+            never_ending = {
+                "nominal-day": "", "end-mode": "never", "end-date": "",
+                "max-occurrences": "",
+            }
             period = str(ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD))
             month = str(ref_cache.recurrence_unit_id(RecurrenceUnitEnum.MONTH))
             containing = str(
@@ -2424,34 +2660,45 @@ class TestDeductionCadenceForm:
             assert _prefill_attributes(html, twenty_four.id) == {
                 "unit-id": period, "interval": "1",
                 "placement-id": containing, "max-per-month": "2",
+                "starts-on": "2026-01-02", **never_ending,
             }
             assert _prefill_attributes(html, twelve.id) == {
                 "unit-id": month, "interval": "1",
                 "placement-id": first_on_or_after, "max-per-month": "",
+                "starts-on": "2026-01-01", **never_ending,
             }
             assert _prefill_attributes(html, every.id) == {
                 "unit-id": "", "interval": "", "placement-id": "", "max-per-month": "",
+                "starts-on": "", **never_ending,
             }
 
-    def test_a_crafted_start_or_bound_cannot_reach_the_rule(
+    def test_a_stated_start_and_bound_reach_the_rule_and_a_due_day_does_not(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """``starts_on``, a due day and a closing bound on the wire are dropped, not authored."""
+        """``starts_on`` and a closing bound are the owner's and are authored; a due day is dropped.
+
+        Until plan step salary:R18-c every one of these was dropped on the
+        wire (rulings R-SAL30 / R-SAL31); ruling **R-SAL38** (2) gives every
+        line a start and an optional end, so a monthly line that begins
+        2026-04-01 and ends 2026-06-30 is stored exactly so.  ``due_day_of
+        _month`` is still nobody's on a payroll line and still meets the
+        schema's EXCLUDE; ``max_occurrences`` beside an ``on_date`` mode is
+        the input that shape does not need and is dropped by the compose.
+        """
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     **_line_form(
-                        "Crafted",
+                        "Spanned",
                         **_cadence_payload(
                             RecurrenceUnitEnum.MONTH,
                             PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
                             ceiling=None,
                         ),
                     ),
-                    "starts_on": "2026-04-15",
-                    "nominal_day": "30",
+                    "starts_on": "2026-04-01",
                     "due_day_of_month": "20",
                     "recurrence_end_mode": "on_date",
                     "end_date": "2026-06-30",
@@ -2461,15 +2708,328 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
-                .filter_by(salary_profile_id=profile.id, name="Crafted").one()
+                db.session.query(PaycheckLine)
+                .filter_by(salary_profile_id=profile.id, name="Spanned").one()
             )
             rule = added.recurrence_rule
-            assert rule.starts_on == date(2026, 1, 1)
+            assert rule.starts_on == date(2026, 4, 1)
             assert rule.nominal_day is None
             assert rule.due_day_of_month is None
-            assert rule.end_date is None
+            assert rule.end_date == date(2026, 6, 30)
             assert rule.max_occurrences is None
+            # The section words the span beside the cadence, and the edit
+            # button carries it for the prefill.
+            html = response.data.decode()
+            assert "from Apr 01, 2026" in html
+            assert 'data-line-starts-on="2026-04-01"' in html
+            assert 'data-line-end-mode="on_date"' in html
+            assert 'data-line-end-date="2026-06-30"' in html
+
+    def test_a_blank_start_is_the_opening_and_a_line_with_no_rule_prefills_blank(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Blank start: the unit's zero at the opening (R-SAL36) as before; a rule-less line's edit button carries no date."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data=_line_form(
+                    "Monthly", **_cadence_payload(
+                        RecurrenceUnitEnum.MONTH,
+                        PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                        ceiling=None,
+                    ),
+                ),
+                follow_redirects=True,
+            )
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data=_line_form("Every", **_cadence_payload(
+                    RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+                )),
+                follow_redirects=True,
+            )
+            monthly = db.session.query(PaycheckLine).filter_by(name="Monthly").one()
+            every = db.session.query(PaycheckLine).filter_by(name="Every").one()
+            assert monthly.recurrence_rule.starts_on == date(2026, 1, 1)
+            assert every.recurrence_rule is None
+            html = response.data.decode()
+            every_button = re.search(
+                rf'<button[^>]*data-line-edit="{every.id}"[^>]*>', html, re.S,
+            ).group(0)
+            assert 'data-line-starts-on=""' in every_button
+            assert 'data-line-end-mode="never"' in every_button
+            # The derived default is worded as nothing: no "from" on the monthly line.
+            assert "from Jan 01, 2026" not in html
+
+    def test_an_every_paycheck_line_with_a_span_keeps_a_rule(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Every paycheck FROM a date, or UNTIL one, is a rule (R-SAL29's canonicalisation needs no span).
+
+        The developer's ended `$100` allowance is this shape: taken on every
+        paycheck between two dates.  The engine then admits exactly the
+        paydays inside the span.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={
+                    **_line_form("Bounded", **_cadence_payload(
+                        RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+                    )),
+                    "starts_on": "2026-02-01",
+                    "recurrence_end_mode": "on_date",
+                    "end_date": "2026-03-01",
+                },
+                follow_redirects=True,
+            )
+            line = db.session.query(PaycheckLine).filter_by(name="Bounded").one()
+            rule = line.recurrence_rule
+            assert rule is not None
+            calendar = calendar_for(seed_user["user"].id)
+            # A paycheck cadence's first occurrence IS a paycheck: the seam
+            # places a stated date on the payday whose period holds it (the
+            # rule every template form's start already follows).
+            first_payday = calendar.period_containing(date(2026, 2, 1)).start_date
+            assert (rule.starts_on, rule.end_date, rule.max_per_month) == (
+                first_payday, date(2026, 3, 1), None,
+            )
+            assert first_payday == date(2026, 1, 30)
+            basis = PayrollBasis(profile, calendar)
+            paydays = [period.start_date for period in calendar.saved()]
+            # The ten seeded paydays run 2026-01-02 .. 2026-05-08 a fortnight
+            # apart; the span admits the three inside it and none of the
+            # other seven.
+            assert len(paydays) == 10
+            assert [
+                payday for payday in paydays if basis.line_applies_on(line, payday)
+            ] == [date(2026, 1, 30), date(2026, 2, 13), date(2026, 2, 27)]
+            # The Frequency cell words the span beside the cadence, the stop
+            # in the recurrence package's own format and the start in the same.
+            html = response.data.decode()
+            assert "Every paycheck, from Jan 30, 2026, until Mar 01, 2026" in html
+
+    def test_a_stop_before_the_derived_opening_is_refused_and_no_line_is_written(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A blank start with a stop before the opening payday is the write door's refusal, not a 500.
+
+        The schema grades an inverted window only when the submission states
+        BOTH dates; a blank start states none, so the pair meets the write
+        door with the derived opening (2026-01-02) as its start and the stated
+        2025-12-15 as its stop.  The create helper every template form uses
+        words that refusal (an adversarial review of plan step salary:R18-c
+        found the line door reaching the write door directly, where the
+        refusal was a 500), and the flushed line is rolled back with it.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={
+                    **_line_form("Stopped", **_cadence_payload(
+                        RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+                    )),
+                    "recurrence_end_mode": "on_date",
+                    "end_date": "2025-12-15",
+                },
+                follow_redirects=True,
+            )
+            assert response.status_code == 200
+            assert end_bound_before_start_message(
+                date(2025, 12, 15), date(2026, 1, 2),
+            ) in response.data.decode()
+            assert db.session.query(PaycheckLine).filter_by(
+                salary_profile_id=profile.id, name="Stopped",
+            ).count() == 0
+
+    def test_a_nominal_day_posted_beside_a_blank_start_is_dropped_with_the_derivation(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A crafted nominal day beside a blank start does not reach the spec beside the derived 1st.
+
+        The schema's nominal-day rule is skipped when no start is stated, so
+        ``nominal_day=31`` beside a blank start passes it; the derived
+        2026-01-01 never clamped, and the pair would be refused by the spec as
+        a broken invariant -- a 500.  The derivation drops the day with the
+        blank it rode beside (the script disables that control; only a
+        crafted POST carries it).
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            response = auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={
+                    **_line_form("Crafted", **_cadence_payload(
+                        RecurrenceUnitEnum.MONTH,
+                        PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                        ceiling=None,
+                    )),
+                    "nominal_day": "31",
+                },
+                follow_redirects=True,
+            )
+            assert response.status_code == 200
+            line = db.session.query(PaycheckLine).filter_by(
+                salary_profile_id=profile.id, name="Crafted",
+            ).one()
+            assert (line.recurrence_rule.starts_on, line.recurrence_rule.nominal_day) == (
+                date(2026, 1, 1), None,
+            )
+
+    def test_an_edit_that_clears_the_start_box_is_back_to_the_derived_default(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A stated start cleared on an edit re-derives the unit's zero at the opening, in place."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            monthly = _cadence_payload(
+                RecurrenceUnitEnum.MONTH, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                ceiling=None,
+            )
+            auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={**_line_form("Spanned", **monthly), "starts_on": "2026-04-01"},
+                follow_redirects=True,
+            )
+            line = db.session.query(PaycheckLine).filter_by(name="Spanned").one()
+            rule_id = line.recurrence_rule.id
+            assert line.recurrence_rule.starts_on == date(2026, 4, 1)
+            auth_client.post(
+                f"/salary/lines/{line.id}/edit",
+                data=_line_form("Spanned", **monthly),
+                follow_redirects=True,
+            )
+            db.session.expire_all()
+            line = db.session.get(PaycheckLine, line.id)
+            assert line.recurrence_rule.id == rule_id
+            assert (line.recurrence_rule.starts_on, line.recurrence_rule.nominal_day) == (
+                date(2026, 1, 1), None,
+            )
+
+    def test_an_every_paycheck_line_gaining_an_end_on_edit_gains_a_rule(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A rule-less every-paycheck line given a stop on its edit form is a rule from the opening."""
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            every = _cadence_payload(
+                RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+            )
+            auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data=_line_form("Ending", **every), follow_redirects=True,
+            )
+            line = db.session.query(PaycheckLine).filter_by(name="Ending").one()
+            assert line.recurrence_rule is None
+            response = auth_client.post(
+                f"/salary/lines/{line.id}/edit",
+                data={
+                    **_line_form("Ending", **every),
+                    "recurrence_end_mode": "on_date",
+                    "end_date": "2026-03-01",
+                },
+                follow_redirects=True,
+            )
+            assert response.status_code == 200
+            db.session.expire_all()
+            line = db.session.get(PaycheckLine, line.id)
+            rule = line.recurrence_rule
+            assert rule is not None
+            assert (rule.starts_on, rule.end_date, rule.max_occurrences, rule.max_per_month) == (
+                date(2026, 1, 2), date(2026, 3, 1), None, None,
+            )
+            calendar = calendar_for(seed_user["user"].id)
+            basis = PayrollBasis(profile, calendar)
+            assert [
+                period.start_date for period in calendar.saved()
+                if basis.line_applies_on(line, period.start_date)
+            ] == [
+                date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+                date(2026, 2, 13), date(2026, 2, 27),
+            ]
+            # From the opening is the derived default, worded as nothing.
+            assert "Every paycheck, until Mar 01, 2026" in response.data.decode()
+
+    def test_a_stated_start_on_the_opening_payday_is_a_span_and_keeps_a_rule(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Typing the opening payday into "Starts on" is a stated start, so the line keeps a rule.
+
+        A blank box and a typed 2026-01-02 derive the same date, and a first
+        draft canonicalised both to NO rule; they are not one spelling below
+        a stated ``history_opens_on``, where a rule-less line prices on the
+        replayed backdated paydays and a rule from the opening does not (an
+        adversarial review of plan step salary:R18-c).  A typed date is the
+        user's and is stored as a rule; what a blank means there is the
+        developer's question, reported with this leaf.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={
+                    **_line_form("Typed", **_cadence_payload(
+                        RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+                    )),
+                    "starts_on": "2026-01-02",
+                },
+                follow_redirects=True,
+            )
+            line = db.session.query(PaycheckLine).filter_by(name="Typed").one()
+            rule = line.recurrence_rule
+            assert rule is not None, "a typed start was read as the blank box"
+            assert (rule.starts_on, rule.end_date, rule.max_occurrences) == (
+                date(2026, 1, 2), None, None,
+            )
+
+    def test_an_edit_with_no_bound_keys_keeps_a_bounded_lines_stop(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A payload with no bound keys leaves the stored stop standing, so the rule is kept.
+
+        The update door reads an ABSENT bound as "the form said nothing about
+        it" (a disabled control, a crafted POST) and leaves the stored bound
+        alone; the every-paycheck canonicalisation must read the same stored
+        bound, or a bounded every-paycheck line re-saved without the keys
+        would be canonicalised to NO rule and lose its stop (an adversarial
+        review of plan step salary:R18-c).  The blank start box re-derives
+        the opening, as it does on any edit.
+        """
+        with app.app_context():
+            profile = _create_profile(seed_user)
+            every = _cadence_payload(
+                RecurrenceUnitEnum.PERIOD, PeriodPlacementEnum.CONTAINING_DATE,
+            )
+            auth_client.post(
+                f"/salary/{profile.id}/lines",
+                data={
+                    **_line_form("Bounded", **every),
+                    "starts_on": "2026-02-01",
+                    "recurrence_end_mode": "on_date",
+                    "end_date": "2026-03-01",
+                },
+                follow_redirects=True,
+            )
+            line = db.session.query(PaycheckLine).filter_by(name="Bounded").one()
+            rule_id = line.recurrence_rule.id
+            assert line.recurrence_rule.starts_on == date(2026, 1, 30)
+            payload = {**_line_form("Bounded", amount="110.00", **every)}
+            for key in ("recurrence_end_mode", "end_date", "max_occurrences"):
+                del payload[key]
+            auth_client.post(
+                f"/salary/lines/{line.id}/edit", data=payload, follow_redirects=True,
+            )
+            db.session.expire_all()
+            line = db.session.get(PaycheckLine, line.id)
+            assert line.amount == Decimal("110.00")
+            assert line.recurrence_rule is not None, "the stored stop was read as no span"
+            assert line.recurrence_rule.id == rule_id
+            assert (line.recurrence_rule.starts_on, line.recurrence_rule.end_date) == (
+                date(2026, 1, 2), date(2026, 3, 1),
+            )
 
     def test_a_refused_cadence_is_heard_in_its_own_words(
         self, app, auth_client, seed_user, seed_periods,
@@ -2478,7 +3038,7 @@ class TestDeductionCadenceForm:
         with app.app_context():
             profile = _create_profile(seed_user)
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Half",
                     **_cadence_payload(
@@ -2490,7 +3050,7 @@ class TestDeductionCadenceForm:
             )
             assert response.status_code == 200
             assert b"Say how often this repeats." in response.data
-            assert db.session.query(PaycheckDeduction).filter_by(
+            assert db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=profile.id, name="Half",
             ).count() == 0
 
@@ -2503,7 +3063,7 @@ class TestDeductionCadenceForm:
             line = _a_line(profile, "Health", 24)
             before = _authored_columns(line.recurrence_rule)
             response = auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(
@@ -2517,7 +3077,7 @@ class TestDeductionCadenceForm:
             assert b"a per-month limit has nothing to limit" in response.data
             db.session.expire_all()
             assert _authored_columns(
-                db.session.get(PaycheckDeduction, line.id).recurrence_rule,
+                db.session.get(PaycheckLine, line.id).recurrence_rule,
             ) == before
 
     def test_a_line_added_by_the_form_regenerates_the_profiles_paychecks(
@@ -2530,7 +3090,7 @@ class TestDeductionCadenceForm:
         amount, re-stated to the CURRENT paycheck's net (today is frozen at
         2026-03-20 in this module; the paycheck of Mar 13) -- is what grades
         it: a regeneration that ran before the rule existed, or that priced
-        a ``profile.deductions`` collection the new line never joined, would
+        a ``profile.lines`` collection the new line never joined, would
         have stated the net WITHOUT the line.  The second is the shape this
         test measured on the first cut: pricing the paycheck BEFORE the add
         loads the collection into the session the request shares, and a
@@ -2545,7 +3105,7 @@ class TestDeductionCadenceForm:
             net_without = ctx.paychecks().for_profile(profile).at(current).earnings.net_pay
 
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Health",
                     **_cadence_payload(
@@ -2586,7 +3146,7 @@ class TestDeductionCadenceForm:
             rebuild_calendar(seed_user["user"].id, date(2026, 3, 13), 10, 14)
             profile = _create_profile(seed_user)
             auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data=_line_form(
                     "Dues",
                     **_cadence_payload(
@@ -2598,7 +3158,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             line = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="Dues").one()
             )
             rule = line.recurrence_rule
@@ -2618,7 +3178,7 @@ class TestDeductionCadenceForm:
             )
             assert prefill["interval"] == "1"
             auth_client.post(
-                f"/salary/deductions/{line.id}/edit",
+                f"/salary/lines/{line.id}/edit",
                 data=_line_form(
                     "Dues", amount="120.00",
                     **_cadence_payload(
@@ -2630,7 +3190,7 @@ class TestDeductionCadenceForm:
                 follow_redirects=True,
             )
             db.session.expire_all()
-            line = db.session.get(PaycheckDeduction, line.id)
+            line = db.session.get(PaycheckLine, line.id)
             assert line.amount == Decimal("120.00")
             assert line.recurrence_rule.id == rule_id
             assert _authored_columns(line.recurrence_rule) == before
@@ -2645,7 +3205,7 @@ class TestDeductionFrequencyDisplay:
     Since plan step **salary:R15-b** (rulings **R-SAL3**, **R-SAL32**) a
     line's frequency is a recurrence rule on the row, or none for *every
     paycheck*, and the cell reads it through the recurrence package's ONE
-    phrase producer (``app.services.deduction_cadence``): the three
+    phrase producer (``app.services.payroll_line_cadence``): the three
     hand-worded labels the cell carried ("26x/yr (every paycheck)", "24x/yr
     (skip 3rd paycheck)", "12x/yr (monthly)") went with the column.  The
     cases seed the two migrated shapes through the shared builder the
@@ -2656,7 +3216,7 @@ class TestDeductionFrequencyDisplay:
     def _cell(html, deduction_id):
         """The rendered Frequency cell for one line."""
         match = re.search(
-            r'<td data-ded-cadence="%d">(.*?)</td>' % deduction_id, html, re.S,
+            r'<td data-line-cadence="%d">(.*?)</td>' % deduction_id, html, re.S,
         )
         assert match, f"no Frequency cell for deduction {deduction_id}"
         return match.group(1).strip()
@@ -2664,11 +3224,11 @@ class TestDeductionFrequencyDisplay:
     @staticmethod
     def _seed(profile, name, per_year):
         """A flat pre-tax line, with the migrated rule for a 24 / 12."""
-        pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+        pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
         flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
-        deduction = PaycheckDeduction(
+        deduction = PaycheckLine(
             salary_profile_id=profile.id,
-            deduction_timing_id=pre_tax.id,
+            paycheck_line_kind_id=pre_tax.id,
             calc_method_id=flat_method.id,
             name=name,
             amount=Decimal("100.00"),
@@ -2676,7 +3236,7 @@ class TestDeductionFrequencyDisplay:
         db.session.add(deduction)
         db.session.flush()
         if per_year != 26:
-            make_deduction_cadence_rule(db.session, deduction, per_year)
+            make_line_cadence_rule(db.session, deduction, per_year)
         db.session.commit()
         return deduction.id
 
@@ -2804,13 +3364,13 @@ class TestDeductionFrequencyDisplay:
         """
         with app.app_context():
             profile = _create_profile(seed_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             response = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={
                     "name": "401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                     **_cadence_payload(
@@ -2823,7 +3383,7 @@ class TestDeductionFrequencyDisplay:
             )
             assert response.status_code == 200
             added = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="401k").one()
             )
             assert added.recurrence_rule is not None
@@ -2837,6 +3397,8 @@ class TestDeductionFrequencyDisplay:
                     ref_cache.period_placement_id(PeriodPlacementEnum.CONTAINING_DATE),
                 ),
                 "max-per-month": "2",
+                "starts-on": "2026-01-02", "nominal-day": "",
+                "end-mode": "never", "end-date": "", "max-occurrences": "",
             }
 
     def test_the_htmx_edit_response_keeps_the_lines_rule(
@@ -2846,13 +3408,13 @@ class TestDeductionFrequencyDisplay:
         with app.app_context():
             profile = _create_profile(seed_user)
             ded_id = self._seed(profile, "Health Insurance", 24)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
             response = auth_client.post(
-                f"/salary/deductions/{ded_id}/edit",
+                f"/salary/lines/{ded_id}/edit",
                 data={
                     "name": "Health Insurance",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "175.00",
                 },
@@ -2863,7 +3425,7 @@ class TestDeductionFrequencyDisplay:
                 "Every paycheck (at most 2 a month)"
             )
             db.session.expire_all()
-            assert db.session.get(PaycheckDeduction, ded_id).amount == Decimal("175.00")
+            assert db.session.get(PaycheckLine, ded_id).amount == Decimal("175.00")
 
 
 # ── Breakdown & Projection ────────────────────────────────────────
@@ -3362,17 +3924,17 @@ class TestSalaryNegativePaths:
     def test_add_deduction_to_other_users_profile_idor(
         self, app, auth_client, seed_user, second_user
     ):
-        """POST /salary/<id>/deductions for another user's profile is blocked."""
+        """POST /salary/<id>/lines for another user's profile is blocked."""
         with app.app_context():
             other_profile = _create_second_user_salary_profile(second_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
             resp = auth_client.post(
-                f"/salary/{other_profile.id}/deductions",
+                f"/salary/{other_profile.id}/lines",
                 data={
                     "name": "Sneaky 401k",
-                    "deduction_timing_id": pre_tax.id,
+                    "paycheck_line_kind_id": pre_tax.id,
                     "calc_method_id": flat_method.id,
                     "amount": "200.00",
                 },
@@ -3382,7 +3944,7 @@ class TestSalaryNegativePaths:
             assert resp.status_code == 404
 
             # Verify no deduction was created for the other user's profile.
-            ded_count = db.session.query(PaycheckDeduction).filter_by(
+            ded_count = db.session.query(PaycheckLine).filter_by(
                 salary_profile_id=other_profile.id,
             ).count()
             assert ded_count == 0
@@ -3421,15 +3983,15 @@ class TestSalaryNegativePaths:
     def test_delete_deduction_from_other_users_profile_idor(
         self, app, auth_client, seed_user, second_user
     ):
-        """POST /salary/deductions/<id>/delete for another user's deduction is blocked."""
+        """POST /salary/lines/<id>/delete for another user's deduction is blocked."""
         with app.app_context():
             other_profile = _create_second_user_salary_profile(second_user)
-            pre_tax = db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             flat_method = db.session.query(CalcMethod).filter_by(name="flat").one()
 
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=other_profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="Other 401k",
                 amount=Decimal("100.0000"),
@@ -3439,7 +4001,7 @@ class TestSalaryNegativePaths:
             ded_id = deduction.id
 
             resp = auth_client.post(
-                f"/salary/deductions/{ded_id}/delete",
+                f"/salary/lines/{ded_id}/delete",
                 follow_redirects=True,
             )
 
@@ -3447,7 +4009,7 @@ class TestSalaryNegativePaths:
 
             # Verify deduction still exists in DB.
             db.session.expire_all()
-            refreshed = db.session.get(PaycheckDeduction, ded_id)
+            refreshed = db.session.get(PaycheckLine, ded_id)
             assert refreshed is not None
 
     def test_view_other_users_breakdown_idor(
@@ -4446,15 +5008,15 @@ class TestCalibrationServerDerivedSnapshot:
             # Pre-tax deduction added AFTER calibration would shift the
             # taxable divisor from 2884.62 to 2684.62 if the snapshot
             # were re-derived; the snapshot must not move.
-            pre_tax = db.session.query(DeductionTiming).filter_by(
-                name="pre_tax"
+            pre_tax = db.session.query(PaycheckLineKind).filter_by(
+                name="pre_tax_deduction"
             ).one()
             flat_method = db.session.query(CalcMethod).filter_by(
                 name="flat"
             ).one()
-            deduction = PaycheckDeduction(
+            deduction = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=pre_tax.id,
+                paycheck_line_kind_id=pre_tax.id,
                 calc_method_id=flat_method.id,
                 name="401k",
                 amount=Decimal("200.00"),
@@ -4632,7 +5194,7 @@ class TestButtonPlacement:
 
             cockpit_pos = html.index("Open cockpit")
             projection_pos = html.index("Projection ledger")
-            deductions_pos = html.index('id="deductions-section"')
+            deductions_pos = html.index('id="lines-section"')
 
             assert cockpit_pos < deductions_pos
             assert projection_pos < deductions_pos
@@ -4678,7 +5240,7 @@ class TestButtonPlacement:
             submit_pos = html.index("Update Profile")
             cockpit_pos = html.index("Open cockpit")
             projection_pos = html.index("Projection ledger")
-            deductions_pos = html.index('id="deductions-section"')
+            deductions_pos = html.index('id="lines-section"')
 
             # Buttons are near the submit button, before the deductions section.
             assert cockpit_pos > submit_pos
@@ -4938,10 +5500,10 @@ class TestCockpitContext:
 
 
 class TestAnatomyFragment:
-    """HTMX anatomy fragment: owner-only, prev/next context, OOB deductions."""
+    """HTMX anatomy fragment: owner-only, prev/next context, OOB lines card."""
 
     def test_anatomy_renders(self, app, auth_client, seed_user, seed_periods):
-        """GET the fragment returns the composition + OOB deductions cards."""
+        """GET the fragment returns the composition + OOB lines cards."""
         with app.app_context():
             profile = _create_profile(seed_user)
 
@@ -4951,7 +5513,7 @@ class TestAnatomyFragment:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert 'id="anatomy-composition"' in html
-            assert 'id="anatomy-deductions"' in html
+            assert 'id="anatomy-lines"' in html
             assert 'hx-swap-oob="true"' in html
             assert "Where this paycheck goes" in html
 

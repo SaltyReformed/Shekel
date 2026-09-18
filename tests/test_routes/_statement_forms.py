@@ -279,15 +279,16 @@ class _OneFormReader(ReconcileFormReader):
     its own ``csrf_token`` or ``tab``, because the cards form carries both.
     """
 
-    def __init__(self, action):
+    def __init__(self, action, attribute="action"):
         super().__init__()
         self._action = action
+        self._attribute = attribute
         self._depth = None
 
     def handle_starttag(self, tag, attrs):
         """Collect only while inside the form named by *action*."""
         if tag == "form":
-            if self._action in dict(attrs).get("action", ""):
+            if self._action in dict(attrs).get(self._attribute, ""):
                 self._depth = 0
             return
         if self._depth is None:
@@ -303,25 +304,29 @@ class _OneFormReader(ReconcileFormReader):
             super().handle_endtag(tag)
 
 
-def form_fields(page, action):
+def form_fields(page, action, *, attribute="action"):
     """Return what a browser would submit from ONE form on *page*.
 
     Args:
         page: The rendered page or body, as text.
-        action: A substring of the form's ``action``, naming which form.
+        action: A substring of the form's *attribute*, naming which form.
+        attribute: The form attribute that names it -- ``action`` for a
+            plain form, ``hx-patch`` for the grid popover's HTMX form (plan
+            step ``balance:X-bi-7b``, whose door tests post what that card
+            renders).
 
     Returns:
         Its ``(name, value)`` pairs, repeats kept, in document order.
 
     Raises:
-        AssertionError: When no form on the page has that action, which would
-            make every assertion over the result vacuous.
+        AssertionError: When no form on the page has that attribute value,
+            which would make every assertion over the result vacuous.
     """
-    assert f'action="' in page and action in page, (
-        f"no form on this page has an action containing {action!r}, so a "
-        f"payload scraped from it would be empty"
+    assert f'{attribute}="' in page and action in page, (
+        f"no form on this page has a {attribute} containing {action!r}, so "
+        f"a payload scraped from it would be empty"
     )
-    reader = _OneFormReader(action)
+    reader = _OneFormReader(action, attribute)
     reader.feed(page)
     return reader.fields
 

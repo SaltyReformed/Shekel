@@ -8,8 +8,8 @@ of the 2026-04-15 security remediation plan:
     ``salary.salary_raises (salary_profile_id, raise_type_id,
     effective_year, effective_month)`` with
     ``NULLS NOT DISTINCT`` semantics (F-051).
-  - ``uq_paycheck_deductions_profile_name`` on
-    ``salary.paycheck_deductions (salary_profile_id, name)`` (F-052).
+  - ``uq_paycheck_lines_profile_name`` on
+    ``salary.paycheck_lines (salary_profile_id, name)`` (F-052).
 
 Coverage:
   1. Database-level enforcement (raw INSERT raises IntegrityError on
@@ -30,10 +30,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.category import Category
-from app.models.paycheck_deduction import PaycheckDeduction
+from app.models.paycheck_line import PaycheckLine
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    CalcMethod, DeductionTiming, FilingStatus,
+    CalcMethod, PaycheckLineKind, FilingStatus,
     RaiseType, TransactionType,
 )
 from app.models.salary_profile import SalaryProfile
@@ -48,7 +48,7 @@ from tests._test_helpers import freeze_today, make_every_period_rule
 
 
 SALARY_RAISES_UNIQUE = "uq_salary_raises_profile_type_year_month"
-PAYCHECK_DEDUCTIONS_UNIQUE = "uq_paycheck_deductions_profile_name"
+PAYCHECK_LINES_UNIQUE = "uq_paycheck_lines_profile_name"
 
 
 @pytest.fixture(autouse=True)
@@ -137,13 +137,13 @@ def _make_raise(profile, raise_type, *, year, month, percentage="0.03",
 
 
 def _make_deduction(profile, name="401k", amount="200.00",
-                    timing_name="pre_tax", method_name="flat"):
-    """Insert a PaycheckDeduction directly (bypasses the route layer)."""
-    timing = db.session.query(DeductionTiming).filter_by(name=timing_name).one()
+                    timing_name="pre_tax_deduction", method_name="flat"):
+    """Insert a PaycheckLine directly (bypasses the route layer)."""
+    timing = db.session.query(PaycheckLineKind).filter_by(name=timing_name).one()
     method = db.session.query(CalcMethod).filter_by(name=method_name).one()
-    obj = PaycheckDeduction(
+    obj = PaycheckLine(
         salary_profile_id=profile.id,
-        deduction_timing_id=timing.id,
+        paycheck_line_kind_id=timing.id,
         calc_method_id=method.id,
         name=name,
         amount=Decimal(amount),
@@ -245,7 +245,7 @@ class TestSalaryRaiseUniqueConstraint:
             assert count == 2
 
 
-class TestPaycheckDeductionUniqueConstraint:
+class TestPaycheckLineUniqueConstraint:
     """Direct INSERT collisions surface IntegrityError on the C-23 constraint."""
 
     def test_duplicate_name_on_same_profile_rejected(
@@ -257,12 +257,12 @@ class TestPaycheckDeductionUniqueConstraint:
             _make_deduction(profile, name="401k", amount="200.00")
 
             timing = (
-                db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             )
             method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            duplicate = PaycheckDeduction(
+            duplicate = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=timing.id,
+                paycheck_line_kind_id=timing.id,
                 calc_method_id=method.id,
                 name="401k",
                 amount=Decimal("250.00"),
@@ -272,7 +272,7 @@ class TestPaycheckDeductionUniqueConstraint:
                 db.session.commit()
             db.session.rollback()
             assert is_unique_violation(
-                excinfo.value, PAYCHECK_DEDUCTIONS_UNIQUE,
+                excinfo.value, PAYCHECK_LINES_UNIQUE,
             )
 
     def test_duplicate_blocked_even_when_first_is_inactive(
@@ -292,12 +292,12 @@ class TestPaycheckDeductionUniqueConstraint:
             db.session.commit()
 
             timing = (
-                db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             )
             method = db.session.query(CalcMethod).filter_by(name="flat").one()
-            duplicate = PaycheckDeduction(
+            duplicate = PaycheckLine(
                 salary_profile_id=profile.id,
-                deduction_timing_id=timing.id,
+                paycheck_line_kind_id=timing.id,
                 calc_method_id=method.id,
                 name="Health Insurance",
                 amount=Decimal("199.00"),
@@ -307,7 +307,7 @@ class TestPaycheckDeductionUniqueConstraint:
                 db.session.commit()
             db.session.rollback()
             assert is_unique_violation(
-                excinfo.value, PAYCHECK_DEDUCTIONS_UNIQUE,
+                excinfo.value, PAYCHECK_LINES_UNIQUE,
             )
 
     def test_distinct_name_or_profile_allowed(
@@ -319,7 +319,7 @@ class TestPaycheckDeductionUniqueConstraint:
             _make_deduction(profile, name="401k", amount="200.00")
             _make_deduction(profile, name="Roth IRA", amount="150.00")
             count = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id)
                 .count()
             )
@@ -450,7 +450,7 @@ class TestUpdateRaiseRoute:
 
 
 class TestAddDeductionRoute:
-    """POST /salary/<id>/deductions double-submit handling."""
+    """POST /salary/<id>/lines double-submit handling."""
 
     def test_double_submit_creates_one_deduction(
         self, app, auth_client, seed_user, seed_periods,
@@ -459,17 +459,17 @@ class TestAddDeductionRoute:
         with app.app_context():
             profile = _create_profile(seed_user)
             timing = (
-                db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             )
             method = db.session.query(CalcMethod).filter_by(name="flat").one()
             data = {
                 "name": "401k",
-                "deduction_timing_id": timing.id,
+                "paycheck_line_kind_id": timing.id,
                 "calc_method_id": method.id,
                 "amount": "250.00",
             }
             r1 = auth_client.post(
-                f"/salary/{profile.id}/deductions", data=data,
+                f"/salary/{profile.id}/lines", data=data,
                 follow_redirects=True,
             )
             assert r1.status_code == 200
@@ -477,7 +477,7 @@ class TestAddDeductionRoute:
             assert b"added" in r1.data
 
             r2 = auth_client.post(
-                f"/salary/{profile.id}/deductions", data=data,
+                f"/salary/{profile.id}/lines", data=data,
                 follow_redirects=True,
             )
             assert r2.status_code == 200
@@ -485,7 +485,7 @@ class TestAddDeductionRoute:
 
             db.session.expire_all()
             count = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id, name="401k")
                 .count()
             )
@@ -498,21 +498,21 @@ class TestAddDeductionRoute:
         with app.app_context():
             profile = _create_profile(seed_user)
             timing = (
-                db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             )
             method = db.session.query(CalcMethod).filter_by(name="flat").one()
             base = {
-                "deduction_timing_id": timing.id,
+                "paycheck_line_kind_id": timing.id,
                 "calc_method_id": method.id,
                 "amount": "200.00",
             }
             r1 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={**base, "name": "401k"},
                 follow_redirects=True,
             )
             r2 = auth_client.post(
-                f"/salary/{profile.id}/deductions",
+                f"/salary/{profile.id}/lines",
                 data={**base, "name": "HSA"},
                 follow_redirects=True,
             )
@@ -520,7 +520,7 @@ class TestAddDeductionRoute:
             assert r2.status_code == 200
             db.session.expire_all()
             count = (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(salary_profile_id=profile.id)
                 .count()
             )
@@ -528,7 +528,7 @@ class TestAddDeductionRoute:
 
 
 class TestUpdateDeductionRoute:
-    """POST /salary/deductions/<id>/edit collision handling."""
+    """POST /salary/lines/<id>/edit collision handling."""
 
     def test_rename_to_existing_name_returns_warning(
         self, app, auth_client, seed_user, seed_periods,
@@ -537,7 +537,7 @@ class TestUpdateDeductionRoute:
         with app.app_context():
             profile = _create_profile(seed_user)
             timing = (
-                db.session.query(DeductionTiming).filter_by(name="pre_tax").one()
+                db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one()
             )
             method = db.session.query(CalcMethod).filter_by(name="flat").one()
             existing = _make_deduction(profile, name="401k")
@@ -546,10 +546,10 @@ class TestUpdateDeductionRoute:
             target_version = target.version_id
 
             resp = auth_client.post(
-                f"/salary/deductions/{target_id}/edit",
+                f"/salary/lines/{target_id}/edit",
                 data={
                     "name": "401k",
-                    "deduction_timing_id": str(timing.id),
+                    "paycheck_line_kind_id": str(timing.id),
                     "calc_method_id": str(method.id),
                     "amount": "200.00",
                     "version_id": str(target_version),
@@ -560,11 +560,11 @@ class TestUpdateDeductionRoute:
             assert b"already uses that" in resp.data
 
             db.session.expire_all()
-            refreshed = db.session.get(PaycheckDeduction, target_id)
+            refreshed = db.session.get(PaycheckLine, target_id)
             assert refreshed.name == "HSA"
             # ``existing`` is untouched.
             assert (
-                db.session.query(PaycheckDeduction)
+                db.session.query(PaycheckLine)
                 .filter_by(id=existing.id)
                 .one()
                 .name == "401k"

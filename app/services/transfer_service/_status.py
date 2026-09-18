@@ -30,8 +30,11 @@ CONSTRUCTORS that hold it open (``_build_shadow`` and ``create_transfer``),
 which plan step X-aj2 replaces.
 
 Flask-isolated like the parent service: plain data and ORM rows in, mutations
-applied in place, no ``request`` / ``session`` imports, no flush, no commit --
-the caller owns the session boundary.
+applied in place, no ``request`` / ``session`` imports, no flush or commit of
+its own -- the caller owns the session boundary.  (The seam this module calls
+reads each shadow's ``entries`` to keep its covering movement in step, a lazy
+load that may autoflush pending writes; ``_update`` reads the aggregate's lock
+through the rows' counters as well as their dirty state for that reason.)
 """
 
 from app.enums import SettledDayBasisEnum

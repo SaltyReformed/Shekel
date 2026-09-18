@@ -55,6 +55,8 @@ from decimal import Decimal
 
 from app.enums import StatementBalanceEvidenceEnum
 from app.extensions import db
+from app.models.account import AccountAnchorHistory
+from app.models.anchor_release import AnchorRelease
 from app.models.statement_import import BankStatementLine, StatementImport
 
 _ZERO_MONEY = Decimal("0.00")
@@ -65,15 +67,15 @@ _ONE_DAY = timedelta(days=1)
 class BankAnchor:
     """The recorded fact every derived bank balance is walked from.
 
-    **A value rather than the :class:`~app.models.statement_import.StatementImport`
+    **A value rather than the :class:`~app.models.account.AccountAnchorHistory`
     row it came from**, because what a derivation needs is the three facts
     below and nothing else -- and handing a reader the ORM row invites it to
-    reach for ``period_start`` or ``file_name`` and grow a dependency on which
-    import happened to win.
+    reach through to the import's ``period_start`` or ``file_name`` and grow a
+    dependency on which import happened to win.
 
     Attributes:
-        day: The day the figure is the balance FOR -- the import's solved
-            ``balance_effective_on``, never the day its header names.
+        day: The day the figure is the balance FOR -- the level's solved
+            ``observed_on``, never the day the file's header names.
         balance: What the bank said the account held at the end of that day.
         evidence: How strongly that figure is held, as the WEAKEST LINK in the
             chain behind it (ruling **R-GF**).
@@ -102,19 +104,73 @@ class BankBalances:
     balances: "dict[date, Decimal]"
 
 
-def anchor_evidence(anchor: StatementImport) -> StatementBalanceEvidenceEnum:
-    """Return one anchored import's own evidence level.
+def bank_levels(
+    account_id: int,
+) -> "list[tuple[AccountAnchorHistory, AnchorRelease | None]]":
+    """Return every BANK level of *account_id* with its release, if any.
+
+    ONE fetch that :func:`standing_bank_levels` narrows and
+    :func:`~._reads.import_history` reads per import, split so a reader that
+    needs the answer for twenty imports at once pays one query rather than
+    twenty while still reaching the one predicate the release door acts on.
 
     Args:
-        anchor: The import, which carries a non-NULL ``balance_evidence_id``.
+        account_id: The account whose levels to read.
+
+    Returns:
+        ``[(level, release or None), ...]`` over the account's levels that
+        name a statement (``statement_import_id IS NOT NULL``), ascending by
+        level id.  A level whose release is ``None`` STANDS; one with a
+        release has been withdrawn, and the release says why.  The LEFT JOIN
+        is exact rather than approximate because ``uq_anchor_releases_anchor``
+        holds a level to at most one release.
+    """
+    return (
+        db.session.query(AccountAnchorHistory, AnchorRelease)
+        .outerjoin(
+            AnchorRelease, AnchorRelease.anchor_id == AccountAnchorHistory.id,
+        )
+        .filter(
+            AccountAnchorHistory.account_id == account_id,
+            AccountAnchorHistory.statement_import_id.isnot(None),
+        )
+        .order_by(AccountAnchorHistory.id)
+        .all()
+    )
+
+
+def standing_bank_levels(account_id: int) -> "list[AccountAnchorHistory]":
+    """Return *account_id*'s bank levels that no release has withdrawn.
+
+    The rows the bank walk may anchor on (:func:`~._balance.usable_anchor`)
+    and the rows a line change can release (:func:`resting_on`): both
+    questions are about levels that STAND, and this is the one narrowing of
+    :func:`bank_levels` that says what standing means.
+
+    Args:
+        account_id: The account whose levels to read.
+
+    Returns:
+        The standing bank levels, ascending by id.
+    """
+    return [
+        level for level, release in bank_levels(account_id) if release is None
+    ]
+
+
+def anchor_evidence(level: AccountAnchorHistory) -> StatementBalanceEvidenceEnum:
+    """Return one level's own evidence.
+
+    Args:
+        level: The level row; every row carries an ``evidence_id``.
 
     Returns:
         Its :class:`~app.enums.StatementBalanceEvidenceEnum` member.
 
     **Resolved from the ID and never from the ref row's ``name``**, which is
     the project-wide IDs-for-logic rule at the one place it is easiest to
-    break: ``StatementBalanceEvidenceEnum(row.balance_evidence.name)`` reads
-    naturally and turns a display string into a dispatch, where
+    break: ``StatementBalanceEvidenceEnum(<ref row>.name)`` reads naturally
+    and turns a display string into a dispatch, where
     ``shekel-refname-compare`` cannot see it because it is a constructor rather
     than a comparison.  Found by adversarial review 2026-08-23.
     """
@@ -124,22 +180,32 @@ def anchor_evidence(anchor: StatementImport) -> StatementBalanceEvidenceEnum:
     # cost dodge; ``app/models/transaction.py`` takes the same shape.
     from app import ref_cache  # pylint: disable=import-outside-toplevel
 
-    return ref_cache.statement_balance_evidence_member(
-        anchor.balance_evidence_id,
-    )
+    return ref_cache.statement_balance_evidence_member(level.evidence_id)
 
 
 def usable_anchor(account_id: int) -> "BankAnchor | None":
     """Return the recorded fact this account's balances should be walked from.
 
     Args:
-        account_id: The account whose imports to read.
+        account_id: The account whose levels to read.
 
     Returns:
-        The :class:`BankAnchor`, or ``None`` when the account holds no anchored
-        import -- which is an ordinary state, not a failure: a file may state no
-        balance at all, or state one its own lines cannot reach (a date-range
-        export states TODAY's figure), and both record the claim with no anchor.
+        The :class:`BankAnchor`, or ``None`` when the account holds no standing
+        bank level -- which is an ordinary state, not a failure: a file may
+        state no balance at all, or state one its own lines cannot reach (a
+        date-range export states TODAY's figure), and both record the claim
+        with no level; and a placed level may have been released.
+
+    **Over STANDING BANK levels only, and that is permanent** (plan step
+    ``balance:X-bj-1``, developer ruling 2026-09-16).  The level relation
+    holds the owner's true-ups beside the bank's placements since that step,
+    and this fold is ``anchor + sum(lines)``, which is exact only from the
+    bank's own posted end-of-day figure: a number the owner typed may be an
+    available balance carrying pending items, so walking the bank's lines
+    from it would be arithmetic on two bases.  That restricts the DOMAIN of
+    one derived figure ("what the bank's record says") to the rows it is
+    about; it ranks nothing across sources, so ruling **R-IS**'s
+    no-precedence-branch rule stands.
 
     **Chosen by EVIDENCE first, with recency only as a tie-break.**  That is
     the correction of a comment claiming any anchor would serve because they
@@ -151,37 +217,34 @@ def usable_anchor(account_id: int) -> "BankAnchor | None":
     nearer, stronger anchor.  Refuted by adversarial review 2026-08-23.
 
     **The strength ORDER is read from the enum, never from the ref row's id.**
-    Sorting by ``balance_evidence_id`` would work only while the seed happens
-    to INSERT the ladder in order -- a second statement of the ladder, in a
+    Sorting by ``evidence_id`` would work only while the seed happens to
+    INSERT the ladder in order -- a second statement of the ladder, in a
     migration, that nothing reconciles against
     :attr:`~app.enums.StatementBalanceEvidenceEnum.strength`.  It was written
     that way first and was measured BACKWARDS: the seed writes
     ``file_chain, corroborated, uncorroborated``, so ``id DESC`` returned the
-    WEAKEST anchor.  An account holds a handful of imports, so the ordering
-    that matters is done here over the enum and the query orders only the
-    tie-break.
+    WEAKEST anchor.  An account holds a handful of levels, so the ordering
+    that matters is done here over the enum and the tie-break is a sort.
+
+    **It still chooses ONE anchor for the whole account**, which is finding
+    **N-343**'s subject (a stronger anchor in an older, disconnected run leaves
+    recent days unpriced); choosing within the RUN is ``X-bj-1``'s second
+    leaf, and this step moves no priced day.
     """
-    anchored = (
-        db.session.query(StatementImport)
-        .filter(
-            StatementImport.account_id == account_id,
-            StatementImport.balance_effective_on.isnot(None),
-        )
+    standing = sorted(
+        standing_bank_levels(account_id),
         # The TIE-BREAK, already applied: ``max`` below returns the FIRST
         # maximal element, so the strongest anchor with the most recent
-        # effective day wins without a second sort.
-        .order_by(
-            StatementImport.balance_effective_on.desc(),
-            StatementImport.id.desc(),
-        )
-        .all()
+        # day wins without a second sort.
+        key=lambda level: (level.observed_on, level.id),
+        reverse=True,
     )
-    if not anchored:
+    if not standing:
         return None
-    chosen = max(anchored, key=lambda row: anchor_evidence(row).strength)
+    chosen = max(standing, key=lambda level: anchor_evidence(level).strength)
     return BankAnchor(
-        day=chosen.balance_effective_on,
-        balance=chosen.stated_balance,
+        day=chosen.observed_on,
+        balance=Decimal(str(chosen.anchor_balance)),
         evidence=anchor_evidence(chosen),
     )
 

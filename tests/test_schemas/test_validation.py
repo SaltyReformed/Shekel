@@ -15,15 +15,16 @@ from decimal import Decimal
 import pytest
 from marshmallow import ValidationError
 
-from app.enums import RecurrenceUnitEnum
+from app.enums import PaycheckLineKindEnum, RecurrenceUnitEnum
 from app.schemas.validation._helpers import _normalize_empty_inputs
 from app.schemas.validation.templates import A_CADENCE_IS_REQUIRED
 from tests._test_helpers import cadence_payload
 from app.services.pay_rhythm import FixedDays
 from app.schemas.validation import (
+    RECURRENCE_NEEDS_A_START,
     AccountCreateSchema,
     CategoryCreateSchema,
-    DeductionCreateSchema,
+    PaycheckLineCreateSchema,
     FicaConfigSchema,
     InlineTransactionCreateSchema,
     PayHistorySchema,
@@ -947,17 +948,17 @@ class TestRaiseCreateSchema:
         assert "effective_month" in exc.value.messages
 
 
-# ── DeductionCreateSchema ────────────────────────────────────────────
+# ── PaycheckLineCreateSchema ────────────────────────────────────────────
 
 
 class TestDeductionCreateSchema:
-    """Tests for DeductionCreateSchema."""
+    """Tests for PaycheckLineCreateSchema."""
 
     def test_valid_data(self):
         """Valid deduction data loads with defaults."""
-        data = DeductionCreateSchema().load({
+        data = PaycheckLineCreateSchema().load({
             "name": "401k",
-            "deduction_timing_id": "1",
+            "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
             "amount": "250.0000",
         })
@@ -970,25 +971,112 @@ class TestDeductionCreateSchema:
         seam (R15-c's form), so a posted count is an unknown key: dropped by
         ``BaseSchema``'s EXCLUDE, never loaded, never written by name.
         """
-        data = DeductionCreateSchema().load({
+        data = PaycheckLineCreateSchema().load({
             "name": "401k",
-            "deduction_timing_id": "1",
+            "paycheck_line_kind_id": "1",
             "calc_method_id": "1",
             "amount": "250.0000",
             "deductions_per_year": "24",
         })
         assert "deductions_per_year" not in data
-        assert "deductions_per_year" not in DeductionCreateSchema().fields
+        assert "deductions_per_year" not in PaycheckLineCreateSchema().fields
 
     def test_missing_required_field(self):
         """Missing name raises ValidationError."""
         with pytest.raises(ValidationError) as exc:
-            DeductionCreateSchema().load({
-                "deduction_timing_id": "1",
+            PaycheckLineCreateSchema().load({
+                "paycheck_line_kind_id": "1",
                 "calc_method_id": "1",
                 "amount": "100.0000",
             })
         assert "name" in exc.value.messages
+
+    @pytest.mark.parametrize("member", list(PaycheckLineKindEnum))
+    def test_a_target_account_is_accepted_on_a_deduction_and_refused_on_an_earning(
+        self, member,
+    ):
+        """The one side-specific rule, swept over all four kinds (plan step salary:R18-b).
+
+        A deduction may name the account it funds; an earning funds nothing,
+        so the pair is refused on ``target_account_id`` with the sentence the
+        flash allowlist carries.  IDs for logic: the side is read through the
+        kind vocabulary, never the name.
+        """
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.services import paycheck_line_kinds  # pylint: disable=import-outside-toplevel
+
+        kind_id = ref_cache.paycheck_line_kind_id(member)
+        payload = {
+            "name": "Line", "paycheck_line_kind_id": str(kind_id),
+            "calc_method_id": "1", "amount": "50.0000", "target_account_id": "7",
+        }
+        if member in paycheck_line_kinds.DEDUCTION_KINDS:
+            assert PaycheckLineCreateSchema().load(payload)["target_account_id"] == 7
+        else:
+            with pytest.raises(ValidationError) as exc:
+                PaycheckLineCreateSchema().load(payload)
+            assert exc.value.messages["target_account_id"] == [
+                "Only a deduction can fund an account; an earning line is "
+                "paid to you and has no target account.",
+            ]
+        # Without a target every kind loads.
+        del payload["target_account_id"]
+        assert PaycheckLineCreateSchema().load(payload)["paycheck_line_kind_id"] == kind_id
+
+
+    def test_a_chosen_cadence_with_a_blank_start_loads_and_the_span_is_composed(self):
+        """A line's start may be blank (the opening payday); a stated start and bound load as one value.
+
+        Plan step salary:R18-c (ruling **R-SAL38** (2), amending R-SAL30 /
+        R-SAL31): the line schema carries the whole recurrence form mixin
+        with ``recurrence_start_is_required`` OFF, so a chosen cadence with
+        no start is not refused here -- the route derives the opening -- and
+        the three end-bound controls compose to one ``EndBound``.  The
+        template forms keep the requirement; an inverted window is refused
+        on the end date, the mixin's own rule.
+        """
+        from app.enums import PeriodPlacementEnum  # pylint: disable=import-outside-toplevel
+        from app.services.recurrence import EndsOnDate  # pylint: disable=import-outside-toplevel
+
+        base = {
+            "name": "Phone Allowance", "paycheck_line_kind_id": "1",
+            "calc_method_id": "1", "amount": "45.0000",
+            **cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH,
+                placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                states_a_start=False,
+            ),
+        }
+        blank = PaycheckLineCreateSchema().load(base)
+        assert "starts_on" not in blank
+        assert "recurrence_end_mode" not in blank
+
+        stated = PaycheckLineCreateSchema().load({
+            **base, "starts_on": "2026-09-01",
+            "recurrence_end_mode": "on_date", "end_date": "2027-06-30",
+        })
+        assert stated["starts_on"] == date(2026, 9, 1)
+        assert stated["recurrence_end_mode"] == EndsOnDate(on=date(2027, 6, 30))
+        assert "end_date" not in stated
+
+        with pytest.raises(ValidationError) as exc:
+            PaycheckLineCreateSchema().load({
+                **base, "starts_on": "2026-09-01",
+                "recurrence_end_mode": "on_date", "end_date": "2026-08-01",
+            })
+        assert "end_date" in exc.value.messages
+
+        with pytest.raises(ValidationError) as exc:
+            TemplateCreateSchema().load({
+                "name": "Rent", "account_id": "1", "category_id": "1",
+                "transaction_type_id": "1", "default_amount": "100.00",
+                **cadence_payload(
+                    unit=RecurrenceUnitEnum.MONTH,
+                    placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
+                    states_a_start=False,
+                ),
+            })
+        assert exc.value.messages == RECURRENCE_NEEDS_A_START
 
 
 # ── FicaConfigSchema ─────────────────────────────────────────────────

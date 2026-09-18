@@ -38,8 +38,10 @@ from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    StatusEnum,
 )
 from app.exceptions import UndatedSettleError
+from app.services.posting_reads import PostingError
 from sqlalchemy import text as sa_text
 
 from app.extensions import db as _db
@@ -59,12 +61,18 @@ from app.services import (
     loan_posting_service,
     pay_period_write,
     posting_service,
+    status_seam,
+    transaction_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    add_entry,
+    figure_source_columns,
+    generate_row_of,
+    make_expense_template,
     record_paydays_across_a_hole,
     rhythm_of,
     an_entered_day,
@@ -518,20 +526,49 @@ class TestWalkAccountLedger:
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            txn = _settle_expense(
-                seed_user, account, "200.00",
+            # An envelope closed on the PURCHASES basis with a purchase still
+            # unposted, since plan step X-bi-3b: every stored-figure settle --
+            # a bill's since X-bi-3a, a paycheck's since 3b -- posts its money
+            # under its covering movement and the row's own leg is zero, so
+            # the transaction arm never meets one through the postings and
+            # there is nothing to refuse there (the movement's own day is
+            # what the walk's purchase arm refuses instead,
+            # ``test_a_posted_movement_with_no_day_is_REFUSED_by_this_walk``
+            # below).  A purchases-basis close stores no figure: its posted
+            # purchases carry their own legs and the UNPOSTED remainder is
+            # the row's leg, posted under ``transaction_id`` -- the one shape
+            # whose money still reaches this arm.
+            txn = generate_row_of(
+                make_expense_template(
+                    _db.session, seed_user, amount="200.00", name="Groceries",
+                    category_key="Groceries", is_envelope=True, account=account,
+                ),
+                seed_user["bootstrap_period"],
+            )
+            add_entry(
+                _db.session, seed_user, txn, Decimal("200.00"),
                 seed_user["bootstrap_period"].start_date,
             )
+            transaction_service.settle_transaction(
+                txn,
+                settle_day=an_entered_day(
+                    seed_user["bootstrap_period"].start_date,
+                ),
+            )
             _db.session.commit()
+            # The fixture's premise, measured: the row's OWN leg carries the
+            # unposted remainder, so a journal entry names ``transaction_id``.
+            assert _db.session.query(JournalEntry).filter(
+                JournalEntry.transaction_id == txn.id,
+            ).count() == 1, "the fixture's money must post under the row"
             # Break the row AFTER its postings exist, which is the only way to
             # reach this walk with one: a bulk update bypasses the ORM, exactly
-            # as the real hazard does.
-            # The whole RECORD goes with the day, because
-            # ``ck_transactions_settle_day_needs_a_record`` refuses a day that
-            # names no figure (plan step X-au-c3).  The break under test is
-            # still the missing DAY on a settled STATUS, which no constraint
-            # can state -- the predicate is ``ref.statuses.is_settled`` and a
-            # CHECK cannot join.
+            # as the real hazard does.  The break under test is the missing
+            # DAY on a settled STATUS, which no constraint can state -- the
+            # predicate is ``ref.statuses.is_settled`` and a CHECK cannot
+            # join.  The purchases RECORD stays: ``ck_transactions_settle_day_
+            # needs_a_record`` is an implication, so a retained record with
+            # no day is admissible (plan step X-au-c3).
             _db.session.query(Transaction).filter(
                 Transaction.id == txn.id,
             ).update(
@@ -542,8 +579,6 @@ class TestWalkAccountLedger:
                     # BICONDITIONAL: a basis left behind with no day is as
                     # unstorable as a day with no basis (plan step X-az).
                     "settled_day_basis_id": None,
-                    "settled_amount": None,
-                    "settled_basis_id": None,
                 },
                 synchronize_session=False,
             )
@@ -554,6 +589,39 @@ class TestWalkAccountLedger:
                     account.id, seed_user["scenario"].id,
                 )
             assert str(txn.id) in str(exc.value)
+
+    def test_a_posted_movement_with_no_day_is_REFUSED_by_this_walk(
+        self, app, db, seed_user,
+    ):
+        """The control above, on the row that carries a settled bill's money.
+
+        Plan step **X-bi-3a**: a bill's settle mirrors its figure onto a
+        covering movement, posted at the movement's own day.  A movement
+        whose legs are posted and whose day is then nulled is the broken
+        state -- a leg posted for money never seen to move -- and the walk's
+        purchase arm refuses it by name rather than dating it by any
+        fallback (``_purchase_source_days``).
+        """
+        with app.app_context():
+            account = _make_account(seed_user, "500.00")
+            txn = _settle_expense(
+                seed_user, account, "200.00",
+                seed_user["bootstrap_period"].start_date,
+            )
+            _db.session.commit()
+            movement, = status_seam.covering_movements(txn)
+            _db.session.query(TransactionEntry).filter(
+                TransactionEntry.id == movement.id,
+            ).update(
+                {"settled_on": None, "settled_day_basis_id": None},
+                synchronize_session=False,
+            )
+            _db.session.commit()
+            with pytest.raises(PostingError) as exc:
+                account_posting_service.walk_account_ledger(
+                    account.id, seed_user["scenario"].id,
+                )
+            assert str(movement.id) in str(exc.value)
 
     def test_a_transfers_clearing_link_is_read_off_THIS_accounts_leg(
         self, app, db, seed_user,
@@ -660,6 +728,7 @@ class TestWalkAccountLedger:
                 seed_user, _db.session, period, "Groceries", Decimal("500.00"),
             )
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("40.00"),
@@ -889,6 +958,13 @@ class TestWalkAccountLedger:
             txn = _settle_expense(
                 seed_user, account, "200.00", origin + timedelta(days=1),
             )
+            # The revert goes through the ONE status door first (plan step
+            # X-bi-3a): the settle wrote a covering movement that carries the
+            # money, and only the seam's revert releases it; the primitive then
+            # reconciles what is left.  Every figure below is unchanged.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
             _db.session.commit()
@@ -1114,6 +1190,13 @@ class TestSyncAccountAnchorPostings:
             )
             _db.session.commit()
 
+            # The revert goes through the ONE status door first (plan step
+            # X-bi-3a): the settle wrote a covering movement that carries the
+            # money, and only the seam's revert releases it; the primitive then
+            # reconciles what is left.  Every figure below is unchanged.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -1178,6 +1261,13 @@ class TestSyncAccountAnchorPostings:
             )
             _db.session.commit()
 
+            # The revert goes through the ONE status door first (plan step
+            # X-bi-3a): the settle wrote a covering movement that carries the
+            # money, and only the seam's revert releases it; the primitive then
+            # reconciles what is left.  Every figure below is unchanged.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             _settle_expense(
                 seed_user, account, "150.00",
@@ -1815,6 +1905,13 @@ class TestSyncEntryPoints:
             assert len(trueups) == 1
             assert _entry_legs(trueups[0].id)[linked.id][0] == Decimal("50.00")
 
+            # The revert goes through the ONE status door first (plan step
+            # X-bi-3a): the settle wrote a covering movement that carries the
+            # money, and only the seam's revert releases it; the primitive then
+            # reconciles what is left.  Every figure below is unchanged.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             posting_service.sync_transaction_postings(txn, settled=False)
             _db.session.commit()
 

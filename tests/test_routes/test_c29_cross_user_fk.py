@@ -38,13 +38,13 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.ref import AccountType
 from app.services import transfer_service
 from app.services import account_service
 from app.models.amount_ownership import AmountOwnership
+from tests._test_helpers import one_off_row_of
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -59,18 +59,16 @@ def _create_projected_expense(seed_user, period):
     Returns:
         The created Transaction (committed, refreshed).
     """
-    txn = Transaction(
-        user_id=period.user_id,
-        pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
-        account_id=seed_user["account"].id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+    txn = one_off_row_of(
+        period,
         name="C-29 Bill",
-        category_id=seed_user["categories"]["Rent"].id,
+        amount=Decimal("123.45"),
+        user_id=period.user_id,
+        account_id=seed_user["account"].id,
+        scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        amount_ownership=AmountOwnership.own(Decimal("123.45")),
+        category_id=seed_user["categories"]["Rent"].id,
     )
-    db.session.add(txn)
     db.session.commit()
     return txn
 

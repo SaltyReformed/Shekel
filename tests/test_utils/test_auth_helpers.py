@@ -37,8 +37,7 @@ from app.utils.log_events import (
     EVT_RESOURCE_NOT_FOUND,
 )
 from app.utils.session_helpers import FRESH_LOGIN_AT_KEY
-from app.models.amount_ownership import AmountOwnership
-from tests._test_helpers import rhythm_of
+from tests._test_helpers import rhythm_of, one_off_row_of
 from tests._test_helpers import record_paydays_across_a_hole
 
 
@@ -91,21 +90,18 @@ class TestGetOwnedViaParent:
 
     def _create_transaction(self, seed_user, period):
         """Helper: create a projected expense in the given period."""
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-        txn = Transaction(
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=seed_user["scenario"].id,
-            account_id=seed_user["account"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            period,
             name="Test Expense",
-            category_id=seed_user["categories"]["Groceries"].id,
+            amount=Decimal("50.00"),
+            user_id=period.user_id,
+            account_id=seed_user["account"].id,
+            scenario_id=seed_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
+            category_id=seed_user["categories"]["Groceries"].id,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 
@@ -141,20 +137,17 @@ class TestGetOwnedViaParent:
             db.session.flush()
 
             # Create a transaction owned by the second user.
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            txn2 = Transaction(
-                user_id=periods2[0].user_id,
-                pay_period_id=periods2[0].id,
-                scenario_id=second_user["scenario"].id,
-                account_id=second_user["account"].id,
-                status_id=projected.id,
+            txn2 = one_off_row_of(
+                periods2[0],
                 name="Other User Expense",
-                category_id=second_user["categories"]["Rent"].id,
+                amount=Decimal("99.00"),
+                user_id=periods2[0].user_id,
+                account_id=second_user["account"].id,
+                scenario_id=second_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("99.00")),
+                category_id=second_user["categories"]["Rent"].id,
             )
-            db.session.add(txn2)
             db.session.flush()
 
             result = get_owned_via_parent(Transaction, txn2.id, "pay_period")
@@ -585,22 +578,19 @@ class TestAccessDeniedLogging:
         )
         db.session.flush()
 
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(
             name="Expense"
         ).one()
-        txn2 = Transaction(
-            user_id=periods2[0].user_id,
-            pay_period_id=periods2[0].id,
-            scenario_id=second_user["scenario"].id,
-            account_id=second_user["account"].id,
-            status_id=projected.id,
+        txn2 = one_off_row_of(
+            periods2[0],
             name="Other User Expense",
-            category_id=second_user["categories"]["Rent"].id,
+            amount=Decimal("99.00"),
+            user_id=periods2[0].user_id,
+            account_id=second_user["account"].id,
+            scenario_id=second_user["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("99.00")),
+            category_id=second_user["categories"]["Rent"].id,
         )
-        db.session.add(txn2)
         db.session.flush()
 
         with app.test_request_context("/some/path"):
@@ -696,29 +686,26 @@ class TestAccessDeniedLogging:
 
     @staticmethod
     def _make_owned_txn(db, owner, period):
-        """Create an ad-hoc, non-companion-visible expense owned by *owner*.
+        """Create a one-off, non-companion-visible expense owned by *owner*.
 
-        Template-less (``template_id`` defaults to None) so
-        ``visible_to_companion`` reads the row's own ``companion_visible``
-        column, which defaults to False -- a companion of the owner is
+        A rule-less definition's placed row (plan step balance:X-bi-7c), so
+        ``visible_to_companion`` reads the DEFINITION's ``companion_visible``,
+        which the producer leaves False -- a companion of the owner is
         therefore denied.
         """
-        projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
-        txn = Transaction(
-            user_id=period.user_id,
-            pay_period_id=period.id,
-            scenario_id=owner["scenario"].id,
-            account_id=owner["account"].id,
-            status_id=projected.id,
+        txn = one_off_row_of(
+            period,
             name="Access-log test expense",
-            category_id=next(iter(owner["categories"].values())).id,
+            amount=Decimal("50.00"),
+            user_id=period.user_id,
+            account_id=owner["account"].id,
+            scenario_id=owner["scenario"].id,
             transaction_type_id=expense_type.id,
-            amount_ownership=AmountOwnership.own(Decimal("50.00")),
+            category_id=next(iter(owner["categories"].values())).id,
         )
-        db.session.add(txn)
         db.session.flush()
         return txn
 

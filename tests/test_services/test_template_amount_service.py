@@ -387,6 +387,116 @@ class TestSetAmount:
 # ── Rule 4: how a mis-dated version is withdrawn ─────────────────────
 
 
+class TestRestateInEffect:
+    """Rule 3's second door (ruling **R-BAL29**): correct the version a date READS."""
+
+    def test_the_version_in_effect_on_the_date_is_corrected_in_place(
+        self, app, seed_user,
+    ):
+        """Geico's three versions, ``on`` inside the June window: June corrected, three stay three."""
+        with app.app_context():
+            template = _txn_template(seed_user)
+            _seed_geico_history(template)
+            tas.restate_in_effect(
+                template, Decimal("180.00"), on=date(2026, 7, 15),
+            )
+            db.session.flush()
+            assert [
+                (v.effective_date, v.amount) for v in tas.amount_versions(template)
+            ] == [
+                (date(2026, 4, 1), Decimal("178.00")),
+                (date(2026, 6, 1), Decimal("180.00")),
+                (date(2026, 9, 1), Decimal("165.30")),
+            ]
+            assert tas.amount_as_of(template, date(2026, 7, 15)) == Decimal("180.00")
+            assert tas.amount_as_of(template, date(2026, 5, 1)) == Decimal("178.00")
+            # The scalar is the NEWEST price, untouched by a middle correction.
+            assert template.default_amount == Decimal("165.30")
+
+    def test_before_the_earliest_version_the_earliest_is_corrected(
+        self, app, seed_user,
+    ):
+        """The series holds flat before its first version, so that is what a date there reads."""
+        with app.app_context():
+            template = _txn_template(seed_user)
+            _seed_geico_history(template)
+            tas.restate_in_effect(
+                template, Decimal("170.00"), on=date(2026, 1, 1),
+            )
+            db.session.flush()
+            versions = tas.amount_versions(template)
+            assert (versions[0].effective_date, versions[0].amount) == (
+                date(2026, 4, 1), Decimal("170.00"),
+            )
+            assert len(versions) == 3
+
+    def test_a_one_version_series_stays_one_whatever_the_date(
+        self, app, seed_user,
+    ):
+        """R-BAL29's own walk: the Kindle, ``on`` moved off the version's date.
+
+        ``set_amount(effective_on=05-10)`` would append; this corrects 05-07.
+        """
+        with app.app_context():
+            template = _txn_template(seed_user, amount="162.25", name="Kayla's Kindle")
+            tas.set_amount(
+                template, Decimal("162.25"), effective_on=date(2026, 5, 7),
+            )
+            tas.restate_in_effect(
+                template, Decimal("170.00"), on=date(2026, 5, 10),
+            )
+            db.session.flush()
+            assert [
+                (v.effective_date, v.amount) for v in tas.amount_versions(template)
+            ] == [(date(2026, 5, 7), Decimal("170.00"))]
+            assert template.default_amount == Decimal("170.00")
+            assert tas.amount_as_of(template, date(2026, 5, 7)) == Decimal("170.00")
+
+    def test_an_equal_figure_writes_nothing(self, app, seed_user):
+        """The no-op arm: the same figure restated emits no UPDATE.
+
+        Graded on the optimistic-lock counter after a COMMIT rather than on
+        ``session.dirty``, which cannot tell a net-unchanged assignment from
+        a write (``_resync_scalar`` assigns the scalar it re-reads).
+        """
+        with app.app_context():
+            template = _txn_template(seed_user, amount="162.25")
+            tas.set_amount(
+                template, Decimal("162.25"), effective_on=date(2026, 5, 7),
+            )
+            db.session.commit()
+            before = template.version_id
+            tas.restate_in_effect(
+                template, Decimal("162.25"), on=date(2026, 5, 9),
+            )
+            db.session.commit()
+            db.session.refresh(template)
+            assert template.version_id == before
+            assert [
+                (v.effective_date, v.amount) for v in tas.amount_versions(template)
+            ] == [(date(2026, 5, 7), Decimal("162.25"))]
+
+    def test_an_empty_series_is_refused(self, app, seed_user):
+        """Nothing is in effect on any date of a series with no version."""
+        with app.app_context():
+            template = _txn_template(seed_user)
+            with pytest.raises(ValueError, match="no amount version"):
+                tas.restate_in_effect(
+                    template, Decimal("1.00"), on=date(2026, 5, 7),
+                )
+
+    def test_the_scalar_follows_a_corrected_newest_version(self, app, seed_user):
+        """``_resync_scalar`` runs: correcting the newest version moves the column."""
+        with app.app_context():
+            template = _txn_template(seed_user)
+            _seed_geico_history(template)
+            tas.restate_in_effect(
+                template, Decimal("160.00"), on=date(2026, 12, 1),
+            )
+            db.session.flush()
+            assert template.default_amount == Decimal("160.00")
+
+
 class TestDeleteAmountVersion:
     """Withdrawal, and the one entry it refuses."""
 

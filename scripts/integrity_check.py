@@ -375,10 +375,18 @@ def check_balance_anomalies(session):
         # for -- the balance engine has no starting point, so every producer
         # downstream of it fails.  BA-05 and BA-06 flag states worth a human's
         # attention that still render.
+        # BA-01 asks about the OWNER's assertions: since plan step
+        # balance:X-bj-1 the same table holds the bank's statement placements,
+        # and ``resolve_anchor`` reads the owner's rows alone until the flip
+        # (``balance_predicates.owner_declared_clause``; this raw SQL is that
+        # predicate's one second spelling, named there).  An account whose
+        # only level is a bank's is an account the resolver still raises for.
         ("BA-01", "critical", "Accounts with no balance assertion at all", """
             SELECT a.id, a.name
             FROM budget.accounts a
-            LEFT JOIN budget.account_anchor_history h ON h.account_id = a.id
+            LEFT JOIN budget.account_anchor_history h
+                   ON h.account_id = a.id
+                  AND h.statement_import_id IS NULL
             WHERE h.id IS NULL
         """),
         # BA-06 is a CHECK and deliberately not a refusal or a log line
@@ -661,7 +669,7 @@ def check_data_consistency(session):
         """
         SELECT pd.id, pd.name AS deduction_name,
                sp.user_id AS profile_user, a.user_id AS account_user
-        FROM salary.paycheck_deductions pd
+        FROM salary.paycheck_lines pd
         JOIN salary.salary_profiles sp ON pd.salary_profile_id = sp.id
         JOIN budget.accounts a ON pd.target_account_id = a.id
         WHERE pd.target_account_id IS NOT NULL

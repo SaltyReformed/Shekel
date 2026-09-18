@@ -329,17 +329,24 @@ class FilingStatus(db.Model):
         return f"<FilingStatus {self.name}>"
 
 
-class DeductionTiming(db.Model):
-    """Deduction timing reference: 'pre_tax', 'post_tax' (Phase 2)."""
+class PaycheckLineKind(db.Model):
+    """A payroll line's KIND: its position in the paycheck's waterfall.
 
-    __tablename__ = "deduction_timings"
+    ``pre_tax_deduction`` and ``post_tax_deduction`` since plan step
+    salary:R18-a (ruling R-SAL38), which renamed ``ref.deduction_timings``
+    (``pre_tax`` / ``post_tax``, Phase 2) because the table it keys,
+    ``salary.paycheck_lines``, holds the earning side too from R18-b.  The
+    vocabulary is :class:`~app.enums.PaycheckLineKindEnum`.
+    """
+
+    __tablename__ = "paycheck_line_kinds"
     __table_args__ = {"schema": "ref"}
 
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(10), unique=True, nullable=False)
+    name = db.Column(db.String(25), unique=True, nullable=False)
 
     def __repr__(self):
-        return f"<DeductionTiming {self.name}>"
+        return f"<PaycheckLineKind {self.name}>"
 
 
 class CalcMethod(db.Model):
@@ -830,16 +837,52 @@ class SettledDayBasis(db.Model):
         return f"<SettledDayBasis {self.name}>"
 
 
+class MovementFigureSource(db.Model):
+    """WHO WROTE a movement's figure (plan step **X-bi-3a**, ruling **R-BAL39**).
+
+    The catalogue behind ``budget.transaction_entries.figure_source_id`` --
+    ``resolved`` (the settle priced it from the plan), ``typed`` (a person
+    stated it) or ``observed`` (the bank's line stated it).  It is the twin of
+    :class:`SettledDayBasis` for the FIGURE beside the day, and it lives on
+    the one table that holds movements: a purchase against an envelope has
+    always been one, and since X-bi-3a a settle writes one for a bill too
+    (since X-bi-3b for a paycheck) -- the covering movement that records the
+    parent's money the way a purchase records an envelope's.  A transaction's own figure keeps
+    :class:`SettlementBasis` until ``balance:X-bi-4`` makes it derivable.
+
+    :class:`app.enums.MovementFigureSourceEnum` carries the argument: why the
+    partition is over the SOURCE, why a reader needs it, and why it is not a
+    reuse of the transaction's catalogue.
+
+    Application code resolves these via ``ref_cache.movement_figure_source_id``
+    and compares against the integer ID -- never the string ``name`` -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "movement_figure_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<MovementFigureSource {self.name}>"
+
+
 class StatementBalanceEvidence(db.Model):
     """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
 
-    The catalogue behind ``budget.statement_imports.balance_evidence_id``.  An
-    import that placed no figure on a day carries NULL here and no
-    ``balance_effective_on``; one that DID carries both, and this says how much
-    that placement can be trusted -- ``file_chain`` (the file states a balance
-    beside every line, so it proves itself), ``corroborated`` (the figure
-    agrees with a balance the app already holds which is itself evidenced) or
-    ``uncorroborated`` (nothing confirms it).
+    The catalogue behind ``budget.account_anchor_history.evidence_id``, the
+    level relation's rank (plan step ``balance:X-bj-1``; it was
+    ``budget.statement_imports.balance_evidence_id`` from X-f6e-1 until then).
+    Every level carries one, and this says how much it can be trusted --
+    ``file_chain`` (the file states a balance beside every line, so it proves
+    itself), ``corroborated`` (the figure agrees with a balance the app already
+    holds which is itself evidenced) or ``uncorroborated`` (nothing confirms
+    it, which is what a first import is and what an owner-typed figure always
+    is).  An import that placed no figure on a day owns no level and so
+    carries none.
 
     :class:`app.enums.StatementBalanceEvidenceEnum` carries why it is the
     WEAKEST LINK in the chain rather than a description of how the day was

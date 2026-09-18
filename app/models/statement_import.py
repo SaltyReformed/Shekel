@@ -166,19 +166,6 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
                         verbatim and never rewritten.  Both-or-neither,
                         enforced by
                         ``ck_statement_imports_stated_balance_paired``.
-        balance_effective_on -- the day that claimed figure is actually the
-                        balance FOR, solved from the file's own lines (plan
-                        step ``bank_import:X-f6e-1``, ruling **R-GF**).  NULL
-                        where the file's own lines cannot reach the day it
-                        claims, which a DATE-RANGE export always is.
-        balance_evidence_id -- how strongly that figure is HELD
-                        (``ref.statement_balance_evidence``): proved by the
-                        file's own chain, corroborated by other recorded
-                        statements, or confirmed by nothing.  It is the
-                        WEAKEST link in the chain behind the figure, so an
-                        anchor solved against an unconfirmed opening is itself
-                        unconfirmed.  See
-                        :class:`app.enums.StatementBalanceEvidenceEnum`.
 
     **The stated day is NOT the day the figure is for, and that is measured
     rather than defensive.**  SECU writes the balance as of the EXPORT INSTANT
@@ -188,16 +175,35 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     2026-08-16 export it reads ``$4,747.63``, which is 2026-08-13's closing,
     over a file listing two 2026-08-14 lines worth ``-$1,006.72``.  The claim
     and the day it is FOR are therefore two facts, so the file's own words stay
-    in ``stated_balance_on`` and the solved day stands in
-    ``balance_effective_on`` beside it.
+    here and the solved day is a LEVEL.
 
-    **``opening_balance`` and ``closing_balance`` were DROPPED at that step**,
+    **What the import made of the claim is a row in the LEVEL RELATION, not
+    two columns here** (plan step ``balance:X-bj-1``, rulings **R-IS** and
+    **R-JN**).  ``balance_effective_on`` and ``balance_evidence_id`` lived on
+    this row from ``bank_import:X-f6e-1`` until that step, and a release
+    nulled them by UPDATE.  The bank's placement is an observation of the same
+    quantity the owner's true-ups observe -- the account's balance at the
+    close of a day -- so it is a :class:`~app.models.account.AccountAnchorHistory`
+    row naming this import, its amount locked to :attr:`stated_balance` by
+    ``fk_anchor_history_statement_import_claim`` over
+    ``uq_statement_imports_id_stated_balance``, and its withdrawal an
+    appended :class:`~app.models.anchor_release.AnchorRelease`.  An import
+    whose header cannot be placed owns no level; one whose placement was
+    released owns a level and a release.  The three CHECKs that paired and
+    bounded the two columns went with them: the pairing is the level row's
+    NOT NULL shape and its keys, and the bound (the solved day lies inside the
+    file) is ``budget.level_lies_within_file``
+    (:mod:`app.level_infrastructure`), attached to BOTH tables so neither the
+    level nor this row's span can move outside the other.
+
+    **``opening_balance`` and ``closing_balance`` were DROPPED at X-f6e-1**,
     and dropping them is the point rather than a tidy-up: ``closing`` is
     ``opening + Sigma(lines)`` and ``opening`` is
     ``stated - Sigma(lines up to the effective day)``, so both were derived
     values stored beside their own source with nothing reconciling the three --
     the root cause several of this project's arcs exist to remove.  What is
-    stored is the observation and how firmly it is held; every balance derives.
+    stored is the claim; the observation and how firmly it is held are the
+    level row's; every balance derives.
     """
 
     __tablename__ = "statement_imports"
@@ -208,6 +214,19 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
         # (``id`` is already the primary key).
         db.UniqueConstraint(
             "id", "account_id", name="uq_statement_imports_id_account",
+        ),
+        # The superkey a bank LEVEL's amount keys onto
+        # (``fk_anchor_history_statement_import_claim``, plan step
+        # ``balance:X-bj-1``).  It constrains nothing on its own (``id`` is the
+        # primary key); it exists because PostgreSQL requires a UNIQUE over
+        # exactly the referenced columns.  ``stated_balance`` is nullable, and
+        # that is load-bearing: a NULL in a referenced column matches no
+        # referencing row, so an import that states no balance can own no
+        # level -- the rule ``ck_statement_imports_anchor_needs_a_claim`` used
+        # to state in words, now a property of the key.
+        db.UniqueConstraint(
+            "id", "stated_balance",
+            name="uq_statement_imports_id_stated_balance",
         ),
         db.CheckConstraint(
             "period_end >= period_start",
@@ -228,47 +247,21 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
             "recorded_count >= 0 AND recorded_count <= line_count",
             name="ck_statement_imports_recorded_within_file",
         ),
-        # The file's CLAIM is one fact in two columns, and what the import
-        # made of it is a SECOND fact in two more.  A figure without its day
-        # asserts nothing about an account, a day without a figure asserts
-        # nothing at all, and a solved effective day without a basis is the
-        # inference finding **N-241** deleted one table over: a fact whose
-        # provenance a reader would have to guess from which other column
-        # happens to be populated.
+        # The file's CLAIM is one fact in two columns.  A figure without its
+        # day asserts nothing about an account, and a day without a figure
+        # asserts nothing at all.  What the import MADE of the claim -- the
+        # day it is the balance for, and how firmly -- is a level row's
+        # (plan step ``balance:X-bj-1``); the two CHECKs that paired those
+        # columns here are that row's NOT NULL shape now, and the one that
+        # bounded the solved day within the file is
+        # ``budget.level_lies_within_file`` on both tables.  A date-range
+        # export still records its claim and owns no level: the developer's
+        # 2026-01-02..2026-03-31 file, pulled 2026-08-23, states `$2,459.60`
+        # as of 08-23, 145 days past its last line and `$255.41` from the
+        # `$2,715.01` its own 139 lines imply.
         db.CheckConstraint(
             "(stated_balance IS NULL) = (stated_balance_on IS NULL)",
             name="ck_statement_imports_stated_balance_paired",
-        ),
-        db.CheckConstraint(
-            "(balance_effective_on IS NULL) = (balance_evidence_id IS NULL)",
-            name="ck_statement_imports_balance_evidence_paired",
-        ),
-        # An anchor comes FROM a claim, so it cannot outlive one -- an
-        # implication rather than a biconditional, and the asymmetry is
-        # MEASURED.  A date-range export states the CURRENT balance rather
-        # than the range's closing: the developer's 2026-01-02..2026-03-31
-        # file, pulled 2026-08-23, states `$2,459.60` as of 08-23, which is
-        # 145 days past its last line and `$255.41` from the `$2,715.01` its
-        # own 139 lines imply.  Its claim is real and its anchor is
-        # undeterminable, so a claim with no anchor is the honest state.
-        db.CheckConstraint(
-            "balance_effective_on IS NULL OR stated_balance IS NOT NULL",
-            name="ck_statement_imports_anchor_needs_a_claim",
-        ),
-        # The solved day is one the FILE could have pinned, and both bounds are
-        # structural truths about the solve rather than tolerances.  It ranges
-        # over {the day before the first line} + {every day the file covers},
-        # so ``period_start - 1`` is its floor and ``period_end`` its ceiling;
-        # and a bank cannot state a balance for a day after the one it wrote on
-        # the header, so the claimed day is its other ceiling.  Measured on the
-        # developer's exports: 08-22 solves at 08-21 under a header dated
-        # 08-22, and 08-16 at 08-13 under one dated 08-16.
-        db.CheckConstraint(
-            "balance_effective_on IS NULL OR ("
-            "balance_effective_on >= period_start - 1 "
-            "AND balance_effective_on <= period_end "
-            "AND balance_effective_on <= stated_balance_on)",
-            name="ck_statement_imports_effective_day_within_file",
         ),
         db.Index("idx_statement_imports_account", "account_id"),
         {"schema": "budget"},
@@ -291,18 +284,15 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     # it.  Every SECU export the developer holds states one.
     stated_balance = db.Column(db.Numeric(12, 2))
     stated_balance_on = db.Column(db.Date)
-    # The day :attr:`stated_balance` is the balance FOR, solved from the lines
-    # (plan step ``bank_import:X-f6e-1``).  NOT a copy of
-    # :attr:`stated_balance_on`: on the developer's own 2026-08-16 export the
-    # two are three days apart.
-    balance_effective_on = db.Column(db.Date)
-    balance_evidence_id = db.Column(
-        db.Integer,
-        db.ForeignKey("ref.statement_balance_evidence.id", ondelete="RESTRICT"),
-    )
 
     source = db.relationship("StatementSource", lazy="joined")
-    balance_evidence = db.relationship("StatementBalanceEvidence", lazy="joined")
+    # NO relationship to the level this import placed or to the releases
+    # naming it, deliberately: both tables are append-only, and a relationship
+    # would let the unit of work emit the SET NULL / DELETE the triggers
+    # refuse on the way to deleting this row.  The database's own CASCADE and
+    # ``SET NULL (released_by_import_id)`` are the disposal path, and the
+    # readers that want a level join for it
+    # (``statement_import._balance.bank_levels``).
     lines = db.relationship(
         "BankStatementLine", back_populates="statement_import",
         cascade="all, delete-orphan", passive_deletes=True,

@@ -24,7 +24,8 @@ from app.models.statement_match import StatementMatchMember
 from app.services.statement_match import removals_by_match
 
 from ._adapters import supported_sources
-from ._anchor import ImportedBalance, anchored_imports, resting_on
+from ._anchor import ImportedBalance, PlacementRelease, resting_on
+from ._balance import bank_levels
 
 
 @dataclass(frozen=True)
@@ -529,7 +530,22 @@ def import_history(
     # the import's lines post on; the merchants are one aggregate keyed by
     # import.  An import owning no line releases nothing and is absent from
     # ``owned``, which is the act's own reading of that absence.
-    anchored = anchored_imports(account_id)
+    # ONE read of the level relation for every import on the page (plan step
+    # ``balance:X-bj-1``): which figure stands, which was withdrawn and why.
+    # Standing levels feed the same predicate the delete acts on; every level
+    # feeds the badge.
+    levels = bank_levels(account_id)
+    standing = [level for level, release in levels if release is None]
+    # Keyed by import id, which ``uq_anchor_history_statement_import`` makes
+    # exact: an import owns at most one level.
+    placements = {
+        level.statement_import_id: (level, release) for level, release in levels
+    }
+    causes = _file_names_of(
+        release.released_by_import_id
+        for _level, release in levels
+        if release is not None and release.released_by_import_id is not None
+    )
     owned = lines_by_import(account_id)
     orphans = orphan_merchants_by_import(account_id)
     return [
@@ -545,38 +561,100 @@ def import_history(
             removes=_removal_preview(
                 by_import.get(row.id, ()), removals, skips.get(row.id, 0),
                 anchors=(
-                    len(resting_on(anchored, owned[row.id].earliest, row.id))
+                    len(resting_on(standing, owned[row.id].earliest, row.id))
                     if row.id in owned else 0
                 ),
                 merchants=len(orphans.get(row.id, ())),
             ),
-            balance=_imported_balance(row),
+            balance=_imported_balance(row, placements.get(row.id), causes),
         )
         for row in imports
     ]
 
 
-def _imported_balance(row: StatementImport) -> "ImportedBalance | None":
+def _imported_balance(
+    row: StatementImport, placement: "tuple | None",
+    causes: "dict[int, str]",
+) -> "ImportedBalance | None":
     """Return one import's balance facts as a value, or ``None``.
 
     Args:
         row: The :class:`~app.models.statement_import.StatementImport`.
+        placement: The import's ``(level, release)`` off
+            :func:`~._balance.bank_levels`, or ``None`` when it placed no
+            figure.
+        causes: ``{import_id: file_name}`` for every import a rendered
+            release names as its cause (:func:`_file_names_of`), TOTAL over
+            them, so this indexes rather than defaulting.
 
     Returns:
         Its :class:`ImportedBalance`, or ``None`` when the file stated no
         balance.  ``stated_balance`` alone is tested, and that is exact rather
         than economical: ``ck_statement_imports_stated_balance_paired`` holds
-        it and its day NULL together.
+        it and its day NULL together.  A placed figure carries the level's
+        day and evidence; a withdrawn one carries neither and says why
+        (:class:`~._anchor.PlacementRelease`); a never-placed one carries
+        nothing.
     """
     if row.stated_balance is None:
         return None
+    if placement is None:
+        return ImportedBalance(
+            stated=row.stated_balance,
+            stated_on=row.stated_balance_on,
+            effective_on=None,
+            evidence=None,
+        )
+    level, release = placement
+    if release is None:
+        return ImportedBalance(
+            stated=row.stated_balance,
+            stated_on=row.stated_balance_on,
+            effective_on=level.observed_on,
+            evidence=ref_cache.statement_balance_evidence_member(
+                level.evidence_id,
+            ),
+        )
     return ImportedBalance(
         stated=row.stated_balance,
         stated_on=row.stated_balance_on,
-        effective_on=row.balance_effective_on,
-        evidence=ref_cache.statement_balance_evidence_member(
-            row.balance_evidence_id,
+        effective_on=None,
+        evidence=None,
+        release=PlacementRelease(
+            placed_on=level.observed_on,
+            by_file_name=(
+                None if release.released_by_import_id is None
+                else causes[release.released_by_import_id]
+            ),
+            lines_changed_from=release.lines_changed_from,
+            released_at=release.created_at,
         ),
+    )
+
+
+def _file_names_of(import_ids) -> "dict[int, str]":
+    """Return ``{import_id: file_name}`` for every id in *import_ids*.
+
+    ONE query for every cause the page names rather than one per released
+    row.  The key ``fk_anchor_releases_import_account`` holds that a non-NULL
+    cause names a row that exists, so the mapping is total over the ids
+    given and a reader indexes it; a release whose cause is gone carries
+    NULL and is never looked up.
+
+    Args:
+        import_ids: The ``budget.statement_imports`` ids to name; duplicates
+            and an empty iterable are both fine.
+
+    Returns:
+        The mapping, empty when nothing was asked for (no query is issued).
+    """
+    wanted = set(import_ids)
+    if not wanted:
+        return {}
+    return dict(
+        db.session.query(StatementImport.id, StatementImport.file_name)
+        .filter(StatementImport.id.in_(wanted))
+        .all()
     )
 
 

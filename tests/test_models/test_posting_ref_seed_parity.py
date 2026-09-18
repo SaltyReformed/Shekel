@@ -101,6 +101,7 @@ from app.enums import (
     AccountOpeningSourceEnum,
     AmountSourceEnum,
     SettledDayBasisEnum,
+    MovementFigureSourceEnum,
     StatementBalanceEvidenceEnum,
     SettlementBasisEnum,
     BusinessDayShiftEnum,
@@ -137,6 +138,7 @@ _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (StatementSourceEnum, "ref.statement_sources"),
     (SettlementBasisEnum, "ref.settlement_bases"),
     (SettledDayBasisEnum, "ref.settled_day_bases"),
+    (MovementFigureSourceEnum, "ref.movement_figure_sources"),
     (StatementBalanceEvidenceEnum, "ref.statement_balance_evidence"),
     (AccountOpeningSourceEnum, "ref.account_opening_sources"),
 )
@@ -158,6 +160,7 @@ _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (StatementSourceEnum, "StatementSource"),
     (SettlementBasisEnum, "SettlementBasis"),
     (SettledDayBasisEnum, "SettledDayBasis"),
+    (MovementFigureSourceEnum, "MovementFigureSource"),
     (StatementBalanceEvidenceEnum, "StatementBalanceEvidence"),
     (AccountOpeningSourceEnum, "AccountOpeningSource"),
 )

@@ -47,7 +47,10 @@ from app.services.cash_ledger import (
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
+    family_journal_filter,
+    figure_source_columns,
     generate_row_of,
+    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     net_posted_by_day,
@@ -71,6 +74,7 @@ def _make_entry(txn_id, user_id, amount, description, *,
     setup focused on the helper's contract.
     """
     entry = TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn_id,
         # The parent's account, resolved from the id this helper takes: an
         # entry's account IS its parent's, and the schema refuses any other
@@ -382,32 +386,29 @@ class TestSettleFromEntriesPreconditions:
     def test_rejects_template_less_transaction(
         self, app, db, seed_user, seed_periods,
     ):
-        """Transactions without a template are not envelope-tracked.
+        """A LEGACY link-less transaction is not envelope-tracked.
 
-        Ad-hoc transactions (created without a recurrence template)
-        have no envelope semantics; mark_done's manual-actual branch
-        handles them.  The helper is for tracked rows only.
+        Its ``tracks_purchases`` reads the row's own cell (the ``template_id
+        is None`` arm), which production holds until the cutover (X-bi-7d);
+        mark_done's manual-actual branch handles it.  Built on the shape's
+        one transitional home (plan step balance:X-bi-7c, ruling R-BAL59);
+        7d retires this case with the arm.  A one-off placed today reads its
+        definition's flag, which ``test_rejects_non_envelope_template``
+        grades on a definition.
         """
         with app.app_context():
-            projected_status = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
             )
-            txn = Transaction(
+            txn = legacy_link_less_row_of(
+                seed_periods[0], name="Ad-hoc expense", amount="50.00",
                 user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
-                status_id=projected_status.id,
-                name="Ad-hoc expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("50.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             with pytest.raises(ValidationError) as exc_info:
@@ -1238,9 +1239,11 @@ class TestApplyRequestedStatusTheDoorVerb:
 
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert txn.settled_on == display_today()
+            # The row's FAMILY (plan step X-bi-3a): the $100.00 is posted under
+            # the covering movement the seam wrote, the parent's leg is zero.
             entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn.id).all()
+                .filter(family_journal_filter(txn)).all()
             )
             assert len(entries) == 1
             # effective_amount == estimated_amount == 100.00, nothing credited,
@@ -1769,7 +1772,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             # door leaves it green (measured by a neutral review, 2026-08-18).
             # The net per day is what separates "re-booked" from "booked twice".
             assert net_posted_by_day(
-                JournalEntry.transaction_id == txn.id,
+                family_journal_filter(txn),
             ) == {day: Decimal("87.10")}
 
     def test_a_REVERT_carrying_a_figure_is_refused_and_changes_nothing(

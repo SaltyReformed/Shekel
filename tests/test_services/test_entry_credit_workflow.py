@@ -27,9 +27,10 @@ from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
 from tests._test_helpers import (
     an_entered_day,
+    figure_source_columns,
     generate_row_of,
+    one_off_row_of,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 class TestSyncEntryPayback:
@@ -41,6 +42,7 @@ class TestSyncEntryPayback:
         Returns the new TransactionEntry (flushed, id available).
         """
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=user.id,
             amount=Decimal(amount),
@@ -58,6 +60,7 @@ class TestSyncEntryPayback:
         Returns the new TransactionEntry (flushed, id available).
         """
         entry = TransactionEntry(
+            **figure_source_columns(),
             transaction_id=txn.id, account_id=txn.account_id,
             user_id=user.id,
             amount=Decimal(amount),
@@ -509,6 +512,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
@@ -555,6 +559,7 @@ class TestPaybackCorrectness:
             assert txn.pay_period_id == seed_periods[0].id
 
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
@@ -582,6 +587,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
@@ -613,11 +619,13 @@ class TestPaybackCorrectness:
             txn2 = generate_row_of(template, seed_periods[2])
 
             e1 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn1.id, account_id=txn1.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Txn1",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn2.id, account_id=txn2.account_id, user_id=user.id,
                 amount=Decimal("200.00"), description="Txn2",
                 purchased_on=date(2026, 1, 30), is_credit=True,
@@ -647,6 +655,7 @@ class TestPaybackCorrectness:
 
             for amt in ["33.33", "33.33", "33.34"]:
                 e = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=user.id,
                     amount=Decimal(amt),
@@ -673,6 +682,7 @@ class TestPaybackCorrectness:
             user = seed_user["user"]
 
             e = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("0.01"),
@@ -705,6 +715,7 @@ class TestEntryLinkIntegrity:
             entries = []
             for i, amt in enumerate(["30.00", "40.00", "30.00"]):
                 e = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id,
                     user_id=user.id,
                     amount=Decimal(amt),
@@ -734,6 +745,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
@@ -748,6 +760,7 @@ class TestEntryLinkIntegrity:
             assert e1.credit_payback_id == payback.id
 
             e2 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
@@ -776,6 +789,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
@@ -813,6 +827,7 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             debit = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("200.00"),
@@ -821,6 +836,7 @@ class TestEntryLinkIntegrity:
                 is_credit=False,
             )
             credit = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
@@ -850,11 +866,13 @@ class TestEntryLinkIntegrity:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 5), is_credit=True,
@@ -901,16 +919,19 @@ class TestPaybackLifecycle:
             user = seed_user["user"]
 
             e1 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 6), is_credit=True,
             )
             e3 = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("75.00"), description="C",
                 purchased_on=date(2026, 1, 7), is_credit=True,
@@ -952,6 +973,7 @@ class TestPaybackLifecycle:
             user = seed_user["user"]
 
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Toggle",
                 purchased_on=date(2026, 1, 5), is_credit=True,
@@ -983,6 +1005,7 @@ class TestPaybackLifecycle:
 
             for i in range(3):
                 e = TransactionEntry(
+                    **figure_source_columns(),
                     transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
                     amount=Decimal("50.00"), description=f"Debit {i}",
                     purchased_on=date(2026, 1, 5), is_credit=False,
@@ -1028,23 +1051,20 @@ class TestLegacyCreditGuard:
         does not have is_envelope enabled.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Non-Tracked Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)
@@ -1063,23 +1083,20 @@ class TestLegacyCreditGuard:
         Projected status and deletes the payback.
         """
         with app.app_context():
-            projected = db.session.query(Status).filter_by(name="Projected").one()
             expense_type = (
                 db.session.query(TransactionType).filter_by(name="Expense").one()
             )
 
-            txn = Transaction(
-                user_id=seed_periods[0].user_id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
+            txn = one_off_row_of(
+                seed_periods[0],
                 name="Legacy Expense",
-                category_id=seed_user["categories"]["Groceries"].id,
+                amount=Decimal("100.00"),
+                user_id=seed_periods[0].user_id,
+                account_id=seed_user["account"].id,
+                scenario_id=seed_user["scenario"].id,
                 transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
+                category_id=seed_user["categories"]["Groceries"].id,
             )
-            db.session.add(txn)
             db.session.flush()
 
             payback = credit_workflow.mark_as_credit(txn.id, seed_user["user"].id)

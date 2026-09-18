@@ -38,6 +38,7 @@ from app.services.settle_day import (
 )
 from app.services.state_machine import verify_transition
 from app.services.status_seam._record import Settlement
+from app.services.status_seam._covering import sync_covering_movement
 from app.services.status_seam._refusals import (
     StatusBearingRow,
     reject_figure_without_settled_status,
@@ -307,10 +308,12 @@ def apply_status_change(
          before it renders.
 
     It deliberately does NOT post to the ledger and does NOT flush or commit:
-    ledger emission is reconciled once at the END of each handler, after every
+    ledger emission is reconciled at the END of each handler, after every
     effect field is applied, never at the status flip (Build-Order Step 3,
-    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses);
-    the caller owns the session boundary.
+    Commit 6 -- the same placement ``transfer_service.update_transfer`` uses;
+    the PATCH handler's UNLOCK order, ruling **R-BAL58**, runs the status verb
+    before its field writes and reconciles again after them); the caller owns
+    the session boundary.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
@@ -480,6 +483,9 @@ def apply_status_change(
         )
 
     verify_transition(row, new_status_id)
+    # Read BEFORE the assignment, for the covering movement below: leaving the
+    # settled band is a question about the status the row is LEAVING.
+    was_settled = row.status_id in settled_status_ids()
     row.status_id = new_status_id
 
     # Settle-day maintenance -- the day AND the basis that says how it is known,
@@ -578,5 +584,22 @@ def apply_status_change(
             row.settled_basis_id = ref_cache.settlement_basis_id(
                 settlement.basis,
             )
+        # **The record's other home** (plan step **X-bi-3a**, ruling
+        # **R-BAL39**): a settle on the manual branch is mirrored as ONE
+        # covering movement, the payment row that records a bill's money the
+        # way a purchase records an envelope's, and leaving the band releases
+        # it.  Written LAST so every value it mirrors -- the day pair, the
+        # link, the figure and its basis -- is the row's final one for this
+        # act.  The rule and the lifecycle are
+        # :mod:`app.services.status_seam._covering`'s; it covers every kind
+        # of row, a transfer shadow included since plan step X-bi-3c (the
+        # kind gate went in three leaves: expense at 3a, income at 3b,
+        # transfer at 3c).
+        sync_covering_movement(
+            row,
+            was_settled=was_settled,
+            now_settled=new_status_id in settled_status_ids(),
+            settlement=settlement,
+        )
 
     db.session.expire(row, ["status"])

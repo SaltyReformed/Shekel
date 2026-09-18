@@ -20,6 +20,8 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import (
+    MovementFigureSourceEnum,
+    SettledDayBasisEnum,
     SettlementBasisEnum,
     StatementSourceEnum,
     StatusEnum,
@@ -31,7 +33,6 @@ from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import derived_amount_basis
@@ -52,13 +53,14 @@ from app.services.statement_match import (
 from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    figure_source_columns,
     generate_row_of,
     last_covered_day,
     make_every_period_rule,
+    one_off_row_of,
     settle_day_columns,
     state_template_price,
 )
-from app.models.amount_ownership import AmountOwnership
 
 
 def a_transaction(
@@ -166,20 +168,20 @@ def a_transaction(
         for column, value in settlement.items():
             setattr(txn, column, value)
     else:
-        txn = Transaction(
-            template_id=None,
-            user_id=seed_user["user"].id,
-            pay_period_id=(period or seed_user["bootstrap_period"]).id,
+        # A ONE-OFF through the producer (plan step balance:X-bi-7c): a
+        # rule-less definition plus its placed row, priced at *amount* and
+        # dated on the paycheck's start, with the settlement laid on bare as
+        # for the engine's row above.  This built a link-less row owning its
+        # figure until that step -- the shape the cutover (X-bi-7d) deletes.
+        txn = one_off_row_of(
+            period or seed_user["bootstrap_period"], name=name, amount=amount,
+            user_id=seed_user["user"].id, account_id=account_id,
             scenario_id=seed_user["scenario"].id,
-            account_id=account_id,
-            name=name,
-            category_id=category_id,
-            transaction_type_id=type_id,
-            amount_ownership=AmountOwnership.own(Decimal(amount)),
+            transaction_type_id=type_id, category_id=category_id,
             is_envelope=is_envelope,
-            **settlement,
         )
-        db.session.add(txn)
+        for column, value in settlement.items():
+            setattr(txn, column, value)
     db.session.flush()
     return txn
 
@@ -217,6 +219,14 @@ def a_purchase(
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.
     """
     entry = TransactionEntry(
+        # WHO WROTE the figure follows WHO stated the day (plan step
+        # **X-bi-3a**): a purchase the bank observed carries the bank's figure,
+        # every other one a person's -- the purchase doors' own rule
+        # (``entry_service.figure_source_of``) stated for a bare builder.
+        **figure_source_columns(
+            MovementFigureSourceEnum.OBSERVED
+            if settle_day_basis is SettledDayBasisEnum.OBSERVED else None
+        ),
         transaction_id=parent.id,
         account_id=parent.account_id,
         user_id=seed_user["user"].id,

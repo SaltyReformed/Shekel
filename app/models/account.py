@@ -5,6 +5,7 @@ Tracks checking and savings accounts with anchor balance history
 for the true-up workflow.
 """
 
+from app.enums import StatementBalanceEvidenceEnum
 from app.extensions import db
 from app.models.append_only import (
     AppendOnlyViolation,
@@ -182,8 +183,86 @@ class Account(
         return f"<Account {self.name} ({self.id})>"
 
 
+def _owner_declared_evidence_id() -> int:
+    """Return the evidence a level the OWNER declared is held with.
+
+    The column default for :attr:`AccountAnchorHistory.evidence_id`, and the
+    whole of what an owner-typed figure can claim: ``uncorroborated`` --
+    "nothing confirms it; the figure is taken at face value" -- which the enum
+    defines as exactly what a first import is (plan step ``balance:X-bj-1``,
+    developer ruling 2026-09-16).  The import door sets a bank row's evidence
+    explicitly from what it solved; every other writer of this table is an
+    owner declaring a balance and takes this.
+
+    A callable rather than a literal because the id is a ``ref`` row's, read
+    through the cache and never frozen into the schema.  Imported inside the
+    call because ``ref_cache`` imports this module.
+    """
+    # Pylint: ``import-outside-toplevel`` (1/0) -- a real import cycle, not a
+    # cost dodge; ``app/models/transaction.py`` takes the same shape.
+    from app import ref_cache  # pylint: disable=import-outside-toplevel
+
+    return ref_cache.statement_balance_evidence_id(
+        StatementBalanceEvidenceEnum.UNCORROBORATED,
+    )
+
+
 class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
-    """Audit trail of anchor balance true-ups for an account.
+    """THE LEVEL RELATION: every observation that an account held a balance on a day.
+
+    **One relation for both observers, and that is ruling R-IS as built by
+    plan step ``balance:X-bj-1`` (ruling R-JN; the forks ruled 2026-09-16).**
+    A row says *account A held $B at the close of day D*, and who observed it
+    is :attr:`statement_import_id`: a bank STATEMENT (the import that stated
+    the figure and solved its day) or, when that column is NULL, the OWNER,
+    who read their bank and typed it.  The two were held in unrelated places
+    -- this table, and two columns on ``budget.statement_imports`` -- with no
+    rule saying which governed, which was finding **N-314**; one relation with
+    a declared evidence rank (:attr:`evidence_id`) closes that structurally,
+    because there is no "which authority wins" branch left to write.
+
+    **The source is the import key's nullability, and there is deliberately no
+    typed ``source_id``.**  The key is not a proxy for the fact, it IS the
+    fact: ``fk_anchor_history_statement_import_claim`` locks a row's
+    :attr:`anchor_balance` to its import's own ``stated_balance``, so any row
+    naming an import is a bank level by construction, and no third writer
+    exists.  A typed column would copy ``statement_imports.source_id`` on bank
+    rows and be a constant on the owner's -- a second home (rule 14) -- and
+    PostgreSQL cannot pair it with a nullable key in a CHECK without freezing
+    a ``ref`` id into the schema.  Precedent: ``pay_calendar:R-PC80``, absence
+    is the discriminator when the stored shapes are disjoint.  A surface that
+    wants a source label (the statements page's badge, the history card)
+    derives it from the join.
+
+    **A bank level goes with its file, and a delete cannot manufacture an
+    owner row.**  Both import keys are ``ON DELETE CASCADE``: a placement is
+    the file's conclusion, and a row that exists only because a line did
+    states nothing once the line is destroyed (``bank_import:R-GG(e)``).  The
+    append-only DELETE arm permits that cascade by the same end-state test it
+    applies to an account's disposal (``app.append_only_infrastructure``); the
+    audit log keeps the row.  This is why the relation is ONE table and not a
+    base table with a statement subtype beside it: a subtype row cascading
+    away would leave the base row standing as an owner-declared level and
+    feed it to the cash reset, and SQL cannot say "the parent dies with this
+    child".
+
+    **A release is an APPENDED row in ``budget.anchor_releases``, never an
+    edit here** (:class:`~app.models.anchor_release.AnchorRelease`).  A bank
+    level is solved from the lines recorded at or before its day, so a later
+    import recording such a line, or a delete removing one, withdraws it; the
+    withdrawal names the level and its cause.  A level STANDS when no release
+    names it.
+
+    **What reads which rows, until the flip.**  The cash fold still RESETS at
+    the owner's levels and at nothing else (``X-f3c-5`` deletes that reset),
+    so every cash-side reader composes
+    :func:`app.utils.balance_predicates.owner_declared_clause` -- one
+    predicate, deleted with the reset.  The bank walk
+    (``statement_import.fold_bank_balances``) anchors on STANDING BANK levels
+    only, permanently: ``anchor + sum(lines)`` is exact only from the bank's
+    own posted end-of-day figure, and a typed number may hold pending items.
+    That restricts the domain of one derived figure to the rows it is about;
+    it ranks nothing across sources, so R-IS's rule stands.
 
     **Two clocks, and only one of them dates anything.**  ``observed_on`` is
     the BUSINESS date -- the civil day the asserted balance was TRUE -- and it
@@ -268,7 +347,8 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     ``source_id`` FK because it is READ -- ``loan_loaders`` tells a
     ``tracking_start`` from a ``user_trueup``, the write door scopes its
     duplicate compare per source, and the dashboard renders the label.  This
-    table carries one kind of fact and needs no such split.
+    table's two kinds of row are told apart by :attr:`statement_import_id`,
+    which every reader that cares composes as a predicate (see above).
     """
 
     __tablename__ = "account_anchor_history"
@@ -277,6 +357,48 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
             "idx_anchor_history_account",
             "account_id",
             "created_at",
+        ),
+        # A bank level names ONE OF THIS ACCOUNT'S statements, structurally
+        # (plan step ``balance:X-bj-1``): the composite key onto
+        # ``uq_statement_imports_id_account`` is what makes a level solved
+        # from another account's file unrepresentable.  ``MATCH SIMPLE``
+        # (PostgreSQL's default) is what lets it sit beside a nullable
+        # column: an owner-declared row satisfies it whatever ``account_id``
+        # says.  CASCADE: the placement is the file's conclusion and goes
+        # with it -- see the class docstring.
+        db.ForeignKeyConstraint(
+            ["statement_import_id", "account_id"],
+            ["budget.statement_imports.id",
+             "budget.statement_imports.account_id"],
+            name="fk_anchor_history_statement_import_account",
+            ondelete="CASCADE",
+        ),
+        # A bank level's FIGURE is its file's own claim, guaranteed rather
+        # than maintained: the pair keys onto
+        # ``uq_statement_imports_id_stated_balance``, so a level whose amount
+        # differs from what its statement stated cannot be stored, and --
+        # because a NULL ``stated_balance`` matches nothing -- an import that
+        # states no balance cannot own a level at all.  That second property
+        # is what ``ck_statement_imports_anchor_needs_a_claim`` used to say
+        # in words on the other table.  The claim is the SOURCE; this row's
+        # amount is a co-located key over it, the shape
+        # ``bank_statement_lines.account_id`` takes against its import.
+        db.ForeignKeyConstraint(
+            ["statement_import_id", "anchor_balance"],
+            ["budget.statement_imports.id",
+             "budget.statement_imports.stated_balance"],
+            name="fk_anchor_history_statement_import_claim",
+            ondelete="CASCADE",
+        ),
+        # An import places its figure on AT MOST ONE day: the door writes one
+        # level per import, and a withdrawn placement is never re-placed by
+        # the same import (the NEXT import re-establishes a level from the
+        # evidence then present).  The key makes that structural, and it is
+        # what lets the statements page key a placement by import id.  NULLs
+        # are distinct under a UNIQUE constraint, so the owner's rows are
+        # untouched by it.
+        db.UniqueConstraint(
+            "statement_import_id", name="uq_anchor_history_statement_import",
         ),
         # **The SUPERKEY the clearing links target, and it does NOT revive
         # R-EQ** (plan step X-f3a-1, ruling **R-FL**).  A transaction and a
@@ -357,6 +479,35 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     recorded_on = db.Column(
         db.Date, nullable=False, default=display_today,
     )
+    # How firmly this level is held: the WEAKEST LINK in the chain behind the
+    # figure, over ``ref.statement_balance_evidence``
+    # (:class:`~app.enums.StatementBalanceEvidenceEnum`).  NOT NULL: every
+    # observation carries its evidence (ruling R-IS).  The import door sets a
+    # bank row's from what it solved (``file_chain`` from the file's own
+    # chain, ``corroborated`` from agreement with a recorded statement,
+    # ``uncorroborated`` from nothing); an owner's row takes the default,
+    # which is the bottom rung -- see :func:`_owner_declared_evidence_id`.
+    # The rank is READ by the bank walk alone (``usable_anchor`` chooses the
+    # strongest standing bank level) and shown by the badge; no cash reader
+    # consults it.
+    evidence_id = db.Column(
+        db.Integer,
+        # Named, so a database built by ``create_all`` (``init_database``'s
+        # fresh path) and one built by the migration chain carry the same
+        # constraint name and the migration's downgrade can drop it on either.
+        db.ForeignKey(
+            "ref.statement_balance_evidence.id",
+            name="fk_account_anchor_history_evidence",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+        default=_owner_declared_evidence_id,
+    )
+    # The statement that observed this level, or NULL for a level the owner
+    # declared -- the source, stated once (see the class docstring for why it
+    # is this key and not a typed column).  Its two composite keys are in
+    # ``__table_args__``; this bare column carries no key of its own.
+    statement_import_id = db.Column(db.Integer)
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")

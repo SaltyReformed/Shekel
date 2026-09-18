@@ -108,6 +108,7 @@ from app.enums import (
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     PostingKindEnum,
+    PostingSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -128,10 +129,14 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
+    family_journal_filter,
+    figure_source_columns,
     add_txn,
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
+    legacy_link_less_row_of,
+    settle_cash_row,
     create_settled_transfer,
     linked_ledger_account,
     settle_day_columns,
@@ -342,15 +347,28 @@ def _independent_posted_purchase_effect(
     exactly what the parent's own leg and its purchases' legs add up to, so
     counting one here would double it.
 
-    Restated in SQL rather than shared with ``posting_service._purchase_posts``,
-    for the reason every helper in this file is: an oracle that imported the
-    rule it grades could not grade it.
+    Signed by the PARENT's type, as :func:`_independent_cash_txn_effect`
+    signs a row's own figure (plan step X-bi-3b, ruling **R-BAL35**: a
+    movement's direction is its parent's).  No purchase can sit under an
+    unsettled income parent today, so the income arm meets nothing; it is
+    stated so this oracle grades the whole rule and not the rule minus a
+    case.
+
+    Restated in SQL rather than shared with ``posting_service._purchase_posts``
+    or ``cash_ledger.movement_cash_leg``, for the reason every helper in this
+    file is: an oracle that imported the rule it grades could not grade it.
     """
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    signed = case(
+        (
+            Transaction.transaction_type_id == income_type_id,
+            TransactionEntry.amount,
+        ),
+        else_=-TransactionEntry.amount,
+    )
     return (
         _db.session.query(
-            _db.func.coalesce(
-                _db.func.sum(-TransactionEntry.amount), Decimal("0")
-            )
+            _db.func.coalesce(_db.func.sum(signed), Decimal("0"))
         )
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
         .filter(
@@ -673,9 +691,11 @@ def _assert_every_settled_transaction_posts(user_id: int) -> None:
         if _signed_cash_effect(txn) == 0:
             # A zero-effect settled row (all-credit envelope) posts nothing.
             continue
+        # The row's FAMILY (plan step X-bi-3a): a covered bill's money is
+        # posted under its covering movement, not under the row.
         entry_count = (
             _db.session.query(JournalEntry)
-            .filter_by(transaction_id=txn.id)
+            .filter(family_journal_filter(txn))
             .count()
         )
         assert entry_count >= 1, (
@@ -887,6 +907,13 @@ class TestPerCounterAccountReconciliation:
         by a transaction; this raw-SQL delete reproduces the DB-level SET NULL
         directly to lock the defensive linkage reconciliation -- see the
         ``ledger_account.py`` "Reconciliation of orphans" note.)
+
+        **On the LEGACY link-less row, until the cutover** (plan step
+        ``balance:X-bi-7c``, ruling **R-BAL59**): a one-off's
+        definition references the category, ``transaction_templates.
+        category_id`` is RESTRICT, and the delete this case reproduces cannot
+        happen to a placed row.  ``X-bi-7d`` deletes the shape and re-fixtures
+        or retires this case with it.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -903,9 +930,14 @@ class TestPerCounterAccountReconciliation:
             # snapshot can be checked against it (not a bare string literal).
             hobbies_display_name = hobbies.display_name
 
-            txn = create_settled_cash_transaction(
-                seed_user, db.session, period, Decimal("50.00"),
-                category=hobbies,
+            txn = settle_cash_row(
+                legacy_link_less_row_of(
+                    period, name="Cash Txn", amount="50.00",
+                    user_id=user_id, account_id=seed_user["account"].id,
+                    scenario_id=scenario_id,
+                    transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                    category_id=hobbies_id,
+                ),
             )
             db.session.commit()
             txn_id = txn.id
@@ -989,12 +1021,16 @@ class TestPerEntryAndTrialBalance:
             db.session.commit()
 
             # Three settled sources -> three source-linked balanced entries
-            # (the Step-5 openings carry their own correction sources).
+            # (the Step-5 openings carry their own correction sources).  The
+            # two expense sources link by their covering movement since plan
+            # step X-bi-3a (``transaction_entry_id``); the income one still by
+            # ``transaction_id`` until X-bi-3b.
             assert (
                 _db.session.query(JournalEntry)
                 .filter(_db.or_(
                     JournalEntry.transfer_id.isnot(None),
                     JournalEntry.transaction_id.isnot(None),
+                    JournalEntry.transaction_entry_id.isnot(None),
                 ))
                 .count()
             ) == 3
@@ -1041,6 +1077,7 @@ class TestEverySettledTransactionPosts:
                 settled_amount="75.00",
             )
             db.session.add(TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
@@ -1296,8 +1333,11 @@ class TestRevertAndMoveReconciles:
         class): a Paid $50 expense in period P is reverted to Projected AND
         moved to a future period F in ONE PATCH (the finalised lock lifts on
         the revert), then re-settled.  The handler applies the new
-        ``pay_period_id`` BEFORE the end-of-handler reconcile, so a reversal
-        stamped with the row's current period would land in F -- leaving P's
+        ``pay_period_id`` BEFORE the end-of-handler reconcile (since ruling
+        **R-BAL58** the revert's own reconcile runs first and the handler
+        reconciles again after the move; this case holds under both), so a
+        reversal stamped with the row's current period would land in F --
+        leaving P's
         entry and its reversal straddling two periods, where truncating F
         CASCADE-deletes half the pair and permanently strands the other
         (``transaction_id`` SET NULL, unhealable).  Under the R2 attribution
@@ -1369,7 +1409,7 @@ def _period_ledger_nets(transaction_id, pay_period_id):
         )
         .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
         .filter(
-            JournalEntry.transaction_id == transaction_id,
+            family_journal_filter(transaction_id),
             JournalEntry.pay_period_id == pay_period_id,
         )
         .group_by(Posting.ledger_account_id)
@@ -1386,7 +1426,7 @@ def _entry_ids_in_period(transaction_id, pay_period_id):
         entry_id for (entry_id,) in (
             _db.session.query(JournalEntry.id)
             .filter(
-                JournalEntry.transaction_id == transaction_id,
+                family_journal_filter(transaction_id),
                 JournalEntry.pay_period_id == pay_period_id,
             )
             .all()
@@ -1449,9 +1489,19 @@ class TestRevertedTransactionReconcilesAtZero:
                 groceries_counter, scenario_id,
             ) == Decimal("0.00")
             # Two entries survive (settle + reversal); neither was edited.
+            # They were the covering movement's (plan step X-bi-3a), and the
+            # revert deleted that mirror after reversing its legs, so the pair
+            # stands as unlinked PURCHASE-sourced history -- the reverse-
+            # before-delete discipline, seen from the ledger.
             assert (
                 _db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn_id)
+                .filter(
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.PURCHASE,
+                    ),
+                    JournalEntry.transaction_entry_id.is_(None),
+                )
                 .count()
             ) == 2
             _assert_full_reconciliation(scenario_id)
@@ -1512,6 +1562,7 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
             )
             txn.category_id = seed_user["categories"]["Groceries"].id
             entry = TransactionEntry(
+                **figure_source_columns(),
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=user_id,
                 amount=Decimal("40.00"),
@@ -1708,7 +1759,7 @@ class TestOracleIsNotVacuous:
             # balanced trigger validates only at COMMIT, which we never reach.
             entry_id = (
                 _db.session.query(JournalEntry.id)
-                .filter_by(transaction_id=txn.id)
+                .filter(family_journal_filter(txn))
                 .scalar()
             )
             _db.session.execute(_db.text(

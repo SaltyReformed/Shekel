@@ -10,6 +10,15 @@ monthly moves money.  Both directions are driven through the migration's own
 shipped callables, and every assertion reads the DATABASE for the objects --
 and, for the rewrite, prices the migrated line through the engine against
 the ordinal rule it replaced, which is the byte-identical claim in miniature.
+
+**Every case that drives this revision's callables runs them under plan step
+``salary:R18-a``'s downgrade** (:func:`~tests._test_helpers
+.rewind_paycheck_lines_rename`, Alembic's newest-first order): head renamed
+``salary.paycheck_deductions`` and the arm's column (ruling **R-SAL38**), so
+the statements here find the schema they were written against only once the
+later revision is undone -- and its upgrade is replayed before a line is read
+back through the models this tree maps.  The one case that reads HEAD's
+schema names the head objects.
 """
 from __future__ import annotations
 
@@ -21,15 +30,17 @@ from sqlalchemy import text
 
 from app.enums import PeriodPlacementEnum, RecurrenceUnitEnum
 from app.extensions import db
-from app.models.paycheck_deduction import PaycheckDeduction
-from app.models.ref import CalcMethod, DeductionTiming
+from app.models.paycheck_line import PaycheckLine
+from app.models.ref import CalcMethod, PaycheckLineKind
 from app.services.pay_calendar import calendar_for, paydays_in_month_through
 from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence import RecurrenceSpec, author_rule
 from tests._test_helpers import (
     load_migration_module,
-    make_deduction_cadence_rule,
+    make_line_cadence_rule,
     make_salary_profile,
+    replay_paycheck_lines_rename as _replay,
+    rewind_paycheck_lines_rename as _rewind,
     run_migration_callable as _run,
 )
 
@@ -38,12 +49,20 @@ _M_R15B = load_migration_module(
     "542c61e48ee8_a_deductions_cadence_is_a_rule.py",
 )
 
+#: This revision's objects, spelled as it wrote them -- the names the schema
+#: carries under the R18-a rewind every driven case runs in.
 _ARM = "paycheck_deduction_id"
 _ARM_FK = "fk_recurrence_rules_paycheck_deduction_id"
 _ARM_INDEX = "uq_recurrence_rules_paycheck_deduction_id"
 _ARC = "ck_recurrence_rules_one_owner"
 _OLD_COLUMN = "deductions_per_year"
 _OLD_CHECK = "ck_paycheck_deductions_positive_per_year"
+_LINES = "paycheck_deductions"
+#: The same objects under HEAD's names (plan step salary:R18-a).
+_HEAD_ARM = "paycheck_line_id"
+_HEAD_ARM_FK = "fk_recurrence_rules_paycheck_line_id"
+_HEAD_ARM_INDEX = "uq_recurrence_rules_paycheck_line_id"
+_HEAD_LINES = "paycheck_lines"
 
 
 def _columns(session, schema, table) -> set[str]:
@@ -93,12 +112,12 @@ def _seed_lines(seed_user, names):
     """A salary profile with one flat pre-tax line per name; returns ``{name: id}``."""
     profile = make_salary_profile(seed_user, db.session)
     db.session.flush()
-    timing = db.session.query(DeductionTiming).filter_by(name="pre_tax").one().id
+    timing = db.session.query(PaycheckLineKind).filter_by(name="pre_tax_deduction").one().id
     method = db.session.query(CalcMethod).filter_by(name="flat").one().id
     ids = {}
     for name in names:
-        line = PaycheckDeduction(
-            salary_profile_id=profile.id, deduction_timing_id=timing,
+        line = PaycheckLine(
+            salary_profile_id=profile.id, paycheck_line_kind_id=timing,
             calc_method_id=method, name=name, amount=Decimal("100.00"),
         )
         db.session.add(line)
@@ -126,22 +145,24 @@ class TestTheRoundTrip:
     def test_the_upgrade_left_the_arm_and_took_the_column(self, app, db):
         """Every object the migration adds is present, and the column is gone."""
         with app.app_context():
-            assert _ARM in _columns(db.session, "budget", "recurrence_rules")
+            assert _HEAD_ARM in _columns(db.session, "budget", "recurrence_rules")
             constraints = _constraints(db.session, "budget", "recurrence_rules")
-            assert _ARM_FK in constraints
-            assert "ON DELETE CASCADE" in constraints[_ARM_FK]
-            assert "(paycheck_deduction_id IS NOT NULL)" in constraints[_ARC]
-            assert _ARM_INDEX in _indexes(db.session)
-            assert _OLD_COLUMN not in _columns(db.session, "salary", "paycheck_deductions")
-            assert _OLD_CHECK not in _constraints(db.session, "salary", "paycheck_deductions")
+            assert _HEAD_ARM_FK in constraints
+            assert "ON DELETE CASCADE" in constraints[_HEAD_ARM_FK]
+            assert "(paycheck_line_id IS NOT NULL)" in constraints[_ARC]
+            assert _HEAD_ARM_INDEX in _indexes(db.session)
+            assert _OLD_COLUMN not in _columns(db.session, "salary", _HEAD_LINES)
+            for name in _constraints(db.session, "salary", _HEAD_LINES):
+                assert "per_year" not in name, name
 
     def test_down_then_up_restores_exactly_the_objects(self, app, db):
         """With no deduction rule the downgrade rebuilds the old shape and the upgrade the new."""
         with app.app_context():
+            _rewind(db.session)
             rules_before = _constraints(db.session, "budget", "recurrence_rules")
-            deds_before = _constraints(db.session, "salary", "paycheck_deductions")
+            deds_before = _constraints(db.session, "salary", _LINES)
             rule_columns_before = _columns(db.session, "budget", "recurrence_rules")
-            ded_columns_before = _columns(db.session, "salary", "paycheck_deductions")
+            ded_columns_before = _columns(db.session, "salary", _LINES)
 
             _run(_M_R15B.downgrade, db.session)
 
@@ -150,15 +171,16 @@ class TestTheRoundTrip:
             down_rules = _constraints(db.session, "budget", "recurrence_rules")
             assert _ARM_FK not in down_rules
             assert "<>" in down_rules[_ARC], "the two-arm XOR was not restored"
-            assert _OLD_COLUMN in _columns(db.session, "salary", "paycheck_deductions")
-            assert _OLD_CHECK in _constraints(db.session, "salary", "paycheck_deductions")
+            assert _OLD_COLUMN in _columns(db.session, "salary", _LINES)
+            assert _OLD_CHECK in _constraints(db.session, "salary", _LINES)
 
             _run(_M_R15B.upgrade, db.session)
 
             assert _columns(db.session, "budget", "recurrence_rules") == rule_columns_before
-            assert _columns(db.session, "salary", "paycheck_deductions") == ded_columns_before
+            assert _columns(db.session, "salary", _LINES) == ded_columns_before
             assert _constraints(db.session, "budget", "recurrence_rules") == rules_before
-            assert _constraints(db.session, "salary", "paycheck_deductions") == deds_before
+            assert _constraints(db.session, "salary", _LINES) == deds_before
+            _replay(db.session)
 
 
 @pytest.mark.usefixtures("seed_periods")
@@ -170,6 +192,7 @@ class TestTheUpgradeRewritesEachLine:
         """Each stored count is re-expressed exactly as the migration's docstring spells."""
         with app.app_context():
             _profile, ids = _seed_lines(seed_user, ["every", "twenty_four", "twelve"])
+            _rewind(db.session)
             _run(_M_R15B.downgrade, db.session)
             _set_old_counts(db.session, {
                 ids["every"]: 26, ids["twenty_four"]: 24, ids["twelve"]: 12,
@@ -192,7 +215,8 @@ class TestTheUpgradeRewritesEachLine:
                     twelve.max_per_month, twelve.starts_on) == (
                 "month", 1, "period_starting_on_or_after", None, opening.replace(day=1),
             )
-            assert _OLD_COLUMN not in _columns(db.session, "salary", "paycheck_deductions")
+            assert _OLD_COLUMN not in _columns(db.session, "salary", _LINES)
+            _replay(db.session)
 
     def test_the_migrated_rules_admit_exactly_the_paydays_the_ordinal_rule_did(
         self, app, db, seed_user,
@@ -208,23 +232,25 @@ class TestTheUpgradeRewritesEachLine:
         """
         with app.app_context():
             profile, ids = _seed_lines(seed_user, ["twenty_four", "twelve"])
+            _rewind(db.session)
             _run(_M_R15B.downgrade, db.session)
             _set_old_counts(db.session, {ids["twenty_four"]: 24, ids["twelve"]: 12})
             _run(_M_R15B.upgrade, db.session)
+            _replay(db.session)
 
             db.session.expire_all()
             profile = db.session.get(type(profile), profile.id)
             calendar = calendar_for(seed_user["user"].id)
             basis = PayrollBasis(profile, calendar)
-            by_name = {line.name: line for line in profile.deductions}
+            by_name = {line.name: line for line in profile.lines}
             paydays = [period.start_date for period in calendar.periods]
             assert len(paydays) >= 3
             for payday in paydays:
                 ordinal = len(paydays_in_month_through(calendar, payday))
-                assert basis.deduction_applies_on(by_name["twenty_four"], payday) is (
+                assert basis.line_applies_on(by_name["twenty_four"], payday) is (
                     ordinal < 3
                 ), f"24-line on {payday} (ordinal {ordinal})"
-                assert basis.deduction_applies_on(by_name["twelve"], payday) is (
+                assert basis.line_applies_on(by_name["twelve"], payday) is (
                     ordinal == 1
                 ), f"12-line on {payday} (ordinal {ordinal})"
             # Non-vacuous: the seeded calendar holds a first, a second and a
@@ -237,6 +263,7 @@ class TestTheUpgradeRewritesEachLine:
         """52 is neither 26, 24 nor 12: the upgrade names the row and stops."""
         with app.app_context():
             _profile, ids = _seed_lines(seed_user, ["weekly"])
+            _rewind(db.session)
             _run(_M_R15B.downgrade, db.session)
             _set_old_counts(db.session, {ids["weekly"]: 52})
 
@@ -249,16 +276,18 @@ class TestTheUpgradeRewritesEachLine:
             assert "neither 26, 24 nor 12" in message
             # Refused means untouched: the arm was added inside the same
             # transaction and rolled back with it; the column survives.
-            assert _OLD_COLUMN in _columns(db.session, "salary", "paycheck_deductions")
+            assert _OLD_COLUMN in _columns(db.session, "salary", _LINES)
             assert _ARM not in _columns(db.session, "budget", "recurrence_rules")
             # Put the template back the way the suite expects it.
             _set_old_counts(db.session, {ids["weekly"]: 26})
             _run(_M_R15B.upgrade, db.session)
+            _replay(db.session)
 
     def test_a_line_whose_owner_has_no_payday_refuses_by_name(self, app, db, seed_user):
         """No opening payday, no rule to start (R-SAL30): the upgrade names the line and stops."""
         with app.app_context():
             _profile, ids = _seed_lines(seed_user, ["orphan"])
+            _rewind(db.session)
             _run(_M_R15B.downgrade, db.session)
             _set_old_counts(db.session, {ids["orphan"]: 24})
             db.session.execute(text(
@@ -273,9 +302,10 @@ class TestTheUpgradeRewritesEachLine:
             message = str(excinfo.value)
             assert f"deduction {ids['orphan']} ('orphan', 24/yr) of user {seed_user['user'].id}" in message
             assert "opening payday" in message
-            assert _OLD_COLUMN in _columns(db.session, "salary", "paycheck_deductions")
+            assert _OLD_COLUMN in _columns(db.session, "salary", _LINES)
             _set_old_counts(db.session, {ids["orphan"]: 26})
             _run(_M_R15B.upgrade, db.session)
+            _replay(db.session)
 
 
 @pytest.mark.usefixtures("seed_periods")
@@ -288,11 +318,12 @@ class TestTheDowngradeRebuildsTheColumnAndRefusesWhatItCannotSay:
         with app.app_context():
             _profile, ids = _seed_lines(seed_user, ["every", "twenty_four", "twelve"])
             for name, per_year in (("twenty_four", 24), ("twelve", 12)):
-                make_deduction_cadence_rule(
-                    db.session, db.session.get(PaycheckDeduction, ids[name]), per_year,
+                make_line_cadence_rule(
+                    db.session, db.session.get(PaycheckLine, ids[name]), per_year,
                 )
             db.session.commit()
 
+            _rewind(db.session)
             _run(_M_R15B.downgrade, db.session)
 
             counts = dict(db.session.execute(text(
@@ -304,6 +335,7 @@ class TestTheDowngradeRebuildsTheColumnAndRefusesWhatItCannotSay:
                 "WHERE transaction_template_id IS NULL AND transfer_template_id IS NULL"
             )).scalar() == 0, "a deduction-owned rule survived the downgrade"
             _run(_M_R15B.upgrade, db.session)
+            _replay(db.session)
 
     def test_a_monthly_rule_from_a_day_other_than_the_first_is_not_a_twelve(
         self, app, db, seed_user,
@@ -329,15 +361,19 @@ class TestTheDowngradeRebuildsTheColumnAndRefusesWhatItCannotSay:
                     starts_on=opening,
                 ),
                 calendar,
-                db.session.get(PaycheckDeduction, ids["late"]),
+                db.session.get(PaycheckLine, ids["late"]),
             )
             db.session.commit()
+            # Read the id BEFORE the rewind: an expired ORM attribute reloads
+            # through the head model, which maps the column the rewind renamed.
+            rule_id = rule.id
+            _rewind(db.session)
 
             with pytest.raises(RuntimeError) as excinfo:
                 _run(_M_R15B.downgrade, db.session)
             db.session.rollback()
 
-            assert f"rule {rule.id} on deduction {ids['late']} (every 1 month" in str(excinfo.value)
+            assert f"rule {rule_id} on deduction {ids['late']} (every 1 month" in str(excinfo.value)
             assert _ARM in _columns(db.session, "budget", "recurrence_rules")
 
     def test_a_shape_the_column_cannot_say_refuses_by_name(self, app, db, seed_user):
@@ -353,18 +389,22 @@ class TestTheDowngradeRebuildsTheColumnAndRefusesWhatItCannotSay:
                     starts_on=calendar.opening_bound().replace(day=1),
                 ),
                 calendar,
-                db.session.get(PaycheckDeduction, ids["quarterly"]),
+                db.session.get(PaycheckLine, ids["quarterly"]),
             )
             db.session.commit()
+            rule_id = rule.id
+            _rewind(db.session)
 
             with pytest.raises(RuntimeError) as excinfo:
                 _run(_M_R15B.downgrade, db.session)
             db.session.rollback()
 
             message = str(excinfo.value)
-            assert f"rule {rule.id} on deduction {ids['quarterly']} (every 3 month" in message
+            assert f"rule {rule_id} on deduction {ids['quarterly']} (every 3 month" in message
             assert "moves money" in message
             # Refused means untouched.
             assert _ARM in _columns(db.session, "budget", "recurrence_rules")
-            assert _OLD_COLUMN not in _columns(db.session, "salary", "paycheck_deductions")
-            assert db.session.get(PaycheckDeduction, ids["quarterly"]).recurrence_rule is not None
+            assert _OLD_COLUMN not in _columns(db.session, "salary", _LINES)
+            _replay(db.session)
+            db.session.expire_all()
+            assert db.session.get(PaycheckLine, ids["quarterly"]).recurrence_rule is not None

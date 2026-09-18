@@ -46,6 +46,7 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.services import account_service
 from tests._test_helpers import (
+    figure_source_columns,
     current_pay_period,
     generate_row_of,
     last_covered_day,
@@ -77,6 +78,7 @@ def _make_envelope_template(
 def _add_entry(txn, seed_user, amount):
     """Attach a debit entry to *txn*."""
     db.session.add(TransactionEntry(
+        **figure_source_columns(),
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),

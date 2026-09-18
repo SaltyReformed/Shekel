@@ -55,6 +55,7 @@ here so ``from app.services import carry_forward_service`` and every
 from ._execute import carry_forward_unpaid
 from ._preview import (
     BLOCK_AMBIGUOUS_TARGETS,
+    BLOCK_CLOSED_TARGET,
     PLAN_KIND_DISCRETE,
     PLAN_KIND_ENVELOPE,
     PLAN_KIND_TRANSFER,
@@ -72,4 +73,5 @@ __all__ = [
     "PLAN_KIND_DISCRETE",
     "PLAN_KIND_TRANSFER",
     "BLOCK_AMBIGUOUS_TARGETS",
+    "BLOCK_CLOSED_TARGET",
 ]

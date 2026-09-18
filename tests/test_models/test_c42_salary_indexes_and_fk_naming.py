@@ -70,6 +70,35 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import text
 
+from tests._test_helpers import rewind_paycheck_lines_rename
+
+
+# ---------------------------------------------------------------------------
+# The schema this revision was written against
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _c42_schema(app, db):
+    """Run every case here under plan step ``salary:R18-a``'s downgrade.
+
+    Two of the six C-42 indexes and two of its four FK renames live on
+    ``salary.paycheck_deductions``, which head renamed to
+    ``salary.paycheck_lines`` (ruling **R-SAL38**) along with the kind
+    FK's name -- so ``INDEX_SPECS`` / ``FK_RENAME_SPECS``, read straight
+    off the migration module, name objects the head template no longer
+    carries, and ``upgrade()`` would create an index on a table that is
+    not there.  :func:`~tests._test_helpers.rewind_paycheck_lines_rename`
+    puts the old names back first (the stacked, newest-first shape of
+    :func:`~tests._test_helpers.rewind_pay_schedule_rhythm`); every case
+    then reads and drives C-42 against the schema it was written for.
+    Nothing is replayed: the ``db`` fixture re-clones the per-worker
+    database for every test, and no case here reads a line through the
+    models.
+    """
+    with app.app_context():
+        rewind_paycheck_lines_rename(db.session)
+
 
 # ---------------------------------------------------------------------------
 # Migration module loader
@@ -237,7 +266,9 @@ class TestPostUpgradeDbShape:
 
     The test template runs the migration chain to head when built
     (see ``scripts/build_test_template.py``), so every per-worker
-    clone inherits the post-C-42 state.  These tests are the
+    clone inherits the post-C-42 state -- under the R18-a rewind the
+    module's autouse fixture applies, which restores the two
+    deduction-table artifacts' names.  These tests are the
     template-state precondition for the rest of the suite -- if any
     fail, the template was built without the C-42 migration and
     needs to be rebuilt with

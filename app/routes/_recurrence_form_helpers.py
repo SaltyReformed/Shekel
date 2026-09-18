@@ -228,6 +228,7 @@ def author_recurrence_for_create(
     template: RecurrenceOwner,
     *,
     redirect: RedirectTarget,
+    calendar: PayCalendar | None = None,
 ) -> RecurrenceRule | Response | None:
     """Write the create form's cadence onto the definition it belongs to.
 
@@ -255,6 +256,11 @@ def author_recurrence_for_create(
             rule and the schedule it resolves against cannot name different
             owners.
         redirect: Where the one refusal here sends the user (the create form).
+        calendar: The owner's pay calendar when the caller already holds one
+            -- the salary line door's read pass does (plan step salary:R18-c),
+            and a second derivation of the same calendar in one request is
+            the redundant producer call this project treats as a defect --
+            else ``None`` and it is loaded for ``template.user_id`` here.
 
     Returns:
         The flushed :class:`RecurrenceRule`; ``None`` when *spec* is ``None``
@@ -278,7 +284,11 @@ def author_recurrence_for_create(
     if spec is None:
         return None
     try:
-        return author_rule(spec, calendar_for(template.user_id), template)
+        return author_rule(
+            spec,
+            calendar if calendar is not None else calendar_for(template.user_id),
+            template,
+        )
     except EmptyAuthoredWindowError as refused:
         db.session.rollback()
         flash(
@@ -725,7 +735,7 @@ def _clear_recurrence_rule(template: Any) -> None:
 
     Args:
         template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
-            step salary:R15-c) ``PaycheckDeduction`` whose recurrence is being
+            step salary:R15-c) ``PaycheckLine`` whose recurrence is being
             cleared.  Mutated in place; a no-op when it names no rule.
     """
     if template.recurrence_rule is None:
@@ -814,7 +824,7 @@ def resolve_recurrence_rule_for_update(
 
     Args:
         template: The ``TransactionTemplate``, ``TransferTemplate`` or (plan
-            step salary:R15-c) ``PaycheckDeduction`` being updated -- the
+            step salary:R15-c) ``PaycheckLine`` being updated -- the
             :data:`~app.services.recurrence.RecurrenceOwner` union.
             Accessed for ``recurrence_rule`` (which a fresh rule is authored
             onto, and which is cleared when none was selected) and

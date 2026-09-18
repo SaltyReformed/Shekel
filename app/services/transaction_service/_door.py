@@ -78,6 +78,12 @@ def apply_requested_status(
     ``transfer_service.update_transfer`` documents.  A caller that edits
     posting-relevant fields WITHOUT changing the status still owes its own
     reconcile; there is no status change for this function to hang one on.
+    So does a caller that runs this BEFORE its field writes -- the PATCH
+    handler's unlock order (ruling **R-BAL58**: a transition that lifts a
+    finalised row's lock is applied first, so the edits land on an unlocked
+    row) -- because the reconcile here read the pre-edit row, and a moved
+    period or category re-files an envelope's purchase legs only through a
+    reconcile that reads the final one.
 
     Does NOT flush or commit -- the caller owns the session boundary.
 

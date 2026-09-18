@@ -33,6 +33,7 @@ import pytest
 from app import ref_cache
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.exceptions import StatementBalanceUnexplained
+from app.models.account import AccountAnchorHistory
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.services.statement_import import (
     KnownOpening,
@@ -43,14 +44,15 @@ from app.services.statement_import import (
     solve_effective_day,
     weaker_of,
 )
-# ``_anchor``'s partition of the release into a fetch and a predicate has no
+# The package's partition of the release into a fetch and a predicate has no
 # importer outside the package, so exporting the pair from
 # ``statement_import.__init__`` would be the public surface ``CLAUDE.md``
 # rule 13 forbids.  Reaching into it from the module's own tests is the
 # allowance ``test_merchant_schema`` takes for ``_merchants``.
-from app.services.statement_import._anchor import (
-    anchored_imports,
-    resting_on,
+from app.services.statement_import._anchor import resting_on
+from app.services.statement_import._balance import (
+    bank_levels,
+    standing_bank_levels,
 )
 
 _FILE_CHAIN = StatementBalanceEvidenceEnum.FILE_CHAIN
@@ -105,7 +107,9 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
     Built through the models rather than through ``record_statement``, and
     deliberately: these exercise the WALK and the RELEASE over what is stored,
     so constructing the stored state directly keeps their tests from also being
-    tests of the door that writes it.
+    tests of the door that writes it.  A placed figure is a LEVEL row naming
+    the import (plan step ``balance:X-bj-1``), written here as the door
+    writes it.
 
     Args:
         db: The session fixture.
@@ -119,6 +123,7 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
 
     Returns:
         The staged :class:`~app.models.statement_import.StatementImport`.
+        Its level, when it placed one, is :func:`_placement`'s answer.
     """
     days = [day for day, _ in lines]
     start, end = period or (min(days), max(days))
@@ -136,14 +141,18 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
         recorded_count=len(lines),
         stated_balance=None if stated is None else Decimal(stated),
         stated_balance_on=None if stated is None else (effective_on or end),
-        balance_effective_on=effective_on,
-        balance_evidence_id=(
-            None if evidence is None
-            else ref_cache.statement_balance_evidence_id(evidence)
-        ),
     )
     db.session.add(row)
     db.session.flush()
+    if effective_on is not None:
+        db.session.add(AccountAnchorHistory(
+            account_id=account.id,
+            anchor_balance=Decimal(stated),
+            observed_on=effective_on,
+            evidence_id=ref_cache.statement_balance_evidence_id(evidence),
+            statement_import_id=row.id,
+        ))
+        db.session.flush()
     for ordinal, (day, amount) in enumerate(lines):
         db.session.add(BankStatementLine(
             account_id=account.id,
@@ -160,6 +169,20 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
         ))
     db.session.flush()
     return row
+
+
+def _placement(db, statement_import):
+    """Return ``(level, release)`` for one import, or ``None`` when unplaced.
+
+    The page's own read (:func:`~app.services.statement_import._balance
+    .bank_levels`), narrowed to one import, so a test asks the relation what
+    stands rather than a column that no longer exists.
+    """
+    db.session.flush()
+    for level, release in bank_levels(statement_import.account_id):
+        if level.statement_import_id == statement_import.id:
+            return level, release
+    return None
 
 
 class TestTheSolveFindsTheDayTheFigureIsFor:
@@ -490,12 +513,13 @@ class TestTheRecordedHistoryWalk:
     ):
         """The filter that stops a date-range export becoming the anchor.
 
-        Without it the anchor selection returns a row whose
-        ``balance_effective_on`` is ``None`` and the coverage test raises
-        ``TypeError`` comparing a date against it -- a 500.  Found by
-        adversarial review 2026-08-23.  (The selection moved to
-        ``_balance.usable_anchor`` at plan step ``bank_import:X-f6e-2``;
-        this reaches it through the public reader that consumes it.)
+        Without it the anchor selection returned a row whose placed day was
+        ``None`` and the coverage test raised ``TypeError`` comparing a date
+        against it -- a 500.  Found by adversarial review 2026-08-23.  (The
+        selection moved to ``_balance.usable_anchor`` at plan step
+        ``bank_import:X-f6e-2``, and since ``balance:X-bj-1`` an unplaced
+        import simply owns no level row; this reaches it through the public
+        reader that consumes it.)
         """
         _seed_import(
             db, seed_user["account"], stated="2459.60", effective_on=None,
@@ -702,6 +726,14 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
     day an earlier anchor had priced, and a delete removing the lines an anchor
     rested on -- and one rule closes both: the evidence moved, so the
     conclusion goes.
+
+    **A release is an APPENDED row since plan step ``balance:X-bj-1``**: the
+    level relation is append-only at the database tier, so the withdrawal is
+    a ``budget.anchor_releases`` row naming the level and the import whose
+    lines changed, and a level STANDS when no release names it.  Every case
+    here therefore seeds the CAUSE -- the import that recorded the changing
+    line -- because both doors have one and the door's own id is what it
+    passes.
     """
 
     def test_it_releases_an_anchor_at_or_after_the_changed_day(
@@ -714,13 +746,23 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
             lines=[(date(2026, 3, 1), "100.00")],
             period=(date(2026, 3, 1), date(2026, 3, 3)),
         )
+        cause = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-15.00")], file_name="later.csv",
+        )
 
         assert release_anchors_from(
-            seed_user["account"].id, date(2026, 3, 2),
+            seed_user["account"].id, date(2026, 3, 2), cause.id,
         ) == 1
-        db.session.flush()
-        assert row.balance_effective_on is None
-        assert row.balance_evidence_id is None
+        level, release = _placement(db, row)
+        # The level is untouched -- append-only -- and the release names
+        # the cause and the day.
+        assert level.observed_on == date(2026, 3, 3)
+        assert release is not None
+        assert release.anchor_id == level.id
+        assert release.released_by_import_id == cause.id
+        assert release.lines_changed_from == date(2026, 3, 2)
+        assert standing_bank_levels(seed_user["account"].id) == []
 
     def test_it_LEAVES_an_anchor_that_predates_the_change(
         self, app, db, seed_user,
@@ -732,11 +774,17 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
             lines=[(date(2026, 3, 1), "100.00")],
             period=(date(2026, 3, 1), date(2026, 3, 3)),
         )
+        cause = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-15.00")], file_name="later.csv",
+        )
 
         assert release_anchors_from(
-            seed_user["account"].id, date(2026, 3, 2),
+            seed_user["account"].id, date(2026, 3, 2), cause.id,
         ) == 0
-        assert row.balance_effective_on == date(2026, 3, 1)
+        level, release = _placement(db, row)
+        assert level.observed_on == date(2026, 3, 1)
+        assert release is None
 
     def test_the_recording_import_is_EXCLUDED_from_its_own_release(
         self, app, db, seed_user,
@@ -750,10 +798,11 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
         )
 
         assert release_anchors_from(
-            seed_user["account"].id, date(2026, 3, 2),
-            except_import_id=row.id,
+            seed_user["account"].id, date(2026, 3, 2), row.id,
         ) == 0
-        assert row.balance_effective_on == date(2026, 3, 3)
+        level, release = _placement(db, row)
+        assert level.observed_on == date(2026, 3, 3)
+        assert release is None
 
     def test_it_is_scoped_to_ITS_OWN_account(
         self, app, db, seed_user, seed_second_user,
@@ -766,15 +815,85 @@ class TestTheDoorsThatChangeLinesReleaseTheAnchorsTheyUndercut:
             period=(date(2026, 3, 1), date(2026, 3, 3)),
             file_name="other.csv",
         )
+        cause = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 1), "-15.00")], file_name="mine.csv",
+        )
 
         assert release_anchors_from(
-            seed_user["account"].id, date(2026, 3, 1),
+            seed_user["account"].id, date(2026, 3, 1), cause.id,
         ) == 0
-        assert other.balance_effective_on == date(2026, 3, 3)
+        level, release = _placement(db, other)
+        assert level.observed_on == date(2026, 3, 3)
+        assert release is None
+
+    def test_a_released_level_is_released_ONCE(self, app, db, seed_user):
+        """A withdrawn level rests on nothing: a second change releases nothing.
+
+        ``resting_on`` reads STANDING levels, so the second door finds none,
+        and ``uq_anchor_releases_anchor`` would refuse a second row anyway.
+        """
+        row = _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00")],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        first = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-15.00")], file_name="first.csv",
+        )
+        second = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-20.00")], file_name="second.csv",
+        )
+        assert release_anchors_from(
+            seed_user["account"].id, date(2026, 3, 2), first.id,
+        ) == 1
+
+        assert release_anchors_from(
+            seed_user["account"].id, date(2026, 3, 2), second.id,
+        ) == 0
+        _level, release = _placement(db, row)
+        assert release.released_by_import_id == first.id
+
+    def test_deleting_the_CAUSE_keeps_the_release_and_nulls_the_cause(
+        self, app, db, seed_user,
+    ):
+        """The one UPDATE the append-only refusal admits: the key's SET NULL.
+
+        The level stays withdrawn -- nothing re-instates it -- and the release
+        keeps the day whose lines changed; only the import it named is gone.
+        Committed, because the refusal's DELETE arm is a deferred constraint
+        trigger and the audit row is the record that survives.
+        """
+        row = _seed_import(
+            db, seed_user["account"], stated="1085.00",
+            effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
+            lines=[(date(2026, 3, 1), "100.00")],
+            period=(date(2026, 3, 1), date(2026, 3, 3)),
+        )
+        cause = _seed_import(
+            db, seed_user["account"],
+            lines=[(date(2026, 3, 2), "-15.00")], file_name="later.csv",
+        )
+        release_anchors_from(
+            seed_user["account"].id, date(2026, 3, 2), cause.id,
+        )
+        db.session.commit()
+
+        db.session.delete(cause)
+        db.session.commit()
+
+        _level, release = _placement(db, row)
+        assert release is not None
+        assert release.released_by_import_id is None
+        assert release.lines_changed_from == date(2026, 3, 2)
+        assert standing_bank_levels(seed_user["account"].id) == []
 
 
 class TestWhichPlacementsRestOnAChangedDay:
-    """``resting_on`` over ``anchored_imports``: THE predicate, stated once.
+    """``resting_on`` over ``standing_bank_levels``: THE predicate, stated once.
 
     Plan step ``bank_import:X-gr``, finding **BI-490**.  The release door acts
     on this list and the delete confirmation counts it, so what the pair
@@ -798,17 +917,24 @@ class TestWhichPlacementsRestOnAChangedDay:
             lines=[(date(2026, 3, 1), "100.00")],
             period=(date(2026, 3, 1), date(2026, 3, 3)),
         )
-        anchored = anchored_imports(seed_user["account"].id)
+        standing = standing_bank_levels(seed_user["account"].id)
 
-        assert [one.id for one in resting_on(anchored, date(2026, 3, 3))] == [
-            row.id,
-        ]
-        assert resting_on(anchored, date(2026, 3, 4)) == []
+        assert [
+            one.statement_import_id
+            for one in resting_on(standing, date(2026, 3, 3))
+        ] == [row.id]
+        assert resting_on(standing, date(2026, 3, 4)) == []
 
-    def test_anchored_imports_holds_the_PLACED_ones_only(
+    def test_standing_bank_levels_holds_the_PLACED_ones_only(
         self, app, db, seed_user,
     ):
-        """A claim with no placement rests on nothing and is not fetched."""
+        """A claim with no placement owns no level and is not fetched.
+
+        And the OWNER's own levels are not bank levels: an assertion typed
+        through the true-up door sits in the same relation since plan step
+        ``balance:X-bj-1`` and names no import, so it can neither anchor the
+        bank walk nor be released by a line change.
+        """
         placed = _seed_import(
             db, seed_user["account"], stated="1085.00",
             effective_on=date(2026, 3, 3), evidence=_FILE_CHAIN,
@@ -821,9 +947,16 @@ class TestWhichPlacementsRestOnAChangedDay:
             period=(date(2026, 3, 5), date(2026, 3, 5)),
             file_name="unplaced.csv",
         )
+        db.session.add(AccountAnchorHistory(
+            account_id=seed_user["account"].id,
+            anchor_balance=Decimal("1085.00"),
+            observed_on=date(2026, 3, 3),
+        ))
+        db.session.flush()
 
         assert [
-            one.id for one in anchored_imports(seed_user["account"].id)
+            one.statement_import_id
+            for one in standing_bank_levels(seed_user["account"].id)
         ] == [placed.id]
 
     def test_the_exclusion_leaves_the_named_import_and_no_other(
@@ -843,14 +976,17 @@ class TestWhichPlacementsRestOnAChangedDay:
             period=(date(2026, 3, 5), date(2026, 3, 5)),
             file_name="second.csv",
         )
-        anchored = anchored_imports(seed_user["account"].id)
+        standing = standing_bank_levels(seed_user["account"].id)
 
-        assert [
-            one.id for one in resting_on(anchored, date(2026, 3, 1), first.id)
-        ] == [second.id]
-        assert [
-            one.id for one in resting_on(anchored, date(2026, 3, 1), second.id)
-        ] == [first.id]
-        assert [
-            one.id for one in resting_on(anchored, date(2026, 3, 1))
-        ] == [first.id, second.id]
+        def imports_of(levels):
+            return [one.statement_import_id for one in levels]
+
+        assert imports_of(
+            resting_on(standing, date(2026, 3, 1), first.id),
+        ) == [second.id]
+        assert imports_of(
+            resting_on(standing, date(2026, 3, 1), second.id),
+        ) == [first.id]
+        assert imports_of(
+            resting_on(standing, date(2026, 3, 1)),
+        ) == [first.id, second.id]

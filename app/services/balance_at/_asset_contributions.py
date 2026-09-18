@@ -36,6 +36,8 @@ from app.services.cash_ledger import (
     AmountBasis,
     ReconciledThrough,
     contributions_by_id,
+    planned_leg_contribution,
+    transfer_pricing_load_options,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -45,9 +47,11 @@ from app.services.investment_projection import (
     AccountPayrollFeed,
     employer_contribution_params,
 )
-from app.services.loan_loaders import query_shadow_income
+from app.services.loan_loaders import (
+    projected_income_legs,
+    settled_income_shadows,
+)
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
-from app.utils.amount_relationships import pricing_load_options
 
 _ZERO = Decimal("0")
 
@@ -160,11 +164,20 @@ def _recorded_contributions(
 ) -> dict[int, Decimal]:
     """Return the transfer-linked contributions recorded per pay period.
 
-    The RECORDED half of ruling R-R's partition, loaded through the shared
-    :func:`~app.services.loan_loaders.query_shadow_income` -- the app's one
-    definition of "a contribution into this account" (a transfer's income-leg
-    shadow, excluding soft-deleted and balance-excluded rows), which the YTD
-    and limit accounting already read.
+    The RECORDED half of ruling R-R's partition, loaded through the loan
+    loaders' ONE settled/projected partition -- the app's one definition of "a
+    contribution into this account" (a transfer INTO it, excluding soft-deleted
+    and balance-excluded ones), which the YTD and limit accounting already
+    read.  **Two relations since plan step balance:X-bi-6a** (ruling
+    **R-BAL13**): a contribution that has SETTLED is its income-shadow row,
+    read from ``budget.transactions`` by
+    :func:`~app.services.loan_loaders.settled_income_shadows` and worth what it
+    recorded; one still PROJECTED is a leg of its parent transfer, read from
+    ``budget.transfers`` by
+    :func:`~app.services.loan_loaders.projected_income_legs` and worth what
+    the parent resolves to
+    (:func:`~app.services.cash_ledger.planned_leg_contribution`).  Both file
+    under the same period the fold lands them in.
 
     These rows are NOT contributed by this module: they are ordinary ACTUAL /
     PLANNED events in the cash fold underneath it, which is exactly why the
@@ -178,13 +191,14 @@ def _recorded_contributions(
     starts in.  It is windowed by account and scenario, which is the whole
     domain.
 
-    **Every row is priced through the amount model** (plan step X-au-c2), which
-    is what makes this feed survive the transfer cutover: a contribution shadow
-    is a transfer shadow, so plan step X-au-f declares it derived and its own
-    amount column goes empty.  The basis is built over the whole feed at once --
-    neither live producer has a candidate among these rows (the salary half
-    wants a template link, the loan half a loan-payment settings row), so it
-    costs two list comprehensions and no query.
+    **The settled half states no pricing load and the projected half states
+    the transfer's own.**  A settled row is valued from its settlement record
+    (:func:`~app.services.row_valuation.fixed_contribution` answers before the
+    amount model is asked), so nothing on that path walks a relationship; a
+    leg's parent is priced through its definition, so that path takes
+    :func:`~app.utils.amount_relationships.transfer_pricing_load_options`.
+    *It passed ``pricing_load_options()`` over ONE mixed row set until this
+    step, because the projected shadows in it walked to their parents.*
 
     Args:
         basis: The read pass's
@@ -193,18 +207,26 @@ def _recorded_contributions(
         account_id: The account receiving the contributions.
 
     Returns:
-        ``{pay_period_id: total}`` over what each row CONTRIBUTES -- the
-        realized actual for a settled shadow, else its resolved amount.  ``{}``
-        for an account with none.
+        ``{pay_period_id: total}`` over what each contribution is WORTH -- the
+        realized actual for a settled shadow, the parent's resolved amount for
+        a projected leg.  ``{}`` for an account with none.
     """
-    rows = query_shadow_income(
-        account_id, basis.scenario_id, options=pricing_load_options(),
-    ).all()
-    contributions = contributions_by_id(rows, basis)
+    settled = settled_income_shadows(
+        account_id, basis.scenario_id, options=(),
+    )
+    contributions = contributions_by_id(settled, basis)
     totals: dict[int, Decimal] = {}
-    for txn in rows:
+    for txn in settled:
         totals[txn.pay_period_id] = (
             totals.get(txn.pay_period_id, _ZERO) + contributions[txn.id]
+        )
+    for leg in projected_income_legs(
+        account_id, basis.scenario_id,
+        options=transfer_pricing_load_options(),
+    ):
+        totals[leg.pay_period_id] = (
+            totals.get(leg.pay_period_id, _ZERO)
+            + planned_leg_contribution(leg, basis)
         )
     return totals
 
@@ -266,7 +288,7 @@ def _plan_for(
     # .cap_contribution_at_limit` of zero is zero) plus ``employer = 0``
     # (:func:`~app.services.growth_engine.calculate_employer_contribution`
     # returns ``ZERO`` for the ``None`` params ``models_employer`` False
-    # supplies below) -- and it costs one recorded-contribution query for an
+    # supplies below) -- and it costs the recorded-contribution queries for an
     # account that models nothing.
     if not inputs.feed.is_payroll_linked and not models_employer:
         return None
