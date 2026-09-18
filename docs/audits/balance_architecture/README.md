@@ -414,12 +414,17 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [ ] **X-bi-3** the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**): every settle writes
-    the payment row a purchase already is (**R-BAL39**); four leaves, only 3d moves money.
+    the payment row a purchase already is (**R-BAL39**); five leaves, only 3d moves money.
     * [x] **X-bi-3c** `68401855` -- both transfer legs covered through the seam (**R-BAL41**); the
       ledger's endpoint ruled C (**R-BAL45**), 3c its first leaf; an endpoint move carries the
       movements (**R-BAL46**, migration `c4e8a2d7f1b3`); the lock predicate total; six rows born.
-    * [ ] **X-bi-3d** the cutover MIGRATION by the total rule, fail-closed (**R-BAL40**, R-HJ
-      scoped): 154 rows on the 2026-09-06 snapshot, 0 without a settle day; **MOVES MONEY**.
+    * [x] **X-bi-3d** `3a15daf4` -- every settled row covered by the fail-closed migration
+      `ad573b07bede` (**R-BAL40**): 162 rows / `$89,741.80` on the 2026-09-18 restore, 0 dateless; the
+      figure's source is the writer's (**R-BAL61**), the downgrade leaves the rows (**R-BAL62**);
+      **MOVED MONEY** `$0.00`, three harnesses byte-identical across the cutover and the resync.
+    * [ ] **X-bi-3e** the settle record carries the figure's source, each writer stating it
+      (**R-BAL61**); both day-inference spellings deleted; a revert un-dates the movement. Closes
+      **BAL-508**.
   * [ ] **X-bi-4** the fold re-points to movements in ONE commit for every account kind at once.
     **Its design loop hears a fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18): whether
     `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than
