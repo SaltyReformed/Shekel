@@ -48,18 +48,21 @@ from app.routes._commit_helpers import (
 )
 from app.routes._form_errors import load_form_or_redirect
 from app.routes._recurrence_form_helpers import (
+    author_recurrence_for_create,
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_refusals import RecurrenceFormContext
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
+    RECURRENCE_END_BOUND_KEY,
     RECURRENCE_MAX_PER_MONTH_KEY,
+    RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
 )
 from app.services import paycheck_line_kinds, payroll_line_cadence
 from app.services.balance_at import BalanceContext
-from app.services.recurrence import author_rule
+from app.services.recurrence import NeverEnds, end_bound_from_columns
 from app.routes.salary._bp import salary_bp
 from app.routes.salary._helpers import (
     _LINE_UPDATE_FIELDS,
@@ -339,34 +342,52 @@ def update_raise(raise_id):
 def _settle_line_cadence(
     data: dict[str, Any], ctx: BalanceContext, *, stored: RecurrenceRule | None,
 ) -> None:
-    """Write into the payload what the deduction form does not collect about its rule.
+    """Write into the payload what the line form leaves to the app about its rule.
 
-    The deduction form authors a cadence through the shared recurrence
-    controls (plan step salary:R15-c, ruling **R-SAL31**) and NOTHING else
-    about the rule -- so before the recurrence seam reads the payload the way
-    it reads a template form's, the two facts a payroll line's rule derives
-    are written in, exactly as ``_loan_destination.settle_first_occurrence``
-    writes a loan payment's derived start into a transfer form's payload:
+    The line form authors a cadence through the shared recurrence controls
+    (plan step salary:R15-c, ruling **R-SAL31**) and, since plan step
+    salary:R18-c (ruling **R-SAL38** (2), amending R-SAL30 and R-SAL31), a
+    SPAN: a "Starts on" that may be left blank and an optional closing bound.
+    Before the recurrence seam reads the payload the way it reads a template
+    form's, the two facts a payroll line's rule derives are written in,
+    exactly as ``_loan_destination.settle_first_occurrence`` writes a loan
+    payment's derived start into a transfer form's payload:
 
-    * ``starts_on`` -- the STORED unit's zero at the owner's opening payday
-      (rulings **R-SAL30**, **R-SAL36**;
+    * a BLANK ``starts_on`` -- the STORED unit's zero at the owner's opening
+      payday (rulings **R-SAL30**, **R-SAL36**;
       :func:`~app.services.payroll_line_cadence.first_occurrence`, which reads
       the unit the door canonicalises to, so "every 12 months" and the
-      ``YEAR`` its edit form reads back derive one day), so the seam's own
-      start handling applies unchanged: a create authors it, an update
-      re-points the rule onto it (PRESENT replaces), and a rule's first
-      occurrence is always the derived one -- the same one, on every
-      re-save of the same cadence.
-    * the every-paycheck spelling -- ``every 1 paycheck, no ceiling`` -- is
-      rewritten as NO cadence (ruling **R-SAL29**;
+      ``YEAR`` its edit form reads back derive one day).  A STATED start is
+      the user's and passes through untouched, so the seam's own start
+      handling applies unchanged: a create authors it, an update re-points
+      the rule onto it (PRESENT replaces), and a cleared box on an edit is
+      back to the default.
+    * the every-paycheck spelling -- ``every 1 paycheck, no ceiling``, with
+      NO SPAN -- is rewritten as NO cadence (ruling **R-SAL29**;
       :func:`~app.services.payroll_line_cadence.is_every_paycheck`), which the
       seam reads as *author nothing* on a create and *delete the rule this
-      line had* on an update.  The ceiling is read the way the seam's update
-      door reads it: a PRESENT key (an enabled control, possibly cleared) is
-      what the form said, an ABSENT one (a control the form disabled, or a
-      crafted POST) leaves the STORED ceiling standing -- so a 24 line
-      re-saved with the key missing is still the 24 shape and not silently
-      an every-paycheck line.
+      line had* on an update.  A span is ANY stated start, or a closing bound
+      other than *never*: an every-paycheck line that begins or ends
+      mid-employment IS a rule, and keeps one.  A stated start is a span
+      even when it names the opening payday, and an adversarial review of
+      this leaf is why: below a STATED ``history_opens_on`` the engine
+      replays backdated paydays for a capped line's year-to-date and the FICA
+      cumulative, and there a line with NO rule answers *taken* while a rule
+      from the opening answers *not taken* (the rule's walk runs forward from
+      its start) -- so two spellings a first draft called equivalent price
+      differently, and a typed date must not pick the side silently.  What
+      *every paycheck* means below the opening is the developer's question,
+      not this door's.  The ceiling and the bound are read the way the seam's
+      update door reads them: a PRESENT key (an enabled control, possibly
+      cleared) is what the form said, an ABSENT one (a control the form
+      disabled, or a crafted POST) leaves the STORED value standing -- so a
+      24 line re-saved with the key missing is still the 24 shape, and a
+      bounded line re-saved with the bound's keys missing keeps its stop
+      rather than losing its rule.
+    * a derived start carries NO nominal day: the derived zero -- a payday,
+      the 1st, January 1st -- never clamps, and a nominal day posted beside a
+      blank start (a crafted POST; the script disables the control) would
+      otherwise reach the spec as a pair it refuses as a broken invariant.
 
     A submission that names no cadence is left alone: ``None`` is the form's
     "Does not repeat", and an ABSENT unit is a form that said nothing about
@@ -392,12 +413,29 @@ def _settle_line_cadence(
         if RECURRENCE_MAX_PER_MONTH_KEY in data
         else (stored.max_per_month if stored is not None else None)
     )
-    if payroll_line_cadence.is_every_paycheck(unit, data["interval_n"], ceiling):
+    bound = (
+        data[RECURRENCE_END_BOUND_KEY]
+        if RECURRENCE_END_BOUND_KEY in data
+        else (
+            end_bound_from_columns(stored.end_date, stored.max_occurrences)
+            if stored is not None else None
+        )
+    )
+    stated_start = data.get(RECURRENCE_STARTS_ON_KEY)
+    spans = stated_start is not None or (
+        bound is not None and not isinstance(bound, NeverEnds)
+    )
+    if (
+        not spans
+        and payroll_line_cadence.is_every_paycheck(unit, data["interval_n"], ceiling)
+    ):
         data["recurrence_unit"] = None
         return
-    data[RECURRENCE_STARTS_ON_KEY] = payroll_line_cadence.first_occurrence(
-        unit, data["interval_n"], ctx.calendar(),
-    )
+    if stated_start is None:
+        data[RECURRENCE_STARTS_ON_KEY] = payroll_line_cadence.first_occurrence(
+            unit, data["interval_n"], ctx.calendar(),
+        )
+        data[RECURRENCE_NOMINAL_DAY_KEY] = None
 
 
 @salary_bp.route("/salary/<int:profile_id>/lines", methods=["POST"])
@@ -483,8 +521,17 @@ def add_line(profile_id):
         # name-collision ``IntegrityError`` below surfaces from, as it was
         # when the regeneration's own flush was the first.
         db.session.flush()
-        if spec is not None:
-            author_rule(spec, ctx.calendar(), deduction)
+        # Through the create helper every template form uses, for its ONE
+        # refusal (plan step salary:R18-c): a stated stop before the first
+        # occurrence the rule would actually have -- an end date under a
+        # blank start's derived opening, or under the payday a stated start
+        # normalises onto -- is the write door's EmptyAuthoredWindowError,
+        # worded in the schema's sentence and rolled back, not a 500.
+        authored = author_recurrence_for_create(
+            spec, deduction, redirect=_edit_page(profile_id), calendar=ctx.calendar(),
+        )
+        if isinstance(authored, Response):
+            return authored
         _regenerate_salary_transactions(profile)
         db.session.commit()
     except IntegrityError as exc:
@@ -696,7 +743,10 @@ def update_line(line_id):
         deduction,
         data,
         ctx=RecurrenceFormContext(
-            end_bound=None,
+            # The closing bound the form stated, composed by the schema
+            # (plan step salary:R18-c); ``None`` when it stated nothing,
+            # which leaves the stored bound alone.
+            end_bound=data.pop(RECURRENCE_END_BOUND_KEY, None),
             redirect=_edit_page(profile.id),
             include_due_day_of_month=False,
         ),
