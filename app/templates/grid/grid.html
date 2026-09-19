@@ -421,7 +421,15 @@
             hx-disabled-elt="find button[type=submit]">
         <div class="modal-body">
           <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
+          {#- The account the new row lives on (plan step credit_card:CC-4-2,
+              ruling R-CC16): the hidden input it always was when the set is
+              one account, else the picker below the paycheck field.  The
+              create door refuses a foreign or loan account as it always has;
+              no refusal is added here.  Whitespace-controlled so the
+              one-member form is byte-identical to the pre-card one. -#}
+          {%- if accounts|length <= 1 %}
           <input type="hidden" name="account_id" value="{{ account.id }}">
+          {%- endif %}
 
           <div class="mb-3">
             <label class="form-label" for="add_txn_name">Name</label>
@@ -459,6 +467,20 @@
               {% endfor %}
             </select>
           </div>
+          {#- The account picker over the set's members -- checking and its
+              cards -- defaulting to the balance line's (plan step
+              credit_card:CC-4-2).  Rendered only when there is a choice to
+              make; the hidden input above carries the one member otherwise. -#}
+          {%- if accounts|length > 1 %}
+          <div class="mb-3">
+            <label class="form-label" for="add_txn_account">Account</label>
+            <select id="add_txn_account" name="account_id" class="form-select" required>
+              {% for acct in accounts %}
+              <option value="{{ acct.id }}" {{ 'selected' if acct.id == account.id else '' }}>{{ acct.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {%- endif %}
 
           {# Tracking & visibility flags.  Both post to create_transaction,
              whose schema defaults them off and rejects is_envelope on
