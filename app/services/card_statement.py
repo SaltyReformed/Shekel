@@ -199,7 +199,11 @@ def owed(fold_balance: Decimal) -> Decimal:
     is owed, and every statement figure is stated as an amount owed.  The
     statement balance is ``owed(cash_balance_at(account, ctx,
     window.valuation_date))``; a payday row's base under **R-CC22** is the
-    same flip of the fold at the end of the day before its day.
+    same flip of the fold at the end of the day before its day.  The
+    net-worth band flips with ``abs()`` instead
+    (:func:`app.services.balance_at.liability_owed_at_dates`), so a card in
+    CREDIT reads as owed there: ledger row **CC-354**, owned by plan step
+    CC-5, not this module's to fix.
 
     Args:
         fold_balance: The seam's cash-flow balance (negative = owed).

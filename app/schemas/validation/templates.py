@@ -10,8 +10,7 @@ from marshmallow import (
 )
 
 from app.schemas.validation._helpers import (
-    EFFECTIVE_DATE_MAX,
-    EFFECTIVE_DATE_MIN,
+    _EFFECTIVE_DATE_RANGE,
     BaseSchema,
     RowId,
     _normalize_empty_inputs,
@@ -196,11 +195,7 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     # (``routes/salary/tax_config.py``), and
     # ``ck_template_amount_versions_effective_date_range`` mirrors it at
     # the storage tier for raw-SQL writers.
-    effective_from = fields.Date(
-        validate=validate.Range(
-            min=EFFECTIVE_DATE_MIN, max=EFFECTIVE_DATE_MAX,
-        ),
-    )
+    effective_from = fields.Date(validate=_EFFECTIVE_DATE_RANGE)
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

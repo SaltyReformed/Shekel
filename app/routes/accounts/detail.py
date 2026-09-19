@@ -61,7 +61,6 @@ from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
-from app.models.credit_card_params import CreditCardParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
@@ -75,12 +74,14 @@ from app.routes.accounts.reconcile import (
 )
 from app.services import (
     balance_at,
+    card_apr,
     cash_ledger,
     home_equity_service,
     property_equity_chart,
 )
 from app.services.account_projection import is_revolving
 from app.services.balance_at import BalanceContext
+from app.services.card_terms import load_card_terms
 from app.utils.account_validation import (
     _appreciation_params_schema,
     _interest_params_schema,
@@ -192,30 +193,50 @@ def _interest_params(account: Account) -> InterestParams:
     return params
 
 
-def _card_terms(account: Account) -> CreditCardParams | None:
-    """Return the card's terms row, or ``None`` while the card is dormant.
+def _card_context(
+    account: Account, ctx: BalanceContext, is_card: bool,
+) -> dict:
+    """The Card terms card's context: the terms row and, once it exists, the APR.
 
-    The opposite disposition to :func:`_interest_params`, and deliberately so
-    (plan step credit_card:CC-2, design 3.4): an interest-bearing account's
-    params row is written by every door that makes it interest-bearing, so a
-    missing one is corrupt data and the page refuses; a card's row is written
-    by the OWNER alone, through the terms door, and no door creates it on
-    their behalf, so a missing one is the ordinary state of a card whose
-    terms are not yet stated.  The page renders the terms form blank in that
-    state and every card feature stays dormant.
+    Three states under one key shape.  A non-card carries the keys empty
+    (the partial is not included; the template's context has one shape).  A
+    dormant card carries its ``None`` terms and nothing else: the partial
+    renders the terms form blank and no APR section, so the APR series is
+    not read -- whatever rows the account holds are unread while it is
+    dormant, and the doors are gated the same way (plan step
+    credit_card:CC-3, developer ruling **R-CC28**).  A configured card
+    carries its terms, its APR series newest first, and the rate in effect
+    on the read pass's own day (``ctx.as_of``, the one clock this page
+    holds).
+
+    A missing terms row is the opposite disposition to
+    :func:`_interest_params`, and deliberately so (plan step credit_card:CC-2,
+    design 3.4): an interest-bearing account's params row is written by every
+    door that makes it interest-bearing, so a missing one is corrupt data and
+    the page refuses; a card's row is written by the OWNER alone, through the
+    terms door, so a missing one is the ordinary state of a card whose terms
+    are not yet stated.
 
     Args:
-        account: The revolving account being rendered.
+        account: The account being rendered.
+        ctx: The page's read pass.
+        is_card: The ONE card predicate's answer for *account*, decided once
+            by the caller and also handed to the template.
 
     Returns:
-        Its :class:`~app.models.credit_card_params.CreditCardParams`, or
-        ``None``.
+        ``card_terms``, ``card_aprs`` and ``card_apr_today``.
     """
-    return (
-        db.session.query(CreditCardParams)
-        .filter_by(account_id=account.id)
-        .first()
-    )
+    terms = load_card_terms(account.id) if is_card else None
+    if terms is None:
+        return {"card_terms": None, "card_aprs": [], "card_apr_today": None}
+    aprs = card_apr.load_card_aprs(account.id)
+    return {
+        "card_terms": terms,
+        "card_aprs": aprs,
+        "card_apr_today": card_apr.apr_in_effect(aprs, ctx.as_of),
+    }
+
+
 
 
 def _build_horizons(
@@ -584,7 +605,7 @@ def cash_detail(account_id):
         # ONE card predicate (CC-1); the row is read only for a card, and
         # ``None`` is the dormant state the partial renders blank.
         is_card=is_card,
-        card_terms=_card_terms(account) if is_card else None,
+        **_card_context(account, ctx, is_card),
         **_cash_detail_context(account, ctx),
     )
 

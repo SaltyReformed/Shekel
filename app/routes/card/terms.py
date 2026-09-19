@@ -17,10 +17,10 @@ from flask import Response, flash
 from app.extensions import db
 from app.models.credit_card_params import CreditCardParams
 from app.routes._form_errors import load_form_or_redirect
-from app.routes._redirect_target import RedirectTarget
 from app.routes.card._bp import card_bp
-from app.routes.card._helpers import load_card_or_404
+from app.routes.card._helpers import back_to_card, load_card_or_404
 from app.schemas.validation import CreditCardTermsSchema
+from app.services.card_terms import load_card_terms
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -52,17 +52,13 @@ def save_terms(account_id):
     application creates the row on the owner's behalf.
     """
     account = load_card_or_404(account_id)
-    back = RedirectTarget("accounts.cash_detail", {"account_id": account.id})
+    back = back_to_card(account.id)
 
     data = load_form_or_redirect(_terms_schema, back)
     if isinstance(data, Response):
         return data
 
-    params = (
-        db.session.query(CreditCardParams)
-        .filter_by(account_id=account.id)
-        .first()
-    )
+    params = load_card_terms(account.id)
     if params is None:
         db.session.add(CreditCardParams(
             account_id=account.id, user_id=account.user_id, **data,

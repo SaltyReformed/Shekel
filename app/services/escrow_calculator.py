@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.utils.effective_dated import in_effect_on
 from app.utils.money import (
     CENTS,
     MONTHS_PER_YEAR,
@@ -284,7 +285,7 @@ def _build_version_rows(
     Returns:
         The line's version rows, ascending by ``effective_date``.
     """
-    current = _version_as_of(line.versions, on_date)
+    current = in_effect_on(line.versions, on_date)
     current_id = current.id if current is not None else None
     rows: list[EscrowVersionDisplay] = []
     for version in sorted(line.versions, key=lambda v: v.effective_date):
@@ -472,37 +473,14 @@ def project_monthly_escrow(components: list, years: int) -> Decimal:
     return round_money(total)
 
 
-def _version_as_of(versions: list, on_date: date) -> object | None:
-    """Return a line's version in effect on ``on_date`` (supersession resolution).
-
-    The version with the greatest ``effective_date <= on_date`` -- the one the
-    later versions have not yet superseded.  ``None`` when the line has no version
-    on or before ``on_date`` (it did not exist yet).  This is the single
-    "which version applies" primitive; a removal tombstone is a normal version
-    here (it wins if it is the latest on/before the date), and the caller decides
-    a tombstone contributes 0.
-
-    Args:
-        versions: The line's :class:`~app.models.escrow_line.EscrowComponentVersion`
-            objects (each with ``effective_date``), in any order.
-        on_date: The date to resolve the in-effect version for.
-
-    Returns:
-        The in-effect version, or ``None`` if none is on/before ``on_date``.
-    """
-    candidates = [v for v in versions if v.effective_date <= on_date]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda v: v.effective_date)
-
-
 def resolve_active_lines(lines: list, on_date: date) -> list[ResolvedEscrowLine]:
     """Resolve each escrow line to its in-effect, non-removed version on ``on_date``.
 
     For every line, pick the version in effect on ``on_date``
-    (:func:`_version_as_of`); drop the line when it has no version yet or its
-    in-effect version is a removal tombstone (``is_removed``), so it contributes
-    nothing on that date.  The returned rows preserve input line order (the
+    (:func:`~app.utils.effective_dated.in_effect_on`); drop the line when it
+    has no version yet or its in-effect version is a removal tombstone
+    (``is_removed``), so it contributes nothing on that date.  The returned
+    rows preserve input line order (the
     loaders sort by name), which the display cent-allocation relies on for stable
     tie-breaking.
 
@@ -522,7 +500,9 @@ def resolve_active_lines(lines: list, on_date: date) -> list[ResolvedEscrowLine]
     """
     resolved: list[ResolvedEscrowLine] = []
     for line in lines:
-        version = _version_as_of(line.versions, on_date)
+        # A removal tombstone is a normal version here (it wins when it is
+        # the latest on or before the date); this loop decides it counts 0.
+        version = in_effect_on(line.versions, on_date)
         if version is None or version.is_removed:
             continue
         inflation = version.inflation_rate
