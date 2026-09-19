@@ -355,8 +355,9 @@ def _page_account_override() -> int | None:
     read).  ``/analytics/calendar`` reads an ``account_id`` with the SAME
     meaning since plan step CC-4-3 -- the balance line within the set -- and
     issues no such fragment; the dashboard reads the set with no
-    ``account_id`` of its own and issues no cell fragment (its one fragment,
-    the anchor form, carries the id on the FRAGMENT's URL, not the page's);
+    ``account_id`` of its own and issues no cell fragment (its two fragments,
+    the anchor form and the pulse section, carry no id on the PAGE's URL;
+    the anchor form's rides on the FRAGMENT's);
     every ``accounts.*`` page carries its id as a PATH parameter, so its
     query is empty.  A page that later gains both a cell fragment and an
     ``account_id`` with another meaning must either name the balance line's
