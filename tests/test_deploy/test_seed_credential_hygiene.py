@@ -495,7 +495,7 @@ class TestDockerignoreCoverage:
         "scripts/integrity_check.py",
         "scripts/reset_mfa.py",
         "scripts/rotate_sessions.py",
-        "scripts/rotate_totp_key.py",
+        "scripts/rotate_field_key.py",
         "scripts/seed_companion.py",
         # Shared CLI helpers the runtime scripts above import; excluding
         # it would break every docker exec script at import time.

@@ -1183,11 +1183,11 @@ class TestMfaSetup:
                 f"{len(rendered_codes)}: {rendered_codes!r}"
             )
 
-    def test_mfa_confirm_missing_totp_key(self, app, auth_client, seed_user, monkeypatch):
-        """POST /mfa/confirm redirects to security settings when TOTP key is missing.
+    def test_mfa_confirm_missing_field_key(self, app, auth_client, seed_user, monkeypatch):
+        """POST /mfa/confirm redirects to security settings when the key is missing.
 
         Setup writes a pending secret successfully; then the operator
-        unsets ``TOTP_ENCRYPTION_KEY`` between request boundaries.  At
+        unsets ``FIELD_ENCRYPTION_KEY`` between request boundaries.  At
         confirm time the route's ``decrypt_secret`` call raises
         RuntimeError.  The route must (a) clear the unrecoverable
         pending state, (b) redirect to ``/settings?section=security``
@@ -1207,7 +1207,7 @@ class TestMfaSetup:
             auth_client.get("/mfa/setup")
 
             # Remove the key so the next decrypt_secret raises RuntimeError.
-            monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+            monkeypatch.delenv("FIELD_ENCRYPTION_KEY", raising=False)
 
             response = auth_client.post("/mfa/confirm", data={
                 "totp_code": "123456",
@@ -1396,10 +1396,10 @@ class TestMfaLogin:
             assert grid_resp.status_code == 302
             assert "login" in grid_resp.headers.get("Location", "")
 
-    def test_mfa_verify_missing_totp_key(self, app, client, seed_user, monkeypatch):
-        """POST /mfa/verify redirects to login when TOTP key is missing.
+    def test_mfa_verify_missing_field_key(self, app, client, seed_user, monkeypatch):
+        """POST /mfa/verify redirects to login when the field-encryption key is missing.
 
-        When TOTP_ENCRYPTION_KEY is removed after MFA was enabled,
+        When FIELD_ENCRYPTION_KEY is removed after MFA was enabled,
         decrypt_secret() raises RuntimeError.  The route must catch
         this, clear pending session state, and redirect to login
         instead of returning a 500 error.
@@ -1414,7 +1414,7 @@ class TestMfaLogin:
             })
 
             # Remove the key so decrypt_secret raises RuntimeError.
-            monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
+            monkeypatch.delenv("FIELD_ENCRYPTION_KEY", raising=False)
 
             # Step 2: attempt MFA verification.
             response = client.post("/mfa/verify", data={

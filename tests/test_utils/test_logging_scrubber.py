@@ -104,6 +104,26 @@ class TestScrubMessage:
         assert "zoo-bar-baz-quux-this-is-the-key" not in record.msg
         assert "SECRET_KEY=[REDACTED]" in record.msg
 
+    def test_field_encryption_key_env_line_redacted(self):
+        """``FIELD_ENCRYPTION_KEY=...`` and its ``_OLD`` twin are redacted.
+
+        The key's regex was renamed with the key (``bank_import:X-f6b-2``,
+        BI-503) and carried no case of its own before; a config dump that
+        prints either spelling is the shape this pins.
+        """
+        scrubber = SensitiveFieldScrubber()
+        record = _make_record(
+            "config dump FIELD_ENCRYPTION_KEY=fernet-primary-key-bytes "
+            "FIELD_ENCRYPTION_KEY_OLD=fernet-retired-key-bytes"
+        )
+
+        scrubber.filter(record)
+
+        assert "fernet-primary-key-bytes" not in record.msg
+        assert "fernet-retired-key-bytes" not in record.msg
+        assert "FIELD_ENCRYPTION_KEY=[REDACTED]" in record.msg
+        assert "FIELD_ENCRYPTION_KEY_OLD=[REDACTED]" in record.msg
+
     def test_backup_code_redacted(self):
         """``backup_code=`` and ``backup_codes=`` both match."""
         scrubber = SensitiveFieldScrubber()

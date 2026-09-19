@@ -3,6 +3,7 @@
 import logging
 
 import pytest
+from cryptography.fernet import Fernet
 from flask import abort
 
 from app import create_app
@@ -426,6 +427,10 @@ class TestErrorPages:
         )
         monkeypatch.setattr(
             ProdConfig, "SQLALCHEMY_DATABASE_URI", "postgresql://localhost/shekel"
+        )
+        # Production requires a loadable field key since R-BI23.
+        monkeypatch.setattr(
+            BaseConfig, "FIELD_ENCRYPTION_KEY", Fernet.generate_key().decode(),
         )
         config = ProdConfig()
         assert config.DEBUG is False

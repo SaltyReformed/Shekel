@@ -1005,8 +1005,8 @@ class TestEntrypointLoaderSourceShape:
             ("SECRET_KEY", "secret_key"),
             ("POSTGRES_PASSWORD", "postgres_password"),
             ("APP_ROLE_PASSWORD", "app_role_password"),
-            ("TOTP_ENCRYPTION_KEY", "totp_encryption_key"),
-            ("TOTP_ENCRYPTION_KEY_OLD", "totp_encryption_key_old"),
+            ("FIELD_ENCRYPTION_KEY", "field_encryption_key"),
+            ("FIELD_ENCRYPTION_KEY_OLD", "field_encryption_key_old"),
         ],
     )
     def test_loader_is_invoked_for_each_secret(
@@ -1481,7 +1481,7 @@ class TestProdComposeSecretsBlock:
             "secret_key",
             "postgres_password",
             "app_role_password",
-            "totp_encryption_key",
+            "field_encryption_key",
         ],
     )
     def test_top_level_secrets_block_declares_secret(
@@ -1508,7 +1508,7 @@ class TestProdComposeSecretsBlock:
             "secret_key",
             "postgres_password",
             "app_role_password",
-            "totp_encryption_key",
+            "field_encryption_key",
         ],
     )
     def test_app_service_grants_access_to_secret(
@@ -1657,7 +1657,7 @@ class TestProdComposeMergedConfig:
             "secret_key",
             "postgres_password",
             "app_role_password",
-            "totp_encryption_key",
+            "field_encryption_key",
         ):
             expected = f"file: /opt/docker/shekel/secrets/{secret}"
             assert expected in merged, (
@@ -1693,7 +1693,7 @@ class TestProdComposeMergedConfig:
             "secret_key",
             "postgres_password",
             "app_role_password",
-            "totp_encryption_key",
+            "field_encryption_key",
         ):
             assert secret in app_secrets, (
                 f"merged compose config does not wire {secret} into "

@@ -19,7 +19,7 @@ entrypoint_failed() {
     echo "Common causes:"
     echo "  - PostgreSQL is not ready or not reachable"
     echo "  - Missing or invalid values in .env (POSTGRES_PASSWORD,"
-    echo "    SECRET_KEY, APP_ROLE_PASSWORD)"
+    echo "    SECRET_KEY, APP_ROLE_PASSWORD, FIELD_ENCRYPTION_KEY)"
     echo "  - Database migration conflict"
     echo "  - Audit triggers absent or short of the expected count"
     echo ""
@@ -103,8 +103,8 @@ fi
 _load_secret SECRET_KEY secret_key
 _load_secret POSTGRES_PASSWORD postgres_password
 _load_secret APP_ROLE_PASSWORD app_role_password
-_load_secret TOTP_ENCRYPTION_KEY totp_encryption_key
-_load_secret TOTP_ENCRYPTION_KEY_OLD totp_encryption_key_old
+_load_secret FIELD_ENCRYPTION_KEY field_encryption_key
+_load_secret FIELD_ENCRYPTION_KEY_OLD field_encryption_key_old
 
 # Rebuild DATABASE_URL and DB_PASSWORD when POSTGRES_PASSWORD came
 # from a secret file.  The compose file's interpolation baked the
@@ -132,12 +132,14 @@ fi
 unset _postgres_password_loaded_from_file
 
 # ── 0a. Validate SECRET_KEY shape ─────────────────────────────────
-# Flask's ProdConfig.__init__ also validates SECRET_KEY, but it only
-# fires once Python imports the config -- after entrypoint has already
-# run migrations.  We catch misconfiguration here so the database is
-# never touched under a placeholder key.  The placeholder list below
-# must stay in sync with _KNOWN_DEFAULT_SECRETS in app/config.py.
-# 32 is the minimum length matching _MIN_SECRET_KEY_LENGTH.
+# Flask's ProdConfig.__init__ validates SECRET_KEY too, at step 3's
+# create_app (before any migration runs) -- since bank_import:X-f6b-2,
+# which made create_app instantiate the config class; until then that
+# method never ran at all.  This check stays as the earlier, shell-side
+# twin so the database is never touched under a placeholder key.  The
+# placeholder list below must stay in sync with _KNOWN_DEFAULT_SECRETS
+# in app/config.py.  32 is the minimum length matching
+# _MIN_SECRET_KEY_LENGTH.
 if [ -z "${SECRET_KEY:-}" ]; then
     echo "ERROR: SECRET_KEY is not set in the environment." >&2
     echo "       Generate with: python -c \"import secrets; print(secrets.token_hex(32))\"" >&2

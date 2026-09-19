@@ -284,7 +284,7 @@ def mfa_setup():
         return redirect(url_for("settings.show", section="security"))
 
     secret = mfa_service.generate_totp_secret()
-    # Encrypt before any DB mutation so a missing TOTP_ENCRYPTION_KEY
+    # Encrypt before any DB mutation so a missing FIELD_ENCRYPTION_KEY
     # leaves the database state untouched -- no orphan pending row, no
     # half-initialized MfaConfig.  encrypt_secret() raises RuntimeError
     # when the key is unset (see app/services/mfa_service.py:_build_fernet_list).
@@ -293,7 +293,7 @@ def mfa_setup():
     except RuntimeError:
         flash(
             "MFA is not available. The server administrator must set "
-            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "FIELD_ENCRYPTION_KEY before MFA can be enabled.",
             "danger",
         )
         return redirect(url_for("settings.show", section="security"))
@@ -376,7 +376,7 @@ def mfa_confirm():
     try:
         secret = mfa_service.decrypt_secret(mfa_config.pending_secret_encrypted)
     except RuntimeError:
-        # TOTP_ENCRYPTION_KEY is unset.  Sending the user back to
+        # FIELD_ENCRYPTION_KEY is unset.  Sending the user back to
         # /mfa/setup would only loop them through the same failure
         # (encrypt_secret would raise RuntimeError too), so clear the
         # pending state and bounce to the security settings page where
@@ -387,14 +387,14 @@ def mfa_confirm():
         db.session.commit()
         flash(
             "MFA is not available. The server administrator must set "
-            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "FIELD_ENCRYPTION_KEY before MFA can be enabled.",
             "danger",
         )
         return redirect(url_for("settings.show", section="security"))
     except InvalidToken:
         # The pending ciphertext is unreadable under the current Fernet
         # key list -- typically because the key it was written under has
-        # been pruned from TOTP_ENCRYPTION_KEY_OLD between /mfa/setup
+        # been pruned from FIELD_ENCRYPTION_KEY_OLD between /mfa/setup
         # and /mfa/confirm.  /mfa/setup itself still works (the primary
         # key is present), so direct the user there to start over.
         mfa_config.pending_secret_encrypted = None
@@ -429,21 +429,21 @@ def mfa_confirm():
         return redirect(url_for("auth.mfa_setup"))
 
     # Re-encrypt under the current primary key rather than copying the
-    # bytes verbatim from the pending column.  If TOTP_ENCRYPTION_KEY
+    # bytes verbatim from the pending column.  If FIELD_ENCRYPTION_KEY
     # rotated during the setup window the pending ciphertext could
     # decrypt under a retired key only; promoting that ciphertext as-is
     # would leave the active credential dependent on a key the operator
-    # is about to remove from TOTP_ENCRYPTION_KEY_OLD.  Re-encrypt
+    # is about to remove from FIELD_ENCRYPTION_KEY_OLD.  Re-encrypt
     # binds the active record to the current primary every time.
     try:
         mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
     except RuntimeError:
         # decrypt_secret() succeeded above so MultiFernet was usable a
-        # moment ago.  This branch is only hit if TOTP_ENCRYPTION_KEY
+        # moment ago.  This branch is only hit if FIELD_ENCRYPTION_KEY
         # was unset between the two calls -- defensive, not expected.
         flash(
             "MFA is not available. The server administrator must set "
-            "TOTP_ENCRYPTION_KEY before MFA can be enabled.",
+            "FIELD_ENCRYPTION_KEY before MFA can be enabled.",
             "danger",
         )
         return redirect(url_for("settings.show", section="security"))

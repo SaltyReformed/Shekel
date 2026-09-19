@@ -1,13 +1,14 @@
 """
-Shekel Budget App -- Tests for scripts/rotate_totp_key.py
+Shekel Budget App -- Tests for scripts/rotate_field_key.py
 
 Covers ``execute_rotation`` and ``main`` entry points of the
-TOTP-key rotation script.  ``execute_rotation`` is exercised
+field-encryption-key rotation script (``TOTP_ENCRYPTION_KEY`` until
+bank_import:X-f6b-2 renamed it, BI-503).  ``execute_rotation`` is exercised
 directly with the test database session; ``main`` is exercised via
 ``parse_args`` and the ``argv`` parameter to keep the tests
 independent of ``sys.argv``.
 
-Related audit findings: F-030 (TOTP_ENCRYPTION_KEY rotation
+Related audit findings: F-030 (FIELD_ENCRYPTION_KEY rotation
 infrastructure) addressed in commit C-04.  The rotation script is
 the operational control that lets an operator move every existing
 ciphertext forward to a freshly-generated primary key without
@@ -23,7 +24,7 @@ from app.extensions import db
 from app.models.user import MfaConfig, User
 from app.services import mfa_service
 from app.services.auth_service import hash_password
-from scripts.rotate_totp_key import (
+from scripts.rotate_field_key import (
     execute_rotation,
     main,
     parse_args,
@@ -125,8 +126,8 @@ class TestExecuteRotation:
         db.session.commit()
 
         # Move to post-rotation state: new is primary, old is retired.
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
 
         rotated, already_current, skipped = execute_rotation(db.session)
 
@@ -134,7 +135,7 @@ class TestExecuteRotation:
 
         # Every row must now decrypt under the new primary alone --
         # this is the criterion the runbook tells operators to use
-        # before pruning TOTP_ENCRYPTION_KEY_OLD.
+        # before pruning FIELD_ENCRYPTION_KEY_OLD.
         new_only = Fernet(new_key)
         for config_id, expected_plaintext in config_ids:
             cfg = db.session.get(MfaConfig, config_id)
@@ -172,8 +173,8 @@ class TestExecuteRotation:
             config_ids.append(cfg.id)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
 
         # First run: every row is rotated.
         first_result = execute_rotation(db.session)
@@ -218,7 +219,7 @@ class TestExecuteRotation:
             the operator make progress on the rest of the table.
           - The skipped-row id is included in an ERROR-level log so
             operators can investigate before pruning
-            ``TOTP_ENCRYPTION_KEY_OLD``.
+            ``FIELD_ENCRYPTION_KEY_OLD``.
           - The on-disk ciphertext is left untouched.
         """
         unknown_key = Fernet.generate_key()  # Will not be configured.
@@ -238,8 +239,8 @@ class TestExecuteRotation:
             original_cts[cfg.id] = ct
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", retired_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", retired_key.decode())
 
         rotated, already_current, skipped = execute_rotation(db.session)
 
@@ -268,11 +269,11 @@ class TestExecuteRotation:
         cfg = _make_mfa_config(user.id, ct)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
         # No retired key -- guarantees rotate() raises InvalidToken.
-        monkeypatch.delenv("TOTP_ENCRYPTION_KEY_OLD", raising=False)
+        monkeypatch.delenv("FIELD_ENCRYPTION_KEY_OLD", raising=False)
 
-        with caplog.at_level(logging.ERROR, logger="scripts.rotate_totp_key"):
+        with caplog.at_level(logging.ERROR, logger="scripts.rotate_field_key"):
             execute_rotation(db.session)
 
         # The error message must reference the row id; matching by id
@@ -296,8 +297,8 @@ class TestExecuteRotation:
         could trip on the empty case.
         """
         new_key = Fernet.generate_key()
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.delenv("TOTP_ENCRYPTION_KEY_OLD", raising=False)
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.delenv("FIELD_ENCRYPTION_KEY_OLD", raising=False)
 
         assert db.session.query(MfaConfig).count() == 0
         result = execute_rotation(db.session)
@@ -331,8 +332,8 @@ class TestExecuteRotation:
         db.session.add(null_config)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
 
         rotated, already_current, skipped = execute_rotation(db.session)
         assert (rotated, already_current, skipped) == (1, 0, 0)
@@ -346,7 +347,7 @@ class TestExecuteRotation:
 
         Operations alerting and the audit log key on this event.  If
         the event name, level, or expected fields drift, every
-        downstream filter built against ``totp_key_rotated`` silently
+        downstream filter built against ``field_key_rotated`` silently
         misses real rotations.
         """
         new_key = Fernet.generate_key()
@@ -357,8 +358,8 @@ class TestExecuteRotation:
         _make_mfa_config(user.id, ct)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
 
         with caplog.at_level(logging.WARNING):
             execute_rotation(db.session)
@@ -366,10 +367,10 @@ class TestExecuteRotation:
         # Find the structured event by attribute, not message text.
         matching = [
             r for r in caplog.records
-            if getattr(r, "event", None) == "totp_key_rotated"
+            if getattr(r, "event", None) == "field_key_rotated"
         ]
         assert len(matching) == 1, (
-            f"Expected exactly one totp_key_rotated record; got "
+            f"Expected exactly one field_key_rotated record; got "
             f"{[(r.levelname, getattr(r, 'event', None)) for r in caplog.records]}"
         )
         record = matching[0]
@@ -388,8 +389,8 @@ class TestExecuteRotation:
         the table in its prior state, which an operator could
         misinterpret as a successful rotation.
         """
-        monkeypatch.delenv("TOTP_ENCRYPTION_KEY", raising=False)
-        with pytest.raises(RuntimeError, match="TOTP_ENCRYPTION_KEY"):
+        monkeypatch.delenv("FIELD_ENCRYPTION_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="FIELD_ENCRYPTION_KEY"):
             execute_rotation(db.session)
 
 
@@ -434,7 +435,7 @@ class TestMain:
 
         Exit code 2 is the operator-facing signal that ``--confirm``
         was honored AND the rotation completed AND the operator must
-        not yet prune ``TOTP_ENCRYPTION_KEY_OLD``.  Without this
+        not yet prune ``FIELD_ENCRYPTION_KEY_OLD``.  Without this
         distinct code, an operator scripting the rotation could miss
         the warning and remove a key that is still in use.
 
@@ -450,14 +451,14 @@ class TestMain:
         _make_mfa_config(user.id, ct)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.delenv("TOTP_ENCRYPTION_KEY_OLD", raising=False)
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.delenv("FIELD_ENCRYPTION_KEY_OLD", raising=False)
 
         # Patch run_rotation so main() runs the rotation against the
         # test database, not a freshly-built production app context.
-        from scripts import rotate_totp_key  # pylint: disable=import-outside-toplevel
+        from scripts import rotate_field_key  # pylint: disable=import-outside-toplevel
         monkeypatch.setattr(
-            rotate_totp_key, "run_rotation",
+            rotate_field_key, "run_rotation",
             lambda: execute_rotation(db.session),
         )
 
@@ -486,12 +487,12 @@ class TestMain:
         _make_mfa_config(user.id, ct)
         db.session.commit()
 
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", new_key.decode())
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY_OLD", old_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
 
-        from scripts import rotate_totp_key  # pylint: disable=import-outside-toplevel
+        from scripts import rotate_field_key  # pylint: disable=import-outside-toplevel
         monkeypatch.setattr(
-            rotate_totp_key, "run_rotation",
+            rotate_field_key, "run_rotation",
             lambda: execute_rotation(db.session),
         )
 

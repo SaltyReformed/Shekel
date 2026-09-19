@@ -16,6 +16,7 @@ gate covers every static security knob the app ships with.
 from importlib import reload
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app import config as config_module
 from app.config import (
@@ -35,6 +36,11 @@ from app.extensions import login_manager
 # tests that deploy this value would still fail because it is short
 # entropy and well-known.  Used only for unit tests of ProdConfig.
 _VALID_SECRET_KEY = "0123456789abcdef" * 4  # 64 chars
+
+# A loadable Fernet key for the cases that construct a VALID production
+# configuration: production requires one since ``bank_import:R-BI23``.
+# Generated per import, never a real secret.
+_VALID_FIELD_KEY = Fernet.generate_key().decode()
 
 
 class TestTheUploadCeiling:
@@ -143,9 +149,13 @@ class TestTestConfig:
 class TestProdConfig:
     """Tests for ProdConfig validation.
 
-    Covers SECRET_KEY (empty / placeholder / short / valid),
-    DATABASE_URL, and TOTP_ENCRYPTION_KEY paths through
-    ``ProdConfig.__init__``.
+    Covers SECRET_KEY (empty / placeholder / short / valid) and
+    DATABASE_URL paths through ``ProdConfig.__init__``.  The
+    FIELD_ENCRYPTION_KEY refusals (ruling ``bank_import:R-BI23``) and
+    the proof that ``create_app`` runs ``__init__`` at all are
+    ``tests/test_field_encryption_key.py``.  A successful construction
+    here supplies a loadable field key, because production requires
+    one since R-BI23.
     """
 
     def test_prodconfig_rejects_empty_secret_key(self, monkeypatch):
@@ -251,6 +261,9 @@ class TestProdConfig:
         monkeypatch.setattr(
             ProdConfig, "SQLALCHEMY_DATABASE_URI", "postgresql:///shekel"
         )
+        monkeypatch.setattr(
+            BaseConfig, "FIELD_ENCRYPTION_KEY", _VALID_FIELD_KEY,
+        )
         config = ProdConfig()
         assert config.SECRET_KEY == _VALID_SECRET_KEY
 
@@ -277,7 +290,7 @@ class TestProdConfig:
         """
         monkeypatch.setattr(BaseConfig, "SECRET_KEY", _VALID_SECRET_KEY)
         monkeypatch.setattr(ProdConfig, "SQLALCHEMY_DATABASE_URI", None)
-        monkeypatch.setenv("TOTP_ENCRYPTION_KEY", "test-key")
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", "test-key")
         with pytest.raises(ValueError, match="DATABASE_URL"):
             ProdConfig()
 
@@ -319,20 +332,6 @@ class TestProdConfig:
         assert ProdConfig.REMEMBER_COOKIE_SECURE is True
         assert ProdConfig.REMEMBER_COOKIE_HTTPONLY is True
         assert ProdConfig.REMEMBER_COOKIE_SAMESITE == "Lax"
-
-    def test_totp_key_optional_at_startup(self, monkeypatch):
-        """ProdConfig does not crash when TOTP_ENCRYPTION_KEY is missing.
-
-        The key is only needed when a user enables MFA, not at app
-        startup.  Enforcement happens in mfa_service.get_encryption_key().
-        """
-        monkeypatch.setattr(BaseConfig, "SECRET_KEY", _VALID_SECRET_KEY)
-        monkeypatch.setattr(
-            ProdConfig, "SQLALCHEMY_DATABASE_URI", "postgresql:///shekel"
-        )
-        monkeypatch.setattr(BaseConfig, "TOTP_ENCRYPTION_KEY", None)
-        config = ProdConfig()
-        assert config.TOTP_ENCRYPTION_KEY is None
 
 
 class TestRuntimeDatabaseUri:
@@ -896,6 +895,9 @@ class TestRateLimitConfig:
         )
         monkeypatch.setattr(
             ProdConfig, "RATELIMIT_STORAGE_URI", "redis://redis:6379/0"
+        )
+        monkeypatch.setattr(
+            BaseConfig, "FIELD_ENCRYPTION_KEY", _VALID_FIELD_KEY,
         )
         config = ProdConfig()
         assert config.RATELIMIT_STORAGE_URI == "redis://redis:6379/0"

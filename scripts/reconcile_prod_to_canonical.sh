@@ -85,7 +85,7 @@ for pair in \
     "SECRET_KEY:secret_key" \
     "POSTGRES_PASSWORD:postgres_password" \
     "APP_ROLE_PASSWORD:app_role_password" \
-    "TOTP_ENCRYPTION_KEY:totp_encryption_key"; do
+    "FIELD_ENCRYPTION_KEY:field_encryption_key"; do
     env_key=${pair%%:*}
     file_name=${pair##*:}
     target="$PROD_ROOT/secrets/$file_name"
@@ -133,7 +133,7 @@ fi
 
 # Carry forward the values that should survive: SHEKEL_REDIS_PASSWORD,
 # SEED_USER_*, GUNICORN_WORKERS, NGINX_PORT, AUDIT_RETENTION_DAYS,
-# LOG_LEVEL, SLOW_REQUEST_THRESHOLD_MS, TOTP_ENCRYPTION_KEY_OLD.
+# LOG_LEVEL, SLOW_REQUEST_THRESHOLD_MS, FIELD_ENCRYPTION_KEY_OLD.
 SHEKEL_REDIS_PASSWORD=$(extract_env_value SHEKEL_REDIS_PASSWORD)
 [[ -n "$SHEKEL_REDIS_PASSWORD" ]] || die "SHEKEL_REDIS_PASSWORD missing in current .env"
 SEED_USER_EMAIL=$(extract_env_value SEED_USER_EMAIL)
@@ -156,7 +156,7 @@ cat >"$PROD_ROOT/.env" <<ENVEOF
 # Shekel Budget App -- shared-mode production environment.
 # Rewritten by scripts/reconcile_prod_to_canonical.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ).
 # Real secret values for SECRET_KEY, POSTGRES_PASSWORD,
-# APP_ROLE_PASSWORD, and TOTP_ENCRYPTION_KEY are now in
+# APP_ROLE_PASSWORD, and FIELD_ENCRYPTION_KEY are now in
 # /opt/docker/shekel/secrets/<name>; the placeholders below satisfy
 # the base docker-compose.yml's \${VAR:?...} interpolation.
 # Audit findings F-022, F-109, F-148 / Commits C-34, C-38.
@@ -164,14 +164,14 @@ cat >"$PROD_ROOT/.env" <<ENVEOF
 SECRET_KEY=replaced_by_docker_secret
 POSTGRES_PASSWORD=replaced_by_docker_secret
 APP_ROLE_PASSWORD=replaced_by_docker_secret
-TOTP_ENCRYPTION_KEY=replaced_by_docker_secret
+FIELD_ENCRYPTION_KEY=replaced_by_docker_secret
 
-# Retired TOTP keys for non-destructive rotation.  Empty in steady
+# Retired field-encryption keys for non-destructive rotation.  Empty in steady
 # state.  When set, also write the value to
-# /opt/docker/shekel/secrets/totp_encryption_key_old and inline-add
+# /opt/docker/shekel/secrets/field_encryption_key_old and inline-add
 # it to the secrets: block of the override during the rotation
-# window.  See docs/runbook_secrets.md "Rotating TOTP_ENCRYPTION_KEY".
-TOTP_ENCRYPTION_KEY_OLD=
+# window.  See docs/runbook_secrets.md "Rotating FIELD_ENCRYPTION_KEY".
+FIELD_ENCRYPTION_KEY_OLD=
 
 # Per-app Redis ACL user password.  Lower sensitivity than the four
 # secrets above (gates a Redis user restricted to the ~LIMITS*

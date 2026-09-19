@@ -58,14 +58,26 @@ def create_app(config_name=None, *, init_ref_cache=True):
     config_class = CONFIG_MAP.get(config_name)
     if config_class is None:
         raise ValueError(f"Unknown config_name: {config_name!r}")
-    app.config.from_object(config_class)
+    # INSTANTIATED, not passed as the class: Flask's ``from_object``
+    # reads attributes and instantiates nothing, so the class's
+    # ``__init__`` -- ``BaseConfig``'s refusal of the field key's old
+    # name in every environment, ``ProdConfig``'s refusals of a missing
+    # or placeholder SECRET_KEY / DATABASE_URL / in-memory limiter /
+    # field key -- runs HERE, on every start path (gunicorn, ``flask
+    # run``, the entrypoint's migration host, the operator scripts),
+    # before logging, extensions or the database are touched.  Passing
+    # the class, as the factory did until ``bank_import:X-f6b-2``, left
+    # every one of those refusals dead at runtime.
+    app.config.from_object(config_class())
 
     # --- Logging ---------------------------------------------------------
     setup_logging(app)
 
-    if not app.config.get("TOTP_ENCRYPTION_KEY"):
+    # Development and test only: ``ProdConfig.__init__`` has already
+    # refused a production start without the key (R-BI23).
+    if not app.config.get("FIELD_ENCRYPTION_KEY"):
         app.logger.warning(
-            "TOTP_ENCRYPTION_KEY is not set. MFA/TOTP will be unavailable "
+            "FIELD_ENCRYPTION_KEY is not set. MFA/TOTP will be unavailable "
             "until this key is configured. See .env.example for details."
         )
 

@@ -162,10 +162,15 @@ _SENSITIVE_KEY_NAMES = (
     r"pending[_-]secret(?:[_-]encrypted)?",
     # Application crypto material.  ``secret_key`` covers Flask's
     # SECRET_KEY and the explicit ``SECRET_KEY=`` env-style line.
-    # ``totp_encryption_key`` and the rotation-key sibling are also
+    # ``field_encryption_key`` and the rotation-key sibling are also
     # covered so an accidental ``app.config`` dump cannot leak them.
+    # The key's OLD spelling (``totp_encryption_key``, retired by
+    # ``bank_import:X-f6b-2``) is deliberately absent: no running process
+    # holds a value under it, because ``app.config.refuse_retired_field_
+    # key_names`` refuses to start while one does.  Retiring that refusal
+    # puts the old spelling back here first.
     r"secret[_-]key",
-    r"totp[_-]encryption[_-]key(?:[_-]old)?",
+    r"field[_-]encryption[_-]key(?:[_-]old)?",
     # MFA backup codes.  ``backup_code`` (singular) is the form-field
     # accepted at /mfa/verify; ``backup_codes`` (plural) is the JSON
     # array column on auth.mfa_configs.
@@ -255,8 +260,11 @@ _SENSITIVE_EXTRA_FIELDS = frozenset({
     "totp_code",
     "totp_secret",
     "totp_secret_encrypted",
-    "totp_encryption_key",
-    "totp_encryption_key_old",
+    # The retired ``totp_encryption_key`` names are absent for the reason
+    # ``_SENSITIVE_KEY_NAMES`` states: the start-up refusal guarantees no
+    # process holds a value under them.
+    "field_encryption_key",
+    "field_encryption_key_old",
     "pending_secret",
     "pending_secret_encrypted",
     "secret_key",

@@ -1,15 +1,15 @@
 """
-Shekel Budget App -- TOTP Encryption Key Rotation
+Shekel Budget App -- Field Encryption Key Rotation
 
 One-shot operations utility that re-wraps every
 ``auth.mfa_configs.totp_secret_encrypted`` blob under the current
-primary key (``TOTP_ENCRYPTION_KEY``).  Intended to be run AFTER an
+primary key (``FIELD_ENCRYPTION_KEY``).  Intended to be run AFTER an
 operator has:
 
     1. Generated a new primary key
        (``Fernet.generate_key().decode()``).
-    2. Moved the previous primary key to ``TOTP_ENCRYPTION_KEY_OLD``.
-    3. Set the new key as ``TOTP_ENCRYPTION_KEY``.
+    2. Moved the previous primary key to ``FIELD_ENCRYPTION_KEY_OLD``.
+    3. Set the new key as ``FIELD_ENCRYPTION_KEY``.
     4. Restarted the application container so the new key list takes
        effect at the runtime layer.
 
@@ -18,10 +18,10 @@ The application is fully usable between steps 4 and 5 because
 decrypts under either the new primary or the retired key.  This
 script's role is to migrate the at-rest ciphertexts forward so the
 operator can safely remove the retired key from
-``TOTP_ENCRYPTION_KEY_OLD`` at the next deploy.
+``FIELD_ENCRYPTION_KEY_OLD`` at the next deploy.
 
 Usage:
-    python scripts/rotate_totp_key.py --confirm
+    python scripts/rotate_field_key.py --confirm
 
 The ``--confirm`` flag is mandatory: running without it prints a
 short usage hint and exits with code 1, never touching the database.
@@ -37,7 +37,7 @@ Exit codes:
     1  ``--confirm`` flag was not supplied.
     2  Successful run but at least one row could not be decrypted
        under any configured key.  Operator action required: do NOT
-       remove ``TOTP_ENCRYPTION_KEY_OLD`` until the row is recovered
+       remove ``FIELD_ENCRYPTION_KEY_OLD`` until the row is recovered
        or the user re-enrolls MFA.
 
 Test entry point:
@@ -52,7 +52,7 @@ import logging
 import os
 import sys
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken, MultiFernet
 
 # Ensure the project root is on sys.path so 'app' and 'scripts' are
 # importable.
@@ -136,7 +136,7 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
         logger.error(
             "MFA config id=%d cannot be decrypted under any "
             "configured key. Row left untouched. Investigate "
-            "before removing TOTP_ENCRYPTION_KEY_OLD.",
+            "before removing FIELD_ENCRYPTION_KEY_OLD.",
             config.id,
         )
         return _OUTCOME_SKIPPED
@@ -168,17 +168,20 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
         query was issued.
 
     Raises:
-        RuntimeError: If ``TOTP_ENCRYPTION_KEY`` is unset or empty.
+        RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
             Without a primary key the rotation has no target, so we
             fail fast rather than silently leaving the table in its
             previous state.
+        ValueError: If any configured key cannot be parsed as a Fernet
+            key -- the same refusal ``mfa_service.get_encryption_key``
+            raises, since both build the list the same way.
 
     Side effects:
         - Mutates ``totp_secret_encrypted`` on rows that need rotation.
         - Commits the transaction once at the end (single commit so
           either the whole rotation succeeds or the whole rotation
           rolls back on a database error).
-        - Emits a structured log event ``totp_key_rotated`` at
+        - Emits a structured log event ``field_key_rotated`` at
           ``WARNING`` level with the three counts.
     """
     # Pylint: import-outside-toplevel -- importing anything under
@@ -189,22 +192,21 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
     # DATABASE_URL override contract.
     # pylint: disable=import-outside-toplevel
     from app.models.user import MfaConfig
-    from app.services import mfa_service
+    from app.utils.field_encryption import build_fernet_list
     from app.utils.log_events import AUTH, log_event
     # pylint: enable=import-outside-toplevel
 
     logger = logging.getLogger(__name__)
 
-    # The primary-only Fernet is the idempotency probe.  We deliberately
-    # re-read the env var here rather than poking at MultiFernet's
-    # private ``_fernets`` list -- the env var is the contract.
-    primary_key = os.getenv("TOTP_ENCRYPTION_KEY")
-    if not primary_key:
-        raise RuntimeError(
-            "TOTP_ENCRYPTION_KEY environment variable is not set."
-        )
-    primary_only = Fernet(primary_key)
-    multi = mfa_service.get_encryption_key()
+    # ONE parse of the environment (``build_fernet_list``, the list
+    # ``mfa_service.get_encryption_key`` wraps): its index 0 is the
+    # primary alone, which is the idempotency probe, and the whole
+    # list is the rotating cipher.  A first version re-read the env
+    # var here, a second spelling of the primary that could disagree
+    # with the cipher's.
+    fernets = build_fernet_list()
+    primary_only = fernets[0]
+    multi = MultiFernet(fernets)
 
     counts = {
         _OUTCOME_ROTATED: 0,
@@ -225,9 +227,9 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
     log_event(
         logger,
         logging.WARNING,
-        "totp_key_rotated",
+        "field_key_rotated",
         AUTH,
-        "TOTP encryption key rotation completed.",
+        "Field encryption key rotation completed.",
         rotated=counts[_OUTCOME_ROTATED],
         already_current=counts[_OUTCOME_ALREADY_CURRENT],
         skipped=counts[_OUTCOME_SKIPPED],
@@ -266,10 +268,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         argv,
         description=(
             "Re-wrap every auth.mfa_configs ciphertext under the "
-            "current TOTP_ENCRYPTION_KEY primary key.  Run during a "
+            "current FIELD_ENCRYPTION_KEY primary key.  Run during a "
             "key rotation, after the new key has been promoted to "
-            "TOTP_ENCRYPTION_KEY and the previous key has been moved "
-            "to TOTP_ENCRYPTION_KEY_OLD.  See "
+            "FIELD_ENCRYPTION_KEY and the previous key has been moved "
+            "to FIELD_ENCRYPTION_KEY_OLD.  See "
             "docs/runbook_secrets.md."
         ),
         acknowledgment=(
@@ -294,9 +296,9 @@ def main(argv: list[str] | None = None) -> int:
           - ``2`` -- rotation completed but at least one row was
             skipped because no configured key could decrypt it.  The
             operator must reconcile the row before pruning
-            ``TOTP_ENCRYPTION_KEY_OLD``.
+            ``FIELD_ENCRYPTION_KEY_OLD``.
     """
-    refusal = confirm_gate(parse_args(argv), "rotate_totp_key.py")
+    refusal = confirm_gate(parse_args(argv), "rotate_field_key.py")
     if refusal is not None:
         return refusal
     rotated, already_current, skipped = run_rotation()

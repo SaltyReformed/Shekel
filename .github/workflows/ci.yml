@@ -93,7 +93,7 @@ jobs:
       # a superuser by the postgres image's ``POSTGRES_USER`` env, so
       # ``CREATEDB`` is implicit and no explicit grant step is needed.
       TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
-      # TOTP_ENCRYPTION_KEY is auto-generated per test by conftest.py.
+      # FIELD_ENCRYPTION_KEY is auto-generated per test by conftest.py.
       # No need to set it here.
       #
       # ── The process clock is skewed off the app's ON PURPOSE ──────
