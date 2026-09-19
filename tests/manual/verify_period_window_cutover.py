@@ -242,6 +242,7 @@ def _calendar_figures(user_id):
                 lambda year=year, month=month: _plain(
                     calendar_service.get_month_detail(
                         user_id, year, month, today=today,
+                        user_settings=None,
                     ),
                 ),
             )
@@ -251,7 +252,7 @@ def _calendar_figures(user_id):
             str(year): _guard(
                 f"get_year_overview {year}",
                 lambda year=year: _plain(
-                    calendar_service.get_year_overview(user_id, year),
+                    calendar_service.get_year_overview(user_id, year, user_settings=None),
                 ),
             )
             for year in years
@@ -277,7 +278,7 @@ def _spending_figures(user_id):
         f"{w.window_type}:{w.year}:{w.month}:{w.period_id}": _guard(
             f"spending {w}",
             lambda w=w: _plain(
-                spending_report_service.compute_spending_report(user_id, w),
+                spending_report_service.compute_spending_report(user_id, w, user_settings=None),
             ),
         )
         for w in windows

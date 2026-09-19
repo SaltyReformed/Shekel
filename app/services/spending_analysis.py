@@ -14,8 +14,8 @@ defined once rather than re-implemented per surface (coding-standards rule
 ``duplicate-code`` finding the same way):
 
 * :func:`query_settled_expenses` -- the settled-expense ORM query selected by
-  a PERIOD SET (settled status, expense type, not deleted, scoped to one
-  account / scenario / period set).  Its one caller is the Spending report's
+  a PERIOD SET (settled status, expense type, not deleted, scoped to the
+  owner's cash-flow set / scenario / period set).  Its one caller is the Spending report's
   pay-period arm, which no route reaches today; the sibling below is what a
   live render runs.  The two share their row filters, so a change to what
   "settled spending" selects is still a single edit.
@@ -52,6 +52,7 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
 from app.services.pay_calendar import DerivedPeriod
 from app.services.cash_ledger import AmountBasis, resolve_transaction_amount
 from app.services.row_valuation import settled_figure
@@ -106,15 +107,25 @@ def validate_window(
 def query_settled_expenses(
     scenario_id: int,
     period_ids: list[int],
-    account_id: int,
+    cash_flow: CashFlowSet,
 ) -> list[Transaction]:
-    """Load settled expense transactions for one account over given periods.
+    """Load settled expense transactions across the cash-flow set over given periods.
 
     Filters: settled status only (Paid/Received -- so Cancelled and
     Credit, which are not settled, are excluded), expense type only, not
-    deleted, one account, one scenario, and ``pay_period_id`` in
-    *period_ids*.  Transfer shadows are included: they are ordinary
+    deleted, the owner's cash-flow set, one scenario, and ``pay_period_id``
+    in *period_ids*.  Transfer shadows are included: they are ordinary
     ``Transaction`` rows that participate in spending.
+
+    **The rows are the PAYCHECK's across the set -- checking and its cards
+    -- not one account's** (developer ruling ``credit_card:R-CC16``, plan
+    step CC-4-3), through the ONE clause every plan-item reader appends,
+    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
+    rows, less the far leg of a transfer between two members (ruling
+    ``R-CC23``), so a card payment is one settled row, on the balance
+    account's side.  It was ``Transaction.account_id == account_id``, which
+    left the phone bill that lives on the card out of where the money went; a
+    set of one member is that filter, row for row.
 
     **It eager-loads ``category`` and NOT ``pay_period``**, and the second half
     of that changed at pay-calendar plan step **C2-f3d** -- in BOTH queries,
@@ -164,7 +175,7 @@ def query_settled_expenses(
             baseline).
         period_ids: The pay-period ids to include.  An empty list yields
             an empty result.
-        account_id: The account to scope to (the analytics checking scope).
+        cash_flow: The owner's cash-flow set, whose members' rows to load.
 
     Returns:
         The matching settled expense :class:`Transaction` rows.
@@ -191,7 +202,7 @@ def query_settled_expenses(
             selectinload(Transaction.entries),
         )
         .filter(
-            Transaction.account_id == account_id,
+            paycheck_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
@@ -205,14 +216,15 @@ def query_settled_expenses(
 
 def query_settled_expenses_in_span(
     scenario_id: int,
-    account_id: int,
+    cash_flow: CashFlowSet,
     user_id: int,
     first_day: date,
     last_day: date,
 ) -> list[Transaction]:
     """Load the settled expenses ATTRIBUTED to a calendar span.
 
-    The same row filters as :func:`query_settled_expenses`, selected by the
+    The same row filters as :func:`query_settled_expenses` -- the cash-flow
+    set's rows through the one clause, plan step CC-4-3 -- selected by the
     attribution rule instead of a period set: rows whose
     ``COALESCE(due_date, owning period start)`` falls inside
     ``[first_day, last_day]``, across ALL the user's pay periods.  The
@@ -230,7 +242,7 @@ def query_settled_expenses_in_span(
     Args:
         scenario_id: The budget scenario to scope to (the caller's
             baseline).
-        account_id: The account to scope to (the analytics checking scope).
+        cash_flow: The owner's cash-flow set, whose members' rows to load.
         user_id: The owning user (scopes the pay-period join).
         first_day: The span's first calendar day (inclusive).
         last_day: The span's last calendar day (inclusive).
@@ -255,7 +267,7 @@ def query_settled_expenses_in_span(
             selectinload(Transaction.entries),
         )
         .filter(
-            Transaction.account_id == account_id,
+            paycheck_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             PayPeriod.user_id == user_id,
             Transaction.is_deleted.is_(False),
