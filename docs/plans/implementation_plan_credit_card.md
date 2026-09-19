@@ -154,9 +154,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
 - [ ] **CC-9** `feat(cards): rewards` -- design 3.7: accrual as a derived figure over settled
       purchases minus redemptions; manual redemptions and the auto-redeem threshold as rows; no
       `system_origin_id`. Ruled the tail of the path by the 2026-09-15 order.
-- [ ] **CC-10** `feat(cards): the refusals` -- design 3.8: a transfer OUT of a card refused at both
-      transfer doors (the sibling of the loan guard); `active_accounts_query`'s `revolving` filter
-      shipped with CC-4-1.
+- [x] **CC-10** `32528a7c` -- a transfer OUT of a card refused at both transfer doors through ONE
+      composed loan-or-card set (`_validation._reject_unmodeled_source`, leaf `c5fffc55`; the
+      investment contribution door translates the refusal instead of a 500); a card kept out of a
+      paycheck's deposit picker (`active_accounts_query(revolving=False)`, design 3.8); no
+      migration; data unchanged on production (0 revolving accounts, read-only 21:4x 2026-09-18); a
+      LOAN source at the investment door now flashes where it was a 500.
 - [ ] **CC-11** `feat(cards): the cockpit and the grid affordances` -- design 3.9, through the
       design loop: each screen held to `docs/design/fable5-design-language.md` and verified on the
       dev clone.
