@@ -186,7 +186,8 @@ def _paycheck_template(
     Args:
         data: The validated create payload; read for the name and the annual
             salary.
-        account_id: The non-loan deposit account the paychecks land in.
+        account_id: The deposit account the paychecks land in -- neither a
+            loan nor a credit card (the picker in :func:`create_profile`).
         category_id: This owner's ``Income: Salary`` category.
         calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
             read for the schedule's opening payday and for the paycheck count
@@ -250,22 +251,30 @@ def create_profile():
 
     salary_category = _salary_category(current_user.id)
 
-    # Get the default deposit account -- a NON-LOAN (non-amortizing) account.
+    # Get the default deposit account -- a NON-LOAN (non-amortizing) account
+    # that is not a credit card either.
     # A loan's balance is ledger-derived, not a transaction sum (ruling D4 /
     # finding N-11): depositing salary income onto a loan would have the
     # recurrence engine generate raw income transactions onto it
     # (``recurrence_engine.generate_for_template`` copies ``template.account_id``)
     # -- a cash leg the loan fold cannot see, the shape the transaction-create
     # routes (``_reject_transaction_on_loan``) and the template form also
-    # refuse.  ``active_accounts_query(amortizing=False)`` is the shared
-    # kind-boundary composer the grid's account pickers use (ruling D4 / A1).
+    # refuse.  A CARD is excluded for a different reason (plan step
+    # credit_card:CC-10, design 3.8): its balance IS the cash fold, so every
+    # generated paycheck would be counted -- as income paying DOWN the card,
+    # which a salary is not.  A card takes its payment (a transfer into it)
+    # and a credit (a refund, a redemption; direct income stays allowed at
+    # the transaction doors), not the owner's paycheck.
+    # ``active_accounts_query`` is the shared kind-boundary composer the
+    # grid's account pickers use (ruling D4 / A1); ``revolving`` is its
+    # orthogonal second filter (CC-4-1).
     account = account_service.active_accounts_query(
-        current_user.id, amortizing=False,
+        current_user.id, amortizing=False, revolving=False,
     ).first()
     if not account:
         flash(Markup(
-            'You need an active account that is not a loan before creating a '
-            'salary profile. '
+            'You need an active account that is not a loan or a credit card '
+            'before creating a salary profile. '
             '<a href="' + url_for("accounts.new_account") + '" class="alert-link">'
             'Create an account</a>.'
         ), "danger")
