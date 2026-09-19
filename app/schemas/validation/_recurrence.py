@@ -37,8 +37,7 @@ from marshmallow import (
 )
 
 from app.schemas.validation._helpers import (
-    EFFECTIVE_DATE_MAX,
-    EFFECTIVE_DATE_MIN,
+    _EFFECTIVE_DATE_RANGE,
     _RefEnumField,
 )
 
@@ -677,11 +676,7 @@ class RecurrenceFormFieldsMixin(RecurrenceCadenceFieldsMixin):
     # schemas: an ``<input type="date">`` accepts a four- or five-digit-year
     # typo, and here the consequence is worse than a bad version date -- a
     # first occurrence past the horizon generates NOTHING, silently.
-    starts_on = fields.Date(
-        validate=validate.Range(
-            min=EFFECTIVE_DATE_MIN, max=EFFECTIVE_DATE_MAX,
-        ),
-    )
+    starts_on = fields.Date(validate=_EFFECTIVE_DATE_RANGE)
 
     # The day the rule MEANS when ``starts_on``'s own month was too short to
     # hold it, and ``None`` -- which is every ordinary rule -- when the date

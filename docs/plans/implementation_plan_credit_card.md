@@ -84,10 +84,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       derivation) under C13-c's ownership key, migration `97f92340fffc` (the table empty); ONE door
       and ONE schema, the five NOT NULL columns required (`R-CC24`); the "Card terms" card on cash
       detail gated by `is_revolving` (`R-CC25`). Moved no money; suite 14652/0 on its tree.
-- [ ] **CC-3** `feat(cards): the statement cycle, pure, and the card's APR` -- design 3.4:
-      `card_statement.py` (cycle window, statement sequence, due date, minimum payment, grace kept)
-      with no Flask and no session, and the APR on `rate_history` behind a card-gated loader and
-      write route the loan loaders never see.
+- [x] **CC-3** `e4c0b5ec` -- `card_statement.py` pure (leaf `8cec3531`: the closed-open window, the
+      due date the first due day strictly after the close `R-CC26`, owed = minus the fold `R-CC29`);
+      `card_apr.py` + the set-by-date and remove doors (`R-CC27`) inside the Card terms card
+      (`R-CC28`); ONE effective-dated walk `utils/effective_dated.in_effect_on` (escrow re-pointed;
+      `BAL-524` folds the six left). A card BORN a card is what the loan loaders never see (the
+      re-typed loan is the held candidate).
 - [ ] **CC-3i** `feat(cards): the finance charge under the one interest producer` -- design 3.6:
       `recurrence:R16-d`'s `accrued_interest` under the `DAILY_ACTUAL_365` member that step gains,
       summed per constant-balance segment of the closed-open cycle, purchases joining the path on

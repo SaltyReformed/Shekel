@@ -109,6 +109,18 @@ _NON_NEGATIVE_MONETARY = validate.Range(
 EFFECTIVE_DATE_MIN: date = CALENDAR_DATE_MIN
 EFFECTIVE_DATE_MAX: date = CALENDAR_DATE_MAX
 
+# The same window as the per-control validator every effective-dated form
+# field carries, because an HTML date input accepts a four-digit-year typo and
+# the consequence is permanent (a ``0202-08-11`` became an amount series'
+# EARLIEST version under review).  Declared at plan step credit_card:CC-3 for
+# the reason ``_RATE_FRACTION_RANGE`` was at CC-2 -- a bound used by more than
+# one schema has one home -- and the three fields that spelled it inline
+# (``templates.py``, ``transfers.py``, ``_recurrence.py``) read it from here
+# since that step.
+_EFFECTIVE_DATE_RANGE = validate.Range(
+    min=EFFECTIVE_DATE_MIN, max=EFFECTIVE_DATE_MAX,
+)
+
 # The window a salary raise's YEAR -- effective or terminal -- may fall in, as
 # the per-control validator: the owner gets a message on the control instead
 # of an IntegrityError.  The NUMBERS live with the rule, in

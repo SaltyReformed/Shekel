@@ -66,12 +66,18 @@ class CreditCardParams(AccountScopedUniqueMixin, UserScopedMixin,
           cycle).  A purchase posted AT the close belongs to the NEXT cycle
           (closed-open window; CC-3).
       ``payment_due_day``   -- the day of the month the closed statement's
-          payment is due (1-31, same clamp).  It falls in the month AFTER the
-          close, so no ordering between the two days is a rule here.
+          payment is due (1-31, same clamp).  The due DATE is the first
+          occurrence of this day strictly after the close date
+          (:func:`app.services.card_statement.due_date_for`, developer ruling
+          **R-CC26**): the same month when its clamped date falls after the
+          close date (closes the 5th, due the 28th), the next month
+          otherwise (closes the 20th, due the 15th) -- so no ordering
+          between the two days is a rule here.
       ``min_payment_percent`` -- the fraction of the statement balance the
           issuer requires (``0.0200`` for 2%); the minimum is
           ``max(min_payment_floor, round_money(pct x balance))`` clamped to
-          the balance (CC-3).
+          the balance and never below zero
+          (:func:`app.services.card_statement.minimum_payment`, **R-CC29**).
       ``min_payment_floor``   -- the dollar floor of that minimum.
       ``cashback_rate``       -- the flat reward fraction on purchases
           (**R-CC4**); ``0`` is a value, not missing (E-12), and the default

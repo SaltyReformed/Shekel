@@ -96,7 +96,7 @@ from app.schemas.validation.auth import (
     ReauthSchema,
     RegisterSchema,
 )
-from app.schemas.validation.cards import CreditCardTermsSchema
+from app.schemas.validation.cards import CardAprSchema, CreditCardTermsSchema
 from app.schemas.validation.categories import (
     CategoryCreateSchema,
     CategoryEditSchema,
@@ -201,6 +201,7 @@ __all__ = [
     "AppreciationParamsUpdateSchema",
     "CalibrationConfirmSchema",
     "CalibrationSchema",
+    "CardAprSchema",
     "CategoryCreateSchema",
     "CategoryEditSchema",
     "ChangePasswordSchema",
