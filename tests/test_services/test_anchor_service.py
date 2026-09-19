@@ -1,9 +1,11 @@
 """
 Shekel Budget App -- Anchor Service Tests
 
-Unit tests for :mod:`app.services.anchor_service`.  Pins both outcomes of
-:func:`apply_anchor_true_up` and its loan twin, ruling **R-EQ**'s duplicate
-rule, and the contract that an unexpected ``IntegrityError`` propagates.
+Unit tests for :mod:`app.services.anchor_service` and its loan half,
+:mod:`app.services.loan_anchor_service` (split out at plan step
+``recurrence:R20``).  Pins both outcomes of :func:`apply_anchor_true_up` and
+its loan twin, ruling **R-EQ**'s duplicate rule, and the contract that an
+unexpected ``IntegrityError`` propagates.
 
 Pre-extraction these branches were covered indirectly by the grid
 HTMX-route test suites (``TestTrueUpSameDayDuplicate`` and
@@ -46,6 +48,8 @@ from app.services import (
 from app.services.anchor_service import (
     AnchorTrueUpOutcome,
     apply_anchor_true_up,
+)
+from app.services.loan_anchor_service import (
     apply_loan_anchor_true_up,
     record_loan_tracking_start,
 )

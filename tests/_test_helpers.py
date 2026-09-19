@@ -801,7 +801,7 @@ def _sync_loan_ledger(loan_account_id):
       :func:`~app.services.loan_posting_service.sync_loan_postings_all_scenarios`
       (``app/routes/loan/params.py:125`` and ``:177``).
     * The balance true-up and the tracking-start opening both route through
-      :func:`app.services.anchor_service._append_loan_anchor_and_sync`, which
+      :func:`app.services.loan_anchor_service._append_loan_anchor_and_sync`, which
       appends the event, re-syncs, and commits (``anchor_service.py:390``).
 
     The property that matters, and the one this helper reproduces, is that the
@@ -947,7 +947,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
 
     Mirrors the production balance-trueup path
-    (:func:`app.services.anchor_service.apply_loan_anchor_true_up`,
+    (:func:`app.services.loan_anchor_service.apply_loan_anchor_true_up`,
     E-18 / Commit 16): the operator asserts a new dated balance and the
     resolver replays forward from this latest event.  Under the
     contractual-schedule balance model, a cash overpayment does NOT
@@ -960,7 +960,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     Like production, the event is RECONCILED INTO POSTINGS in the same
     transaction (:func:`_sync_loan_ledger`): ``apply_loan_anchor_true_up`` appends
     the row and re-syncs every scenario
-    (``anchor_service._append_loan_anchor_and_sync``, which then commits; this
+    (``loan_anchor_service._append_loan_anchor_and_sync``, which then commits; this
     helper leaves the commit to its caller).  An un-reconciled true-up
     does not exist as far as the ledger is concerned -- and the ledger is what
     every loan surface now reads -- so a fixture that only wrote the event left
@@ -1006,7 +1006,7 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
     """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life import).
 
     Mirrors the production tracking-start path
-    (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
+    (:func:`app.services.loan_anchor_service.record_loan_tracking_start`): the operator
     began tracking an already-amortizing loan and asserts its real balance as of a
     date at/before the first recorded payment.  It is loaded as an ordinary
     ``is_opening=False`` balance ASSERTION
@@ -1018,7 +1018,7 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
     Like production, the event is RECONCILED INTO POSTINGS in the same
     transaction (:func:`_sync_loan_ledger`): ``record_loan_tracking_start``
     appends the row and re-syncs every scenario (it shares
-    ``anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
+    ``loan_anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
     commits; this helper leaves the commit to its caller).
 
     Args:

@@ -155,7 +155,7 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
       ``(anchor_date, created_at)`` does not order them.  ``event_id`` does, and
       the later INSERT wins -- the same "the last one recorded is that day's
       closing balance" rule the cash walk and this table's own write door
-      (:func:`app.services.anchor_service._governing_loan_anchor`) already apply.
+      (:func:`app.services.loan_anchor_service._governing_loan_anchor`) already apply.
     * **It is ONE statement, not a rule each consumer re-derives.**  This list
       had no ``ORDER BY`` and its two consumers each broke a tie their own way:
       the fold's walk (:func:`app.services.loan_ledger.walk_loan_ledger`) reset

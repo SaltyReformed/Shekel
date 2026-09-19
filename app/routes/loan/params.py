@@ -30,8 +30,8 @@ from app.routes.loan._helpers import (
     _update_schema,
 )
 from app.services import (
-    anchor_service,
     cash_ledger,
+    loan_anchor_service,
     loan_loaders,
     loan_posting_service,
 )
@@ -321,7 +321,7 @@ def true_up_balance(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    outcome = anchor_service.apply_loan_anchor_true_up(
+    outcome = loan_anchor_service.apply_loan_anchor_true_up(
         account=account,
         anchor_balance=anchor_balance,
         anchor_date=anchor_date,
@@ -440,7 +440,7 @@ def record_tracking_start(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    outcome = anchor_service.record_loan_tracking_start(
+    outcome = loan_anchor_service.record_loan_tracking_start(
         account=account,
         anchor_balance=anchor_balance,
         anchor_date=anchor_date,
