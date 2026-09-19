@@ -18,8 +18,8 @@ work by grep alone.
 every leaf from scratch (**R-CC16**..**R-CC22**); no leaf waits on `balance:X-f4`, and the waits
 that are real are `steps.md`'s cells. **When each leaf may start is `steps.md`'s answer**, never
 restated here. Every card test builds rows through the suite's builders (`one_off_row_of`,
-`generate_row_of`, `payback_row_of`), never `Transaction(`: `X-bi-7c`'s census marker counts the
-latter.
+`generate_row_of`, `payback_row_of`), never `Transaction(`: `tests/manual/census_hand_built_rows.py`
+(`X-bi-7c`'s instrument) counts the latter.
 
 **This arc's findings live in `ledger.md`, its steps are indexed in `steps.md`, its rules are
 `conventions.md` and what "done" means is `verification.md`** -- the shared registries for every
