@@ -28,13 +28,12 @@ it", and each is a measured hazard rather than caution.**
 * **NEW swipe lines only** (**R-GI**).  A line is fresh to the import that
   FIRST sighted it (plan step ``bank_import:X-f6b-1``: derived from the
   sightings, ``_fresh_line_ids``), so no second column is needed.  It is also
-  exactly right about the case that looks like an exception:
-  :func:`~app.services.statement_import._record._absorb_gained_facts` fills
-  a recorded line's ``merchant_id`` when a later export names one the first
-  adapter could not, so such a line becomes rule-keyed at a LATER import
-  while its first sighting stays the earlier one -- and it is not a new
-  swipe, so it is not
-  filed.  A re-import of an overlapping span records no fresh line and
+  exactly right about the case that looks like an exception: a line's
+  merchant is the earliest surviving sighting that names one (ruling
+  **R-BI16**), so a line the first adapter could not name becomes rule-keyed
+  at a LATER import while its first sighting stays the earlier one -- and it
+  is not a new swipe, so it is not filed.  A re-import of an overlapping
+  span records no fresh line and
   therefore files nothing, which is what makes this door idempotent for free.
 * **The pass must have finished LOOKING** (:meth:`~._reads.ReviewSet
   .search_gap_for`, developer ruling 2026-08-26).  Membership of ``creatable``

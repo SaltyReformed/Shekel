@@ -114,6 +114,7 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
+    InFlightMovement,
     AmountBasis,
     CashLedgerWalk,
     dated_deltas,
@@ -128,6 +129,8 @@ from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext
 from ._memoize import _memoize_once
 from ._fold import sample_cumulative
+
+_PlanItem = Transaction | PlannedTransferLeg | InFlightMovement  # one plan item
 
 _ZERO_MONEY = Decimal("0.00")
 # Ruling R-G's clamp floor: the earliest day a plan can still happen is the day
@@ -803,15 +806,17 @@ class _CashPlan:
     pass's context was built on).
 
     Attributes:
-        rows: Every still-Projected balance-contributing row of the account's
-            OWN in the scenario, unwindowed, plus one
+        rows: What :func:`~app.services.cash_ledger.planned_cash_rows` loads,
+            unwindowed: every still-Projected contributing row of the
+            account's OWN, one
             :class:`~app.services.transfer_legs.PlannedTransferLeg` per
-            still-projected transfer the account is on
-            (:func:`~app.services.cash_ledger.planned_cash_rows`; plan step
-            **X-bi-6a**, ruling **R-BAL13** -- a transfer's leg is derived
-            from the parent row rather than read off its shadow).
+            still-projected transfer whose leg here is not yet a dated
+            movement (rulings **R-BAL13**, **R-BAL79**), and one
+            :class:`~app.services.cash_ledger.InFlightMovement` per un-dated
+            purchase on the account (ruling **R-BAL77**).
         by_day: The same items keyed by the day each LANDS on (ruling R-G's
-            clamp) -- the cash clock.  Empty when the account has no plan.
+            clamp; a movement in flight's floor is the day it happened) --
+            the cash clock.  Empty when the account has no plan.
         basis: The READ PASS's
             :class:`~app.services.cash_ledger.AmountBasis` -- what every row is
             priced through -- carried here and threaded into every reduction so
@@ -829,8 +834,8 @@ class _CashPlan:
             needs it.
     """
 
-    rows: "list[Transaction | PlannedTransferLeg]"
-    by_day: "dict[date, list[Transaction | PlannedTransferLeg]]"
+    rows: "list[_PlanItem]"
+    by_day: "dict[date, list[_PlanItem]]"
     basis: AmountBasis
 
 
@@ -854,6 +859,11 @@ def _cash_plan(
     Rejected at the ruling: landing it on its nominal date, which on real data
     (one re-anchor every 2.3 days on Checking) silently deletes nearly every
     unpaid past-due bill within days of its being entered.
+
+    **A movement IN FLIGHT lands on ``max(the day it happened, as_of + 1)``**
+    (ruling **R-BAL77**): money already spent and not yet seen to leave, with
+    no due date and no period to clamp into, held from tomorrow and never
+    from before it was made.  Its BUDGET column stays its parent's.
 
     **A transfer LEG lands where its PARENT is filed** (plan step **X-bi-6a**).
     The plan holds one :class:`~app.services.transfer_legs.PlannedTransferLeg`
@@ -931,8 +941,13 @@ def _cash_plan(
         return _CashPlan(rows=[], by_day={}, basis=basis)
 
     not_before = as_of + _ONE_DAY
-    by_day: "dict[date, list[Transaction | PlannedTransferLeg]]" = defaultdict(list)
+    by_day: "dict[date, list[_PlanItem]]" = defaultdict(list)
     for item in rows:
+        if isinstance(item, InFlightMovement):
+            # No due date and no attribution clamp: money already spent lands
+            # no earlier than the day it happened (ruling **R-BAL77**).
+            by_day[max(item.purchased_on, not_before)].append(item)
+            continue
         filed = item.transfer if isinstance(item, PlannedTransferLeg) else item
         period = calendar.require_period(FiledRow.for_row(filed))
         nominal = period.attribution_day(item.due_date)

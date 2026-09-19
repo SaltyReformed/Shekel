@@ -24,6 +24,12 @@ queries.
   already resolved either an explicit account_id or wants the user's
   default checking account.
 
+* ``resolve_cash_flow_set`` -- the grid resolver's answer widened to
+  "checking and its cards" (ruling ``credit_card:R-CC16``, plan step
+  CC-4-1): the primary grid account plus the owner's active revolving
+  accounts, as one :class:`~app.services.cash_flow_set.CashFlowSet`
+  whose balance line is the primary or an override within the set.
+
 The grid path keeps its richer fallback because the grid is the
 primary UI for transaction display; the analytics path's narrower
 fallback matches its reporting use case where "no account
@@ -36,6 +42,7 @@ from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.services import account_service
+from app.services.cash_flow_set import CashFlowSet
 
 
 def is_cash_flow_account(account: Account) -> bool:
@@ -192,6 +199,36 @@ def _first_active_checking_account(user_id) -> Account | None:
     )
 
 
+def _admissible_grid_account(user_id, account_id) -> Account | None:
+    """Return the account *account_id* names if the grid may render it, else ``None``.
+
+    The ONE admission test behind :func:`resolve_grid_account`'s first two
+    steps -- an override and a saved default are refused for the same three
+    reasons (not the owner's, archived, an amortizing loan: ruling D4 / step
+    A1) -- and behind :func:`resolve_cash_flow_set`'s override arm, which
+    needs the answer WITHOUT the fallback chain the grid resolver runs after a
+    refusal.  It was written inline twice in the resolver and would have been
+    written a third time; a rule stated once cannot drift.
+
+    Args:
+        user_id: The current user's id.
+        account_id: The candidate ``budget.accounts.id``, or ``None``.
+
+    Returns:
+        The :class:`Account`, or ``None`` when there is no such row, it is
+        another owner's, it is inactive, or it is not a cash-flow kind.
+    """
+    if account_id is None:
+        return None
+    acct = db.session.get(Account, account_id)
+    if (
+        acct and acct.user_id == user_id and acct.is_active
+        and is_cash_flow_account(acct)
+    ):
+        return acct
+    return None
+
+
 def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
     """Return the Account to use for grid balance display.
 
@@ -212,21 +249,16 @@ def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
         accounts exist.
     """
     # 1. Override from query param.
-    if override_account_id is not None:
-        acct = db.session.get(Account, override_account_id)
-        if (
-            acct and acct.user_id == user_id and acct.is_active
-            and is_cash_flow_account(acct)
-        ):
-            return acct
+    acct = _admissible_grid_account(user_id, override_account_id)
+    if acct is not None:
+        return acct
 
     # 2. User setting.
-    if user_settings and user_settings.default_grid_account_id:
-        acct = db.session.get(Account, user_settings.default_grid_account_id)
-        if (
-            acct and acct.user_id == user_id and acct.is_active
-            and is_cash_flow_account(acct)
-        ):
+    if user_settings:
+        acct = _admissible_grid_account(
+            user_id, user_settings.default_grid_account_id,
+        )
+        if acct is not None:
             return acct
 
     # 3. First active checking account.
@@ -240,6 +272,98 @@ def resolve_grid_account(user_id, user_settings=None, override_account_id=None):
         .order_by(Account.sort_order, Account.id)
         .first()
     )
+
+
+def _active_revolving_accounts(user_id) -> list[Account]:
+    """Return the owner's active credit cards, picker-ordered.
+
+    The card half of the cash-flow set: every active account whose type
+    carries ``has_revolving_credit`` (plan step CC-1's flag), ordered the way
+    :func:`resolve_grid_account`'s fallback orders accounts so the set's member
+    order is stable across renders.
+
+    Args:
+        user_id: ``auth.users.id`` of the owner.
+
+    Returns:
+        The active revolving :class:`Account` rows, by ``sort_order`` then
+        ``id``.  Empty for an owner with no card, which is every owner before
+        the credit-card arc's release.
+    """
+    return (
+        account_service.active_accounts_query(
+            user_id, amortizing=False, revolving=True,
+        )
+        .order_by(Account.sort_order, Account.id)
+        .all()
+    )
+
+
+def resolve_cash_flow_set(
+    user_id, user_settings=None, override_account_id=None,
+) -> CashFlowSet | None:
+    """Return the owner's cash-flow set: checking and its cards.
+
+    The "checking and its cards" predicate of developer ruling
+    ``credit_card:R-CC16`` (design ``docs/design/credit_card_from_scratch.md``
+    3.3, plan step CC-4-1): the accounts a paycheck's plan items live on, read
+    as ONE SET by the budget grid and by every other plan-item reader, with the
+    balance line still ONE account's.
+
+    **The PRIMARY is :func:`resolve_grid_account`'s own answer with no
+    override** -- the owner's ``default_grid_account_id``, else their first
+    active checking account, else their first grid-eligible account -- and the
+    set is that account plus every active revolving account
+    (:func:`_active_revolving_accounts`).  ONE definition of the primary for
+    every reader: the grid reads it here (this step); the dashboard's bills,
+    the spending report and the calendar's default read it at plan step
+    CC-4-3, where the latter two take :func:`resolve_analytics_account`'s
+    "first active checking, no settings layer" today -- a second spelling of
+    one question, which on the 2026-09-18 production population named the
+    same account (the one owner's ``default_grid_account_id`` IS their first
+    active checking account).
+
+    **The BALANCE line is the primary, or the override the request named.**
+    The grid has always taken a ``?account_id=`` override, and it keeps its
+    meaning under the set:
+
+    * an override naming a MEMBER (a card) puts that member's balance on the
+      line and keeps the set's rows -- the same paycheck, seen from the card;
+    * an override naming an owned, active, cash-flow account OUTSIDE the set
+      (a savings account) keeps that account's single-account view exactly as
+      before this step: the set collapses to that one account, so nothing on
+      the screen changes for it;
+    * an override the grid resolver refuses (another owner's, archived, a
+      loan, unknown) falls through to the primary, as it always has -- through
+      the ONE admission test :func:`_admissible_grid_account`, so the primary
+      chain runs once per request whatever the override.
+
+    Args:
+        user_id: The current user's id.
+        user_settings: The user's ``UserSettings`` row (or ``None``).
+        override_account_id: Explicit account id from a query param.
+
+    Returns:
+        The :class:`~app.services.cash_flow_set.CashFlowSet`, or ``None`` when
+        the owner has no grid-eligible account at all (the same state
+        :func:`resolve_grid_account` answers ``None`` for).
+    """
+    primary = resolve_grid_account(user_id, user_settings)
+    if primary is None:
+        return None
+    members = (
+        primary,
+        *[
+            card for card in _active_revolving_accounts(user_id)
+            if card.id != primary.id
+        ],
+    )
+    balance = _admissible_grid_account(user_id, override_account_id)
+    if balance is None:
+        return CashFlowSet(balance=primary, members=members)
+    if balance.id not in {member.id for member in members}:
+        members = (balance,)
+    return CashFlowSet(balance=balance, members=members)
 
 
 def resolve_analytics_account(

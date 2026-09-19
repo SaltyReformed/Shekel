@@ -59,6 +59,7 @@ from app.utils.balance_predicates import (
 )
 
 from ._amounts import ReconciledThrough
+from ._events import InFlightMovement, in_flight_movements
 
 
 @dataclass(frozen=True)
@@ -386,15 +387,29 @@ def reconciled_through(account_id: int) -> ReconciledThrough:
 
 def planned_cash_rows(
     account_id: int, scenario_id: int,
-) -> list[Transaction | PlannedTransferLeg]:
-    """Return an account's still-PROJECTED plan: its own rows and its transfer legs.
+) -> list[Transaction | PlannedTransferLeg | InFlightMovement]:
+    """Return an account's plan: its projected rows, transfer legs and movements in flight.
 
     The PLAN half of the cash event stream, and the structural twin of
-    :func:`app.services.cash_ledger.settled_cash_facts` beside it: same account /
-    scenario scope, same shared eligibility gate, same eager load, same absence
-    of a period window.  The two differ in their status narrowing (settled there,
-    Projected here), in what they RETURN, and -- since plan step **X-bi-6a** --
-    in WHERE a transfer's leg comes from, and each of those is a ruling:
+    :func:`app.services.cash_ledger.settled_cash_facts` beside it: that half
+    is every DATED movement on the account, this half is everything the
+    projection must still hold -- three kinds since plan step
+    ``balance:X-bi-4a``, each a ruling:
+
+    **A movement IN FLIGHT is a plan item** (ruling **R-BAL77**): a purchase
+    recorded against a contributing envelope, open or closed, that the bank
+    has not been seen to take
+    (:func:`~app.services.cash_ledger._events.in_flight_movements`, the
+    un-dated half of the ONE movement stream the settled twin reads the dated
+    half of).  It is worth its own figure and lands no earlier than the day it
+    happened; the Projected envelope it sits under reserves only its UNSPENT
+    budget (:func:`~._amounts._entry_checking_impact`), so the two never
+    hold the same dollars back twice.  Through ``X-bi-3e`` a Projected
+    envelope's reservation carried its un-dated purchases inside one
+    ``max`` and a CLOSED envelope's row leg booked them on the close day;
+    the identity ``max(a, b) = b + max(a - b, 0)`` is what split the first
+    into this item plus the unspent budget, and the ruling is what deleted
+    the second.
 
     **A still-projected transfer's leg is DERIVED from the parent row, not read
     off its shadow** (ruling **R-BAL13**).  The two shadow ``Transaction`` rows
@@ -408,37 +423,35 @@ def planned_cash_rows(
     :func:`app.services.transfer_legs.planned_transfer_legs` over
     ``budget.transfers``: one :class:`~app.services.transfer_legs.PlannedTransferLeg`
     per live still-projected transfer the account is on either side of, worth
-    the parent's resolved amount.  The settled twin still reads a SETTLED
-    shadow's record from the shadow row, because that is where plan step
-    ``X-au-c3`` recorded it; plan step ``X-bi-4`` moves that half onto
-    movements.  Both halves loaded, byte-identical wherever Transfer
-    Invariants 1-3 hold (0 of 350 shadow rows drifted from their parent on the
-    2026-09-15 production snapshot).  Where a pair has drifted on period, due
-    date, deletion or scenario the plan follows the PARENT, which is ruling
-    **R-JA**'s direction; where it has drifted on STATUS the two halves
-    disagree about which relation the row is in, and a settled shadow under a
-    still-Projected parent is counted by both -- the package docstring states
-    the figures, and ``X-bi-4`` is the step that re-keys the record half.
+    the parent's resolved amount -- **and only for a side whose DATED
+    movement does not yet exist** (ruling **R-BAL79**, plan step
+    ``balance:X-bi-4a``): the settled twin reads a settled leg as its
+    shadow's covering movement, so the movement, not the parent's status, is
+    what decides which relation a leg is in, and a leg cannot be counted by
+    both halves.  Where a pair has drifted on period, due date, deletion or
+    scenario the plan follows the PARENT, which is ruling **R-JA**'s
+    direction.
 
-    * a SETTLED row can be dated by this leaf -- its ``settled_on`` is a
-      STORED fact and nothing derives it (plan step X-f1, ruling R-EC; it was
-      ``COALESCE(paid_at, period start)`` until then) -- so ``_events``
-      returns it valued and dated, as a
+    * a DATED movement can be dated by this leaf -- its ``settled_on`` is a
+      STORED fact and nothing derives it (plan step X-f1, ruling R-EC) -- so
+      ``_events`` returns it valued and dated, as a
       :class:`~app.services.cash_ledger.CashSourceFact`;
-    * a PROJECTED row cannot.  Its effective date is
-      ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot
-      have already happened"), which is a function of the READER's as-of -- and
-      this package reads no clock, deliberately (a walk that read one made the
-      posted ledger a function of when the sync happened to run, the corruption
-      shape plan step A3 removed from the loan side).
+    * a plan item cannot.  A projected row's effective date is
+      ``max(its attribution date, as_of + 1 day)`` and a movement in flight's
+      is ``max(the day it happened, as_of + 1 day)`` (ruling R-G: "a plan
+      cannot have already happened"), each a function of the READER's as-of
+      -- and this package reads no clock, deliberately (a walk that read one
+      made the posted ledger a function of when the sync happened to run, the
+      corruption shape plan step A3 removed from the loan side).
 
-    So this returns the rows THEMSELVES and the seam's cash fold owns the dating
-    and the valuation, exactly as the loan plan's PLANNED tier lives in
+    So this returns the items THEMSELVES and the seam's cash fold owns the
+    dating and the valuation, exactly as the loan plan's PLANNED tier lives in
     ``balance_at._plan`` rather than in ``loan_ledger`` (plan step C6a's ruling,
-    restated for cash).  That is also why it is a plain loader and not a
-    ``CashPlannedFact``: a fact type here would have to carry either no date (a
-    dataclass earning nothing over the row) or a clock-derived one (the thing the
-    ruling forbids).
+    restated for cash).  That is also why a row is returned as a plain row and
+    not a ``CashPlannedFact``: a fact type here would have to carry either no
+    date (a dataclass earning nothing over the row) or a clock-derived one (the
+    thing the ruling forbids); a movement in flight carries the day it
+    happened, which is a stored fact and not a derivation.
 
     **It takes no period window, for the same reason its settled twin does not.**
     An argument a caller can get wrong is a defect, not a contract (plan
@@ -466,16 +479,26 @@ def planned_cash_rows(
         Every still-Projected contributing row of the account's OWN (no
         shadow), with ``entries`` populated, followed by one
         :class:`~app.services.transfer_legs.PlannedTransferLeg` per live
-        still-projected transfer the account is on, its parent's pricing
-        relationships populated.  Unordered: the fold groups them by day.
+        still-projected transfer the account is on whose leg here is not yet
+        a dated movement, its parent's pricing relationships populated,
+        followed by one
+        :class:`~app.services.cash_ledger._events.InFlightMovement` per
+        un-dated purchase on the account.  Unordered: the fold groups them by
+        day.
     """
-    rows: list[Transaction | PlannedTransferLeg] = _unwindowed_contributing_rows(
-        account_id, scenario_id,
-        and_(is_projected_clause(Transaction), Transaction.transfer_id.is_(None)),
+    rows: list[Transaction | PlannedTransferLeg | InFlightMovement] = (
+        _unwindowed_contributing_rows(
+            account_id, scenario_id,
+            and_(
+                is_projected_clause(Transaction),
+                Transaction.transfer_id.is_(None),
+            ),
+        )
     )
     rows.extend(planned_transfer_legs(
         account_id, scenario_id, options=transfer_pricing_load_options(),
     ))
+    rows.extend(in_flight_movements(account_id, scenario_id))
     return rows
 
 
@@ -484,27 +507,27 @@ def _unwindowed_contributing_rows(
 ) -> list[Transaction]:
     """Return an account's contributing rows in one scenario, narrowed by the caller.
 
-    The ONE unwindowed row load behind both halves of the cash event stream --
+    The unwindowed ROW load behind the plan half of the cash event stream --
     :func:`planned_cash_rows` above (still-Projected, and since plan step
-    X-bi-6a no transfer shadow) and
-    :func:`app.services.cash_ledger.settled_cash_facts` (settled).  The two halves
-    partition the contributing set exactly: ``balance_contributing_clause``
-    admits Projected, Paid and Received, and the two callers narrow to
-    the first and the last three respectively -- the plan half then leaves its
-    shadows to :func:`app.services.transfer_legs.planned_transfer_legs`, which
-    derives the same legs from their parents.
+    X-bi-6a no transfer shadow).  **It was the one load behind BOTH halves
+    through ``X-bi-3e``**, the settled half narrowing it to the settled
+    statuses; since plan step ``balance:X-bi-4a`` the settled half reads no
+    row at all -- it is every dated MOVEMENT on the account, loaded with its
+    parent in one statement (``_events._movements_of``, ruling **R-BAL80**)
+    -- so the four-relationship parent chain this loader's options carry no
+    longer costs a fold anything on the settled side (ledger row
+    **BAL-501**, closed here).  What partitions the contributing set now is
+    the movement's DAY: dated movements are the actual, un-dated ones are in
+    flight, and this load is the plan's still-Projected rows beside them.
 
-    Extracted when the second half was written and ``duplicate-code`` reported
-    the eight shared lines.  PRIVATE, and imported across sibling modules exactly
-    as ``_amounts._entry_aware_amount`` already is: it is an implementation detail of
-    the two loaders, not a leaf surface a consumer should reach -- which is also
-    what keeps it out of the W9909 registry, structure doing what a fence entry
-    would otherwise have to.  Sharing it is not tidiness: the account / scenario
-    scope, the contributing gate, and ``selectinload(entries)`` are individually
-    load-bearing -- a missing ``selectinload(entries)`` is the seam that shipped
-    two different balances for one row in CRIT-01 / F-009 -- so a second
-    hand-written copy is exactly where one of them would go missing on one half
-    only.
+    Kept where it is rather than folded into its one caller: the account /
+    scenario scope, the contributing gate, and ``selectinload(entries)`` are
+    individually load-bearing -- a missing ``selectinload(entries)`` is the
+    seam that shipped two different balances for one row in CRIT-01 / F-009
+    -- and stating them once beside the narrowing parameter keeps "which rows
+    exist at all" a single clause rather than a filter written per caller.
+    PRIVATE, and out of the W9909 registry for the same reason as before:
+    an implementation detail of the loader, not a leaf surface.
 
     **``joinedload(pay_period)`` was a THIRD option here and pay-calendar plan
     step C4-a-1 deleted it, which is worth a paragraph because of what kept it
@@ -539,9 +562,8 @@ def _unwindowed_contributing_rows(
             over ``Transaction``, built from the shared builders in
             :mod:`app.utils.balance_predicates`
             (:func:`~app.utils.balance_predicates.is_projected_clause` composed
-            with ``transfer_id IS NULL`` for the plan,
-            ``status_id.in_(settled_status_ids())`` for the settled half),
-            never a status literal written at the call site.
+            with ``transfer_id IS NULL`` for the plan), never a status literal
+            written at the call site.
 
     Returns:
         ``list[Transaction]`` -- the matching rows, unordered, with ``entries``
@@ -550,11 +572,13 @@ def _unwindowed_contributing_rows(
     return (
         db.session.query(Transaction)
         # What a CONTRIBUTION pass reads, stated by the valuation rather than
-        # copied here (plan step X-au-g-2c-2).  The Projected arm carries no
-        # transfer shadow since plan step X-bi-6a -- its legs are derived from
-        # the parents, loaded with their own pricing set -- so the parent chain
-        # in this set now serves the SETTLED arm's shadows alone, which are
-        # valued from their record and reach it only off the settled path.
+        # copied here (plan step X-au-g-2c-2): the pricing set a still-Projected
+        # row is resolved through, plus its entries for the unspent-budget
+        # reservation.  The Projected arm carries no transfer shadow since plan
+        # step X-bi-6a, so the transfer chain inside this set serves nothing
+        # here; it is the valuation's own statement of what a contribution
+        # pass MAY read, and narrowing it per caller is the copied-clause
+        # shape this loader exists to avoid.
         .options(*valuation_load_options())
         .filter(
             Transaction.account_id == account_id,

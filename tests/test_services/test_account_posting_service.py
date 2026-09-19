@@ -34,6 +34,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
+from app.services.cash_flow_set import CashFlowSet
 from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
@@ -69,6 +70,7 @@ from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
     add_entry,
+    add_txn,
     figure_source_columns,
     generate_row_of,
     make_expense_template,
@@ -513,70 +515,69 @@ class TestWalkAccountLedger:
     def test_a_settled_row_with_no_day_is_REFUSED_by_this_walk_too(
         self, app, db, seed_user,
     ):
-        """The POSTED walk refuses an undated settled row, as the source walk does.
+        """The POSTED walk refuses an undated settled row behind a LEGACY leg.
 
-        Pinned separately from ``test_cash_walk.py``'s twin because it is a
+        Pinned separately from ``test_cash_walk.py`` because it is a
         different reader on a different table: this walk reaches
         ``balance_predicates.settled_day`` from ``_transaction_source_days``,
-        which resolves the day of a row it found through the POSTINGS.  The two
-        must not drift about what an undated settled row means, and the whole
-        point of the accessor is that they cannot -- so the pin is here to prove
-        the second call site really consults it.
+        which resolves the day of a row it found through the POSTINGS.  The
+        pin is here to prove that call site really consults it.
+
+        **The row's own leg is a LEGACY shape since plan step
+        ``balance:X-bi-4a``** (ruling **R-BAL80**): the writer posts nothing
+        under ``transaction_id`` any more, and the deploy resync brings every
+        such leg production held to zero.  So the one way a transaction-linked
+        non-zero net still reaches this arm is a legacy leg the resync has
+        not yet met, staged here through the balanced-write leaf exactly as
+        the writer once wrote it; the cash walk's own alarm moved to
+        ``integrity_check`` DC-11 with its row read.
         """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        from app.services import ledger_account_service
+        from app.services._posting_write import (
+            emit_typed_source_deltas, ledger_class_of,
+        )
+        from app.services.posting_reads import _ledger_account_for
+
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            # An envelope closed on the PURCHASES basis with a purchase still
-            # unposted, since plan step X-bi-3b: every stored-figure settle --
-            # a bill's since X-bi-3a, a paycheck's since 3b -- posts its money
-            # under its covering movement and the row's own leg is zero, so
-            # the transaction arm never meets one through the postings and
-            # there is nothing to refuse there (the movement's own day is
-            # what the walk's purchase arm refuses instead,
-            # ``test_a_posted_movement_with_no_day_is_REFUSED_by_this_walk``
-            # below).  A purchases-basis close stores no figure: its posted
-            # purchases carry their own legs and the UNPOSTED remainder is
-            # the row's leg, posted under ``transaction_id`` -- the one shape
-            # whose money still reaches this arm.
-            txn = generate_row_of(
-                make_expense_template(
-                    _db.session, seed_user, amount="200.00", name="Groceries",
-                    category_key="Groceries", is_envelope=True, account=account,
-                ),
-                seed_user["bootstrap_period"],
+            txn = add_txn(
+                _db.session, seed_user, seed_user["bootstrap_period"],
+                "Groceries", "200.00", status_enum=StatusEnum.DONE,
+                category_key="Groceries", account=account,
+                settled_on=seed_user["bootstrap_period"].start_date,
             )
-            add_entry(
-                _db.session, seed_user, txn, Decimal("200.00"),
-                seed_user["bootstrap_period"].start_date,
+            cash = _ledger_account_for(txn.account_id)
+            category = ledger_account_service.get_or_create_category_ledger_account(
+                txn.user_id, txn.category_id, ledger_class_of(txn),
             )
-            transaction_service.settle_transaction(
+            emit_typed_source_deltas(
                 txn,
-                settle_day=an_entered_day(
-                    seed_user["bootstrap_period"].start_date,
-                ),
+                targets={
+                    (txn.pay_period_id, txn.settled_on): {
+                        cash.id: Decimal("-200.00"), category.id: Decimal("200.00"),
+                    },
+                },
+                source=PostingSourceEnum.TRANSACTION,
+                description=txn.name,
+                log_label=f"legacy row leg {txn.id}",
+                transaction_id=txn.id,
             )
             _db.session.commit()
-            # The fixture's premise, measured: the row's OWN leg carries the
-            # unposted remainder, so a journal entry names ``transaction_id``.
             assert _db.session.query(JournalEntry).filter(
                 JournalEntry.transaction_id == txn.id,
-            ).count() == 1, "the fixture's money must post under the row"
-            # Break the row AFTER its postings exist, which is the only way to
-            # reach this walk with one: a bulk update bypasses the ORM, exactly
-            # as the real hazard does.  The break under test is the missing
-            # DAY on a settled STATUS, which no constraint can state -- the
-            # predicate is ``ref.statuses.is_settled`` and a CHECK cannot
-            # join.  The purchases RECORD stays: ``ck_transactions_settle_day_
-            # needs_a_record`` is an implication, so a retained record with
-            # no day is admissible (plan step X-au-c3).
+            ).count() == 1, "the legacy leg must post under the row"
+            # Break the row AFTER its postings exist: a bulk update bypasses
+            # the ORM, exactly as the real hazard does.  The purchases RECORD
+            # stays: ``ck_transactions_settle_day_needs_a_record`` is an
+            # implication, so a retained record with no day is admissible.
             _db.session.query(Transaction).filter(
                 Transaction.id == txn.id,
             ).update(
                 {
                     "settled_on": None,
-                    # The day's BASIS goes with the day, because
-                    # ``ck_transactions_settle_day_basis_pairing`` is a
-                    # BICONDITIONAL: a basis left behind with no day is as
-                    # unstorable as a day with no basis (plan step X-az).
+                    # The day's BASIS goes with the day
+                    # (``ck_transactions_settle_day_basis_pairing``).
                     "settled_day_basis_id": None,
                 },
                 synchronize_session=False,
@@ -738,7 +739,7 @@ class TestWalkAccountLedger:
             )
             _db.session.add(entry)
             _db.session.flush()
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             day_at = _PINNED_OPENING_AT + timedelta(days=40)
             _add_assertion(checking, "1000.00", day_at)
             governing = _add_assertion(
@@ -964,7 +965,7 @@ class TestWalkAccountLedger:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
             _db.session.commit()
 
@@ -1196,7 +1197,7 @@ class TestSyncAccountAnchorPostings:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -1267,7 +1268,7 @@ class TestSyncAccountAnchorPostings:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             _settle_expense(
                 seed_user, account, "150.00",
                 origin + timedelta(days=1),
@@ -1911,7 +1912,7 @@ class TestSyncEntryPoints:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             assert posting_service.account_posting_total(
@@ -2065,7 +2066,7 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
                 .order_by(PayPeriod.start_date)
                 .all()
             )
-            grid = balance_at.grid_balance_view(account, ctx)
+            grid = balance_at.grid_balance_view(CashFlowSet.single(account), ctx)
 
             compared = 0
             for period in periods:

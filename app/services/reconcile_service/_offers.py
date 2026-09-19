@@ -188,8 +188,8 @@ class OutstandingTransaction:
             later through its own CC Payback).  So a `$40` debit plus a `$60`
             card purchase is offered at `$100.00` on a screen captioned "tick
             everything your statement shows", against a statement showing
-            `$40`.  The LEDGER was right either way -- ``settled_cash_leg``
-            subtracts the credit sum -- and only the panel's figure was, so the
+            `$40`.  The LEDGER was right either way -- the row's leg
+            subtracted the credit sum -- and only the panel's figure was, so the
             fix is to print both rather than to change what a tick books:
             the RECORDED figure legitimately IS total spend.
         is_income: Whether this row is money ARRIVING.  The panel counts

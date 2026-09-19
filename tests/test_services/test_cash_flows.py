@@ -49,7 +49,7 @@ from decimal import Decimal
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
 from app.services import transaction_service
-from app.services.cash_ledger import sum_projected
+from app.services.cash_ledger import in_flight_movements, sum_projected
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -290,14 +290,30 @@ class TestTheTwoLegs:
 
 
 class TestTheReductionIsAdditiveOverRows:
-    """Each row is priced by its own rule, and the legs sum independently.
+    """Each item is priced by its own rule, and the legs sum independently.
 
     The property the fold depends on structurally: ``sum_projected`` is
     additive over disjoint groups, so a period's days sum to the period's net
     exactly -- which is why ``_cash_fold._planned_day_nets`` may reduce per DAY
     and ``_budget_legs`` may reduce the SAME rows per pay period and get
     answers that reconcile to the cent.
+
+    **The plan set holds a third kind since plan step ``balance:X-bi-4a``**
+    (ruling **R-BAL77**): an un-dated purchase is a movement IN FLIGHT, an
+    item of its own beside the envelope that now reserves only its UNSPENT
+    budget.  The cases below hand the reduction the account's in-flight
+    items with the rows (:func:`_with_in_flight`), and every figure is the
+    one the three-bucket reservation produced through ``X-bi-3e``:
+    ``max(E - P - C, U) == U + max(E - SUM(entries), 0)``.
     """
+
+    @staticmethod
+    def _with_in_flight(seed_user, *rows):
+        """Return *rows* plus the account's movements in flight, as the plan loads them."""
+        return [
+            *rows,
+            *in_flight_movements(seed_user["account"].id, seed_user["scenario"].id),
+        ]
 
     def test_two_envelopes_each_take_their_own_entries(
         self, app, db, seed_user, seed_periods,
@@ -321,9 +337,10 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, gas], _unreconciled(groceries, gas)) == (
-                _ZERO, Decimal("480.00"),
-            )
+            assert sum_projected(
+                self._with_in_flight(seed_user, groceries, gas),
+                _unreconciled(groceries, gas),
+            ) == (_ZERO, Decimal("480.00"))
 
     def test_a_row_without_entries_sums_beside_one_with_them(
         self, app, db, seed_user, seed_periods,
@@ -352,9 +369,10 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, rent, paycheck], _unreconciled(groceries, rent, paycheck)) == (
-                Decimal("2000.00"), Decimal("1600.00"),
-            )
+            assert sum_projected(
+                self._with_in_flight(seed_user, groceries, rent, paycheck),
+                _unreconciled(groceries, rent, paycheck),
+            ) == (Decimal("2000.00"), Decimal("1600.00"))
 
     def test_a_transfer_shadow_is_priced_like_any_other_row(
         self, app, db, seed_user, seed_periods,
@@ -396,6 +414,7 @@ class TestTheReductionIsAdditiveOverRows:
                 .one()
             )
 
-            assert sum_projected([groceries, shadow], _unreconciled(groceries, shadow)) == (
-                _ZERO, Decimal("700.00"),
-            )
+            assert sum_projected(
+                self._with_in_flight(seed_user, groceries, shadow),
+                _unreconciled(groceries, shadow),
+            ) == (_ZERO, Decimal("700.00"))

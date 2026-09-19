@@ -81,11 +81,11 @@ nothing and says so on its own first line. The code as committed is what those s
     - [x] **X-f6b-1** `d4eb2752` -- the sighting relation, coverage the declared window, the solve's
           candidates the line days + the stated day (**R-BI10**, **R-BAL71**, **R-BAL74**); no
           money. Closed **N-303**, **N-313**, **N-331**, **N-434**.
-    - [ ] **X-f6b-1b** `refactor(import): a line's merchant is a read over its sightings` -- the
-          sighting carries the merchant its word names, the line answers with the earliest surviving
-          sighting's that names one (one rule, SQL and Python), the stored key dropped by a
-          migration (**R-BI15**; before -2, so the adapter never writes one); no money. Closes
-          **BI-504**.
+    - [x] **X-f6b-1b** `5daa1393` -- the sighting carries the merchant key; the line's merchant is a
+          READ over its sightings, one correlated SQL producer wrapped read-only (**R-BI16**); the
+          word column and the line's key dropped by migration (**R-BI17**; the UP sweeps merchants
+          nothing names); `orphan_merchants_by_import` reads the sightings' keys. No money (306 of
+          306 equal on the restore). Closed **BI-504**.
     - [ ] **X-f6b-2** `feat(import): the SimpleFIN feed` -- `bank_feeds` under the renamed field key
           (**R-BI12**, **BI-503**), the claim and mapping, one sync function (**R-BI13**), a match
           carrying the reviewed day (**R-BI14**). Closes **N-338**, **BI-499**, **BI-503**.
@@ -99,28 +99,12 @@ nothing and says so on its own first line. The code as committed is what those s
 under rule 5 to `historical/bank_import_x_gi_leaves_as_built_2026-09-12.md`, on `X-gi-4`'s tick.
 **The X-ga..X-gj leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
 (**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`), and
-**the shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
-`historical/bank_import_x_*` files: every finding it did not close is a live `ledger.md` row, and
-what it leaves a LATER step is on that step's own entry.
+**the shipped X-gb..X-gf-3b-2 span and X-gk are ARCHIVED under rule 5** to their four as-built
+records under `historical/` (`bank_import_x_gb_x_gc`, `_x_gd`, `_x_ge`, `_x_gf`; X-gk has none) and
+their index rows to `historical/bank_import_shipped_steps_archived_2026-09-18.md` (on `X-f6b-1b`'s
+tick): every finding they did not close is a live `ledger.md` row, and what they leave a LATER step
+is on that step's own entry.
 
-- [x] **X-gb** `ec346c46` -- the delete door (**R-GM**), P-6. Closed **N-344**; opened **N-348**.
-- [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**..**R-GP**).
-- [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its identity and its store.
-- [x] **X-gd-1** `395b14f7` -- a merchant is a ROW (**R-GR**).
-- [x] **X-gd-2** `154cfcec` -- the rule STORE (**R-GS**, **R-GT**); **N-353** shut, **N-358** open.
-- [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**, **R-GU**); MONEY, no press. **N-359**.
-- [x] **X-ge-1** `6d3e3ca1` -- each tier publishes the refusals it used to swallow.
-- [x] **X-gf** `ff744d79` -- the review is an exception queue; minted **X-gi**.
-- [x] **X-gf-1** `a4db019f` -- an unmatched inflow becomes income (`bank_import:R-GW`).
-- [x] **X-gf-2** `64cfca05` -- the register is not the queue (**R-GX**, **R-GY**). Shut **N-358**,
-      **N-349**.
-- [x] **X-gf-3** `ff744d79` -- decomposed parent of the queue proper; ticked with its two.
-- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT, one SENTENCE. Shut **N-359**, **N-371**.
-- [x] **X-gf-3b** `ff744d79` -- decomposed parent of the queue's second leaf; ticked with two.
-- [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (**R-HC**). Closed **N-374**.
-- [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
-      **N-381** open.
-- [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**); opened **N-402** and **N-403**.
 - [x] **X-gi** `cd78499a` `refactor(import): the queue's replaced model leaves orphans` -- the
       DECOMPOSED parent of the exception queue's retirement, split 2026-09-05 at its own census into
       five leaves. **The census may delete nothing it has not shown orphaned**, because a route that
@@ -213,6 +197,13 @@ what it leaves a LATER step is on that step's own entry.
       swipes from card-side charges -- and the card-tender entry shape the loop must design over is
       the movement on the card CC-5 builds. Designing over the payback shape the card arc deletes is
       the mistake that withdrew `balance:X-au-i`.
+- [ ] **X-hc** `refactor(import): a row an accepted act names is the bank's` -- **R-BI18** (N-372's
+      round, X-f6b-2's design loop): its settle day and figure are observed facts, so every door
+      that would move them, its status or its existence REFUSES while the act stands ("undo the
+      match first"); the members' row-side keys become NO ACTION like the line-side key;
+      `_still_holds`, the fold and R-GX(c)'s whatever-its-age clause delete (R-GX(c) AMENDED when
+      this ships); its first act is the census of the doors it refuses at. After `balance:X-bi-4b`
+      (the figure's home moves there), beside `X-gl-2`. Closes **N-372**.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are
@@ -235,7 +226,9 @@ what it leaves a LATER step is on that step's own entry.
         the deletion of `_candidates.act_still_names_a_row` and most of
         `app/services/match_withdrawal`. **Without it X-gl-1's UNIQUE key is not earned**: a stale
         MATCH disposition would block a later SKIP on a genuinely unanswered line. FORK, unruled --
-        keeping the filter instead gives up the key, which is most of the reason to do the work.
+        keeping the filter instead gives up the key, which is most of the reason to do the work; a
+        THIRD option since **R-BI18** (2026-09-18): neither, because `X-hc` makes the state
+        unrepresentable (row-side keys NO ACTION, the doors refuse), so this waits on `X-hc`.
   - [ ] **X-gl-3** `feat(import): a rule states a disposition and a refusal` -- `merchant_rules`
         carries a nullable DISPOSITION beside a separate REFUSAL flag; *never a purchase* leaves the
         answer set and `RuleAnswer` is replaced by the verb set. Makes **R-JH** structural rather

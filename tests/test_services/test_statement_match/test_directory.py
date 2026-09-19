@@ -18,7 +18,7 @@ the thing it grades were deleted.
 """
 
 from dataclasses import fields
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -54,6 +54,7 @@ from ._builders import (
     a_merchant,
     a_rule,
     a_scope,
+    a_sighting,
     a_transaction,
     an_import,
     an_unexplained_outflow,
@@ -530,6 +531,43 @@ class TestTheActivityBesideTheAnswer:
             )
 
             assert entry.activity == MerchantActivity(0, None)
+
+    def test_a_line_two_imports_named_two_ways_counts_ONCE_for_the_earliest(
+        self, app, db, seed_user,
+    ):
+        """The count is of LINES by the line's merchant, not of sightings.
+
+        A line's merchant is the earliest surviving sighting that names one
+        (ruling **R-BI16**), so a line the CSV called ``Duke Energy`` and a
+        later source called ``DUKE ENERGY BILL`` is one line of ``Duke
+        Energy``'s, and the later word's merchant has no line at all here --
+        the directory pairs it to zero, exactly as it does an answered
+        merchant that outlived its lines.  A read grouped over the sightings
+        would count the line twice, once under each word.
+        """
+        with app.app_context():
+            earlier = an_import(
+                seed_user, created_at=datetime(2026, 3, 1, 12, tzinfo=timezone.utc),
+            )
+            later = an_import(
+                seed_user, created_at=datetime(2026, 3, 2, 12, tzinfo=timezone.utc),
+            )
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, earlier, amount="-18.00", posted_on=day,
+                merchant="Duke Energy",
+            )
+            a_sighting(seed_user, later, line, merchant="DUKE ENERGY BILL")
+            db.session.commit()
+
+            counted = merchant_activity(seed_user["account"].id)
+
+            assert counted == {
+                the_merchant_id(seed_user, "Duke Energy"): MerchantActivity(
+                    line_count=1, last_seen=day,
+                ),
+            }
+            assert the_merchant_id(seed_user, "DUKE ENERGY BILL") not in counted
 
     def test_the_read_is_scoped_to_the_account(self, app, db, seed_user):
         """A second account's lines are not counted against this one's.

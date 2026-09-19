@@ -61,13 +61,6 @@ _PARAM_FIELDS = {
     "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
 }
 
-# Name of the composite unique constraint that backstops the
-# loan rate-history double-submit fix (F-104 / C-22).  Mirrors the
-# literal in ``app/models/loan_features.py:RateHistory.__table_args__``
-# and ``migrations/versions/<C-22 revision>.py``; renaming the
-# constraint requires a coordinated edit across all three sites.
-_RATE_HISTORY_UNIQUE_CONSTRAINT = "uq_rate_history_account_effective_date"
-
 _create_schema = LoanParamsCreateSchema()
 _update_schema = LoanParamsUpdateSchema()
 _trueup_schema = LoanAnchorTrueupSchema()

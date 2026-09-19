@@ -36,8 +36,9 @@ is MEMBERSHIP** (ruling **R-GG**).
   when nothing is left in it and nothing has touched it since, and otherwise
   it simply stays.  **It never refuses**, because the container is not what
   the act is about and leaving one standing costs nothing: it budgets `0.00`,
-  holds nothing, and books nothing (``settled_cash_leg`` over an empty
-  ``purchases`` settlement is ``0.00``), so it is an ordinary row the owner
+  holds nothing, and books nothing (an empty ``purchases`` settlement has no
+  covering movement, so ``covered_cash_leg`` reads ``0.00``), so it is an
+  ordinary row the owner
   deletes in one click if they want it gone.
 
 **THREE things refuse an undo, and all THREE are asked before anything is
@@ -94,7 +95,7 @@ from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
 
-from app.exceptions import AmountUnresolvable, ValidationError
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import (
     StatementMatch,
@@ -485,18 +486,24 @@ def _subject_removal(
       record and the undo refuses rather than taking it.
     * would the door that removes it refuse anyway?  A purchase goes through
       ``entry_service``, which admits removing one from a settled row only
-      where the removal cannot change what that row's own close booked -- and
-      the container this act created can be put beyond that afterwards, by
-      being RE-CLOSED AT A STORED FIGURE -- the owner unticks *Track
-      individual purchases* on the settled row and types an Actual.
-      **Measured on the first build of this step**: the panel offered *"Undo
-      removes 1 row"* over such a container and the release then raised with
-      the act already deleted from the session, which breaks this package's
-      promise that a refused act leaves the database exactly as it was.
-      (The measurement was taken over an ARCHIVED container; plan step
+      where the row records its purchases as its figure (a ``purchases``
+      settlement; ruling **R-GG** amended by **R-BAL77**) -- and through plan
+      step ``X-bi-3e`` the container this act created could be put beyond
+      that afterwards, by being RE-CLOSED AT A STORED FIGURE: the owner
+      unticked *Track individual purchases* on the settled row and typed an
+      Actual.  **Measured on the first build of this step**: the panel offered
+      *"Undo removes 1 row"* over such a container and the release then
+      raised with the act already deleted from the session, which breaks this
+      package's promise that a refused act leaves the database exactly as it
+      was.  (The measurement was taken over an ARCHIVED container; plan step
       **balance:X-am** deleted that status, and this sentence named the
       stored-figure route beside it all along -- which is what caught an X-am
       draft arguing the arm had become unreachable and deleting its test.)
+      Ruling **R-BAL78** (plan step ``balance:X-bi-4a``) refuses the typed
+      figure over purchases at the verb and the seam, so that route is
+      unrepresentable now and ``test_release``'s case grades the refusal;
+      the question is still asked here, because the answer is the door's and
+      not this module's to assume.
 
     Args:
         creation: The creation record, carrying the revision this act left.
@@ -512,52 +519,25 @@ def _subject_removal(
         f"{subject.transaction.name}: {subject.description}"
         if is_purchase else subject.name
     )
-    # **A row the amount model can no longer price REFUSES the undo, and it
-    # refuses rather than raising** (adversarial security review 2026-08-24).
-    # This runs on the REVIEW PAGE's own render, where its sibling
-    # :func:`~._accepted_view._accepted_row` already guards the identical call
-    # and states why: a raise here would make the screen permanently
-    # unreachable for the account with no in-app repair, which is finding
-    # **N-302**'s shape.  Refusing is the honest answer as well as the safe
-    # one -- a door that cannot say what removing a row would take out of the
-    # books may not remove it.
-    try:
-        cash = (
-            _entry_cash(subject) if is_purchase
-            # The row's FAMILY (plan step **X-bi-3a**): the money a release
-            # takes out of the books sits on the row's covering movement,
-            # which goes with the row.
-            else status_seam.settled_family_leg(subject)
-        )
-    except AmountUnresolvable:
-        # **AN EDIT OUTRANKS AN UNPRICEABLE ROW, and plan step balance:X-bx is
-        # what made the pairing reachable.**  ``settled_cash_leg`` refuses a row
-        # that has not SETTLED now, rather than pricing its plan column, so the
-        # commonest way into this handler is an ordinary REVERT of a row this
-        # act minted settled (``_uncategorized.mint_uncategorized``) -- and a
-        # revert bumps ``version_id``, so the owner has edited it.  Reporting
-        # "the app can no longer work out what that row is worth" for a row the
-        # owner simply reverted is false and offers no repair, where the edit
-        # sentence below is true and tells them what to do.  The version test is
-        # made HERE rather than hoisted above the pricing so the priced path is
-        # untouched; the two branches state the same rule in the same order.
-        edited_since = subject.version_id != creation.created_version_id
-        return PlannedRemoval(
-            kind=RowKind.TRANSACTION, row_id=subject.id, label=label,
-            cash_amount=Decimal("0.00"), is_container=False, subject=subject,
-        ), (
-            (
-                f'Undoing this match would remove "{label}", which it created '
-                f"-- but you have edited that row since, so it is your record "
-                f"now.  Delete it yourself if you want it gone, then undo the "
-                f"match.  Nothing was changed."
-            ) if edited_since else (
-                f'Undoing this match would remove "{label}", which it created, '
-                f"but the app can no longer work out what that row is worth -- "
-                f"so it cannot tell you what removing it would take out of "
-                f"your books.  Nothing was changed."
-            )
-        )
+    # **Nothing here can fail to price** (ruling **R-BAL81**): a purchase is
+    # worth its own movement and a row what its covering movement moves, and
+    # a movement's figure is stored.  A row this act minted settled and the
+    # owner has since REVERTED (the commonest edit) is worth ``0.00`` -- its
+    # kept movement is un-dated -- and the version test below refuses the
+    # undo as an edit, which is the sentence that tells them what to do.
+    # Through ``X-bi-4a``'s first cut the row arm read ``settled_family_leg``,
+    # which REFUSED a reverted row, and this caught the refusal so the review
+    # page could not raise (finding **N-302**'s shape) and stated the same
+    # edit sentence from the except arm -- with a second sentence, "the app
+    # can no longer work out what that row is worth", for a refusal with no
+    # edit behind it, a state no door could write.  Both arms are one path
+    # now, and the second sentence is gone with the refusal.
+    cash = (
+        _entry_cash(subject) if is_purchase
+        # The money a release takes out of the books sits on the row's
+        # covering movement (plan step **X-bi-3a**), which goes with the row.
+        else status_seam.covered_cash_leg(subject)
+    )
     row = PlannedRemoval(
         kind=RowKind.PURCHASE if is_purchase else RowKind.TRANSACTION,
         row_id=subject.id,
@@ -574,7 +554,7 @@ def _subject_removal(
             f"Nothing was changed."
         )
     blocked = (
-        entry_service.removal_refusal(subject.transaction, subject)
+        entry_service.removal_refusal(subject.transaction)
         if is_purchase else None
     )
     if blocked is not None:
@@ -585,38 +565,33 @@ def _subject_removal(
     return row, None
 
 
-def _container_removal(container: Transaction) -> "PlannedRemoval | None":
-    """Return the removal for an emptied CONTAINER, or ``None`` to keep it.
+def _container_removal(container: Transaction) -> PlannedRemoval:
+    """Return the removal for an emptied CONTAINER.
 
-    **The price is READ rather than assumed**, because a settled row's own leg
-    is the amount model's answer and this module is not a second one -- an
-    emptied ``purchases`` settlement records ``0.00`` because that is what its
-    entries say.
-
-    **A container the model cannot price STAYS, and it does not refuse.**  Its
-    twin :func:`_subject_removal` turns the same failure into a refusal
-    because a subject is what the act is about; a container is not, so the
-    conservative answer is simply to leave it -- and the call has to be
-    guarded either way, because this runs on the review page's own render
-    where a raise would make the screen permanently unreachable for the
-    account, which is finding **N-302**'s shape.  Named by adversarial
-    financial review 2026-08-24 as the one such call left bare.
+    **The price is READ rather than assumed**, because what a row moves is the
+    cash ledger's answer and this module is not a second one: a container is
+    worth what its covering movement moves (ruling **R-BAL81**), and an
+    emptied ``purchases`` settlement has none, so it reads ``0.00``.  An
+    EDITED container never reaches here -- :func:`_container_survives` holds
+    it by its revision first -- and nothing here can refuse to price, a
+    movement's figure being stored.  Through ``X-bi-4a``'s first cut this
+    read ``settled_family_leg`` under a guard and returned ``None`` to keep a
+    container the amount model could not price (adversarial financial review
+    2026-08-24 named the call as the one left bare on the review page's
+    render, finding **N-302**'s shape); the only such container was a
+    reverted one, which the revision test already held.
 
     Args:
         container: The budget line this act created, now holding nothing.
 
     Returns:
-        Its :class:`PlannedRemoval`, or ``None`` when it cannot be priced.
+        Its :class:`PlannedRemoval`.
     """
-    try:
-        # The family, for the reason ``_subject_removal`` gives.
-        cash = status_seam.settled_family_leg(container)
-    except AmountUnresolvable:
-        return None
     return PlannedRemoval(
         kind=RowKind.TRANSACTION, row_id=container.id,
-        label=container.name, cash_amount=cash, is_container=True,
-        subject=container,
+        label=container.name,
+        cash_amount=status_seam.covered_cash_leg(container),
+        is_container=True, subject=container,
     )
 
 
@@ -684,7 +659,7 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
         container for container, creation in containers
         if not _container_survives(container, creation, going)
     ]
-    kept = [row for row in (_container_removal(c) for c in emptied) if row]
+    kept = [_container_removal(container) for container in emptied]
     rows = (*subjects, *kept)
     return PlannedRemovals(
         rows=rows,

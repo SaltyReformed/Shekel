@@ -144,14 +144,15 @@ def _a_card_payment(seed_user, posted_on):
         posted_on=posted_on,
         amount=Decimal("-793.23"),
         sequence_in_group=0,
-        merchant_id=merchant.id,
     )
     db.session.add(line)
     db.session.flush()
     db.session.add(StatementLineSighting(
         account_id=account.id, line_id=line.id, import_id=statement.id,
         description="ACH DEBIT CAPITAL ONE CRCARDPMT",
-        merchant="Capital One Credit Card",
+        # The KEY, on the sighting (ruling **R-BI16**): the line's merchant
+        # is the read over its sightings.
+        merchant_id=merchant.id,
         # **The SOURCE's own filing**, which is what ruling R-GJ reads --
         # ``_vocabulary.ACCOUNT_PAYMENT_CATEGORIES`` maps this exact string
         # for this source.  A merchant name alone parks nothing.

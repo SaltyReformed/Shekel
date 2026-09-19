@@ -209,9 +209,7 @@ def resolve_conflicts(transaction_ids, action, user_id):
         # movement the ledger no longer holds.  Idempotent and empty-handed for
         # a row whose family never posted, which is every other row here.
         for txn in restored:
-            posting_service.sync_transaction_postings(
-                txn, settled=txn.status.is_settled,
-            )
+            posting_service.sync_transaction_postings(txn)
         log_event(
             logger, logging.INFO, EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS,
             "Recurrence conflicts resolved (update)",

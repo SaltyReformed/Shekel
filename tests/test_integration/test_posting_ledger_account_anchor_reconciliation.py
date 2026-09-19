@@ -620,9 +620,9 @@ class TestAbsoluteInvariantPerAccount:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("250.00")
-            assert posting_service.settled_transaction_effect(
+            assert posting_service.posted_purchase_effect(
                 savings.id, scenario_id,
-            ) == Decimal("-300.00")  # both spends, the ledger-native cash effect
+            ) == Decimal("-300.00")  # both spends' movements, the ledger-native cash effect
 
             # The equity twin nets -(opening 500 + true-up 50) = -550.00.
             equity = ledger_account_of_kind(
@@ -904,7 +904,7 @@ class TestRevertAfterTrueupSelfHeals:
             status_seam.apply_status_change(
                 spend, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(spend, settled=False)
+            posting_service.sync_transaction_postings(spend)
             db.session.commit()
 
             assert posting_service.account_posting_total(

@@ -176,9 +176,7 @@ def apply_requested_status(
     apply_status_change(
         txn, new_status_id, settle_day=settle_day, settlement=settlement,
     )
-    posting_service.sync_transaction_postings(
-        txn, settled=txn.status.is_settled,
-    )
+    posting_service.sync_transaction_postings(txn)
 
 
 def _correction_for_status(

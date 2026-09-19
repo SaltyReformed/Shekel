@@ -475,6 +475,7 @@ class TestTheOfferNamesTheMerchantTheDoorFiledFor:
                 description="POINT OF SALE DEBIT L340 THING",
             )
             amazon = a_merchant(seed_user, "Amazon")
+            again = an_import(seed_user)
             db.session.commit()
             scope = a_scope(seed_user)
             review = review_set(scope)
@@ -482,15 +483,22 @@ class TestTheOfferNamesTheMerchantTheDoorFiledFor:
             assert {each.line_id: each.merchant_id for each in review.unmatched} == {
                 line.id: None,
             }
-            # The re-import's NULL-fill, landing from a second connection
-            # between the derivation and the press.
+            # The re-import's write, landing from a second connection between
+            # the derivation and the press: a SIGHTING naming the merchant
+            # (ruling **R-BI16**; the line itself is not written), which the
+            # line's merchant then reads as the earliest sighting naming one.
             with db.engine.connect() as connection:
                 connection.execute(
                     text(
-                        "UPDATE budget.bank_statement_lines "
-                        "SET merchant_id = :merchant WHERE id = :id"
+                        "INSERT INTO budget.statement_line_sightings "
+                        "(account_id, line_id, import_id, description, "
+                        "merchant_id) VALUES (:a, :l, :i, :d, :m)"
                     ),
-                    {"merchant": amazon.id, "id": line.id},
+                    {
+                        "a": line.account_id, "l": line.id, "i": again.id,
+                        "d": "POINT OF SALE DEBIT L340 THING (Amazon)",
+                        "m": amazon.id,
+                    },
                 )
                 connection.commit()
 

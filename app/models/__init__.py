@@ -74,6 +74,7 @@ from app.models.loan_features import RateHistory
 from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.credit_card_params import CreditCardParams
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import (
@@ -168,6 +169,7 @@ __all__ = [
     "EscrowComponentVersion",
     "InvestmentParams",
     "AssetAppreciationParams",
+    "CreditCardParams",
     "Merchant",
     "MerchantRule",
     "AccountExternalIdentity",

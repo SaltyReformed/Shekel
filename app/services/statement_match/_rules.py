@@ -734,10 +734,10 @@ def account_merchants(account_id: int) -> "dict[int, str]":
     :class:`~app.models.merchant.Merchant` row OUTLIVES its lines, so the union
     IS this table and the second half has nothing left to add.  The set is
     that union and no more because deleting an import removes the merchants
-    its lines alone named and no answer is about
+    its sightings alone name and no answer is about
     (``statement_import._reads.orphan_merchants_by_import``), the half that
     preserved nothing, and because no door mints a merchant it does not also
-    write onto a line (``statement_import._merchants.resolve_merchants``).
+    write onto a sighting (``statement_import._merchants.resolve_merchants``).
 
     **What it is still FOR is the sentence, not the scope.**  A rule names a
     ``merchant_id`` held to this account by

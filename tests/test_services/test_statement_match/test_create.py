@@ -67,7 +67,6 @@ from ._builders import (
     a_purchase,
     a_rule,
     a_scope,
-    a_submission,
     a_transaction,
     accepted_acts,
     an_answers,
@@ -790,11 +789,14 @@ class TestWhatTheCreateDoorRefuses:
     ):
         """One scope for the reader and the writer.
 
-        A row closed at a FIXED figure cannot record a new purchase: its gross
-        cannot rise, so ``settled_cash_leg`` would subtract money the gross
-        never held.  Measured on a production clone, `-163.95` became
-        `+203.67` -- an expense row publishing an inflow -- while the anchor
-        true-up moved `$0.00`, so the spending was never recorded at all.
+        A row closed at a FIXED figure cannot record a new purchase: its
+        stored figure was fixed before the purchase was weighed, so the
+        purchase's own movement would be counted beside the covering
+        movement that already carries the whole close (ruling **R-BAL80**).
+        Measured on a production clone under the row-leg fold of the time,
+        `-163.95` became `+203.67` -- an expense row publishing an inflow --
+        while the anchor true-up moved `$0.00`, so the spending was never
+        recorded at all.
         """
         with app.app_context():
             fixed = a_transaction(
@@ -809,10 +811,14 @@ class TestWhatTheCreateDoorRefuses:
             )
             offered = _offerable(seed_user)
             assert fixed.id not in {d.transaction_id for d in offered}
+            # The row holds its covering movement and nothing else.
+            assert fixed.purchases == []
+            before = db.session.query(TransactionEntry).count()
 
             with pytest.raises(ValidationError, match="not one this purchase"):
                 _record(seed_user, line, transaction_id=fixed.id)
-            assert db.session.query(TransactionEntry).count() == 0
+            assert db.session.query(TransactionEntry).count() == before
+            assert fixed.purchases == []
 
     def test_ANOTHER_USERS_category_is_refused(
         self, app, db, seed_user, seed_second_user,
@@ -1411,42 +1417,36 @@ class TestWhatTheScreenMayOFFER:
             )
             assert deposit.id not in self._offered(seed_user)
 
-    def test_an_envelope_ALREADY_MATCHED_to_a_line_is_not(
+    def test_an_envelope_closed_at_its_purchases_is_never_MATCHED_as_a_row(
         self, app, db, seed_user,
     ):
-        """``accept_match`` refuses a purchase whose parent another match names.
+        """The one envelope a purchase may join cannot be a match's own row.
 
-        **The refusal is WIDER than this door needs** (finding **N-317**), and
-        X-f6a-3c-1 re-measured how much: every destination this clause uniquely
-        removes is one a new purchase moves by `$0.00`, because a match settles
-        the envelope it names and only an envelope that settles FROM ITS
-        ENTRIES lands on the purchases basis the money clause admits.  It is
-        left whole anyway on the developer's ruling of 2026-08-19 -- a money
-        guard is not narrowed for a `$0.00` benefit -- so the screen stops
-        offering it and the width stays a finding rather than a fix.
+        Through plan step ``balance:X-bi-4a``'s first cut this case matched
+        such an envelope to a line AS A ROW (it was offered at its un-dated
+        purchases) and graded that the screen then stopped offering it as a
+        destination, because ``accept_match`` refuses a purchase whose parent
+        another match names (finding **N-317**, a guard wider than this door
+        needs, left whole on the developer's ruling of 2026-08-19).  Under
+        ruling **R-BAL81** the row is worth ``0`` to the offer and is not a
+        candidate -- its purchase is -- so no match can name it while it holds
+        one; the row stays the destination the case above says it is.  The
+        already-matched clause keeps its live subject, an envelope matched
+        EMPTY (``test_batch.py::test_a_creation_cannot_target_an_envelope_a_
+        match_claimed``).
         """
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
-            statement = an_import(seed_user)
             leg = statement_match.candidates_for(
                 seed_user["account"].id,
                 pay_calendar.calendar_for(seed_user["user"].id),
                 a_basis(seed_user),
             )
-            worth = next(
-                row.cash_amount for row in leg.rows
-                if row.row_id == envelope.id
-                and row.kind is statement_match.RowKind.TRANSACTION
-            )
-            line = a_bank_line(
-                seed_user, statement, amount=str(worth),
-                posted_on=seed_user["bootstrap_period"].start_date,
-            )
-            scope = a_scope(seed_user)
-            statement_match.accept_match(
-                a_submission(scope, lines=[line], transactions=[envelope]),
-                scope,
-            )
-            db.session.flush()
+            offered = {(row.kind, row.row_id) for row in leg.rows}
+            assert (statement_match.RowKind.TRANSACTION, envelope.id) not in offered
+            assert {
+                (statement_match.RowKind.PURCHASE, purchase.id)
+                for purchase in envelope.purchases
+            } <= offered
 
-            assert envelope.id not in self._offered(seed_user)
+            assert envelope.id in self._offered(seed_user)

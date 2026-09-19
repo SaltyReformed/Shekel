@@ -86,9 +86,7 @@ from tests._test_helpers import (
 from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transfer_amount,
-    settled_cash_leg,
 )
-from app.utils.balance_predicates import is_balance_contributing
 from app.services.row_valuation import settled_contribution
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
@@ -833,6 +831,16 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
     silently -- and the accessor's every reader asks what a row's money DID, so
     that answer reported a movement which had not happened.  It refuses on the
     STATUS now, so both cases below refuse and neither depends on the column.
+
+    **The reader case went with its reader** (ruling **R-BAL81**, plan step
+    ``balance:X-bi-4a``).  A third case drove ``cash_ledger.settled_cash_leg``
+    -- which guarded on ``is_balance_contributing`` alone, so the refusal one
+    call down was the whole of what stopped a `$100.00` Projected bill being
+    booked as confirmed cash -- to show the refusal reaching a real reader.
+    That function is deleted: a settled row is worth what its covering
+    movement moves, a stored figure, and no cash-ledger reader prices a row
+    through this accessor now.  Every surviving reader restricts its rows to
+    a settled status in SQL, so the refusal is graded where it lives.
     """
 
     def test_a_derived_transaction_refuses(
@@ -883,39 +891,6 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
                 AmountUnresolvable, match="cash_ledger.contribution_of",
             ):
                 _ = settled_contribution(txn)
-
-    def test_the_CASH_LEDGER_reader_refuses_the_same_row(
-        self, app, db, seed_user, seed_periods
-    ):
-        """The refusal reaches a real READER, not just the accessor.
-
-        A guard nobody has watched fire is ungraded, and the case above drives
-        the accessor directly.  This drives
-        :func:`~app.services.cash_ledger.settled_cash_leg` -- the "confirmed
-        cash effect" reader the posting writer and the cash walk both book from
-        -- with the same Projected, plan-owning row.
-
-        **What it pins is the money.**  ``settled_cash_leg`` guards only on
-        ``is_balance_contributing``, which does NOT test status, so before plan
-        step X-bx this returned ``-$100.00``: a confirmed outflow, booked onto
-        the account's ledger, for a bill that has not been paid.  The row still
-        carries that ``$100.00``, so nothing about the column stops it -- the
-        refusal one call down is the whole of what does.
-        """
-        with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-            )
-            db.session.add(txn)
-            db.session.flush()
-
-            # The row CONTRIBUTES, so the reader's own guard lets it through.
-            assert is_balance_contributing(txn) is True
-            assert txn.estimated_amount == Decimal("100.00")
-
-            with pytest.raises(AmountUnresolvable, match="has not settled"):
-                _ = settled_cash_leg(txn)
 
     def test_a_derived_transfer_refuses(self, app, db, seed_full_user_data):
         """The transfer twin refuses on the same shape.

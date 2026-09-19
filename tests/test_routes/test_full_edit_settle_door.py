@@ -56,7 +56,7 @@ from tests._test_helpers import (
     net_posted_by_day,
     settlement_basis_id,
 )
-from app.services import status_seam, transaction_service
+from app.services import entry_service, status_seam, transaction_service
 from app.services.cash_ledger import contribution_of, resolve_transaction_amount
 from app.services.row_valuation import settled_contribution, settled_figure
 
@@ -186,14 +186,18 @@ class TestTheDropdownBooksWhatTheRowCost:
     def test_the_dropdown_settles_at_the_entry_sum(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Picking Paid in the popover books $48.98, not the $80.00 budget.
+        """Picking Paid in the popover records $48.98, not the $80.00 budget.
 
         Shown to FIRE: routing this door back to ``status_seam`` books
-        ``$80.00`` and leaves ``actual_amount`` NULL.
+        ``$80.00`` -- a dated covering movement -- and leaves the record
+        stating the budget.
 
-        Arithmetic: one purchase of $48.98 against an $80.00 envelope, so
-        ``actual_amount`` is 48.98 and the checking leg is -48.98.  The $31.02
-        difference is budget that was never spent and must not be booked.
+        Arithmetic: one purchase of $48.98 against an $80.00 envelope, so the
+        record is 48.98 and the ledger holds NOTHING at the close (ruling
+        **R-BAL77**, plan step ``balance:X-bi-4a``: an un-dated purchase is
+        in flight, and the close books nothing of its own); dating the
+        purchase books its own -48.98.  The $31.02 difference is budget that
+        was never spent and must not be booked either way.
         """
         with app.app_context():
             txn = _gas_envelope(seed_user, seed_periods_today[3])
@@ -218,7 +222,15 @@ class TestTheDropdownBooksWhatTheRowCost:
             ) == Decimal("80.00")
             assert settled_contribution(reloaded) == Decimal("48.98")
             assert reloaded.settled_on == display_today()
-            # The ledger books what the row cost, not what it budgeted.
+            # The ledger books nothing at the close -- neither the budget nor
+            # the in-flight purchase -- and the purchase's own leg once dated.
+            assert _cash_leg(txn_id, seed_user["account"].id) == Decimal("0")
+            [purchase] = reloaded.purchases
+            entry_service.update_entry(
+                purchase.id, seed_user["user"].id,
+                settle_day=an_entered_day(display_today()),
+            )
+            db.session.commit()
             assert _cash_leg(txn_id, seed_user["account"].id) == Decimal(
                 "-48.98",
             )
@@ -335,13 +347,15 @@ class TestTheDropdownBooksWhatTheRowCost:
 class TestTheFieldWritesFlushInsideTheExceptionNet:
     """The derived-amount guard reads a LAZY relationship, so it FLUSHES.
 
-    ``settles_from_entries`` resolves ``tracks_purchases``, which for a
-    template-linked row is ``self.template.is_envelope`` -- a default
-    ``lazy="select"`` relationship (``models/transaction.py:324``).  Reading it
-    emits a SELECT, and a SELECT autoflushes the ``setattr`` loop's staged
-    mutations as the version-pinned UPDATE.  That made the request's FIRST flush
-    happen above the handler's own exception net and, worse, before
-    ``is_override`` was written.
+    ``settles_from_entries`` reads ``Transaction.purchases`` -- the ``entries``
+    one-to-many, a default ``lazy="select"`` relationship -- for every row
+    since plan step ``balance:X-bi-4a`` (ruling **R-BAL78** dropped the
+    ``tracks_purchases`` half, which read ``self.template.is_envelope``
+    through the ``template`` many-to-one).  Reading it emits a SELECT, and a
+    SELECT autoflushes the ``setattr`` loop's staged mutations as the
+    version-pinned UPDATE.  That made the request's FIRST flush happen above
+    the handler's own exception net and, worse, before ``is_override`` was
+    written.
 
     Found by adversarial review after the step had shipped, and the comment it
     contradicted is the tell: the handler claimed its three excepts "cover the
@@ -397,16 +411,20 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
 
         **And the row stays an ENVELOPE, with no purchases against it.**  The
         flush the ordering is about is the guard's ``entries`` read -- a
-        one-to-many the ORM autoflushes before querying -- and only an
-        envelope reaches it: ``tracks_purchases`` is asked first, and its
-        ``template`` read is a by-key many-to-one the ORM serves from the
-        identity map with no flush at all.  This case used to switch the
-        template to non-envelope, so the guard never flushed and the flag
-        could be written anywhere without a collision: measured 2026-09-11,
-        it passed with the flag moved below the guard AND with the flag
-        deleted outright, in that shape.  An envelope with no purchases still
-        settles on the MANUAL branch (``settles_from_entries`` needs both
-        halves), so the typed figure is honoured exactly as before.
+        one-to-many the ORM autoflushes before querying.  Through plan step
+        ``balance:X-bi-3e`` only an envelope reached it: ``tracks_purchases``
+        was asked first, and its ``template`` read is a by-key many-to-one
+        the ORM serves from the identity map with no flush at all, so this
+        case's switching the template to non-envelope meant the guard never
+        flushed and the flag could be written anywhere without a collision
+        (measured 2026-09-11: it passed with the flag moved below the guard
+        AND with the flag deleted outright, in that shape).  Since
+        ``balance:X-bi-4a`` every row's guard reads ``entries`` (ruling
+        **R-BAL78**), and the envelope shape is kept because it is the one
+        the case was written about.  An envelope with no purchases still
+        settles on the MANUAL branch (nothing is recorded against it, so
+        ``settles_from_entries`` is false), so the typed figure is honoured
+        exactly as before.
 
         Shown to FIRE: moving ``is_override`` back below the guard raises
         ``IntegrityError`` out of the handler (re-measured 2026-09-11 on the
