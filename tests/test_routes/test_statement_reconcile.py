@@ -2680,6 +2680,93 @@ class TestTheBooksAlreadyHoldSentenceIsONESpelling:
 
             assert "This pay period already holds" not in page
 
+    def test_an_OUTFLOW_card_prints_the_LEAVING_sentence_through_the_same_macro(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Ruling **bank_import:R-BI19**, plan step ``bank_import:X-f6b-2``.
+
+        The developer's own shape: a `$50.00` ``Food Lion`` purchase logged by
+        hand, a `$54.12` Food Lion swipe from the bank, no rule.  The near
+        tier's bound throws the pair away unreported, and this card had NO
+        positive signal at all (finding **N-381**).  It prints the shared
+        macro with the value's own words -- the template chooses nothing --
+        and the glyph title beside the sentence is the value's too.
+        """
+        with app.app_context():
+            groceries = an_envelope(seed_user)
+            a_purchase(
+                seed_user, groceries, amount="50.00", description="Food Lion",
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="-54.12",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="POINT OF SALE DEBIT L340 (Food Lion)",
+                merchant="Food Lion",
+            )
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert (
+                "Your records already hold 1 row(s) totalling -$50.00 leaving "
+                "that no bank line explains: Groceries: Food Lion -$50.00. If "
+                "this line is those, match it against them instead of "
+                "recording it here."
+            ) in page
+            assert (
+                "Your records already hold spending near this line that no "
+                "bank line explains, named for this merchant or inside its "
+                "envelope."
+            ) in page, "the glyph's title is the value's, not a fixed string"
+            assert "This pay period already holds" not in page
+
+    def test_a_REFUND_card_prints_the_ARRIVING_sentence_whole_on_the_purchase_side(
+        self, app, db, auth_client, seed_user,
+    ):
+        """Plan step ``bank_import:X-f6b-2``: the fact rides on the LINE now.
+
+        A merchant credit a rule claims files as a negative purchase (ruling
+        **R-II**), and its card had only the panel note until this step:
+        ``creatable_card`` set the money-at-risk field to ``None`` and only
+        the income branch drew the alert.  The line's own fact reaches the
+        purchase ADD branch now, so the refund card draws the amber alert
+        and the glyph with the ARRIVING words -- and this case asserts the
+        sentence WHOLE, tail included, which is what grades the reworded
+        macro as byte-identical for the value that existed before it.
+        """
+        with app.app_context():
+            envelope = an_envelope(seed_user, name="Home Improvement")
+            # Smaller than the refund, or the arriving fact's own proof
+            # (a deposit smaller than the smallest row) drops it.
+            a_transaction(
+                seed_user, name="Interest", amount="20.00", income=True,
+            )
+            a_bank_line(
+                seed_user, an_import(seed_user), amount="28.29",
+                posted_on=seed_user["bootstrap_period"].start_date,
+                description="POINT OF SALE L340 (Amazon)", merchant="Amazon",
+            )
+            db.session.commit()
+            a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+            db.session.commit()
+
+            page = " ".join(_page(auth_client, seed_user).split())
+
+            assert "refund back into a budget line" in page, (
+                "the card is the purchase side's, not the income branch's"
+            )
+            assert (
+                "This pay period already holds 1 row(s) totalling $20.00 your "
+                "records say arrived and no bank line explains: Interest "
+                "$20.00. If this line is those, match it against them instead "
+                "of recording it here."
+            ) in page
+            assert (
+                "This pay period already holds money arriving that no bank "
+                "line explains."
+            ) in page, "the glyph's title is the arriving value's"
+            assert "Your records already hold" not in page
+
 
 class TestThePaneOffersWHEREADifferenceGoes:
     """Plan steps **bank_import:X-gj-3a** and **X-gp**; rulings **R-GD(a)**,

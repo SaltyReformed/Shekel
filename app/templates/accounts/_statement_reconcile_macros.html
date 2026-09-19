@@ -1,6 +1,6 @@
 {% from "_money_macros.html" import money %}
 {% from "accounts/_statement_undo_macros.html" import undo_form, undo_removals %}
-{% from "accounts/_statement_queue_macros.html" import books_already_hold %}
+{% from "accounts/_statement_queue_macros.html" import held_alert %}
 
 {# THE THREE CARDS THIS PAGE IS MADE OF, and the panel one click behind one of
    them.
@@ -191,6 +191,12 @@
     <span class="font-mono">{{ card.line.happened_on }}</span>.
   </p>
   {% endif %}
+  {# WHAT THE BOOKS MAY ALREADY HOLD THIS AS (ruling bank_import:R-BI19, plan
+     step X-f6b-2): the rows named for this merchant or inside the envelope
+     the rule would file into, printed above the control that would record
+     the line a second time.  The income branch below has had its twin since
+     X-gj-2b; this side had NO positive signal at all (finding N-381). #}
+  {% if card.already_held %}{{ held_alert(card.already_held) }}{% endif %}
   <div class="rec-add" data-rec-add>
     <label class="form-label small mb-1" for="destination-{{ card.line.line_id }}">
       Where does it go?
@@ -273,12 +279,7 @@
      rather than left to be inferred from a missing destination, which is the
      defect plan step X-f6a-3c-2 corrected on the purchase side. #}
   <input type="hidden" name="destination-{{ card.line.line_id }}" value="income">
-  {% if card.arrivals_already_held %}
-  <div class="alert rec-risk d-flex gap-2 align-items-start py-2 mb-2" role="alert">
-    <i class="bi bi-exclamation-triangle mt-1"></i>
-    <div class="small">{{ books_already_hold(card.arrivals_already_held) }}</div>
-  </div>
-  {% endif %}
+  {% if card.already_held %}{{ held_alert(card.already_held) }}{% endif %}
 
   {% elif offer.is_skip %}
   {# THE FOURTH VERB, LIT (plan step bank_import:X-gj-4b, rulings R-JG and
@@ -374,9 +375,9 @@
     </div>
     <div class="rec-sentence">
       {{ sentence(card.sentence) }}
-      {% if card.arrivals_already_held %}
+      {% if card.already_held %}
       <i class="bi bi-exclamation-triangle rec-risk-glyph"
-         title="This pay period already holds money arriving that no bank line explains."></i>
+         title="{{ card.already_held.glyph_title }}"></i>
       {% endif %}
       {# THE CARET, on every card, showing that it opens.  It is the whole
          affordance on a card with no suggestion, whose sentence already
