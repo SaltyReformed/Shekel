@@ -1459,10 +1459,14 @@ class TestTheReportReadsTheCashFlowSet:
         INTO checking (allowed), its source and its expense shadow re-pointed
         onto the card by assignment, and only THEN settled through
         ``update_transfer`` -- the settle half of ``create_settled_transfer``,
-        split out so the covering movement a settle writes on each shadow's
-        own account (plan step balance:X-bi-3a; the money the fold and the
-        posting writer read since X-bi-4a, ruling R-BAL80) lands on the
-        planted accounts rather than on the helper.  The savings account is
+        split out because the order is load-bearing: the covering movement
+        a settle writes on each shadow's own account (plan step
+        balance:X-bi-3a) would FOLLOW a later re-point (the parent-account
+        key cascades ON UPDATE), but the posted ledger books the pair off
+        ``xfer.from_account_id`` at settle time and does not follow one, so
+        settle-then-re-point would leave a leg on the helper's ledger
+        account.  Neither reader here reads postings; the order is kept so
+        the planted state is whole.  The savings account is
         not a member of the set and holds no transaction row once the shadow
         has moved.  The plant carries its own tell, because an UN-planted
         fixture (helper -> checking, never re-pointed) reads the same $165.00
