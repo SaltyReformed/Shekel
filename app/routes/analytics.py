@@ -68,8 +68,8 @@ def _validate_owned_or_abort(model, pk):
 
     A ``pk`` of ``None`` means "query argument absent" -- bypass
     validation and let the caller's downstream logic supply a
-    user-scoped default (e.g. the user's first active checking
-    account, or the user's current pay period).  The caller MUST
+    user-scoped default (e.g. the cash-flow set's primary, or the
+    user's current pay period).  The caller MUST
     NOT attempt to use the return value when passing ``None``.
 
     Audit reference: F-039 + F-098 / commit C-30 of the
@@ -157,7 +157,13 @@ def calendar_tab():
         view: 'month' (default) or 'year'.
         year: Calendar year (default: current year).
         month: Calendar month 1-12 (default: current month).
-        account_id: Optional account filter.
+        account_id: The BALANCE account, with the meaning the grid's
+            ``?account_id=`` has since plan step ``credit_card:CC-4-3``: the
+            day cells hold the paycheck's rows across the owner's cash-flow
+            set (checking and its cards, ruling R-CC16) and this names the
+            member whose balance line renders; an owned cash-flow account
+            outside the set is its own single-account calendar; a refused
+            id 404s (below).  Absent, the set's primary.
 
     A direct (non-HTMX) request renders the analytics shell with the
     Calendar tab active (D13), which then auto-loads this partial.
@@ -197,12 +203,16 @@ def calendar_tab():
     threshold = settings.large_transaction_threshold if settings else 500
     low_balance = settings.low_balance_threshold if settings else 500
 
+    # The settings row this route already holds is the saved-default layer
+    # the set's primary reads (plan step CC-4-3): passed down rather than
+    # loaded a second time inside the service.
     try:
         if view == "year":
-            return _render_year_view(year, account_id, threshold)
+            return _render_year_view(year, account_id, threshold, settings)
         data = calendar_service.get_month_detail(
             user_id=current_user.id, year=year, month=month,
             account_id=account_id, large_threshold=threshold, today=today,
+            user_settings=settings,
         )
         return _render_month_view(data, year, month, low_balance, today)
     except CalendarAccountNotResolvableError:
@@ -302,10 +312,11 @@ def spending_tab():
     vs-average / payment-timing chips, and the trailing-12 emphasis month
     chart with click-to-navigate bars), the merged "Where It Went" ledger
     with its By size / By change lens on a month-over-month basis, and the
-    Estimate Surprises rail.  The surface is MEASURED (settled expenses on
-    the user's active checking account); the account scope and settled basis
-    are labeled on screen.  A user with no active checking account or no
-    baseline scenario gets the empty state.
+    Estimate Surprises rail.  The surface is MEASURED (settled expenses
+    across the owner's cash-flow set -- the primary grid account and its
+    cards, plan step ``credit_card:CC-4-3``); the balance account's name and
+    the settled basis are labeled on screen.  A user with no grid-eligible
+    account or no baseline scenario gets the empty state.
 
     The producer accepts pay-period / month / year windows, but S-P2 exposes
     only the calendar-month picker (the S-P1 gate ruling).  The default is the
@@ -340,7 +351,7 @@ def spending_tab():
         window_type="month", month=month, year=year,
     )
     report = spending_report_service.compute_spending_report(
-        current_user.id, window,
+        current_user.id, window, user_settings=current_user.settings,
     )
 
     return render_template(
@@ -594,13 +605,14 @@ def _render_month_view(data, year, month, low_balance, today):
     )
 
 
-def _render_year_view(year, account_id, threshold):
+def _render_year_view(year, account_id, threshold, settings):
     """Render the year overview with 12 month cards."""
     data = calendar_service.get_year_overview(
         user_id=current_user.id,
         year=year,
         account_id=account_id,
         large_threshold=threshold,
+        user_settings=settings,
     )
 
     # Attach month names to each MonthSummary for template display.

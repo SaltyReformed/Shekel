@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
@@ -66,17 +65,19 @@ class AcceptedRow:
         label: What to call the app row.
         settled_on: The day it currently records, which is the bank's own day
             for a match still in agreement.
-        cash_amount: Its signed cash effect NOW, or ``None`` when the amount
-            model can no longer price it.  Carried because
+        cash_amount: Its signed cash effect NOW -- what its covering movement
+            or its own movement moves (ruling **R-BAL81**), ``0.00`` for a
+            member soft-deleted or reverted since.  Carried because
             :func:`_still_holds` re-asks the balance the accept door checked,
-            and a member that has since been soft-deleted contributes zero --
-            which no test over days could see.
+            and such a member contributes zero -- which no test over days
+            could see.  It was ``Decimal | None`` while a reverted member's
+            valuation could refuse (through ``X-bi-4a``'s first cut).
         agrees: Whether that day is still the one the match asserted.
     """
 
     label: str
     settled_on: "date | None"
-    cash_amount: "Decimal | None"
+    cash_amount: Decimal
     agrees: bool
 
 
@@ -524,12 +525,19 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
     """Return one member of an accepted match, valued as it stands NOW.
 
     **The valuation is the cash ledger's, and it is what makes a soft-deleted
-    member visible.**  ``settled_cash_leg`` answers ``0.00`` for a row that
-    contributes nothing -- soft-deleted, Credit or Cancelled -- so a member
-    that has quietly left the balance shows up in :func:`_still_holds`'s sum
-    even though its recorded day is untouched.  A purchase takes the same gate
-    through its PARENT, which is ruling **R-FM**: a non-contributing row's
-    purchases post nothing either.
+    member visible.**  ``covered_cash_leg`` answers ``0.00`` for a row that
+    contributes nothing -- soft-deleted, Credit or Cancelled -- and for one
+    whose covering movement is un-dated (REVERTED since the match was
+    accepted, plan step ``X-bi-3e-2``), so a member that has quietly left
+    the balance shows up in :func:`_still_holds`'s sum even though its
+    recorded day is untouched.  A purchase takes the same gate through its
+    PARENT, which is ruling **R-FM**: a non-contributing row's purchases post
+    nothing either.  Nothing here can fail to price: a movement's figure is
+    stored (ruling **R-BAL81**).  Through ``X-bi-4a``'s first cut the
+    transaction arm read ``settled_family_leg``, which REFUSED a reverted
+    member, and this caught the refusal as ``None`` so the group was offered
+    for re-review rather than the page raising (finding **N-302**'s shape);
+    the arithmetic says the same thing now.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
@@ -541,25 +549,11 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
         Its :class:`AcceptedRow`.
     """
     if isinstance(row, Transaction):
-        try:
-            # The row's FAMILY (plan step **X-bi-3a**): a settled bill's own
-            # leg is zero and its covering movement carries the money, and
-            # this register compares the member against the bank's line --
-            # the same valuation the offer and the post-apply check use.
-            amount = status_seam.settled_family_leg(row)
-        except AmountUnresolvable:
-            # **A member the amount model cannot price stops the match holding
-            # rather than stopping the page.**  This row is already a match
-            # MEMBER, so it is read on every load and the owner cannot
-            # un-select it -- a raise here would make the screen permanently
-            # unreachable for the account, with no in-app repair, which is
-            # finding N-302's shape.  ``None`` propagates into
-            # :func:`_still_holds` as a sum that cannot be taken, so the group
-            # is offered for re-review, which is the honest answer.
-            amount = None
         return AcceptedRow(
             label=row.name, settled_on=row.settled_on,
-            cash_amount=amount,
+            # What the row's covering movement moves (ruling **R-BAL81**) --
+            # the same valuation the offer and the post-apply check use.
+            cash_amount=status_seam.covered_cash_leg(row),
             agrees=row.settled_on == posts_on,
         )
     # **A CARD purchase moves no cash through THIS account at all** -- it
@@ -609,8 +603,6 @@ def _still_holds(
         nothing to any balance, so only the total can see it has gone.
     """
     if not rows:
-        return False
-    if any(row.cash_amount is None for row in rows):
         return False
     if any(row.settled_on != posts_on for row in rows):
         return False

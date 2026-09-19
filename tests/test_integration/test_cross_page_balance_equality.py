@@ -420,6 +420,7 @@ def _calendar_value(ctx):
         year=ctx["year"],
         month=ctx["month"],
         account_id=ctx["account_id"],
+        user_settings=None,
     )
     return detail.projected_end_balance
 

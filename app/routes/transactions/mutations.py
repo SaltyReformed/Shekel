@@ -358,9 +358,7 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
         if not unlocks:
             _apply_status_or_postings(txn, data, new_status_id)
         elif _POSTING_RELEVANT_FIELDS & data.keys():
-            posting_service.sync_transaction_postings(
-                txn, settled=txn.status.is_settled,
-            )
+            posting_service.sync_transaction_postings(txn)
         if reverts_credit:
             # Inside the StaleDataError net deliberately: the payback
             # lookup autoflushes the already-dirtied row (the
@@ -476,9 +474,7 @@ def _apply_status_or_postings(txn, data, new_status_id):
         # reason as the caller's payback delete: the reconcile's flush
         # autoflushes the version-pinned row, so a concurrent commit
         # surfaces here as a 409, not a 500.
-        posting_service.sync_transaction_postings(
-            txn, settled=txn.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(txn)
 
 
 def _stale_form_conflict(txn, data):

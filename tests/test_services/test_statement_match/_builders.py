@@ -57,6 +57,7 @@ from app.services.statement_match import (
 from app.services.one_off import OneOffToPlace, place_one_off
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    cover_bare_settled_row,
     figure_source_columns,
     generate_row_of,
     last_covered_day,
@@ -98,7 +99,17 @@ def a_transaction(
             the basis a settle through the ordinary door writes, and the figure
             is the row's own estimate -- which is what
             ``transaction_service.settle_transaction`` resolves for a row that
-            owns its amount.
+            owns its amount.  **And it gets the COVERING MOVEMENT the seam
+            mirrors that record as** (plan step ``balance:X-bi-3a``; written
+            here through :func:`tests._test_helpers.cover_bare_settled_row`,
+            the seam's own writer, as :func:`tests._test_helpers.add_txn`
+            does): since ruling **R-BAL81** a settled row is worth what that
+            movement moves, so a record laid bare WITHOUT it is a row the
+            matcher prices at ``0`` and never offers -- a state no door
+            writes, and one this package graded 27 cases against through
+            ``X-bi-4a``'s first cut, when the matcher still priced the bare
+            record itself (measured 2026-09-18: 45 failures in this package
+            under R-BAL81 became 18 on this change alone).
         status: Its status.
         is_envelope: Whether it tracks purchases.
         period: The pay period to file it under; the bootstrap one by default.
@@ -187,6 +198,8 @@ def a_transaction(
         for column, value in settlement.items():
             setattr(txn, column, value)
     db.session.flush()
+    if settled_on:
+        cover_bare_settled_row(db.session, txn, amount)
     return txn
 
 

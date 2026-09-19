@@ -33,6 +33,7 @@ from app.services import (
     status_seam,
 )
 from tests._test_helpers import (
+    create_account_of_type,
     create_savings_account,
     create_transfer,
     eras_of,
@@ -42,7 +43,9 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
     restate_fixture_era,
     rhythm_of,
+    set_default_grid_account,
     settle_day_columns,
+    cover_bare_settled_row,
     settlement_columns,
     state_template_price,
 )
@@ -168,6 +171,8 @@ def _add_transaction(
         ).items():
         setattr(txn, _column, _value)
     db_session.flush()
+    if default_settle_day(period, status_id) is not None:
+        cover_bare_settled_row(db_session, txn, amount, settled_amount)
     return txn
 
 
@@ -232,6 +237,7 @@ class TestMonthDetailEmpty:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=4,
+                user_settings=None,
             )
             assert result.total_income == Decimal("0")
             assert result.total_expenses == Decimal("0")
@@ -275,6 +281,7 @@ class TestMonthDetailIncomeAndExpenses:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert result.total_income == Decimal("4000.00")
             assert result.total_expenses == Decimal("1000.00")
@@ -297,6 +304,7 @@ class TestDayAssignment:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert 15 in result.day_entries
             assert len(result.day_entries[15]) == 1
@@ -316,6 +324,7 @@ class TestDayAssignment:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert 2 in result.day_entries
             assert result.day_entries[2][0].name == "Paycheck"
@@ -347,6 +356,7 @@ class TestDayAssignment:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             # Should fall back to period start_date (Jan 2).
             assert 2 in result.day_entries
@@ -375,6 +385,7 @@ class TestDayAssignment:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             entries = result.day_entries[5]
             amounts = [e.amount for e in entries]
@@ -410,11 +421,13 @@ class TestNoDuplicates:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             feb = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=2,
+                user_settings=None,
             )
             # Clamped to period 1's end (Jan 29): counted in January...
             assert jan.total_expenses == Decimal("300.00")
@@ -436,6 +449,7 @@ class TestNoDuplicates:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             # Only one entry should exist.
             all_entries = [
@@ -462,6 +476,7 @@ class TestLargeTransactions:
                 year=2026,
                 month=1,
                 large_threshold=500,
+                user_settings=None,
             )
             entry = result.day_entries[5][0]
             assert entry.is_large is True
@@ -480,6 +495,7 @@ class TestLargeTransactions:
                 year=2026,
                 month=1,
                 large_threshold=500,
+                user_settings=None,
             )
             assert result.day_entries[5][0].is_large is True
 
@@ -497,6 +513,7 @@ class TestLargeTransactions:
                 year=2026,
                 month=1,
                 large_threshold=500,
+                user_settings=None,
             )
             assert result.day_entries[5][0].is_large is False
 
@@ -521,6 +538,7 @@ class TestIncomeExpenseClassification:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert result.total_income == Decimal("3000.00")
             assert result.total_expenses == Decimal("1200.00")
@@ -567,6 +585,7 @@ class TestIncomeExpenseClassification:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert result.day_totals[2] == (Decimal("3000.00"), Decimal("400.00"))
             assert result.day_totals[5] == (Decimal("0"), Decimal("1200.00"))
@@ -598,6 +617,7 @@ class TestDeletedTransactions:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             all_entries = [
                 e for entries in result.day_entries.values() for e in entries
@@ -631,6 +651,7 @@ class TestCategoryInfo:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             entry = result.day_entries[10][0]
             assert entry.category_group == "Auto"
@@ -654,8 +675,258 @@ class TestDefaultAccount:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert result.total_expenses == Decimal("100.00")
+
+
+class TestTheCalendarReadsTheCashFlowSet:
+    """The day cells hold the paycheck's rows across the set (plan step CC-4-3).
+
+    Developer ruling ``credit_card:R-CC16``: the phone bill that is always
+    paid by card is a row ON the card, so a calendar that read one account's
+    rows dropped it from the month it is due in.  The rows are the owner's
+    cash-flow set's now, through the one clause
+    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`); the balance
+    line, the month-end figure and the scope name stay ONE member's, and
+    ``account_id`` names that member the way the grid's override does.
+
+    April flows, dated forward of the suite's frozen today (2026-03-20) so a
+    projected row lands on its own day (ruling R-G): Rent $300.00 on
+    checking due 04-02, Phone $45.00 on the card due 04-05, both in period 6
+    (Mar 27 -- Apr 9).  Checking's anchor is $1000.00 (the seed); the card's
+    is -$500.00 asserted the day before today (the factory).  Month-end on
+    checking's line: 1000.00 - 300.00 = 700.00; on the card's:
+    -500.00 - 45.00 = -545.00.  Every case plants a card, because an owner
+    with none is a set of one and cannot tell the clause from the filter.
+    """
+
+    @staticmethod
+    def _card(seed_user, db_session):
+        """Create an active Credit Card account for *seed_user*."""
+        return create_account_of_type(
+            seed_user, db_session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+
+    @staticmethod
+    def _expense_on(seed_user, period, account, name, amount, due_date):
+        """Place a projected one-off EXPENSE row on *account* in *period*."""
+        return one_off_row_of(
+            period, name=name, amount=Decimal(amount),
+            user_id=seed_user["user"].id, account_id=account.id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            due_date=due_date,
+        )
+
+    def _april(self, seed_user, seed_periods, db_session, card):
+        """Plant the class docstring's two April rows."""
+        self._expense_on(
+            seed_user, seed_periods[6], seed_user["account"], "Rent",
+            "300.00", date(2026, 4, 2),
+        )
+        self._expense_on(
+            seed_user, seed_periods[6], card, "Phone", "45.00",
+            date(2026, 4, 5),
+        )
+        db_session.commit()
+
+    def test_a_bill_on_the_card_is_on_the_months_calendar(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The card's row is a day cell and a month total; the line is checking's.
+
+        total_expenses = 300.00 + 45.00 = 345.00; the 5th holds "Phone";
+        ``account_name`` is Checking and the month-end balance is checking's
+        700.00 -- the rows are the set's, the balance one member's.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            self._april(seed_user, seed_periods, db.session, card)
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                today=date(2026, 3, 20),
+                user_settings=None,
+            )
+            assert result.total_expenses == Decimal("345.00")
+            assert [e.name for e in result.day_entries[5]] == ["Phone"]
+            assert result.account_name == "Checking"
+            assert result.projected_end_balance == Decimal("700.00")
+            assert result.daily.daily_balances[30] == Decimal("700.00")
+
+    def test_a_member_named_by_account_id_goes_on_the_line(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """``account_id=<card>`` is the same paycheck, seen from the card.
+
+        The rows are unchanged (345.00 of expenses, Rent still on the 2nd);
+        the scope name and the month-end balance are the card's, -545.00.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            self._april(seed_user, seed_periods, db.session, card)
+
+            result = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                account_id=card.id, today=date(2026, 3, 20),
+                user_settings=None,
+            )
+            assert result.total_expenses == Decimal("345.00")
+            assert [e.name for e in result.day_entries[2]] == ["Rent"]
+            assert result.account_name == "Rewards Card"
+            assert result.projected_end_balance == Decimal("-545.00")
+            assert result.daily.daily_balances[30] == Decimal("-545.00")
+
+    def test_a_transfer_between_members_shows_once_from_the_lines_side(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Ruling R-CC23 on the calendar: the far leg is not a day cell.
+
+        A $165.00 checking -> card payment due 04-08: on checking's calendar
+        it is one expense (165.00 out, 0.00 in); on the card's it is one
+        income (165.00 in, 0.00 out).  Loading every member's rows without
+        the far-leg arm would put BOTH shadows on both calendars -- 165.00
+        in and 165.00 out on each -- the owner's own payment read as income.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            create_transfer(
+                seed_user, db.session, seed_user["account"], card,
+                seed_periods[6], amount=Decimal("165.00"),
+                due_date=date(2026, 4, 8),
+            )
+            db.session.commit()
+
+            checking_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                user_settings=None,
+            )
+            card_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                account_id=card.id,
+                user_settings=None,
+            )
+            assert checking_view.total_expenses == Decimal("165.00")
+            assert checking_view.total_income == Decimal("0")
+            assert card_view.total_income == Decimal("165.00")
+            assert card_view.total_expenses == Decimal("0")
+
+    def test_an_account_outside_the_set_is_its_own_calendar(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """``account_id=<savings>`` is the single-account calendar as before.
+
+        A $75.00 fee on savings due 04-03 beside the class's two rows: the
+        savings calendar holds 75.00 of expenses and neither Rent nor Phone;
+        checking's holds 345.00 and not the fee.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            self._expense_on(
+                seed_user, seed_periods[6], savings, "Fee", "75.00",
+                date(2026, 4, 3),
+            )
+            self._april(seed_user, seed_periods, db.session, card)
+
+            savings_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                account_id=savings.id,
+                user_settings=None,
+            )
+            checking_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                user_settings=None,
+            )
+            assert savings_view.total_expenses == Decimal("75.00")
+            assert savings_view.account_name == "Savings"
+            assert checking_view.total_expenses == Decimal("345.00")
+
+    def test_an_archived_owned_account_is_refused_not_fallen_through(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An explicit id the admission test refuses raises, as a loan's does.
+
+        The analytics policy the set twin keeps: a question about THAT
+        account, never answered with the primary's calendar.  The loan case
+        is graded end to end in ``test_routes/test_analytics.py``; this is
+        the archived arm, which nothing else pins.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Old Savings", Decimal("0.00"),
+            )
+            savings.is_active = False
+            db.session.commit()
+
+            with pytest.raises(CalendarAccountNotResolvableError):
+                calendar_service.get_month_detail(
+                    user_id=seed_user["user"].id, year=2026, month=4,
+                    account_id=savings.id,
+                    user_settings=None,
+                )
+
+    def test_the_default_reads_the_saved_default_grid_account(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The default is the set's PRIMARY, read off the settings row passed.
+
+        ``resolve_analytics_account`` read "first active checking" and no
+        settings row, so a saved ``default_grid_account_id`` moved the grid
+        and not the calendar.  With the row passed, an HYSA saved as the
+        default is the balance line; with ``None`` the chain runs without
+        that layer and checking answers.
+        """
+        with app.app_context():
+            hysa = create_account_of_type(
+                seed_user, db.session, "HYSA", "Rainy Day",
+                anchor_balance=Decimal("1000.00"),
+            )
+            settings = set_default_grid_account(
+                db.session, seed_user["user"].id, hysa.id,
+            )
+            db.session.commit()
+
+            with_layer = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                user_settings=settings,
+            )
+            without = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=4,
+                user_settings=None,
+            )
+            assert with_layer.account_name == "Rainy Day"
+            assert without.account_name == "Checking"
+
+    def test_the_year_overview_reads_the_same_set(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The year's twelve months are the set's rows behind one line.
+
+        April's summary carries 345.00 of expenses on checking's line and,
+        with ``account_id=<card>``, the same 345.00 on the card's line with
+        the card's name.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            self._april(seed_user, seed_periods, db.session, card)
+
+            checking_year = calendar_service.get_year_overview(
+                user_id=seed_user["user"].id, year=2026,
+                user_settings=None,
+            )
+            card_year = calendar_service.get_year_overview(
+                user_id=seed_user["user"].id, year=2026, account_id=card.id,
+                user_settings=None,
+            )
+            assert checking_year.months[3].total_expenses == Decimal("345.00")
+            assert checking_year.months[3].account_name == "Checking"
+            assert card_year.months[3].total_expenses == Decimal("345.00")
+            assert card_year.months[3].account_name == "Rewards Card"
 
 
 class TestPaycheckDays:
@@ -672,6 +943,7 @@ class TestPaycheckDays:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert result.paycheck_days == [2, 16, 30]
 
@@ -735,6 +1007,7 @@ class TestMonthEndBalance:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=4,
+                user_settings=None,
             )
             assert result.projected_end_balance == Decimal("4000.00")
 
@@ -802,6 +1075,7 @@ class TestMonthEndBalance:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=4,
+                user_settings=None,
             )
             # 1000 + (1500-200) + (1500-200) = 3600.00.
             # Pre-Commit-9 returned 2300.00 -- HIGH-02 / W-277.
@@ -1026,6 +1300,7 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
             def _badges():
                 summary = calendar_service.get_month_detail(
                     seed_user["user"].id, month.year, month.month,
+                    user_settings=None,
                 )
                 return [
                     entry.is_infrequent
@@ -1073,6 +1348,7 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
             ):
                 summary = calendar_service.get_month_detail(
                     seed_user["user"].id, month.year, month.month,
+                    user_settings=None,
                 )
             assert [
                 entry.is_infrequent
@@ -1187,6 +1463,7 @@ class TestThirdPaycheckDetection:
 
             overview = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id, year=2026,
+                user_settings=None,
             )
             flagged = {
                 summary.month for summary in overview.months
@@ -1240,6 +1517,7 @@ class TestThirdPaycheckDetection:
 
             detail = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2027, month=1,
+                user_settings=None,
             )
             assert detail.paycheck_days == []
             assert detail.is_third_paycheck_month is False
@@ -1250,6 +1528,7 @@ class TestThirdPaycheckDetection:
 
             overview = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id, year=2027,
+                user_settings=None,
             )
             assert overview.months[0].is_third_paycheck_month is False
 
@@ -1309,6 +1588,7 @@ class TestThirdPaycheckDetection:
             }
             overview = calendar_service.get_year_overview(
                 user_id=user_id, year=2026,
+                user_settings=None,
             )
             flagged = {
                 summary.month for summary in overview.months
@@ -1329,6 +1609,7 @@ class TestYearOverview:
             result = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id,
                 year=2026,
+                user_settings=None,
             )
             assert len(result.months) == 12
             # Months are ordered January through December.
@@ -1354,6 +1635,7 @@ class TestYearOverview:
             result = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id,
                 year=2026,
+                user_settings=None,
             )
             third_paycheck_count = sum(
                 1 for ms in result.months if ms.is_third_paycheck_month
@@ -1376,6 +1658,7 @@ class TestYearOverview:
             result = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id,
                 year=2026,
+                user_settings=None,
             )
             sum_income = sum(ms.total_income for ms in result.months)
             sum_expenses = sum(ms.total_expenses for ms in result.months)
@@ -1398,6 +1681,7 @@ class TestYearOverview:
             result = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id,
                 year=2026,
+                user_settings=None,
             )
             # April (index 3) should be empty.
             apr = result.months[3]
@@ -1422,6 +1706,7 @@ class TestYearOverview:
             result = calendar_service.get_year_overview(
                 user_id=seed_user["user"].id,
                 year=2026,
+                user_settings=None,
             )
             # All transactions are in January -- no cross-month leakage.
             assert result.annual_income == Decimal("3000.00")
@@ -1459,6 +1744,7 @@ class TestEdgeCases:
                 user_id=seed_user["user"].id,
                 year=2028,
                 month=2,
+                user_settings=None,
             )
             assert 29 in result.day_entries
             assert result.day_entries[29][0].name == "Leap Day"
@@ -1483,6 +1769,7 @@ class TestEdgeCases:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert 5 in result.day_entries
             assert result.day_entries[5][0].name == "Transfer Out"
@@ -1533,6 +1820,7 @@ class TestBalanceContributingPredicate:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             # F-3 / W-065: 500 + 200 = 700.00 (both contribute).
             assert result.total_expenses == Decimal("700.00")
@@ -1588,6 +1876,7 @@ class TestBalanceContributingPredicate:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             # F-3 / W-065: 500 + 200 = 700.00; Cancelled + Credit excluded.
             assert result.total_expenses == Decimal("700.00")
@@ -1619,7 +1908,7 @@ class TestBalanceContributingPredicate:
 
             Projected $500, no entries -> reservation      500.00
             Settled $200 (actual 200.00), no credit entries
-              -> settled_cash_leg = 200.00 - 0             200.00
+              -> its covering movement                    200.00
             Cancelled $100 -> neither projected nor settled  0.00
             Credit $50     -> neither projected nor settled  0.00
                                                           -------
@@ -1727,6 +2016,7 @@ class TestBalanceContributingPredicate:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             assert len(real.day_entries[5]) == 2
             assert real.total_expenses == Decimal("700.00")
@@ -1748,6 +2038,7 @@ class TestBalanceContributingPredicate:
                 user_id=seed_user["user"].id,
                 year=2026,
                 month=1,
+                user_settings=None,
             )
             # Predicate dropped: all four rows leak into the day cell.
             assert len(regressed.day_entries[5]) == 4
@@ -1770,7 +2061,8 @@ class TestUnresolvableAccountOrScenario:
     After Commits 3-8 of the main remediation locked the E-19 /
     CRIT-01 invariant, the calendar service must raise
     :class:`CalendarAccountNotResolvableError` when
-    :func:`resolve_analytics_account` returns ``None`` -- the pre-F-2
+    :func:`resolve_analytics_cash_flow_set` (``resolve_analytics_account``
+    until plan step CC-4-3) returns ``None`` -- the pre-F-2
     behaviour of silently substituting a zeroed
     :class:`MonthSummary` / :class:`YearOverview` masked the
     upstream defect behind a ``$0.00`` calendar.
@@ -1791,14 +2083,15 @@ class TestUnresolvableAccountOrScenario:
         """C11-1 (service): None account -> CalendarAccountNotResolvableError."""
         with app.app_context():
             monkeypatch.setattr(
-                calendar_service, "resolve_analytics_account",
-                lambda _user_id, _account_id: None,
+                calendar_service, "resolve_analytics_cash_flow_set",
+                lambda _user_id, _user_settings, _account_id: None,
             )
             with pytest.raises(CalendarAccountNotResolvableError):
                 calendar_service.get_month_detail(
                     user_id=seed_user["user"].id,
                     year=2026,
                     month=1,
+                    user_settings=None,
                 )
 
     def test_month_detail_raises_when_scenario_unresolvable(
@@ -1821,6 +2114,7 @@ class TestUnresolvableAccountOrScenario:
                     user_id=seed_user["user"].id,
                     year=2026,
                     month=1,
+                    user_settings=None,
                 )
 
     def test_year_overview_raises_when_account_unresolvable(
@@ -1829,13 +2123,14 @@ class TestUnresolvableAccountOrScenario:
         """C11-1 (service, year view): None account -> error."""
         with app.app_context():
             monkeypatch.setattr(
-                calendar_service, "resolve_analytics_account",
-                lambda _user_id, _account_id: None,
+                calendar_service, "resolve_analytics_cash_flow_set",
+                lambda _user_id, _user_settings, _account_id: None,
             )
             with pytest.raises(CalendarAccountNotResolvableError):
                 calendar_service.get_year_overview(
                     user_id=seed_user["user"].id,
                     year=2026,
+                    user_settings=None,
                 )
 
     def test_year_overview_raises_when_scenario_unresolvable(
@@ -1857,6 +2152,7 @@ class TestUnresolvableAccountOrScenario:
                 calendar_service.get_year_overview(
                     user_id=seed_user["user"].id,
                     year=2026,
+                    user_settings=None,
                 )
 
 
@@ -1906,6 +2202,7 @@ class TestCalendarDailyView:
             self._seed_april(db, seed_user, seed_periods)
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=4,
+                user_settings=None,
             )
         assert result.daily is None
 
@@ -1918,6 +2215,7 @@ class TestCalendarDailyView:
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=4,
                 today=date(2026, 4, 20),
+                user_settings=None,
             )
         daily = result.daily
         assert isinstance(daily, DailyView)
@@ -1937,6 +2235,7 @@ class TestCalendarDailyView:
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=4,
                 today=date(2026, 4, 20),
+                user_settings=None,
             )
         daily = result.daily
         # End-of-day balance on the 20th (after the Car payment): $1700.
@@ -1957,6 +2256,7 @@ class TestCalendarDailyView:
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=4,
                 today=date(2026, 3, 15),
+                user_settings=None,
             )
         daily = result.daily
         assert daily.balance_today is None
@@ -1983,6 +2283,7 @@ class TestCalendarDailyView:
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=1,
                 today=date(2026, 1, 6),
+                user_settings=None,
             )
         names = [e.name for e in result.day_entries[6]]
         # Income leads even though the expense is larger.
@@ -2016,6 +2317,7 @@ class TestCalendarDailyView:
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=1,
                 today=date(2026, 1, 7),
+                user_settings=None,
             )
         assert len(result.day_entries[7]) == 5
         overflow = result.day_overflow[7]
@@ -2075,6 +2377,7 @@ class TestARefundedDayOnTheRealCalendar:
 
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
             )
 
             refunds = [
@@ -2112,6 +2415,7 @@ class TestARefundedDayOnTheRealCalendar:
 
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
             )
 
             assert result.total_expenses == Decimal("70.00")

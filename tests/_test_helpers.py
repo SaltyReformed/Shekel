@@ -3715,7 +3715,7 @@ def settle_cash_row(
         sync_covering_movement(
             txn, was_settled=True, now_settled=True, settlement=None,
         )
-    posting_service.sync_transaction_postings(txn, settled=True)
+    posting_service.sync_transaction_postings(txn)
     return txn
 
 
@@ -4512,13 +4512,17 @@ def family_journal_filter(txn):
     cases the developer confirmed on 2026-09-15 widen their subject the same
     way and no figure moves: the row's entries, plus its covering movements'.
 
-    The movements are read through ``Transaction.covering_movements``.  A
-    revert KEEPS the mirror, un-dated (plan step **X-bi-3e-2**, ruling
-    **R-BAL61**), so a reverted row's family includes its survivor's linked
-    postings -- a net-zero pair once the door's reconcile has reversed them
-    -- where through 3e-1 the mirror was deleted and the pair stood unlinked.
-    Every reader of this filter sums a net or scopes by period, so the pair
-    changes no figure.
+    The movements are read through ``Transaction.entries`` -- EVERY movement
+    of the row since plan step ``balance:X-bi-4a`` (ruling **R-BAL80**: the
+    fold and the writer read a row's money as its movements alone, a dated
+    purchase's leg as much as the covering movement's; through ``X-bi-3e``
+    this read the covering movements only, while the row's own leg carried
+    an envelope's un-dated purchases).  A revert KEEPS the mirror, un-dated
+    (plan step **X-bi-3e-2**, ruling **R-BAL61**), so a reverted row's family
+    includes its survivor's linked postings -- a net-zero pair once the
+    door's reconcile has reversed them -- where through 3e-1 the mirror was
+    deleted and the pair stood unlinked.  Every reader of this filter sums a
+    net or scopes by period, so the pair changes no figure.
 
     Args:
         txn: The :class:`~app.models.transaction.Transaction`, or its id.
@@ -4539,7 +4543,7 @@ def family_journal_filter(txn):
         # family is whatever still names the id -- nothing, which is the claim
         # such a case makes.
         return JournalEntry.transaction_id == txn
-    movement_ids = [movement.id for movement in row.covering_movements]
+    movement_ids = [movement.id for movement in row.entries]
     own = JournalEntry.transaction_id == row.id
     if not movement_ids:
         return own
@@ -4570,29 +4574,6 @@ def purchases_of(txn):
 
     row = txn if isinstance(txn, Transaction) else db.session.get(Transaction, txn)
     return row.purchases
-
-
-def family_cash_leg(txn):
-    """Return what *txn*'s FAMILY books: its own leg plus its covering movements'.
-
-    The reader's twin of :func:`family_journal_filter` for the fold's own
-    valuation (plan step **X-bi-3a**): ``cash_ledger.settled_cash_leg``
-    answers zero for a covered bill, and the app's one family valuation,
-    ``status_seam.settled_family_leg``, adds the movement back -- asked
-    here through that producer so a case that asserts "what this settled
-    row is worth" grades the same rule the matcher and the undo dialog read.
-
-    Args:
-        txn: The settled :class:`~app.models.transaction.Transaction`.
-
-    Returns:
-        The signed ``Decimal`` the family books.
-    """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
-    from app.services.status_seam import settled_family_leg
-
-    return settled_family_leg(txn)
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -4628,7 +4609,16 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     transaction transition but is a legitimate STARTING state for a fixture.
     What it may not produce is an INCOHERENT row: a settled row with no settle
     day is the state ``balance_predicates.settled_day`` refuses, and every
-    reader of it would raise.
+    reader of it would raise -- **and since plan step ``balance:X-bi-4a`` a
+    settled row with no COVERING MOVEMENT is one too** (ruling **R-BAL80**):
+    the fold and the posting writer read a settled row's money as its
+    movements alone, so a bare row carrying only the record columns would be
+    money no reader can see, the pre-``X-bi-3d`` shape the cutover migration
+    exists to end.  So a settled row built here also carries the covering
+    movement the seam would have written for it, through the seam's own
+    writer (``sync_covering_movement``, the ONE producer of the mirror) and
+    not a fixture's restatement; the writer has still never seen it, which is
+    what the suites that need that state rely on.
 
     Args:
         db_session: The test ``db.session``.
@@ -4716,7 +4706,51 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     for column, value in bare_state.items():
         setattr(txn, column, value)
     db_session.flush()
+    if settled_on is not None:
+        cover_bare_settled_row(db_session, txn, amount, settled_amount)
     return txn
+
+
+def cover_bare_settled_row(db_session, txn, amount, submitted=None):
+    """Write the covering movement a bare-built settled row owes (R-BAL80).
+
+    **The second half of the one door a bare-built settled row goes
+    through** (plan step ``balance:X-bi-4a``): :func:`settlement_columns`
+    lays the record's columns before the row exists, and this writes the
+    seam's mirror once it does -- the seam's own writer, over that record,
+    the plan's figure ``resolved`` when nobody typed one, else the typed
+    figure ``typed`` (the same two arms ``Settlement.from_settle`` takes for
+    a live settle).  A ``$0.00`` figure writes none, as the seam writes none.
+    :func:`add_txn` calls it; a suite that lays a settled row bare itself
+    calls it after its flush, or the fold and the ledger read the row as
+    money no reader can see.
+
+    Args:
+        db_session: The test session; flushed after the write.
+        txn: The settled row, flushed, its record columns laid.
+        amount: The row's plan figure.
+        submitted: The figure a fixture recorded as a human's correction, or
+            ``None`` -- the same argument :func:`settlement_columns` took.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from app.enums import MovementFigureSourceEnum
+    from app.services.status_seam import Settlement
+    from app.services.status_seam._covering import sync_covering_movement
+
+    if submitted is None:
+        settlement = Settlement(
+            amount=Decimal(str(amount)),
+            source=MovementFigureSourceEnum.RESOLVED,
+        )
+    else:
+        settlement = Settlement(
+            amount=Decimal(str(submitted)),
+            source=MovementFigureSourceEnum.TYPED,
+        )
+    sync_covering_movement(
+        txn, was_settled=False, now_settled=True, settlement=settlement,
+    )
+    db_session.flush()
 
 
 def generate_row_of(template, period):

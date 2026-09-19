@@ -25,6 +25,8 @@ from app.services import (
     pay_period_service,
     transaction_service,
 )
+from app.services.account_resolver import resolve_cash_flow_set
+from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
@@ -484,6 +486,40 @@ def get_full_create():
     """HTMX partial: return the full create popover form.
 
     Query params: category_id, period_id, account_id, transaction_type_id.
+
+    **The form offers an ACCOUNT PICKER over the owner's cash-flow set**
+    (plan step ``credit_card:CC-4-2``, ruling **R-CC16**): the cell's
+    ``account_id`` is the balance line of the grid that opened the popover,
+    and the set it HEADS --
+    :func:`~app.services.account_resolver.resolve_cash_flow_set` with that
+    id as the override, the resolution ``/grid?account_id=`` makes -- is
+    what the picker lists, that account selected.  A member heads the whole
+    set (checking and its cards); an owned cash-flow account outside it
+    (savings) heads a set of one.
+
+    **An id the grid resolver would NOT put on the line -- a loan, an
+    archived account, or any id for an owner with no grid-eligible account
+    -- is the cell's own set of one, never the primary's set.**  This is a
+    WRITE form: it carries the account it was opened with and the create
+    door decides, exactly as it decides the quick-create's hidden input.
+    The grid PAGE falls through to the primary for the same crafted URL,
+    and a first draft copied that; the review named the difference (two
+    create doors answering one id two ways) and the developer ruled
+    2026-09-18: carry the id, let the door refuse -- a write never
+    re-targets silently.  **What that door refuses today is narrower than
+    the ruling's premise said**: a foreign account is 404 and an amortizing
+    loan is 422 (``create._reject_transaction_on_loan``), but an ARCHIVED
+    account is ADMITTED -- neither create door reads ``is_active`` -- so a
+    crafted id for one lands a plan row on an account no grid surface loads.
+    Pre-existing at both doors (the quick-create carried the same id
+    before this step), found by CC-4-2's re-review, reported to the
+    developer and the coordinator as a candidate ledger row rather than
+    closed here.  Only a crafted URL reaches any of this: the empty cell
+    names the page's balance line, which the resolver admitted.
+
+    ONE member renders the hidden input the form always carried, so the
+    pre-card popover is byte-identical.  The quick-create keeps its hidden
+    default: it is the one-keystroke path.
     """
     cell, err = _resolve_grid_cell()
     if err is not None:
@@ -493,6 +529,11 @@ def get_full_create():
     if not scenario:
         return "No baseline scenario", 400
 
+    cash_flow = resolve_cash_flow_set(
+        current_user.id, current_user.settings, cell.account.id,
+    )
+    if cash_flow is None or cash_flow.balance.id != cell.account.id:
+        cash_flow = CashFlowSet.single(cell.account)
     # No ``statuses``: the create form has no status control -- a new
     # transaction is born Projected (the create route assigns it), so there is
     # nothing for the user to pick.  Status changes happen later through the
@@ -502,7 +543,10 @@ def get_full_create():
         category=cell.category,
         # The ID, not the row -- see :func:`get_quick_create`.
         period_id=cell.period_id,
+        # The cell's own account in every case (the docstring's rule); the
+        # set's balance is that account by construction above.
         account_id=cell.account.id,
+        accounts=cash_flow.members,
         scenario_id=scenario.id,
         transaction_type_id=cell.transaction_type_id,
     )

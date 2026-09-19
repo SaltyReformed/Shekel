@@ -73,16 +73,17 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
 
     **It prints both rather than changing what a tick books**, which is the
     only correct direction: ``actual_amount`` legitimately IS total spend, the
-    posted ledger already subtracts both terms
-    (``cash_ledger.settled_cash_leg``), and moving the booked figure would make
+    posted ledger already leaves both terms out (a card purchase is a movement
+    that moves nothing and a dated purchase posts on its own day,
+    ``cash_ledger.movement_cash_leg``), and moving the booked figure would make
     the panel disagree with the grid and the analytics.
 
     Both terms are the cash ledger's own, taken as ONE published sum
     (``cash_ledger.off_statement_sum``) rather than as two additions restated
     here: one rule, one statement, so a change to what either means cannot
-    leave the panel saying the old thing.  Its other callers are
-    ``cash_ledger.cash_leg_of`` -- and therefore ``settled_cash_leg`` -- and
-    the statement matcher, which asks the same question of a bank line.
+    leave the panel saying the old thing.  Its other caller is the statement
+    matcher's corrected figure for a line (``_landing.corrected_figure``),
+    which asks the same question of a bank line.
 
     Args:
         txn: The row being offered, with ``entries`` loaded.

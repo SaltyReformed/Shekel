@@ -585,14 +585,14 @@ class TestTruncateHardLocks:
                 status_enum=StatusEnum.DONE, category_key="Groceries",
             )
             db.session.commit()
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             # The H1 mirror flow: revert AND move back to the kept period.
             txn.pay_period_id = keep_period.id
             txn.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
             db.session.flush()
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
             # F holds the self-cancelling pair; the source row left it.
             assert db.session.query(JournalEntry).filter_by(

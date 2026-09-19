@@ -91,9 +91,11 @@ def destinations_for(
       ._reject_settled_addition`): on a ``purchases`` basis a new purchase
       raises what the row cost by exactly its own amount and the row's cash leg
       does not move, so the movement is recorded; on a stored-figure basis the
-      gross cannot rise, and ``settled_cash_leg`` then subtracts money the gross
-      never held -- measured on a production clone, `-163.95` became `+203.67`
-      while the anchor true-up moved `$0.00`.
+      gross cannot rise, and the purchase's movement would post beside the
+      covering movement that already carries the close (ruling **R-BAL80**)
+      -- measured on a production clone through ``X-bi-3e``, when the row's
+      own leg subtracted it from a gross that never held it: `-163.95` became
+      `+203.67` while the anchor true-up moved `$0.00`.
 
     **A SIXTH clause stood here until plan step balance:X-am** (ruling
     **balance:R-HA**): the row must not be ARCHIVED, because an archived row's

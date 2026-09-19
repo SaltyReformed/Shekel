@@ -176,13 +176,14 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # none reads a balance.  It says WHEN the user last declared one,
     # never what it was.
     "reconciled_through",
-    # The SETTLED per-row rule (plan step X-a), moved here from
-    # ``posting_service._signed_cash_leg`` so the ledger WRITER and the cash
-    # WALK value one row the same way by construction.  A non-producer for
-    # exactly the reason its projected siblings above are: an amount per
-    # TRANSACTION is not a balance per ACCOUNT.
-    "settled_cash_leg",
-    # One TERM of the rule above -- ``Sigma(credit entry amounts)`` for one
+    # (``settled_cash_leg`` -- the SETTLED per-row rule, plan step X-a, moved
+    # here from ``posting_service._signed_cash_leg`` -- stood here as a
+    # non-producer until plan step ``balance:X-bi-4a`` deleted it under
+    # ruling **R-BAL81**: a settled row is worth what its covering movement
+    # moves, ``status_seam.covered_cash_leg``, and the walk and the writer
+    # read movements alone.  The two terms below outlive it for the reconcile
+    # panel.)
+    # One TERM of that rule -- ``Sigma(credit entry amounts)`` for one
     # row -- published at plan step X-f2-c3 so the reconcile panel can print
     # what a STATEMENT shows beside what a tick books (finding **N-226**)
     # without writing ``entry.is_credit`` a second time.  A non-producer by
@@ -195,22 +196,22 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # component of an amount per transaction, not a balance per account.
     "posted_purchase_sum",
     # The SUM of the two terms above, published at plan step
-    # ``bank_import:X-f6a-2`` because THREE readers now ask for it -- the
-    # rule below, the reconcile panel's "what a statement shows" caption,
-    # and the statement matcher -- and two additions written out is one
-    # place for them to drift.  A non-producer for its components' own
-    # reason: a component of an amount per transaction is not a balance per
-    # account.
+    # ``bank_import:X-f6a-2`` because three readers then asked for it -- the
+    # row leg, the reconcile panel's "what a statement shows" caption, and
+    # the statement matcher's corrected figure -- and two additions written
+    # out is one place for them to drift; the panel is its one reader since
+    # ``balance:X-bi-4a`` (finding **BAL-523**).  A non-producer for its
+    # components' own reason: a component of an amount per transaction is
+    # not a balance per account.
     "off_statement_sum",
-    # ``settled_cash_leg`` with its first term supplied, so one rule serves
-    # a SETTLED row (whose gross it owns) and a PROJECTED one (whose gross
-    # is what settling would book) alike.  Its second caller is the
-    # statement matcher, which must value a row the bank names whether the
-    # app has settled it or not.  Non-producing for the same reason as the
-    # function it generalises: it answers what ONE ROW moves, never what an
-    # account HOLDS.
+    # The one sign rule for a ROW -- gross, signed by the transaction TYPE,
+    # behind the contributing gate -- for a PROJECTED row the statement
+    # matcher prices at what settling it would book (``settled_cash_leg``
+    # with its first term supplied, through X-bi-4a's first cut).
+    # Non-producing for the same reason as the function it generalised: it
+    # answers what ONE ROW moves, never what an account HOLDS.
     "cash_leg_of",
-    # The MOVEMENT's twin of ``settled_cash_leg`` (plan step X-bi-3b,
+    # The MOVEMENT's twin of ``cash_leg_of`` (plan step X-bi-3b,
     # ruling **R-BAL35**): what ONE purchase or covering movement moves
     # through its parent's account, its whole figure in the PARENT's
     # direction, total over the card partition and the contributing gate.
@@ -261,6 +262,13 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # method is left for this set to rule on.  A day is not a balance.
     "cash_anchor_facts",
     "settled_cash_facts",
+    # ``in_flight_movements`` (plan step ``balance:X-bi-4a``, ruling
+    # **R-BAL77**) -- the UN-DATED half of the one movement stream
+    # ``settled_cash_facts`` loads the dated half of: a LOADER of stored
+    # purchases the bank has not been seen to take, each valued by the same
+    # per-movement leg.  Where one lands and what the plan holds at time T
+    # are ``balance_at._cash_fold``'s, exactly as for ``planned_cash_rows``.
+    "in_flight_movements",
     # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
     # ``account_openings`` row: returning a recorded balance is not
     # computing one.  The FOLD seeds from it.

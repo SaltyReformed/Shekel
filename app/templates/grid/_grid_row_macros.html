@@ -49,6 +49,18 @@
    publish both (`grid/page.py`, `companion.py`, `_render_helpers.py`,
    `transactions/_helpers.py`, `transactions/forms.py`).
 
+   THE BALANCE LINE travels the same way (plan step credit_card:CC-4-2):
+   every row macro takes `account` -- the account whose balance the surface
+   renders, or none for a surface with no balance line (the companion) -- and
+   a row on another account carries an account chip.  `render_row_cells` has
+   always taken it (the empty cell's create URL names it); the three mobile
+   macros take it as a REQUIRED parameter right after the amount maps
+   (Jinja, like Python, refuses a required parameter after a defaulted one)
+   -- omitted, Jinja binds `Undefined` and the first row's `.id` raises --
+   so a caller cannot draw a row with no chip and nothing to say the
+   decision was skipped.  `none` is the value for a surface with no balance
+   line.
+
    Jinja globals consumed (registered in app/jinja_globals.py):
      STATUS_PROJECTED, STATUS_CREDIT.
 #}
@@ -205,7 +217,7 @@
 </tr>
 {%- endmacro %}
 
-{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
+{% macro render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, account, can_edit=True, id_prefix='', entry_lists=none, today=none) -%}
 {#- Mobile grid cards for one (rk, period) cell.
 
     Looks up the matched transactions for the cell and emits one card
@@ -227,15 +239,15 @@
     renders one transaction and names no period at all (plan step C2-f2b
     dropped the parameter it had been passed through).  Every other
     parameter is forwarded verbatim; see that macro for `can_edit` /
-    `id_prefix` / `entry_lists` / `today` semantics.
+    `id_prefix` / `entry_lists` / `today` / `account` semantics.
 -#}
 {% set matched = matched_by_row_period.get((rk.category_id, rk.template_id, rk.txn_name, period.period_id), []) %}
 {% for txn in matched %}
-{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit, id_prefix, entry_lists, today) }}
+{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, account, can_edit, id_prefix, entry_lists, today) }}
 {% endfor %}
 {%- endmacro %}
 
-{% macro render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
+{% macro render_one_card(rk, txn, entry_sums, budgets, settled, retained, account, can_edit=True, id_prefix='', entry_lists=none, today=none, error=none) -%}
 {#- Render exactly one mobile transaction card.
 
     It took a `period` between `rk` and `txn` until plan step C2-f2b and
@@ -249,6 +261,17 @@
 
     `budgets` and `settled` are the page's two amount maps, threaded as
     PARAMETERS -- see the file header for why they cannot be context.
+
+    account (REQUIRED; none for no balance line): the BALANCE LINE's Account
+    (plan step credit_card:CC-4-2, ruling R-CC16).  A card whose row is on another
+    account than this one carries an account chip after its badges -- the
+    phone bill that lives on the card, seen from checking's grid.  A
+    PARAMETER for the reason the amount maps are (this file is imported
+    without context), threaded from the page (`ctx.account`) and from the
+    single-card fragment (`_render_helpers.fragment_balance_line`).  `none`
+    means NO balance line and draws no chip: the companion's page, which
+    reads the owner's plan and no balance.  The label is `txn.account.name`,
+    a joined load, so the read costs no query.
 
     error (default none): optional message string.  When set, a danger
     banner renders as the wrapper's first child: a rejected mutation
@@ -411,6 +434,12 @@
         {% if txn.credit_payback_for_id %}
           <span class="badge-credit ms-1">CC</span>
         {% endif %}
+        {#- The account chip (plan step credit_card:CC-4-2): the row's money
+            moves on another account than the balance line's.  Whitespace-
+            controlled so a card on the balance line emits no bytes here. -#}
+        {%- if account is not none and txn.account_id != account.id %}
+          <span class="flag-chip flag-chip--neutral ms-1" title="On {{ txn.account.name }}">{{ txn.account.name }}</span>
+        {%- endif %}
       </span>
       <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
         {% if show_progress %}
@@ -535,12 +564,18 @@
   </div>
 {%- endmacro %}
 
-{% macro render_row_static(rk, period, matched_by_row_period, budgets, settled, retained) -%}
+{% macro render_row_static(rk, period, matched_by_row_period, budgets, settled, retained, account) -%}
 {#- Mobile Plan tab static row.  Emits zero or more non-interactive
     `<li class="list-group-item">` rows, one per matched transaction
     for the given (rk, period) cell.  Used exclusively by the read-
     only Plan tab in `_mobile_plan.html` to surface upcoming line
     items inside a period accordion body.
+
+    `account` (REQUIRED; none for no balance line) is the balance line's
+    Account, as on `render_one_card`: a row on another account carries the same account
+    chip here, beside the badges this row already preserves from the
+    interactive card, so a glance at the Plan tab distinguishes a card
+    row the way This Period does (plan step credit_card:CC-4-2).
 
     The Plan tab answers "what does the next half-year look like
     from today?" -- a planning / affordability view.  Future periods
@@ -611,6 +646,12 @@
       {% if txn.credit_payback_for_id %}
         <span class="badge-credit ms-1">CC</span>
       {% endif %}
+      {#- The account chip (plan step credit_card:CC-4-2), as on the
+          interactive card; whitespace-controlled so a row on the balance
+          line emits no bytes here. -#}
+      {%- if account is not none and txn.account_id != account.id %}
+        <span class="flag-chip flag-chip--neutral ms-1" title="On {{ txn.account.name }}">{{ txn.account.name }}</span>
+      {%- endif %}
     </span>
     <span class="font-mono fw-semibold text-nowrap">
       {{ money(display_amount, cents=false) }}{{ retained_badge(will_book) }}

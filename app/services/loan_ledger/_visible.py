@@ -9,10 +9,10 @@ carries in ``journal_entries.entry_date``:
 * a **PAYMENT** is visible from its **settled date** -- the shadow's STORED
   ``transactions.settled_on``, read through the SAME
   :func:`app.utils.balance_predicates.settled_day` accessor the posting writer
-  stamps the payment's ``entry_date`` with
-  (:func:`app.services.posting_service._transaction_entry_date`) and the cash
-  walk dates its own settles with, and the SAME date the checking outflow moves
-  on, so the loan and checking move together (ruling R-A).
+  stamps a transfer's ``entry_date`` with
+  (:func:`app.services.posting_service._entry_date`), the day the cash walk
+  folds the payment's covering movement on, and the SAME date the checking
+  outflow moves on, so the loan and checking move together (ruling R-A).
 
   **There is no derivation and no fallback left here, and that is plan step
   X-f1** (ruling R-EC).  It WAS the display-timezone civil date of the shadow's
@@ -109,11 +109,12 @@ def payment_visible_on(shadow: Transaction) -> date:
     Its **settled date** (step C2, ruling R-A): the shadow's STORED
     ``settled_on``, read through the shared
     :func:`app.utils.balance_predicates.settled_day`.  That is the same accessor
-    the posting writer stamps the payment's ``entry_date`` through
-    (:func:`app.services.posting_service._transaction_entry_date`), so the day
-    the fold counts this payment and the day the sum-of-postings reader counts
-    it cannot drift; and it is the day the checking outflow moves, so the loan
-    and checking move together.
+    the posting writer stamps a transfer's ``entry_date`` through
+    (:func:`app.services.posting_service._entry_date`), and the covering
+    movement the seam mirrors that day onto is what the cash fold counts, so
+    the day the fold counts this payment and the day the sum-of-postings
+    reader counts it cannot drift; and it is the day the checking outflow
+    moves, so the loan and checking move together.
 
     **It DERIVED that day from ``paid_at`` until plan step X-f1** (ruling R-EC)
     -- a display-timezone conversion of the click instant with the pay period's

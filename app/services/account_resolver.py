@@ -16,25 +16,27 @@ queries.
     4. First active grid-eligible account  (by sort_order, id)
     5. None
 
-* ``resolve_analytics_account`` -- 2-step fallback used by the
-  calendar and spending analytics surfaces.  Its explicit branch
-  applies the SAME amortizing-kind gate (plan step X-a1), so neither
-  resolver can hand a loan to a surface that renders a cash-flow
-  balance.  No user-settings or override layer; the caller has
-  already resolved either an explicit account_id or wants the user's
-  default checking account.
-
 * ``resolve_cash_flow_set`` -- the grid resolver's answer widened to
   "checking and its cards" (ruling ``credit_card:R-CC16``, plan step
   CC-4-1): the primary grid account plus the owner's active revolving
   accounts, as one :class:`~app.services.cash_flow_set.CashFlowSet`
   whose balance line is the primary or an override within the set.
+  Read by the grid, the dashboard and the spending report.
 
-The grid path keeps its richer fallback because the grid is the
-primary UI for transaction display; the analytics path's narrower
-fallback matches its reporting use case where "no account
-configured" should produce an empty report rather than synthesise
-an analysis against an arbitrary savings account.
+* ``resolve_analytics_cash_flow_set`` -- the SAME set for the calendar,
+  which takes an explicit ``account_id`` as a question about THAT
+  account: an override the admission test refuses answers ``None`` (the
+  route's 404) where the grid resolver falls through to the primary.
+  It replaced ``resolve_analytics_account`` at plan step CC-4-3, whose
+  "first active checking, no settings layer" default was a second
+  spelling of the primary; every analytics surface now reads the one
+  primary the grid reads.
+
+One admission test (``_admissible_grid_account``: the owner's, active,
+a cash-flow kind) sits behind every explicit id and every saved default,
+so neither resolver can hand a loan to a surface that renders a
+cash-flow balance (ruling D4 / step A1; plan step X-a1 closed the
+calendar door finding N-38 measured open).
 """
 
 from app import ref_cache
@@ -50,7 +52,7 @@ def is_cash_flow_account(account: Account) -> bool:
 
     A cash-flow surface renders a balance beside the account's OWN transaction
     rows, so the two have to reconcile on screen.  This predicate gates the
-    surfaces reached through the two resolvers in this module: the budget
+    surfaces reached through the resolvers in this module: the budget
     grid, the dashboard hero and pulse, and the analytics calendar's
     end-of-day line and month-end figure.
 
@@ -76,8 +78,9 @@ def is_cash_flow_account(account: Account) -> bool:
     **One predicate, both resolvers, because it is one question.**  It was
     ``is_grid_account`` and gated the grid path alone, which read as a
     grid preference rather than the kind rule it is -- and the calendar
-    reached the same producers through :func:`resolve_analytics_account`
-    with no gate at all.  Measured on a dev clone 2026-07-25, before plan
+    reached the same producers through ``resolve_analytics_account`` (its
+    resolver until plan step CC-4-3) with no gate at all.  Measured on a
+    dev clone 2026-07-25, before plan
     step X-a1 closed it: ``/analytics?view=month&account_id=3`` rendered
     the Mortgage at ``$178,103.41`` and ``account_id=8`` rendered the Van
     Loan at ``$531.94``, where the loans owed ``$177,277.97`` and
@@ -174,10 +177,12 @@ def _first_active_checking_account(user_id) -> Account | None:
 
     The single definition of "which account is this user's checking
     account": the first active account of the CHECKING type, ordered by
-    ``sort_order`` then ``id``.  Both resolvers fall back to this so the
-    grid and analytics surfaces always pick the same account for a user;
-    a change to the selection rule (a new tiebreaker, a primary flag)
-    lives here once.
+    ``sort_order`` then ``id``.  :func:`resolve_grid_account`'s step 3 falls
+    back to this, and since plan step CC-4-3 every cash-flow surface reaches
+    it through that one chain (the analytics resolver read it directly
+    before), so the grid and analytics surfaces always pick the same account
+    for a user; a change to the selection rule (a new tiebreaker, a primary
+    flag) lives here once.
 
     Args:
         user_id: The current user's id.
@@ -299,6 +304,49 @@ def _active_revolving_accounts(user_id) -> list[Account]:
     )
 
 
+def _cash_flow_set(
+    user_id, user_settings, balance: Account | None,
+) -> CashFlowSet | None:
+    """Build the owner's cash-flow set behind *balance*, or the primary.
+
+    The ONE walk both public resolvers share: the primary is
+    :func:`resolve_grid_account`'s answer with no override, the members are
+    the primary plus every active revolving account, and the balance line is
+    *balance* when the caller admitted one -- a member keeps the set's rows
+    behind its own line; an owned cash-flow account outside the set collapses
+    the set to itself -- else the primary.  What differs between the two
+    callers is only what they do with an override the admission test refuses,
+    and that policy is theirs; the set is built here once.
+
+    Args:
+        user_id: The current user's id.
+        user_settings: The user's ``UserSettings`` row (or ``None``).
+        balance: An account :func:`_admissible_grid_account` ADMITTED, or
+            ``None`` for the primary.  Never an unadmitted row: the callers
+            run the admission test first, which is what keeps this walk from
+            restating it.
+
+    Returns:
+        The :class:`~app.services.cash_flow_set.CashFlowSet`, or ``None`` when
+        the owner has no grid-eligible account at all.
+    """
+    primary = resolve_grid_account(user_id, user_settings)
+    if primary is None:
+        return None
+    members = (
+        primary,
+        *[
+            card for card in _active_revolving_accounts(user_id)
+            if card.id != primary.id
+        ],
+    )
+    if balance is None:
+        return CashFlowSet(balance=primary, members=members)
+    if balance.id not in {member.id for member in members}:
+        members = (balance,)
+    return CashFlowSet(balance=balance, members=members)
+
+
 def resolve_cash_flow_set(
     user_id, user_settings=None, override_account_id=None,
 ) -> CashFlowSet | None:
@@ -315,13 +363,13 @@ def resolve_cash_flow_set(
     active checking account, else their first grid-eligible account -- and the
     set is that account plus every active revolving account
     (:func:`_active_revolving_accounts`).  ONE definition of the primary for
-    every reader: the grid reads it here (this step); the dashboard's bills,
-    the spending report and the calendar's default read it at plan step
-    CC-4-3, where the latter two take :func:`resolve_analytics_account`'s
-    "first active checking, no settings layer" today -- a second spelling of
-    one question, which on the 2026-09-18 production population named the
-    same account (the one owner's ``default_grid_account_id`` IS their first
-    active checking account).
+    every reader: the grid and the dashboard read it here, and since plan step
+    CC-4-3 so do the spending report and the calendar's default
+    (:func:`resolve_analytics_cash_flow_set`), which until then took
+    ``resolve_analytics_account``'s "first active checking, no settings layer"
+    -- a second spelling of one question, which on the 2026-09-18 production
+    population named the same account (the one owner's
+    ``default_grid_account_id`` IS their first active checking account).
 
     **The BALANCE line is the primary, or the override the request named.**
     The grid has always taken a ``?account_id=`` override, and it keeps its
@@ -348,92 +396,53 @@ def resolve_cash_flow_set(
         the owner has no grid-eligible account at all (the same state
         :func:`resolve_grid_account` answers ``None`` for).
     """
-    primary = resolve_grid_account(user_id, user_settings)
-    if primary is None:
-        return None
-    members = (
-        primary,
-        *[
-            card for card in _active_revolving_accounts(user_id)
-            if card.id != primary.id
-        ],
+    return _cash_flow_set(
+        user_id, user_settings,
+        _admissible_grid_account(user_id, override_account_id),
     )
-    balance = _admissible_grid_account(user_id, override_account_id)
-    if balance is None:
-        return CashFlowSet(balance=primary, members=members)
-    if balance.id not in {member.id for member in members}:
-        members = (balance,)
-    return CashFlowSet(balance=balance, members=members)
 
 
-def resolve_analytics_account(
-    user_id: int,
-    account_id: int | None,
-) -> Account | None:
-    """Return the account to scope analytics queries to.
+def resolve_analytics_cash_flow_set(
+    user_id, user_settings, account_id: int | None,
+) -> CashFlowSet | None:
+    """Return the cash-flow set for an analytics surface, or ``None`` for a refused id.
 
-    Two-step fallback chain used by the calendar, spending-report, and
-    spending-trend analytics services:
+    The calendar's twin of :func:`resolve_cash_flow_set` (plan step
+    ``credit_card:CC-4-3``): the SAME set, through the same walk
+    (:func:`_cash_flow_set`), with one difference in what an explicit
+    ``account_id`` means.  The grid resolver treats a refused override as
+    absent and falls through to the primary; here an explicit id is a
+    question about THAT account, so one the admission test refuses --
+    another owner's, archived, a loan, unknown -- answers ``None`` and the
+    calendar turns it into the project-standard 404
+    (:class:`~app.services.calendar_service.CalendarAccountNotResolvableError`;
+    "404 for both 'not found' and 'not yours'").  Answering with a different
+    account's balance would be a wrong answer rather than a missing one --
+    the policy ``resolve_analytics_account`` carried since plan step X-a1
+    (finding N-38: ``?account_id=<Van Loan>`` rendered ``$531.94`` for a loan
+    owing ``$15,663.59`` before the gate), and the one thing of it that
+    survives this step.
 
-      1. If ``account_id`` is provided, verify it exists, belongs to
-         ``user_id``, is still active, and is a cash-flow kind
-         (:func:`is_cash_flow_account`).  Return the account on success
-         or ``None`` on any failure (mismatched user, inactive, missing
-         row, amortizing).  Returning ``None`` rather than silently
-         falling through is deliberate -- an explicit ``account_id``
-         that fails the ownership check is an IDOR signal, not a
-         request to pick a different account, and one naming a LOAN is
-         a request the surface cannot answer rather than a request to
-         answer about some other account.
-      2. Fall back to the user's first active checking account by
-         ``sort_order, id``.  CHECKING-typed by construction, so the
-         kind gate has nothing to add on this branch.
-
-    **Why the kind gate is here and not in the fold (plan step X-a1,
-    finding N-38).**  The calendar's balance line and month-end figure
-    are the seam's CASH-FLOW view -- ``cash_daily_balance_series`` and
-    ``cash_balance_at`` -- which answers the account's pure transaction
-    running balance and consults no kind, deliberately: its day cells
-    render the same transaction rows, so a kind-correct balance beside
-    them would not reconcile.  Pointing that view at a loan does not
-    produce a wrong-looking number, it produces a confident one
-    (``$531.94`` for a Van Loan owing ``$15,663.59``, measured before
-    this gate).  The answer is the one ruling R-E gave for the same
-    class of leak on the write side -- refuse at the SOURCE -- so the
-    producers stay TOTAL and kind-blind, with no balance surface able
-    to ask them a question about a loan.  The kind-correct entry
-    (``balance_at.balance_at``) is where a loan's balance comes from.
-
-    Unlike :func:`resolve_grid_account`, this helper does NOT consult
-    ``UserSettings.default_grid_account_id`` or accept an
-    ``override_account_id`` -- analytics callers operate on either an
-    explicit account or the user's canonical checking account, with no
-    intermediate UI-state layer.  It also does not FALL THROUGH on a
-    refused account the way the grid resolver does: an explicit
-    ``account_id`` is a question about that account, and answering it
-    with a different account's balance would be a wrong answer rather
-    than a missing one.  The calendar turns this ``None`` into a 404
-    (``CalendarAccountNotResolvableError``), matching the cash detail
-    page, which already 404s a loan (``_cash_page.cash_detail_wrong_type``).
+    An admitted id is the override :func:`resolve_cash_flow_set` describes: a
+    member puts its balance on the line behind the set's rows; an owned
+    cash-flow account outside the set is that account's single-account view.
+    ``None`` is the primary.
 
     Args:
-        user_id: The current user's id.  Used for ownership check on
-            the explicit branch and for the fallback query.
-        account_id: Optional explicit account id.  ``None`` triggers
-            the fallback to the first active checking account.
+        user_id: The current user's id.
+        user_settings: The user's ``UserSettings`` row (or ``None``) -- the
+            saved-default layer the primary reads, which the analytics
+            surfaces did not consult before this step.
+        account_id: The explicit account id from the request, or ``None``.
 
     Returns:
-        The :class:`Account` instance the analytics service should
-        scope its queries to, or ``None`` when no suitable account
-        exists.
+        The :class:`~app.services.cash_flow_set.CashFlowSet`; ``None`` when an
+        explicit id is refused, or when the owner has no grid-eligible
+        account at all.
     """
-    if account_id is not None:
-        acct = db.session.get(Account, account_id)
-        if (
-            acct and acct.user_id == user_id and acct.is_active
-            and is_cash_flow_account(acct)
-        ):
-            return acct
+    if account_id is None:
+        return _cash_flow_set(user_id, user_settings, None)
+    balance = _admissible_grid_account(user_id, account_id)
+    if balance is None:
         return None
-
-    return _first_active_checking_account(user_id)
+    return _cash_flow_set(user_id, user_settings, balance)

@@ -345,12 +345,15 @@ class TestTheOutstandingSet:
         **This asserted the exact opposite until the developer's 2026-08-17
         ruling**, on the premise that "the entry reservation prices only
         Projected rows, so a purchase on a settled parent is inert".  Ruling
-        **R-FM** had already falsified that one step earlier:
-        ``cash_ledger.settled_cash_leg`` subtracts every POSTED purchase from a
-        settled row's close, so recording the day moves that purchase's cash out
-        of the close's day and onto the bank's.  The total never changes -- the
-        two terms always sum to the row's whole debit -- and the DAY is what a
-        paper statement reconciles against, which is this panel's whole subject.
+        **R-FM** had already falsified that one step earlier: the row's own
+        leg of the time (``cash_ledger.settled_cash_leg``, deleted at ruling
+        **R-BAL81**) subtracted every POSTED purchase from a settled row's
+        close, so recording the day moved that purchase's cash out of the
+        close's day and onto the bank's; since ``balance:X-bi-4a`` every
+        purchase is a movement of its own and the row books nothing (ruling
+        **R-BAL80**), so the day is the whole of what recording it changes.
+        The total never changes, and the DAY is what a paper statement
+        reconciles against, which is this panel's whole subject.
 
         Measured on the 2026-08-17 production dump: 28 closed envelopes hold 61
         debit purchases carrying no posting day, ``$4,360.07`` between them,
@@ -2202,10 +2205,12 @@ class TestTheCashFigureBesideTheBookedOne:
     captioned "tick everything your statement shows", against a statement
     showing `$40`.
 
-    **The LEDGER was right either way** -- ``settled_cash_leg`` subtracts the
-    credit sum -- so the fix prints both figures rather than changing what a
-    tick books: ``actual_amount`` legitimately IS total spend, and moving it
-    would make the panel disagree with the grid and the analytics.
+    **The LEDGER was right either way** -- a card purchase moves nothing
+    through checking (``cash_ledger.movement_cash_leg``), as the row's own leg
+    of the time subtracted the credit sum -- so the fix prints both figures
+    rather than changing what a tick books: ``actual_amount`` legitimately IS
+    total spend, and moving it would make the panel disagree with the grid
+    and the analytics.
 
     Production carries 18 card entries in history and ZERO on a Projected
     envelope today, so this is latent rather than live.
@@ -2291,10 +2296,16 @@ class TestTheCashFigureBesideTheBookedOne:
         """The panel's second figure IS the posted one, not a lookalike.
 
         Both come from ``cash_ledger.credit_entry_sum``, and this grades that
-        by settling the row and comparing against ``settled_cash_leg`` -- the
-        expression the ledger writer and the cash walk both reduce through.
-        Two numbers that agree by construction rather than by coincidence is
-        the whole reason the term was published instead of re-summed.
+        by settling the row and comparing against what its family's
+        movements move through this account -- ``movement_cash_leg``, the one
+        valuation the ledger writer and the cash walk post through (ruling
+        **R-BAL80**): the debit purchase its own `$40.00`, the card purchase
+        nothing, and the row itself nothing (a ``purchases`` close has no
+        covering movement, ruling **R-BAL81**).  Two numbers that agree by
+        construction rather than by coincidence is the whole reason the term
+        was published instead of re-summed.  (Through plan step
+        ``balance:X-bi-4a``'s first cut this compared against the row's own
+        leg, ``settled_cash_leg``, which R-BAL81 deleted.)
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
@@ -2318,7 +2329,15 @@ class TestTheCashFigureBesideTheBookedOne:
 
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
-            assert cash_ledger.settled_cash_leg(settled) == -offered_cash
+            assert settled.covering_movements == []
+            assert status_seam.covered_cash_leg(settled) == Decimal("0.00")
+            assert sum(
+                (
+                    cash_ledger.movement_cash_leg(settled, entry)
+                    for entry in settled.entries
+                ),
+                Decimal("0.00"),
+            ) == -offered_cash
 
 
 class TestTheCorrectionCountIsWhatAHumanTyped:

@@ -124,7 +124,7 @@ replay that decides so.**  Its amortization schedule drives its real balance
 (principal paydown) while its grid "transactions" are payment transfers recorded
 as income -- opposite sign, different magnitude -- so no accrual row reconciles
 them.  Ruling D4 refuses a loan at the RESOLVER (``resolve_grid_account`` and
-``resolve_analytics_account`` both skip amortizing accounts), so this is a
+``resolve_analytics_cash_flow_set`` both skip amortizing accounts), so this is a
 degenerate safety rather than a supported view; the replay reaches it anyway and
 returns the cash fold, because ``_modelled_return`` models nothing for the
 AMORTIZING kind.  An AMORTIZING account with no ``LoanParams`` lands in the same

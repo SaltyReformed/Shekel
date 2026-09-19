@@ -95,7 +95,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
+from app.services.cash_ledger import settled_cash_facts
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
     _entry_checking_impact,
@@ -258,10 +258,25 @@ class TestASettleWritesTheMovementItRecords:
             )
 
 
-class TestTheMovementMovesNoBalance:
-    """Ruling R-FM's identity, graded against the same fold without the row."""
+class TestTheMovementIsTheBalance:
+    """The fold reads the movement and nothing of the row (ruling R-BAL80).
 
-    def test_the_folds_per_day_sums_are_identical_with_and_without(
+    Through plan step ``X-bi-3e`` this class graded ruling R-FM's identity --
+    the fold's per-day sums were IDENTICAL with and without the movement,
+    because the row's own leg booked whatever the movement did not.  Since
+    ``balance:X-bi-4a`` the row's leg is not a fact, and under ruling
+    **R-BAL81** it is not a price either: the row is WORTH what its covering
+    movement moves (``status_seam.covered_cash_leg``, the matcher's one
+    valuation of a settled row).  Delete the movement around the seam and
+    the fold reads NOTHING for the row and the matcher prices it at
+    nothing -- the same answer from both readers, stated by the movement.
+    The inverse of the identity, and the control that would fail if a
+    row-leg fact came back.  (Through X-bi-4a's first cut the control
+    asserted the deleted ``settled_cash_leg`` still priced the whole bill
+    without its movement -- the row-leg reader R-BAL81 deleted.)
+    """
+
+    def test_the_fold_reads_the_movement_and_nothing_without_it(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -270,20 +285,22 @@ class TestTheMovementMovesNoBalance:
             db.session.flush()
             account_id, scenario_id = txn.account_id, txn.scenario_id
 
-            # The parent's own leg nets to zero and the movement carries it.
-            assert settled_cash_leg(txn) == Decimal("0")
+            # The row is worth its covering movement (R-BAL81) and the fold
+            # reads that movement.
+            assert status_seam.covered_cash_leg(txn) == Decimal("-148.32")
             with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
             assert with_movement[txn.settled_on] == Decimal("-148.32")
 
-            # The CONTROL: delete the movement around the seam, and the fold
-            # books the parent's whole leg on the same day instead.
+            # The CONTROL: delete the movement around the seam.  The row is
+            # worth nothing to the matcher and the fold reads none of it.
             movement = _only_movement(txn)
             txn.entries.remove(movement)
             db.session.flush()
             db.session.expire(txn)
-            assert settled_cash_leg(txn) == Decimal("-148.32")
+            assert status_seam.covered_cash_leg(txn) == Decimal("0")
             without = _per_day(settled_cash_facts(account_id, scenario_id))
-            assert without == with_movement
+            assert txn.settled_on not in without
+            assert without == {}
 
     def test_the_posted_ledgers_cash_net_moves_by_the_figure(
         self, app, seed_user, seed_periods,
@@ -851,9 +868,8 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.RESOLVED,
             )
-            # The parent's own leg nets to zero and the movement carries the
-            # money IN: the fact says income, and says +figure.
-            assert settled_cash_leg(txn) == Decimal("0")
+            # The movement carries the money IN: the fact says income, and
+            # says +figure; the row is worth that movement (R-BAL81).
             facts = [
                 fact for fact in settled_cash_facts(txn.account_id, txn.scenario_id)
                 if fact.entry_id == movement.id
@@ -861,12 +877,12 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             assert len(facts) == 1
             assert facts[0].is_income is True
             assert facts[0].delta == Decimal("2572.78")
-            assert status_seam.settled_family_leg(txn) == Decimal("2572.78")
+            assert status_seam.covered_cash_leg(txn) == Decimal("2572.78")
 
-    def test_the_folds_per_day_sums_are_identical_with_and_without(
+    def test_the_fold_reads_the_movement_and_nothing_without_it(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-FM's identity holds for income exactly as for a bill."""
+        """The movement IS the fold for income exactly as for a bill (R-BAL80)."""
         with app.app_context():
             txn = _paycheck(seed_user, seed_periods[0])
             _settle(txn)
@@ -878,8 +894,9 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             txn.entries.remove(movement)
             db.session.flush()
             db.session.expire(txn)
-            assert settled_cash_leg(txn) == Decimal("2572.78")
-            assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_movement
+            # Worth nothing without its movement (R-BAL81), as the fold reads.
+            assert status_seam.covered_cash_leg(txn) == Decimal("0")
+            assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
     def test_the_posted_ledger_books_the_family_as_INCOME(
         self, app, seed_user, seed_periods,
@@ -987,8 +1004,10 @@ class TestATransferIsCoveredOnBothLegs:
     ONE transfer entry and a shadow's movement posts NOWHERE through the
     interval (ruling **R-BAL45**: the ruled endpoint, one entry per movement
     against a transfers-in-transit account, is ``X-bi-6``'s); the walk reads
-    each leg as ``0 + movement``, so the fold is identical with and without,
-    which is the control below.  Worked on ``$500.00`` Checking -> Savings.
+    each leg's movement and nothing of the leg (ruling **R-BAL80**), and
+    each leg is worth its movement (ruling **R-BAL81**), so the fold reads
+    nothing for a leg without one -- the control below.  Worked on
+    ``$500.00`` Checking -> Savings.
     """
 
     def test_each_leg_holds_one_movement_in_its_own_direction(
@@ -1007,8 +1026,10 @@ class TestATransferIsCoveredOnBothLegs:
                 assert movement.purchased_on == leg.settled_on
                 assert movement.settled_on == leg.settled_on
                 assert movement.account_id == leg.account_id
-                # The leg's own leg nets to zero; the movement carries the money.
-                assert settled_cash_leg(leg) == Decimal("0")
+                # The leg is worth what its movement moves (R-BAL81).
+                assert status_seam.covered_cash_leg(leg) == (
+                    cash_ledger.movement_cash_leg(leg, movement)
+                )
             facts = {
                 leg.id: [
                     fact for fact in settled_cash_facts(leg.account_id, leg.scenario_id)
@@ -1021,10 +1042,10 @@ class TestATransferIsCoveredOnBothLegs:
             assert [fact.delta for fact in facts[income.id]] == [Decimal("500.00")]
             assert [fact.is_income for fact in facts[income.id]] == [True]
 
-    def test_the_folds_per_day_sums_are_identical_with_and_without_on_both_accounts(
+    def test_the_fold_reads_each_legs_movement_and_nothing_without_it(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-FM's identity, on the from-account and the to-account."""
+        """The movement IS the fold on the from-account and the to-account (R-BAL80)."""
         with app.app_context():
             _, expense, income = _settled_pair(seed_user, seed_periods[0])
             expected = {expense: Decimal("-500.00"), income: Decimal("500.00")}
@@ -1036,8 +1057,8 @@ class TestATransferIsCoveredOnBothLegs:
                 leg.entries.remove(movement)
                 db.session.flush()
                 db.session.expire(leg)
-                assert settled_cash_leg(leg) == figure
-                assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_movement
+                assert status_seam.covered_cash_leg(leg) == Decimal("0")
+                assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
     def test_the_ledger_books_the_pair_whole_and_the_movements_nowhere(
         self, app, seed_user, seed_periods,
@@ -1086,7 +1107,6 @@ class TestATransferIsCoveredOnBothLegs:
                 assert posting_service.account_posting_total(account.id, scenario_id) == (
                     opening
                     + posting_service.settled_transfer_effect(account.id, scenario_id)
-                    + posting_service.settled_transaction_effect(account.id, scenario_id)
                     + posting_service.posted_purchase_effect(account.id, scenario_id)
                 )
             db.session.commit()
@@ -1193,9 +1213,8 @@ class TestATransferIsCoveredOnBothLegs:
                 movement = _only_movement(leg)
                 assert movement.amount == Decimal("500.00")
                 assert movement.settled_on == leg.settled_on
-            assert settled_cash_leg(expense) == Decimal("0")
-            assert status_seam.settled_family_leg(expense) == Decimal("-500.00")
-            assert status_seam.settled_family_leg(income) == Decimal("500.00")
+            assert status_seam.covered_cash_leg(expense) == Decimal("-500.00")
+            assert status_seam.covered_cash_leg(income) == Decimal("500.00")
 
 
 class TestATransfersMovementsFollowItsLifecycle:
@@ -1570,9 +1589,11 @@ class TestAKeptMovementIsNotAPurchase:
             envelope, _ = _reverted_manual_close(seed_user, seed_periods[0])
             basis = planted_basis(envelope)
             assert _entry_aware_amount(envelope, basis) == Decimal("100.00")
-            # Over the family the survivor is an unposted debit and the floor
-            # holds the close back in place of the plan.
-            assert _entry_checking_impact(envelope.entries, Decimal("100.00")) == Decimal("120.00")
+            # Over the family the survivor would SPEND the budget -- the close
+            # the owner withdrew read as a purchase -- and nothing of the plan
+            # would be held back (the unspent-budget reservation, ruling
+            # R-BAL77; through X-bi-3e the three-bucket floor read $120.00).
+            assert _entry_checking_impact(envelope.entries, Decimal("100.00")) == Decimal("0")
 
     def test_the_reconcile_panel_neither_offers_nor_stamps_the_survivor(
         self, app, seed_user, seed_periods,
@@ -1722,8 +1743,15 @@ class TestAKeptMovementIsNotAPurchase:
             assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
                 SettlementBasisEnum.PURCHASES,
             )
-            assert status_seam.settled_family_leg(envelope) == Decimal("-30.00")
+            # The purchase carries the `$30.00`; the row, closed from its
+            # purchases, has no covering movement and is worth nothing of its
+            # own (ruling R-BAL81).
             assert envelope.covering_movements == []
+            assert status_seam.covered_cash_leg(envelope) == Decimal("0")
+            assert [
+                cash_ledger.movement_cash_leg(envelope, entry)
+                for entry in envelope.entries
+            ] == [Decimal("-30.00")]
             assert db.session.get(TransactionEntry, survivor.id) is None
 
     def test_a_settled_manual_close_envelope_lists_no_purchase(
@@ -1821,18 +1849,22 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
                 entry_service.delete_entry(record.id, seed_user["user"].id)
             assert db.session.get(TransactionEntry, record.id) is not None
 
-    def test_a_stored_figure_row_holding_a_real_purchase_keeps_it(
+    def test_a_figure_typed_over_a_real_purchase_is_refused(
         self, app, seed_user, seed_periods,
     ):
-        """The door path that refutes 'a stored-figure row holds no purchases'.
+        """The door path that once produced a stored figure beside a purchase.
 
         An envelope with a bank-born purchase is settled, its *Track
         individual purchases* is unticked on the settled row, and a figure is
-        typed over it: a ``corrected`` record beside a real purchase.  The
-        seam must write its OWN movement beside that purchase, never
-        overwrite the purchase as its mirror (``test_release``'s
-        container-beyond-the-door case is the same path, graded there for
-        the undo's refusal).
+        typed over it.  Through plan step ``X-bi-3e`` that wrote a
+        ``corrected`` record beside the real purchase, and this case graded
+        that the seam wrote its OWN movement rather than overwriting the
+        purchase as its mirror.  Ruling **R-BAL78** (plan step
+        ``balance:X-bi-4a``) makes the state UNREPRESENTABLE: the purchases
+        ARE the figure, a stated figure over them would be counted beside
+        them by a fold that reads movements alone, so the seam refuses the
+        record and the row stands exactly as it was -- settled on its
+        purchases, the purchase untouched, no second movement.
         """
         with app.app_context():
             # A bank-born envelope as the bank door mints one since X-bi-7b-3
@@ -1866,17 +1898,27 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             envelope.template.is_envelope = False
             db.session.flush()
             assert envelope.tracks_purchases is False
-            transaction_service.apply_requested_status(
-                envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
-            )
+            # The DOOR refuses first: a row holding purchases takes its figure
+            # from them whatever the flag says (``settles_from_entries``).
+            with pytest.raises(ValidationError, match="takes its figure from the purchases"):
+                transaction_service.apply_requested_status(
+                    envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
+                )
+            # The SEAM refuses on its own, for a caller around the door.
+            with pytest.raises(ValidationError, match="records its money as purchases"):
+                status_seam.apply_status_change(
+                    envelope, envelope.status_id,
+                    settlement=status_seam.Settlement(
+                        amount=Decimal("999.99"),
+                        source=MovementFigureSourceEnum.TYPED,
+                    ),
+                )
             db.session.flush()
 
             assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+                SettlementBasisEnum.PURCHASES,
             )
-            record = _only_movement(envelope)
-            assert record.id != purchase.id
-            assert record.amount == Decimal("999.99")
+            assert envelope.covering_movements == []
             kept = db.session.get(TransactionEntry, purchase.id)
             assert kept.amount == Decimal("57.96")
             assert kept.description == "Walmart"

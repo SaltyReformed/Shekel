@@ -252,12 +252,18 @@ def _reject_uncorrectable_row(
 
     * a row whose FIGURE IS NOT ITS OWN TO STATE, which the row now SAYS
       (:attr:`~._offers.CandidateRow.states_own_figure`) rather than this door
-      re-deriving.  A difference on one says a PURCHASE is missing or wrong,
-      which is a different repair on a different row.  **The census that
-      answers it is TWO published predicates and it moved to the candidate
-      constructor at plan step X-f6d-1**, because the PROPOSER has to ask the
-      same question and is pure: a near miss offered on such a row is an
-      Accept button that can never succeed;
+      re-deriving.  A difference on one says a CARD PURCHASE is missing or
+      wrong, which is a different repair on a different row.  **The census
+      that answers it is TWO published predicates and it moved to the
+      candidate constructor at plan step X-f6d-1**, because the PROPOSER has
+      to ask the same question and is pure: a near miss offered on such a
+      row is an Accept button that can never succeed.  **Its one reachable
+      subject is the CC PAYBACK** (ruling **R-BAL81**, plan step
+      ``balance:X-bi-4a``): the census's other member, an envelope holding
+      purchases, is worth ``0`` to the offer and is never a candidate, so
+      the sentence below is written for the payback -- through ``X-bi-4a``'s
+      first cut it named the envelope's purchases, and an owner reading it
+      beside a payback was told to fix a purchase the row does not hold;
     * a transfer SHADOW.  ``CLAUDE.md`` transfer invariant 3 holds a shadow's
       amount equal to its parent's, so correcting one means correcting the
       TRANSFER, which is not this door.
@@ -292,10 +298,11 @@ def _reject_uncorrectable_row(
     if not row.states_own_figure:
         raise ValidationError(
             f"These do not add up.  Your bank shows {sides.bank:+,.2f} and "
-            f'what you picked comes to {sides.app:+,.2f}.  "{row.label}" is '
-            f"worth whatever its purchases are, so it has no figure of its "
-            f"own to correct -- the difference is a purchase that is missing "
-            f"or wrong, and that is what to fix." + _NOTHING
+            f'what you picked comes to {sides.app:+,.2f}.  "{row.label}" '
+            f"repays what was spent on the card under the row it names, so "
+            f"it has no figure of its own to correct -- the difference is a "
+            f"card purchase that is missing or wrong under that row, and "
+            f"that is what to fix." + _NOTHING
         )
 
 

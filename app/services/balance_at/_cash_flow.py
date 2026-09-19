@@ -119,8 +119,9 @@ def cash_balance_map(
     gate rather than a coincidence.**  A loan's balance is not a
     transaction sum (finding B-3), so every resolver feeding these entries
     refuses one at the source: ``resolve_grid_account`` since ruling D4 /
-    plan step A1 (grid, dashboard, pulse), ``resolve_analytics_account``
-    since plan step X-a1 (the calendar -- finding N-38), and the cash
+    plan step A1 (grid, dashboard, pulse), the analytics resolver
+    (``resolve_analytics_cash_flow_set``; ``resolve_analytics_account`` until
+    plan step CC-4-3) since plan step X-a1 (the calendar -- finding N-38), and the cash
     detail page's own ``_cash_page.cash_detail_wrong_type`` 404.  These producers
     therefore stay TOTAL and kind-blind by design, and no screen can ask
     them a question only ``balance_at.balance_at`` can answer.

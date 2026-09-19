@@ -16,11 +16,14 @@ was measuring is exactly this one.  The split follows the sibling-split
 convention ``posting_reads`` was created by.
 
 **It holds no public door, deliberately.**  The two doors a caller reaches --
-``posting_service.sync_purchase_postings`` and
-``posting_service.reverse_purchase_postings_before_delete`` -- stay in the
+``posting_service.sync_transaction_postings`` (the family reconcile, and since
+plan step ``balance:X-bi-4a`` the whole of what an ordinary transaction posts)
+and ``posting_service.reverse_purchase_postings_before_delete`` -- stay in the
 writer module, because both must run the account anchor self-heal that module
 owns, and because ``posting_service`` remains the ledger's ONE public surface.
-What lives here is what those doors are made of.
+What lives here is what those doors are made of.  (A per-purchase door,
+``sync_purchase_postings``, stood beside them with zero callers until that
+step deleted it -- ledger row **BAL-507**.)
 
 **The dependency runs one way**: this module imports the balanced-write leaf
 (:mod:`app.services._posting_write`) and the chart resolvers, and never
@@ -88,12 +91,12 @@ def purchase_posts(txn: Transaction, entry) -> bool:
 
     The ONE statement of "is this purchase in the ledger" on the write side,
     and the twin of the read side's own three narrowings
-    (:func:`app.services.cash_ledger._events._posted_purchase_facts`).  All
+    (:func:`app.services.cash_ledger._events.settled_cash_facts`).  All
     three are load-bearing and each is stated there in full:
 
     * the PARENT contributes to a balance at all (not soft-deleted, not Credit
-      or Cancelled) -- :func:`~app.services.cash_ledger.settled_cash_leg`'s
-      totality rule, extended to the family it now has;
+      or Cancelled) -- :func:`~app.services.cash_ledger.movement_cash_leg`'s
+      totality rule, the family's since ruling **R-FM**;
     * the purchase is a DEBIT -- a card purchase leaves through its own CC
       Payback sibling and never touches this account;
     * its bank posting day is RECORDED -- the trigger itself.
@@ -119,9 +122,11 @@ def purchase_posts(txn: Transaction, entry) -> bool:
 def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
     """Return the debit-positive ledger target for a POSTED movement.
 
-    The movement analog of :func:`_settled_target`, and since plan step
-    ``balance:X-bi-3b`` the SAME shape: ``{cash_ledger_id: leg,
-    category_ledger_id: -leg}``, summing to zero by construction, where
+    The ONE ledger target an ordinary transaction's family has (plan step
+    ``balance:X-bi-4a``, ruling **R-BAL80**: a plan row books nothing of its
+    own, so the row-level ``_settled_target`` this was the analog of is
+    gone): ``{cash_ledger_id: leg, category_ledger_id: -leg}``, summing to
+    zero by construction, where
     ``leg`` is :func:`app.services.cash_ledger.movement_cash_leg` -- the
     movement's whole figure in its PARENT's direction (ruling **R-BAL35**).
     A purchase against an envelope books ``{cash: -amount, category:
@@ -141,15 +146,16 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
 
     **The counter leg is the PARENT's own category, in the parent's class**
     (ruling **R-FM**, developer 2026-08-15; the class since X-bi-3b by
-    :func:`~app.services._posting_write.ledger_class_of`, the mapping
-    ``_settled_target`` reads).  A movement carries no category of its own,
-    and the money it records is its parent's: booking it there recognises the
-    expense or income in the right category on the day it happens, and the
-    parent's close then books only the remainder to the SAME account, so the
-    two always sum to the row's whole figure.  Rejected: booking it to
-    Uncategorized until the close, which shows an open envelope's real spend
-    as uncategorised on the income statement and makes every close write a
-    reclassification pair.
+    :func:`~app.services._posting_write.ledger_class_of`).  A movement carries
+    no category of its own, and the money it records is its parent's: booking
+    it there recognises the expense or income in the right category on the
+    day it happens.  Through ``X-bi-3e`` the parent's close then booked the
+    remainder to the SAME account, so the two summed to the row's whole
+    figure; since plan step ``balance:X-bi-4a`` the close books nothing, and
+    a purchase not yet dated is in flight until it is (ruling **R-BAL77**).
+    Rejected: booking it to Uncategorized until the close, which shows an
+    open envelope's real spend as uncategorised on the income statement and
+    makes every close write a reclassification pair.
 
     A re-category of the parent is therefore a re-category of its purchases, and
     it reconciles by the same mechanism the parent's own leg uses: the sync
@@ -163,11 +169,11 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
             unwritable), so the cash account is read straight off it.
         txn: Its parent transaction, taken as an ARGUMENT rather than through
             ``entry.transaction`` so the caller that already holds it -- every
-            caller does -- pays no lazy load, and so the category booked here is
-            provably the one the parent's own leg books.  Its ``user_id`` is
+            caller does -- pays no lazy load, and so every movement of one
+            family is provably booked to one category.  Its ``user_id`` is
             the category account's owner, the ONE home ``pay_calendar:C13-b``
-            gave a row's owner (``_settled_target`` says why it is read here
-            and not passed).
+            gave a row's owner: a parameter every caller binds from that home
+            would be a second home one hop away.
 
     Returns:
         ``{cash_ledger_id: leg, category_ledger_id: -leg}``.
