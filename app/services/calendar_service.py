@@ -23,8 +23,9 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.user import UserSettings
 from app.services import balance_at, cash_ledger
-from app.services.account_resolver import resolve_analytics_account
+from app.services.account_resolver import resolve_analytics_cash_flow_set
 from app.services.calendar_day_flows import (
     MAX_VISIBLE_DAY_FLOWS,
     DayEntry,
@@ -35,6 +36,7 @@ from app.services.calendar_day_flows import (
     order_for_display,
 )
 from app.services.calendar_infrequency import badge_cadence
+from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
 from app.services.pay_calendar import (
     DerivedPeriod,
     PayCadence,
@@ -54,9 +56,12 @@ class CalendarAccountNotResolvableError(LookupError):
 
     After Commits 3-8 of the main remediation locked the E-19 / CRIT-01
     invariant ("anchor is never NULL; ``resolve_anchor`` raises or
-    returns a valid ``AnchorPoint``"), an ``account is None`` outcome from
-    :func:`~app.services.account_resolver.resolve_analytics_account`
-    indicates an *upstream* defect (a deleted analytics account), not a normal
+    returns a valid ``AnchorPoint``"), a ``None`` outcome from
+    :func:`~app.services.account_resolver.resolve_analytics_cash_flow_set`
+    (``resolve_analytics_account`` until plan step CC-4-3) -- an explicit
+    ``account_id`` the admission test refuses, or an owner with no
+    grid-eligible account -- indicates an *upstream* defect (a deleted
+    analytics account) or a question the surface cannot answer, not a normal
     "empty calendar" state.  Pre-F-2 the service silently substituted a zeroed
     :class:`MonthSummary` / :class:`YearOverview`, which masked the upstream bug
     behind a ``$0.00`` calendar shown to the user with no error.  Raising
@@ -143,9 +148,12 @@ class MonthSummary:  # pylint: disable=too-many-instance-attributes
     its own.  ``day_overflow`` is the parallel per-day "+N more" residual;
     ``daily`` bundles the whole daily running-balance projection as one
     cohesive sub-object (:class:`DailyView`), ``None`` for the year overview.
-    ``account_name`` is the resolved analytics account's display name (the
-    on-screen scope label the month template renders so the checking-only
-    scope is stated, not silent -- the analytics-audit cross-cutting fix).
+    ``account_name`` is the BALANCE account's display name (the on-screen
+    scope label the month template renders so the scope is stated, not silent
+    -- the analytics-audit cross-cutting fix).  Since plan step CC-4-3 the
+    day cells hold the paycheck's rows across the owner's cash-flow set
+    (ruling ``R-CC16``) while the balance line, the month-end figure and this
+    name stay one member's.
 
     ``projected_end_balance`` is the period-flat seam scalar at the last
     calendar day (the containing period's end); the month view's honest
@@ -189,6 +197,7 @@ def get_month_detail(  # pylint: disable=too-many-arguments
     large_threshold: int = 500,
     *,
     today: date | None = None,
+    user_settings: UserSettings | None,
 ) -> MonthSummary:
     """Compute calendar data for a single month.
 
@@ -198,20 +207,37 @@ def get_month_detail(  # pylint: disable=too-many-arguments
     month-end balance, large/infrequent flags, and -- when ``today`` is
     supplied -- the daily running-balance projection (:class:`DailyView`).
 
-    Pylint: ``too-many-arguments`` (6/5) -- these six are independent
+    **The rows are the paycheck's across the owner's CASH-FLOW SET since plan
+    step ``credit_card:CC-4-3``** (ruling ``R-CC16``): the primary grid
+    account plus its active cards, read through the one clause every
+    plan-item reader appends, with the balance line still ONE member's.
+    ``account_id`` keeps the meaning the grid gives it -- a member puts its
+    balance on the line behind the set's rows; an owned cash-flow account
+    outside the set (a savings account) is that account's single-account
+    calendar as before -- and keeps this surface's own policy for a refused
+    id (another owner's, archived, a loan, unknown): a 404, never a fall
+    through (:func:`~app.services.account_resolver.resolve_analytics_cash_flow_set`).
+    The DEFAULT is the set's primary -- the owner's saved default grid
+    account, else their first active checking account, else their first
+    grid-eligible account -- where it was the first active checking account
+    alone; the one definition of the primary every cash-flow surface reads.
+
+    Pylint: ``too-many-arguments`` (7/5) -- these seven are independent
     calendar-render inputs, not a cohesive entity: the owner id, the target
-    year and month, the optional account scope, the large-flag threshold, and
-    the display-tz ``today`` that gates the daily view.  They are passed
-    straight through from the route's own request args, so a param object
-    would be stamp coupling; ``get_year_overview`` shares the same
-    non-cohesive shape minus ``today``.
+    year and month, the optional account scope, the large-flag threshold, the
+    display-tz ``today`` that gates the daily view, and the settings row the
+    primary reads.  They are passed straight through from the route's own
+    request args and the row it already holds, so a param object would be
+    stamp coupling; ``get_year_overview`` shares the same non-cohesive shape
+    minus ``today``.
 
     Args:
         user_id: The user's ID.
         year: Calendar year.
         month: Calendar month (1-12).
-        account_id: Account to scope transactions to.  Defaults to
-            the user's first active checking account.
+        account_id: The BALANCE account, as the grid's ``?account_id=``
+            override: a member of the set or an owned cash-flow account
+            outside it.  Defaults to the set's primary.
         large_threshold: Amount at or above which a transaction is
             flagged as large.
         today: The current date in the display timezone (the route resolves
@@ -220,13 +246,23 @@ def get_month_detail(  # pylint: disable=too-many-arguments
             strip, day-cell balances, and elapsed/remaining split need it);
             when ``None`` (aggregate callers that do not render daily
             balances) ``daily`` is ``None`` and no balance-series read runs.
+        user_settings: The owner's ``UserSettings`` row, or ``None`` when
+            they have none -- the saved-default layer the primary reads,
+            which this surface did not consult before plan step CC-4-3.
+            Keyword-only and REQUIRED, with ``None`` a value a caller states
+            rather than a default it can fall into: an omitted row would
+            resolve a different primary than the grid's for an owner with a
+            saved default, silently -- the drift this step deletes -- and a
+            missing argument fails at the call instead.  The route passes
+            the row it already loaded.
 
     Returns:
         A MonthSummary with day-level and aggregate data.
 
     Raises:
-        CalendarAccountNotResolvableError: The analytics account cannot be
-            resolved -- an upstream defect the route turns into a 404.
+        CalendarAccountNotResolvableError: An explicit ``account_id`` the
+            admission test refuses, or an owner with no grid-eligible account
+            -- the route turns it into a 404.
         PayCalendarError: See
             :func:`~app.services.calendar_infrequency.badge_cadence`.
         RecurrenceResolutionError: See
@@ -235,8 +271,10 @@ def get_month_detail(  # pylint: disable=too-many-arguments
             500 is the intended answer -- ``routes/analytics.py`` catches only
             the first of these three.
     """
-    account = resolve_analytics_account(user_id, account_id)
-    if account is None:
+    cash_flow = resolve_analytics_cash_flow_set(
+        user_id, user_settings, account_id,
+    )
+    if cash_flow is None:
         raise CalendarAccountNotResolvableError(
             f"Analytics account not resolvable for user_id={user_id} "
             f"account_id={account_id} year={year} month={month}",
@@ -254,11 +292,11 @@ def get_month_detail(  # pylint: disable=too-many-arguments
     # it once.
     periods = balance_ctx.calendar().overlapping(first_day, last_day)
     transactions = _query_transactions_for_range(
-        account.id, balance_ctx.scenario_id, periods,
+        cash_flow, balance_ctx.scenario_id, periods,
     )
 
     ctx = _MonthBuildContext(
-        year=year, account=account, periods=periods,
+        year=year, account=cash_flow.balance, periods=periods,
         transactions=transactions,
         contributions=cash_ledger.contributions_by_id(
             transactions, balance_ctx.amounts(),
@@ -275,17 +313,24 @@ def get_year_overview(
     year: int,
     account_id: int | None = None,
     large_threshold: int = 500,
+    *,
+    user_settings: UserSettings | None,
 ) -> YearOverview:
     """Compute 12-month overview for a calendar year.
 
     Fetches all transactions for the year in a single query, then
-    partitions by month in Python to avoid 12 database round trips.
+    partitions by month in Python to avoid 12 database round trips.  The
+    scope is :func:`get_month_detail`'s: the owner's cash-flow set behind
+    one balance line (plan step CC-4-3).
 
     Args:
         user_id: The user's ID.
         year: Calendar year.
-        account_id: Account to scope to.  Defaults to checking.
+        account_id: The BALANCE account, as :func:`get_month_detail` takes
+            it.  Defaults to the set's primary.
         large_threshold: Large transaction threshold.
+        user_settings: The owner's ``UserSettings`` row, or ``None`` -- as
+            :func:`get_month_detail` takes it: keyword-only and required.
 
     Returns:
         A YearOverview with 12 MonthSummary entries (Jan-Dec).
@@ -293,8 +338,10 @@ def get_year_overview(
     Raises:
         The three :func:`get_month_detail` raises, for the same reasons.
     """
-    account = resolve_analytics_account(user_id, account_id)
-    if account is None:
+    cash_flow = resolve_analytics_cash_flow_set(
+        user_id, user_settings, account_id,
+    )
+    if cash_flow is None:
         raise CalendarAccountNotResolvableError(
             f"Analytics account not resolvable for user_id={user_id} "
             f"account_id={account_id} year={year}",
@@ -306,11 +353,11 @@ def get_year_overview(
     # ONE resolution, threaded -- see ``get_month_detail`` for what C2-f1 collapsed.
     periods = balance_ctx.calendar().overlapping(first_day, last_day)
     all_txns = _query_transactions_for_range(
-        account.id, balance_ctx.scenario_id, periods,
+        cash_flow, balance_ctx.scenario_id, periods,
     )
 
     ctx = _MonthBuildContext(
-        year=year, account=account, periods=periods,
+        year=year, account=cash_flow.balance, periods=periods,
         transactions=all_txns,
         contributions=cash_ledger.contributions_by_id(
             all_txns, balance_ctx.amounts(),
@@ -337,11 +384,23 @@ def get_year_overview(
 
 
 def _query_transactions_for_range(
-    account_id: int,
+    cash_flow: CashFlowSet,
     scenario_id: int,
     periods: PeriodWindow,
 ) -> list[Transaction]:
     """Load the transactions filed under every period of *periods*.
+
+    **The rows are the PAYCHECK's across the owner's cash-flow set -- checking
+    and its cards -- not one account's** (developer ruling
+    ``credit_card:R-CC16``, plan step CC-4-3), through the ONE clause every
+    plan-item reader appends,
+    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
+    rows, less the far leg of a transfer between two members, which the
+    calendar shows once from the balance line's side (ruling ``R-CC23``) --
+    as an expense on checking's calendar, as income on the card's.  It was
+    ``Transaction.account_id == account_id``, which dropped the phone bill
+    that lives on the card from the month it is due in; a set of one member
+    is that filter, row for row.
 
     **It TAKES the window rather than resolving one** (plan step C2-f1).  Both
     callers already hold the answer -- they render it as the period strip --
@@ -381,14 +440,15 @@ def _query_transactions_for_range(
 
     **``user_id`` is gone, so OWNER SCOPING is a precondition on the caller
     rather than a filter here** -- stated because an unstated one is how a
-    scoping check goes missing.  Both callers take *account* from
-    ``resolve_analytics_account(user_id, ...)`` and *periods* off a
+    scoping check goes missing.  Both callers take *cash_flow* from
+    ``resolve_analytics_cash_flow_set(user_id, ...)``, whose every member
+    passed the owner's admission test, and *periods* off a
     ``BalanceContext`` built for that same owner, so both keys are already
     theirs.
 
     Args:
-        account_id: The account whose rows to load; the CALLER owns its
-            ownership check.
+        cash_flow: The owner's cash-flow set, whose members' rows to load;
+            the CALLER owns its ownership check.
         scenario_id: The budget scenario the rows live in.
         periods: The pay periods the span touches, resolved once by the caller
             off its own ``BalanceContext``, which is what scopes them.
@@ -409,7 +469,7 @@ def _query_transactions_for_range(
             joinedload(Transaction.pay_period),
         )
         .filter(
-            Transaction.account_id == account_id,
+            paycheck_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             balance_contributing_clause(),
             Transaction.pay_period_id.in_(period_ids),
@@ -522,9 +582,13 @@ def _assign_transactions_to_days(
 class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
     """The pre-queried data and config shared across a year's month summaries.
 
-    ``get_year_overview`` resolves the account, scenario, overlapping
+    ``get_year_overview`` resolves the cash-flow set, scenario, overlapping
     periods, and transaction set once and builds twelve summaries from
     them, varying only the month (``get_month_detail`` builds one).
+    ``account`` is the set's BALANCE line -- the member whose running
+    balance, month-end figure and name the summaries carry; the rows were
+    selected across the whole set before this context was built, so the set
+    itself does not ride here.
     Bundling these into the context the build shares keeps
     :func:`_build_month_summary` a two-argument call and makes that
     resolved-once-reused relationship explicit.
@@ -552,9 +616,10 @@ class _MonthBuildContext:  # pylint: disable=too-many-instance-attributes
     Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE one
     calendar build's inputs, read as a flat unit by
     :func:`_build_month_summary` and its helpers, with no cohesive sub-group to
-    nest: the year and account scope the query, the periods, transactions and
-    their contributions are its result, and the threshold, context, clock and
-    cadence are four independent per-build settings.  Mirrors
+    nest: the year scopes the query and the account the balance line, the
+    periods, transactions and their contributions are its result, and the
+    threshold, context, clock and cadence are four independent per-build
+    settings.  Mirrors
     :class:`DayEntry`'s 10/7 here.
     """
 
@@ -829,9 +894,13 @@ def _compute_month_end_balance(
     which folds the account's cash events (plan step X-c2b2), at the
     actual last day of the month.  The cash-flow entry (not the
     kind-correct :func:`~app.services.balance_at.balance_at`) keeps this a
-    pure transaction running-balance that reconciles with the day cells the
-    calendar renders for the same month; the analytics account can be any
-    kind via an explicit ``account_id``.  This is the HIGH-02 / W-277
+    pure transaction running-balance of the BALANCE account, the member
+    whose own rows among the day cells it reconciles with -- the cells hold
+    the whole set's rows since plan step CC-4-3, so the month's totals and
+    this line can differ by what moves on the other members, a divergence
+    with no reconciling term yet (the grid's "On other accounts" is the
+    shape); the balance account can be any cash-flow kind via an explicit
+    ``account_id``.  This is the HIGH-02 / W-277
     fix: pre-remediation the calendar walked a separate code path
     that (a) selected the last pay period whose ``end_date`` was on or
     before the calendar month-end (up to ~13 days stale when the

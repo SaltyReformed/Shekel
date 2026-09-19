@@ -20,6 +20,7 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
+from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.utils.balance_predicates import is_projected_clause
 
@@ -28,7 +29,7 @@ from app.utils.balance_predicates import is_projected_clause
 
 
 def _query_unpaid_expense_rows(
-    account_id: int,
+    cash_flow: CashFlowSet,
     scenario_id: int,
     period_ids: list[int],
 ) -> list[Transaction]:
@@ -40,10 +41,26 @@ def _query_unpaid_expense_rows(
     eager-loads, and the Projected / expense / not-deleted filter are
     defined exactly once rather than copied per producer (DRY).
 
+    **The rows are the PAYCHECK's across the owner's cash-flow set -- checking
+    and its cards -- not one account's** (developer ruling
+    ``credit_card:R-CC16``, plan step CC-4-3), through the ONE clause every
+    plan-item reader appends,
+    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
+    rows, less the far leg of a transfer between two members (ruling
+    ``R-CC23``).  It was ``Transaction.account_id == account_id``, which
+    dropped the phone bill that lives on the card from the bills the paycheck
+    still owes; a set of one member is that filter, row for row.
+
     Transfer-out shadows ARE included: they are expense-typed
     transactions, so they satisfy the expense filter and are obligations
-    that still draw down checking (the Gate B4b ruling).  Income shadows
-    are not (they are income-typed).
+    the paycheck still owes on the member they leave (the Gate B4b ruling,
+    which read "draw down checking" while the reader was one account's).
+    Income shadows are not (they are income-typed).  A payment from the
+    balance account to a card is therefore one obligation, on the balance
+    line's side; the card's income shadow is both income-typed and the far
+    leg.  A transfer with one endpoint outside the set (card -> savings)
+    shows from its member endpoint, as a checking -> savings transfer
+    always has.
 
     selectinload(entries) + joinedload(template) avoid N+1 lookups when a
     consumer checks ``is_envelope`` or iterates entries for the
@@ -53,7 +70,7 @@ def _query_unpaid_expense_rows(
     the Python ``is_projected`` predicate.
 
     Args:
-        account_id: The account whose rows to load.
+        cash_flow: The owner's cash-flow set, whose members' rows to load.
         scenario_id: The scenario the rows belong to.
         period_ids: The pay period ids to load rows for.  An empty list
             yields an empty result.
@@ -75,7 +92,7 @@ def _query_unpaid_expense_rows(
             selectinload(Transaction.entries),
         )
         .filter(
-            Transaction.account_id == account_id,
+            paycheck_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),

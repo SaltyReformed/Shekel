@@ -88,8 +88,9 @@ function's number.
 :class:`~app.services.account_projection.AccountProjectionKind`: this is the
 cash-flow view, whose balance must reconcile with the transaction rows rendered
 beside it whatever the account.  What keeps a LOAN out of that view is a gate at
-the SOURCE -- ``resolve_grid_account`` since plan step A1 and
-``resolve_analytics_account`` since X-a1 -- not a refusal in here, which would
+the SOURCE -- ``resolve_grid_account`` since plan step A1 and the analytics
+resolver (``resolve_analytics_cash_flow_set``; ``resolve_analytics_account``
+until plan step CC-4-3) since X-a1 -- not a refusal in here, which would
 reintroduce exactly the partiality above.
 
 **WIRED since plan step X-c2b2.**  Every cash figure the app renders is one of

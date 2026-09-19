@@ -1,8 +1,9 @@
 """
 Shekel Budget App -- Dashboard: the section the page is ABOUT.
 
-The dashboard renders one account, over one pay period, out of one read
-pass.  Naming that subject is what this module does, and it does it
+The dashboard renders one balance account and the paycheck's bills across
+the owner's cash-flow set, over one pay period, out of one read pass.
+Naming that subject is what this module does, and it does it
 exactly once per render: :func:`resolve_section` is the shared
 head-of-function resolution the pulse producer
 (:func:`~._pulse.compute_pulse_section`) and the hero fragment
@@ -18,8 +19,9 @@ from typing import TYPE_CHECKING
 from app.extensions import db
 from app.models.account import Account
 from app.models.user import UserSettings
-from app.services.account_resolver import resolve_grid_account
+from app.services.account_resolver import resolve_cash_flow_set
 from app.services.balance_at import BalanceContext
+from app.services.cash_flow_set import CashFlowSet
 
 if TYPE_CHECKING:
     # Type-only: the value arrives from ``balance_ctx.calendar()``, which
@@ -34,10 +36,11 @@ _DEFAULT_STALENESS_DAYS = 14
 
 @dataclass(frozen=True)
 class DashboardSection:
-    """One dashboard render's subject: one read pass, one account, one period.
+    """One dashboard render's subject: one read pass, one cash-flow set, one period.
 
-    Every producer on this page answers about the same account over the same
-    paycheck out of the same read pass, and this is that statement as a value.
+    Every producer on this page answers about the same set -- and the same
+    balance account within it -- over the same paycheck out of the same read
+    pass, and this is that statement as a value.
 
     **It replaced a three-slot tuple of optionals** (pay-calendar plan step
     C2-f2e).  ``_resolve_section_context`` returned
@@ -49,15 +52,23 @@ class DashboardSection:
     :func:`resolve_section` instead: the coupling is the return type now, and
     a section that EXISTS carries all three facts.
 
-    **Why the account and the settings ride here rather than being looked up
-    again.**  ``resolve_grid_account`` needs the settings row and the pulse
-    hero needs it a second time for the staleness threshold; before this step
-    ``/`` resolved the account TWICE per render (the route for its
-    ``has_account`` flag, the producer for its own use) and queried the
-    settings row TWICE inside the pulse producer alone.  Measured on the test
-    database over an owner with a salary profile, a 401(k), a mortgage and an
-    active goal: ``resolve_grid_account`` 2, ``_get_user_settings`` 2.  Both
-    are 1 now, because the render resolves its subject once and hands it down.
+    **Why the set and the settings ride here rather than being looked up
+    again.**  The resolver needs the settings row and the pulse hero needs it
+    a second time for the staleness threshold; before this step ``/``
+    resolved the account TWICE per render (the route for its ``has_account``
+    flag, the producer for its own use) and queried the settings row TWICE
+    inside the pulse producer alone.  Measured on the test database over an
+    owner with a salary profile, a 401(k), a mortgage and an active goal:
+    ``resolve_grid_account`` 2, ``_get_user_settings`` 2.  Both are 1 now,
+    because the render resolves its subject once and hands it down.
+
+    **The subject is the owner's CASH-FLOW SET since plan step
+    ``credit_card:CC-4-3``** (ruling ``R-CC16``): the primary grid account
+    plus its active cards, resolved by
+    :func:`~app.services.account_resolver.resolve_cash_flow_set` -- the ONE
+    call the grid makes -- with no override, because the dashboard takes
+    none.  The upcoming bills are the paycheck's across the set; the hero,
+    the chart and the trough stay the BALANCE line's, which is the primary.
 
     Attributes:
         balance_ctx: The render's read pass -- the pinned ``as_of``, the
@@ -66,20 +77,31 @@ class DashboardSection:
             structural here rather than a coincidence of what each producer
             happened to call; this package holds no ``BalanceContext.build``
             call at all (ledger row **P56**).
-        account: The dashboard's account -- ``resolve_grid_account``'s pick,
-            which may be ANY non-amortizing kind (a user can point the
-            dashboard at an HYSA, or the fallback can land on a non-checking
-            account).  Never ``None``: a render with no resolvable account has
-            no section.
+        cash_flow: The owner's :class:`~app.services.cash_flow_set.CashFlowSet`
+            -- the accounts whose plan items are this paycheck's bills, and
+            the one whose balance the page renders.  Never ``None``: a render
+            with no resolvable account has no section.
         settings: The owner's :class:`~app.models.user.UserSettings`, or
             ``None`` when they have no row.  Loaded once, as the input to the
-            account resolution above, and read again by the hero's staleness
+            set resolution above, and read again by the hero's staleness
             caption and the chart's low-balance threshold.
     """
 
     balance_ctx: BalanceContext
-    account: Account
+    cash_flow: CashFlowSet
     settings: UserSettings | None
+
+    @property
+    def account(self) -> Account:
+        """The dashboard's BALANCE account: the set's balance line.
+
+        ``resolve_grid_account``'s pick, which may be ANY non-amortizing kind
+        (a user can point the dashboard at an HYSA, or the fallback can land
+        on a non-checking account).  A property over :attr:`cash_flow` rather
+        than a second field, so the account the hero names and the balance
+        line the set carries cannot be two values (CLAUDE.md rule 14).
+        """
+        return self.cash_flow.balance
 
     @property
     def current_period(self) -> "DerivedPeriod | None":
@@ -132,8 +154,8 @@ def resolve_section(
     The shared head-of-function resolution the pulse producer
     (:func:`~._pulse.compute_pulse_section`), the hero fragment
     (:func:`~._balance.compute_balance_section`) and the page's own
-    ``has_account`` flag all read, so the account and the settings row are
-    resolved ONCE per render rather than once per consumer.
+    ``has_account`` flag all read, so the cash-flow set and the settings row
+    are resolved ONCE per render rather than once per consumer.
 
     **It TAKES the read pass rather than building one** (pay-calendar plan step
     C2-f2e, ledger rows **P56** and **P61**).  It called
@@ -159,11 +181,11 @@ def resolve_section(
         answers (plan step X-v2, ruling R-BW).
     """
     settings = _get_user_settings(balance_ctx.user_id)
-    account = resolve_grid_account(balance_ctx.user_id, settings)
-    if account is None:
+    cash_flow = resolve_cash_flow_set(balance_ctx.user_id, settings)
+    if cash_flow is None:
         return None
     return DashboardSection(
-        balance_ctx=balance_ctx, account=account, settings=settings,
+        balance_ctx=balance_ctx, cash_flow=cash_flow, settings=settings,
     )
 
 
