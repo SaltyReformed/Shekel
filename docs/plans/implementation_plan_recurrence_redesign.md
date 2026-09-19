@@ -636,13 +636,13 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       (baseline byte-identical over both loans; a planted `$500` sweep into the Mortgage `None` ->
       `2034-10-01`; the reset hole `2029-03-22` -> `2029-02-22`; August charged once, 91 -> 90).
       Closed **D46**, **D47**, **D48**, **D53**, **D54**; opened **REC-517** (R16-f), **REC-518**
-      (R5), **REC-519** (R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
+      (R5), **REC-519** (closed at R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
 
 - [x] **R20 -- the setup door records the stated balance as the assertion it is.** `b4da8068` -- as
       built, on `b141e779` (the loan anchor doors moved to `loan_anchor_service.py`): a
       `tracking_start` at the owner's "as of" day whenever the loan originated before it; migration
-      `22b23085394d` dropped `LoanParams.current_principal` and its CHECK (0 of 2 backfilled on
-      production); the tracking-start door's earliest-payment refusal deleted (**R-R72** part 3).
+      `22b23085394d` dropped `LoanParams.current_principal` and its CHECK (0 of 2 on the 09-19
+      clone; production prints its count); the earliest-payment refusal deleted (**R-R72** part 3).
       Closed **REC-519**. Spec and notes: `historical/recurrence_r20_as_built_2026-09-19.md`.
 
 - [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
