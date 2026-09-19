@@ -84,7 +84,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
 # The day before the seeded calendar's first payday (``seed_periods`` rebuilds
 # the owner's schedule from 2026-01-02): the date every loan built through
-# ``_create_loan_account`` asserts its balance on.  See that helper.
+# ``_create_loan_account`` states its balance for -- the setup door's "as of"
+# day.  See that helper.
 _TRACKED_FROM = date(2026, 1, 1)
 
 
@@ -103,13 +104,17 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     To preserve the test contract without rewriting every caller,
     this helper builds the loan with an ``original_principal`` of
     ``principal + 5000`` (simulating "$5,000 already paid down before
-    the test starts") and then appends a USER_TRUEUP event at the lower
-    ``principal`` value, dated :data:`_TRACKED_FROM` -- the day before the
-    seeded calendar's first payday, i.e. "the balance when the owner began
-    tracking this loan".  The origination anchor is SYNTHESIZED from the
-    params (no stored ``LoanAnchorEvent`` -- matching production's
-    ``create_params`` since the read switch retired that write), so the
-    loan carries exactly ONE stored anchor event: the true-up.
+    the test starts") and states the lower ``principal`` as the balance
+    "as of" :data:`_TRACKED_FROM` -- the day before the seeded calendar's
+    first payday, i.e. "the balance when the owner began tracking this
+    loan".  That is the setup door's own write (plan step R20, ruling
+    R-R72 part 3): a ``tracking_start`` event, recorded by the shared
+    factory exactly as ``loan.create_params`` records it.  The origination
+    anchor is SYNTHESIZED from the params (no stored ``LoanAnchorEvent`` --
+    matching production's ``create_params`` since the read switch retired
+    that write), so the loan carries exactly ONE stored anchor event: the
+    tracking-start.  *It was a ``user_trueup`` appended after the fact until
+    R20*; the two sources differ in label alone, so no figure moved.
 
     **The assertion is dated when tracking began, not the day after
     origination** (plan step R16-b-2, rulings R-R71 / R-R72).  A loan's
@@ -125,17 +130,20 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
     charged.
 
     When ``principal == 0`` the gap is the full $5,000, so the
-    trueup at $0 produces a paid-off loan state -- what
+    assertion at $0 produces a paid-off loan state -- what
     ``test_refinance_paid_off_loan`` needs.  When ``principal > 0``
-    the trueup at ``principal`` produces a partially-paid loan
+    the assertion at ``principal`` produces a partially-paid loan
     state -- what ``test_refinance_principal_auto_calculated`` and
     every other refinance / debt-card test needs.
 
     Routes through :func:`tests._test_helpers.create_loan_account` (the ONE
-    shared loan builder) and :func:`tests._test_helpers.insert_trueup_event`,
-    so BOTH anchors are reconciled into the loan's genesis posting ledger in
-    the same transaction that writes them -- exactly what
-    ``loan.create_params`` / ``anchor_service`` do in production.  The
+    shared loan builder), so the assertion is reconciled into the loan's
+    genesis posting ledger in the same transaction that writes it -- exactly
+    what ``loan.create_params`` does in production.  ``is_arm`` is set after:
+    the flag alone moves no posting, since the rate-period engine's ARM
+    branch fires only on a first-adjustment count this helper never sets
+    (``rate_period_engine.py``, the ``terms.is_arm and first is not None``
+    condition), and the origination rate row holds either way.  The
     hand-rolled block this replaced opened no ledger at all, so every loan
     here exercised the no-ledger fallback production never takes.
 
@@ -160,12 +168,10 @@ def _create_loan_account(seed_user, db_session, account_type, name, principal,
         principal=principal + Decimal("5000.00"), rate=rate, term=term,
         origination_date=orig_date, payment_day=payment_day,
         account_type=account_type,
+        tracked_balance=principal, tracked_from=_TRACKED_FROM,
     )
     params = loan_params_for(db_session, account.id)
-    # Set BEFORE the trueup's ledger re-sync so the postings are reconciled
-    # against the loan's final terms.
     params.is_arm = is_arm
-    insert_trueup_event(params, principal, _TRACKED_FROM)
     db_session.commit()
     return account
 
@@ -471,7 +477,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "30000.00",
-                "current_principal": "25000.00",
+                "anchor_balance": "25000.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "5.000",
                 "term_months": "60",
                 "origination_date": "2025-01-01",
@@ -548,7 +555,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "12000.00",
-                "current_principal": "12000.00",
+                "anchor_balance": "12000.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "5.000",
                 "term_months": "24",
                 "origination_date": "2026-03-15",
@@ -588,7 +596,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "12000.00",
-                "current_principal": "12000.00",
+                "anchor_balance": "12000.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "5.000",
                 "term_months": "24",
                 "origination_date": "2026-03-15",
@@ -611,6 +620,12 @@ class TestLoanSetup:
         assert db.session.query(RateHistory).filter_by(
             account_id=account.id,
         ).count() == 0, "a refused setup left the origination rate behind"
+        # The stated balance's tracking-start is staged in the same
+        # transaction (plan step R20) and rolls back with the rest.
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        assert db.session.query(_LAE).filter_by(
+            account_id=account.id,
+        ).count() == 0, "a refused setup left the stated balance behind"
         db.session.refresh(rule)
         assert rule.starts_on == date(2026, 1, 2)
         assert rule.end_date == date(2026, 1, 16)
@@ -618,7 +633,7 @@ class TestLoanSetup:
     def test_create_params_writes_no_anchor_event_and_posts_the_opening(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Setup writes NO LoanAnchorEvent; the ledger opening is the record.
+        """Setup writes NO origination LoanAnchorEvent; the ledger opening is the record.
 
         The read switch's final commit retired the origination event write:
         the origination anchor is synthesized from the immutable LoanParams,
@@ -627,6 +642,12 @@ class TestLoanSetup:
         confirmed-balance reader answers the full $30,000 owed).  The
         dashboard must still resolve and render -- the resolver's replay
         fallback runs on the synthesized facts, never a stored row.
+
+        The balance is stated for the ORIGINATION day, so the setup door's
+        own write (plan step R20: a ``tracking_start`` for a balance stated
+        after origination) has nothing to record either -- the origination
+        IS that assertion.  :meth:`test_setup_records_the_stated_balance_as_a_tracking_start`
+        is the other half.
         """
         loan_type = (
             db.session.query(AccountType).filter_by(name="Auto Loan").one()
@@ -646,7 +667,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "30000.00",
-                "current_principal": "30000.00",
+                "anchor_balance": "30000.00",
+                "anchor_date": "2025-01-01",
                 "interest_rate": "5.000",
                 "term_months": "60",
                 "origination_date": "2025-01-01",
@@ -682,7 +704,9 @@ class TestLoanSetup:
         """Setup (zero events) then a true-up: the card reads the asserted value.
 
         The post-retirement lifecycle end-to-end through the ROUTES: a loan
-        created with NO stored anchor rows at all, then a $25,000 true-up
+        created with NO stored anchor rows at all (its balance stated for the
+        origination day, so the setup door records nothing -- plan step
+        R20), then a $25,000 true-up
         asserted through the dashboard form.  The true-up appends the ONE
         ``user_trueup`` event (the source document), the genesis sync books
         its TRUEUP correction so the confirmed-balance reader answers the
@@ -707,7 +731,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "30000.00",
-                "current_principal": "30000.00",
+                "anchor_balance": "30000.00",
+                "anchor_date": "2025-01-01",
                 "interest_rate": "5.000",
                 "term_months": "60",
                 "origination_date": "2025-01-01",
@@ -753,7 +778,8 @@ class TestLoanSetup:
             f"/accounts/{acct.id}/loan/setup",
             data={
                 "original_principal": "99999.00",
-                "current_principal": "99999.00",
+                "anchor_balance": "99999.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "0.99",
                 "term_months": "12",
                 "origination_date": "2025-01-01",
@@ -782,7 +808,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "30000.00",
-                "current_principal": "25000.00",
+                "anchor_balance": "25000.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "5.000",
                 "term_months": "360",
                 "origination_date": "2025-01-01",
@@ -813,7 +840,8 @@ class TestLoanSetup:
             f"/accounts/{account.id}/loan/setup",
             data={
                 "original_principal": "300000.00",
-                "current_principal": "250000.00",
+                "anchor_balance": "250000.00",
+                "anchor_date": "2026-03-20",
                 "interest_rate": "6.500",
                 "term_months": "360",
                 "origination_date": "2023-06-01",
@@ -824,8 +852,16 @@ class TestLoanSetup:
         params = db.session.query(LoanParams).filter_by(account_id=account.id).one()
         assert params.term_months == 360
 
-    def test_setup_prefills_current_principal(self, auth_client, seed_user, db, seed_periods):
-        """Setup form pre-fills current_principal from anchor balance."""
+    def test_setup_prefills_the_stated_balance_and_its_day(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The setup form opens on the account's anchor balance, stated for today.
+
+        Plan step R20: the "balance today" field prefills from the account's
+        latest cash assertion (the $15,000 typed when the account was made)
+        and its "as of" date from today, the setup date, bounded above by
+        today -- what the form submits unchanged is the door's default.
+        """
         loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
         resp = auth_client.post(
             "/accounts",
@@ -837,8 +873,204 @@ class TestLoanSetup:
             follow_redirects=True,
         )
         assert resp.status_code == 200
-        assert b'name="current_principal"' in resp.data
+        assert b'name="current_principal"' not in resp.data
+        assert b'name="anchor_balance"' in resp.data
         assert b'value="15000.00"' in resp.data
+        assert b'name="anchor_date"' in resp.data
+        assert b'max="2026-03-20" value="2026-03-20"' in resp.data
+
+    def _unconfigured_auto_loan(self, seed_user, db, name):
+        """Return a committed, not-yet-configured Auto Loan account."""
+        loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
+        account = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=loan_type.id,
+                name=name,
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.add(account)
+        db.session.commit()
+        return account
+
+    def _stored_anchors(self, db, account):
+        """Return ``[(date, balance, source id)]`` for every stored anchor row."""
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
+        rows = (
+            db.session.query(_LAE)
+            .filter(_LAE.account_id == account.id)
+            .order_by(_LAE.id)
+            .all()
+        )
+        return [(e.anchor_date, e.anchor_balance, e.source_id) for e in rows]
+
+    def test_setup_records_the_stated_balance_as_a_tracking_start(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A loan originating before the stated day gets ONE tracking_start at that day.
+
+        Plan step R20 (ruling R-R72 part 3, finding REC-519).  A $30,000
+        loan originating 2025-01-01, set up on the frozen 2026-03-20 with
+        "balance today" $25,000 as of 2026-02-15: the door appends exactly
+        one ``tracking_start`` at (2026-02-15, $25,000) in the same
+        transaction as the params, the genesis ledger reconciles to it, and
+        the dashboard reads $25,000 with the row labelled a tracking start.
+        Until R20 the $25,000 landed in ``LoanParams.current_principal`` and
+        the loan read as unpaid since 2025 (the R-R71 calendar).
+        """
+        account = self._unconfigured_auto_loan(seed_user, db, "Mid-life Setup")
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "25000.00",
+                "anchor_date": "2026-02-15",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+        from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
+        assert self._stored_anchors(db, account) == [(
+            date(2026, 2, 15), Decimal("25000.00"),
+            ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.TRACKING_START),
+        )]
+        assert posted_loan_balance_at(
+            account.id, seed_user["scenario"].id, date.today(),
+        ) == Decimal("25000.00")
+        page = auth_client.get(f"/accounts/{account.id}/loan")
+        assert page.status_code == 200
+        assert b"25,000.00" in page.data
+        # The anchors card's row badge, not the tracking-start FORM's label
+        # (which every configured loan's page renders).
+        assert (
+            b'<span class="badge bg-secondary ms-1">Tracking start</span>'
+            in page.data
+        )
+
+    def test_setup_asserts_nothing_for_a_loan_originating_after_today(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A loan not yet originated is configured, and no assertion is written.
+
+        The form still submits its prefilled pair (today, the account's
+        anchor), but a loan originating 2026-06-01 has no balance today: the
+        origination IS its assertion (plan step R20), and the stated pair --
+        necessarily dated before origination -- is not a refusal either,
+        since no date on or before today could satisfy the bound.
+        """
+        account = self._unconfigured_auto_loan(seed_user, db, "Future Setup")
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "0.00",
+                "anchor_date": "2026-03-20",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2026-06-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 302
+        assert db.session.query(LoanParams).filter_by(account_id=account.id).one()
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_refuses_a_stated_day_before_origination(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A stated day before an ORIGINATED loan's origination is refused whole.
+
+        The origination half of the ``[origination_date, today]`` bound
+        (plan step R20), refused the way the two dashboard doors refuse a
+        pre-origination date: the form re-renders with the sentence, and
+        neither params, rate row nor anchor row is written.
+        """
+        account = self._unconfigured_auto_loan(seed_user, db, "Refused Setup")
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "25000.00",
+                "anchor_date": "2024-12-31",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 200
+        assert (
+            b"Balance date cannot be before the loan&#39;s origination date "
+            b"(2025-01-01)." in resp.data
+        )
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert db.session.query(RateHistory).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_refuses_a_stated_day_after_today(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The schema refuses a stated day in the future; nothing is written."""
+        account = self._unconfigured_auto_loan(seed_user, db, "Future-dated Setup")
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "anchor_balance": "25000.00",
+                "anchor_date": "2026-03-21",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 200
+        assert b"Please correct the highlighted errors" in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert self._stored_anchors(db, account) == []
+
+    def test_setup_requires_the_stated_pair(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A submission carrying only the retired ``current_principal`` field is refused.
+
+        A stale client's field is dropped by the schema's EXCLUDE policy,
+        which leaves the required pair missing -- so the door refuses rather
+        than configuring a loan whose stated balance it silently lost.
+        """
+        account = self._unconfigured_auto_loan(seed_user, db, "Stale Client Setup")
+
+        resp = auth_client.post(
+            f"/accounts/{account.id}/loan/setup",
+            data={
+                "original_principal": "30000.00",
+                "current_principal": "25000.00",
+                "interest_rate": "5.000",
+                "term_months": "60",
+                "origination_date": "2025-01-01",
+                "payment_day": "15",
+            },
+        )
+        assert resp.status_code == 200
+        assert b"Please correct the highlighted errors" in resp.data
+        assert db.session.query(LoanParams).filter_by(
+            account_id=account.id,
+        ).count() == 0
+        assert self._stored_anchors(db, account) == []
 
 
 # ── Update Params Tests ──────────────────────────────────────────────
@@ -848,34 +1080,40 @@ class TestLoanParamsUpdate:
     """Tests for updating loan parameters."""
 
     def test_params_update(self, auth_client, seed_user, db, seed_periods):
-        """POST valid data updates editable params; current_principal is ignored.
+        """POST valid data updates editable params; a stray ``current_principal`` is ignored.
 
-        Re-pinned for E-18 / Commit 16 (decision D-C).  ``current_principal``
-        is non-authoritative seed and the params form no longer accepts
-        it -- ``LoanParamsUpdateSchema``'s ``unknown = EXCLUDE`` policy
-        silently strips a stray submission.  The interest_rate
-        percentage-to-decimal conversion is unchanged; the test was
-        rewritten so its earlier ``params.current_principal ==
-        Decimal("22000.00")`` assertion (which pinned the now-deprecated
-        column write) is dropped in favor of an explicit invariant: the
-        seed column survives the POST untouched.
+        Re-pinned for E-18 / Commit 16 (decision D-C) and again for plan step
+        R20.  The balance is not a parameter: ``LoanParamsUpdateSchema``'s
+        ``unknown = EXCLUDE`` policy silently strips a stray
+        ``current_principal`` submission (the column E-18 demoted and R20
+        dropped), and the loan's balance -- the ledger's, asserted only
+        through the dated true-up form -- survives the POST untouched.  The
+        interest_rate percentage-to-decimal conversion is unchanged.
 
         Hand-check:
-        * The fixture seeds ``current_principal == Decimal("25000.00")``
-          via ``_create_auto_loan``.
+        * The fixture states ``$25,000.00`` as the balance via
+          ``_create_auto_loan`` (one ``tracking_start``).
         * POSTing ``current_principal=22000.00`` is the silent no-op
           because the schema does not declare the field and
           ``_PARAM_FIELDS`` in :func:`app.routes.loan.update_params`
-          no longer references it.
+          does not reference it: no anchor row is written and the posted
+          balance still reads ``$25,000.00``.
         * ``interest_rate=4.500`` -> ``Decimal("0.04500")`` via
           ``LoanParamsUpdateSchema``'s ``@pre_load`` hook, which
           dispatches to
           :func:`app.schemas.validation._normalize_percent_fields`
           (Commit 24 / HIGH-06 convention).
         """
+        from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         acct = _create_auto_loan(seed_user, db.session)
-        params_before = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
-        seed_principal = params_before.current_principal
+        scenario_id = seed_user["scenario"].id
+        events_before = (
+            db.session.query(_LAE).filter_by(account_id=acct.id).count()
+        )
+        assert events_before == 1
+        assert posted_loan_balance_at(
+            acct.id, scenario_id, date.today(),
+        ) == Decimal("25000.00")
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/params",
@@ -904,10 +1142,15 @@ class TestLoanParamsUpdate:
             .one()
         )
         assert origination_rate.interest_rate == Decimal("0.04500")
-        # E-18 / Commit 16: the stray ``current_principal`` post must
-        # NOT mutate the seed column.  Users edit the displayed
-        # balance via the dated true-up form, not this endpoint.
-        assert params.current_principal == seed_principal
+        # E-18 / Commit 16 / R20: the stray ``current_principal`` post
+        # asserts nothing.  Users edit the displayed balance via the dated
+        # true-up form, not this endpoint.
+        assert (
+            db.session.query(_LAE).filter_by(account_id=acct.id).count()
+        ) == events_before
+        assert posted_loan_balance_at(
+            acct.id, scenario_id, date.today(),
+        ) == Decimal("25000.00")
 
     def test_params_update_validation(self, auth_client, seed_user, db, seed_periods):
         """POST invalid data leaves DB unchanged."""
@@ -931,7 +1174,6 @@ class TestLoanParamsUpdate:
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={
-                "current_principal": "25000.00",
                 "interest_rate": "5.000",
                 "payment_day": "15",
                 "term_months": "48",
@@ -949,7 +1191,6 @@ class TestLoanParamsUpdate:
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={
-                "current_principal": "250000.00",
                 "interest_rate": "6.500",
                 "payment_day": "1",
                 "is_arm": "true",
@@ -968,12 +1209,12 @@ class TestLoanParamsUpdate:
         """POST to another user's loan params returns 404 (security) and is unchanged."""
         other = _create_other_loan(second_user, db.session)
         orig = db.session.query(LoanParams).filter_by(account_id=other.id).one()
-        orig_principal = orig.current_principal
+        orig_day = orig.payment_day
+        assert orig_day != 28
 
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/params",
             data={
-                "current_principal": "1.00",
                 "interest_rate": "0.99",
                 "payment_day": "28",
             },
@@ -982,13 +1223,13 @@ class TestLoanParamsUpdate:
 
         db.session.expire_all()
         after = db.session.query(LoanParams).filter_by(account_id=other.id).one()
-        assert after.current_principal == orig_principal
+        assert after.payment_day == orig_day
 
     def test_params_update_nonexistent(self, auth_client, seed_user, db, seed_periods):
         """POST to nonexistent account returns 404 (security)."""
         resp = auth_client.post(
             "/accounts/999999/loan/params",
-            data={"current_principal": "20000.00", "interest_rate": "5.0", "payment_day": "1"},
+            data={"interest_rate": "5.0", "payment_day": "1"},
         )
         assert resp.status_code == 404
 
@@ -1001,7 +1242,7 @@ class TestLoanParamsUpdate:
         checking = seed_user["account"]
         resp = auth_client.post(
             f"/accounts/{checking.id}/loan/params",
-            data={"current_principal": "20000.00", "interest_rate": "5.0", "payment_day": "1"},
+            data={"interest_rate": "5.0", "payment_day": "1"},
         )
         assert resp.status_code == 404
 
@@ -1013,7 +1254,6 @@ class TestLoanParamsUpdate:
         auth_client.post(
             f"/accounts/{acct.id}/loan/params",
             data={
-                "current_principal": "25000.00",
                 "interest_rate": "5.000",
                 "payment_day": "15",
                 "term_months": "36",
@@ -2819,7 +3059,7 @@ class TestPayoffChartShape:
         overlay = _parse_chart_array(resp.data.decode(), "overlay")
         assert band is not None and overlay is not None
         # First label is the month after the loan's LATEST assertion:
-        # _create_mortgage's user-trueup is dated ``_TRACKED_FROM`` (2026-01-01)
+        # _create_mortgage's tracking-start is dated ``_TRACKED_FROM`` (2026-01-01)
         # at $250k, and with no confirmed payments the first row is the
         # contractual grid's first installment after it.  (It read "Jul 2023"
         # while the true-up was dated the day after origination.)  Feb 1 and
@@ -3145,7 +3385,7 @@ class TestLoanNegativePaths:
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/params",
-            data={"current_principal": "25000.00", "interest_rate": "-0.01", "payment_day": "15"},
+            data={"interest_rate": "-0.01", "payment_day": "15"},
         )
         db.session.expire_all()
         after_rate = (
@@ -3164,7 +3404,7 @@ class TestLoanNegativePaths:
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/params",
-            data={"current_principal": "25000.00", "interest_rate": "5.000", "payment_day": "0"},
+            data={"interest_rate": "5.000", "payment_day": "0"},
         )
         db.session.expire_all()
         after = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
@@ -3178,7 +3418,7 @@ class TestLoanNegativePaths:
 
         auth_client.post(
             f"/accounts/{acct.id}/loan/params",
-            data={"current_principal": "25000.00", "interest_rate": "5.000", "payment_day": "32"},
+            data={"interest_rate": "5.000", "payment_day": "32"},
         )
         db.session.expire_all()
         after = db.session.query(LoanParams).filter_by(account_id=acct.id).one()
@@ -3570,7 +3810,7 @@ class TestLoanDashboardWithPayments:
     ):
         """Payoff calculator target date mode works with payment history.
 
-        The target date mode uses current_principal from LoanParams
+        The target date mode projects from the loan's seam-derived balance
         (not derived from payments in this commit).
         """
         acct = _create_mortgage(seed_user, db.session)
@@ -5018,7 +5258,7 @@ class TestPaymentBreakdown:
         """Mortgage with escrow: breakdown card shows P/I/E amounts.
 
         Setup: $250,000 mortgage at 6.5%, 360 months, origination 2023-06-01.
-        LoanParams created by _create_mortgage: current_principal=$250K,
+        LoanParams created by _create_mortgage: balance stated at $250K,
         original_principal=$255K, rate=0.065, term=360, payment_day=1.
         Escrow: $7,200 property tax + $2,400 insurance = $9,600/yr = $800/mo.
 
@@ -5287,8 +5527,8 @@ def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00")
     pass ``origination_date`` explicitly so the alignment does not
     drift as today's date advances.
 
-    Sets original_principal = current_principal so the schedule aligns
-    with the full term (no early-payoff due to a lower current balance).
+    States no balance after origination, so the schedule aligns with the
+    full term (no early-payoff due to a lower current balance).
 
     Args:
         seed_user: The seed_user fixture dict.
@@ -5323,16 +5563,17 @@ def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00")
 def _create_loan_account_exact(seed_user, db_session, account_type, name,
                                 original_principal, rate, term, orig_date,
                                 payment_day):
-    """Like :func:`_create_loan_account` but with NO trueup anchor.
+    """Like :func:`_create_loan_account` but with NO stated balance.
 
     The loan carries only its origination anchor, so ``original_principal``
     IS its resolved balance -- there is no ``+ $5,000`` paid-down gap and no
-    trueup event.  (The hand-rolled block this replaced also took a
+    assertion event.  (The hand-rolled block this replaced also took a
     ``current_principal``, but it only ever landed in the non-authoritative
-    ``LoanParams.current_principal`` column and the loan account's unread
-    anchor balance: with no trueup event, the resolver and the genesis ledger
-    both seeded from ``original_principal`` regardless.  The parameter is gone
-    rather than kept as a decorative no-op.)
+    ``LoanParams.current_principal`` column -- dropped at plan step R20 --
+    and the loan account's unread anchor balance: with no assertion event,
+    the resolver and the genesis ledger both seeded from
+    ``original_principal`` regardless.  The parameter is gone rather than
+    kept as a decorative no-op.)
 
     Routes through the shared factory, so the loan's genesis posting ledger is
     opened in the same transaction as its ``LoanParams``.
@@ -7259,7 +7500,7 @@ class TestRefinanceCalculator:
 
         With confirmed payments, the current side uses the committed
         schedule metrics and the refinance principal is based on the
-        reduced real balance, not the stored current_principal.
+        reduced real balance, not the balance stated at setup.
         """
         acct = _create_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
@@ -8107,7 +8348,12 @@ class TestLoanNavPills:
 
 
 class TestRecordTrackingStartRoute:
-    """POST /loan/tracking-start records a mid-life opening (a tracking_start event)."""
+    """POST /loan/tracking-start records a mid-life tracking-start (a tracking_start event).
+
+    Every fixture loan here already carries ONE ``tracking_start`` -- the
+    balance stated at setup, which the shared helper records the way the
+    setup door does (plan step R20) -- so this door's write is the SECOND.
+    """
 
     def _tracking_start_events(self, db_session, account):
         """Return the account's tracking_start LoanAnchorEvents."""
@@ -8130,13 +8376,17 @@ class TestRecordTrackingStartRoute:
     ):
         """A valid tracking-start POST appends one tracking_start event and redirects.
 
-        The auto-loan fixture originated 2025-01-01.  POSTing a $20,000 balance
-        as of 2025-06-01 (after origination, before any payment, before today)
-        appends exactly one tracking_start event with that balance / date and
-        redirects to the dashboard.
+        The auto-loan fixture originated 2025-01-01 and stated $25,000 as of
+        ``_TRACKED_FROM``.  POSTing a $20,000 balance as of 2025-06-01
+        (after origination, before any payment, before today) appends exactly
+        one more tracking_start event with that balance / date and redirects
+        to the dashboard.
         """
         acct = _create_auto_loan(seed_user, db.session)
-        assert self._tracking_start_events(db.session, acct) == []
+        before = self._tracking_start_events(db.session, acct)
+        assert [(e.anchor_date, e.anchor_balance) for e in before] == [
+            (_TRACKED_FROM, Decimal("25000.00")),
+        ]
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
@@ -8147,31 +8397,41 @@ class TestRecordTrackingStartRoute:
 
         db.session.expire_all()
         events = self._tracking_start_events(db.session, acct)
-        assert len(events) == 1
-        assert events[0].anchor_balance == Decimal("20000.00")
-        assert events[0].anchor_date == date(2025, 6, 1)
+        assert len(events) == 2
+        new = [e for e in events if e.id not in {b.id for b in before}]
+        assert len(new) == 1
+        assert new[0].anchor_balance == Decimal("20000.00")
+        assert new[0].anchor_date == date(2025, 6, 1)
 
     def test_rejects_date_before_origination(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """A tracking-start dated before origination is rejected; no event written."""
         acct = _create_auto_loan(seed_user, db.session)
+        before = len(self._tracking_start_events(db.session, acct))
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
             data={"anchor_date": "2024-12-01", "anchor_balance": "20000.00"},
         )
         assert resp.status_code == 302
         db.session.expire_all()
-        assert self._tracking_start_events(db.session, acct) == []
+        assert len(self._tracking_start_events(db.session, acct)) == before
 
-    def test_rejects_date_on_or_after_first_payment(
+    def test_accepts_a_date_after_a_recorded_payment(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """A tracking-start dated after a recorded payment is rejected; no event.
+        """A tracking-start dated after a recorded payment is recorded and governs.
 
-        With a settled payment in an early period (due well before the frozen
-        today of 2026-03-20), a tracking-start dated today would leave that
-        payment pre-opening, so the route rejects it and writes no event.
+        **The route refused this until plan step R20** (ruling R-R72 part 3),
+        on the ground that the payment "would sort before the opening in the
+        walk and be subsumed" -- a claim about an opening the tracking-start
+        stopped being at step C1.  It is an ordinary dated assertion: with a
+        $500 payment settled in an early period (due well before the frozen
+        today of 2026-03-20), a $20,000 tracking-start dated today is
+        appended, and it is the loan's LATEST assertion, so the ledger's
+        balance today reads exactly $20,000 -- the payment before it is
+        superseded by the owner's statement, precisely as a true-up dated
+        today would supersede it.
         """
         acct = _create_auto_loan(seed_user, db.session)
         create_settled_transfer(
@@ -8179,6 +8439,10 @@ class TestRecordTrackingStartRoute:
             seed_periods[0], amount=Decimal("500.00"),
         )
         db.session.commit()
+        before = len(self._tracking_start_events(db.session, acct))
+        assert posted_loan_balance_at(
+            acct.id, seed_user["scenario"].id, date.today(),
+        ) != Decimal("20000.00")
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/tracking-start",
@@ -8188,8 +8452,20 @@ class TestRecordTrackingStartRoute:
             },
         )
         assert resp.status_code == 302
+        assert resp.headers["Location"].endswith(f"/accounts/{acct.id}/loan")
         db.session.expire_all()
-        assert self._tracking_start_events(db.session, acct) == []
+        events = self._tracking_start_events(db.session, acct)
+        assert len(events) == before + 1
+        assert posted_loan_balance_at(
+            acct.id, seed_user["scenario"].id, date.today(),
+        ) == Decimal("20000.00")
+        page = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert page.status_code == 200
+        # Two tracking-start rows now wear the anchors card's badge (the
+        # form's own label is on every page and grades nothing).
+        assert page.data.count(
+            b'<span class="badge bg-secondary ms-1">Tracking start</span>'
+        ) == 2
 
 
 class TestLoanBalanceTrueUp:
@@ -8208,11 +8484,12 @@ class TestLoanBalanceTrueUp:
         """POST trueup creates a new LoanAnchorEvent; no prior row mutated.
 
         Hand-check: the ``_create_auto_loan`` fixture writes ONE stored
-        anchor event (a user_trueup at $25,000; the origination is
-        synthesized from params, not stored -- as production's create_params
-        does since the read switch).  After POSTing today / $24,000:
+        anchor event (the balance stated at setup, a tracking_start at
+        $25,000; the origination is synthesized from params, not stored --
+        as production's create_params does since the read switch).  After
+        POSTing today / $24,000:
           * 302 redirect to /accounts/<id>/loan.
-          * Two anchor events on disk (seed trueup + new trueup).
+          * Two anchor events on disk (the stated balance + new trueup).
           * The new event has source_id == USER_TRUEUP id, balance
             $24,000, anchor_date == 2026-03-20 (the frozen "today"
             for this test file).
@@ -8234,8 +8511,8 @@ class TestLoanBalanceTrueUp:
             for e in before_events
         ]
         assert len(before_snapshot) == 1, (
-            "Fixture is expected to seed one stored event (the true-up; "
-            "origination is synthesized, not stored); if this assertion "
+            "Fixture is expected to seed one stored event (the balance stated "
+            "at setup; origination is synthesized, not stored); if this assertion "
             "fails the helper has drifted and the rest of this test "
             "is meaningless."
         )
@@ -8294,11 +8571,10 @@ class TestLoanBalanceTrueUp:
         anchor_date than the existing seed trueup is selected.  This
         verifies the resolver consumes the freshly-written event.
 
-        Hand-check: seed trueup is at the fixture's
-        ``origination_date + 1 day`` (i.e. 2025-01-02) at $25,000.
-        The new trueup is dated 2026-03-20 (today) at $23,500, which
-        is strictly later, so the resolver picks it -- meaning the
-        loan card's displayed Current Principal becomes $23,500.00.
+        Hand-check: the balance stated at setup is dated ``_TRACKED_FROM``
+        (2026-01-01) at $25,000.  The new trueup is dated 2026-03-20
+        (today) at $23,500, which is strictly later, so the resolver picks
+        it -- meaning the loan card's displayed balance becomes $23,500.00.
         """
         acct = _create_auto_loan(seed_user, db.session)
 

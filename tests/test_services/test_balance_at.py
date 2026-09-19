@@ -233,6 +233,7 @@ def _make_hysa(db, seed_user, anchor_period, balance):
 
 def _make_mortgage(
     db, seed_user, anchor_period, balance, origination_date, name="Mortgage",
+    *, tracked_from=None,
 ):
     """Create a Mortgage (AMORTIZING) through the shared loan factory.
 
@@ -240,6 +241,9 @@ def _make_mortgage(
     without colliding on the ``(user_id, name)`` unique constraint.  Returns
     ``(account, loan_params)`` so a caller can append a trueup event (e.g. to
     drive the loan to paid-off / empty-schedule, or to re-anchor it today).
+    ``tracked_from`` states *balance* as the balance on that day the way the
+    setup door records it (plan step R20: a ``tracking_start``), the mid-life
+    import shape; omitted, the loan carries only its origination assertion.
 
     Delegates to :func:`create_loan_account` rather than re-rolling the
     account-factory + ``LoanParams`` + rate block: the hand-rolled copy this
@@ -251,6 +255,8 @@ def _make_mortgage(
         rate=Decimal("0.06500"), term=360,
         origination_date=origination_date, payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
+        tracked_balance=balance if tracked_from is not None else None,
+        tracked_from=tracked_from,
     )
     return acct, loan_params_for(db.session, acct.id)
 
@@ -4226,12 +4232,14 @@ class TestLiabilityOwedAtDates:
     ):
         """A mortgage's owed balance strictly declines across future sample dates.
 
-        A mortgage originated a year ago whose $200,000 balance is asserted
-        TODAY -- the mid-life-import shape.  The assertion is what makes it
-        amortize: since plan step R16-b-2 (ruling R-R71) the plan charges every
-        contractual installment after the loan's LATEST assertion, so with only
-        its origination anchor the year of unrecorded installments would stand
-        as arrears and the balance would GROW (the shape
+        A mortgage originated a year ago whose $200,000 balance is stated
+        TODAY, at setup -- the mid-life-import shape, recorded the way the
+        setup door records it (plan step R20: a ``tracking_start``).  The
+        assertion is what makes it amortize: since plan step R16-b-2 (ruling
+        R-R71) the plan charges every contractual installment after the
+        loan's LATEST assertion, so with only its origination anchor the year
+        of unrecorded installments would stand as arrears and the balance
+        would GROW (the shape
         :meth:`test_forward_owed_credits_only_future_installments_not_overdue_ones`
         pins).
         """
@@ -4240,14 +4248,10 @@ class TestLiabilityOwedAtDates:
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, params = _make_mortgage(
+            acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
-                date.today() - timedelta(days=365),
+                date.today() - timedelta(days=365), tracked_from=date.today(),
             )
-            insert_trueup_event(
-                params, Decimal("200000.00"), anchor_date=date.today(),
-            )
-            db.session.commit()
             today = date.today()
             samples = [
                 today,
@@ -4646,22 +4650,18 @@ class TestLiabilityOwedAtDates:
         The batch shape the sole caller actually passes.  The amortizing account
         must amortize while the card -- which carries no planned row here --
         folds to its asserted figure at every date, in the same result dict.
-        The mortgage's $200,000 is asserted today so that it amortizes (see
-        :meth:`test_amortizing_loan_amortizes_across_future_dates`).
+        The mortgage's $200,000 is stated today, at setup, so that it
+        amortizes (see :meth:`test_amortizing_loan_amortizes_across_future_dates`).
         """
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = all_periods(user_id)
-            acct, params = _make_mortgage(
+            acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
-                date.today() - timedelta(days=365),
+                date.today() - timedelta(days=365), tracked_from=date.today(),
             )
-            insert_trueup_event(
-                params, Decimal("200000.00"), anchor_date=date.today(),
-            )
-            db.session.commit()
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),

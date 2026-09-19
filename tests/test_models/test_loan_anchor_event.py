@@ -57,7 +57,7 @@ from tests._test_helpers import insert_origination_rate
 
 def _create_loan_account(seed_user, db_session, *,
                          original_principal=Decimal("250000.00"),
-                         current_principal=Decimal("200000.00"),
+                         anchor_balance=Decimal("200000.00"),
                          rate=Decimal("0.06500"),
                          term_months=360,
                          origination_date=date(2024, 1, 1),
@@ -72,17 +72,13 @@ def _create_loan_account(seed_user, db_session, *,
     layers the LoanParams row on top.
 
     Deliberately NOT routed through ``_test_helpers.create_loan_account``, unlike
-    every other loan builder in the suite.  Two reasons, both structural:
-
-    * These are MODEL tests (the append-only ``before_update`` / ``before_delete``
-      listeners and the same-day unique index).  They never read a balance through
-      the ``balance_at`` seam, so the genesis posting ledger the factory opens is
-      irrelevant to them -- they assert on table rows, not on money.
-    * They need ``current_principal`` to DIFFER from ``original_principal``.  That
-      column is a non-authoritative seed (E-18 / Commit 15) that no reader reads,
-      so the shared factory deliberately does not expose it; widening the factory's
-      API to carry a deprecated column just to absorb this file would be a step
-      backwards.
+    every other loan builder in the suite.  These are MODEL tests (the append-only
+    ``before_update`` / ``before_delete`` listeners and the same-day unique
+    index).  They never read a balance through the ``balance_at`` seam, so the
+    genesis posting ledger the factory opens is irrelevant to them -- they assert
+    on table rows, not on money.  (A second reason, a ``current_principal``
+    DIFFERING from ``original_principal``, died with that column at plan step
+    R20; the account's cash anchor still differs, as a decoy.)
 
     Keep it hand-rolled.  It is not an oversight.
     """
@@ -92,14 +88,13 @@ def _create_loan_account(seed_user, db_session, *,
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name=name,
-            anchor_balance=current_principal,
+            anchor_balance=anchor_balance,
         ),
     )
     db_session.flush()
     params = LoanParams(
         account_id=account.id,
         original_principal=original_principal,
-        current_principal=current_principal,
         term_months=term_months,
         origination_date=origination_date,
         payment_day=payment_day,
@@ -209,7 +204,7 @@ class TestSchemaShape:
         It could not do that job without also refusing a correction, because a
         retry and a deliberate re-assertion carry identical values -- so the
         rule moved to the write door
-        (``anchor_service._append_loan_anchor_and_sync``), which compares the
+        (``loan_anchor_service._append_loan_anchor_and_sync``), which compares the
         submission against the event that GOVERNS and can tell them apart.  The
         door's coverage is
         ``test_anchor_service.TestApplyLoanAnchorTrueUpUnchanged``.

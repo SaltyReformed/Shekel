@@ -263,7 +263,7 @@ def anchor_chronology_key(
     ``shekel-prod-db`` carries four such rows today, and they escape a tie only
     because no two of them share an ``anchor_date``.  The higher id wins, which
     is the rule the write door
-    (:func:`app.services.anchor_service._governing_loan_anchor`) and both cash
+    (:func:`app.services.loan_anchor_service._governing_loan_anchor`) and both cash
     orderings already apply.
 
     Pure: three attribute reads and a tuple, no I/O and no clock.

@@ -37,7 +37,7 @@ Duplicate-submit prevention follows the :class:`AccountAnchorHistory`
 precedent, and since ruling **R-EQ** (plan step X-f1c4b) that precedent is a
 WRITE-DOOR rule rather than a unique index: an event is appended only when it
 differs from the event that already governs its source.  See
-:func:`app.services.anchor_service._append_loan_anchor_and_sync` for the rule
+:func:`app.services.loan_anchor_service._append_loan_anchor_and_sync` for the rule
 and the ``__table_args__`` comment below for what the deleted index could not
 express.
 """
@@ -85,7 +85,7 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
             name="ck_loan_anchor_events_balance_nonneg",
         ),
         # Forward-scan index for the write door's governing-event query
-        # (``anchor_service._governing_loan_anchor``, which filters on
+        # (``loan_anchor_service._governing_loan_anchor``, which filters on
         # ``account_id`` and bounds ``anchor_date``).  It named the RESOLVER's
         # "latest anchor per account" lookup too until plan step X-an-b: that
         # read path issues no ``ORDER BY`` at all now -- ``load_loan_anchor_facts``
@@ -115,7 +115,7 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
         # correcting it earlier on the same recording day, and the write was
         # rejected while the route flashed "already recorded".  The rule now
         # lives at the write door
-        # (``anchor_service._append_loan_anchor_and_sync``), which compares the
+        # (``loan_anchor_service._append_loan_anchor_and_sync``), which compares the
         # submission against the event that GOVERNS for its own source and so
         # answers exactly.
         #

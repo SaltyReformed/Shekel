@@ -31,7 +31,8 @@
       <div class="pulse-hero__label">Balance owed</div>
       {# E-18 / read switch: resolver-derived current_balance (ledger
          authoritative) -- the same figure as the /savings debt card and the
-         net-worth liability, never the stored LoanParams.current_principal.
+         net-worth liability, never a stored scalar (the LoanParams
+         current-principal seed was dropped at plan step recurrence:R20).
          The hero doubles as the click-to-edit dated-true-up control (D14). #}
       {% include "loan/_balance_hero.html" %}
       <div class="nw-hero__cap">
@@ -625,18 +626,21 @@
           </button>
         </form>
         <hr>
-        {# Tracking start (mid-life import).  For a loan you began tracking after
-           origination: records the real opening balance as of a date at/before
-           your first recorded payment, so the confirmed ledger opens there
-           instead of the full origination amount (no fictional plateau, and
-           recorded payments accrue interest on the correct balance). #}
+        {# Tracking start (mid-life import).  The setup form records the
+           balance stated at setup as this same tracking-start (plan step
+           recurrence:R20); this door is for recording one after the fact.
+           It is an ordinary dated assertion that resets the ledger's running
+           balance on its date, whatever payments are recorded around it --
+           the "on or before your first recorded payment" rule went with R20
+           (ruling R-R72 part 3). #}
         <form method="POST" action="{{ url_for('loan.record_tracking_start', account_id=account.id) }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
           <label class="form-label mb-1"><i class="bi bi-flag"></i> Tracking start</label>
           <p class="text-muted small mb-2">
-            Started tracking this loan mid-life? Record the lender's balance as
-            of a date on or before your first recorded payment. The confirmed
-            ledger opens from here instead of the original loan amount.
+            Started tracking this loan mid-life and did not record the balance
+            at setup? Record the lender's balance as of the date you began
+            tracking. The ledger reads that balance from there instead of
+            amortizing the original loan amount.
           </p>
           <div class="row g-2 align-items-end">
             <div class="col-sm-6">

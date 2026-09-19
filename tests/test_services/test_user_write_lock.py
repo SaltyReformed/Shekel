@@ -50,6 +50,7 @@ from app.services import (
     account_service,
     anchor_service,
     cash_ledger,
+    loan_anchor_service,
     loan_posting_service,
     opening_service,
 )
@@ -569,7 +570,7 @@ class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
             db.session.commit()
 
             _result, statements = capture_sql_statements(
-                lambda: anchor_service.apply_loan_anchor_true_up(
+                lambda: loan_anchor_service.apply_loan_anchor_true_up(
                     account=loan,
                     anchor_balance=Decimal("12345.67"),
                     anchor_date=display_today(),
