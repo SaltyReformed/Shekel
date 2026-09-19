@@ -350,8 +350,8 @@ class TestPostPaidEntryMutation:
     that cost by exactly the figure a bank statement just showed -- the
     PESSIMISTIC direction, and the whole of what the statement importer does.
     A row closed at a STORED figure still refuses, because its gross cannot
-    rise and ``settled_cash_leg`` would then subtract money the gross never
-    held.
+    rise and the purchase's own movement would be counted beside the covering
+    movement that already carries the whole close (ruling **R-BAL80**).
 
     The service-level controls live in
     ``test_entry_service.TestASettledRowsPurchasesAreClosed`` and
@@ -435,9 +435,10 @@ class TestPostPaidEntryMutation:
 
         An envelope closed with NO entries takes ``mark-done``'s ``derived``
         branch and stores its figure, so nothing a new purchase does can raise
-        it -- and ``settled_cash_leg``'s posted-purchase term would then
-        subtract money that gross never contained.  Measured on a production
-        clone: `-163.95` became `+203.67`, an expense row publishing an inflow,
+        it -- and the purchase's own movement would be counted beside the
+        covering movement that already carries the close (ruling
+        **R-BAL80**).  Measured on a production clone under the row-leg fold
+        of the time: `-163.95` became `+203.67`, an expense row publishing an inflow,
         while the anchor true-up moved `$0.00` so the spending was never
         recorded at all.
         """

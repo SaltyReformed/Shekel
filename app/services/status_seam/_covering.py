@@ -70,14 +70,18 @@ state.
 **Which entry is the covering movement is a STORED fact of the movement**
 (``transaction_entries.covers_settlement``), never a derivation over the
 row.  A first cut read "a settled row that stores a figure holds no
-purchases, so its entries are the seam's" -- and a door refutes it: *Track
-individual purchases* unticked on a settled envelope, then a figure typed
-over it, leaves a ``corrected`` record beside real purchases
-(``test_release``'s container-beyond-the-door case drives it end to end).
-Under the derivation the seam would have overwritten one of those purchases
-as its mirror.  So the seam marks what it writes, finds it by the mark, the
-entry doors refuse to touch a marked row, and a partial unique index holds
-the count at one per row.
+purchases, so its entries are the seam's" -- and a door refuted it at the
+time: *Track individual purchases* unticked on a settled envelope, then a
+figure typed over it, left a ``corrected`` record beside real purchases
+(``test_release``'s container-beyond-the-door case drove it end to end), and
+under the derivation the seam would have overwritten one of those purchases
+as its mirror.  Ruling **R-BAL78** (plan step ``balance:X-bi-4a``) refuses
+that typed figure at the verb and at the seam, so the state is
+unrepresentable now and the case grades the refusal; the mark stays a stored
+fact anyway, because a reader that is correct only while every door keeps a
+rule is a contract nobody can see.  So the seam marks what it writes, finds
+it by the mark, the entry doors refuse to touch a marked row, and a partial
+unique index holds the count at one per row.
 
 **Every settled row is covered, whatever its kind, and the kinds arrived one
 leaf at a time.**  ``X-bi-3a`` covered EXPENSE parents; ``X-bi-3b`` covered
@@ -123,8 +127,10 @@ FLUSHES, as every ledger write does, and the caller owns the session
 boundary.  The ledger is otherwise the DOOR's: a revert un-dates the mirror
 here and the verb's family reconcile (``posting_service.
 sync_transaction_postings``, which walks ``txn.entries`` after the seam
-returns and posts nothing for an un-dated movement) reverses its legs, as it
-reverses the parent's own -- every production revert of a transaction reaches
+returns and posts nothing for an un-dated movement) reverses its legs --
+the parent posts nothing of its own since plan step ``balance:X-bi-4a``
+(ruling **R-BAL80**), so the movement's legs are the whole of what a revert
+reverses -- every production revert of a transaction reaches
 the seam through ``transaction_service.apply_requested_status``, and a
 transfer's shadows post nowhere (R-BAL45); ``scripts/integrity_check.py``'s
 DC-10 grades the state a caller of the bare seam would leave.  Money is
@@ -394,8 +400,10 @@ def _follow_assertion(row: Transaction) -> None:
     The ledger is the door's.  An un-dated movement posts nothing
     (``_posting_purchases.purchase_posts`` needs a day), so the family
     reconcile every revert door runs after the seam reverses whatever the
-    movement had posted -- the same walk that reverses the parent's own leg,
-    one spelling rather than an explicit reversal here beside it.  The revert
+    movement had posted -- the one walk, which reversed the parent's own leg
+    beside it through ``X-bi-3e`` and posts nothing for the row since
+    ``balance:X-bi-4a`` (ruling **R-BAL80**) -- one spelling rather than an
+    explicit reversal here beside it.  The revert
     arm deleted the row and reversed its legs itself through ``X-bi-3e-1``,
     because ``journal_entries.transaction_entry_id`` is SET NULL on delete
     and legs left behind a deleted row could never be reversed; a kept row

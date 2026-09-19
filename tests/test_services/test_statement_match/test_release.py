@@ -33,7 +33,7 @@ from sqlalchemy import event
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
-from app.exceptions import AmountUnresolvable, ValidationError
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
 from app.models.transaction import Transaction
@@ -48,7 +48,7 @@ from app.services import (
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import settled_cash_leg
+from app.services.cash_ledger import in_flight_movements, movement_cash_leg
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.models.statement_match import (
     StatementMatch,
@@ -926,21 +926,23 @@ class TestTheSettledParentRuleIsTheArithmetic:
     ):
         """The measurement the rule is written from.
 
-        The envelope's own cash leg reads ``0.00`` before and ``0.00`` after;
-        the account's posted total moves ``822.04 -> 880.00``, which is the
-        removed purchase's own `$57.96` leg reversed on its own day and
-        nothing else.  Before this step the removal was refused outright, and
-        103 purchases a statement pass created in error had no door at all.
+        The envelope is worth nothing of its own before and after -- a
+        ``purchases`` close has no covering movement, its purchases carrying
+        the money (ruling **R-BAL81**) -- and the account's posted total
+        moves ``822.04 -> 880.00``, which is the removed purchase's own
+        `$57.96` leg reversed on its own day and nothing else.  Before this
+        step the removal was refused outright, and 103 purchases a statement
+        pass created in error had no door at all.
         """
         envelope, doomed = self._closed_holding(seed_user)
-        assert settled_cash_leg(envelope) == Decimal("0.00")
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
         assert _posted_total(seed_user) == Decimal("822.04")
 
         entry_service.delete_entry(doomed.id, seed_user["user"].id)
         db.session.flush()
         db.session.expire(envelope)
 
-        assert settled_cash_leg(envelope) == Decimal("0.00")
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
         assert _posted_total(seed_user) == Decimal("880.00")
 
     def test_an_UNPOSTED_purchase_is_admitted_since_the_row_books_nothing(
@@ -953,28 +955,37 @@ class TestTheSettledParentRuleIsTheArithmetic:
         external evidence, already-spent money handed back to the projection.
         Since plan step ``balance:X-bi-4a`` a plan row books nothing of its
         own (ruling **R-BAL80**): the un-dated purchase is a movement in
-        flight, and removing it removes that and nothing else.  The matcher's
-        row-leg producer still prices the row (``settled_cash_leg``, its one
-        reader) and reads the removal as ``-57.96 -> 0.00`` -- a figure the
-        fold and the ledger no longer book.
+        flight, and removing it removes that and nothing else.  The row is
+        worth nothing to the matcher before and after (ruling **R-BAL81**:
+        a ``purchases`` close has no covering movement); through X-bi-4a's
+        first cut the matcher's row-leg producer read the removal as
+        ``-57.96 -> 0.00``, a figure no other reader booked, and R-BAL81
+        deleted it.
         """
         envelope, doomed = self._closed_holding(seed_user, posted=False)
-        assert settled_cash_leg(envelope) == Decimal("-57.96")
+        account_id, scenario_id = envelope.account_id, envelope.scenario_id
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
+        assert [
+            (flight.entry_id, flight.delta)
+            for flight in in_flight_movements(account_id, scenario_id)
+        ] == [(doomed.id, Decimal("-57.96"))]
 
         entry_service.delete_entry(doomed.id, seed_user["user"].id)
         db.session.flush()
 
         assert db.session.get(TransactionEntry, doomed.id) is None
         db.session.expire(envelope)
-        assert settled_cash_leg(envelope) == Decimal("0.00")
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
+        assert in_flight_movements(account_id, scenario_id) == []
 
     def test_a_STORED_figure_settlement_is_still_refused(
         self, app, db, seed_user,
     ):
         """A ``derived`` close fixed its figure before this purchase existed.
 
-        Its cost cannot fall by the purchase, and ``settled_cash_leg``'s third
-        term would stop subtracting money the total never contained.
+        Its cost cannot fall by the purchase, whose own movement would
+        otherwise be counted beside the covering movement that already
+        carries the whole close (ruling **R-BAL80**).
 
         **A fourth case stood beside this one until plan step balance:X-am**:
         an ARCHIVED parent, refused whatever its basis and carrying its own
@@ -1008,11 +1019,15 @@ class TestTheSettledParentRuleIsTheArithmetic:
     ):
         """The arm the rule's own paragraph is written about, graded.
 
-        ``settled_cash_leg`` subtracts TWO terms and a card purchase sits in
-        the credit one, so removing it moves the settled figure and that term
-        by the same amount and the row's own close books what it always
-        booked.  The card's own liability follows: the CC Payback is
-        re-derived down by the purchase.
+        A card purchase moves no cash through THIS account
+        (``cash_ledger.movement_cash_leg`` reads it as ``0.00``; it leaves
+        through its CC Payback), so removing it changes nothing the family
+        moves here: the movements' cash sum reads the same before and after,
+        and the row itself is worth nothing of its own either way (ruling
+        **R-BAL81**).  The card's own liability follows: the CC Payback is
+        re-derived down by the purchase.  (Through X-bi-4a's first cut this
+        pinned ``settled_cash_leg``, whose credit term moved with the figure
+        so the row's own close read the same; R-BAL81 deleted it.)
 
         **It had no test at all until adversarial financial review 2026-08-24
         deleted the ``is_credit`` clause and watched the whole suite pass** --
@@ -1043,7 +1058,13 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.flush()
         posting_service.sync_transaction_postings(envelope)
         db.session.flush()
-        before = settled_cash_leg(envelope)
+        assert movement_cash_leg(envelope, doomed) == Decimal("0.00")
+        before = sum(
+            (movement_cash_leg(envelope, entry) for entry in envelope.entries),
+            Decimal("0.00"),
+        )
+        assert before == Decimal("-120.00")
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
         assert payback.estimated_amount == Decimal("57.96")
 
         entry_service.delete_entry(doomed.id, seed_user["user"].id)
@@ -1051,9 +1072,14 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.expire(envelope)
 
         assert db.session.get(TransactionEntry, doomed.id) is None
-        # The row's OWN close is untouched: the figure and the credit term
-        # moved together, which is the whole argument for admitting this.
-        assert settled_cash_leg(envelope) == before
+        # What the family moves through THIS account is untouched: the card
+        # purchase moved none of it, which is the whole argument for
+        # admitting this.
+        assert sum(
+            (movement_cash_leg(envelope, entry) for entry in envelope.entries),
+            Decimal("0.00"),
+        ) == before
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
         # ...and the card owes less, because the spend it repays has gone.
         assert db.session.get(Transaction, payback.id) is None
 
@@ -1339,29 +1365,37 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         assert first == replace(first, subject=other)
 
 
-class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
-    """The three readers that CATCH the valuation's refusal, graded.
+class TestARevertedSubjectIsRefusedAsAnEdit:
+    """A subject the owner reverted since the match refuses the undo as an EDIT.
 
-    **Plan step balance:X-bx made these paths live, and nothing entered them
+    **Plan step balance:X-bx made this path live, and nothing entered it
     before it.**  That step widened
     :func:`~app.services.row_valuation.settled_contribution` -- and through it
-    ``cash_ledger.settled_cash_leg`` -- to REFUSE a row that has not settled,
-    where it used to price the row's plan column.  Three readers in this
-    package admit a row of any status and catch that refusal, because they
-    render the review page and a raise there would strand the account with no
-    in-app repair (finding **N-302**).
+    the matcher's row-leg producer of the time, ``cash_ledger.settled_cash_leg``
+    -- to REFUSE a row that has not settled, where it used to price the row's
+    plan column; three readers in this package caught that refusal, because
+    they render the review page and a raise there would strand the account
+    with no in-app repair (finding **N-302**), and on those three the refusal
+    changed an ANSWER rather than failing a test.  ``grep -rn
+    AmountUnresolvable tests/test_services/test_statement_match/`` returned
+    NOTHING before this class: the step's own full-suite mutation probe could
+    not have seen a defect there.  It had one, graded below.
 
-    So on those three the refusal changes an ANSWER rather than failing a test,
-    and a green suite cannot tell "never reached" from "reached and
-    re-answered".  Two adversarial reviews of X-bx made that point
-    independently, and `grep -rn AmountUnresolvable tests/test_services
-    /test_statement_match/` returned NOTHING before this class: the step's own
-    full-suite mutation probe could not have seen a defect here.  It had one.
+    **Since ruling R-BAL81 (plan step balance:X-bi-4a) nothing here can fail
+    to price.**  A row is worth what its covering movement moves, a stored
+    figure: a REVERTED subject's kept movement is un-dated, so it is worth
+    ``0.00`` (``status_seam.covered_cash_leg``), and the version test refuses
+    the undo as the edit it is -- the same row and the same sentence the
+    catching arm produced.  The catches and the second sentence ("the app
+    can no longer work out what that row is worth", for a refusal with no
+    edit behind it) are deleted with the refusal, and the case that pinned
+    that arm on an UNEDITED subject is deleted with them: its state, a
+    reverted row at its creation revision, was one no door could write.
 
     The reachable shape is an ordinary REVERT.  A subject a match minted is
     settled when the act records it, so reverting that row to Projected both
-    bumps ``version_id`` (the owner has edited it) and takes it out of the
-    settled band (it can no longer be priced).
+    bumps ``version_id`` (the owner has edited it) and un-dates its covering
+    movement (it is worth nothing to the undo).
     """
 
     def test_a_REVERTED_subject_is_refused_for_the_EDIT_not_for_the_price(
@@ -1369,16 +1403,19 @@ class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
     ):
         """The message defect X-bx introduced, as its own control.
 
-        Both refusals are honest about refusing, so no money moves either way
-        and a test asserting "the undo refuses" would pass on the defect.  What
-        separates them is what the owner is TOLD: the price sentence says the
-        app cannot work out what the row is worth and offers no repair, which
-        is false here -- the row was reverted, and the edit sentence names that
-        and tells them what to do about it.
+        Both refusals were honest about refusing, so no money moved either
+        way and a test asserting "the undo refuses" would pass on the defect.
+        What separated them is what the owner is TOLD: the price sentence
+        said the app cannot work out what the row is worth and offered no
+        repair, which was false here -- the row was reverted, and the edit
+        sentence names that and tells them what to do about it.
 
-        ``_subject_removal`` prices BEFORE it compares revisions, so once the
-        price started refusing, the price sentence won a race the edit sentence
-        used to win.  The fix states the revision test in the refusal path too.
+        ``_subject_removal`` priced BEFORE it compared revisions, so once the
+        price started refusing, the price sentence won a race the edit
+        sentence used to win; the fix stated the revision test in the refusal
+        path too.  Under ruling **R-BAL81** the price cannot refuse -- the
+        reverted subject is worth ``0.00`` -- so the edit sentence is the only
+        one left, and this case pins that the price sentence is gone.
         """
         subject = a_transaction(
             seed_user, name="Residual", amount="41.00", template=False,
@@ -1399,9 +1436,10 @@ class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
         )
         db.session.flush()
         assert subject.version_id != creation.created_version_id
-        # The precondition the whole case rests on: the valuation now refuses.
-        with pytest.raises(AmountUnresolvable):
-            settled_cash_leg(subject)
+        # The precondition the case rests on: the reverted row is worth
+        # nothing (its kept movement is un-dated, ruling R-BAL81), and
+        # nothing refuses to say so.
+        assert status_seam.covered_cash_leg(subject) == Decimal("0.00")
 
         row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
             creation, subject,
@@ -1410,43 +1448,5 @@ class TestAnUnpriceableSubjectSaysWhyItIsUnpriceable:
         assert refusal is not None
         assert "you have edited that row since" in refusal
         assert "can no longer work out what that row is worth" not in refusal
-        # A refused act reports nothing to remove, on this arm as on the other.
-        assert row.cash_amount == Decimal("0.00")
-
-    def test_an_UNEDITED_subject_the_model_cannot_price_still_says_so(
-        self, app, db, seed_user,
-    ):
-        """The other arm, so the fix above is a BRANCH and not a replacement.
-
-        A subject at its creation revision that the amount model cannot price
-        keeps the price sentence -- there is no edit to report, and the honest
-        answer is that the app cannot say what removing it would take out of
-        the books.  Without this case the fix could have replaced one sentence
-        with the other and stayed green.
-        """
-        subject = a_transaction(
-            seed_user, name="Residual", amount="41.00", template=False,
-            status=StatusEnum.DONE,
-            settled_on=seed_user["bootstrap_period"].start_date,
-        )
-        db.session.flush()
-        status_seam.apply_status_change(
-            subject, ref_cache.status_id(StatusEnum.PROJECTED),
-        )
-        db.session.flush()
-        # The creation record is written AFTER the revert, so the act's
-        # revision is the row's current one: unpriceable, and NOT edited.
-        creation = StatementMatchCreation(
-            match_id=0, account_id=seed_user["account"].id,
-            transaction_id=subject.id, transaction_entry_id=None,
-            created_version_id=subject.version_id,
-        )
-
-        row, refusal = statement_match._release._subject_removal(  # pylint: disable=protected-access
-            creation, subject,
-        )
-
-        assert refusal is not None
-        assert "can no longer work out what that row is worth" in refusal
-        assert "you have edited that row since" not in refusal
+        # A refused act reports nothing to remove.
         assert row.cash_amount == Decimal("0.00")

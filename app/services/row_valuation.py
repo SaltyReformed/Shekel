@@ -410,15 +410,18 @@ def settled_contribution(txn) -> Decimal:
     deleted at plan step ``balance:X-bi-4a`` (ruling **R-BAL81**: a settled
     row is worth what its covering movement moves, a stored figure).
 
-    **THE OTHER THREE DO NOT RESTRICT ANYTHING, AND THAT IS DELIBERATE.**
-    ``statement_match``'s ``_accepted_view._accepted_row``, ``_release
-    ._subject_removal`` and ``._container_removal`` admit a row of any status
-    and CATCH this refusal, because they render the review page and a raise
-    there would make the screen permanently unreachable for the account with no
-    in-app repair (finding **N-302**).  For them the refusal is an ANSWER, not a
-    failure, so a reader of this function must not read "every caller is
-    settled-only" into it: what is true is that nowhere does the refusal reach a
-    user as a 500.
+    **Three readers once admitted a row of ANY status and CAUGHT this
+    refusal**, and they are gone with the seventh.  ``statement_match``'s
+    ``_accepted_view._accepted_row``, ``_release._subject_removal`` and
+    ``._container_removal`` reached here through ``settled_cash_leg`` and
+    caught the refusal by name, because they render the review page and a
+    raise there would make the screen permanently unreachable for the account
+    with no in-app repair (finding **N-302**); for them the refusal was an
+    ANSWER.  Since ruling **R-BAL81** all three read
+    ``status_seam.covered_cash_leg``, which raises nothing, so every reader
+    left is settled-only by its own query -- a claim the refusal states
+    rather than a docstring asserts, and nowhere does it reach a user as a
+    500.
 
     **It is :func:`~app.services.cash_ledger.contribution_of`'s PARTIAL twin,
     and the two share every line but the last** (plan step X-bx).  Both gate an

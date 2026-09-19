@@ -2619,10 +2619,13 @@ class TestTheReconcileRoute:
         "the entry reservation prices only PROJECTED rows, so a purchase on a
         settled parent is inert", and is now the opposite of both (developer,
         2026-08-17).  Ruling **R-FM** falsified the "inert" premise one plan
-        step earlier: ``cash_ledger.settled_cash_leg`` subtracts every POSTED
-        purchase from a settled row's close, so recording the day moves that
-        purchase's cash off the close's day and onto the bank's.  The total
-        never moves; the DAY does, and a paper statement is reconciled by day.
+        step earlier: the row's own leg of the time (``cash_ledger.
+        settled_cash_leg``, deleted at ruling **R-BAL81**) subtracted every
+        POSTED purchase from a settled row's close, so recording the day moved
+        that purchase's cash off the close's day and onto the bank's; since
+        ``balance:X-bi-4a`` every purchase is a movement of its own and the
+        row books nothing (ruling **R-BAL80**).  The total never moves; the
+        DAY does, and a paper statement is reconciled by day.
 
         Driven through the ROUTE rather than the service, which is the half its
         sibling in ``test_reconcile_service`` cannot see: the panel must LIST

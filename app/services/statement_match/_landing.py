@@ -31,7 +31,7 @@ gap nobody attributed, stay in :mod:`._variance`.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import.  :func:`corrected_figure` READS --
-one ``Transaction`` and its off-statement sum -- and writes nothing.
+a purchase's parent, for the sign rule -- and writes nothing.
 """
 
 from __future__ import annotations
@@ -40,9 +40,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services.cash_ledger import movement_figure_for, off_statement_sum
+from app.services.cash_ledger import movement_figure_for
 from app.utils.money import round_money
 
 from ._offers import CandidateRow, RowKind
@@ -321,15 +320,26 @@ def corrected_figure(
 ) -> "Decimal | None":
     """Return the figure *row* should book to move its cash onto the bank's.
 
-    **The bank constrains the CASH LEG, and the stored figure is GROSS**, so
-    the two are not the same number on a row carrying entries.  Inverting
-    :func:`~app.services.cash_ledger.cash_leg_of` -- *gross, less what never
-    reaches this account, signed by the transaction TYPE* -- gives
-    ``|bank| + off_statement_sum``, which reuses that rule rather than
-    restating it.  The two coincide on every row this arm reaches today (all 8
-    of the developer's transaction near misses carry no entries), and the
-    inversion is written anyway because a row that HAS entries is expressible
-    and would otherwise book its credit purchases twice.
+    **The bank constrains the CASH LEG, and a transaction's figure IS its
+    cash leg unsigned** (ruling **R-BAL81**, plan step ``balance:X-bi-4a``):
+    a settled row is worth what its covering movement moves and a projected
+    one what settling it would book, signed by the transaction TYPE
+    (:func:`~app.services.cash_ledger.cash_leg_of`), and no row this arm
+    prices holds a purchase -- a row settling from its purchases is worth
+    ``0`` to the offer and is not a candidate, and a stated figure beside
+    purchases is unrepresentable (ruling **R-BAL78**).  So the inversion is
+    ``|bank|``.  Through ``X-bi-4a``'s first cut it was ``|bank| +
+    off_statement_sum``, the inverse of a row leg that subtracted card and
+    posted purchases, and that term met a settled row's own covering
+    movement -- summed as a posted purchase by a reader that walked the
+    family -- and booked ``bank + figure`` onto it: a `$178.32` bill matched
+    to the bank's `-178.29` re-recorded its movement at `356.61` and the
+    post-apply check refused the act (finding **BAL-523**, measured on
+    production's own release 2026-09-18 and confirmed by the developer on the
+    reconcile screen the same evening).  The sum reads the row's purchases
+    now, which is ``0`` for every row here by construction, and the term is
+    deleted rather than kept at zero: a dead term under a live docstring is
+    the shape ``cash_leg_of`` shed in the same step.
 
     **A PURCHASE stores its figure directly** -- its cash is its stored
     amount in its PARENT's direction
@@ -356,10 +366,10 @@ def corrected_figure(
 
     Returns:
         The figure to submit, or ``None`` when nothing should be submitted --
-        a group, an unchanged figure, or a row whose amount is DERIVED from its
-        own purchases and which :func:`~._variance._reject_uncorrectable_row`
-        has already
-        refused.
+        a group or an unchanged figure.  A row whose figure is not its own to
+        state (a CC payback; an envelope holding purchases is never a
+        candidate, ruling **R-BAL81**) never reaches here:
+        :func:`~._variance._reject_uncorrectable_row` has already refused it.
     """
     if bank_cash is None or bank_cash == row.cash_amount:
         return None
@@ -371,5 +381,4 @@ def corrected_figure(
     # ``settled_amount IS NULL OR >= 0``) whose direction comes from the
     # transaction TYPE rather than from the figure, so the magnitude really is
     # what it should book.  Only a PURCHASE stores a signed amount.
-    txn = db.session.get(Transaction, row.row_id)
-    return round_money(abs(bank_cash) + off_statement_sum(txn))
+    return round_money(abs(bank_cash))

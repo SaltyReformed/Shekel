@@ -44,7 +44,7 @@ from app.services import (
     transaction_service,
 )
 from app.services._posting_write import emit_typed_source_deltas, ledger_class_of
-from app.services.cash_ledger import settled_cash_facts, settled_cash_leg
+from app.services.cash_ledger import settled_cash_facts
 from app.services.posting_reads import _ledger_account_for
 from app.services.entry_service import EntryDetails
 from app.services.settle_day import SettleDay
@@ -373,8 +373,10 @@ class TestTheCutoverMirrorsTheRowsOwnRecord:
             assert _cover() == 1
             movement = _only_movement(txn)
             _assert_mirrors(txn, movement, MovementFigureSourceEnum.RESOLVED)
-            # Worth nothing to the fold, as the row's own leg is.
-            assert settled_cash_leg(txn) == Decimal("0.00")
+            # Worth nothing to the fold, and nothing to the matcher (ruling
+            # R-BAL81): a movement under a non-contributing parent moves
+            # nothing.
+            assert status_seam.covered_cash_leg(txn) == Decimal("0.00")
             assert not any(
                 fact.entry_id == movement.id
                 for fact in settled_cash_facts(txn.account_id, txn.scenario_id)
@@ -461,9 +463,13 @@ class TestTheCutoverWritesWhatTheFoldReads:
     fold reads movements alone (ruling **R-BAL80**), so on THIS tree an
     uncovered settled row is worth NOTHING to the fold and the cutover's
     write is what makes its money visible -- which is what a database still
-    behind ``ad573b07bede`` meets when this image upgrades it.  The row leg
-    the matcher still prices (``settled_cash_leg``) reads the whole figure
-    uncovered and zero covered, exactly as before.
+    behind ``ad573b07bede`` meets when this image upgrades it.  The matcher
+    prices the row at that same movement (ruling **R-BAL81**,
+    ``status_seam.covered_cash_leg``): nothing uncovered, the figure
+    covered -- so the cutover's write is what makes the row's money visible
+    to every reader.  (Through X-bi-4a's first cut the matcher's row-leg
+    producer, ``settled_cash_leg``, read the whole figure uncovered and
+    zero covered; R-BAL81 deleted it.)
     """
 
     def test_the_fold_reads_nothing_uncovered_and_the_movement_covered(
@@ -477,11 +483,11 @@ class TestTheCutoverWritesWhatTheFoldReads:
             assert with_seams[txn.settled_on] == Decimal("-148.32")
 
             _uncover(txn)
-            assert settled_cash_leg(txn) == Decimal("-148.32")
+            assert status_seam.covered_cash_leg(txn) == Decimal("0")
             assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
             assert _cover() == 1
-            assert settled_cash_leg(txn) == Decimal("0")
+            assert status_seam.covered_cash_leg(txn) == Decimal("-148.32")
             assert _per_day(settled_cash_facts(account_id, scenario_id)) == with_seams
 
 

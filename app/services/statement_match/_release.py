@@ -486,18 +486,24 @@ def _subject_removal(
       record and the undo refuses rather than taking it.
     * would the door that removes it refuse anyway?  A purchase goes through
       ``entry_service``, which admits removing one from a settled row only
-      where the removal cannot change what that row's own close booked -- and
-      the container this act created can be put beyond that afterwards, by
-      being RE-CLOSED AT A STORED FIGURE -- the owner unticks *Track
-      individual purchases* on the settled row and types an Actual.
-      **Measured on the first build of this step**: the panel offered *"Undo
-      removes 1 row"* over such a container and the release then raised with
-      the act already deleted from the session, which breaks this package's
-      promise that a refused act leaves the database exactly as it was.
-      (The measurement was taken over an ARCHIVED container; plan step
+      where the row records its purchases as its figure (a ``purchases``
+      settlement; ruling **R-GG** amended by **R-BAL77**) -- and through plan
+      step ``X-bi-3e`` the container this act created could be put beyond
+      that afterwards, by being RE-CLOSED AT A STORED FIGURE: the owner
+      unticked *Track individual purchases* on the settled row and typed an
+      Actual.  **Measured on the first build of this step**: the panel offered
+      *"Undo removes 1 row"* over such a container and the release then
+      raised with the act already deleted from the session, which breaks this
+      package's promise that a refused act leaves the database exactly as it
+      was.  (The measurement was taken over an ARCHIVED container; plan step
       **balance:X-am** deleted that status, and this sentence named the
       stored-figure route beside it all along -- which is what caught an X-am
       draft arguing the arm had become unreachable and deleting its test.)
+      Ruling **R-BAL78** (plan step ``balance:X-bi-4a``) refuses the typed
+      figure over purchases at the verb and the seam, so that route is
+      unrepresentable now and ``test_release``'s case grades the refusal;
+      the question is still asked here, because the answer is the door's and
+      not this module's to assume.
 
     Args:
         creation: The creation record, carrying the revision this act left.

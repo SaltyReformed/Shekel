@@ -34,7 +34,6 @@ from tests._test_helpers import (
     typed,
     account_never_asserted,
     an_entered_day,
-    family_cash_leg,
     figure_source_columns,
     generate_row_of,
     legacy_link_less_row_of,
@@ -2182,11 +2181,13 @@ class TestASettledRowsPurchasesAreClosed:
 
         **Everything above is an argument about what the row COST.  The day the
         BANK took a purchase is not that** (developer ruling, 2026-08-17).
-        Recording it changes no total: ``cash_ledger.settled_cash_leg``
-        subtracts every POSTED purchase from the row's close, so the purchase's
-        own dated leg and the remainder of the close always sum to the row's
-        whole debit.  What moves is the DAY, which is what a paper statement is
-        reconciled against.
+        Recording it changes no total: a purchase is a movement of its own
+        and the row books nothing (ruling **R-BAL80**), so what the family
+        moves is the same before and after -- the purchase leaves the
+        in-flight tier for the dated stream.  (Through plan step ``X-bi-3e``
+        the row's own leg subtracted every POSTED purchase from the close, so
+        the two summed to the row's whole debit either way.)  What moves is
+        the DAY, which is what a paper statement is reconciled against.
 
         Refusing it would strand already-spent money on the day the envelope
         happened to be closed, with no door to correct it: measured on the
@@ -2342,20 +2343,25 @@ class TestASettledRowMayStillGAINAPurchase:
     behave oppositely (measured on a production clone 2026-08-18):
 
       * a ``purchases`` settlement stores no figure, so the close IS
-        ``Sigma(entries)``.  A new posted purchase raises it by its own amount
-        and ``settled_cash_leg`` subtracts the same amount, so the envelope's
-        own leg does not move and the purchase books its own dated cash.
-        Adding `$18.64` to one 2026-05-21 close shrank that day's anchor
-        true-up by exactly `$18.64`;
+        ``Sigma(entries)`` and has no covering movement.  A new posted
+        purchase is a movement of its own on its own day and the row books
+        nothing (ruling **R-BAL80**), so nothing else moves.  Adding `$18.64`
+        to one 2026-05-21 close shrank that day's anchor true-up by exactly
+        `$18.64`;
       * a ``derived`` or ``corrected`` settlement stores its figure, fixed
-        before the purchase existed.  The subtraction then removes money the
-        gross never held: `-163.95` became **`+203.67`**, an expense row
-        publishing an inflow, while the true-up moved `$0.00` so the spending
-        was not recorded at all.
+        before the purchase existed, and its covering movement carries the
+        whole close.  The purchase's own movement would then be counted
+        BESIDE it -- a `$500.00` close with a `$600.00` purchase inserted
+        reads `-1,100.00` -- a double count of spending the close never held.
+        (Under the row-leg fold of the time the same insert read the money
+        back the other way: `-163.95` became **`+203.67`**, an expense row
+        publishing an inflow, while the true-up moved `$0.00` so the
+        spending was not recorded at all.)
 
     :func:`~app.services.entry_service._doors._reject_settled_addition` is the
     only thing that makes the second state unrepresentable --
-    ``cash_ledger.cash_leg_of`` states no precondition and cannot see one.
+    ``cash_ledger.movement_cash_leg`` states no precondition and cannot see
+    one.
     """
 
     @staticmethod
@@ -2412,30 +2418,41 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id,
             ).count() == 2
 
-    def test_a_POSTED_addition_leaves_the_envelope_s_OWN_leg_alone(
+    def test_a_POSTED_addition_adds_its_own_movement_and_moves_nothing_else(
         self, app, db, seed_user, seed_entry_template,
     ):
         """The money property the whole rule rests on.
 
         A purchase carrying a bank posting day is a cash movement of its own
-        (ruling **R-FM**), so its envelope's close must book only the
-        remainder.  On a ``purchases`` basis the two terms move together --
-        ``gross`` and ``Sigma(posted)`` both rise by the new amount -- so the
-        envelope's leg is byte-identical and the account's total falls by
-        exactly the purchase.  That is what makes the import RECORD the
-        movement instead of redistributing one it already had.
+        (ruling **R-FM**), and on a ``purchases`` basis the row books nothing
+        of its own (ruling **R-BAL80**; it is worth nothing to the matcher
+        either, ruling **R-BAL81**).  So the import RECORDS the movement
+        instead of redistributing one it already had: the dated stream gains
+        exactly the new purchase on its own day, and the `$50.00` already in
+        flight stays there untouched.
 
-        Shown to FIRE: without the ``Sigma(posted)`` term the leg would move by
-        the whole `$30.00`.
+        Through plan step ``balance:X-bi-4a``'s first cut this pinned the
+        row's own leg -- ``gross`` and ``Sigma(posted)`` rose together, so
+        ``settled_cash_leg`` read `-50.00` before and after -- and its firing
+        control was that term; R-BAL81 deleted the leg, and the control is
+        the composition of the two streams.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
-            _make_entry(txn, seed_user["user"], amount="50.00")
+            held = _make_entry(txn, seed_user["user"], amount="50.00")
             self._close(txn)
-            leg_before = cash_ledger.settled_cash_leg(txn)
-            assert leg_before == Decimal("-50.00")
+            account_id, scenario_id = txn.account_id, txn.scenario_id
+            assert status_seam.covered_cash_leg(txn) == Decimal("0.00")
+            assert [
+                (item.entry_id, item.delta)
+                for item in cash_ledger.in_flight_movements(account_id, scenario_id)
+            ] == [(held.id, Decimal("-50.00"))]
+            dated_before = [
+                (fact.settled_on, fact.delta)
+                for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)
+            ]
 
             entry_service.create_entry(
                 transaction_id=txn.id,
@@ -2450,7 +2467,15 @@ class TestASettledRowMayStillGAINAPurchase:
             db.session.flush()
             db.session.expire(txn)
 
-            assert cash_ledger.settled_cash_leg(txn) == leg_before
+            assert status_seam.covered_cash_leg(txn) == Decimal("0.00")
+            assert [
+                (item.entry_id, item.delta)
+                for item in cash_ledger.in_flight_movements(account_id, scenario_id)
+            ] == [(held.id, Decimal("-50.00"))]
+            assert [
+                (fact.settled_on, fact.delta)
+                for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)
+            ] == dated_before + [(display_today(), Decimal("-30.00"))]
             assert cash_ledger.posted_purchase_sum(txn) == Decimal("30.00")
 
     def test_a_STORED_FIGURE_close_refuses_a_new_purchase(
@@ -2486,12 +2511,12 @@ class TestASettledRowMayStillGAINAPurchase:
             # No purchase landed; the covering movement is not one (X-bi-3a).
             assert purchases_of(txn.id) == []
 
-    def test_the_state_the_refusal_prevents_publishes_a_FABRICATED_INFLOW(
+    def test_the_state_the_refusal_prevents_publishes_a_DOUBLE_COUNT(
         self, app, db, seed_user, seed_entry_template,
     ):
         """The guard's firing control, built the only way it can be reached.
 
-        ``cash_leg_of`` is TOTAL in every other direction and states no
+        ``movement_cash_leg`` is TOTAL in every other direction and states no
         precondition here, so nothing but
         :func:`~app.services.entry_service._doors._reject_settled_addition`
         keeps this unrepresentable.  A test that only asserted the refusal
@@ -2499,21 +2524,37 @@ class TestASettledRowMayStillGAINAPurchase:
         this one builds it through the ORM, past every door, and measures what
         the money rule then answers.
 
-        `-500.00` becomes `+100.00`: an EXPENSE row reporting that the account
-        RECEIVED `$100.00`.  Both legs still net to `-500.00`, which is why no
-        rendered balance moves and why the balance instrument is blind to it.
+        The family reads `-1,100.00` for a close that recorded `$500.00`: the
+        covering movement carries the whole close and the illegal purchase's
+        own movement is counted BESIDE it (ruling **R-BAL80**), `$600.00` of
+        spending the close never held.  Every reader of the family -- the fold
+        (``settled_cash_facts``) and the ledger writer -- sees the double
+        count; the row's own valuation does not move (ruling **R-BAL81**: it
+        is worth its covering movement, still `-500.00`), which is why the
+        matcher alone would be blind to it.
+
+        Through plan step ``balance:X-bi-4a``'s first cut the composition
+        under test was the row's OWN leg, which read the whole illegal
+        purchase back as an INFLOW (`0 - 600` beside the covering movement;
+        `-500 + 600 = +100` before X-bi-3a); that leg is deleted.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
             self._close(txn)
-            # The close's own leg is zero since plan step X-bi-3a -- its
-            # covering movement carries the `$500.00` -- so the family is what
-            # the close booked, and the row's OWN leg is the composition under
-            # test.
-            assert family_cash_leg(txn) == Decimal("-500.00")
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("0.00")
+            account_id, scenario_id = txn.account_id, txn.scenario_id
+            # The covering movement carries the `$500.00`; the row is worth
+            # it (R-BAL81) and the family moves it.
+            assert status_seam.covered_cash_leg(txn) == Decimal("-500.00")
+            assert sum(
+                (cash_ledger.movement_cash_leg(txn, entry) for entry in txn.entries),
+                Decimal("0.00"),
+            ) == Decimal("-500.00")
+            facts_before = sum(
+                (fact.delta for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)),
+                Decimal("0.00"),
+            )
 
             # PAST the door on purpose -- see the docstring.
             entry = TransactionEntry(
@@ -2528,19 +2569,20 @@ class TestASettledRowMayStillGAINAPurchase:
             db.session.flush()
             db.session.expire(txn)
 
-            # The row's own leg reads the WHOLE illegal purchase back as an
-            # inflow now: `0 - 600` on top of a covering movement that already
-            # carries the close.  It was `-500 + 600 = +100` while the close
-            # sat on the row's leg (before X-bi-3a); the fabrication is the
-            # same kind and larger.
-            assert cash_ledger.settled_cash_leg(txn) == Decimal("600.00")
-            # ...and the row, its covering movement and the illegal purchase's
-            # own fact still sum to what the close alone booked, so the
-            # account total is intact and only the COMPOSITION is false.
-            assert (
-                family_cash_leg(txn) - Decimal("600.00")
-                == Decimal("-500.00")
-            )
+            # The family now moves `$1,100.00` for a `$500.00` close, and the
+            # fold reads the same: the illegal purchase's own fact beside the
+            # covering movement's.
+            assert sum(
+                (cash_ledger.movement_cash_leg(txn, entry) for entry in txn.entries),
+                Decimal("0.00"),
+            ) == Decimal("-1100.00")
+            assert sum(
+                (fact.delta for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)),
+                Decimal("0.00"),
+            ) == facts_before - Decimal("600.00")
+            # ...while the row's own valuation is untouched, so only a reader
+            # of the family can see the double count.
+            assert status_seam.covered_cash_leg(txn) == Decimal("-500.00")
 
     def test_an_UNDATED_purchase_is_admitted_on_a_closed_row_and_is_in_flight(
         self, app, db, seed_user, seed_entry_template,

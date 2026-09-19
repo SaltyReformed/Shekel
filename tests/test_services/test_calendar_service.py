@@ -1618,7 +1618,7 @@ class TestBalanceContributingPredicate:
 
             Projected $500, no entries -> reservation      500.00
             Settled $200 (actual 200.00), no credit entries
-              -> settled_cash_leg = 200.00 - 0             200.00
+              -> its covering movement                    200.00
             Cancelled $100 -> neither projected nor settled  0.00
             Credit $50     -> neither projected nor settled  0.00
                                                           -------

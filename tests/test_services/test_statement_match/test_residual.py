@@ -73,6 +73,7 @@ from ._builders import (
 from tests._test_helpers import (
     family_journal_filter,
     last_covered_day,
+    payback_row_of,
     resolved_amount,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -282,6 +283,39 @@ def _a_transfer_shadow(seed_user, *, amount="100.00"):
             Transaction.account_id == seed_user["account"].id,
         )
         .one()
+    )
+
+
+def _a_cc_payback(seed_user, *, amount="180.00"):
+    """Return the Projected CC payback the app mints for one card purchase.
+
+    **The one row shape whose figure is not its own to state and which the
+    matcher still OFFERS** (ruling **R-BAL81**): an envelope holding
+    purchases -- the other member of that census -- is worth ``0`` to the
+    offer and is never a candidate, so a case grading
+    ``_reject_uncorrectable_row``'s "no figure of its own" clause on a group
+    stages a payback.  Through the app's own producer
+    (:func:`tests._test_helpers.payback_row_of`, ruling **R-BAL59**): a card
+    purchase of *amount* under an envelope of its own, and
+    ``sync_entry_payback`` minting the payback in the paycheck after it --
+    a hand-built payback with no card spend behind it is the row that
+    producer DELETES.
+
+    Args:
+        seed_user: The seeded user bundle.
+        amount: The card purchase's figure, as a string; the payback repays
+            exactly it.
+
+    Returns:
+        The minted :class:`~app.models.transaction.Transaction`.
+    """
+    envelope = a_transaction(
+        seed_user, name="Card Spend", amount="300.00", is_envelope=True,
+    )
+    a_later_period(seed_user)
+    return payback_row_of(
+        db.session, seed_user, envelope, Decimal(amount),
+        seed_user["bootstrap_period"].start_date,
     )
 
 
@@ -1154,7 +1188,13 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
     def test_two_lines_against_a_row_that_CANNOT_be_corrected_still_refuse(
         self, app, db, seed_user,
     ):
-        """The widening moved the SHAPE test, not the row refusals."""
+        """The widening moved the SHAPE test, not the row refusals.
+
+        The uncorrectable row is a CC payback (:func:`_a_cc_payback`): through
+        plan step ``balance:X-bi-4a``'s first cut it was an envelope holding
+        a purchase, which ruling **R-BAL81** keeps out of the offer
+        altogether.
+        """
         statement = an_import(seed_user)
         first = seed_user["bootstrap_period"].start_date
         line_a = a_bank_line(
@@ -1164,17 +1204,15 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
             seed_user, statement, amount="-80.06",
             posted_on=first + timedelta(days=1),
         )
-        envelope = a_transaction(
-            seed_user, name="Groceries", amount="180.00", is_envelope=True,
-        )
-        a_purchase(seed_user, envelope, amount="180.00")
+        payback = _a_cc_payback(seed_user, amount="180.00")
 
         with pytest.raises(ValidationError) as caught:
             _submit(
-                seed_user, lines=[line_a, line_b], transactions=[envelope],
+                seed_user, lines=[line_a, line_b], transactions=[payback],
             )
 
         assert "no figure of its own" in str(caught.value)
+        assert payback.settled_on is None
         assert not _minted(seed_user)
 
 
@@ -2268,9 +2306,13 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
     ):
         """``_reject_uncorrectable_row`` is asked of EVERY member, still.
 
-        An envelope is worth whatever its purchases are, so a difference on a
-        group holding one says a PURCHASE is missing or wrong -- a different
-        repair on a different row, and one this door must not paper over.
+        A CC payback's figure is a fact about the card spend it repays, so a
+        difference on a group holding one is a different repair on a
+        different row, and one this door must not paper over.  (Through plan
+        step ``balance:X-bi-4a``'s first cut the member was an envelope
+        holding a purchase, whose figure is its purchases; ruling **R-BAL81**
+        keeps such a row out of the offer altogether, so the payback is the
+        census's one member the matcher still offers.)
 
         **The attribution here points at the OTHER member**, which is what
         makes this a firing control for the widening rather than a restatement
@@ -2286,19 +2328,12 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             seed_user, statement, amount="-280.06",
             posted_on=seed_user["bootstrap_period"].start_date,
         )
-        envelope = a_transaction(
-            seed_user, name="Groceries", amount="180.00", is_envelope=True,
-        )
-        # **The purchase is what makes the envelope uncorrectable**: an
-        # envelope with NO entries settles at its own estimate and states its
-        # own figure, which ``settles_from_entries`` says in one line and a
-        # first version of this case did not stage.
-        a_purchase(seed_user, envelope, amount="180.00")
+        payback = _a_cc_payback(seed_user, amount="180.00")
         priced = a_transaction(seed_user, name="Electricity", amount="100.00")
 
         with pytest.raises(ValidationError) as caught:
             _submit(
-                seed_user, lines=[line], transactions=[envelope, priced],
+                seed_user, lines=[line], transactions=[payback, priced],
                 residual="-0.06",
                 attributed=(RowKind.TRANSACTION, priced),
             )

@@ -693,9 +693,10 @@ class TestSourceFactValuation:
         )
         assert purchase_fact.entry_id is not None
         assert _running_balance(account, scenario) == Decimal("880.00")
-        # The claim the whole ``settled_cash_leg`` move rests on: the walk's
-        # delta IS the amount the writer booked on the linked ledger, in the
-        # SAME sign.  Asserting the sign here is what keeps plan step X-d from
+        # The claim the row-leg move to ``cash_ledger`` rested on (plan step
+        # X-a), and the movement's fact inherits it: the walk's delta IS the
+        # amount the writer booked on the linked ledger, in the SAME sign.
+        # Asserting the sign here is what keeps plan step X-d from
         # wiring the writer onto a negated feed -- a flip that still balances
         # every entry, so nothing else would catch it.
         assert _linked_ledger_net(
@@ -822,15 +823,19 @@ class TestTheWalkSeesOnlyItsOwnRows:
     ):  # pylint: disable=unused-argument
         """A soft-deleted settled envelope must not reach the walk.
 
-        The guard that matters most for money: ``settled_cash_leg`` is TOTAL and
-        returns ``0.00`` for a non-contributing row, but without the SQL
-        exclusion the row would still enter the stream -- and a deleted envelope
-        carrying an $80.00 credit entry is precisely the shape that used to
-        value at a fabricated ``+$80.00`` inflow.  Both defences are pinned: the
-        row is absent, AND the valuation of it is zero.
+        The guard that matters most for money: every valuation is TOTAL over
+        the contributing gate -- a movement under a non-contributing parent
+        moves nothing (``movement_cash_leg``, ruling **R-FM**) and the row is
+        worth nothing (``covered_cash_leg``, ruling **R-BAL81**) -- but without
+        the SQL exclusion the row would still enter the stream, and a deleted
+        envelope carrying an $80.00 credit entry is precisely the shape that
+        used to value at a fabricated ``+$80.00`` inflow through the row's own
+        leg (``settled_cash_leg``, deleted at R-BAL81).  Both defences are
+        pinned: the row is absent, AND every valuation of it is zero.
         """
         from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
-        from app.services.cash_ledger import settled_cash_leg  # pylint: disable=import-outside-toplevel
+        from app.services.cash_ledger import movement_cash_leg  # pylint: disable=import-outside-toplevel
+        from app.services.status_seam import covered_cash_leg  # pylint: disable=import-outside-toplevel
 
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -853,7 +858,11 @@ class TestTheWalkSeesOnlyItsOwnRows:
         db.session.commit()
 
         assert settled_cash_facts(account.id, scenario.id) == []
-        assert settled_cash_leg(txn) == Decimal("0.00")
+        assert covered_cash_leg(txn) == Decimal("0.00")
+        assert txn.entries, "the row must carry movements or this grades nothing"
+        assert {movement_cash_leg(txn, entry) for entry in txn.entries} == {
+            Decimal("0.00"),
+        }
         assert _running_balance(account, scenario) == Decimal("1000.00")
 
     def test_another_scenarios_rows_do_not_enter_the_walk(

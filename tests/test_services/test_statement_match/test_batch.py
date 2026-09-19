@@ -36,7 +36,12 @@ from app.extensions import db as _db
 from app.models.statement_line_skip import StatementLineSkip
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
-from app.services import balance_at, cash_ledger, statement_match
+from app.services import (
+    balance_at,
+    statement_match,
+    status_seam,
+    transaction_service,
+)
 from app.services.posting_reads import PostingError
 from app.services.statement_match import (
     IncomeCreation,
@@ -56,6 +61,7 @@ from app.services.statement_match._outcome import FiledMerchant
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from tests._test_helpers import (
+    an_entered_day,
     purchases_of,
     count_amount_bases,
     last_covered_day,
@@ -467,24 +473,27 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
     ):
         """The interaction that makes a shared PRICE safe at all.
 
-        A candidate's figure is ``gross - card entries - posted purchases``, so
-        the ONLY way one item can move a figure another item names is by
-        posting or adding a purchase under it -- which makes the two a parent
-        and its own child.  That pairing is refused across matches, and the
-        guard reads the database, so each item flushing before the next is
-        validated is what keeps the once-derived price true.
+        Through plan step ``balance:X-bi-4a``'s first cut a candidate's
+        figure was ``gross - card entries - posted purchases``, so the way
+        one item could move a figure another item named was by posting or
+        adding a purchase under it -- a parent and its own child -- and
+        matching the purchase first dropped the envelope's leg by the
+        purchase's amount, so the second item would have been accepted
+        against a price the app no longer held.  Under ruling **R-BAL81** an
+        envelope holding purchases is worth ``0`` to the offer in EITHER
+        order, so the second item is refused as unavailable rather than
+        re-priced; what this case still grades is that the pass refuses it
+        (a scope with the claims baked in would offer it), and the re-pricing
+        of a row another item moves is
+        :class:`TestASIBLINGWriteCannotBookAgainstAStalePrice`'s.
 
-        Without it: matching the purchase first drops the envelope's leg by the
-        purchase's amount, and the second item would then be accepted against a
-        price the app no longer holds.
-
-        **The sentence is the RE-PRICING one, not the double-count one, and
-        that is the correct order of refusals.**  Posting the envelope's only
-        purchase leaves the envelope worth `$0.00`, and a row worth nothing can
-        match no bank line -- so ``resolve_rows`` refuses it before
-        ``record_match``'s guard is ever asked.  The guard still owns the OTHER
-        direction, where the envelope is matched first and keeps a figure;
-        :meth:`test_the_double_count_guard_still_names_itself` is that case.
+        **The sentence is the availability one, not the double-count one, and
+        that is the correct order of refusals.**  A row worth nothing can
+        match no bank line, so ``resolve_rows`` refuses it before
+        ``record_match``'s guard is ever asked.  The guard's live shape is an
+        envelope matched EMPTY, reverted, then given a purchase
+        (``test_accept.py::TestEveryOtherRefusalFires::
+        test_a_purchase_under_a_REVERTED_matched_envelope_is_refused``).
         """
         with app.app_context():
             statement = an_import(seed_user)
@@ -519,18 +528,23 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
             )
 
 
-    def test_the_double_count_guard_still_names_itself(
+    def test_an_envelope_item_is_refused_and_its_purchase_item_lands(
         self, app, db, seed_user,
     ):
-        """The other direction, where the specific sentence is the useful one.
+        """The other direction, and under ruling R-BAL81 it cannot start.
 
-        An envelope matched FIRST keeps its figure, so re-pricing has nothing
-        to say about the purchase inside it -- and what must refuse the second
-        item is the guard that knows WHY: the envelope's cash leg already
-        covers its own outstanding purchases, so naming both counts that
-        purchase in two terms.  Measured on a production clone at plan step
-        X-f6a-2: two matched line-sets worth `-284.33` backed by `-265.69` of
-        ledger, the projected balance `$18.64` high.
+        Through plan step ``balance:X-bi-4a``'s first cut an envelope matched
+        FIRST kept its figure, so re-pricing had nothing to say about the
+        purchase inside it, and what refused the second item was the guard
+        that knew WHY (``_reject_parent_and_its_own_purchase``: the envelope's
+        cash leg covered its own outstanding purchases, so naming both counted
+        that purchase in two terms; measured on a production clone at plan
+        step X-f6a-2, two matched line-sets worth `-284.33` backed by
+        `-265.69` of ledger, the projected balance `$18.64` high).  A row that
+        settles from its purchases is worth ``0`` to the offer now and is not
+        a candidate, so the FIRST item is the one refused -- as unavailable,
+        by ``_resolve`` -- and the purchase item lands on its own; the guard
+        is never reached from this shape.
         """
         with app.app_context():
             statement = an_import(seed_user)
@@ -558,7 +572,10 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
 
             assert outcome.applied_count == 1
             assert outcome.refused_count == 1
-            assert "count the same money twice" in outcome.refused[0].reason
+            assert outcome.refused[0].line_ids == (parent_line.id,)
+            assert "no longer available" in outcome.refused[0].reason
+            assert purchase.settled_on == day
+            assert envelope.settled_on is None
 
 
 class TestASIBLINGWriteCannotBookAgainstAStalePrice:
@@ -1627,7 +1644,9 @@ class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
 
         The envelope settles from its own entries and every purchase carries
         the day the bank took it, so the container contributes nothing itself
-        -- before the re-close and after it.
+        -- before the re-close and after it: a ``purchases`` close has no
+        covering movement and is worth nothing of its own (ruling
+        **R-BAL81**), and the balance moves by the purchases alone.
         """
         first = seed_user["bootstrap_period"].start_date + timedelta(days=1)
         later = first + timedelta(days=4)
@@ -1639,7 +1658,8 @@ class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
         envelope = db.session.query(Transaction).filter_by(
             name="Home Improvement",
         ).one()
-        assert cash_ledger.settled_cash_leg(envelope) == Decimal("0.00")
+        assert envelope.covering_movements == []
+        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
         assert _balance(seed_user, later + timedelta(days=2)) == (
             before - Decimal("75.00")
         )
@@ -1655,16 +1675,26 @@ class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
         complete this press's own.
         """
         closed_on = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+        # Closed FROM ITS PURCHASES through the verb, on the owner's day: the
+        # one settled state a new purchase may join (ruling R-FX), and the one
+        # a ``purchases`` record is -- no covering movement, its purchases the
+        # record (ruling R-BAL78).  This laid the close on bare and flipped
+        # its basis by hand, a row no door writes.
         envelope = a_transaction(
             seed_user, name="Groceries", amount="500.00", is_envelope=True,
-            settled_on=closed_on,
         )
-        envelope.settled_basis_id = ref_cache.settlement_basis_id(
+        a_purchase(
+            seed_user, envelope, amount="30.00", description="Kroger",
+            purchased_on=closed_on, settled_on=closed_on,
+        )
+        transaction_service.settle_transaction(
+            envelope, settle_day=an_entered_day(closed_on),
+        )
+        db.session.flush()
+        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
             SettlementBasisEnum.PURCHASES,
         )
-        envelope.settled_amount = None
-        envelope.status_id = ref_cache.status_id(StatusEnum.DONE)
-        db.session.flush()
+        assert envelope.covering_movements == []
         statement = an_import(seed_user)
         line = a_bank_line(
             seed_user, statement, amount="-20.00",
@@ -1801,10 +1831,11 @@ class TestThePassHoldsONEAmountBasis:
         """The firing control: ONE construction, however many rows are priced.
 
         **The rows are PROJECTED deliberately, and that is what makes this
-        control sharp.**  A settled row is valued from its own record
-        (``cash_ledger.settled_cash_leg``) and never reaches the resolver, so a
-        pass of settled rows builds one basis whether or not this step shipped
-        -- the assertion would hold over a broken tree.  Each of these prices.
+        control sharp.**  A settled row is valued at its covering movement
+        (``status_seam.covered_cash_leg``, ruling **R-BAL81**) and never
+        reaches the resolver, so a pass of settled rows builds one basis
+        whether or not this step shipped -- the assertion would hold over a
+        broken tree.  Each of these prices.
         """
         with app.app_context():
             for index in range(8):

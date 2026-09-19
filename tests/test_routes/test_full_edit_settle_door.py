@@ -347,13 +347,15 @@ class TestTheDropdownBooksWhatTheRowCost:
 class TestTheFieldWritesFlushInsideTheExceptionNet:
     """The derived-amount guard reads a LAZY relationship, so it FLUSHES.
 
-    ``settles_from_entries`` resolves ``tracks_purchases``, which for a
-    template-linked row is ``self.template.is_envelope`` -- a default
-    ``lazy="select"`` relationship (``models/transaction.py:324``).  Reading it
-    emits a SELECT, and a SELECT autoflushes the ``setattr`` loop's staged
-    mutations as the version-pinned UPDATE.  That made the request's FIRST flush
-    happen above the handler's own exception net and, worse, before
-    ``is_override`` was written.
+    ``settles_from_entries`` reads ``Transaction.purchases`` -- the ``entries``
+    one-to-many, a default ``lazy="select"`` relationship -- for every row
+    since plan step ``balance:X-bi-4a`` (ruling **R-BAL78** dropped the
+    ``tracks_purchases`` half, which read ``self.template.is_envelope``
+    through the ``template`` many-to-one).  Reading it emits a SELECT, and a
+    SELECT autoflushes the ``setattr`` loop's staged mutations as the
+    version-pinned UPDATE.  That made the request's FIRST flush happen above
+    the handler's own exception net and, worse, before ``is_override`` was
+    written.
 
     Found by adversarial review after the step had shipped, and the comment it
     contradicted is the tell: the handler claimed its three excepts "cover the
@@ -409,16 +411,20 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
 
         **And the row stays an ENVELOPE, with no purchases against it.**  The
         flush the ordering is about is the guard's ``entries`` read -- a
-        one-to-many the ORM autoflushes before querying -- and only an
-        envelope reaches it: ``tracks_purchases`` is asked first, and its
-        ``template`` read is a by-key many-to-one the ORM serves from the
-        identity map with no flush at all.  This case used to switch the
-        template to non-envelope, so the guard never flushed and the flag
-        could be written anywhere without a collision: measured 2026-09-11,
-        it passed with the flag moved below the guard AND with the flag
-        deleted outright, in that shape.  An envelope with no purchases still
-        settles on the MANUAL branch (``settles_from_entries`` needs both
-        halves), so the typed figure is honoured exactly as before.
+        one-to-many the ORM autoflushes before querying.  Through plan step
+        ``balance:X-bi-3e`` only an envelope reached it: ``tracks_purchases``
+        was asked first, and its ``template`` read is a by-key many-to-one
+        the ORM serves from the identity map with no flush at all, so this
+        case's switching the template to non-envelope meant the guard never
+        flushed and the flag could be written anywhere without a collision
+        (measured 2026-09-11: it passed with the flag moved below the guard
+        AND with the flag deleted outright, in that shape).  Since
+        ``balance:X-bi-4a`` every row's guard reads ``entries`` (ruling
+        **R-BAL78**), and the envelope shape is kept because it is the one
+        the case was written about.  An envelope with no purchases still
+        settles on the MANUAL branch (nothing is recorded against it, so
+        ``settles_from_entries`` is false), so the typed figure is honoured
+        exactly as before.
 
         Shown to FIRE: moving ``is_override`` back below the guard raises
         ``IntegrityError`` out of the handler (re-measured 2026-09-11 on the

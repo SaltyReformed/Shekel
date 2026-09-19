@@ -4568,32 +4568,6 @@ def purchases_of(txn):
     return row.purchases
 
 
-def family_cash_leg(txn):
-    """Return what a settled *txn* is WORTH: the cash its covering movement moves.
-
-    The reader's twin of :func:`family_journal_filter` for the app's one
-    valuation of a settled row, ``status_seam.covered_cash_leg`` (ruling
-    **R-BAL81**, plan step ``balance:X-bi-4a``) -- asked here through that
-    producer so a case that asserts "what this settled row is worth" grades
-    the same rule the matcher, its accepted register and its undo dialog
-    read.  Through ``X-bi-4a``'s first cut this read ``settled_family_leg``,
-    the row's own leg plus its covering movement's; the row's leg is deleted
-    and an envelope closed from its purchases is worth ``0`` here, its
-    purchases carrying the money.
-
-    Args:
-        txn: The settled :class:`~app.models.transaction.Transaction`.
-
-    Returns:
-        The signed ``Decimal`` the row's covering movement moves.
-    """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
-    from app.services.status_seam import covered_cash_leg
-
-    return covered_cash_leg(txn)
-
-
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session, seed_user, period, name, amount,
     status_enum=None, is_income=False,

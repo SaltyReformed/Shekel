@@ -90,15 +90,22 @@ def credit_entry_sum(txn: Transaction) -> Decimal:
     writing ``entry.is_credit`` a second time: the two would then be one rule
     in two places, on the screen a user reads beside a paper statement.
 
+    **It reads the row's PURCHASES, not its family** (ruling **R-BAL68**):
+    a card purchase is something a person recorded against the row, and
+    ``Transaction.purchases`` is the one reading of that.  The seam's covering
+    movement is never a card entry, so this term read the same over
+    ``entries``; it is spelled over the purchases because that is what it
+    means, and because its twin below was not the same over both.
+
     Args:
-        txn: The transaction whose credit entries to sum.
+        txn: The transaction whose credit purchases to sum.
 
     Returns:
-        The sum of ``amount`` over the transaction's ``is_credit`` entries, as a
-        ``Decimal`` (``Decimal("0")`` when there are none).
+        The sum of ``amount`` over the transaction's ``is_credit`` purchases,
+        as a ``Decimal`` (``Decimal("0")`` when there are none).
     """
     return sum(
-        (entry.amount for entry in txn.entries if entry.is_credit),
+        (entry.amount for entry in txn.purchases if entry.is_credit),
         Decimal("0"),
     )
 
@@ -124,16 +131,37 @@ def posted_purchase_sum(txn: Transaction) -> Decimal:
     than writing ``entry.settled_on is not None`` a second time, so a change to
     what "already posted" means cannot leave the panel saying the old thing.
 
+    **It reads the row's PURCHASES, not its family, and through plan step
+    ``balance:X-bi-4a``'s first cut it did not** (ruling **R-BAL68**: a
+    reader that means the purchases asks for them; the seam's covering
+    movement is not one).  Over ``entries`` this summed a settled bill's own
+    covering movement -- dated, debit, and exactly the row's figure -- as a
+    purchase that had posted.  Through ``X-bi-3e`` that was load-bearing:
+    ``settled_cash_leg`` subtracted it from the recorded figure, which is how
+    a covered bill's own leg read zero (ruling **R-FM**'s identity) and the
+    reason R-BAL68's re-point passed this module by.  With that leg deleted
+    (ruling **R-BAL81**) the term had one reader left that could meet a
+    settled row -- the matcher's corrected figure for a near-miss line,
+    ``_landing.corrected_figure`` = ``|bank| + off_statement_sum`` -- and
+    there it doubled: a `$178.32` bill covered on 01-09, matched to the
+    bank's `-178.29`, booked `356.61` onto its own movement and the accept
+    door's post-apply check refused the act as one that moved its own row
+    (finding **BAL-523**; measured 2026-09-18 on production's own release
+    through the settle door, and confirmed by the developer on the reconcile
+    screen the same evening).  That reader's term is deleted with the fix;
+    this sum reads the purchases for the one reader it has left.
+
     Args:
         txn: The transaction whose posted purchases to sum.
 
     Returns:
-        The sum of ``amount`` over the transaction's debit entries carrying a
-        ``settled_on``, as a ``Decimal`` (``Decimal("0")`` when there are none).
+        The sum of ``amount`` over the transaction's debit purchases carrying
+        a ``settled_on``, as a ``Decimal`` (``Decimal("0")`` when there are
+        none).
     """
     return sum(
         (
-            entry.amount for entry in txn.entries
+            entry.amount for entry in txn.purchases
             if not entry.is_credit and entry.settled_on is not None
         ),
         Decimal("0"),
@@ -144,12 +172,24 @@ def off_statement_sum(txn) -> Decimal:
     """Return what *txn* BOOKS but does not move through its cash account.
 
     The two terms a row can carry that never reach this account's statement,
-    stated once because three readers ask for them:
+    stated once for the reconcile panel's cash figure beside the booked one
+    (``reconcile_service._transactions``), its one reader since the matcher's
+    corrected figure dropped it (finding **BAL-523**; the row-leg family read
+    it through ``X-bi-3e``):
 
     * a CARD purchase, which leaves later through its own CC Payback sibling;
     * a purchase whose bank posting day is already recorded, whose cash left on
       its own day and is a movement of its own in the ledger (ruling **R-FM**,
       plan step ``balance:X-f3b``).
+
+    Both terms are read over the row's PURCHASES (ruling **R-BAL68**), so a
+    settled row's covering movement is in neither; and no row the statement
+    matcher prices holds a purchase (ruling **R-BAL78** makes a stated figure
+    beside purchases unrepresentable, and a row settling from its purchases
+    is worth ``0`` to the offer under ruling **R-BAL81**), so for the
+    matcher's corrected figure this is ``0.00`` by construction.  The
+    reconcile panel, which offers a Projected envelope holding purchases, is
+    the reader it is not zero for.
 
     Args:
         txn: The row, with ``entries`` loaded.

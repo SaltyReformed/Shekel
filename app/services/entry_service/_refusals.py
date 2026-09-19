@@ -328,8 +328,8 @@ def _reject_settled_addition(txn: Transaction) -> None:
     raise ValidationError(
         f"Transaction {txn.id} has settled and records a fixed figure, so a "
         "new purchase cannot be added to it: the row's cost would not grow by "
-        "the purchase, and the purchase's own cash would be subtracted from a "
-        "total that never contained it. Set the row back to Projected, add "
+        "the purchase, and the purchase's own cash would be counted beside a "
+        "figure that already covers it. Set the row back to Projected, add "
         "the purchase, and mark it paid again -- that restates what it cost "
         "from the purchases themselves."
     )
@@ -452,8 +452,8 @@ def removal_refusal(txn: Transaction) -> "str | None":
         return (
             f"Transaction {txn.id} has settled and records a fixed figure, so "
             "a purchase cannot be removed from it: the row's cost would not "
-            "fall by the purchase, and the purchase's own cash would stop "
-            "being subtracted from a total that still contains it. Set the "
+            "fall by the purchase, and the figure it records would go on "
+            "counting cash the purchase no longer explains. Set the "
             "row back to Projected, remove the purchase, and mark it paid "
             "again -- that restates what it cost from the purchases "
             "themselves."

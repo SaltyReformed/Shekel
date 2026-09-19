@@ -84,8 +84,18 @@ class TestEachRowSaysWhetherItsFigureIsItsOwn:
         assert row.states_own_figure is True
         assert row.figure_is_correctable is True
 
-    def test_an_ENVELOPE_HOLDING_PURCHASES_does_not(self, app, db, seed_user):
-        """Its figure IS its purchases, so a correction is reverted.
+    def test_an_ENVELOPE_HOLDING_PURCHASES_is_not_offered(
+        self, app, db, seed_user,
+    ):
+        """Its figure IS its purchases, so the ROW is not a candidate at all.
+
+        Through plan step ``balance:X-bi-4a``'s first cut the row was offered
+        at its un-dated purchases and this census said its figure was not its
+        own (``states_own_figure is False``); under ruling **R-BAL81** a row
+        that settles from its purchases is worth ``0`` to the offer and
+        ``transaction_candidate`` drops it, its purchases being the
+        candidates.  The census's remaining subject is the CC payback
+        (``test_a_CC_PAYBACK_does_not`` below).
 
         **Both halves of ``settles_from_entries`` matter**: an envelope with
         NO entries derives nothing and keeps its own figure, which the case
@@ -94,13 +104,13 @@ class TestEachRowSaysWhetherItsFigureIsItsOwn:
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
-        a_purchase(seed_user, envelope, amount="25.00")
+        purchase = a_purchase(seed_user, envelope, amount="25.00")
         db.session.flush()
 
-        row = _candidate(seed_user, envelope.id, RowKind.TRANSACTION)
-
-        assert row.states_own_figure is False
-        assert row.figure_is_correctable is False
+        assert _candidate(seed_user, envelope.id, RowKind.TRANSACTION) is None
+        offered = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
+        assert offered is not None
+        assert offered.cash_amount == Decimal("-25.00")
 
     def test_an_EMPTY_envelope_still_states_its_own(self, app, db, seed_user):
         """Production's ``Kayla's Spending Money``: envelope-tracked, 0 entries.
@@ -205,26 +215,29 @@ class TestWhichRowsTheBankNeverShowsByThemselves:
             row.not_shown_alone.sentence
         )
 
-    def test_an_ENVELOPE_HOLDING_PURCHASES_carries_it_too(
+    def test_an_ENVELOPE_HOLDING_PURCHASES_is_not_offered_at_all(
         self, app, db, seed_user,
     ):
-        """The other member, which has zero live instances and one rule.
+        """The other member cannot reach the caveat: it is never a candidate.
 
-        The bank showed the purchases inside this row, not the row.  It is
-        graded here rather than left to the payback case because the two reach
-        the caveat through DIFFERENT published predicates
-        (``settles_from_entries`` and ``repays_card_spend``), and a caveat that
-        happened to cover only one of them would read as covering both.
+        The bank showed the purchases inside this row, not the row.  Through
+        plan step ``balance:X-bi-4a``'s first cut the row was offered at its
+        un-dated purchases and carried this caveat, graded here rather than
+        left to the payback case because the two reached it through
+        DIFFERENT published predicates (``settles_from_entries`` and
+        ``repays_card_spend``).  Under ruling **R-BAL81** such a row is worth
+        ``0`` to the offer and is dropped, so the caveat has ONE live subject,
+        the payback above; this case pins the drop, and that the purchase
+        inside the row is what is offered instead.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
-        a_purchase(seed_user, envelope, amount="25.00")
+        purchase = a_purchase(seed_user, envelope, amount="25.00")
         db.session.flush()
 
-        row = _candidate(seed_user, envelope.id, RowKind.TRANSACTION)
-
-        assert row.not_shown_alone is not None
+        assert _candidate(seed_user, envelope.id, RowKind.TRANSACTION) is None
+        assert _candidate(seed_user, purchase.id, RowKind.PURCHASE) is not None
 
     def test_an_ORDINARY_bill_carries_NONE(self, app, db, seed_user):
         """The discriminating half: a bill IS a line of its own.
