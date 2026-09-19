@@ -434,8 +434,9 @@ def active_accounts_query(
     and not a new one -- the "checking and its cards" set
     (:func:`app.services.account_resolver.resolve_cash_flow_set`, ruling
     ``credit_card:R-CC16``) reads it with ``True``; the salary deposit picker
-    and the transfer doors' refusals (plan step CC-10) will read it with
-    ``False``.  ``ck_account_types_revolving_is_plain`` makes a type that is
+    reads it with ``False`` (plan step CC-10); the transfer doors' refusal
+    reads :func:`app.services.account_projection.is_revolving` instead.
+    ``ck_account_types_revolving_is_plain`` makes a type that is
     both revolving and amortizing unrepresentable, so the two filters can
     never contradict each other on a real row.
 

@@ -60,6 +60,10 @@ def _reject_transfer_out_of_loan(from_account: Account) -> None:
     R10-b, :func:`._endpoints._resolve_endpoints`, which is where an update
     MOVES one -- rather than silently corrupting the loan's balance.  Refusing
     at only the first would have left the second a way straight past it.
+    Since plan step ``credit_card:CC-10`` neither door names this function:
+    both call :func:`._validation._reject_unmodeled_source`, the ONE set of
+    source refusals, which asks this and its card sibling
+    :func:`._validation._reject_transfer_out_of_revolving` together.
 
     Args:
         from_account: The transfer's source account (already ownership-checked).
