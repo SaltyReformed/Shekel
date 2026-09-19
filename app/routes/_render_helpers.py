@@ -14,10 +14,13 @@ of ``app/routes/_commit_helpers.py``.
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
-from flask import render_template
+from flask import render_template, request
 from flask_login import current_user
+from werkzeug.datastructures import MultiDict
 
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
@@ -26,7 +29,7 @@ from app.services.cash_ledger import (
     recorded_amounts_by_id,
     resolve_transfer_amount,
 )
-from app.services.account_resolver import resolve_grid_account
+from app.services.account_resolver import resolve_cash_flow_set
 from app.services.entry_service import build_entry_sums_dict
 from app.services.grid_view_service import due_captions_by_id
 from app.services.transaction_service import retained_settle_amounts_by_id
@@ -318,6 +321,108 @@ def transfer_settlement_amounts(
     )
 
 
+def _page_account_override() -> int | None:
+    """Return the ``account_id`` of the PAGE this fragment will be swapped into.
+
+    htmx sends the browser's current URL with every request it makes
+    (``HX-Current-URL``, on ``htmx.ajax`` and on the popover forms it
+    ``process``es too), and the grid's balance line is a function of that
+    URL: ``/grid?account_id=<card>`` puts the card on the line.  A fragment
+    that re-draws one cell of that page must read the same override the page
+    read, so it takes it from the header the way the page takes it from
+    ``request.args`` -- through werkzeug's own ``type=int`` coercion, so the
+    two cannot read one value two ways -- and answers ``None`` when the
+    header is absent, carries no ``account_id``, or carries one that is not
+    an int.  A request with no such header (a non-htmx caller, a test
+    client) therefore reads the primary, as every fragment resolved before
+    plan step ``credit_card:CC-4-2``.
+
+    **The header is the requester's own and it moves NO write**: it feeds
+    :func:`~app.services.account_resolver.resolve_cash_flow_set`, whose
+    admission test refuses any account that is not the requester's, and a
+    refused, foreign, junk or absent value all render the same primary --
+    there is no oracle in it.  A malformed URL (``urlsplit`` raises on a bad
+    netloc) reads ``None`` for the same reason a junk id does: this runs
+    AFTER the commit, and a render must not turn a persisted write into a
+    500.
+
+    **What makes reading ``account_id`` off ANY host page safe is a census,
+    and the census is this paragraph** (the re-review of CC-4-2 asked for
+    it): the fragments that reach :func:`fragment_balance_line` are issued
+    only from ``/grid`` (where ``?account_id=`` IS the balance line) and from
+    ``/companion/*`` (no ``account_id``, and a companion is answered ``None``
+    before the header is read).  ``/analytics/calendar`` reads an
+    ``account_id`` with another meaning and issues no such fragment; every
+    ``accounts.*`` page carries its id as a PATH parameter, so its query is
+    empty.  A page that later gains both a cell fragment and an
+    ``account_id`` filter of its own -- the dashboard's bills at CC-4-3 are
+    the candidate -- must either name the balance line's meaning for that
+    parameter or scope this read to the grid's path; it is a deliberate
+    decision, not a free ride.
+
+    Returns:
+        The page's ``account_id`` query value, or ``None``.
+    """
+    current_url = request.headers.get("HX-Current-URL")
+    if not current_url:
+        return None
+    try:
+        query = urlsplit(current_url).query
+    except ValueError:
+        return None
+    return MultiDict(parse_qsl(query)).get("account_id", type=int)
+
+
+def fragment_balance_line(owner_id: int) -> Account | None:
+    """Return the BALANCE LINE a one-row fragment draws its row against.
+
+    The account whose balance the PAGE renders (ruling **R-CC16**, plan step
+    ``credit_card:CC-4-1``): the owner's cash-flow set's balance, resolved by
+    the ONE call the grid page makes,
+    :func:`~app.services.account_resolver.resolve_cash_flow_set`, with the
+    page's own ``?account_id=`` override read off htmx's ``HX-Current-URL``
+    (:func:`_page_account_override`).  Stated ONCE for the three fragment
+    renders that need it -- the transfer cell's direction arrow, the
+    transaction cell's account chip and the mobile card's (plan step
+    ``credit_card:CC-4-2``) -- so a re-drawn cell cannot name a different
+    balance line from the page around it.  A row on another account than this
+    one carries the chip; a transfer with this account at one end draws its
+    arrow.
+
+    **It was ``resolve_grid_account`` with NO override until CC-4-2's
+    adversarial review** (the transfer cell's spelling since plan step
+    X-au-f-1): two spellings of one value that agreed only while the page
+    carried no override, so on the card's balance line every click re-drew
+    its cell from checking's side -- the chip appearing on the card's own row
+    and vanishing from checking's -- until a reload.  Developer ruling
+    2026-09-18 (CC-4-2's review, M1): read the page URL, one producer.
+
+    **It is ``None`` for anyone but the row's OWNER**, by the owner's id
+    rather than by what the requester happens to hold.  A companion reads the
+    owner's plan through :func:`~app.services.companion_service` with no
+    balance line at all -- their page renders no balance and no chip -- and
+    the fragment a companion's Mark Paid swaps in must say the same.  Today a
+    companion also owns no account, so the resolver would answer ``None`` for
+    them anyway; the explicit test is what makes that the RULE rather than a
+    property of the current population.
+
+    Args:
+        owner_id: ``auth.users.id`` of the row or transfer being rendered.
+
+    Returns:
+        The balance line of the page the fragment lands on when the requester
+        IS the owner, else ``None`` (which every template reads as "no
+        balance line").  ``None`` too for an owner with no grid-eligible
+        account, as the page's own context is.
+    """
+    if current_user.id != owner_id:
+        return None
+    cash_flow = resolve_cash_flow_set(
+        current_user.id, current_user.settings, _page_account_override(),
+    )
+    return cash_flow.balance if cash_flow is not None else None
+
+
 def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
     """Render a parent transfer's grid cell with the context it must carry.
 
@@ -340,7 +445,11 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
 
     The ACCOUNT is resolved here rather than passed, because all six callers
     resolved the same thing from the same two arguments; it decides which
-    direction arrow the cell draws.
+    direction arrow the cell draws.  Since plan step ``credit_card:CC-4-2`` the
+    resolution is :func:`fragment_balance_line`'s -- the page's own, override
+    included -- shared with the transaction cell and the mobile card, so the
+    three fragments cannot name the balance line three ways, nor one way the
+    page does not.
 
     Args:
         xfer: The transfer to render.  Owner-established by the caller -- see
@@ -361,7 +470,7 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
     return render_template(
         "transfers/_transfer_cell.html",
         xfer=xfer,
-        account=resolve_grid_account(current_user.id, current_user.settings),
+        account=fragment_balance_line(xfer.user_id),
         budgets=transfer_budgets(xfer),
         **extra,
     )
@@ -415,6 +524,18 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     :func:`~app.services.pay_calendar.derive_periods` untouched, so it is the
     same date the grid's derived window publishes.
 
+    **The BALANCE LINE is the fifth thing the cell draws against** (plan step
+    ``credit_card:CC-4-2``, ruling **R-CC16**): a row on another account
+    than the balance line's carries an account chip, which the partial
+    decides off ``t.account_id`` against the ``account`` published here, the
+    way the grid page's row macro publishes its own.  Resolved through
+    :func:`fragment_balance_line`, the same call the transfer cell's arrow
+    reads, and PUBLISHED even when it resolves ``None``: the partial reads it
+    with ``is not none``, so a surface that forgets the key raises where a
+    ``None`` draws no chip.  The chip's label is ``t.account.name``, which
+    costs this fragment nothing -- ``Transaction.account`` is
+    ``lazy="joined"`` on the model, so the row's own load hydrated it.
+
     Args:
         txn: The Transaction object to render.
         **extra: Additional keyword arguments forwarded to
@@ -428,6 +549,7 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     return render_template(
         "grid/_transaction_cell.html",
         txn=txn,
+        account=fragment_balance_line(txn.user_id),
         budgets=amounts.budgets,
         settled=amounts.settled,
         retained=amounts.retained,

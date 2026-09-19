@@ -273,4 +273,11 @@ class TestTheCaptionMapIsREQUIRED:
                     budgets={1: Decimal("1200.00")},
                     settled={1: None},
                     retained={1: None},
+                    # The balance line is the FIFTH required key since plan
+                    # step credit_card:CC-4-2 and is read before the caption;
+                    # ``None`` (no balance line) is a legitimate value that
+                    # draws no chip, so the render reaches the map under test.
+                    # Its own absence is graded by
+                    # ``test_grid.TestTheChipMarksARowOnAnotherAccount``.
+                    account=None,
                 )

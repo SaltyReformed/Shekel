@@ -61,6 +61,12 @@
                                   gets `balance-negative`.  Mirrors
                                   the desktop `_balance_row.html`
                                   pattern.
+     account *                 -- the BALANCE LINE's Account (the page's
+                                  `ctx.account`; None for the zero-account
+                                  owner), forwarded to `render_row_static`
+                                  so a row on another account carries its
+                                  account chip here as on This Period
+                                  (plan step credit_card:CC-4-2).
 #}
 {% from "grid/_grid_row_macros.html" import render_row_static, accrual_class, accrual_money %}
 {% from "_money_macros.html" import money %}
@@ -199,7 +205,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets, settled, retained) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets, settled, retained, account) }}
                 {% endfor %}
               </ul>
             </div>
@@ -219,7 +225,7 @@
                       {{ rk.group_name }}
                     </li>
                   {% endif %}
-                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets, settled, retained) }}
+                  {{ render_row_static(rk, period, plan_matched_by_row_period, budgets, settled, retained, account) }}
                 {% endfor %}
               </ul>
             </div>

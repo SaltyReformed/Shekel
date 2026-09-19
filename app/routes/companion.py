@@ -104,7 +104,9 @@ def _build_partial_context(
         ``columns is defined`` guard is what suppresses it);
         ``all_periods`` / ``start_offset``
         (the partial's jump-to and prev/next are suppressed via
-        ``show_period_nav=False``).
+        ``show_period_nav=False``).  Present as ``None``: ``account``, the
+        balance line the owner's cards decide their account chip against --
+        the companion has none (plan step ``credit_card:CC-4-2``).
     """
     transactions = view.transactions
     owner_id = current_user.linked_owner_id
@@ -199,6 +201,16 @@ def _build_partial_context(
         "today": display_today(),
         "can_edit": False,
         "show_period_nav": False,
+        # NO balance line (plan step credit_card:CC-4-2, ruling R-CC16).  The
+        # owner's grid marks a card whose row is on another account than the
+        # balance line's with an account chip; the companion reads the owner's
+        # plan across EVERY account with no balance on screen, so there is no
+        # line for a row to be "on another account" than.  Published as
+        # ``None`` rather than omitted: the partial forwards the key to the
+        # card macro, which reads it with ``is not none`` -- an undefined key
+        # would raise on the first card, and a surface with no balance line
+        # should say so, not fall through a default.
+        "account": None,
     }
 
 
