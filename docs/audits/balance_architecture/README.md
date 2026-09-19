@@ -17,7 +17,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-bv-2 -- the CHECK `template_id IS NULL OR due_date IS NOT NULL` binds on BOTH row tables** (`6fa17bac`, migration `4d7123cd9803`), closing **BAL-463**, after `X-cf` (`ccf88c01`) and `X-ch` (`28a6317e`) moved the suite's hand-built rows of a definition onto the engine's (**R-BAL17**, both tables) so it could bind on rows a producer wrote. Production read 0 of 636 and 0 of 177 undated on 2026-09-12. `_stated_amount`'s no-due-date refusal is deleted with it: a linked row's `due_date` is a `date` by construction now, so the refusal fenced a state the schema cannot hold | Section 5, X-bv-2 / X-cf / X-ch |
+| **just landed** | **X-bi-4a -- the cash fold and the posted ledger read MOVEMENTS ONLY** (`babae2e3`, no migration; **R-BAL75** / **R-BAL77** / **R-BAL78** / **R-BAL79** / **R-BAL80**, the matcher priced at the covering movement **R-BAL81**): a movement folds on its own account, an un-dated one is IN FLIGHT, a plan leg is emitted only where no dated movement exists. It closed **BAL-523** the day it was born: on production since release #401 (door-settled rows; every settled row since #405) a near-miss match of a settled row was REFUSED because `posted_purchase_sum` walked the row's entries and summed its own covering movement as a purchase (nine refused items in five requests; the fix `c74df8ce`). On the restore Checking's actual line reads `+$137.93` (row 2284's un-dated purchases in flight) and the 09-16 posted-ledger nets move by the same, a deviation from R-BAL80's third grading equality that R-BAL77 explains; the grid, every other account and the statements byte-identical; `$0.00` written. `X-bi-4b` (the figure columns) is next | Section 5, X-bi-4 / X-bi-4a; ../../plans/rulings.md R-BAL75..R-BAL81 |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` deletes the DEFINITION's `is_envelope` rather than the row's. Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
@@ -387,16 +387,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-bi-4** the DECOMPOSED parent of the fold's re-point onto movements, its design loop closed
     2026-09-18 (**R-BAL75**..**R-BAL80**, seven forks with worked dollars, `HANDOFF-X-bi-4.md`);
     ticks with its last leaf.
-    * [ ] **X-bi-4a** the balance and the posted ledger read MOVEMENTS ONLY, in one commit for every
-      kind: a movement folds on its own account (R-BAL75); an un-dated one is IN FLIGHT, held in the
-      projection at `as_of + 1` and out of the actual, the reservation restated once as `undated +
-      max(estimated - SUM(entries), 0)` (R-BAL77; production's actual reads `$137.93` higher, stated
-      in the release); a typed figure over purchases refused at the seam (R-BAL78); a plan leg only
-      where no dated movement exists (R-BAL79, closes **BAL-500**); the settled loader re-keyed onto
-      movements joined to their parents (**BAL-501**); `sync_purchase_postings` deleted (**BAL-507**).
-      Graded by three equalities on the restore: settled stream after = before + the un-dated
-      non-card purchases under settled envelopes; projected end balances byte-identical; posted-ledger
-      nets per (account, day) likewise. No migration.
+    * [x] **X-bi-4a** `babae2e3` -- the fold and the ledger read movements only (R-BAL75, R-BAL77,
+      R-BAL78, R-BAL79, R-BAL80); the in-flight tier; DC-11; the matcher priced at the covering
+      movement (R-BAL81); `bank_import:R-FX` / `R-GG` amended. On the restore Checking's actual
+      line reads `+$137.93` and the 09-16 ledger nets move by the same (R-BAL80's third equality
+      deviates; R-BAL77 explains it); the grid, every other account and the statements are
+      byte-identical; `$0.00` written. Closed BAL-500, BAL-501, BAL-507, BAL-523 (born here).
     * [ ] **X-bi-4b** the row's figure columns `settled_amount` / `settled_basis_id` go by a migration
       (R-BAL80): `settled_figure` = the sum of entries, the SQL twin re-keyed, the basis enum and ref
       table retired, the popovers' Actual prefill and the retained correction read off the record's
