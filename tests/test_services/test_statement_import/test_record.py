@@ -164,7 +164,7 @@ class TestItRecordsWhatTheBankSaid:
         assert days == [date(2026, 3, 2), date(2026, 3, 3), date(2026, 3, 4)]
 
     def test_it_records_the_signed_amounts(self, app, db, seed_user):
-        """Positive INTO the account, matching ``settled_cash_leg``."""
+        """Positive INTO the account, the sign ``cash_ledger.movement_cash_leg`` uses."""
         _record(seed_user, _file())
 
         amounts = sorted(

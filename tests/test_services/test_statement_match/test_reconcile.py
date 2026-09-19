@@ -913,6 +913,18 @@ class TestOnlyTheInboxSweeps:
         the guard ``test_queue``'s own version of this keeps, and the reason
         it keeps it.
 
+        **The withheld card is one whose destination a proposal names WHOLE**
+        (``_verdict._proposed_destinations``, ruling **R-FZ(d)**): an EMPTY
+        Groceries envelope a `-500.00` line matches exactly, which the pass
+        proposes as a whole-row match, and an Amazon line whose rule files
+        into that same envelope.  Through plan step ``balance:X-bi-4a``'s
+        first cut the envelope held a `$180.00` purchase and the line was
+        `-180.00`: the row was offered at its un-dated purchase and proposed
+        whole.  Under ruling **R-BAL81** a row holding purchases is worth
+        ``0`` to the offer and never proposed whole -- its purchase is -- so
+        that shape withholds nothing, and the empty envelope is the one
+        destination a proposal can still claim.
+
         Args:
             seed_user: The seeded user bundle.
             db: The session fixture.
@@ -924,9 +936,8 @@ class TestOnlyTheInboxSweeps:
         envelope = a_transaction(
             seed_user, name="Groceries", amount="500.00", is_envelope=True,
         )
-        a_purchase(seed_user, envelope, amount="180.00")
         a_bank_line(
-            seed_user, an_import(seed_user), amount="-180.00", posted_on=day,
+            seed_user, an_import(seed_user), amount="-500.00", posted_on=day,
             description="POINT OF SALE DEBIT L340 KROGER", sequence_in_group=9,
         )
         an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")

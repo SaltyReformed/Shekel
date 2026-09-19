@@ -43,6 +43,7 @@ from tests._test_helpers import (
     restate_fixture_era,
     rhythm_of,
     settle_day_columns,
+    cover_bare_settled_row,
     settlement_columns,
     state_template_price,
 )
@@ -168,6 +169,8 @@ def _add_transaction(
         ).items():
         setattr(txn, _column, _value)
     db_session.flush()
+    if default_settle_day(period, status_id) is not None:
+        cover_bare_settled_row(db_session, txn, amount, settled_amount)
     return txn
 
 
@@ -1619,7 +1622,7 @@ class TestBalanceContributingPredicate:
 
             Projected $500, no entries -> reservation      500.00
             Settled $200 (actual 200.00), no credit entries
-              -> settled_cash_leg = 200.00 - 0             200.00
+              -> its covering movement                    200.00
             Cancelled $100 -> neither projected nor settled  0.00
             Credit $50     -> neither projected nor settled  0.00
                                                           -------

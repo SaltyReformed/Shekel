@@ -367,9 +367,7 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     # what keeps the ledger equal to the rows without a second definition of
     # what those rows say.
     for row in updated:
-        posting_service.sync_transaction_postings(
-            row, settled=row.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(row)
     return created, updated
 
 
@@ -430,9 +428,7 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
             setattr(row, field, value)
     db.session.flush()
     for row in work.update:
-        posting_service.sync_transaction_postings(
-            row, settled=row.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(row)
     return work.retained_ids
 
 

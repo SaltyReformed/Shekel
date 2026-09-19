@@ -47,6 +47,7 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_a_record,
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
+    reject_stated_figure_over_purchases,
 )
 from app.utils.balance_predicates import (
     enters_settled_band,
@@ -469,6 +470,13 @@ def apply_status_change(
     # as "invalid reference"; see :func:`reject_settle_day_without_a_record`.
     if isinstance(row, Transaction):
         reject_settle_day_without_a_record(row, settle_day, settlement)
+        # The purchases ARE the figure (ruling **R-BAL78**, plan step
+        # ``balance:X-bi-4a``): a stated figure beside real purchases would be
+        # mirrored as a second movement over the same money.  Refused here,
+        # ahead of any mutation like the five above it, so every door that
+        # hands over a record inherits it; only a ``Transaction`` can hold
+        # purchases (``entry_service.create_entry`` refuses a shadow).
+        reject_stated_figure_over_purchases(row, settlement)
 
     # Read BEFORE the assignment below, because it is a question about the
     # status the row is LEAVING.  A row entering the settled band owes a record

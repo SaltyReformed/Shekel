@@ -705,9 +705,7 @@ def close_container(
         # is posted targets `0.00` -- but a contract kept by a cancellation
         # nobody asserts is finding **N-318**'s shape, one module over.  Found
         # by adversarial security review 2026-08-19.
-        posting_service.sync_transaction_postings(
-            envelope, settled=envelope.status.is_settled,
-        )
+        posting_service.sync_transaction_postings(envelope)
 
 
 @dataclass(frozen=True)

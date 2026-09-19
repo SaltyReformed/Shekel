@@ -4,17 +4,18 @@ Shekel Budget App -- Status Seam: the refusals
 The invariants of a settlement stated as GUARDS, so every caller of the seam
 inherits them rather than each door remembering one.  They are gathered here
 because they are one subject -- what a row may and may not assert about its own
-money -- and because :func:`._seam.apply_status_change` runs all five ahead of
+money -- and because :func:`._seam.apply_status_change` runs all six ahead of
 any mutation, so a refused call leaves the row untouched.
 
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Two of the five are this project's answer to a rule that cannot be a CHECK
-constraint, and both say so in their own docstrings: the settled-status
+Three of the six are this project's answer to a rule that cannot be a CHECK
+constraint, and each says so in its own docstring: the settled-status
 questions need ``ref.statuses.is_settled``, which a constraint on
 ``budget.transactions`` cannot see, and the ref convention keeps status ids out
-of a schema.
+of a schema; the stated-figure-over-purchases question is a count over
+another table (:func:`reject_stated_figure_over_purchases`).
 
 Pure: reads columns and the settled-status predicate, raises or returns.  No
 session, no mutation, no Flask.
@@ -232,6 +233,52 @@ def reject_settle_day_without_a_record(
         "the day the money moved: the two are one assertion. Enter what the "
         "bank actually took in the Actual box as well as the day, and both are "
         "recorded together."
+    )
+
+
+def reject_stated_figure_over_purchases(
+    row: Transaction, settlement: Optional[Settlement],
+) -> None:
+    """Refuse a STATED figure on a row whose purchases already state one.
+
+    **The purchases ARE the figure** (plan step ``balance:X-bi-4a``, ruling
+    **R-BAL78**).  A row holding purchases records its money AS those
+    purchases -- each a movement of its own, dated or in flight -- and a
+    figure typed over them would be a second statement of overlapping money:
+    the seam would mirror it as a covering movement beside the purchases,
+    and the fold, which reads movements alone (ruling **R-BAL80**), would
+    count the typed movement AND the purchases.  Worked: `$389.75` of dated
+    purchases under a `$500.00` typed close would read `-$889.75` where the
+    row-leg fold of ``X-bi-3e`` netted the pair to `-$500.00`.  So the state
+    is refused at the seam, where every door that hands over a record
+    arrives, rather than admitted and reconciled: to change what such a row
+    cost, correct or add a purchase.  The one door that could reach it --
+    *Track individual purchases* unticked on a settled envelope, then the
+    Actual box -- now meets this sentence; 0 such rows existed on production
+    when the refusal went in (measured 2026-09-18 on the 12:34 restore).
+
+    A record that STATES a figure is one whose ``source`` is not ``None``
+    (``resolved``, ``typed`` or ``observed``); a ``purchases`` record states
+    none and is what such a row settles on.
+
+    Args:
+        row: The row being written.
+        settlement: The record this call writes, or ``None``.
+
+    Raises:
+        ValidationError: When *settlement* states a figure and *row* holds
+            purchases (:attr:`~app.models.transaction.Transaction.purchases`,
+            the entries less the seam's own covering mark).  A 400: reachable
+            from the Actual box, and the message is the remedy.
+    """
+    if settlement is None or settlement.source is None:
+        return
+    if not row.purchases:
+        return
+    raise ValidationError(
+        f"Transaction {row.id} records its money as purchases, so a figure "
+        "cannot be stated over them: what it cost is what its purchases say. "
+        "To change the total, correct or add a purchase."
     )
 
 

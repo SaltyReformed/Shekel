@@ -2620,10 +2620,13 @@ class TestTheReconcileRoute:
         "the entry reservation prices only PROJECTED rows, so a purchase on a
         settled parent is inert", and is now the opposite of both (developer,
         2026-08-17).  Ruling **R-FM** falsified the "inert" premise one plan
-        step earlier: ``cash_ledger.settled_cash_leg`` subtracts every POSTED
-        purchase from a settled row's close, so recording the day moves that
-        purchase's cash off the close's day and onto the bank's.  The total
-        never moves; the DAY does, and a paper statement is reconciled by day.
+        step earlier: the row's own leg of the time (``cash_ledger.
+        settled_cash_leg``, deleted at ruling **R-BAL81**) subtracted every
+        POSTED purchase from a settled row's close, so recording the day moved
+        that purchase's cash off the close's day and onto the bank's; since
+        ``balance:X-bi-4a`` every purchase is a movement of its own and the
+        row books nothing (ruling **R-BAL80**).  The total never moves; the
+        DAY does, and a paper statement is reconciled by day.
 
         Driven through the ROUTE rather than the service, which is the half its
         sibling in ``test_reconcile_service`` cannot see: the panel must LIST
@@ -3283,17 +3286,21 @@ class TestTheReconcileRoute:
                 b"changed while you were reconciling" in response.data
             )
 
-    def test_a_correctable_row_INSIDE_a_block_still_gets_its_box(
+    def test_a_row_INSIDE_a_block_gets_no_box_whatever_its_flag_says(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Ruling **R-FF** is honoured in BOTH renderings of a settle row.
 
         The panel had two copies of that row and read ``is_correctable`` in only
         one, so a block with purchases printed a static figure whatever the
-        producer said.  Reachable: a template's ``is_envelope`` is editable, so
-        turning purchase-tracking off after its rows carry entries leaves a
-        block with children whose settle IS correctable -- and the correction
-        box vanished silently, on the screen ruling R-FB added it to.
+        producer said.  Through plan step ``X-bi-3e`` this case turned
+        purchase-tracking off after the rows carried entries, which made the
+        block's settle correctable, and graded that the box appeared.  Since
+        ``balance:X-bi-4a`` a row holding purchases takes its figure from them
+        whatever its definition's flag says (ruling **R-BAL78**;
+        ``settles_from_entries`` reads the purchases alone), so the same act
+        leaves the block NOT correctable and BOTH renderings must agree on
+        that: no box, in the with-children arm the flag used to reach.
         """
         with app.app_context():
             past = display_today() - timedelta(days=1)
@@ -3312,7 +3319,7 @@ class TestTheReconcileRoute:
             # The entry checkbox proves the block took the WITH-CHILDREN arm,
             # which is the arm that used to ignore the flag.
             assert 'name="entry_ids" value="' in body
-            assert f'name="settled_amount-{txn.id}"' in body
+            assert f'name="settled_amount-{txn.id}"' not in body
 
     def test_the_write_door_still_404s_a_kind_this_panel_does_not_serve(
         self, app, auth_client, seed_user, seed_periods_today,

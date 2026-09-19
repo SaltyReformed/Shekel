@@ -9,8 +9,9 @@ reconcile a source's net posted ledger effect to a target by emitting one
 balanced delta journal entry, idempotently.
 :func:`~app.services.posting_service.account_posting_total`,
 :func:`~app.services.posting_service.settled_transfer_effect`, and
-:func:`~app.services.posting_service.settled_transaction_effect` are the
-reconciliation helpers the oracle consumes.
+:func:`~app.services.posting_service.posted_purchase_effect` are the
+reconciliation helpers the oracle consumes (the transaction source's own,
+``settled_transaction_effect``, went at plan step ``balance:X-bi-4a``).
 
 The transfer tests pin the load-bearing properties with hand-computed
 arithmetic:
@@ -911,13 +912,15 @@ class TestTransactionSettlePostsBalancedEntry:
     ):
         """A $50 Paid Groceries expense posts -50 / +50, summing to zero.
 
-        Arithmetic (plan Section 1): a plain expense has no entries, so the
-        effect is ``effective_amount`` (50) with the expense sign; the cash
-        leg is -50.00 (a credit: money leaving Checking) and the category leg
-        is +50.00 (a debit: the expense lands in Food: Groceries).  -50.00 +
-        50.00 = 0.00.  Also pins the header metadata (source kind, transaction
-        link, owner / scenario / period -- all sourced from
-        ``txn.pay_period``) and the per-leg posting kind (expense).
+        Arithmetic (plan Section 1): a plain expense's money is its ONE
+        covering movement (plan step ``balance:X-bi-4a``, ruling **R-BAL80**:
+        the row itself posts nothing), worth ``50`` with the expense sign; the
+        cash leg is -50.00 (a credit: money leaving Checking) and the category
+        leg is +50.00 (a debit: the expense lands in Food: Groceries).  -50.00
+        + 50.00 = 0.00.  Also pins the header metadata (the PURCHASE source
+        kind, the movement link, owner / scenario / period) and the per-leg
+        posting kind (expense).  It pinned a TRANSACTION-sourced entry linked
+        by ``transaction_id`` through ``X-bi-3e``.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -931,19 +934,20 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
-            # Header metadata, all from txn / txn.pay_period.
-            assert entry.transaction_id == txn.id
+            # Header metadata: the movement's link, the parent's owner / scenario
+            # / period.
+            [movement] = txn.covering_movements
+            assert entry.transaction_entry_id == movement.id
+            assert entry.transaction_id is None
             assert entry.transfer_id is None
             assert entry.user_id == seed_user["user"].id
             assert entry.scenario_id == _scenario_id(seed_user)
             assert entry.pay_period_id == period.id
             assert entry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSACTION,
+                PostingSourceEnum.PURCHASE,
             )
             assert entry.description == "Groceries"
             assert isinstance(entry.entry_date, date)
@@ -987,9 +991,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Salary", LedgerAccountClassEnum.INCOME,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             legs = _legs_by_ledger(entry.id)
@@ -1030,9 +1032,7 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             legs = _legs_by_ledger(entry.id)
@@ -1040,16 +1040,18 @@ class TestTransactionSettlePostsBalancedEntry:
             assert legs[groceries_ledger] == Decimal("45.00")
 
     def test_envelope_posts_debit_only_effect(self, app, db, seed_user):
-        """A settled envelope posts the DEBIT-only outflow (credit excluded).
+        """A settled envelope's DEBIT purchases post, each on its own day; the close nothing.
 
-        Arithmetic (plan Section 1 worked example): a $200 Groceries envelope
-        with entries $60 debit / $50 debit / $40 credit, marked Paid.  At
-        settle ``actual_amount`` = sum of ALL entries = 150, so
-        ``effective`` = 150 and ``effect = effective(150) - credit_sum(40) =
-        110`` of debit spending.  The cash leg is -110.00 (the two debit
-        purchases) and the Groceries leg +110.00; the $40 credit purchase
-        posts nothing here (its CC Payback posts when it settles), so there is
-        no double-count.
+        Arithmetic (plan Section 1 worked example, re-expressed under ruling
+        **R-BAL77** at plan step ``balance:X-bi-4a``): a $200 Groceries
+        envelope with entries $60 debit / $50 debit / $40 credit, marked Paid.
+        The close books NOTHING -- an un-dated purchase is in flight, not the
+        row's leg (through ``X-bi-3e`` the close booked the $110.00 remainder
+        on the close day).  Dating the two debit purchases posts each: cash
+        -60.00 / Groceries +60.00 and cash -50.00 / Groceries +50.00, -110.00
+        of debit spending over the family; the $40 credit purchase posts
+        nothing (its CC Payback posts when it settles), so there is no
+        double-count.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1057,30 +1059,31 @@ class TestTransactionSettlePostsBalancedEntry:
                 seed_user, _db.session, period, "Groceries Env",
                 Decimal("200.00"),
             )
-            _add_txn_entry(seed_user, txn, "60.00", is_credit=False)
-            _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
+            sixty = _add_txn_entry(seed_user, txn, "60.00", is_credit=False)
+            fifty = _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
-            # Simulate settle_from_entries: actual = sum(all entries), Paid.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.settled_amount = Decimal("150.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
             groceries_ledger = _resolve_category_ledger(
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
-            _db.session.commit()
+            # The close: nothing to post, the purchases are in flight.
+            assert posting_service.sync_transaction_postings(txn) == []
 
-            legs = _legs_by_ledger(entry.id)
-            assert legs[cash_ledger] == Decimal("-110.00")
-            assert legs[groceries_ledger] == Decimal("110.00")
-            assert sum(legs.values()) == Decimal("0.00")
+            record_settle_day(sixty, an_entered_day(display_today()))
+            record_settle_day(fifty, an_entered_day(display_today()))
+            entries = posting_service.sync_transaction_postings(txn)
+            _db.session.commit()
+            assert len(entries) == 2
+            [(_, nets)] = _period_nets(entries).items()
+            assert nets[cash_ledger] == Decimal("-110.00")
+            assert nets[groceries_ledger] == Decimal("110.00")
+            assert sum(nets.values()) == Decimal("0.00")
 
 
 class TestTransactionAllCreditNoop:
@@ -1109,9 +1112,7 @@ class TestTransactionAllCreditNoop:
             txn.settled_amount = Decimal("40.00")
             _db.session.commit()
 
-            result = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            result = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             assert result == []
@@ -1148,13 +1149,15 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
     def test_credit_dominated_expense_still_posts_a_debit_outflow(
         self, app, db, seed_user
     ):
-        """debit $1 / credit $99, actual $100 -> cash leg -1.00, never positive.
+        """debit $1 / credit $99 -> the dated $1 posts -1.00; the $99 card never.
 
-        Arithmetic: ``actual`` = sum of ALL entries = 100, so ``effective`` =
-        100 and ``effect = effective(100) - credit_sum(99) = 1`` of debit
-        spending.  The expense sign makes the cash leg -1.00 (a $1 checking
-        outflow) and the Groceries leg +1.00; the sign follows the transaction
-        type, so a credit-heavy split never turns the expense into an inflow.
+        Arithmetic (ruling **R-BAL77**, plan step ``balance:X-bi-4a``): the
+        close posts nothing; dating the $1 debit purchase posts it, and the
+        expense sign makes the cash leg -1.00 (a $1 checking outflow) and the
+        Groceries leg +1.00.  The $99 card purchase leaves through its CC
+        Payback, so a credit-heavy split never turns the expense into an
+        inflow.  (Through ``X-bi-3e`` the close booked ``effective(100) -
+        credit_sum(99) = 1`` as the row's own leg.)
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1162,23 +1165,21 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
                 seed_user, _db.session, period, "Credit-Heavy Env",
                 Decimal("200.00"),
             )
-            _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
+            one = _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "99.00", is_credit=True)
-            # Simulate settle_from_entries: actual = sum(all entries), Paid.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.settled_amount = Decimal("100.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
             groceries_ledger = _resolve_category_ledger(
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            assert posting_service.sync_transaction_postings(txn) == []
+            record_settle_day(one, an_entered_day(display_today()))
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             legs = _legs_by_ledger(entry.id)
@@ -1212,14 +1213,17 @@ class TestEnvelopeRefundDominatesBooksAnInflow:
     def test_refund_dominated_envelope_books_a_positive_cash_leg(
         self, app, db, seed_user
     ):
-        """debit $1.00 and a -$50.00 refund -> cash leg +49.00, category -49.00.
+        """debit $1.00 and a -$50.00 refund -> the family nets +49.00 cash, -49.00 category.
 
-        Arithmetic: the row settles from its purchases, so its figure is
-        ``sum(entries) = 1.00 + (-50.00) = -49.00``.  No credit entries and no
-        separately-posted purchases, so ``settled_cash_leg = effective = -49.00``
-        and the EXPENSE sign negates it to ``+49.00``: money came back into
-        checking.  The Groceries leg is ``-49.00``, a contra-expense, which is
-        what a refund is.  The two still sum to zero.
+        Arithmetic (ruling **R-BAL77**, plan step ``balance:X-bi-4a``): the
+        row settles from its purchases and its figure is ``sum(entries) =
+        1.00 + (-50.00) = -49.00``; the close posts nothing, and dating both
+        purchases posts each as its own movement -- the $1.00 as cash -1.00 /
+        Groceries +1.00 and the refund as cash +50.00 / Groceries -50.00 --
+        so the family nets ``+49.00`` into checking: money came back.  The
+        Groceries net is ``-49.00``, a contra-expense, which is what a refund
+        is.  The two still sum to zero.  (Through ``X-bi-3e`` the close booked
+        the whole ``-49.00`` as the row's own leg.)
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1227,8 +1231,8 @@ class TestEnvelopeRefundDominatesBooksAnInflow:
                 seed_user, _db.session, period, "Refund-Heavy Env",
                 Decimal("200.00"),
             )
-            _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
-            _add_txn_entry(seed_user, txn, "-50.00", is_credit=False)
+            one = _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
+            refund = _add_txn_entry(seed_user, txn, "-50.00", is_credit=False)
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(
@@ -1245,12 +1249,14 @@ class TestEnvelopeRefundDominatesBooksAnInflow:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            assert posting_service.sync_transaction_postings(txn) == []
+            record_settle_day(one, an_entered_day(display_today()))
+            record_settle_day(refund, an_entered_day(display_today()))
+            entries = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
-            legs = _legs_by_ledger(entry.id)
+            assert len(entries) == 2
+            [(_, legs)] = _period_nets(entries).items()
             assert legs[cash_ledger] == Decimal("49.00")
             assert legs[cash_ledger] > Decimal("0.00")
             assert legs[groceries_ledger] == Decimal("-49.00")
@@ -1275,12 +1281,8 @@ class TestTransactionIdempotency:
             )
             _db.session.commit()
 
-            first = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
-            second = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            first = posting_service.sync_transaction_postings(txn)
+            second = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             assert len(first) == 1
@@ -1294,14 +1296,16 @@ class TestTransactionReversal:
     def test_reverse_nets_to_zero(self, app, db, seed_user):
         """Reverting a settled transaction nets both ledgers back to baseline.
 
-        Arithmetic: settle posts -100 (Checking) / +100 (Groceries).  The
-        revert (``settled=False``, target ``{}``) reverses exactly what is
+        Arithmetic: settle posts -100 (Checking) / +100 (Groceries), the
+        covering movement's leg.  The revert -- the seam un-dates the movement
+        (ruling **R-BAL61**), and the reconcile then reverses exactly what is
         posted: +100 (Checking) / -100 (Groceries).  The category account
         nets to zero, the Checking total lands back on its $1000.00 anchor
-        (the NULL-``paid_at`` settle was pre-assertion-absorbed and the
-        self-heal re-based the opening at each step), and two
-        transaction-linked entries survive (append-only correction, never an
-        edit).
+        (the period-start settle was pre-assertion-absorbed and the self-heal
+        re-based the opening at each step), and two family-linked entries
+        survive (append-only correction, never an edit).  Through ``X-bi-3e``
+        the reconcile took a ``settled=False`` flag for the revert; the row's
+        own target is empty on every call now (ruling **R-BAL80**).
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1314,12 +1318,13 @@ class TestTransactionReversal:
                 seed_user, "Groceries", LedgerAccountClassEnum.EXPENSE,
             ).id
 
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
-            [reversal] = posting_service.sync_transaction_postings(
-                txn, settled=False,
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
+            [reversal] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
@@ -1336,11 +1341,12 @@ class TestTransactionReversal:
         The exact scenario the per-site approach got wrong.  Arithmetic:
 
           1. Settle a $100 expense in category A (Groceries): cash -100, A +100.
-          2. Recategorize to B (Rent) and reconcile with ``settled=False`` (the
-             single-PATCH revert): the reversal reads the LEDGER (category A),
-             not the now-B ``category_id``, so it posts +100 cash / -100 A.  A
-             nets to zero.
-          3. Re-settle (``settled=True``, category now B): cash -100 / +100 B.
+          2. Revert through the seam (the movement is un-dated), recategorize
+             to B (Rent) and reconcile (the single-PATCH revert): the reversal
+             reads the LEDGER (category A), not the now-B ``category_id``, so
+             it posts +100 cash / -100 A.  A nets to zero.
+          3. Re-settle through the seam (the movement is re-dated; category
+             now B) and reconcile: cash -100 / +100 B.
 
         Final books: category A nets to **zero**, category B carries the
         +100.00 expense, and Checking's total sits on its $1000.00 anchor
@@ -1361,16 +1367,28 @@ class TestTransactionReversal:
             ).id
 
             # 1. Settle in category A.
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
-            # 2. Recategorize to B, then reconcile the revert (settled=False).
+            # 2. Revert, recategorize to B, then reconcile.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             txn.category_id = seed_user["categories"]["Rent"].id
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
-            # 3. Re-settle with the new category.
-            posting_service.sync_transaction_postings(txn, settled=True)
+            # 3. Re-settle with the new category, on the day it first settled
+            #    (period start, pre-assertion) so the absorption arithmetic
+            #    above still holds; the seam re-dates the kept movement.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settle_day=an_entered_day(period.start_date),
+                settlement=settlement_if_settling(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                ),
+            )
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             b_ledger = _resolve_category_ledger(
@@ -1411,14 +1429,12 @@ class TestTransactionReversal:
             ).id
             cash_ledger = _ledger_id(seed_user["account"])
 
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             # Recategorize WITHOUT reverting; re-sync while still settled.
             txn.category_id = seed_user["categories"]["Rent"].id
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             b_ledger = _resolve_category_ledger(
@@ -1460,9 +1476,7 @@ class TestTransactionCounterLegRouting:
             )
             _db.session.commit()
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             groceries = _resolve_category_ledger(
@@ -1495,9 +1509,7 @@ class TestTransactionCounterLegRouting:
             )
             _db.session.commit()
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             fallback = _resolve_category_ledger(
@@ -1538,9 +1550,7 @@ class TestTransactionShadowNoop:
             )
             assert shadow.transfer_id is not None
 
-            result = posting_service.sync_transaction_postings(
-                shadow, settled=True,
-            )
+            result = posting_service.sync_transaction_postings(shadow)
             _db.session.commit()
 
             assert result == []
@@ -1549,15 +1559,17 @@ class TestTransactionShadowNoop:
 
 
 class TestTransactionEntryDate:
-    """``entry_date`` is the row's recorded settle DAY.
+    """``entry_date`` is the movement's recorded settle DAY, the row's mirrored.
 
     A sibling case, ``test_entry_date_falls_back_to_period_start_when_paid_at_``
     ``null``, was DELETED at plan step X-f1 rather than re-derived: it built a
     row whose settle day equalled its pay period's start, which is the exact
     value the deleted fallback produced, so the two rules coincide on it and
     nothing it asserted could tell them apart.  Measured by a neutral review --
-    replacing ``_transaction_entry_date`` with the old ``return
+    replacing the row's entry-date reader with the old ``return
     txn.pay_period.start_date`` left it PASSING while the case below failed.
+    Since plan step ``balance:X-bi-4a`` the writer reads no row day at all:
+    the posted entry is the covering movement's, dated by ITS ``settled_on``.
     """
 
     def test_entry_date_is_the_rows_recorded_settle_day(
@@ -1574,13 +1586,13 @@ class TestTransactionEntryDate:
             txn = add_txn(
                 _db.session, seed_user, period, "Groceries", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
+                settled_on=date(2026, 5, 9),
             )
-            record_settle_day(txn, an_entered_day(date(2026, 5, 9)))
             _db.session.commit()
 
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            # The movement's day IS the row's (the seam mirrors it), and the
+            # movement is what posts (ruling **R-BAL80**).
+            [entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
             assert entry.entry_date == date(2026, 5, 9)
 
@@ -1607,62 +1619,66 @@ class TestTransactionFailLoud:
             _db.session.commit()
 
             with pytest.raises(PostingError, match="ledger account"):
-                posting_service.sync_transaction_postings(txn, settled=True)
+                posting_service.sync_transaction_postings(txn)
 
-    def test_settled_transaction_effect_none_scenario_fails_loud(
+    def test_posted_purchase_effect_none_scenario_fails_loud(
         self, app, db, seed_user,
     ):
-        """A None scenario in ``settled_transaction_effect`` raises PostingError."""
+        """A None scenario in ``posted_purchase_effect`` raises PostingError."""
         with app.app_context():
             with pytest.raises(PostingError, match="scenario_id"):
-                posting_service.settled_transaction_effect(
+                posting_service.posted_purchase_effect(
                     seed_user["account"].id, None,
                 )
 
 
-class TestSettledTransactionEffect:
-    """The transaction-effect helper agrees with the posting total."""
+class TestPostedPurchaseEffect:
+    """The movement-effect oracle agrees with the posting total.
+
+    ``settled_transaction_effect``, the transaction source's oracle, went at
+    plan step ``balance:X-bi-4a`` with the row's own leg (ruling **R-BAL80**):
+    ``posted_purchase_effect`` is the whole non-transfer half of the oracle's
+    per-account invariant now -- every DATED movement of a contributing
+    parent, on the movement's account, whatever the parent's status.  Its
+    per-transaction credit-sum subquery, which a case here pinned as
+    correlated rather than global, went with it: the movement oracle excludes
+    a card purchase by the movement's own flag, one row at a time.
+    """
 
     def test_effect_matches_posting_total(self, app, db, seed_user):
-        """The signed transaction effect rides on top of the opening.
+        """The signed movement effect rides on top of the opening.
 
         Arithmetic: a $50 Paid expense (-50) and a $2000 Received income
-        (+2000) on Checking net to +1950.00.  ``settled_transaction_effect``
-        (a source-table query) reports exactly that; both settles are
-        dated today (post-assertion), so
-        ``account_posting_total`` (the ledger sum) carries the same +1950.00
-        on top of the $1000.00 opening -- 2950.00.  The two independent
-        tables agree on the transactions' contribution only because no
-        transfers exist here, so the post-opening cash legs are entirely
-        transaction-sourced.
+        (+2000) on Checking net to +1950.00 -- each settled row's money is its
+        ONE covering movement.  ``posted_purchase_effect`` (a source-table
+        query over the movements) reports exactly that; both settles are
+        dated today (post-assertion), so ``account_posting_total`` (the ledger
+        sum) carries the same +1950.00 on top of the $1000.00 opening --
+        2950.00.  The two independent tables agree on the movements'
+        contribution only because no transfers exist here, so the
+        post-opening cash legs are entirely movement-sourced.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
             expense = add_txn(
                 _db.session, seed_user, period, "Groceries", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
+                settled_on=display_today(),
             )
             income = add_txn(
                 _db.session, seed_user, period, "Salary", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
-                category_key="Salary",
+                category_key="Salary", settled_on=display_today(),
             )
-            # Date both settles post-assertion (add_txn dates a settled row on
-            # NULL, whose period-start fallback would predate the fixture
-            # anchor and absorb the effects into the opening instead).
-            # Server-side now(): the directory conftest freezes the PYTHON
-            # clock to 2026-03-20, which would also predate the anchor.
-            record_settle_day(expense, an_entered_day(display_today()))
-            record_settle_day(income, an_entered_day(display_today()))
             _db.session.commit()
-            posting_service.sync_transaction_postings(expense, settled=True)
-            posting_service.sync_transaction_postings(income, settled=True)
+            posting_service.sync_transaction_postings(expense)
+            posting_service.sync_transaction_postings(income)
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
             account_id = seed_user["account"].id
             # -50 (expense) + 2000 (income) = 1950; ledger 1000 + 1950.
-            assert posting_service.settled_transaction_effect(
+            assert posting_service.posted_purchase_effect(
                 account_id, scenario_id,
             ) == Decimal("1950.00")
             assert posting_service.account_posting_total(
@@ -1670,13 +1686,13 @@ class TestSettledTransactionEffect:
             ) == Decimal("2950.00")
 
     def test_effect_excludes_credit_portion(self, app, db, seed_user):
-        """The effect helper sums the DEBIT-only envelope effect.
+        """The oracle sums the DATED DEBIT movements and leaves a card purchase out.
 
-        Arithmetic: a settled envelope with $60 + $50 debit and $40 credit,
-        ``actual_amount`` 150, has a confirmed cash effect of
-        ``effective(150) - credit_sum(40) = 110`` of expense, so the signed
-        effect is -110.00 -- the SQL credit-sum subquery excludes the credit
-        portion exactly as the go-forward ``credit_entry_sum`` does.
+        Arithmetic: a settled envelope with $60 + $50 debit purchases, both
+        dated, and a $40 card purchase.  The two debit movements are -110.00
+        of expense; the card purchase leaves through its CC Payback and is
+        excluded by its own ``is_credit`` flag, exactly as the go-forward
+        ``purchase_posts`` leaves it out of the ledger.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1684,59 +1700,46 @@ class TestSettledTransactionEffect:
                 seed_user, _db.session, period, "Groceries Env",
                 Decimal("200.00"),
             )
-            _add_txn_entry(seed_user, txn, "60.00", is_credit=False)
-            _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
+            sixty = _add_txn_entry(seed_user, txn, "60.00", is_credit=False)
+            fifty = _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
+            record_settle_day(sixty, an_entered_day(display_today()))
+            record_settle_day(fifty, an_entered_day(display_today()))
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.settled_amount = Decimal("150.00")
             _db.session.commit()
 
-            assert posting_service.settled_transaction_effect(
+            assert posting_service.posted_purchase_effect(
                 seed_user["account"].id, _scenario_id(seed_user),
             ) == Decimal("-110.00")
 
-    def test_effect_correlates_credit_sum_per_transaction(
-        self, app, db, seed_user,
-    ):
-        """The credit-sum subquery is per-transaction, not one global sum.
+    def test_effect_is_blind_to_the_parents_status(self, app, db, seed_user):
+        """A dated purchase under a PROJECTED envelope counts exactly as one under a closed one.
 
-        Two settled expenses on one account: an envelope X ($60 + $50 debit,
-        $40 credit, ``actual`` 150 -> effect -110) and a plain Y ($30, no
-        entries -> effect -30), netting to -140.00.  An UNCORRELATED subquery
-        would subtract the single $40 credit from EVERY row (X -110, Y +10,
-        total -100), so the -140 result is the regression lock that proves the
-        subquery correlates the credit sum to each transaction -- the
-        load-bearing property of the oracle's source-of-truth side that a
-        single-credit-transaction test cannot catch.
+        The narrowing the oracle lost at plan step ``balance:X-bi-4a``: it
+        read purchases on UNSETTLED parents alone while the settled parent's
+        own leg carried the rest.  A $30.00 purchase dated today under an open
+        envelope and a $50.00 bill settled today net -80.00, one term.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
             envelope = create_envelope_txn(
-                seed_user, _db.session, period, "Groceries Env",
-                Decimal("200.00"),
+                seed_user, _db.session, period, "Open Env", Decimal("200.00"),
             )
-            _add_txn_entry(seed_user, envelope, "60.00", is_credit=False)
-            _add_txn_entry(seed_user, envelope, "50.00", is_credit=False)
-            _add_txn_entry(seed_user, envelope, "40.00", is_credit=True)
-            status_seam.apply_status_change(
-                envelope, ref_cache.status_id(StatusEnum.DONE),
-                settlement=settlement_if_settling(envelope, ref_cache.status_id(StatusEnum.DONE)),
-            )
-            envelope.settled_amount = Decimal("150.00")
+            thirty = _add_txn_entry(seed_user, envelope, "30.00", is_credit=False)
+            record_settle_day(thirty, an_entered_day(display_today()))
             add_txn(
-                _db.session, seed_user, period, "Rent", "30.00",
+                _db.session, seed_user, period, "Rent", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Rent",
+                settled_on=display_today(),
             )
             _db.session.commit()
 
-            # -110 (envelope, debit-only) + -30 (plain) = -140; an uncorrelated
-            # credit sum would instead give -100.
-            assert posting_service.settled_transaction_effect(
+            assert posting_service.posted_purchase_effect(
                 seed_user["account"].id, _scenario_id(seed_user),
-            ) == Decimal("-140.00")
+            ) == Decimal("-80.00")
 
 
 # ---------------------------------------------------------------------------
@@ -1780,14 +1783,12 @@ class TestPeriodAttribution:
             txn = add_txn(
                 _db.session, seed_user, period, "Groceries", "100.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
+                settled_on=date(2026, 1, 5),
             )
-            record_settle_day(txn, an_entered_day(date(2026, 1, 5)))
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
 
-            [settle_entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [settle_entry] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
             assert settle_entry.pay_period_id == period.id
             assert settle_entry.entry_date == date(2026, 1, 5)
@@ -1803,9 +1804,7 @@ class TestPeriodAttribution:
             )
             _db.session.flush()
             assert txn.settled_on is None
-            [reversal] = posting_service.sync_transaction_postings(
-                txn, settled=False,
-            )
+            [reversal] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
 
             # The R2 rule: the reversal carries the ORIGINAL period and the
@@ -1831,9 +1830,7 @@ class TestPeriodAttribution:
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             _db.session.flush()
-            [resettle] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
+            [resettle] = posting_service.sync_transaction_postings(txn)
             _db.session.commit()
             assert resettle.pay_period_id == moved_to.id
             assert resettle.entry_date == display_today()

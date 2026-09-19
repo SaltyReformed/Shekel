@@ -223,7 +223,6 @@ from ._cash_leg import (
     movement_figure_for,
     off_statement_sum,
     posted_purchase_sum,
-    settled_cash_leg,
 )
 from ._clearing import (
     ClearableLine,
@@ -245,10 +244,12 @@ from ._events import (
     CashAnchorFact,
     CashOpeningFact,
     CashSourceFact,
+    InFlightMovement,
     account_opening_fact,
     cash_anchor_facts,
     coverage_for,
     governing_account_opening,
+    in_flight_movements,
     settled_cash_facts,
 )
 from ._facts import (
@@ -273,12 +274,14 @@ __all__ = [
     "AnchorPoint",
     "LoanPricing",
     "governing_account_opening",
+    "in_flight_movements",
     "governing_anchor",
     "governing_anchor_on",
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashOpeningFact",
     "CashSourceFact",
+    "InFlightMovement",
     "ClearableLine",
     "ReconciledThrough",
     "StatementCoverage",
@@ -326,7 +329,6 @@ __all__ = [
     "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",
-    "settled_cash_leg",
     "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",

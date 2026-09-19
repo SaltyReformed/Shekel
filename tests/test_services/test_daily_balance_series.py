@@ -62,6 +62,7 @@ from tests._test_helpers import (
     one_off_row_of,
     settle_day_columns,
     settle_instant_on,
+    cover_bare_settled_row,
     settlement_columns,
 )
 
@@ -99,6 +100,8 @@ def _add_txn(
     for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    if default_settle_day(period, status_id) is not None:
+        cover_bare_settled_row(db.session, txn, amount, settled_amount)
     return txn
 
 

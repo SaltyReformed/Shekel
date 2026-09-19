@@ -67,11 +67,11 @@ def ledger_class_of(txn) -> LedgerAccountClassEnum:
     """Return the chart class *txn*'s counter leg books to, by its TYPE.
 
     An income row's counter account is an INCOME-class category account and
-    an expense row's an EXPENSE-class one -- the one mapping the transaction
-    writer (``posting_service._settled_target``) and the movement writer
-    (``_posting_purchases._purchase_target``) share since plan step
-    ``balance:X-bi-3b``, when a movement's class became its PARENT's (ruling
-    **R-BAL35**) and the second writer would otherwise have spelled the
+    an expense row's an EXPENSE-class one -- the one mapping the movement
+    writer (``_posting_purchases._purchase_target``) reads, shared with the
+    row's own writer from plan step ``balance:X-bi-3b`` (when a movement's
+    class became its PARENT's, ruling **R-BAL35**) until ``balance:X-bi-4a``
+    deleted that writer, so the second would otherwise have spelled the
     mapping again.  ``transaction_type_id`` is immutable, so the class is
     stable across the row's life.
 

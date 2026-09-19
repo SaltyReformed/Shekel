@@ -6066,7 +6066,7 @@ class TestSettleDayLifecycle:
                 settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             def _ledger_days():
@@ -6151,7 +6151,7 @@ class TestSettleDayLifecycle:
                 settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            posting_service.sync_transaction_postings(txn, settled=True)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             def _ledger_days():
@@ -6220,7 +6220,7 @@ class TestSettleDayLifecycle:
             txn, ref_cache.status_id(StatusEnum.DONE), settle_day=an_entered_day(day),
             settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
-        posting_service.sync_transaction_postings(txn, settled=True)
+        posting_service.sync_transaction_postings(txn)
         db.session.commit()
         assert txn.settled_on == day
         assert self._ledger_days_for(txn.id) == [day], (

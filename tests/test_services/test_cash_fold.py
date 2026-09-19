@@ -1298,9 +1298,10 @@ _DRIFT_INCOME = Decimal("2500.00")
 # Non-round, so a cent dropped or double-counted anywhere in 52 periods shows up
 # in the total instead of cancelling.
 _DRIFT_EXPENSE = Decimal("1175.53")
-# Period 15's settled expense carries an ACTUAL over its estimate, so
-# ``settled_cash_leg``'s ``effective_amount`` is graded rather than assumed:
-# a walk reading the ESTIMATE understates every column from 15 on by $24.47.
+# Period 15's settled expense carries an ACTUAL over its estimate, so the
+# settled row's movement carrying the RECORDED figure is graded rather than
+# assumed: a walk reading the ESTIMATE understates every column from 15 on by
+# $24.47.
 _DRIFT_ACTUAL_EXPENSE = Decimal("1200.00")
 _DRIFT_ACTUAL_INDEX = 15
 # Three of these sum to $99.99, NOT $100.00.

@@ -60,6 +60,7 @@ from app.services.transfer_legs import PlannedTransferLeg
 from app.utils.balance_predicates import is_projected
 
 from ._amount_source import AmountBasis
+from ._events import InFlightMovement
 from ._amounts import (
     _entry_aware_amount,
     contribution_of,
@@ -70,18 +71,25 @@ from ._amounts import (
 def sum_projected(transactions, basis: AmountBasis):
     """Sum projected (unsettled) income and expenses for one pay period.
 
-    **The row set holds two kinds since plan step X-bi-6a**, and both are
-    reduced here: an ordinary still-projected :class:`Transaction`, valued as
-    below, and a :class:`~app.services.transfer_legs.PlannedTransferLeg` -- one
-    side of a still-projected transfer, derived from the parent row rather
-    than read off a shadow row (ruling **R-BAL13**) -- valued by
+    **The plan set holds three kinds since plan step ``balance:X-bi-4a``**,
+    and all three are reduced here: an ordinary still-projected
+    :class:`Transaction`, valued as below; a
+    :class:`~app.services.transfer_legs.PlannedTransferLeg` -- one side of a
+    still-projected transfer, derived from the parent row rather than read
+    off a shadow row (ruling **R-BAL13**, plan step X-bi-6a) -- valued by
     :func:`~._amounts.planned_leg_contribution` and placed on the income or
-    the expense side by which side of the parent the account is on.  ONE
-    reduction over both, so a day's or a period's net is a single walk
-    whatever mixture of rows and legs the plan holds; the Projected re-check
-    below is applied to a leg's PARENT exactly as it is to a row, so the
-    loader and this reduction cannot disagree about which legs are in the
-    plan either.
+    the expense side by which side of the parent the account is on; and a
+    :class:`~app.services.cash_ledger.InFlightMovement` -- a purchase the
+    bank has not been seen to take (ruling **R-BAL77**), worth its own
+    signed figure and filed on its parent's leg, whatever the parent's
+    status.  ONE reduction over all three, so a day's or a period's net is a
+    single walk whatever mixture the plan holds; the Projected re-check below
+    is applied to a leg's PARENT exactly as it is to a row, so the loader and
+    this reduction cannot disagree about which legs are in the plan either.
+    A movement in flight has no such re-check: its parent's status is not
+    what puts it in the plan (an un-dated purchase under a CLOSED envelope is
+    in flight exactly as one under an open envelope is), and the loader's
+    contributing gate is the one condition on it.
 
     Part of this module's public surface (no leading underscore): the seam's
     cash fold reaches it from another package, so the projected-sum rule lives
@@ -155,9 +163,10 @@ def sum_projected(transactions, basis: AmountBasis):
 
     Args:
         transactions: The plan items for a single pay period or landing day:
-            :class:`~app.models.transaction.Transaction` rows and
-            :class:`~app.services.transfer_legs.PlannedTransferLeg` values, in
-            any mixture.
+            :class:`~app.models.transaction.Transaction` rows,
+            :class:`~app.services.transfer_legs.PlannedTransferLeg` values and
+            :class:`~app.services.cash_ledger.InFlightMovement` values, in any
+            mixture.
         basis: The account's
             :class:`~app.services.cash_ledger._amount_source.AmountBasis` --
             the ids it was built over and the live producers' answers, built
@@ -170,6 +179,14 @@ def sum_projected(transactions, basis: AmountBasis):
     expenses = Decimal("0.00")
 
     for txn in transactions:
+        if isinstance(txn, InFlightMovement):
+            # Signed by the parent's type already (``movement_cash_leg``):
+            # ``-figure`` under an envelope, so an expense of ``-delta``.
+            if txn.is_income:
+                income += txn.delta
+            else:
+                expenses -= txn.delta
+            continue
         if isinstance(txn, PlannedTransferLeg):
             if not is_projected(txn.transfer):
                 continue

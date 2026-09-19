@@ -177,8 +177,9 @@ class TransactionEntry(
         # and was measured so before the constraint moved --
         # ``_posting_purchases._purchase_target`` at ``-28.29`` emits
         # ``{cash: +28.29, category: -28.29}`` with no branch, and
-        # ``cash_ledger.settled_cash_leg``'s three terms are sums that net --
-        # which is what made the old bound a FENCE rather than an invariant.
+        # the row's own leg's three terms (through ``X-bi-3e``) were sums
+        # that net -- which is what made the old bound a FENCE rather than an
+        # invariant.
         #
         # **Positivity did not disappear, it moved to the door that owns it.**
         # "A typed negative is a typo" is a statement about a hand-entry form

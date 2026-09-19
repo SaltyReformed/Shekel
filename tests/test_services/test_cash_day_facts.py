@@ -48,6 +48,7 @@ from tests._test_helpers import (
     one_off_row_of,
     open_books_before_the_first_assertion,
     settle_day_columns,
+    cover_bare_settled_row,
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
@@ -84,6 +85,7 @@ def _settled(
     for _column, _value in settle_day_columns(day).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    cover_bare_settled_row(db.session, txn, amount, amount)
     return txn
 
 
@@ -110,6 +112,8 @@ def _projected(db, seed_user, period, name, amount, due_date):
     for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    if default_settle_day(period, status_id) is not None:
+        cover_bare_settled_row(db.session, txn, amount)
     return txn
 
 
