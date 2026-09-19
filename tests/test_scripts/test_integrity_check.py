@@ -1155,14 +1155,25 @@ class TestDataConsistency:
         assert fired.details[0]["settled_on"] is not None
 
         # Restore the mirror through the seam's own writer; the arm clears.
+        # The record is STATED here rather than read back off the row: since
+        # plan step balance:X-bi-4b-1 ``recorded_settlement`` reads the
+        # covering movement -- the very row this arm deleted -- and a settled
+        # row holding none reads as a close of nothing (ruling R-BAL82),
+        # which would withdraw rather than re-cover.  The columns this arm
+        # still grades against are the seam's stale cache through the
+        # interval, deleted at X-bi-4b-2 with the arm.
         db.session.expire(txn)
+        from app.enums import MovementFigureSourceEnum
+        from app.services.status_seam import Settlement
         from app.services.status_seam._covering import (  # noqa: E402
             sync_covering_movement,
         )
-        from app.services.status_seam import recorded_settlement
         sync_covering_movement(
             txn, was_settled=True, now_settled=True,
-            settlement=recorded_settlement(txn),
+            settlement=Settlement(
+                amount=Decimal("148.32"),
+                source=MovementFigureSourceEnum.RESOLVED,
+            ),
         )
         db.session.flush()
         assert dc11().passed

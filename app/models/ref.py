@@ -819,6 +819,11 @@ class SettlementBasis(db.Model):
     ``budget.transfers`` carries no such column and needs none: a transfer's
     money moves on its two shadow ``Transaction`` rows, which each record their
     own leg, and the transfer itself stays a plan for its whole life.
+
+    **RETIRING with the column** (plan step ``balance:X-bi-4b``, ruling
+    **R-BAL80**): since ``X-bi-4b-1`` the record is read off the covering
+    movement and this table is reached only by the seam's write of the
+    column; ``X-bi-4b-2`` drops both by migration.
     """
 
     __tablename__ = "settlement_bases"

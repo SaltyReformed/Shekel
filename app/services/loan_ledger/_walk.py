@@ -46,6 +46,7 @@ from app.services import (
     loan_resolver,
 )
 from app.services.loan_loaders import LoanAnchorFact
+from app.utils.amount_relationships import settlement_load_options
 
 from ._events import loan_event_stream
 from ._replay import LoanEventStream, replay_loan_events
@@ -232,12 +233,15 @@ def walk_loan_ledger(
     # since-removed version still applies to a historical period and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
-    # ``options=()``: the stream reads each shadow's due date, its pay period
-    # (loaded by the producer) and its SETTLEMENT RECORD -- all columns of the
-    # row plus the joined status.  It traverses no pricing relationship, so it
-    # states no pricing load (plan step balance:X-bl-2a).
+    # The stream reads each shadow's due date, its pay period (loaded by the
+    # producer) and its SETTLEMENT RECORD -- the row's ENTRIES since plan step
+    # balance:X-bi-4b-1 (``row_valuation.settled_contribution`` sums them),
+    # so the record's load is stated and nothing else: it traverses no
+    # pricing relationship, so it states no pricing load (plan step
+    # balance:X-bl-2a).  It was ``options=()`` while the record was the row's
+    # own two columns.
     shadows = loan_loaders.settled_income_shadows(
-        loan_account_id, scenario_id, options=(),
+        loan_account_id, scenario_id, options=settlement_load_options(),
     )
     payment_splits, anchor_corrections = _replay_events(loan_event_stream(
         anchor_facts, shadows, params.payment_day, periods, escrow_lines,

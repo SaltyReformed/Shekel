@@ -282,19 +282,15 @@ _FENCED_MODULE_RULINGS = {
         # sibling one tier up -- that map needs an ``AmountBasis`` because a
         # plan may be DERIVED, and this one needs none because a record is the
         # row's own, which is exactly why it is down here.
-        # ``recorded_figure`` and ``recorded_amounts_by_id`` are
-        # ``settled_figure``'s TOTAL twin and its batch, ruled non-producers on
-        # exactly the same ground and by the same reading: each answers about
-        # ONE ROW from that row's own columns, and the batch is a LOOP over the
-        # single-row form.  The one clause between the pairs decides nothing a
-        # balance sees -- a settled row that RECORDS NOTHING answers ``None``
-        # here and raises there -- because these two are read by the EDIT
-        # DOORS, which prefill a box rather than count anything.  A balance
-        # reader taking this pair instead would be the substitution the fence
-        # exists to catch, and the refusing pair beside it is what it must take.
+        # ``recorded_figure`` and ``recorded_amounts_by_id`` -- the TOTAL twin
+        # and its batch, ruled here on the same ground -- were DELETED at plan
+        # step ``balance:X-bi-4b-1``: the one clause between the pairs ("a
+        # settled row that RECORDS NOTHING answers ``None`` here and raises
+        # there") named a state a settled row can no longer be in, since its
+        # record is the sum of its entries and a row with none is the $0.00
+        # record (rulings R-BAL80, R-BAL82); the edit doors read the counting
+        # pair now.  Dropped here for the reason the paragraph above gives.
         "purchases_total",
-        "recorded_amounts_by_id",
-        "recorded_figure",
         "settled_amounts_by_id",
         "settled_figure",
     })),

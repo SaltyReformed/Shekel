@@ -128,11 +128,13 @@ def _settle_effective(xfer: Transfer) -> Decimal:
       expression above answered ``0`` for one -- a silent zero where a caller
       asked what moved.  The predicate makes the query answer only about a row
       that has settled, and the refusal below turns "nothing to answer" into an
-      error rather than a zero.  Since that expression became a ``CASE`` on the
-      basis it answers ``NULL`` rather than ``0`` for a row recording nothing,
-      so the two ways this lookup comes back empty -- no such shadow, and a
-      shadow with no record -- arrive as one ``None`` and the refusal names
-      both;
+      error rather than a zero.  Through ``X-bi-4a`` the expression was a
+      ``CASE`` on the basis answering ``NULL`` for a settled row recording
+      nothing, so "no such shadow" and "a shadow with no record" arrived as
+      one ``None``; since plan step ``balance:X-bi-4b-1`` the record is the
+      shadow's covering movement and a settled row with no entry is the
+      ``$0.00`` record (ruling **R-BAL82**), so ``None`` means exactly "no
+      settled, active income shadow" and the refusal names that;
     * **no ``.limit(1)``.**  A second active shadow on the to-account raises
       ``MultipleResultsFound`` from ``.scalar()``; the sibling reader at
       ``models/transfer.py`` added ``.limit(1)`` for exactly that.  Transfer
@@ -150,9 +152,7 @@ def _settle_effective(xfer: Transfer) -> Decimal:
     Raises:
         PostingError: If the transfer has no SETTLED, active income shadow on
             its to-account -- a Transfer-Invariant-1 violation, or a caller
-            posting a settled effect for a pair that has not settled -- or if
-            that shadow records no settlement, which
-            ``ck_transactions_settle_day_needs_a_record`` makes unstorable.
+            posting a settled effect for a pair that has not settled.
     """
     effective = (
         db.session.query(posting_reads.settled_figure_clause())
@@ -169,11 +169,9 @@ def _settle_effective(xfer: Transfer) -> Decimal:
     if effective is None:
         raise PostingError(
             f"Transfer {xfer.id} has no settled, active income shadow on "
-            f"account {xfer.to_account_id} that records what moved; cannot "
-            "post its settled effect. Either no such shadow exists (Transfer "
-            "Invariant 1), or the one that does carries no settlement record "
-            "-- a state ck_transactions_settle_day_needs_a_record refuses to "
-            "store and status_seam.apply_status_change refuses to create."
+            f"account {xfer.to_account_id}; cannot post its settled effect "
+            "(Transfer Invariant 1, or a caller posting a settled effect for "
+            "a pair that has not settled)."
         )
     return effective
 

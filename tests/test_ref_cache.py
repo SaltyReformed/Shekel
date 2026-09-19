@@ -63,6 +63,7 @@ from app.services.cash_ledger import contribution_of
 from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
+    cover_bare_settled_row,
     one_off_row_of,
     settle_day_columns,
     settlement_basis_id,
@@ -314,6 +315,8 @@ class TestEffectiveAmount:
             for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
                 setattr(txn, _column, _value)
             db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "500.00", submitted="487.00")
 
             assert settled_contribution(txn) == Decimal("487.00")
 

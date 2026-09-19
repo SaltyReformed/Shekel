@@ -52,6 +52,7 @@ from tests._test_helpers import (
     all_periods,
     an_entered_day,
     append_balance_assertion,
+    cover_bare_settled_row,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
@@ -4542,6 +4543,9 @@ class TestTooltipContent:
             txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
+            db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "500.00", submitted="487.32")
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4579,6 +4583,9 @@ class TestTooltipContent:
             txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
+            db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "500.00", submitted="500.00")
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -4617,6 +4624,9 @@ class TestTooltipContent:
             txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
+            db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "100.00", submitted="100.00")
             db.session.commit()
 
             resp = auth_client.get("/grid?periods=3")
@@ -5018,6 +5028,9 @@ class TestGridSubtotalsRegressionBaseline:
                     submitted=Decimal("400.00"),
                 ).items():
                 setattr(txn, _column, _value)
+            db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "500.00", submitted="400.00")
             db.session.commit()
 
             resp = auth_client.get("/grid")

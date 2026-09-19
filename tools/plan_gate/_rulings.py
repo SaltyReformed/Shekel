@@ -271,7 +271,7 @@ LIFTED_ROWS_OVER_CAP = {
     "bank_import:R-FW": 2543, "bank_import:R-FY": 2364,
     "bank_import:R-GA": 2850, "bank_import:R-GB": 2688,
     "bank_import:R-GD": 3775, "bank_import:R-GF": 2869,
-    "bank_import:R-GG": 2813, "bank_import:R-GJ": 2321,
+    "bank_import:R-GG": 2812, "bank_import:R-GJ": 2321,
     "bank_import:R-GU": 2408, "bank_import:R-GW": 2983,
 }
 

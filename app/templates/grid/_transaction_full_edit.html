@@ -250,18 +250,18 @@
          nothing (``status_seam.correction_record``'s echo rule).
          Submitting a DIFFERENT number records it as a human's correction. #}
       {% if txn.status and txn.status.is_settled and correctable %}
-      {# ``none`` for a settled row that records NOTHING -- the legacy shape
-         finding **N-181** names, which this box exists to repair.  Rendered
-         as an EMPTY input rather than the string "None": a blank box means
-         nothing is recorded, and typing the real figure is the repair. #}
-      {% set recorded = settled[txn.id] %}
+      {# A settled row ALWAYS records a figure since plan step
+         balance:X-bi-4b-1: the sum of its entries, ``0.00`` for a close of
+         nothing (ruling R-BAL82).  The "records NOTHING" legacy shape
+         (finding N-181) this box rendered EMPTY for has no spelling now; a
+         real figure typed over ``0.00`` is still the repair. #}
       <div class="col">
         <label class="form-label mb-0 small" for="settled-amount-{{ txn.id }}">
           Actual
         </label>
         <input type="number" step="0.01" inputmode="decimal"
                name="settled_amount" id="settled-amount-{{ txn.id }}"
-               value="{{ recorded if recorded is not none else '' }}"
+               value="{{ settled[txn.id] }}"
                min="0" max="10000000"
                class="form-control form-control-sm"
                title="What your bank actually took. Correct it if your statement shows a different amount -- you do not need to set the row back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">

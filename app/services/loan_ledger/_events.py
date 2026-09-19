@@ -44,6 +44,7 @@ from app.models.transaction import Transaction
 from app.services import loan_loaders
 from app.services.loan_loaders import LoanAnchorFact
 from app.services.row_valuation import settled_contribution
+from app.utils.amount_relationships import settlement_load_options
 
 from ._charges import charges_for_due_dates
 from ._replay import LoanCashEvent, LoanEventStream, LoanResetEvent
@@ -85,16 +86,19 @@ def confirmed_shadows_through(
     """
     return [
         shadow
-        # ``options=()``, and the reason covers the RETURNED rows and not only
-        # the filter below (plan step balance:X-bl-2a).  This reads
-        # ``payment_visible_on`` -- the ``settled_on`` column -- and its callers
-        # read the same rows: ``confirmed_loan_payment_history`` takes each
-        # shadow's due date and settlement, both of which are columns plus the
-        # pay period ``income_shadows`` loads itself.  No consumer of this list
-        # prices a row, which is what makes stating no pricing load correct
-        # rather than merely locally true.
+        # The record's load and no pricing load, and the reason covers the
+        # RETURNED rows and not only the filter below (plan step
+        # balance:X-bl-2a).  This reads ``payment_visible_on`` -- the
+        # ``settled_on`` column -- and its callers read the same rows:
+        # ``confirmed_loan_payment_history`` takes each shadow's due date and
+        # its settlement, which is the row's ENTRIES since plan step
+        # balance:X-bi-4b-1 (``settled_contribution`` sums them), plus the
+        # pay period ``income_shadows`` loads itself.  No consumer of this
+        # list prices a row, which is what makes stating no pricing load
+        # correct rather than merely locally true; it was ``options=()``
+        # while the record was the row's own two columns.
         for shadow in loan_loaders.settled_income_shadows(
-            loan_account_id, scenario_id, options=(),
+            loan_account_id, scenario_id, options=settlement_load_options(),
         )
         if payment_visible_on(shadow) <= as_of
     ]

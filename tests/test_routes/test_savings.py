@@ -34,6 +34,7 @@ from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    cover_bare_settled_row,
     create_account_of_type,
     create_hysa_account,
     create_loan_account,
@@ -1345,6 +1346,9 @@ class TestEmergencyFundCommittedBaseline:
                         period.start_date, Decimal("10.00"),
                     ).items():
                     setattr(txn, _column, _value)
+                db.session.flush()
+                # The record's home is the covering movement (X-bi-4b-1).
+                cover_bare_settled_row(db.session, txn, "10.00")
 
             # Transfer template with higher committed amount.
             _create_test_transfer_template(
@@ -1420,6 +1424,9 @@ class TestEmergencyFundCommittedBaseline:
                         period.start_date, Decimal("120.00"),
                     ).items():
                     setattr(row, _column, _value)
+                db.session.flush()
+                # The record's home is the covering movement (X-bi-4b-1).
+                cover_bare_settled_row(db.session, row, "120.00")
                 row = one_off_row_of(
                     period,
                     name="Savings Expense",
@@ -1439,6 +1446,8 @@ class TestEmergencyFundCommittedBaseline:
                         period.start_date, Decimal("300.00"),
                     ).items():
                     setattr(row, _column, _value)
+                db.session.flush()
+                cover_bare_settled_row(db.session, row, "300.00")
             db.session.commit()
 
             resp = auth_client.get("/savings")
