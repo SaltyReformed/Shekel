@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
+from app.services.cash_flow_set import CashFlowSet
 from app.enums import (
     AcctCategoryEnum,
     CompoundingFrequencyEnum,
@@ -5911,7 +5912,7 @@ class TestCheckingDetailCanonicalProducer:
             # PLAIN, so the two agree by construction -- which is exactly the
             # condition that made the previous spelling look harmless.
             grid_current_balance = balance_at.grid_balance_view(
-                account,
+                CashFlowSet.single(account),
                 BalanceContext.build(seed_user["user"].id),
             ).columns[current_period.id].balance
 

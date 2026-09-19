@@ -46,7 +46,11 @@ from app import ref_cache
 from app.audit_infrastructure import AUDITED_TABLES
 from app.enums import StatementSourceEnum
 from app.models.ref import AccountType
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.statement_match import (
     StatementMatch,
     StatementMatchCreation,
@@ -113,25 +117,28 @@ def _a_line(db, seed_user, account=None, **overrides):
         ),
         file_name="statement.csv",
         file_digest="b" * 64,
-        period_start=date(2026, 3, 1),
-        period_end=date(2026, 3, 31),
-        line_count=1,
-        recorded_count=1,
+        declared_start=date(2026, 3, 1),
+        declared_end=date(2026, 3, 31),
     )
     db.session.add(statement)
     db.session.flush()
     fields = {
         "account_id": account_id,
-        "import_id": statement.id,
         "posted_on": date(2026, 3, 2),
-        "transaction_on": date(2026, 3, 2),
         "amount": Decimal("-25.00"),
-        "description": "POINT OF SALE DEBIT L340 COFFEE",
         "sequence_in_group": 0,
     }
     fields.update(overrides)
     line = BankStatementLine(**fields)
     db.session.add(line)
+    db.session.flush()
+    # The wording and the stated day are the import's SIGHTING of the line
+    # (plan step ``bank_import:X-f6b-1``).
+    db.session.add(StatementLineSighting(
+        account_id=account_id, line_id=line.id, import_id=statement.id,
+        description="POINT OF SALE DEBIT L340 COFFEE",
+        transaction_on=date(2026, 3, 2),
+    ))
     db.session.flush()
     return line
 
@@ -498,11 +505,12 @@ class TestAMatchMayNotLoseItsBankLines:
         line = _a_line(db, seed_user)
         match = _a_match(db, seed_user)
         _a_member(db, match, bank_statement_line_id=line.id)
+        [sighting] = line.sightings
 
         with pytest.raises(sqlalchemy.exc.IntegrityError):
             db.session.execute(db.text(
                 "DELETE FROM budget.statement_imports WHERE id = :id"
-            ), {"id": line.import_id})
+            ), {"id": sighting.import_id})
             db.session.flush()
 
     def test_an_UNMATCHED_line_still_deletes_freely(

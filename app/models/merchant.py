@@ -50,14 +50,14 @@ have shown them.
 **A merchant SURVIVES the lines that named it, and that is the whole property
 the union above rests on** -- a stated answer has to stay readable and
 restatable after its lines are gone.  **It is not immortal, and the difference
-is the answer.**  Deleting an IMPORT removes the merchants its lines alone
-named AND no stated answer is about
+is the answer.**  Deleting an IMPORT removes the merchants its sightings alone
+name AND no stated answer is about
 (``statement_import._reads.orphan_merchants_by_import`` decides,
 ``_undo._forget_merchants`` deletes), because such a row preserves nothing:
 no rule is keyed on it, the section does not render it, and nothing else can
-reach it.  That leaves no merchant named by no line ONLY because no door
-creates one: ``resolve_merchants`` writes every row it mints onto a line in
-the same pass, and a rule is never withdrawn (measured 0 of 67 on the
+reach it.  That leaves no merchant named by no sighting ONLY because no door
+creates one: ``resolve_merchants`` writes every row it mints onto a sighting
+in the same pass, and a rule is never withdrawn (measured 0 of 67 on the
 developer's database, 2026-09-12).  Without that removal the table had no
 ceiling at all
 -- an owner could upload a file naming any number of unseen merchants, delete
@@ -70,14 +70,19 @@ measured it on 2026-08-25.  An account's deletion takes every merchant through
 **Both referrers name it with the DEFAULT ``NO ACTION``, and the pair of
 consequences was measured rather than reasoned about.**  On a clone of the
 developer's own database, 2026-08-25: deleting a merchant a recorded line names
-is REFUSED (``fk_bank_statement_lines_merchant_account``), which is the truth --
-a line's merchant is not a thing that can vanish out from under it -- and
-deleting the whole ACCOUNT still SUCCEEDS, because every cascade of that one
-statement completes before the referential check runs.  ``RESTRICT`` would have
-given the first and might not have given the second, since it forbids the
-deferral that makes the second work; ``CASCADE`` would have declared that
-deleting a merchant deletes bank lines, which is false of what this app does
-and dangerous if it ever became reachable.
+is REFUSED, which is the truth -- a line's merchant is not a thing that can
+vanish out from under it -- and deleting the whole ACCOUNT still SUCCEEDS,
+because every cascade of that one statement completes before the referential
+check runs.  ``RESTRICT`` would have given the first and might not have given
+the second, since it forbids the deferral that makes the second work;
+``CASCADE`` would have declared that deleting a merchant deletes bank lines,
+which is false of what this app does and dangerous if it ever became
+reachable.  The line-side referrer was ``fk_bank_statement_lines_merchant_
+account`` until plan step ``bank_import:X-f6b-1b``; it is
+``fk_statement_line_sightings_merchant_account`` since (ruling **R-BI16**:
+the key a rule fires on is stored once, on the SIGHTING, and a line's
+merchant is a read over its sightings), with the same action for the same
+measured reasons.
 
 **Per ACCOUNT, not per owner, and that is the same key
 ``merchant_rules`` already carries.**  A statement is one bank's record
@@ -160,9 +165,11 @@ class Merchant(AccountScopedMixin, db.Model):
     # has no interest in which lines named it -- every reader travels the other
     # way -- and a collection here would be a lazy load of a whole statement's
     # lines from any row that touched one.  The other direction is declared
-    # where it is needed and used: ``BankStatementLine.merchant`` is eager and
-    # viewonly, because a reader holding a line always wants the name; the
-    # RULE table has none at all, and reads its merchants in one statement
+    # where it is needed and used: a reader holding a line always wants the
+    # name, so ``BankStatementLine.merchant_name`` is a ``column_property``
+    # projected off the naming sighting and loaded in the line's own
+    # statement (ruling **R-BI16**); the RULE table has none at all, and
+    # reads its merchants in one statement
     # (``statement_match._rules.rules_for``) because it renders every
     # merchant on the account at once.
 

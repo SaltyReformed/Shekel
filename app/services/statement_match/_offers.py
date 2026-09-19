@@ -493,10 +493,11 @@ def merchant_label(merchant: "str | None", description: str) -> str:
     **It takes the two VALUES it uses** (plan step ``bank_import:X-gd-1``).  It
     took a line and duck-typed over :class:`BankLine` and
     :class:`~app.models.statement_import.BankStatementLine`, which each
-    exposed a ``merchant`` string; the ORM row's is a
-    :class:`~app.models.merchant.Merchant` now, so one spelling no longer
-    reaches both -- and a function taking a name and a description says what it
-    needs without either caller having to be a particular shape.
+    exposed a ``merchant`` string; the ORM row exposes the
+    :class:`~app.models.merchant.Merchant`'s id and name as two read-only
+    projections, so one spelling no longer reaches both -- and a function
+    taking a name and a description says what it needs without either caller
+    having to be a particular shape.
 
     Args:
         merchant: What the merchant is called, or ``None`` where the source

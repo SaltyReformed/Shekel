@@ -29,6 +29,7 @@ car payment**, four already matched to ``Transfer to Van Loan`` shadows.
 ``TestTheSourcesLabelOnlyASKS`` is where that boundary is pinned.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -64,6 +65,7 @@ from ._builders import (
     a_merchant,
     a_rule,
     a_scope,
+    a_sighting,
     a_submission,
     a_transaction,
     an_answers,
@@ -369,6 +371,59 @@ class TestTheSourcesLabelOnlyASKS:
                 account=seed_second_user["account"],
             ).id,
         })
+
+    def test_the_set_holds_the_LINES_merchant_not_the_filing_sightings(
+        self, app, db, seed_user,
+    ):
+        """A line filed as a card payment by one sighting, named by another.
+
+        The set feeds :meth:`~app.services.statement_match.CreationBars
+        .bar_for`, which is asked of a LINE's merchant -- the earliest
+        surviving sighting that names one (ruling **R-BI16**) -- so the
+        merchant it must hold is that one, whichever sighting carried the
+        card-payment category.  Here the EARLIEST sighting names
+        ``Capital One Credit Card`` and files under no category; a LATER
+        sighting of the same line files under SECU's card-payment words and
+        names ``Capital One Mobile Pmt``.  The line's merchant is the first;
+        the set must hold the first, and only the first.
+
+        **THE FIRING CONTROL for the read's correlation.**  This reader
+        encloses the line's merchant subquery in a statement that joins the
+        sightings and the imports itself; a subquery whose sightings
+        correlate to the OUTER joined row reads the filing one, and the set
+        holds ``Capital One Mobile Pmt``.  Measured 2026-09-18: rewrite
+        ``_stated_by_the_naming_sighting`` with an implicit ``FROM`` (the
+        tables named only in its ``WHERE``) and no
+        ``.correlate(BankStatementLine)``, and this reads
+        ``frozenset({<Mobile Pmt>}) == frozenset({<Credit Card>})``; either
+        defence alone -- the explicit join chain, or the correlate -- keeps
+        it green, and the correlate is the one that holds under both forms.
+        """
+        earlier = an_import(
+            seed_user, created_at=datetime(2026, 3, 1, 12, tzinfo=timezone.utc),
+        )
+        later = an_import(
+            seed_user, created_at=datetime(2026, 3, 2, 12, tzinfo=timezone.utc),
+        )
+        line = a_bank_line(
+            seed_user, earlier, amount="-793.23",
+            description="ACH DEBIT CAPITAL ONE (Capital One Credit Card)",
+            merchant=CARD_MERCHANT, source_category=None,
+        )
+        a_sighting(
+            seed_user, later, line,
+            description="CAPITAL ONE MOBILE PMT", merchant=OLD_CARD_MERCHANT,
+            source_category=CARD_PAYMENT,
+        )
+        db.session.flush()
+
+        bars = a_bars(seed_user)
+
+        assert line.merchant_id == a_merchant(seed_user, CARD_MERCHANT).id
+        assert bars.account_payments == frozenset({line.merchant_id})
+        assert bars.bar_for(line.merchant_id) is (
+            CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        )
 
 
 class TestTheDoorRefusesABarredLine:

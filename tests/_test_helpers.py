@@ -488,13 +488,19 @@ def _db_clock_insert_attrs(model_class):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from sqlalchemy import Date, DateTime, inspect as sa_inspect
+    from sqlalchemy import Column, Date, DateTime, inspect as sa_inspect
     from sqlalchemy.sql.elements import TextClause
     from sqlalchemy.sql.functions import now as sa_now
 
     resolved = []
     for prop in sa_inspect(model_class).column_attrs:
         column = prop.columns[0]
+        # A ``column_property`` is a column attribute over an EXPRESSION, not
+        # a table column -- ``BankStatementLine``'s two merchant projections
+        # (plan step ``bank_import:X-f6b-1b``) are scalar subqueries -- and
+        # an INSERT omits nothing for it, so there is no default to read.
+        if not isinstance(column, Column):
+            continue
         default = column.server_default
         if default is None:
             continue
@@ -9611,9 +9617,11 @@ def count_amount_bases(monkeypatch):
     return built
 
 
-#: One import, two bank lines and one match naming BOTH, in the shape
-#: ``statement_match._accept.record_match`` leaves: the group's EARLIEST line
-#: posts before the row that explains it settles.
+#: One import, two bank lines it sighted (plan step ``bank_import:X-f6b-1``:
+#: a line is held by its sightings, and the wording is the sighting's) and
+#: one match naming BOTH, in the shape ``statement_match._accept.record_match``
+#: leaves: the group's EARLIEST line posts before the row that explains it
+#: settles.
 #:
 #: **Raw SQL, and ONE copy of it.**  It lived in three test modules
 #: byte-identically until an adversarial test-quality review counted them --
@@ -9631,18 +9639,22 @@ _A_MATCHED_GROUP = """
     WITH import_row AS (
         INSERT INTO budget.statement_imports
                (account_id, user_id, source_id, file_name, file_digest,
-                period_start, period_end, line_count, recorded_count)
+                declared_start, declared_end)
         SELECT :a, :u,
                (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1),
-               'books-boundary-probe.csv', :digest, :early, :late, 2, 2
+               'books-boundary-probe.csv', :digest, :early, :late
         RETURNING id
     ), line_rows AS (
         INSERT INTO budget.bank_statement_lines
-               (account_id, import_id, posted_on, amount, description,
-                sequence_in_group)
-        SELECT :a, import_row.id, day.posted_on, -15.96, 'PROBE', 0
-          FROM import_row, (VALUES (:early), (:late)) AS day(posted_on)
+               (account_id, posted_on, amount, sequence_in_group)
+        SELECT :a, day.posted_on, -15.96, 0
+          FROM (VALUES (:early), (:late)) AS day(posted_on)
         RETURNING id
+    ), sighting_rows AS (
+        INSERT INTO budget.statement_line_sightings
+               (account_id, line_id, import_id, description)
+        SELECT :a, line_rows.id, import_row.id, 'PROBE'
+          FROM import_row, line_rows
     ), match_row AS (
         INSERT INTO budget.statement_matches
                (account_id, user_id, applied_by_rule)

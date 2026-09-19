@@ -38,8 +38,9 @@ today" (developer ruling **R-CC28**).
 2026-09-18): :func:`set_apr` sets the row FOR a date -- one
 ``INSERT ... ON CONFLICT DO UPDATE`` on the table's unique key, so a same-date
 submit rewrites the rate and two in-flight submits cannot race to an
-``IntegrityError`` (the :func:`app.services.pay_schedule_service.ensure_schedule`
-shape) -- and :func:`remove_apr` deletes a row the card holds.  The loan's
+``IntegrityError`` (the :func:`app.services.pay_schedule_service.ensure_schedule_row`
+idiom, a ``pg_insert`` on a named constraint; that one does DO NOTHING)
+-- and :func:`remove_apr` deletes a row the card holds.  The loan's
 door appends and translates a collision into a refusal; the card's has no
 collision to translate.
 

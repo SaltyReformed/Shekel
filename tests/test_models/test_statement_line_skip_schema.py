@@ -40,7 +40,11 @@ import sqlalchemy.exc
 from app import ref_cache
 from app.audit_infrastructure import AUDITED_TABLES
 from app.enums import StatementSourceEnum
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.statement_line_skip import StatementLineSkip
 from tests._test_helpers import load_migration_module
 
@@ -70,22 +74,23 @@ def _a_line(db, seed_user, account=None):
         ),
         file_name="statement.csv",
         file_digest="c" * 64,
-        period_start=date(2026, 3, 1),
-        period_end=date(2026, 3, 31),
-        line_count=1,
-        recorded_count=1,
+        declared_start=date(2026, 3, 1),
+        declared_end=date(2026, 3, 31),
     )
     db.session.add(statement)
     db.session.flush()
     line = BankStatementLine(
         account_id=account_id,
-        import_id=statement.id,
         posted_on=date(2026, 3, 2),
         amount=Decimal("-25.00"),
-        description="POINT OF SALE DEBIT L340 COFFEE",
         sequence_in_group=0,
     )
     db.session.add(line)
+    db.session.flush()
+    db.session.add(StatementLineSighting(
+        account_id=account_id, line_id=line.id, import_id=statement.id,
+        description="POINT OF SALE DEBIT L340 COFFEE",
+    ))
     db.session.flush()
     return line
 
@@ -219,15 +224,17 @@ class TestASkipCannotOutliveItsLine:
     def test_deleting_the_import_takes_the_skip_too(self, app, db, seed_user):
         """The cascade the repair door actually drives.
 
-        ``delete_import`` removes the IMPORT; the lines go by
-        ``fk_bank_statement_lines_import_account`` and the skips by this one,
-        so the chain is two links long and neither is exercised by the case
+        ``delete_import`` removes the IMPORT; its sightings go by
+        ``fk_statement_line_sightings_import_account``, a line left with none
+        by ``budget.remove_line_left_unsighted``, and the skips by this key,
+        so the chain is three links long and none is exercised by the case
         above.
         """
         line = _a_line(db, seed_user)
         db.session.add(_a_skip(seed_user, line))
         db.session.flush()
-        statement = db.session.get(StatementImport, line.import_id)
+        [sighting] = line.sightings
+        statement = db.session.get(StatementImport, sighting.import_id)
 
         db.session.delete(statement)
         db.session.flush()

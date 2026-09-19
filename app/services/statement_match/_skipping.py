@@ -609,9 +609,10 @@ def skipped_acts(
     ``bank_import:X-gj-4c-1`` put back.
 
     **ONE query, and the merchant rides along.**
-    :attr:`~app.models.statement_import.BankStatementLine.merchant` is
-    ``lazy="joined"`` for exactly this reason (finding **N-309**), so listing
-    the lines costs no load per card.  The join is spelled here rather than
+    :attr:`~app.models.statement_import.BankStatementLine.merchant_name` is
+    a ``column_property`` loaded in the line's own statement for exactly
+    this reason (finding **N-309**; ruling **R-BI16**), so listing the lines
+    costs no load per card.  The join is spelled here rather than
     through a relationship on
     :class:`~app.models.statement_line_skip.StatementLineSkip`: that model
     deliberately carries none, and adding one for a single reader that a

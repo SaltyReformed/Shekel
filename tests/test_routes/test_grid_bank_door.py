@@ -24,7 +24,11 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, StatementSourceEnum
 from app.extensions import db
 from app.models.merchant import Merchant
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.user import UserSettings
 from app.services import account_service
 from app.utils.dates import display_today
@@ -62,22 +66,23 @@ def _a_recorded_line(seed_user, posted_on, account=None):
         ),
         file_name="statement.csv",
         file_digest="d" * 64,
-        period_start=posted_on,
-        period_end=posted_on,
-        line_count=1,
-        recorded_count=1,
+        declared_start=posted_on,
+        declared_end=posted_on,
     )
     db.session.add(statement)
     db.session.flush()
     line = BankStatementLine(
         account_id=target.id,
-        import_id=statement.id,
         posted_on=posted_on,
         amount=Decimal("-64.04"),
-        description="POINT OF SALE DEBIT APPLE.COM/BILL",
         sequence_in_group=0,
     )
     db.session.add(line)
+    db.session.flush()
+    db.session.add(StatementLineSighting(
+        account_id=target.id, line_id=line.id, import_id=statement.id,
+        description="POINT OF SALE DEBIT APPLE.COM/BILL",
+    ))
     db.session.commit()
     return line
 
@@ -129,27 +134,30 @@ def _a_card_payment(seed_user, posted_on):
         ),
         file_name="card.csv",
         file_digest="c" * 64,
-        period_start=posted_on,
-        period_end=posted_on,
-        line_count=1,
-        recorded_count=1,
+        declared_start=posted_on,
+        declared_end=posted_on,
     )
     db.session.add(statement)
     db.session.flush()
     line = BankStatementLine(
         account_id=account.id,
-        import_id=statement.id,
         posted_on=posted_on,
         amount=Decimal("-793.23"),
-        description="ACH DEBIT CAPITAL ONE CRCARDPMT",
         sequence_in_group=0,
+    )
+    db.session.add(line)
+    db.session.flush()
+    db.session.add(StatementLineSighting(
+        account_id=account.id, line_id=line.id, import_id=statement.id,
+        description="ACH DEBIT CAPITAL ONE CRCARDPMT",
+        # The KEY, on the sighting (ruling **R-BI16**): the line's merchant
+        # is the read over its sightings.
         merchant_id=merchant.id,
         # **The SOURCE's own filing**, which is what ruling R-GJ reads --
         # ``_vocabulary.ACCOUNT_PAYMENT_CATEGORIES`` maps this exact string
         # for this source.  A merchant name alone parks nothing.
         source_category="Financial Services/Credit Card Payment",
-    )
-    db.session.add(line)
+    ))
     db.session.commit()
     return line
 
