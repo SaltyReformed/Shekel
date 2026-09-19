@@ -1,240 +1,114 @@
-"""Schema and migration locks for the Commit-15 column demotion.
+"""Schema and migration locks for the two dropped ``LoanParams`` columns.
 
-E-18 / Commit 15 alters
-``budget.loan_params.current_principal`` and
-``budget.loan_params.interest_rate`` from NOT NULL to nullable.
-DH-#56 later completed the OPT-1 destructive drop for
-``interest_rate`` (the column is gone; the loan's rate now lives in
-its origination :class:`RateHistory` row), so the locks here cover
-only ``current_principal``, which remains a nullable,
-non-authoritative seed.
-Decision D-A (``docs/audits/financial_calculations/remediation_plan.md``
-Section 2): the loan resolver
-(``app/services/loan_resolver.py``) is the single source of truth
-for "this loan's current principal, monthly payment, schedule,
-payoff date, life-of-loan interest"; the demoted column is a
-non-authoritative seed value that no display surface reads after
-this commit.
+E-18 / Commit 15 demoted ``budget.loan_params.current_principal`` and
+``budget.loan_params.interest_rate`` from NOT NULL to nullable, and both are
+GONE.  DH-#56 completed the OPT-1 drop for ``interest_rate`` (the loan's rate
+lives in its origination :class:`RateHistory` row).  Plan step
+``recurrence:R20`` (ruling **R-R72** part 3, finding **REC-519**) dropped
+``current_principal`` by migration ``22b23085394d``: the balance the owner
+states at setup is a dated assertion, recorded as a ``tracking_start``
+:class:`LoanAnchorEvent`, where the column held it as a value nothing read.
 
 Three locks land here:
 
-* **C15-3 (display-read sweep)** -- a static grep over ``app/``
-  proves no display path still reads ``LoanParams.current_principal``
-  outside of the resolver / append-only event module / migrations /
-  documented out-of-scope engine internals.  Catches a regression
-  the moment any commit re-introduces a stored-column read.
+* **Both columns are gone** -- ``information_schema`` confirms neither exists,
+  so a migration or model edit that re-introduces a stored loan balance or
+  rate is caught the moment it lands.  (Until R20 this module locked the
+  demoted column's NULLABILITY and grepped ``app/`` for reads of it; a column
+  that does not exist needs neither fence.)
 
-* **C15-4 (column nullability)** -- ``information_schema`` confirms
-  ``current_principal`` still accepts NULL.  Catches a regression the
-  moment any future migration or model edit silently re-tightens the
-  contract without a coordinated change to the resolver.
+* **The R20 migration's backfill arm fires for exactly the loan it names**
+  (the old C15-5 round-trip pattern, run against the live test database): the
+  downgrade's literal SQL re-adds the column, five loan shapes are planted,
+  the migration's own backfill statement runs, and the upgrade's literal SQL
+  drops the column again.  Only a loan the old door configured MID-LIFE
+  (originated before its setup day, a stored balance, no assertion of its own
+  -- a legacy ``origination`` row is not one) gets a ``tracking_start`` --
+  dated its setup day, carrying the stored balance -- and neither a loan set
+  up on its origination day, nor one whose stored balance is NULL, nor one
+  the owner has trued up gets anything.  Without this the arm is graded only
+  by the clone rehearsal, where it matched 0 of 2 production loans.
 
-* **C15-5 (downgrade round-trip)** -- the Commit-15 migration's
-  downgrade restores NOT NULL on ``current_principal`` after upgrade,
-  proving the additive demotion is reversible.  Uses raw SQL against
-  the running test database so the test exercises the literal SQL the
-  operator would run.  (``interest_rate`` was dropped by DH-#56 and is
-  no longer part of this round-trip.)
+* **The migration declares its revision pair and a working downgrade** -- the
+  same surface check ``test_loan_anchor_backfill.py::TestDowngradeSmoke`` makes
+  on ``d3d25212504b``, made here on ``22b23085394d``.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest
 # fixture pattern; bodies bind fixtures by name.
 from __future__ import annotations
 
-import re
-import subprocess
-from pathlib import Path
+from datetime import date, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
 
+from app import ref_cache
+from app.enums import LoanAnchorSourceEnum
 from app.extensions import db as _db
+from app.models.loan_anchor_event import LoanAnchorEvent
+from tests._test_helpers import (
+    create_loan_account,
+    insert_trueup_event,
+    load_migration_module,
+    loan_params_for,
+)
 
 
-# pytest-xdist isolation: the C15-5 downgrade test ALTERs the live
-# ``budget.loan_params`` table in-place and then restores NOT NULL.
-# Two xdist workers running the test concurrently against the same
-# per-worker DB clone would race on the ALTER -- pin to a single
+# pytest-xdist isolation: the round-trip test ALTERs the live
+# ``budget.loan_params`` table in-place and then restores the dropped
+# state.  Two xdist workers running the test concurrently against the
+# same per-worker DB clone would race on the ALTER -- pin to a single
 # worker via ``--dist=loadgroup`` (configured in ``pytest.ini``) so
 # the test runs serially with itself across the suite.
 pytestmark = pytest.mark.xdist_group("c15_loan_params_demotion")
 
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_APP_DIR = _REPO_ROOT / "app"
+_M_R20 = load_migration_module(
+    "22b23085394d_the_stated_balance_is_an_assertion.py"
+)
 
 
-# -- C15-3: display-read sweep --------------------------------------------
-
-
-def test_no_display_read_of_current_principal():
-    """C15-3: no display path reads ``LoanParams.current_principal``.
-
-    Greps ``app/`` for ``.current_principal`` attribute reads on
-    LoanParams-shaped objects.  Excludes:
-
-      * ``app/services/loan_resolver.py`` -- the resolver itself
-        (allowed; it IS the source of truth, and it actually reads
-        ``original_principal``, not ``current_principal``).
-      * ``app/models/loan_anchor_event.py`` -- model module
-        (no current_principal reads in practice; excluded
-        defensively to match the verification gate in
-        ``docs/audits/financial_calculations/remediation_plan.md``
-        Section 9 Commit 15).
-      * ``app/models/loan_params.py`` -- the column definition
-        itself; the grep would otherwise count the ``db.Column``
-        line as a hit.
-
-    The three pre-F-10 engine internals
-    (``get_loan_projection`` in ``amortization_engine.py``,
-    ``calculate_balances_with_amortization`` in
-    ``balance_calculator.py``, ``compute_contractual_pi`` in
-    ``loan_payment_service.py``) were collapsed by the follow-up
-    Commit 15 (F-10): the first two were deleted as dead production
-    code; the third was rewritten to read ``original_principal``
-    instead of ``current_principal``.  No engine-internal *read of the
-    demoted column* remains in ``app/services/``.  The one ``services/``
-    entry that post-dates F-10 -- the ``amortization_engine`` package
-    (F-28) -- allow-lists the ``PayoffRequest`` parameter-object field,
-    not a ``LoanParams`` read: the engine has no DB access and cannot
-    touch the demoted column (see the allow-list comment below).
-
-    The grep matches WRITES (``params.current_principal = X``) as
-    well as reads -- but Commit 15 leaves the legacy write path in
-    ``update_params`` intact (Commit 16 retargets it at the true-up
-    event), so the sweep allow-lists known write sites too.  Once
-    Commit 16 lands and Commit 16's update-flow rewrite removes the
-    setattr, drop those allow-list entries.
-    """
-    grep_out = subprocess.run(
-        [
-            "grep", "-rn",
-            r"\.current_principal\b",
-            str(_APP_DIR),
-            "--include=*.py",
-            "--include=*.html",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # ``grep -r`` returns 1 if no match; either outcome is valid as
-    # long as no offending hit remains.
-    lines = [ln for ln in grep_out.stdout.splitlines() if ln.strip()]
-
-    # Allow-list: residual reads documented as out-of-scope follow-ups
-    # for Commit 17 (HIGH-08: unify per-period/interest/payoff figures
-    # via the resolver).  Each entry is ``relpath: signature`` so a
-    # rename of either side triggers a maintenance update here, not a
-    # silent slip-through.  Also covers comments, docstrings,
-    # ``_PARAM_FIELDS`` string literals, the model column definition,
-    # known DebtAccount-dataclass field references (different class),
-    # and refinance-template ``comparison.current_principal`` (dict
-    # key, not LoanParams attribute).
-    _ALLOWED = (
-        # DebtAccount dataclass (different class, not LoanParams):
-        "services/debt_strategy_service.py:",
-        # Template dict-key reads on ``comparison.current_principal``
-        # and ``debt.current_principal`` (DebtAccount), neither
-        # touches LoanParams:
-        "templates/loan/_refinance_results.html:",
-        "templates/debt_strategy/dashboard.html:",
-        # Setup-form template field id/name string literal:
-        "templates/loan/setup.html:",
-        # Comments / docstrings citing the column's name:
-        # (substring matches lines that include the literal string
-        # but are not attribute reads on LoanParams instances).
-        "models/loan_params.py:",  # column definition + docstring
-        "models/loan_anchor_event.py:",  # docstring reference
-        # Commit 16 retargeted the legacy ``update_params`` write path
-        # at the true-up event; the loan routes no longer mutate the
-        # column.  ``routes/loan.py`` became the ``routes/loan/``
-        # package in the Phase 3 pylint-cleanup split; the directory
-        # prefix matches every sub-module.  The grep still matches
-        # docstring / comment references (the ``_PARAM_FIELDS`` allowlist
-        # comment and the ``update_params`` / ``true_up_balance`` docstrings
-        # document the demoted contract in ``_helpers.py`` / ``params.py``);
-        # removing the entry would force every future docstring touch to
-        # bypass the lock.
-        "routes/loan/",
-        # Commit 16 extends ``anchor_service`` for loan trueups; the
-        # module's docstring and the ``apply_loan_anchor_true_up``
-        # docstring reference the demoted column to assert the
-        # invariant that the trueup does NOT mutate it.  Documentation
-        # of the contract, not a read.
-        "services/anchor_service.py:",
-        # Tests don't live under app/ but the grep pattern is
-        # app-only -- listed for completeness; never matched here.
-        "routes/debt_strategy.py:",  # comments only
-        # ``savings_dashboard_service`` became a package in the Phase 3
-        # pylint-cleanup split; the directory prefix matches every
-        # sub-module.  The two ``.current_principal`` hits are prose in
-        # ``_projections.py`` / ``_metrics.py`` (docstring + comment
-        # referencing ``LoanParams.current_principal``); the package code
-        # reads ``state.current_balance`` / ``ad["current_balance"]``,
-        # never the demoted column.
-        "services/savings_dashboard_service/",  # comments only
-        # ``loan_resolver`` became a package in the Phase-3 pylint-cleanup
-        # split; the directory prefix matches every sub-module.  The
-        # ``.current_principal`` hits are prose only (the package docstring
-        # in ``__init__.py`` and the ``LoanState`` docstring in
-        # ``_state.py`` naming the demoted column); the resolver reads
-        # ``state.current_balance``, never the column.
-        "services/loan_resolver/",  # comments only
-        # PayoffRequest parameter-object field (F-28): the pure-function
-        # amortization engine has no DB access and imports no model, so
-        # ``request.current_principal`` reads the resolver-derived
-        # balance the caller passes in (``state.current_balance`` at
-        # ``routes/loan/calculators.py`` payoff_calculate), NOT the demoted
-        # ``LoanParams.current_principal`` column.  The engine became a
-        # package (``_projection.py`` + ``_payoff.py``) in the C0302
-        # split; the directory prefix matches every sub-module, which
-        # remain structurally unable to touch LoanParams, so this entry
-        # does not weaken the lock's real protection.
-        "services/amortization_engine/",
-        # Static / HTML comments + dashboard.html itself:
-        "templates/loan/dashboard.html:",
-    )
-
-    unexpected = [
-        ln for ln in lines
-        if not any(allowed in ln for allowed in _ALLOWED)
-    ]
-    assert not unexpected, (
-        "Found `.current_principal` references outside the allow-list. "
-        "If these are display reads they MUST be routed through "
-        "loan_resolver.resolve_loan(...) per E-18 / Commit 15.  If "
-        "they are new engine internals, document them in "
-        "docs/audits/financial_calculations/remediation_follow_up.md "
-        "and extend the allow-list.\n\n"
-        + "\n".join(unexpected)
-    )
-
-
-# -- C15-4: column nullability --------------------------------------------
-
-
-def test_current_principal_column_nullable():
-    """C15-4: ``current_principal`` is nullable after migration ``c4f0a5b71e83``.
-
-    Queries ``information_schema.columns`` for the live ``is_nullable``
-    flag.  Catches the regression case where a future migration
-    silently re-applies NOT NULL without a coordinated change to the
-    resolver-as-source-of-truth contract.
-    """
-    row = _db.session.execute(text(
+def _column_row(column_name):
+    """Return the ``information_schema`` row for a ``loan_params`` column, or None."""
+    return _db.session.execute(text(
         "SELECT is_nullable FROM information_schema.columns "
         "WHERE table_schema = 'budget' "
         "  AND table_name = 'loan_params' "
-        "  AND column_name = 'current_principal'"
-    )).fetchone()
-    assert row is not None, (
-        "budget.loan_params.current_principal column missing -- "
-        "the schema is out of sync with the model."
+        "  AND column_name = :c"
+    ), {"c": column_name}).fetchone()
+
+
+def _check_names():
+    """Return the CHECK constraint names on ``budget.loan_params``."""
+    rows = _db.session.execute(text(
+        "SELECT conname FROM pg_constraint "
+        "WHERE conrelid = 'budget.loan_params'::regclass "
+        "  AND contype = 'c'"
+    )).fetchall()
+    return {r[0] for r in rows}
+
+
+# -- the columns are gone ----------------------------------------------------
+
+
+def test_current_principal_column_dropped():
+    """R20: ``current_principal`` and its CHECK no longer exist on ``loan_params``.
+
+    Migration ``22b23085394d`` dropped the column E-18 demoted; the balance
+    the owner states at setup is a ``tracking_start`` :class:`LoanAnchorEvent`.
+    This lock catches any migration or model edit that re-introduces a stored
+    loan balance.
+    """
+    assert _column_row("current_principal") is None, (
+        "budget.loan_params.current_principal still exists -- plan step "
+        "recurrence:R20 dropped it (migration 22b23085394d); the balance "
+        "stated at setup is a tracking_start LoanAnchorEvent, not a column."
     )
-    assert row[0] == "YES", (
-        f"current_principal is_nullable={row[0]!r}, expected 'YES' "
-        "per E-18 / Commit 15 demotion (migration c4f0a5b71e83)."
+    assert "ck_loan_params_curr_principal" not in _check_names(), (
+        "ck_loan_params_curr_principal still exists -- it went with the "
+        "column at migration 22b23085394d."
     )
 
 
@@ -248,76 +122,200 @@ def test_interest_rate_column_dropped():
     this lock catches any migration that re-introduces the denormalized
     scalar.
     """
-    row = _db.session.execute(text(
-        "SELECT is_nullable FROM information_schema.columns "
-        "WHERE table_schema = 'budget' "
-        "  AND table_name = 'loan_params' "
-        "  AND column_name = 'interest_rate'"
-    )).fetchone()
-    assert row is None, (
+    assert _column_row("interest_rate") is None, (
         "budget.loan_params.interest_rate still exists -- DH-#56 dropped "
         "it (migration b7d2f4a619c5); the loan's rate is now the "
         "origination RateHistory row, not a stored column."
     )
 
 
-# -- C15-5: downgrade round-trip ------------------------------------------
+# -- the R20 migration -------------------------------------------------------
 
 
-def test_downgrade_restores_not_null_then_upgrade_round_trips():
-    """C15-5: ``ALTER ... SET NOT NULL`` restores the pre-Commit-15 contract.
+def test_r20_migration_revision_pair_and_downgrade_artefacts():
+    """The migration revises the card-terms head and its downgrade names both artefacts."""
+    assert _M_R20.revision == "22b23085394d"
+    assert _M_R20.down_revision == "97f92340fffc"
+    with open(_M_R20.__file__, encoding="utf-8") as handle:
+        downgrade_source = handle.read().split("def downgrade():", 1)[1]
+    assert '"current_principal"' in downgrade_source
+    assert "ck_loan_params_curr_principal" in downgrade_source
 
-    Drives the literal SQL the migration's ``downgrade`` would emit
-    against the live test database, asserts both columns become
-    ``is_nullable = 'NO'``, then re-applies the upgrade SQL and
-    asserts both columns are nullable again.  Round-trip proves the
-    additive demotion is reversible.
 
-    The migration itself raises a RuntimeError when any row carries
-    NULL in either column, naming the offending account so the
-    operator can re-seed; that path is exercised by the migration's
-    own test wrappers (Alembic's online-migration test apparatus).
-    This test focuses on the no-NULL-rows happy path -- the only one
-    operational rollback should encounter, since the
-    Commit-15-shipping code never writes NULL.
+def _tracking_starts(account_id):
+    """Return ``[(anchor_date, anchor_balance)]`` of an account's tracking_start rows."""
+    source_id = ref_cache.loan_anchor_source_id(
+        LoanAnchorSourceEnum.TRACKING_START,
+    )
+    rows = (
+        _db.session.query(LoanAnchorEvent)
+        .filter_by(account_id=account_id, source_id=source_id)
+        .order_by(LoanAnchorEvent.id)
+        .all()
+    )
+    return [(r.anchor_date, r.anchor_balance) for r in rows]
+
+
+def test_r20_backfill_records_the_unasserted_stated_balance_once(
+    app, db, seed_user,
+):
+    """The backfill writes ONE tracking_start per unasserted mid-life loan and nothing else.
+
+    Round trip on the live test database: the downgrade's literal SQL re-adds
+    ``current_principal`` NULL with its CHECK; five loans are planted through
+    the shared factory and their stored balances set by raw UPDATE --
+
+    * ``midlife``: originated 2024-01-01, set up today, stored $17,020.47 --
+      the REC-519 shape, and the one loan the arm is for;
+    * ``legacy``: the same, plus a stored ``origination``-source row (what
+      ``d3d25212504b``'s backfill wrote for every loan of its day).  Every
+      reader synthesizes the origination and ignores that row, so it is not
+      an assertion and the loan IS backfilled -- the predicate excludes the
+      two assertion sources by name, never "any row";
+    * ``trued``: the same, plus a ``user_trueup`` -- production's shape for
+      both live loans -- so NOT backfilled;
+    * ``sameday``: originated today, stored $32,402.45 -- the origination IS
+      its assertion, so nothing is written;
+    * ``blank``: originated 2024-01-01, stored NULL -- nothing to carry;
+
+    then the migration's own backfill statement runs.  Exactly two
+    ``tracking_start`` rows result, on ``midlife`` and ``legacy``, each dated
+    its setup day (``created_at`` read as the owner's civil day) and carrying
+    its stored balance; running the statement again writes nothing more,
+    since both now carry an assertion.  The upgrade's literal drop restores
+    the post-migration schema for the tests that follow.  A control with a
+    carve-out needs a case per direction: ``trued`` is the exclusion firing,
+    ``legacy`` is the exclusion NOT firing where a looser reading would.
+
+    The setup day is asserted against the SAME derivation the migration
+    spells -- ``(created_at AT TIME ZONE 'America/New_York')::date`` -- read
+    off the planted row rather than off the wall clock, so the test cannot
+    flake across the UTC-versus-Eastern midnight window the derivation exists
+    for; ``sameday`` originates on that derived day for the same reason.
     """
-    # ``interest_rate`` is excluded: DH-#56 dropped it, so only
-    # ``current_principal`` carries the Commit-15 nullable demotion now.
-    # Down: ALTER COLUMN ... SET NOT NULL.  Matches the literal
-    # ``op.alter_column(..., nullable=False)`` that Alembic emits.
-    _db.session.execute(text(
-        "ALTER TABLE budget.loan_params "
-        "ALTER COLUMN current_principal SET NOT NULL"
-    ))
-    _db.session.commit()
+    with app.app_context():
+        probe = create_loan_account(
+            seed_user, db.session, name="R20 probe",
+            principal=Decimal("1.00"), term=12,
+            origination_date=date(2024, 1, 1), payment_day=1,
+        )
+        setup_day = db.session.execute(text(
+            "SELECT (created_at AT TIME ZONE 'America/New_York')::date "
+            "FROM budget.loan_params WHERE account_id = :a"
+        ), {"a": probe.id}).scalar()
+        assert date(2024, 1, 1) < setup_day
+        assert abs(setup_day - date.today()) <= timedelta(days=1)
 
-    row = _db.session.execute(text(
-        "SELECT is_nullable FROM information_schema.columns "
-        "WHERE table_schema = 'budget' "
-        "  AND table_name = 'loan_params' "
-        "  AND column_name = 'current_principal'"
-    )).fetchone()
-    assert row[0] == "NO", (
-        f"After downgrade, current_principal is_nullable={row[0]!r}, "
-        "expected 'NO' (the pre-Commit-15 contract)."
-    )
+        midlife = create_loan_account(
+            seed_user, db.session, name="R20 midlife",
+            principal=Decimal("32402.45"), term=72,
+            origination_date=date(2024, 1, 1), payment_day=14,
+        )
+        sameday = create_loan_account(
+            seed_user, db.session, name="R20 sameday",
+            principal=Decimal("32402.45"), term=72,
+            origination_date=setup_day, payment_day=14,
+        )
+        blank = create_loan_account(
+            seed_user, db.session, name="R20 blank",
+            principal=Decimal("32402.45"), term=72,
+            origination_date=date(2024, 1, 1), payment_day=14,
+        )
+        legacy = create_loan_account(
+            seed_user, db.session, name="R20 legacy",
+            principal=Decimal("32402.45"), term=72,
+            origination_date=date(2024, 1, 1), payment_day=14,
+        )
+        db.session.execute(text(
+            "INSERT INTO budget.loan_anchor_events "
+            "    (account_id, anchor_date, anchor_balance, source_id) "
+            "VALUES (:a, :d, :b, :s)"
+        ), {
+            "a": legacy.id, "d": date(2024, 1, 1), "b": Decimal("32402.45"),
+            "s": ref_cache.loan_anchor_source_id(LoanAnchorSourceEnum.ORIGINATION),
+        })
+        trued = create_loan_account(
+            seed_user, db.session, name="R20 trued",
+            principal=Decimal("32402.45"), term=72,
+            origination_date=date(2024, 1, 1), payment_day=14,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, trued.id), Decimal("17020.47"),
+            anchor_date=date(2026, 5, 22),
+        )
+        db.session.commit()
+        for account in (probe, midlife, sameday, blank, legacy, trued):
+            assert _tracking_starts(account.id) == []
 
-    # Up: ALTER COLUMN ... DROP NOT NULL.  Re-applies the
-    # Commit-15 demotion so subsequent tests see the post-upgrade
-    # state.
-    _db.session.execute(text(
-        "ALTER TABLE budget.loan_params "
-        "ALTER COLUMN current_principal DROP NOT NULL"
-    ))
-    _db.session.commit()
+        # Down: the migration's literal downgrade -- the column back, NULL.
+        db.session.execute(text(
+            "ALTER TABLE budget.loan_params "
+            "ADD COLUMN current_principal NUMERIC(12, 2) NULL"
+        ))
+        db.session.execute(text(
+            "ALTER TABLE budget.loan_params "
+            "ADD CONSTRAINT ck_loan_params_curr_principal "
+            "CHECK (current_principal >= 0)"
+        ))
+        db.session.execute(text(
+            "UPDATE budget.loan_params SET current_principal = :b "
+            "WHERE account_id = :a"
+        ), {"a": midlife.id, "b": Decimal("17020.47")})
+        db.session.execute(text(
+            "UPDATE budget.loan_params SET current_principal = :b "
+            "WHERE account_id = :a"
+        ), {"a": sameday.id, "b": Decimal("32402.45")})
+        for account in (legacy, trued):
+            db.session.execute(text(
+                "UPDATE budget.loan_params SET current_principal = :b "
+                "WHERE account_id = :a"
+            ), {"a": account.id, "b": Decimal("17020.47")})
+        db.session.commit()
 
-    row = _db.session.execute(text(
-        "SELECT is_nullable FROM information_schema.columns "
-        "WHERE table_schema = 'budget' "
-        "  AND table_name = 'loan_params' "
-        "  AND column_name = 'current_principal'"
-    )).fetchone()
-    assert row[0] == "YES", (
-        f"After re-upgrade, current_principal is_nullable={row[0]!r}, "
-        "expected 'YES' (the Commit-15 contract)."
-    )
+        try:
+            unasserted = db.session.execute(
+                text(_M_R20._UNASSERTED_MIDLIFE_LOANS_SQL),  # pylint: disable=protected-access
+            ).fetchall()
+            assert sorted((r[0], r[1], r[2]) for r in unasserted) == sorted([
+                (midlife.id, setup_day, Decimal("17020.47")),
+                (legacy.id, setup_day, Decimal("17020.47")),
+            ])
+
+            db.session.execute(text(_M_R20._BACKFILL_TRACKING_START_SQL))  # pylint: disable=protected-access
+            db.session.commit()
+
+            assert _tracking_starts(midlife.id) == [
+                (setup_day, Decimal("17020.47")),
+            ]
+            assert _tracking_starts(legacy.id) == [
+                (setup_day, Decimal("17020.47")),
+            ]
+            assert _tracking_starts(trued.id) == []
+            assert _tracking_starts(sameday.id) == []
+            assert _tracking_starts(blank.id) == []
+            assert _tracking_starts(probe.id) == []
+
+            # A second run finds both loans asserted and writes nothing more.
+            db.session.execute(text(_M_R20._BACKFILL_TRACKING_START_SQL))  # pylint: disable=protected-access
+            db.session.commit()
+            assert _tracking_starts(midlife.id) == [
+                (setup_day, Decimal("17020.47")),
+            ]
+            assert _tracking_starts(legacy.id) == [
+                (setup_day, Decimal("17020.47")),
+            ]
+            assert _tracking_starts(trued.id) == []
+        finally:
+            # Up: the migration's literal drop, so the schema the rest of the
+            # suite reads is the post-R20 one whatever this test asserted.
+            db.session.rollback()
+            db.session.execute(text(
+                "ALTER TABLE budget.loan_params "
+                "DROP CONSTRAINT ck_loan_params_curr_principal"
+            ))
+            db.session.execute(text(
+                "ALTER TABLE budget.loan_params DROP COLUMN current_principal"
+            ))
+            db.session.commit()
+
+        assert _column_row("current_principal") is None

@@ -143,10 +143,8 @@ def _load_debt_accounts(user_id):
             has_arm = True
 
         # Skip debts with zero principal or zero payment (fully paid
-        # off or degenerate loan parameters).  Resolver-derived
-        # values, so a settled-to-zero loan disappears here even if
-        # the legacy ``LoanParams.current_principal`` column still
-        # carries a non-zero seed.
+        # off or degenerate loan parameters).  Seam-derived values: a
+        # settled-to-zero loan disappears here.
         if (
             current_balance <= Decimal("0")
             or terms.monthly_payment <= Decimal("0")

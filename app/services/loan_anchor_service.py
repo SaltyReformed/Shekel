@@ -28,6 +28,13 @@ event to derive the displayed current balance, monthly payment, schedule and
 payoff date, so a new event immediately changes every loan surface
 consistently without writing a column.
 
+The third door is the loan SETUP door's, :func:`stage_loan_tracking_start`: it
+stages a ``tracking_start`` row WITHOUT the re-sync and commit, so the balance
+the owner states at setup is recorded as the assertion it is inside the
+transaction that writes the params (plan step ``recurrence:R20``, ruling
+**R-R72** part 3).  All three construct the row in one place,
+:func:`_stage_loan_anchor`.
+
 Services boundary: no Flask imports.  The route owns the response rendering;
 this module returns an outcome enum the route translates into a flash and a
 redirect.
@@ -125,19 +132,20 @@ def _append_loan_anchor_and_sync(
     ONLY in the anchor source, so they must not drift on the append + re-sync +
     idempotency handling.
 
-    Appends ONE row to the append-only :class:`LoanAnchorEvent` table, then
-    re-syncs the loan's genesis postings in EVERY scenario (the anchor is
-    per-account, not per-scenario) via
+    Stages ONE row on the append-only :class:`LoanAnchorEvent` table (through
+    :func:`_stage_loan_anchor`, the one constructor site), then re-syncs the
+    loan's genesis postings in EVERY scenario (the anchor is per-account, not
+    per-scenario) via
     :func:`app.services.loan_posting_service.sync_loan_postings_all_scenarios` --
     which re-runs the running-balance walk so payments re-split from the new
     anchor.  The just-added event becomes visible to that walk because the sync's
     first query autoflushes it (load-bearing -- must NOT run under
     ``session.no_autoflush``).
 
-    **Whether there is anything to append is decided here, by ruling R-EQ**, and
-    the decision is the checking door's rule on this table: take the owner's
-    write lock, read the event that currently GOVERNS, append only when the
-    submission differs.  It replaced
+    **Whether there is anything to append is decided in the staging core, by
+    ruling R-EQ**, and the decision is the checking door's rule on this table:
+    take the owner's write lock, read the event that currently GOVERNS, append
+    only when the submission differs.  It replaced
     ``loan_posting_service.sync_all_scenarios_or_duplicate`` on this path (that
     helper survives for the ARM rate change, whose table is EDITABLE and whose
     unique key is therefore a real business rule rather than an idempotency
@@ -179,16 +187,9 @@ def _append_loan_anchor_and_sync(
         when the submission matched the governing event of its own source, in
         which case nothing was written and the session was rolled back.
     """
-    # Ruling R-EQ: the lock precedes the read the decision is made from, and on
-    # this path it is also the transaction's first lock (finding N-193's
-    # ordering invariant).  The all-scenario sync below takes the same
-    # re-entrant lock again, harmlessly.
-    lock_user_writes(account.user_id)
-    source_id = ref_cache.loan_anchor_source_id(source)
-    governing = _governing_loan_anchor(account.id, source_id, anchor_date)
-    if governing is not None and (
-        (governing.anchor_date, Decimal(str(governing.anchor_balance)))
-        == (anchor_date, anchor_balance)
+    if not _stage_loan_anchor(
+        account=account, anchor_balance=anchor_balance,
+        anchor_date=anchor_date, source=source,
     ):
         # See the cash door: the id is read before the rollback expires it.
         account_id = account.id
@@ -200,15 +201,79 @@ def _append_loan_anchor_and_sync(
         )
         return AnchorTrueUpOutcome.UNCHANGED
 
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    db.session.commit()
+    return AnchorTrueUpOutcome.COMMITTED
+
+
+def _stage_loan_anchor(
+    *,
+    account: Account,
+    anchor_balance: Decimal,
+    anchor_date: date,
+    source: LoanAnchorSourceEnum,
+) -> bool:
+    """Stage one :class:`LoanAnchorEvent` of ``source`` unless it already stands.
+
+    The ONE place a loan anchor row is constructed, and the ONE place ruling
+    R-EQ's duplicate rule is applied: take the owner's write lock, read the
+    event that currently GOVERNS ``anchor_date`` for this source, and add the
+    row only when the submission differs.  It neither re-syncs the posted
+    ledger nor commits, because the transaction is its CALLER's:
+
+    * :func:`_append_loan_anchor_and_sync` (the true-up and tracking-start
+      doors) re-syncs every scenario and commits, or rolls back when nothing
+      was staged;
+    * :func:`stage_loan_tracking_start` (the loan SETUP door) leaves the
+      staged row in the door's own transaction, beside the params it is an
+      assertion about, and the door runs the one re-sync and the one commit
+      it already runs.
+
+    Splitting the append from the sync-and-commit is what lets the setup door
+    record the assertion in the SAME transaction as the params (plan step
+    ``recurrence:R20``): the committing wrapper cannot be called from inside
+    a door that still has a refusal ahead of its commit, since a refusal rolls
+    the whole write back.  A second constructor site in that door instead
+    would have been a write inheriting none of this rule (ruling R-EQ).
+
+    Args:
+        account: An attached :class:`Account` row for the loan.  Caller owns
+            the ownership check.
+        anchor_balance: The validated :class:`Decimal` balance to assert
+            (``>= 0`` at the schema layer, backstopped by
+            ``ck_loan_anchor_events_balance_nonneg``).
+        anchor_date: The date the balance is asserted for.  Caller enforces
+            the source-appropriate bounds.
+        source: The :class:`~app.enums.LoanAnchorSourceEnum` provenance.
+
+    Returns:
+        ``True`` when a row was added to the session; ``False`` when the
+        governing event of this source already asserts exactly
+        ``(anchor_date, anchor_balance)``, in which case nothing was staged.
+    """
+    # Ruling R-EQ: the lock precedes the read the decision is made from.  For
+    # the two committing doors it is also the transaction's first lock
+    # (finding N-193's ordering invariant); the setup door reaches here with
+    # its params row already INSERTed, which is the order that door has
+    # always had -- until plan step R20 its first taking of this lock was
+    # inside the all-scenario sync, after the same insert.  The sync every
+    # caller runs takes the same re-entrant lock again, harmlessly.
+    lock_user_writes(account.user_id)
+    source_id = ref_cache.loan_anchor_source_id(source)
+    governing = _governing_loan_anchor(account.id, source_id, anchor_date)
+    if governing is not None and (
+        (governing.anchor_date, Decimal(str(governing.anchor_balance)))
+        == (anchor_date, anchor_balance)
+    ):
+        return False
+
     db.session.add(LoanAnchorEvent(
         account_id=account.id,
         anchor_date=anchor_date,
         anchor_balance=anchor_balance,
         source_id=source_id,
     ))
-    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
-    db.session.commit()
-    return AnchorTrueUpOutcome.COMMITTED
+    return True
 
 
 def apply_loan_anchor_true_up(
@@ -232,9 +297,10 @@ def apply_loan_anchor_true_up(
     ``before_update`` / ``before_delete`` event listeners refuse any
     ORM-mediated UPDATE or DELETE), so a correction of an earlier
     trueup is expressed as another append, never an edit.  The
-    function does NOT mutate :class:`LoanParams.current_principal` --
-    that column is non-authoritative seed (E-18) and is never written
-    by the trueup flow.
+    function does NOT mutate :class:`LoanParams`: the balance has no
+    column there (the demoted ``current_principal`` seed was dropped at
+    plan step ``recurrence:R20``), and the immutable origination fields
+    are not its business.
 
     **There is no stale-form conflict on either path, and since plan step
     X-f1c3c that is stated the same way for both.**  A
@@ -303,19 +369,23 @@ def record_loan_tracking_start(
     anchor_balance: Decimal,
     anchor_date: date,
 ) -> AnchorTrueUpOutcome:
-    """Append a ``tracking_start`` opening :class:`LoanAnchorEvent` and commit.
+    """Append a ``tracking_start`` :class:`LoanAnchorEvent` and commit.
 
-    The mid-life-import opening flow: the operator started tracking an
-    already-amortizing loan and asserts its real balance as of a date at/before
-    the first recorded payment.  It is an ordinary ``is_opening=False`` balance
-    ASSERTION that RESETS the genesis walk's running balance at its own date
+    The mid-life-import flow: the operator started tracking an
+    already-amortizing loan and asserts its real balance as of a date.  It is
+    an ordinary ``is_opening=False`` balance ASSERTION that RESETS the genesis
+    walk's running balance at its own date
     (:func:`app.services.loan_loaders.load_loan_anchor_facts`); the origination
     fields on :class:`LoanParams` are untouched.  *It is NOT the loan's OPENING,
     and this said it was until plan step X-an-b*, citing
     ``loan_loaders._opening_anchor_fact`` -- deleted by step C1 along with the
     behaviour.  Origination is the opening ALWAYS: opening at a mid-life
     tracking-start read the loan out of existence for its whole pre-tracking
-    window (finding B-11).
+    window (finding B-11).  *Nor need it precede the loan's recorded payments,
+    and the route refused one that did not until plan step ``recurrence:R20``*
+    (ruling **R-R72** part 3): an assertion after payments is exactly what a
+    true-up already is, the two sources differ in label alone, and the walk
+    resets on both identically.
 
     Shares the append + all-scenario re-sync + duplicate rule of
     :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;
@@ -330,18 +400,67 @@ def record_loan_tracking_start(
         anchor_balance: The validated :class:`Decimal` opening balance
             (``>= 0`` at the schema layer).
         anchor_date: The date the balance is asserted for.  Caller is
-            responsible for enforcing ``origination_date <= anchor_date``,
-            ``anchor_date <= today``, and that it is at/before the earliest
-            recorded payment so no payment is left pre-opening.
+            responsible for enforcing ``origination_date <= anchor_date`` and
+            ``anchor_date <= today``.
 
     Returns:
         ``COMMITTED`` on a new committed event; ``UNCHANGED`` when the
         submission asserts what the governing ``tracking_start`` already asserts
         (idempotent success).  The comparison is scoped to this source, so a
-        re-submitted opening is recognised even when true-ups have been recorded
-        after it -- see :func:`_append_loan_anchor_and_sync`.
+        re-submitted tracking-start is recognised even when true-ups have been
+        recorded after it -- see :func:`_append_loan_anchor_and_sync`.
     """
     return _append_loan_anchor_and_sync(
+        account=account,
+        anchor_balance=anchor_balance,
+        anchor_date=anchor_date,
+        source=LoanAnchorSourceEnum.TRACKING_START,
+    )
+
+
+def stage_loan_tracking_start(
+    *,
+    account: Account,
+    anchor_balance: Decimal,
+    anchor_date: date,
+) -> bool:
+    """Stage a ``tracking_start`` :class:`LoanAnchorEvent` in the caller's transaction.
+
+    The loan SETUP door's entry (plan step ``recurrence:R20``, ruling
+    **R-R72** part 3, finding **REC-519**): the balance the owner states at
+    setup IS a dated assertion, and the door records it as one beside the
+    :class:`LoanParams` row it is an assertion about -- same transaction, one
+    ledger re-sync, one commit, and a refusal later in the door rolls both
+    back together.  Until R20 the form required that balance and stored it in
+    ``LoanParams.current_principal``, which nothing read: a loan configured
+    mid-life then had only its synthesized origination assertion, and under
+    ruling R-R71 every unrecorded month since origination read as unpaid.
+
+    Stages and returns; it does NOT re-sync the posted ledger and does NOT
+    commit.  The door runs ``sync_loan_postings_all_scenarios`` after this
+    exactly as it did before, so the genesis walk folds the assertion the
+    first time it runs, and commits once its own remaining refusals have
+    passed.  Shares :func:`_stage_loan_anchor` with the two committing doors,
+    ruling R-EQ's duplicate rule included; at setup no ``tracking_start`` can
+    already stand (anchor rows are written only for a configured loan, and
+    the account's history is cascade-deleted with it), so the rule is
+    structurally idle here and the return is documented rather than acted on.
+
+    Args:
+        account: An attached :class:`Account` row for the loan being
+            configured.  Caller owns the ownership check.
+        anchor_balance: The validated :class:`Decimal` balance stated
+            (``>= 0`` at the schema layer).
+        anchor_date: The date the balance is stated for.  Caller enforces
+            ``origination_date < anchor_date <= today``: a loan originating on
+            or after the stated date asserts nothing, its origination IS the
+            assertion, and the caller does not reach this function.
+
+    Returns:
+        ``True`` when the row was staged; ``False`` when the governing
+        ``tracking_start`` already asserts this ``(date, balance)``.
+    """
+    return _stage_loan_anchor(
         account=account,
         anchor_balance=anchor_balance,
         anchor_date=anchor_date,

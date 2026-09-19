@@ -324,11 +324,14 @@ class LoanAnchorSourceEnum(enum.Enum):
 
     ORIGINATION = "origination"
     USER_TRUEUP = "user_trueup"
-    # A mid-life loan's first tracked balance: the operator started
-    # tracking an already-amortizing loan and recorded its real balance
-    # as of a date at/before the first recorded payment.  It is an
-    # ordinary balance ASSERTION (is_opening=False) that RESETS the
-    # running balance at its own date, exactly like a user true-up.
+    # A mid-life loan's tracked balance: the operator started tracking an
+    # already-amortizing loan and recorded its real balance as of a date
+    # -- at setup, the balance the setup door asks for (plan step
+    # recurrence:R20), or after the fact through the dashboard's
+    # tracking-start form.  It is an ordinary balance ASSERTION
+    # (is_opening=False) that RESETS the running balance at its own
+    # date, exactly like a user true-up, whatever payments are recorded
+    # around it.
     # It does NOT open the ledger: since plan step C1 the loan's ONE
     # opening is ALWAYS the synthesized ORIGINATION, because opening at
     # a mid-life tracking start read the loan out of existence for its

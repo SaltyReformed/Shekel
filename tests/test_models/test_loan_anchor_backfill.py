@@ -87,7 +87,7 @@ def _origination_id():
 def _create_loan_account(seed_user, db_session, *,
                          type_name="Mortgage",
                          original_principal=Decimal("250000.00"),
-                         current_principal=Decimal("200000.00"),
+                         anchor_balance=Decimal("200000.00"),
                          rate=Decimal("0.06500"),
                          term_months=360,
                          origination_date=date(2024, 1, 1),
@@ -98,11 +98,14 @@ def _create_loan_account(seed_user, db_session, *,
 
     Deliberately NOT routed through ``_test_helpers.create_loan_account`` (see the
     same note on ``test_loan_anchor_event.py``'s builder).  This module tests the
-    d3d25212504b MIGRATION, which reads ``LoanParams.current_principal`` to seed the
-    backfilled anchor events, so it must construct the PRE-migration table state by
-    hand -- including a ``current_principal`` distinct from ``original_principal``,
-    which the shared factory does not expose because no reader reads that column.
-    It touches no balance seam.  Keep it hand-rolled; it is not an oversight.
+    d3d25212504b MIGRATION's origination backfill, which reads the immutable
+    :class:`LoanParams` fields, so it constructs the PRE-migration table state by
+    hand and touches no balance seam.  (It once also carried a
+    ``current_principal`` distinct from ``original_principal`` for that
+    migration's true-up backfill; plan step R20 dropped the column and the
+    ``anchor_balance`` here is the account's cash anchor, a decoy the
+    origination backfill must not read.)  Keep it hand-rolled; it is not an
+    oversight.
 
     Mirrors the helper in ``test_loan_anchor_event.py`` but with a
     runtime-selectable type so individual tests can choose a fixed-
@@ -116,14 +119,13 @@ def _create_loan_account(seed_user, db_session, *,
             user_id=seed_user["user"].id,
             account_type_id=loan_type.id,
             name=name,
-            anchor_balance=current_principal,
+            anchor_balance=anchor_balance,
         ),
     )
     db_session.flush()
     params = LoanParams(
         account_id=account.id,
         original_principal=original_principal,
-        current_principal=current_principal,
         term_months=term_months,
         origination_date=origination_date,
         payment_day=payment_day,
@@ -238,14 +240,14 @@ class TestOriginationBackfill:
             account1, params1 = _create_loan_account(
                 seed_user, _db.session, name="Loan A",
                 original_principal=Decimal("180000.00"),
-                current_principal=Decimal("180000.00"),
+                anchor_balance=Decimal("180000.00"),
                 origination_date=date(2024, 6, 1),
             )
             account2, params2 = _create_loan_account(
                 seed_user, _db.session, type_name="Auto Loan",
                 name="Loan B",
                 original_principal=Decimal("30000.00"),
-                current_principal=Decimal("30000.00"),
+                anchor_balance=Decimal("30000.00"),
                 rate=Decimal("0.05500"),
                 term_months=60,
                 origination_date=date(2025, 1, 1),

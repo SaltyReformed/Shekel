@@ -212,8 +212,8 @@ def payment_installments(
             status it cannot place.  Named here because this function widened
             that refusal's reach: the partition is now also behind
             ``walk_loan_ledger``, ``confirmed_shadows_through``, the posting
-            reader and the tracking-start guard, so a broken status seed is loud
-            on every loan surface rather than on one.
+            reader and the escrow forward-only guard, so a broken status seed
+            is loud on every loan surface rather than on one.
     """
     shadows = income_shadows(
         account_id, scenario_id, options=options, leg_options=leg_options,

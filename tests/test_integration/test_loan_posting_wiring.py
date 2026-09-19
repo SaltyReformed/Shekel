@@ -665,7 +665,12 @@ class TestRouteChokepointWiring:
                 f"/accounts/{loan.id}/loan/setup",
                 data={
                     "original_principal": "100000.00",
-                    "current_principal": "100000.00",
+                    # Stated for the origination day: the setup door then
+                    # records no assertion (plan step R20), and the loan's
+                    # only anchor stays the synthesized origination the
+                    # back-posted split is measured against.
+                    "anchor_balance": "100000.00",
+                    "anchor_date": "2026-01-01",
                     "interest_rate": "6.000",
                     # <= the Auto Loan type's 120-month cap; the split's interest
                     # is balance*rate/12, independent of the term.

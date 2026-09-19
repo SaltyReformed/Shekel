@@ -20,6 +20,26 @@ from app.schemas.validation._helpers import (
 )
 
 
+def _reject_future_anchor_date(data):
+    """Raise when ``data["anchor_date"]`` is strictly after today.
+
+    The one rule every dated balance assertion shares (the setup door's
+    "balance as of" and the dashboard's true-up / tracking-start forms):
+    an assertion is a historical fact, and "the lender will say X next
+    month" is not one.  ``date.today()`` is resolved per call -- the
+    module loads at app construction time, and a floor evaluated at
+    import would freeze "today" at gunicorn boot, defeating the check
+    for every request after the boot day.
+    """
+    anchor_date = data.get("anchor_date")
+    if anchor_date is not None and anchor_date > date.today():
+        raise ValidationError(
+            {"anchor_date": [
+                "Anchor date cannot be in the future."
+            ]}
+        )
+
+
 class LoanParamsCreateSchema(BaseSchema):
     """Validates POST data for creating loan parameters.
 
@@ -35,6 +55,22 @@ class LoanParamsCreateSchema(BaseSchema):
     :class:`RateHistory` row with it, so the rate is validated in the
     same domain ``rate_history.interest_rate``'s
     ``CHECK(interest_rate >= 0 AND interest_rate <= 1)`` stores.
+
+    **The balance the owner states at setup is a dated ASSERTION** (plan
+    step ``recurrence:R20``, ruling **R-R72** part 3): ``anchor_balance``
+    and ``anchor_date`` are the same pair :class:`LoanAnchorTrueupSchema`
+    validates, and ``create_params`` records them as a ``tracking_start``
+    :class:`LoanAnchorEvent` in the same transaction as the params
+    whenever the loan originated BEFORE that date -- a loan originating
+    on or after it asserts nothing, its origination IS the assertion.
+    The date is bounded ``[origination_date, today]``: the future half
+    is refused here, the origination half by the route (the way the
+    true-up door bounds its date), and a loan that has not originated
+    yet is exempt from the origination half, since no date on or before
+    today can satisfy it.  They replaced ``current_principal``, which
+    the form REQUIRED and nothing read (finding **REC-519**); a stale
+    client still posting that field has it dropped by
+    :class:`BaseSchema`'s ``unknown = EXCLUDE`` policy.
     """
 
     _PERCENT_FIELDS = ("interest_rate",)
@@ -51,10 +87,15 @@ class LoanParamsCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
-    current_principal = fields.Decimal(
+    # The balance stated at setup and the day it is stated for: the pair
+    # :class:`LoanAnchorTrueupSchema` validates, bounded the same way
+    # (``>= 0``, backstopped by ``ck_loan_anchor_events_balance_nonneg``;
+    # not in the future).
+    anchor_balance = fields.Decimal(
         required=True, places=2, as_string=True,
-        validate=validate.Range(min=0),
+        validate=validate.Range(min=Decimal("0")),
     )
+    anchor_date = fields.Date(required=True)
     interest_rate = fields.Decimal(
         required=True, places=5, as_string=True,
         validate=validate.Range(min=Decimal("0"), max=Decimal("1")),
@@ -66,19 +107,24 @@ class LoanParamsCreateSchema(BaseSchema):
     arm_first_adjustment_months = fields.Integer(allow_none=True)
     arm_adjustment_interval_months = fields.Integer(allow_none=True)
 
+    @validates_schema
+    def validate_not_future(self, data, **kwargs):
+        """Reject an ``anchor_date`` strictly after today (see the module rule)."""
+        _reject_future_anchor_date(data)
+
 
 class LoanParamsUpdateSchema(BaseSchema):
     """Validates POST data for updating loan parameters.
 
     All fields optional (partial update).  ``original_principal`` and
     ``origination_date`` are omitted -- not updatable after initial
-    setup.  ``current_principal`` is omitted (E-18 / Commit 16): the
-    column is non-authoritative seed and the displayed current
-    balance is the loan resolver's output.  Users edit the balance
-    by appending a :class:`LoanAnchorEvent` via the dated true-up
-    form (validated by :class:`LoanAnchorTrueupSchema` below), not by
+    setup.  The balance is not a parameter at all: the displayed
+    current balance is the balance seam's output, and users edit it by
+    appending a :class:`LoanAnchorEvent` via the dated true-up form
+    (validated by :class:`LoanAnchorTrueupSchema` below), not by
     POSTing this schema.  Stray ``current_principal`` form fields
-    submitted by a stale client are silently excluded by
+    submitted by a stale client (the column E-18 demoted and plan step
+    ``recurrence:R20`` dropped) are silently excluded by
     :class:`BaseSchema`'s ``unknown = EXCLUDE`` policy and ignored.
     """
 
@@ -149,21 +195,8 @@ class LoanAnchorTrueupSchema(BaseSchema):
 
     @validates_schema
     def validate_not_future(self, data, **kwargs):
-        """Reject ``anchor_date`` strictly after today.
-
-        Imported inline -- the module loads at app construction time
-        and ``date.today()`` evaluated at import time would freeze
-        the "today" floor at gunicorn boot, defeating the validator
-        for any request after the boot day.  Resolving ``today``
-        per-request keeps the floor live.
-        """
-        anchor_date = data.get("anchor_date")
-        if anchor_date is not None and anchor_date > date.today():
-            raise ValidationError(
-                {"anchor_date": [
-                    "Anchor date cannot be in the future."
-                ]}
-            )
+        """Reject ``anchor_date`` strictly after today (see the module rule)."""
+        _reject_future_anchor_date(data)
 
 
 class RateChangeSchema(BaseSchema):
