@@ -79,10 +79,11 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       Byte-identical on the dev clone (two liabilities, both loans); on a planted card every moved
       figure is one sum, and the horizon consequence is **BAL-520** (`balance:X-cq`). The migration
       was hand-written past the guard's prompt and accepted as built (developer 2026-09-18).
-- [ ] **CC-2** `feat(cards): the params satellite and its setup flow` -- design 3.4's table:
-      `budget.credit_card_params` (close day, due day, the minimum rule, grace, the limit) under
-      `pay_calendar:C13-c`'s ownership key, its migration, the create and update routes and the
-      schema that takes percents and stores fractions.
+- [x] **CC-2** `c69bdbfe` -- `budget.credit_card_params` (close day, due day, the minimum rule, the
+      cashback rate and auto-redeem threshold, the limit; no `grace` column, its keeping is CC-3's
+      derivation) under C13-c's ownership key, migration `97f92340fffc` (the table empty); ONE door
+      and ONE schema, the five NOT NULL columns required (`R-CC24`); the "Card terms" card on cash
+      detail gated by `is_revolving` (`R-CC25`). Moved no money; suite 14652/0 on its tree.
 - [ ] **CC-3** `feat(cards): the statement cycle, pure, and the card's APR` -- design 3.4:
       `card_statement.py` (cycle window, statement sequence, due date, minimum payment, grace kept)
       with no Flask and no session, and the APR on `rate_history` behind a card-gated loader and

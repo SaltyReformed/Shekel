@@ -1,0 +1,102 @@
+{# The card's terms (plan step credit_card:CC-2; developer ruling R-CC25,
+   2026-09-18): the parameters card a revolving account shows below its
+   balance band on the cash detail page, exactly where an interest-bearing
+   account shows its APY card.  Blank until the owner saves the card's terms,
+   filled from the row after; until then the card is a DORMANT plain
+   liability (design 3.4: no auto-create) and no card feature is offered.
+   The cockpit plan step CC-11 builds replaces this page for a card and
+   carries this form on.
+
+   Every control renders every time, so a submit is the WHOLE row and the one
+   door it posts to (card.save_terms, ruling R-CC24) creates or rewrites it;
+   the five NOT NULL terms are required controls (cash back pre-filled 0.00
+   for a card with no terms), the two nullable ones may be left blank.
+   Rates are entered as percents and stored as fractions (E-28): the schema
+   divides, the template multiplies back through |to_percent.
+
+   Context: account, card_terms (a CreditCardParams row, or None). #}
+<div class="card acctd-params">
+  <div class="card-header">
+    <h6 class="mb-0"><i class="bi bi-credit-card"></i> Card terms</h6>
+  </div>
+  <div class="card-body">
+    {% if card_terms is none %}
+    <p class="text-muted small">
+      No terms recorded yet. Until they are, this card is tracked as a plain
+      balance: no statement cycle, minimum payment or rewards are derived.
+    </p>
+    {% endif %}
+    <form method="POST" action="{{ url_for('card.save_terms', account_id=account.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3">
+        <div class="col-sm-6 col-lg-3">
+          <label for="statement_close_day" class="form-label">Statement closes on day</label>
+          <input type="number" class="form-control" id="statement_close_day" name="statement_close_day"
+                 value="{{ card_terms.statement_close_day if card_terms is not none else '' }}"
+                 min="1" max="31" step="1" required>
+          <div class="form-text">1-31; a 31 means the month's last day.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="payment_due_day" class="form-label">Payment due on day</label>
+          <input type="number" class="form-control" id="payment_due_day" name="payment_due_day"
+                 value="{{ card_terms.payment_due_day if card_terms is not none else '' }}"
+                 min="1" max="31" step="1" required>
+          <div class="form-text">Of the month after the close.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="min_payment_percent" class="form-label">Minimum payment</label>
+          <div class="input-group">
+            <input type="number" class="form-control" id="min_payment_percent" name="min_payment_percent"
+                   value="{{ "%.2f"|format(card_terms.min_payment_percent|to_percent) if card_terms is not none else '' }}"
+                   step="0.01" min="0" max="100" required>
+            <span class="input-group-text">%</span>
+          </div>
+          <div class="form-text">Of the statement balance.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="min_payment_floor" class="form-label">Minimum payment floor</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" id="min_payment_floor" name="min_payment_floor"
+                   value="{{ card_terms.min_payment_floor if card_terms is not none else '' }}"
+                   step="0.01" min="0" required>
+          </div>
+          <div class="form-text">The minimum is never below this.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="cashback_rate" class="form-label">Cash back</label>
+          <div class="input-group">
+            <input type="number" class="form-control" id="cashback_rate" name="cashback_rate"
+                   value="{{ "%.2f"|format(card_terms.cashback_rate|to_percent) if card_terms is not none else '0.00' }}"
+                   step="0.01" min="0" max="100" required>
+            <span class="input-group-text">%</span>
+          </div>
+          <div class="form-text">Flat rate on purchases; 0 for none.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="auto_redeem_threshold" class="form-label">Auto-redeem rewards at</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" id="auto_redeem_threshold" name="auto_redeem_threshold"
+                   value="{{ card_terms.auto_redeem_threshold if card_terms is not none and card_terms.auto_redeem_threshold is not none else '' }}"
+                   step="0.01" min="0.01">
+          </div>
+          <div class="form-text">Blank: redeem by hand only.</div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+          <label for="credit_limit" class="form-label">Credit limit</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" class="form-control" id="credit_limit" name="credit_limit"
+                   value="{{ card_terms.credit_limit if card_terms is not none and card_terms.credit_limit is not none else '' }}"
+                   step="0.01" min="0.01">
+          </div>
+          <div class="form-text">Blank: utilization not tracked.</div>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm mt-3">
+        <i class="bi bi-check-lg"></i> Save terms
+      </button>
+    </form>
+  </div>
+</div>
