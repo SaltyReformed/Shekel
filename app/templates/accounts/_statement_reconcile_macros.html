@@ -104,6 +104,15 @@
        hx-target="this"
        hx-swap="outerHTML"
        hx-disabled-elt="unset">
+    {# THE LINE AS THE SCREEN SHOWED IT (plan step bank_import:X-f6b-2, ruling
+       R-BI14), carried here until the pane arrives and renders its own: the
+       pane replaces this element whole, so exactly one `line-<line>` is in
+       the form at every moment, as with `rows-<line>` below.  Outside the
+       proposal test on purpose: a card no tier paired still names its line
+       when OK'd on MATCH, and the door answers that body with the empty-side
+       refusal it always gave rather than reading the line off the key. #}
+    <input type="hidden" name="line-{{ card.line.line_id }}"
+           value="{{ card.line | reviewed_line_token }}">
     {% if card.panel.proposal %}
     {# WHAT A TIER PROPOSED, CARRIED UNTIL THE PANE ARRIVES AND RENDERS IT.
        Its rows arrive TICKED (R-HS) -- a suggestion the app can justify is

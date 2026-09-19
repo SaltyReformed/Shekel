@@ -67,6 +67,7 @@ from tests.test_services.test_statement_match._builders import (
     a_later_period,
     a_purchase,
     a_rule,
+    a_sighting,
     a_transaction,
     an_envelope,
     an_import,
@@ -980,7 +981,7 @@ class TestTheMatchPanePricesWhatIsTicked:
         priced = auth_client.post(
             _match_url(seed_user["account"].id, line.id),
             data=MultiDict(
-                [("csrf_token", "x")]
+                [("csrf_token", "x"), (f"line-{line.id}", _line_token(first, line.id))]
                 + [(f"rows-{line.id}", token) for token in tokens]
             ),
         ).get_data(as_text=True)
@@ -1002,6 +1003,37 @@ class TestTheMatchPanePricesWhatIsTicked:
 
         assert "Data Manager" in pane
         assert "Health Insurance Allowance" not in pane
+
+
+def _line_token(document, line_id):
+    """Return the ONE ``line-<line_id>`` token *document* rendered.
+
+    Plan step ``bank_import:X-f6b-2``, ruling **bank_import:R-BI14**: a
+    card and its MATCH pane each carry the bank line AS THE SCREEN SHOWED IT
+    as a hidden input, and a browser submits it with every press and every
+    re-price (``hx-include="closest .rec-card"``).  A case that posts a
+    fragment body by hand reads the token off the document it rendered
+    rather than spelling one, for :func:`_post`'s reason: a hand-picked
+    payload is the shape that hid a dead control once.
+
+    Args:
+        document: The rendered page or pane, as text.
+        line_id: The bank line.
+
+    Returns:
+        The token's value.
+
+    Raises:
+        AssertionError: Unless the document carries exactly one.
+    """
+    tokens = [
+        value for name, value in reconcile_form_fields(document)
+        if name == f"line-{line_id}"
+    ]
+    assert len(tokens) == 1, (
+        f"the document carries {len(tokens)} line-{line_id} tokens: {tokens}"
+    )
+    return tokens[0]
 
 
 def _row_tokens(pane, line_id):
@@ -1522,6 +1554,83 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
         assert db.session.query(StatementMatch).count() == 1
         assert txn.settled_amount == Decimal("178.29"), (
             "the row must book what the BANK took"
+        )
+
+    def test_the_page_emits_the_line_AS_THE_SCREEN_SHOWED_IT(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-f6b-2``, ruling **bank_import:R-BI14**.
+
+        The card carries its bank line as one token -- the id and the day the
+        bank said it was made -- which the accept door re-derives under its
+        lock and refuses on difference.  A HIDDEN input, on the consent's own
+        terms: nothing else here would notice it going away, and without it
+        every OK'd MATCH card is refused as naming no line.  Exactly ONCE, so
+        which token the door reads is never the browser's choice.
+        """
+        line, _ = self._near_miss(seed_user, db)
+        fields = reconcile_form_fields(_page(auth_client, seed_user))
+
+        tokens = [value for name, value in fields if name == f"line-{line.id}"]
+        assert tokens == [f"{line.id}:{line.posted_on}"], (
+            "the card did not carry the line as the screen showed it"
+        )
+
+    def test_an_OPENED_card_carries_the_token_once_from_the_pane(
+        self, auth_client, db, seed_user,
+    ):
+        """The include arm: ``?open=<line>`` renders the pane in the document.
+
+        The waiting element and the pane each carry one token and the two
+        are exclusive by the template's own branch; this measures the arm
+        the sibling case above does not reach, so "exactly one at every
+        moment" is graded on both.
+        """
+        line, _ = self._near_miss(seed_user, db)
+
+        page = _open(auth_client, seed_user, line.id)
+
+        assert f'id="rec-match-{line.id}"' in page, "the pane did not open"
+        assert _line_token(page, line.id) == f"{line.id}:{line.posted_on}"
+
+    def test_OK_after_the_bank_RESTATED_the_day_is_refused_on_the_page(
+        self, auth_client, db, seed_user,
+    ):
+        """Finding **N-338** through the screen: the stale press is refused.
+
+        The page is drawn, a second import then states the swipe day for the
+        line (the bank restating a day the first source left unstated), and
+        the owner presses OK on the page they were looking at.  The door
+        answers with the screen at 200, quoting the refusal per item
+        (**R-FZ(a)**), and moves nothing -- the row keeps the figure the
+        stale page would have corrected.
+        """
+        line, txn = self._near_miss(seed_user, db)
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
+        assert (f"verb-{line.id}", "match") in fields
+
+        a_sighting(
+            seed_user, an_import(seed_user), line,
+            transaction_on=line.posted_on - timedelta(days=2),
+        )
+        db.session.commit()
+
+        response = _post(
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
+        )
+
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "reviewed against a different day" in body
+        assert (
+            f"it was shown as {line.posted_on} and the bank now states "
+            f"{line.posted_on - timedelta(days=2)}"
+        ) in body
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 0
+        assert txn.settled_amount == Decimal("178.32"), (
+            "the refused press re-priced the row"
         )
 
     def test_the_MATCH_pane_LOADS_for_a_proposed_card(
@@ -2837,7 +2946,14 @@ class TestThePaneOffersWHEREADifferenceGoes:
         Returns:
             The rendered pane, as text.
         """
-        body = [("csrf_token", "x")]
+        # The line AS THE SCREEN SHOWED IT travels with every re-price
+        # (ruling R-BI14); it is read off the pane's own bare render rather
+        # than spelled here, as :func:`_line_token` says.
+        bare = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+        body = [("csrf_token", "x"), (f"line-{line.id}", _line_token(bare, line.id))]
         body += [(f"rows-{line.id}", token) for token in rows]
         if chosen is not None:
             body.append((f"consent-{line.id}", chosen))
@@ -4403,9 +4519,8 @@ class TestARefusedApplyKeepsTheOwnersTicks:
         """
         pane_of = TestThePaneOffersWHEREADifferenceGoes()
         line, _, _ = pane_of._a_payroll_deposit(seed_user, db)
-        tokens = _row_tokens(
-            pane_of._pane(auth_client, seed_user, line), line.id,
-        )
+        first = pane_of._pane(auth_client, seed_user, line)
+        tokens = _row_tokens(first, line.id)
         chosen = f"0.05@{tokens[0]}"
         assert chosen in _consent_options(
             pane_of._pane(auth_client, seed_user, line, rows=tokens), line.id,
@@ -4414,7 +4529,8 @@ class TestARefusedApplyKeepsTheOwnersTicks:
         pane = auth_client.post(
             _match_url(seed_user["account"].id, line.id),
             data=MultiDict(
-                [("csrf_token", "x"), (f"q-{line.id}", "Data")]
+                [("csrf_token", "x"), (f"q-{line.id}", "Data"),
+                 (f"line-{line.id}", _line_token(first, line.id))]
                 + [(f"rows-{line.id}", token) for token in tokens]
                 + [(f"consent-{line.id}", chosen)]
             ),

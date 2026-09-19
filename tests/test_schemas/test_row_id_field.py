@@ -16,6 +16,7 @@ stops the 76th declaration from being written with the lax field.
 """
 
 import ast
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -28,6 +29,7 @@ from app.schemas.validation.transactions import TransactionCreateSchema
 from app.schemas.validation.merchant_rules import SubmittedAnswer
 from app.services.statement_match import (
     ReviewedDifference,
+    ReviewedLine,
     ReviewedRow,
     RowKind,
     RuleAnswer,
@@ -366,6 +368,13 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: :meth:`TestNoIdFieldWasMissed
 #: ::test_the_reviewed_difference_field_is_strict_about_the_ids_it_carries`
 #: asserts the strictness on both counters inside the member directly.
+#: **``ReviewedLineField`` is here on ``ReviewedRowField``'s terms** (plan
+#: step ``bank_import:X-f6b-2``, ruling **bank_import:R-BI14**): one token
+#: carries a bank line's id AND the day the screen showed the bank saying it
+#: was made, and it returns a value object, so it cannot derive from ``RowId``
+#: either.  :meth:`TestNoIdFieldWasMissed
+#: ::test_the_reviewed_line_field_is_strict_about_the_id_it_carries` asserts
+#: the strictness on the id and on the day directly.
 #: **``Dict`` is here on ``Nested``'s terms, and its KEYS on
 #: ``PurchaseDestination``'s** (plan step ``salary:S3-f-2b``): the readiness
 #: query's ``raise_probes`` is ``fields.Dict(keys=RowId(), values=
@@ -377,8 +386,8 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: ``1.9`` refused) rather than granted by this listing.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
     "Boolean", "Date", "Decimal", "Dict", "Nested", "RuleAnswerField",
-    "PurchaseDestination", "ReviewedDifferenceField", "ReviewedRowField",
-    "String",
+    "PurchaseDestination", "ReviewedDifferenceField", "ReviewedLineField",
+    "ReviewedRowField", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -773,6 +782,38 @@ class TestNoIdFieldWasMissed:
         assert field.deserialize("purchase:7:2473.38:1") == ReviewedRow(
             kind=RowKind.PURCHASE, row_id=7,
             cash_amount=Decimal("2473.38"), version_id=1,
+        )
+
+    def test_the_reviewed_line_field_is_strict_about_the_id_it_carries(self):
+        """``ReviewedLineField`` names a LINE and a DAY, both graded.
+
+        :meth:`test_the_reviewed_row_field_is_strict_about_the_ids_it_carries`'s
+        twin for the line side of a match (plan step ``bank_import:X-f6b-2``,
+        ruling **bank_import:R-BI14**), listed as a non-integer spelling for
+        the same reason and graded here for the same reason.  The id is where
+        a match is written; the day is what the staleness refusal compares,
+        and a lax reading of it -- ``date.fromisoformat`` alone reads
+        ``20260610`` and a datetime -- would accept a body no page rendered.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            ReviewedLineField,
+        )
+
+        field = ReviewedLineField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"{lax}:2026-06-10")
+        for day in ("20260610", "2026-6-10", "2026-06-10T00:00:00",
+                    "2026-W23-3", "2026-02-30", "2026-13-01", "",
+                    " 2026-06-10", "2026-06-10 "):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"12:{day}")
+        for shape in ("12", "12:2026-06-10:1", "", "::"):
+            with pytest.raises(ValidationError):
+                field.deserialize(shape)
+        # ...and what it DOES accept.
+        assert field.deserialize("12:2026-06-10") == ReviewedLine(
+            line_id=12, happened_on=date(2026, 6, 10),
         )
 
     def test_the_reviewed_difference_field_is_strict_about_the_ids_it_carries(

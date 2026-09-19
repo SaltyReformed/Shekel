@@ -31,6 +31,7 @@ from app.services.statement_match import (
     BankLine,
     Consent,
     MatchSubmission,
+    ReviewedLine,
     MerchantSection,
     NewEnvelope,
     PurchaseCreation,
@@ -1198,7 +1199,9 @@ class TestARuleMayNotModifyAHandMadeRow:
                 consent=Consent.STANDING_RULE,
                 incomes=(),
                 matches=(MatchSubmission(
-                    line_ids=frozenset({1}),
+                    lines=frozenset({ReviewedLine(
+                        line_id=1, happened_on=date(2024, 1, 5),
+                    )}),
                     rows=frozenset({"transaction:1"}),
                 ),),
                 creations=(),
@@ -1217,7 +1220,10 @@ class TestARuleMayNotModifyAHandMadeRow:
             consent=Consent.TICKED,
             incomes=(),
             matches=(MatchSubmission(
-                line_ids=frozenset({1}), rows=frozenset({"transaction:1"}),
+                lines=frozenset({ReviewedLine(
+                    line_id=1, happened_on=date(2024, 1, 5),
+                )}),
+                rows=frozenset({"transaction:1"}),
             ),),
             creations=(),
         )

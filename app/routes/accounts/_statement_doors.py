@@ -422,7 +422,7 @@ def submitted_match(submitted) -> MatchSubmission:
         The :class:`~app.services.statement_match.MatchSubmission`.
     """
     return MatchSubmission(
-        line_ids=frozenset(submitted["line_ids"]),
+        lines=frozenset(submitted["lines"]),
         rows=frozenset(submitted["rows"]),
         # The difference the owner agreed to AND the member it lands on, as
         # ONE value (plan step ``bank_import:X-gp``).  ``None`` where the body
@@ -645,7 +645,8 @@ def _messages(errors, path=()):
     """Yield every message in a Marshmallow error structure, WITH its path.
 
     **A LIST field's errors are keyed by INDEX, not flat**, so
-    ``{"matches": {0: {"line_ids": {0: ["Not a valid id."]}}}}`` is the
+    ``{"matches": {0: {"lines": {0: ["That is not a bank line this page could
+    have shown you."]}}}}`` is the
     ordinary shape here rather than an exotic one -- and a flattener assuming
     ``{field: [str]}`` raises ``TypeError`` inside the handler that exists to
     render a refusal.  It is also why ``error_fragments.flatten_schema_errors``

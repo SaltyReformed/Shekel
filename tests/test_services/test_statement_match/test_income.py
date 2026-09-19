@@ -27,7 +27,7 @@ Every refusal here is a FIRING CONTROL: written to fail if the refusal were
 deleted, which is the standard ``docs/plans/verification.md`` sets.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -60,6 +60,7 @@ from app.services.statement_match import (
     IncomeCreation,
     MatchSubmission,
     ReviewedBatch,
+    ReviewedLine,
     apply_reviewed,
     record_income_from_line,
     review_set,
@@ -794,7 +795,12 @@ class TestWhichConsentReachesThisDoor:
                 # about the act CLASS a rule may consent to, and it fires in
                 # ``__post_init__`` before anything reads the item.
                 matches=(
-                    MatchSubmission(line_ids=frozenset({1}), rows=frozenset()),
+                    MatchSubmission(
+                        lines=frozenset({ReviewedLine(
+                            line_id=1, happened_on=date(2024, 1, 5),
+                        )}),
+                        rows=frozenset(),
+                    ),
                 ),
                 creations=(), incomes=(),
             )

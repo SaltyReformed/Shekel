@@ -156,7 +156,8 @@ The public surface, and what each piece is for:
   Undo button, from the door's own derivation, so the control names the money
   it is about to destroy.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
-  :class:`ReviewedRow`, :class:`ReviewedDifference`, :class:`CandidateRow`,
+  :class:`ReviewedRow`, :class:`ReviewedLine`, :class:`ReviewedDifference`,
+  :class:`CandidateRow`,
   :class:`BankLine`,
   :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
@@ -244,8 +245,10 @@ from ._outcome import BatchOutcome
 from ._submission import (
     MatchSubmission,
     ReviewedDifference,
+    ReviewedLine,
     ReviewedRow,
     as_reviewed,
+    as_reviewed_line,
 )
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
@@ -381,6 +384,7 @@ __all__ = [
     "ReviewSet",
     "ReviewedBatch",
     "ReviewedDifference",
+    "ReviewedLine",
     "ReviewedRow",
     "SkippedLine",
     "DirectoryAsk",
@@ -408,6 +412,7 @@ __all__ = [
     "accepted_register",
     "apply_reviewed",
     "as_reviewed",
+    "as_reviewed_line",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",

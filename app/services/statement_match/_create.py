@@ -111,7 +111,7 @@ from ._creations import (
     CreatedSubject,
     PurchaseCreation,
 )
-from ._offers import CandidateRow, RowKind, merchant_label
+from ._offers import CandidateRow, RowKind, day_made, merchant_label
 from ._outcome import FiledMerchant
 from ._reads import as_bank_line
 from ._naming import name_the_filed_definition
@@ -219,24 +219,6 @@ def _load_line(
             "instead. Nothing was changed."
         )
     return line
-
-
-def _made_on(line: BankStatementLine) -> date:
-    """Return the day the bank says the purchase was MADE.
-
-    The stated transaction day where the source states one, else the day it
-    posted -- the same fallback :attr:`~._offers.BankLine.happened_on` makes,
-    and for the same reason: money cannot clear before it moves, so the posting
-    day is the tightest bound a source stating nothing supports.  SECU states
-    one on 182 of 361 lines.
-
-    Args:
-        line: The recorded line.
-
-    Returns:
-        Its budget-clock day.
-    """
-    return line.transaction_on or line.posted_on
 
 
 def _observed(line: BankStatementLine) -> SettleDay:
@@ -544,7 +526,11 @@ def create_purchase_from_line(
     # :attr:`~._offers.BankLine.states_impossible_days` and this door asks it
     # through the same view model :func:`~._skipping.skipped_acts` builds.
     reject_impossible_days(as_bank_line(line))
-    made_on = _made_on(line)
+    # The day the bank says it was MADE, by the package's one spelling
+    # (:func:`~._offers.day_made`; this module spelled it a third time until
+    # plan step ``bank_import:X-f6b-2``).  SECU states one on 182 of 361
+    # lines.
+    made_on = day_made(line)
     # ONE construction of the bank's own day for this act, for the two
     # writers that need it: the purchase is born carrying it, and the
     # container may close on it.  A second construction is the
