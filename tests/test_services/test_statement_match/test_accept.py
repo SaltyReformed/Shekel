@@ -2217,6 +2217,51 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             MovementFigureSourceEnum.OBSERVED,
         )
 
+    def test_a_settled_PAYCHECK_five_cents_off_is_corrected_the_same_way(
+        self, app, db, seed_user,
+    ):
+        """The income arm of finding BAL-523, on the developer's own payroll line.
+
+        A settled paycheck is worth its covering movement in its own direction
+        (``+figure``, ruling **R-BAL81**), and the bank's figure corrects it
+        exactly as it corrects a bill: the record and the movement both read
+        the bank's `$2,473.43`.  Through plan step ``balance:X-bi-4a``'s
+        first cut ``_landing.corrected_figure`` added ``off_statement_sum``,
+        whose posted-purchase term walked the FAMILY and summed the paycheck's
+        own dated covering movement as a purchase that had posted, so the
+        correction booked `2,473.43 + 2,473.38 = 4,946.81` onto the movement
+        and the post-apply check refused the act -- production's payroll
+        line 259 against rows 1625 + 787, 2026-09-18 23:15 UTC, in the
+        observer's record.  The bill cases above cover the expense arm; this
+        is the control for the income one, and it is RED on the walk over
+        ``entries``.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        paycheck = a_transaction(
+            seed_user, name="Payroll", amount="2473.38", income=True,
+            status=StatusEnum.RECEIVED, settled_on=bank_day,
+        )
+        [movement] = paycheck.covering_movements
+        assert movement.amount == Decimal("2473.38")
+        line = a_bank_line(
+            seed_user, statement, amount="2473.43", posted_on=bank_day,
+        )
+
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[paycheck], residual="0.05",
+        )
+
+        assert accepted.match_id is not None
+        assert paycheck.settled_amount == Decimal("2473.43")
+        assert paycheck.settled_basis_id == ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        )
+        assert [m.amount for m in paycheck.covering_movements] == [
+            Decimal("2473.43"),
+        ]
+        assert status_seam.covered_cash_leg(paycheck) == Decimal("2473.43")
+
     def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
         """The control, and it is what makes the test above mean anything.
 
