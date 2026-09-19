@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
     constraint_name_from,
+    cover_bare_settled_row,
     default_settle_day,
     freeze_today,
     generate_row_of,
@@ -118,6 +119,9 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
     }.items():
         setattr(txn, _column, _value)
     db.session.flush()
+    if settled_on is not None:
+        # The record's home is the covering movement (X-bi-4b-1).
+        cover_bare_settled_row(db.session, txn, planned, settled_amount)
     return txn
 
 

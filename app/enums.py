@@ -744,6 +744,14 @@ class SettlementBasisEnum(enum.Enum):
     :class:`AmountSourceEnum` has no ``own`` member.  Whether the row is settled
     NOW is a different question with a different answer: its STATUS
     (``row_valuation.settled_figure``), because a revert keeps what moved.
+
+    **RETIRING** (plan step ``balance:X-bi-4b``, ruling **R-BAL80**).  Since
+    ``X-bi-4b-1`` every reader of the record asks the row's covering
+    movement -- its figure and :class:`MovementFigureSourceEnum` -- and this
+    catalogue's one remaining reader is the seam's write of the row's column
+    (``status_seam.apply_status_change``), the movement's stale cache through
+    the interval; ``X-bi-4b-2`` deletes the column, the ref table and this
+    enum together.
     """
 
     DERIVED = "derived"

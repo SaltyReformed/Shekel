@@ -37,6 +37,7 @@ from app.services.cash_ledger import (
     ReconciledThrough,
     contributions_by_id,
     planned_leg_contribution,
+    settlement_load_options,
     transfer_pricing_load_options,
 )
 from app.services.account_projection import (
@@ -194,8 +195,11 @@ def _recorded_contributions(
     **The settled half states no pricing load and the projected half states
     the transfer's own.**  A settled row is valued from its settlement record
     (:func:`~app.services.row_valuation.fixed_contribution` answers before the
-    amount model is asked), so nothing on that path walks a relationship; a
-    leg's parent is priced through its definition, so that path takes
+    amount model is asked), which is the row's ENTRIES since plan step
+    ``balance:X-bi-4b-1``, so that path takes
+    :func:`~app.utils.amount_relationships.settlement_load_options` and no
+    pricing load; a leg's parent is priced through its definition, so that
+    path takes
     :func:`~app.utils.amount_relationships.transfer_pricing_load_options`.
     *It passed ``pricing_load_options()`` over ONE mixed row set until this
     step, because the projected shadows in it walked to their parents.*
@@ -212,7 +216,7 @@ def _recorded_contributions(
         a projected leg.  ``{}`` for an account with none.
     """
     settled = settled_income_shadows(
-        account_id, basis.scenario_id, options=(),
+        account_id, basis.scenario_id, options=settlement_load_options(),
     )
     contributions = contributions_by_id(settled, basis)
     totals: dict[int, Decimal] = {}

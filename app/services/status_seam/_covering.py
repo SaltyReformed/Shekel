@@ -10,9 +10,12 @@ MANUAL branch's settlement is mirrored as ONE covering movement, a
 wrote it, the day the money moved and how that day is known, and the statement
 that showed it.  ``X-bi-3d`` cut every already-settled row over to this shape
 and ``X-bi-4a`` re-pointed the fold and the posting writer onto movements
-(ruling **R-BAL80**); the bill row still keeps its own record and this module
-keeps the two in step -- the interval ruling **R-BAL40** accepts, and the
-stale cache ``X-bi-4b`` deletes.
+(ruling **R-BAL80**), ``X-bi-4b-1`` every remaining reader of the record
+(``row_valuation.settled_figure`` sums the row's entries; ``_record``'s
+retained reads take the movement's figure and source); the bill row still
+keeps its own two columns, written by the seam and read by nothing that
+counts money -- the interval ruling **R-BAL40** accepts, and the stale cache
+``X-bi-4b-2`` deletes by migration.
 
 **Why the seam, and not the settle verb.**  ``apply_status_change`` is the ONE
 writer of the settlement record (plan step X-au-c3), reached by every settle
@@ -55,8 +58,10 @@ record: its day pair and clearing link are released with the row's
 re-dates the SAME row (``_cover`` through ``_mirror_assertion``; the id
 survives).  A revert deleted it through ``X-bi-3e-1``, and the retained read
 answered by R-BAL61's cutover mapping (``_record.recorded_settlement``,
-ruling **R-BAL70**) for every reverted row; that mapping now answers only a
-record no movement can carry.  What a kept, un-dated movement must NOT do is
+ruling **R-BAL70**) for every reverted row; since plan step
+``balance:X-bi-4b-1`` that read takes the kept movement's figure and source
+and nothing else, and a row with none retains nothing (ruling **R-BAL82**),
+so the mapping is retired.  What a kept, un-dated movement must NOT do is
 read as a purchase -- an envelope closed EMPTY at the door, reverted and
 then given real purchases would sum the stale close into them -- and ruling
 **R-BAL68** answers that where the readers are: every purchase-meaning

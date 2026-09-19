@@ -90,6 +90,7 @@ from app.services import (
     entry_service,
     posting_service,
     reconcile_service,
+    row_valuation,
     status_seam,
     transaction_service,
     transfer_service,
@@ -1321,17 +1322,24 @@ class TestATransfersMovementsFollowItsLifecycle:
             assert _only_movement(expense).account_id == seed_user["account"].id
 
 
-class TestALoanPaymentsLoanSideMovementMovesNoLoanFigure:
-    """The loan replay prices a payment by its RECORD, so the movement is inert.
+class TestALoanPaymentsLoanSideMovementIsItsRecord:
+    """The loan replay prices a payment by its RECORD, and the record is the movement.
 
-    A payment's income leg sits on the LOAN account and now carries a covering
+    A payment's income leg sits on the LOAN account and carries a covering
     movement there; every loan reader values the leg through
-    ``row_valuation.settled_contribution`` and never through the family, and
-    the ledger's loan entry is unchanged by R-BAL45 -- so the seam's balance
-    and the posted balance read identically with and without the movement.
+    ``row_valuation.settled_contribution``, which since plan step
+    ``balance:X-bi-4b-1`` sums the leg's entries (ruling **R-BAL80**) -- so
+    the movement is the whole of what the loan side reads of the payment.
+    Through ``X-bi-4a`` the reader took the leg's own ``settled_amount`` and
+    this class pinned the movement as INERT to it ("the seam's balance and
+    the posted balance read identically with and without the movement");
+    that was the interval ruling R-BAL40 accepted, and the pin is inverted
+    with it: taking the movement away (a state no door writes) now reads the
+    payment as nothing moved, and moves the loan's position with it.  The
+    posted ledger's loan entry is still R-BAL45's, untouched by either.
     """
 
-    def test_the_seam_and_the_posted_ledger_read_the_same_with_and_without(
+    def test_the_loan_side_reads_the_movement_as_the_payment(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -1353,12 +1361,19 @@ class TestALoanPaymentsLoanSideMovementMovesNoLoanFigure:
                     posted_loan_balance_at(loan.id, scenario_id, as_of),
                 )
 
+            assert row_valuation.settled_contribution(income) == Decimal("1910.95")
             with_movement = _read()
             income.entries.remove(movement)
             db.session.commit()
             db.session.expire_all()
-            assert _read() == with_movement
             assert xfer.status.is_settled
+            # The record IS the movement: without it the leg records $0.00
+            # (R-BAL82's close of nothing), the loan's position moves, and the
+            # posted ledger -- R-BAL45's one transfer entry -- is untouched.
+            assert row_valuation.settled_contribution(income) == Decimal("0")
+            without_movement = _read()
+            assert without_movement[0] != with_movement[0]
+            assert without_movement[1] == with_movement[1]
 
 
 class TestThePurchaseDoorsStateTheSource:
@@ -1951,14 +1966,21 @@ class TestTheCatalogueIsSeededAndResolvable:
 
 
 class TestTheRetainedReadTakesTheSourceOffTheMovement:
-    """``recorded_settlement`` reads WHO WROTE the figure off the covering
-    movement, and by ruling R-BAL70's mapping where none survives.
+    """``recorded_settlement`` reads the figure AND who wrote it off the
+    covering movement, and a settled row with none records its entries.
 
-    Plan step X-bi-3e-1 (rulings **R-BAL61**, **R-BAL70**): the row stores
-    no writer, so the retained record's source is the movement's; a record
-    with no movement -- a ``$0.00`` figure, or a row reverted on a tree that
-    deletes the movement -- reads ``derived`` as ``resolved`` and
-    ``corrected`` as ``typed``, the cutover's own classification.
+    Plan step X-bi-3e-1 (ruling **R-BAL61**): the row stores no writer, so
+    the retained record's source is the movement's.  Plan step
+    ``balance:X-bi-4b-1`` (rulings **R-BAL80**, **R-BAL82**): the FIGURE is
+    the movement's too, and a settled row holding no movement -- a ``$0.00``
+    figure, whose movement ``ck_transaction_entries_positive_amount`` admits
+    no row for -- is a close of nothing, read as a record stating no figure
+    (``Settlement(None, None)``) exactly as an envelope's ``purchases``
+    record is; reverted, it retains NOTHING.  Ruling **R-BAL70**'s cutover
+    mapping (``derived`` -> ``resolved``, ``corrected`` -> ``typed`` off the
+    row's basis column) answered that row through ``X-bi-4a`` and retired
+    with the column read; the two ``$0.00`` cases below pinned it and pin
+    R-BAL82 now.
     """
 
     def test_a_typed_correction_reads_typed_off_its_movement(
@@ -1973,14 +1995,19 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             assert retained.source is MovementFigureSourceEnum.TYPED
             assert retained.basis is SettlementBasisEnum.CORRECTED
 
-    def test_a_typed_zero_record_reads_typed_by_the_mapping(
+    def test_a_typed_zero_record_is_a_close_of_nothing_and_retains_nothing(
         self, app, seed_user, seed_periods,
     ):
-        """A ``$0.00`` figure holds no movement, so the mapping answers.
+        """A ``$0.00`` typed figure holds no movement: a close of nothing.
 
         ``ck_transaction_entries_positive_amount`` admits no movement of
-        nothing (``TestAZeroSettlementWritesNoMovement``), so the writer of a
-        ``$0.00`` correction is stored nowhere; ``corrected`` reads ``typed``.
+        nothing (``TestAZeroSettlementWritesNoMovement``), so the row records
+        its entries -- none -- and the typed figure's writer is stored nowhere
+        (R-BAL70 accepted that; R-BAL82 follows it through).  Worked as the
+        ruling was put: 'Water' budgeted `$148.32` here, closed at a typed
+        `$0.00`, then reverted -- the panel used to OFFER and re-book
+        `$0.00` (the retained ``corrected`` column), and offers the plan now
+        unless the owner re-types `$0.00`.
         """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
@@ -1991,12 +2018,26 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             )
             db.session.flush()
             assert txn.covering_movements == []
+            assert row_valuation.settled_figure(txn) == Decimal("0")
             retained = status_seam.recorded_settlement(txn)
-            assert retained.amount == Decimal("0.00")
-            assert retained.source is MovementFigureSourceEnum.TYPED
-            assert retained.basis is SettlementBasisEnum.CORRECTED
+            assert retained.amount is None
+            assert retained.source is None
+            assert status_seam.honoured_correction(txn) is None
 
-    def test_a_derived_zero_record_reads_resolved_by_the_mapping(
+            _revert(txn)
+            db.session.flush()
+            assert status_seam.recorded_settlement(txn) is None
+            assert transaction_service.retained_settle_amounts_by_id([txn]) == {
+                txn.id: None,
+            }
+            basis = cash_ledger.derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            assert transaction_service.settle_amount(txn, basis) == Decimal(
+                "148.32"
+            )
+
+    def test_a_derived_zero_record_is_a_close_of_nothing(
         self, app, seed_user, seed_periods,
     ):
         with app.app_context():
@@ -2004,10 +2045,11 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             _settle(txn)
             db.session.flush()
             assert txn.covering_movements == []
+            assert row_valuation.settled_figure(txn) == Decimal("0")
             retained = status_seam.recorded_settlement(txn)
-            assert retained.amount == Decimal("0.00")
-            assert retained.source is MovementFigureSourceEnum.RESOLVED
-            assert retained.basis is SettlementBasisEnum.DERIVED
+            assert retained.amount is None
+            assert retained.source is None
+            assert retained.basis is SettlementBasisEnum.PURCHASES
 
     def test_a_purchases_record_reads_no_source(
         self, app, seed_user, seed_periods,

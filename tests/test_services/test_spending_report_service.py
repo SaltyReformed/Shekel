@@ -69,6 +69,7 @@ from app.services.spending_report_service._window import (
 )
 from tests._test_helpers import (
     add_entry,
+    cover_bare_settled_row,
     create_account_of_type,
     create_envelope_txn,
     create_savings_account,
@@ -106,7 +107,9 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
     A row in a SETTLED status carries the whole record -- the day, the figure
     and how that figure is known -- resolved through the one door a bare-built
-    fixture uses (``_test_helpers.settlement_columns``, plan step X-au-c3).
+    fixture uses (``_test_helpers.settlement_columns`` for the row's columns,
+    plan step X-au-c3, and ``cover_bare_settled_row`` for the COVERING
+    MOVEMENT the readers ask since plan step ``balance:X-bi-4b-1``).
     *actual* is a figure a HUMAN typed, which makes the record ``corrected``;
     with none the record is ``derived`` at the row's own plan, which is what a
     settle with nothing to correct books.  The settle DAY defaults to the
@@ -144,6 +147,8 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         ).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    if settled_day is not None:
+        cover_bare_settled_row(db.session, txn, planned, actual)
     return txn
 
 
@@ -2179,6 +2184,8 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
                 **settlement_columns(due, Decimal("125.00")),
             }.items():
                 setattr(txn, column, value)
+            db.session.flush()
+            cover_bare_settled_row(db.session, txn, "125.00")
             db.session.commit()
 
             surprises = _build_surprises(
