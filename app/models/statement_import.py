@@ -34,8 +34,17 @@ adapter has to invert anything.
 """
 
 from sqlalchemy import and_, select
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import column_property
 
 from app.extensions import db
+from app.models._statement_import_table_args import (
+    account_external_identity_table_args,
+    bank_statement_line_table_args,
+    statement_import_table_args,
+    statement_line_sighting_table_args,
+)
+from app.models.merchant import Merchant
 from app.models.mixins import (
     AccountScopedMixin,
     CreatedAtMixin,
@@ -82,43 +91,7 @@ class AccountExternalIdentity(AccountScopedMixin, UserScopedMixin,
     """
 
     __tablename__ = "account_external_identities"
-    __table_args__ = (
-        # One external account maps to at most ONE of THIS OWNER'S accounts.
-        # The arm that makes importing the card's export into Checking
-        # refusable by the DATABASE rather than by a reviewer noticing.
-        #
-        # **Scoped by owner, and that is not decoration.**  A GLOBAL key over
-        # ``(source_id, external_account_id)`` is wrong on a low-entropy value:
-        # this adapter's identifier is SECU's MASK (``******3820``), so two
-        # owners at one credit union collide on the last four digits with
-        # probability 1/10,000 per pair -- and the loser could never import
-        # their own statements, while the refusal would disclose that some
-        # other account in the system had claimed their number.  Per owner, the
-        # only row you can collide with is your own, which is a fact you are
-        # entitled to be told about.
-        db.UniqueConstraint(
-            "user_id", "source_id", "external_account_id",
-            name="uq_account_external_identities_owner_source_account",
-        ),
-        # ...and one Shekel account has at most one identity per source, so
-        # "what does this source call this account" has exactly one answer.
-        db.UniqueConstraint(
-            "account_id", "source_id",
-            name="uq_account_external_identities_account_source",
-        ),
-        # This row's owner IS its account's, guaranteed rather than maintained
-        # -- the construction ``fk_transaction_entries_parent_account`` uses,
-        # keyed onto ``uq_accounts_id_user``.  Without it ``user_id`` would be
-        # a copy some writer has to keep in step, and the uniqueness above
-        # would be scoped by a column that could be set wrong.
-        db.ForeignKeyConstraint(
-            ["account_id", "user_id"],
-            ["budget.accounts.id", "budget.accounts.user_id"],
-            name="fk_account_external_identities_owner",
-            ondelete="CASCADE",
-        ),
-        {"schema": "budget"},
-    )
+    __table_args__ = account_external_identity_table_args
 
     id = db.Column(db.Integer, primary_key=True)
     source_id = db.Column(
@@ -233,50 +206,7 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     """
 
     __tablename__ = "statement_imports"
-    __table_args__ = (
-        # The superkey a composite foreign key needs as its target, so
-        # ``fk_statement_line_sightings_import_account`` can hold a
-        # sighting's account equal to its import's.  It constrains nothing on
-        # its own (``id`` is already the primary key).
-        db.UniqueConstraint(
-            "id", "account_id", name="uq_statement_imports_id_account",
-        ),
-        # The superkey a bank LEVEL's amount keys onto
-        # (``fk_anchor_history_statement_import_claim``, plan step
-        # ``balance:X-bj-1``).  It constrains nothing on its own (``id`` is the
-        # primary key); it exists because PostgreSQL requires a UNIQUE over
-        # exactly the referenced columns.  ``stated_balance`` is nullable, and
-        # that is load-bearing: a NULL in a referenced column matches no
-        # referencing row, so an import that states no balance can own no
-        # level -- the rule ``ck_statement_imports_anchor_needs_a_claim`` used
-        # to state in words, now a property of the key.
-        db.UniqueConstraint(
-            "id", "stated_balance",
-            name="uq_statement_imports_id_stated_balance",
-        ),
-        db.CheckConstraint(
-            "declared_end >= declared_start",
-            name="ck_statement_imports_declared_ordered",
-        ),
-        # The file's CLAIM is one fact in two columns.  A figure without its
-        # day asserts nothing about an account, and a day without a figure
-        # asserts nothing at all.  What the import MADE of the claim -- the
-        # day it is the balance for, and how firmly -- is a level row's
-        # (plan step ``balance:X-bj-1``); the two CHECKs that paired those
-        # columns here are that row's NOT NULL shape now, and the one that
-        # bounded the solved day within the file is
-        # ``budget.level_lies_within_file`` on both tables.  A date-range
-        # export still records its claim and owns no level: the developer's
-        # 2026-01-02..2026-03-31 file, pulled 2026-08-23, states `$2,459.60`
-        # as of 08-23, 145 days past its last line and `$255.41` from the
-        # `$2,715.01` its own 139 lines imply.
-        db.CheckConstraint(
-            "(stated_balance IS NULL) = (stated_balance_on IS NULL)",
-            name="ck_statement_imports_stated_balance_paired",
-        ),
-        db.Index("idx_statement_imports_account", "account_id"),
-        {"schema": "budget"},
-    )
+    __table_args__ = statement_import_table_args
 
     id = db.Column(db.Integer, primary_key=True)
     source_id = db.Column(
@@ -362,10 +292,10 @@ class BankStatementLine(AccountScopedMixin, db.Model):
     source's SIGHTING** (plan step ``bank_import:X-f6b-1``, ruling
     **R-BI10**).  This row holds what every source agrees on -- the account,
     the day, the amount, the ordinal that tells two same-day same-amount lines
-    apart, and the merchant KEY a rule fires on -- and one
-    :class:`StatementLineSighting` per import that showed it holds that
-    source's wording, id, stated transaction day, running balance and
-    category.  A line lives while any sighting does
+    apart -- and one :class:`StatementLineSighting` per import that showed it
+    holds that source's wording, id, stated transaction day, running balance,
+    category and the MERCHANT its word names.  A line lives while any
+    sighting does
     (``budget.remove_line_left_unsighted``, :mod:`app.sighting_infrastructure`),
     which is what lets a second source start recording over the first's
     span without the two disagreeing about a line neither authored.  Until
@@ -387,26 +317,42 @@ class BankStatementLine(AccountScopedMixin, db.Model):
                         **N-173**).
         amount       -- signed, positive INTO the account (see the module
                         docstring).
-        merchant_id  -- the :class:`~app.models.merchant.Merchant` this line
-                        was with, or ``None`` where no source has named one.
-                        **The one column here that a rule MATCHES on** (plan
-                        step ``bank_import:X-f6a-3d``): a
-                        :class:`~app.models.merchant_rule
-                        .MerchantRule` is keyed by the same row, so
-                        *lines from this merchant go in this budget line* is a
-                        fact the owner states once.  It held the bank's string
-                        itself until plan step ``bank_import:X-gd-1``, when the
-                        merchant became a row -- so the string lives once and
-                        the two tables agree by id rather than by comparing two
-                        independently-widened copies of it.  **It stays on the
-                        LINE under the sighting relation** because it is the
-                        app's KEY rather than a source's word: minted from the
-                        first sighting that names a merchant word and absorbed
-                        from a later one only while NULL
-                        (``statement_import._record._absorb_gained_facts``);
-                        the WORD each source used is that sighting's own
-                        :attr:`StatementLineSighting.merchant`.
         sequence_in_group -- the ordinal that completes the identity key.
+
+    **The merchant a rule fires on is a READ over the sightings, and the key
+    is stored ONCE, on the sighting** (plan step ``bank_import:X-f6b-1b``,
+    ruling **R-BI16**, which amends R-BI10's "stays on the line" clause).
+    :attr:`merchant_id` and :attr:`merchant_name` are what the EARLIEST
+    surviving sighting that names a merchant says
+    (:attr:`StatementLineSighting.merchant_id`, by
+    :meth:`StatementImport.act_order`), so the merchant a
+    :class:`~app.models.merchant_rule.MerchantRule` is stated against does not
+    move when a later source shows a different word, and a deleted import
+    takes its own word with it and leaves nothing to repair.  *The key lived
+    HERE from plan step ``bank_import:X-gd-1`` (when the merchant became a
+    row) until X-f6b-1b: minted from the first sighting that named a word,
+    filled from a later one only while NULL -- a derived value stored beside
+    its source with no reconciler, so a line kept a key that a since-deleted
+    import had minted (finding **BI-504**).*
+
+    **Both reads are ONE SQL producer each, and nothing else derives them**
+    (``CLAUDE.md`` rule 14; R-BI16's "one SQL producer, read-only" option):
+    a ``column_property`` built by :func:`_stated_by_the_naming_sighting`,
+    correlated to this row explicitly, so ``line.merchant_id`` on a loaded
+    row and ``BankStatementLine.merchant_id`` in a ``filter``, ``group_by``
+    or ``distinct`` are the same subquery -- a reader in either dialect
+    reaches the one walk, and there is no Python re-derivation to agree
+    with it.  The ``hybrid_property`` over each is the SEAL: a
+    ``column_property`` accepts an assignment silently (measured 2026-09-18
+    on SQLAlchemy 2.0: the constructor kwarg and ``row.attr = x`` both land
+    in the instance and vanish at the next load), where the hybrid without a
+    setter raises ``AttributeError`` on both, so no writer can put a key on
+    a line.  **A loaded row's answer is as of its load**: the record door
+    expires :data:`READS_OVER_SIGHTINGS` on every held line after it stages
+    this import's sightings, and a locked read reloads them
+    (``statement_match._resolve.locked_for_write`` composes
+    ``populate_existing()``), which is the same rule the eager
+    :attr:`sightings` collection already lived under.
 
     **The facts a SOURCE states about a line are its sighting's**, read
     through :attr:`sightings` and exposed here once each so a reader holding a
@@ -481,77 +427,7 @@ class BankStatementLine(AccountScopedMixin, db.Model):
     """
 
     __tablename__ = "bank_statement_lines"
-    __table_args__ = (
-        # The SUPERKEY ``statement_match_members`` and
-        # ``statement_line_sightings`` name to prove their own ``account_id``
-        # is this line's (plan step ``bank_import:X-f6a-2``).  It constrains
-        # nothing -- ``id`` is already the primary key, so this key can reject
-        # no row -- and exists only because PostgreSQL requires a UNIQUE over
-        # exactly the referenced columns before a composite foreign key may
-        # target them.
-        db.UniqueConstraint(
-            "id", "account_id", name="uq_bank_statement_lines_id_account",
-        ),
-        # THE IDENTITY.  Re-importing an overlapping span cannot duplicate a
-        # line, structurally rather than by the importer remembering to check.
-        db.UniqueConstraint(
-            "account_id", "posted_on", "amount", "sequence_in_group",
-            name="uq_bank_statement_lines_identity",
-        ),
-        db.CheckConstraint(
-            "sequence_in_group >= 0",
-            name="ck_bank_statement_lines_sequence_non_negative",
-        ),
-        # A statement line MOVES money, and its figure is a REAL number.
-        # ``docs/coding-standards.md`` requires a CHECK on every financial
-        # column; the adapter's refusal of a line stating no amount is the
-        # Python half of the same rule.
-        #
-        # **The ``< 'NaN'`` term is the part that is not obvious, and a first
-        # draft of this constraint got it wrong.**  PostgreSQL's ``numeric``
-        # accepts ``NaN`` and orders it ABOVE every real number, so
-        # ``NaN <> 0`` is TRUE and ``NaN = NaN`` is TRUE -- a plain non-zero
-        # test admits it.  Since NaN sorts greatest, ``x < 'NaN'`` is true for
-        # every real value and false for NaN itself, which is what makes a NaN
-        # amount unrepresentable rather than merely unreached.  It matters
-        # because a NaN amount compares equal to nothing (invisible to every
-        # matcher), poisons ``SUM()`` over the account, and raises inside the
-        # money display macro -- so the page 500s on every later load.  The
-        # running balance carries the same term on its own table.
-        db.CheckConstraint(
-            "amount <> 0 AND amount < 'NaN'::numeric",
-            name="ck_bank_statement_lines_amount_real_nonzero",
-        ),
-        # This line's merchant is one of THIS ACCOUNT's, structurally (plan
-        # step ``bank_import:X-gd-1``).  Composite rather than a bare
-        # ``merchant_id`` FK so that "is this merchant on this account" is
-        # never a reader's check that can be forgotten.  ``MATCH SIMPLE``
-        # (PostgreSQL's default) is what lets it sit on a nullable column -- a
-        # line whose ``merchant_id`` is NULL satisfies it whatever
-        # ``account_id`` says, which is no source having named one.  The
-        # blank-name rule it replaces now lives once, on
-        # ``ck_merchants_name_not_blank``.
-        db.ForeignKeyConstraint(
-            ["merchant_id", "account_id"],
-            ["budget.merchants.id", "budget.merchants.account_id"],
-            name="fk_bank_statement_lines_merchant_account",
-        ),
-        # The walk reads a whole account in posted-day order.
-        db.Index(
-            "idx_bank_statement_lines_account_day",
-            "account_id", "posted_on",
-        ),
-        # The review screen groups an account's unexplained lines BY MERCHANT
-        # and resolves one rule per group (plan step ``bank_import:X-f6a-3d``,
-        # ``statement_match._rules``).  Partial, because a NULL merchant joins
-        # no rule and so is never looked up by this column.
-        db.Index(
-            "idx_bank_statement_lines_account_merchant",
-            "account_id", "merchant_id",
-            postgresql_where=db.text("merchant_id IS NOT NULL"),
-        ),
-        {"schema": "budget"},
-    )
+    __table_args__ = bank_statement_line_table_args
 
     id = db.Column(db.Integer, primary_key=True)
     # ``account_id`` is the mixin's: a direct CASCADE key since X-f6b-1.  The
@@ -562,46 +438,15 @@ class BankStatementLine(AccountScopedMixin, db.Model):
     # the wrong account.
     posted_on = db.Column(db.Date, nullable=False)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
-    # NULLABLE, and the NULL means "no source has named a merchant" rather
-    # than "unknown" -- see the class docstring for why that direction is the
-    # safe one on the fact a rule matches against.  No direct single-column
-    # key: the merchant is reached through a composite that also holds the
-    # ACCOUNT equal.
-    merchant_id = db.Column(db.Integer)
     # NO server default, deliberately.  A default on a component of the
     # IDENTITY key would let a future writer that forgets to compute the
     # ordinal write a plausible row instead of failing.
     sequence_in_group = db.Column(db.SmallInteger, nullable=False)
 
-    # **Eager and VIEWONLY** (plan step ``bank_import:X-gd-1``).  Eager because
-    # every reader that has a line wants what its merchant is CALLED -- the
-    # review screen renders 91 of them at once, and a lazy load there is the
-    # N+1 finding **N-309** already paid for.  Viewonly because the writer sets
-    # ``merchant_id`` from a resolved map (``statement_import._record``), so
-    # nothing assigns through this and the two relationships sharing
-    # ``account_id`` cannot contend over persisting it.
-    #
-    # **A writer that sets ``merchant_id`` may not then read
-    # :attr:`merchant_name` on the same instance**, and that is not a rule
-    # about ``viewonly`` -- it is what a loaded many-to-one does in any
-    # session: assigning the FK column does not move it, so the stale name
-    # survives until the instance is expired.  It cost a real test failure on
-    # 2026-08-25, where the arm under test was correct and the assertion read
-    # the object rather than the row.  No writer in ``app/`` reads it: both
-    # writers are in ``statement_import._record``, which sets the column and
-    # returns counts.  The direction the seam runs in is the whole reason this
-    # is viewonly.
-    merchant = db.relationship(
-        "Merchant",
-        # By NAME, because ``account_id`` is the mixin's column and is not a
-        # name in this class body.
-        foreign_keys="[BankStatementLine.merchant_id, "
-                     "BankStatementLine.account_id]",
-        lazy="joined", viewonly=True,
-    )
-    # **Eager, for the reason :attr:`merchant` is** (plan step
-    # ``bank_import:X-f6b-1``): every reader that has a line wants what the
-    # bank CALLED it, and every one of those facts is a sighting's now.
+    # **Eager** (plan step ``bank_import:X-f6b-1``): every reader that has a
+    # line wants what the bank CALLED it, and every one of those facts is a
+    # sighting's -- the review screen renders 91 lines at once, and a lazy
+    # load here is the N+1 finding **N-309** already paid for.
     # ``joined`` rather than ``selectinload`` so a reader that loads N lines still
     # issues ONE statement -- the property
     # ``test_reading_every_lines_merchant_is_ONE_statement`` grades -- and a
@@ -621,16 +466,67 @@ class BankStatementLine(AccountScopedMixin, db.Model):
         lazy="joined", cascade="all, delete-orphan", passive_deletes=True,
     )
 
-    @property
-    def merchant_name(self) -> "str | None":
+    #: The attributes a loaded line derives from its sightings, which a
+    #: writer that stages a new sighting of it must expire: the collection
+    #: itself, and the two projections of the naming sighting.  ONE spelling
+    #: (``CLAUDE.md`` rule 14), because the record door and the test builder
+    #: each expire exactly this set and neither may know the other's list.
+    READS_OVER_SIGHTINGS = (
+        "sightings",
+        "_BankStatementLine__named_merchant_id",
+        "_BankStatementLine__named_merchant_name",
+    )
+
+    @hybrid_property
+    def merchant_id(self):
+        """Return the merchant a rule on this line fires on, as its row id, or ``None``.
+
+        What the EARLIEST surviving sighting that names a merchant says
+        (ruling **R-BI16**; the class docstring says why that sighting and
+        not the latest).  ``None`` when no sighting names one, which is every
+        source saying it names none -- the direction a missing fact has to
+        fail in, because a NULL keys no rule.
+
+        **A READ-ONLY projection, and the seal is the whole point of the
+        hybrid**: there is no setter, so ``line.merchant_id = x`` and
+        ``BankStatementLine(merchant_id=x)`` both raise ``AttributeError``
+        rather than land a key on a line.  At class level it is the
+        ``column_property``'s own expression, so ``filter``, ``group_by``,
+        ``distinct`` and ``isnot(None)`` all read the one subquery.
+
+        Returns:
+            The merchant row's id, or ``None``.
+        """
+        return self.__named_merchant_id
+
+    @merchant_id.inplace.expression
+    @classmethod
+    def _merchant_id_expression(cls):
+        """Return the SQL form of :attr:`merchant_id`: the sealed ``column_property``."""
+        return cls.__named_merchant_id
+
+    @hybrid_property
+    def merchant_name(self):
         """Return what this line's merchant is CALLED, or ``None``.
 
-        The label half of the fact :attr:`merchant_id` is the key half of, so
-        a caller holding this row does not have to know that a merchant is a
-        row to print its name.  ``None`` exactly when :attr:`merchant_id` is,
-        which is no source having named one.
+        The label half of the fact :attr:`merchant_id` is the key half of,
+        read by the SAME producer (:func:`_stated_by_the_naming_sighting`,
+        projecting :attr:`~app.models.merchant.Merchant.name`), so a caller
+        holding this row does not have to know that a merchant is a row to
+        print its name and the two halves cannot come from two sightings.
+        ``None`` exactly when :attr:`merchant_id` is.  Read-only, for
+        :attr:`merchant_id`'s reason.
+
+        Returns:
+            The merchant row's name, or ``None``.
         """
-        return self.merchant.name if self.merchant is not None else None
+        return self.__named_merchant_name
+
+    @merchant_name.inplace.expression
+    @classmethod
+    def _merchant_name_expression(cls):
+        """Return the SQL form of :attr:`merchant_name`: the sealed ``column_property``."""
+        return cls.__named_merchant_name
 
     @property
     def current(self) -> "StatementLineSighting":
@@ -696,10 +592,10 @@ class StatementLineSighting(db.Model):
     by the sightings of the imports that showed it.*  The line is the bank's
     fact -- account, day, amount, ordinal; this row is one source's account of
     it: the wording that source wrote, the id it assigned, the day it says the
-    money was spent, the balance it stated after the line and the category it
-    filed the line under.  Two sources showing one line write two rows here
-    and one line there, and the app stops calling a second wording a
-    restatement.
+    money was spent, the balance it stated after the line, the category it
+    filed the line under and the merchant its word names.  Two sources
+    showing one line write two rows here and one line there, and the app
+    stops calling a second wording a restatement.
 
     Columns:
         account_id   -- the line's account and the import's, held equal to
@@ -708,11 +604,33 @@ class StatementLineSighting(db.Model):
         line_id      -- the :class:`BankStatementLine`.
         import_id    -- the :class:`StatementImport` that showed it.
         description  -- what this source called the line, verbatim.
-        merchant     -- the merchant WORD this source named, or ``None`` where
-                        it names none: the CSV's parenthesised token, the
-                        feed's ``payee``.  Provenance of this sighting; the
-                        KEY a rule fires on is the line's ``merchant_id``,
-                        minted from the first sighting that names a word.
+        merchant_id  -- the :class:`~app.models.merchant.Merchant` this
+                        source's merchant word names, or ``None`` where it
+                        names none: the CSV's parenthesised token, the feed's
+                        ``payee``, resolved to the account's row for that
+                        word by ``statement_import._merchants
+                        .resolve_merchants`` in the same pass that writes
+                        this row (plan step ``bank_import:X-f6b-1b``, ruling
+                        **R-BI16**).  **The KEY a rule fires on lives HERE
+                        and nowhere else**: the line's answer is a read over
+                        its sightings (:attr:`BankStatementLine.merchant_id`).
+                        The word itself lives once, on the merchant row --
+                        ``merchants.name`` is the source's word verbatim,
+                        written by one path and never edited -- so this row
+                        carried the word as a string from X-f6b-1 until
+                        X-f6b-1b and carries the key now (ruling **R-BI17**:
+                        the word column was two homes for one fact).  Held
+                        to THIS ACCOUNT's merchants by
+                        ``fk_statement_line_sightings_merchant_account``,
+                        composite for the reason the line's key was
+                        (``bank_import:X-gd-1``): *is this merchant on this
+                        account* is never a reader's check.  ``NO ACTION``,
+                        measured rather than reasoned about on the line's key
+                        (:class:`~app.models.merchant.Merchant`): a merchant a
+                        sighting names cannot be deleted from under it, and
+                        an account's deletion still succeeds because every
+                        cascade of that one statement completes before the
+                        check runs.
         transaction_on -- the day this source STATED the transaction itself
                         happened, or ``None`` where it states none.  **The
                         NULL is a fact and not a gap** (plan step
@@ -764,67 +682,7 @@ class StatementLineSighting(db.Model):
     """
 
     __tablename__ = "statement_line_sightings"
-    __table_args__ = (
-        # THE identity of a sighting: one per import per line.  A re-import
-        # of a file the app has already recorded writes one row per line here
-        # and nothing on the line, and this key is what makes writing it twice
-        # in one act impossible rather than checked.
-        db.UniqueConstraint(
-            "line_id", "import_id",
-            name="uq_statement_line_sightings_line_import",
-        ),
-        # This sighting's account IS its line's, guaranteed rather than
-        # maintained -- keyed onto ``uq_bank_statement_lines_id_account``.
-        # CASCADE: a line that goes takes what was said about it.
-        db.ForeignKeyConstraint(
-            ["line_id", "account_id"],
-            ["budget.bank_statement_lines.id",
-             "budget.bank_statement_lines.account_id"],
-            name="fk_statement_line_sightings_line_account",
-            ondelete="CASCADE",
-        ),
-        # ...and its import's, keyed onto ``uq_statement_imports_id_account``.
-        # CASCADE: deleting an import withdraws everything it said, and the
-        # line survives exactly when another import still says something.
-        db.ForeignKeyConstraint(
-            ["import_id", "account_id"],
-            ["budget.statement_imports.id",
-             "budget.statement_imports.account_id"],
-            name="fk_statement_line_sightings_import_account",
-            ondelete="CASCADE",
-        ),
-        # The lookup the record door makes before it pairs: where THIS SOURCE
-        # already holds each id the file states (``_record._held_ids``).
-        # Partial, because most adapters carry no external id.  **Not
-        # unique, and the line-level index it replaces was**: a re-import
-        # re-sights a line under the same id, which is two rows here and one
-        # line there.  The rule that a source names ONE line per id is the
-        # door's (``_record._refuse_moved_ids``), pinned by its tests.
-        db.Index(
-            "idx_statement_line_sightings_account_external_id",
-            "account_id", "external_id",
-            postgresql_where=db.text("external_id IS NOT NULL"),
-        ),
-        # Every per-import count reads this way: the sightings one import
-        # wrote, the lines it alone holds, the merchants its lines name.
-        db.Index("idx_statement_line_sightings_import", "import_id"),
-        # Every per-ACCOUNT derivation reads this way (the first and sole
-        # import of each line, the counts, the record door's id lookup), and
-        # the two composite keys index nothing of their own.  Trivial at one
-        # CSV's 306 rows; the daily feed writes a row per line per sync.
-        db.Index(
-            "idx_statement_line_sightings_account_line",
-            "account_id", "line_id",
-        ),
-        # The stated figure is a REAL number or absent, the same term the
-        # line's own amount carries and for the same reason (see
-        # ``ck_bank_statement_lines_amount_real_nonzero``).
-        db.CheckConstraint(
-            "running_balance IS NULL OR running_balance < 'NaN'::numeric",
-            name="ck_statement_line_sightings_running_balance_real",
-        ),
-        {"schema": "budget"},
-    )
+    __table_args__ = statement_line_sighting_table_args
 
     id = db.Column(db.Integer, primary_key=True)
     # No direct FK: the two composite keys above reach ``budget.accounts``
@@ -834,7 +692,12 @@ class StatementLineSighting(db.Model):
     line_id = db.Column(db.Integer, nullable=False)
     import_id = db.Column(db.Integer, nullable=False)
     description = db.Column(db.String(200), nullable=False)
-    merchant = db.Column(db.String(100))
+    # NULLABLE, and the NULL means "this source names no merchant" rather
+    # than "unknown" -- see :class:`BankStatementLine` for why that direction
+    # is the safe one on the fact a rule matches against.  No direct
+    # single-column key: the merchant is reached through the composite above,
+    # which also holds the ACCOUNT equal.
+    merchant_id = db.Column(db.Integer)
     transaction_on = db.Column(db.Date)
     external_id = db.Column(db.String(64))
     running_balance = db.Column(db.Numeric(12, 2))
@@ -844,14 +707,16 @@ class StatementLineSighting(db.Model):
         "BankStatementLine", back_populates="sightings",
         foreign_keys=[line_id, account_id],
     )
-    # **Eager and VIEWONLY**, the shape :attr:`BankStatementLine.merchant`
-    # takes and for its reason: every reader that holds a sighting asks which
+    # **Eager and VIEWONLY**: every reader that holds a sighting asks which
     # import it belongs to -- to order the sightings of one line
     # (:attr:`BankStatementLine.current`) and to know which SOURCE showed it
     # (``_record._reconcile`` pairs within a source) -- so a lazy load here is
-    # one statement per sighting on every list surface; and viewonly because
-    # :attr:`line` already persists ``account_id`` and two relationships
-    # writing one column would contend.
+    # one statement per sighting on every list surface (finding **N-309**);
+    # and viewonly because :attr:`line` already persists ``account_id`` and
+    # two relationships writing one column would contend.  No relationship
+    # onto the merchant row, deliberately: nothing holding a sighting asks
+    # its merchant's name -- the line's two projections read it in SQL
+    # (:func:`_stated_by_the_naming_sighting`).
     statement_import = db.relationship(
         "StatementImport", foreign_keys=[import_id, account_id],
         lazy="joined", viewonly=True,
@@ -979,3 +844,93 @@ class StatementLineSighting(db.Model):
             f"<StatementLineSighting line={self.line_id} "
             f"import={self.import_id} '{self.description[:24]}'>"
         )
+
+
+def _stated_by_the_naming_sighting(column):
+    """Return *column* as the EARLIEST sighting naming a merchant states it, per line.
+
+    **THE one producer of a line's merchant** (plan step
+    ``bank_import:X-f6b-1b``, ruling **R-BI16**): a scalar subquery over the
+    line's sightings that name a merchant, joined to their imports for the
+    act order and to the merchant row for its name, taking the first by
+    :meth:`StatementImport.act_order`.  Both of
+    :class:`BankStatementLine`'s projections are built here, so the key and
+    the label a reader gets off one row come from the SAME sighting by
+    construction rather than by two derivations agreeing.
+
+    **Correlated to the line EXPLICITLY, and that is load-bearing.**  A
+    scalar subquery auto-correlates every table the enclosing statement also
+    selects from, and one reader encloses this in a statement that joins
+    the sightings and the imports itself
+    (``statement_match._vocabulary.account_payment_merchants`` files a line
+    under a category by ANY of its sightings).  Measured 2026-09-18 on that
+    reader, four ways: written with an IMPLICIT ``FROM`` (every table named
+    only in the ``WHERE``) and left to auto-correlate, the inner sightings
+    ARE the outer joined row and the set holds the filing sighting's
+    merchant instead of the line's -- the silent wrong answer; the explicit
+    ``select_from(...).join(...)`` chain below happens to survive
+    auto-correlation, because a ``JOIN`` is one ``FROM`` element the outer
+    statement does not hold; and ``correlate(BankStatementLine)`` is correct
+    under BOTH forms, because it names the one table that IS the enclosing
+    row and keeps every other in the subquery's own ``FROM``, where it
+    shadows the outer one.  So the correlate is the guarantee and the join
+    chain is the shape; a rewrite that drops both is what
+    ``test_the_set_holds_the_LINES_merchant_not_the_filing_sightings``
+    (``tests/test_services/test_statement_match/test_bars.py``) fails on.
+    The composite joins and the order are the model's own spellings
+    (:meth:`StatementLineSighting.of_its_line`, :meth:`~StatementLineSighting
+    .of_its_import`, :meth:`StatementImport.act_order`), not a second one.
+
+    Args:
+        column: The column to project off the naming sighting's row or its
+            merchant's -- :attr:`StatementLineSighting.merchant_id` or
+            :attr:`~app.models.merchant.Merchant.name`.
+
+    Returns:
+        The scalar subquery, ``NULL`` for a line no sighting names a merchant
+        on.
+    """
+    return (
+        select(column)
+        .select_from(StatementLineSighting)
+        .join(StatementImport, StatementLineSighting.of_its_import())
+        .join(
+            Merchant,
+            and_(
+                StatementLineSighting.merchant_id == Merchant.id,
+                StatementLineSighting.account_id == Merchant.account_id,
+            ),
+        )
+        .where(
+            StatementLineSighting.of_its_line(),
+            StatementLineSighting.merchant_id.isnot(None),
+        )
+        .order_by(*StatementImport.act_order())
+        .limit(1)
+        .correlate(BankStatementLine)
+        .scalar_subquery()
+    )
+
+
+# **The two projections, mapped after both classes exist**, because the
+# producer names the sighting relation and the merchant row and a class body
+# cannot name a class declared below it (SQLAlchemy's documented "append a
+# column_property to a mapped class" form).  The names are DOUBLE-underscored
+# and spelled here in their mangled form, and that is the seal rather than a
+# style (the pattern ``Transaction.__estimated_amount`` set): a
+# ``column_property`` accepts an assignment silently, so the guessable
+# spellings -- ``row._named_merchant_id``, ``row.named_merchant_id`` -- bind
+# plain instance attributes that reach no mapped state and the next read
+# exposes, while the public :attr:`BankStatementLine.merchant_id` refuses a
+# write outright.
+# Pylint: ``protected-access`` -- the mangled attribute is this class's own,
+# assigned at module scope only because the producer must be built after
+# ``StatementLineSighting`` and ``Merchant`` are declared; no other module
+# reaches it, and the hybrids above are its only readers.
+BankStatementLine._BankStatementLine__named_merchant_id = column_property(  # pylint: disable=protected-access
+    _stated_by_the_naming_sighting(StatementLineSighting.merchant_id),
+)
+# Pylint: ``protected-access`` -- as above, for the label projection.
+BankStatementLine._BankStatementLine__named_merchant_name = column_property(  # pylint: disable=protected-access
+    _stated_by_the_naming_sighting(Merchant.name),
+)

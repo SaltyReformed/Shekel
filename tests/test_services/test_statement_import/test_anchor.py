@@ -183,7 +183,6 @@ def _seed_import(db, account, *, stated=None, effective_on=None,
             account_id=account.id,
             posted_on=day,
             amount=Decimal(amount),
-            merchant_id=None,
             sequence_in_group=ordinal,
         )
         db.session.add(line)

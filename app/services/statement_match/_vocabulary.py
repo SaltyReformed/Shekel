@@ -90,7 +90,14 @@ def account_payment_merchants(account_id: int) -> "frozenset[int]":
     seam).  **A line is filed under a category by a SIGHTING of it** since
     plan step ``bank_import:X-f6b-1``: the read walks line -> sighting ->
     import, and a line qualifies when ANY import of a source filed it under
-    that source's card-payment words.  **What narrows the read to this
+    that source's card-payment words.  **The merchant it answers with is the
+    LINE's** -- the earliest surviving sighting's, the read
+    :attr:`~app.models.statement_import.BankStatementLine.merchant_id` is
+    (ruling **R-BI16**) -- and not the filing sighting's, because the bar
+    this set feeds is asked of a line's merchant
+    (:meth:`~._bars.CreationBars.bar_for`); the two are one sighting's
+    except where two sources named a known line two words, and the line's
+    answer is the one the bar is asked about.  **What narrows the read to this
     account is the explicit filter on the LINE**, not the joins: an
     adversarial review 2026-08-24 measured a first version of this sentence
     claiming a composite key made the narrowing structural, and reducing the
@@ -123,7 +130,10 @@ def account_payment_merchants(account_id: int) -> "frozenset[int]":
         .join(StatementImport, StatementLineSighting.of_its_import())
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant_id.isnot(None),
+            # Pylint: ``no-member`` -- a false positive on a hybrid: pylint
+            # infers the getter function, where at class level this is the
+            # sealed ``column_property``'s own expression (R-BI16).
+            BankStatementLine.merchant_id.isnot(None),  # pylint: disable=no-member
             db.or_(*filed_as),
         )
         .distinct()

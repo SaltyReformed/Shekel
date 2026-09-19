@@ -15,6 +15,8 @@ a case below: the identity key, the composite foreign keys, and the fact that a
 merchant row OUTLIVES the lines that named it.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from app.models.merchant import Merchant
@@ -24,6 +26,8 @@ from app.services.statement_import._merchants import resolve_merchants
 from tests._test_helpers import capture_sql_statements
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    a_merchant,
+    a_sighting,
     an_import,
 )
 
@@ -92,13 +96,19 @@ class TestTheIdentity:
         assert "ck_merchants_name_not_blank" in str(caught.value)
 
 
-class TestALineNamesAMerchantOfItsOwnAccount:
-    """``fk_bank_statement_lines_merchant_account``, and the NULL beside it."""
+class TestASightingNamesAMerchantOfItsOwnAccount:
+    """``fk_statement_line_sightings_merchant_account``, and the NULL beside it.
 
-    def test_ANOTHER_ACCOUNTS_merchant_is_unwritable_on_a_line(
+    The key a rule fires on is stored once, on the SIGHTING (plan step
+    ``bank_import:X-f6b-1b``, ruling **R-BI16**); the composite that held the
+    line's key to the line's account from ``bank_import:X-gd-1`` holds the
+    sighting's to the sighting's now.
+    """
+
+    def test_ANOTHER_ACCOUNTS_merchant_is_unwritable_on_a_sighting(
         self, app, db, seed_user, seed_second_user,
     ):
-        """Composite, for the reason the import key beside it is composite.
+        """Composite, for the reason the line key beside it is composite.
 
         A bare ``merchant_id`` foreign key is satisfied perfectly well by
         another account's merchant, and *is this merchant on this account* would
@@ -112,14 +122,17 @@ class TestALineNamesAMerchantOfItsOwnAccount:
         db.session.flush()
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement, amount="-9.99")
-        line.merchant_id = theirs.id
+        [sighting] = line.sightings
+        sighting.merchant_id = theirs.id
 
         with pytest.raises(Exception) as caught:
             db.session.flush()
 
-        assert "fk_bank_statement_lines_merchant_account" in str(caught.value)
+        assert "fk_statement_line_sightings_merchant_account" in str(
+            caught.value,
+        )
 
-    def test_a_line_naming_NO_merchant_satisfies_the_key(
+    def test_a_sighting_naming_NO_merchant_satisfies_the_key(
         self, app, db, seed_user,
     ):
         """``MATCH SIMPLE`` is what lets the composite sit on a nullable column.
@@ -128,6 +141,7 @@ class TestALineNamesAMerchantOfItsOwnAccount:
         fact has to fail in, and it has to remain writable beside a key that
         also names ``account_id`` -- PostgreSQL's default match rule is what
         makes that so rather than a partial constraint somebody maintains.
+        The line's read answers ``None`` for both halves.
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement, amount="-9.99", merchant=None)
@@ -135,6 +149,106 @@ class TestALineNamesAMerchantOfItsOwnAccount:
 
         assert line.merchant_id is None
         assert line.merchant_name is None
+
+
+class TestALinesMerchantIsAReadOverItsSightings:
+    """``BankStatementLine.merchant_id`` and ``merchant_name``: one SQL producer, sealed.
+
+    Ruling **R-BI16** (plan step ``bank_import:X-f6b-1b``).  The line's
+    merchant is what the EARLIEST surviving sighting that names one says, in
+    SQL and on a loaded row alike, and nothing can put a key on a line.
+    """
+
+    def test_the_EARLIEST_naming_sighting_answers_not_the_latest_or_the_lowest_id(
+        self, app, db, seed_user,
+    ):
+        """The three orders that could be confused, told apart in one case.
+
+        The EARLIEST import by act order names ``Food Lion``; the LATEST
+        names ``Walmart``; a sighting in between names none.  The later
+        import's sighting is written FIRST, so "earliest act", "lowest
+        sighting id" and "latest act" are three different rows.  FIRING
+        CONTROL: flip ``_stated_by_the_naming_sighting``'s order to
+        newest-first and the line reads ``Walmart``.
+        """
+        earliest = an_import(
+            seed_user, created_at=datetime(2026, 3, 1, 12, tzinfo=timezone.utc),
+        )
+        between = an_import(
+            seed_user, created_at=datetime(2026, 3, 2, 12, tzinfo=timezone.utc),
+        )
+        latest = an_import(
+            seed_user, created_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc),
+        )
+        line = a_bank_line(seed_user, latest, amount="-9.99", merchant="Walmart")
+        a_sighting(seed_user, between, line, merchant=None)
+        a_sighting(seed_user, earliest, line, merchant="Food Lion")
+        db.session.flush()
+        db.session.expire_all()
+
+        read = db.session.get(BankStatementLine, line.id)
+
+        assert read.merchant_name == "Food Lion"
+        assert read.merchant_id == a_merchant(seed_user, "Food Lion").id
+        assert db.session.query(BankStatementLine.merchant_name).filter(
+            BankStatementLine.id == line.id,
+        ).scalar() == "Food Lion"
+
+    def test_a_key_cannot_be_put_on_a_line(self, app, db, seed_user):
+        """THE SEAL: the constructor kwarg and the assignment both refuse.
+
+        A ``column_property`` accepts both silently (measured 2026-09-18 on
+        SQLAlchemy 2.0: the value sits on the instance until the next load),
+        which is the stale-cache shape the step deletes; the hybrid over it
+        has no setter.  Delete the hybrid and expose the projection under the
+        public name, and both statements below pass without error.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(seed_user, statement, amount="-9.99")
+        merchant = a_merchant(seed_user, "Food Lion")
+
+        with pytest.raises(AttributeError):
+            line.merchant_id = merchant.id
+        with pytest.raises(AttributeError):
+            line.merchant_name = "Food Lion"
+        with pytest.raises(AttributeError):
+            BankStatementLine(
+                account_id=line.account_id, posted_on=line.posted_on,
+                amount=line.amount, sequence_in_group=1,
+                merchant_id=merchant.id,
+            )
+        assert line.merchant_id is None
+
+    def test_deleting_the_naming_import_moves_the_answer_to_the_survivor(
+        self, app, db, seed_user,
+    ):
+        """Finding **BI-504**, closed at the root: nothing to repair.
+
+        A line two imports showed under two words; the FIRST import goes.
+        The line's merchant is the survivor's word, read, not a key the dead
+        import minted -- the stored copy kept the dead import's key until
+        this step.  The sightings go by cascade here, as the delete door's
+        own statement takes them.
+        """
+        first = an_import(
+            seed_user, created_at=datetime(2026, 3, 1, 12, tzinfo=timezone.utc),
+        )
+        second = an_import(
+            seed_user, created_at=datetime(2026, 3, 2, 12, tzinfo=timezone.utc),
+        )
+        line = a_bank_line(seed_user, first, amount="-9.99", merchant="COFFEE")
+        a_sighting(seed_user, second, line, merchant="Coffee Shop")
+        db.session.flush()
+        db.session.expire_all()
+        assert db.session.get(BankStatementLine, line.id).merchant_name == "COFFEE"
+
+        db.session.delete(db.session.get(type(first), first.id))
+        db.session.flush()
+        db.session.expire_all()
+
+        read = db.session.get(BankStatementLine, line.id)
+        assert read.merchant_name == "Coffee Shop"
+        assert [sighting.import_id for sighting in read.sightings] == [second.id]
 
 
 class TestWhatDeletingOneCosts:
@@ -145,14 +259,16 @@ class TestWhatDeletingOneCosts:
     merchants and its lines are removed by the same statement.
     """
 
-    def test_a_merchant_a_LINE_names_may_not_be_deleted(
+    def test_a_merchant_a_SIGHTING_names_may_not_be_deleted(
         self, app, db, seed_user,
     ):
         """A line's merchant is not a thing that can vanish under it.
 
         ``CASCADE`` here would have declared the opposite -- that deleting a
-        merchant deletes bank lines -- which is false of what any door in
-        ``app/`` does and dangerous if it ever became reachable.
+        merchant deletes what a source said about a bank line -- which is
+        false of what any door in ``app/`` does and dangerous if it ever
+        became reachable.  The referrer is the sighting since plan step
+        ``bank_import:X-f6b-1b`` (ruling **R-BI16**).
         """
         statement = an_import(seed_user)
         line = a_bank_line(
@@ -165,7 +281,9 @@ class TestWhatDeletingOneCosts:
         with pytest.raises(Exception) as caught:
             db.session.flush()
 
-        assert "fk_bank_statement_lines_merchant_account" in str(caught.value)
+        assert "fk_statement_line_sightings_merchant_account" in str(
+            caught.value,
+        )
 
     def test_deleting_the_ACCOUNT_still_succeeds(
         self, app, db, seed_user, seed_second_user,
@@ -268,14 +386,17 @@ class TestARuleIsAboutAMerchantOfItsOwnAccount:
 
 
 class TestReadingALinesMerchantCostsNoSecondStatement:
-    """``BankStatementLine.merchant`` is EAGER, and that was a comment only.
+    """``BankStatementLine.merchant_name`` rides in the line's own statement.
 
-    An adversarial review of 2026-08-25 measured the claim ungraded: switching
-    ``lazy="joined"`` to ``lazy="select"`` left the targeted suites green while
-    tripling their wall-clock, because every reader that holds a line reads
-    what its merchant is called.  The review screen renders 91 unexplained
-    lines at once, so the lazy shape is finding **N-309**'s N+1 on the path
-    this step created.
+    An adversarial review of 2026-08-25 measured the claim ungraded on the
+    relationship this read was then: switching ``lazy="joined"`` to
+    ``lazy="select"`` left the targeted suites green while tripling their
+    wall-clock, because every reader that holds a line reads what its
+    merchant is called.  The review screen renders 91 unexplained lines at
+    once, so a per-line load is finding **N-309**'s N+1 on the path this step
+    created.  Since plan step ``bank_import:X-f6b-1b`` the name is a
+    ``column_property`` -- a subquery in the SELECT list -- and the case
+    grades the same claim: make it ``deferred`` and each read loads it.
     """
 
     def test_reading_every_lines_merchant_is_ONE_statement(
@@ -318,10 +439,10 @@ class TestResolvingWordsToRows:
     ):
         """TOTAL over the words asked about, which both writers index on.
 
-        ``_stage_lines`` and ``_absorb_gained_facts`` look every word up
-        directly rather than carrying a fallback, so a mapping missing one of
-        them would be a ``KeyError`` mid-import rather than a wrong row -- but
-        only after the import row had been written.
+        ``_sighting_of`` looks every word up directly rather than carrying a
+        fallback, so a mapping missing one of them would be a ``KeyError``
+        mid-import rather than a wrong row -- but only after the import row
+        had been written.
         """
         account_id = seed_user["account"].id
         first = resolve_merchants(account_id, {"Food Lion"})

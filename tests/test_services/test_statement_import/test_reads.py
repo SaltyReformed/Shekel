@@ -17,7 +17,7 @@ figure rendered to the user and it was asserted nowhere, so summing absolute
 values instead of signed ones would have gone unnoticed.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -50,6 +50,13 @@ from app.services.statement_import._reads import (
     lines_by_import,
     matches_by_import,
     orphan_merchants_by_import,
+)
+
+from tests.test_services.test_statement_match._builders import (
+    a_bank_line,
+    a_merchant,
+    a_sighting,
+    an_import,
 )
 
 from . import _csv_builder as build
@@ -258,6 +265,37 @@ class TestTheTwoReadsTheDeleteConfirmationSharesWithTheAct:
 
         assert orphans == {first.import_id: [big_cheese.id]}
         assert second.import_id not in orphans
+
+    def test_a_merchant_only_ONE_imports_sighting_names_is_that_imports_even_where_the_line_survives(
+        self, app, db, seed_user,
+    ):
+        """The read is over the SIGHTINGS, not the lines' derived merchant.
+
+        One line two imports showed under two words (ruling **R-BI16**):
+        deleting the first takes its sighting, the line survives on the
+        second's, and ``COFFEE`` is then named by nothing -- so it is the
+        first import's to orphan, although the LINE is not the first
+        import's to remove.  A read grouped by the line's derived merchant
+        would attribute ``COFFEE`` to neither (two imports sight the line)
+        and the delete door would leave a merchant no sighting names.
+        """
+        account = seed_user["account"]
+        first = an_import(
+            seed_user, created_at=datetime(2026, 4, 1, 12, tzinfo=timezone.utc),
+        )
+        second = an_import(
+            seed_user, created_at=datetime(2026, 4, 2, 12, tzinfo=timezone.utc),
+        )
+        line = a_bank_line(seed_user, first, amount="-4.50", merchant="COFFEE")
+        a_sighting(seed_user, second, line, merchant="Coffee Shop")
+        db.session.flush()
+        coffee = a_merchant(seed_user, "COFFEE")
+        coffee_shop = a_merchant(seed_user, "Coffee Shop")
+
+        orphans = orphan_merchants_by_import(account.id)
+
+        assert orphans == {first.id: [coffee.id], second.id: [coffee_shop.id]}
+        assert lines_by_import(account.id) == {}
 
     def test_an_ANSWERED_merchant_is_attributed_to_NO_import(
         self, app, db, seed_user,

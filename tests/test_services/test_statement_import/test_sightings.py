@@ -166,7 +166,7 @@ class TestThePairingWithinASource:
             seed_user, earlier, posted_on=_DAY, amount="-25.00",
             description="OLD WORDING", sequence_in_group=0,
         )
-        a_sighting(later, line, description="NEW WORDING")
+        a_sighting(seed_user, later, line, description="NEW WORDING")
         recorded = _recorded(db, seed_user)
 
         assert _pair_group([_incoming("NEW WORDING")], recorded, secu).held == [
@@ -420,7 +420,7 @@ class TestWhatALineReadsOffItsSightings:
             source_category="Later/Category",
         )
         old = a_sighting(
-            earlier, line, description="WHAT IT CALLED IT THEN",
+            seed_user, earlier, line, description="WHAT IT CALLED IT THEN",
             source_category="Earlier/Category", running_balance="1.00",
         )
         [new] = [s for s in line.sightings if s.id != old.id]
@@ -444,9 +444,12 @@ class TestWhatALineReadsOffItsSightings:
             description="X", sequence_in_group=0,
             transaction_on=date(2026, 3, 1),
         )
-        a_sighting(second, line, description="X", transaction_on=None)
+        a_sighting(seed_user, second, line, description="X", transaction_on=None)
         third = an_import(seed_user)
-        a_sighting(third, line, description="X", transaction_on=date(2026, 2, 27))
+        a_sighting(
+            seed_user, third, line, description="X",
+            transaction_on=date(2026, 2, 27),
+        )
 
         db.session.expire_all()
         assert db.session.get(BankStatementLine, line.id).transaction_on == (
@@ -470,7 +473,7 @@ class TestWhatALineReadsOffItsSightings:
                 seed_user, statement, posted_on=_DAY, amount="-25.00",
                 description=f"LINE {ordinal}", sequence_in_group=ordinal,
             )
-            a_sighting(again, line, description=f"LINE {ordinal} AGAIN")
+            a_sighting(seed_user, again, line, description=f"LINE {ordinal} AGAIN")
         db.session.flush()
         db.session.expire_all()
 
@@ -503,7 +506,7 @@ class TestWhatALineReadsOffItsSightings:
                 seed_user, statement, posted_on=_DAY, amount="-25.00",
                 description=f"LINE {ordinal}", sequence_in_group=ordinal,
             )
-            a_sighting(again, line, description=f"LINE {ordinal} AGAIN")
+            a_sighting(seed_user, again, line, description=f"LINE {ordinal} AGAIN")
         db.session.flush()
         db.session.expire_all()
 

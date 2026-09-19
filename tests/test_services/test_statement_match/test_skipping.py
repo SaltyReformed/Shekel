@@ -1156,7 +1156,7 @@ class TestTheReaderOverWhatTheDoorsRecorded:
         # LATEST and its wording is what each line reads.
         again = an_import(seed_user)
         for ordinal, line in enumerate(lines):
-            a_sighting(again, line, description=f"LINE {ordinal} AGAIN")
+            a_sighting(seed_user, again, line, description=f"LINE {ordinal} AGAIN")
         db.session.flush()
 
         acts = skipped_acts(owner_id, account_id, limit=2)
