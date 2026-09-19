@@ -8,13 +8,15 @@ earliest row (the series did not exist yet).  Escrow line versions
 (:mod:`app.services.escrow_calculator`) and a card's APR rows
 (:mod:`app.services.card_apr`) both resolve through it; it was spelled in
 each until plan step credit_card:CC-3's review found the second copy (rule 14:
-one walk).  Two more spellings of the family remain, each with a fallback of
-its own -- :func:`app.services.rate_period_engine._rate_at_date` (a base
-rate before the first row) and
-:func:`app.services.template_amount_service._version_in_effect` (the series
-holds FLAT before its first row) -- and folding them onto this leaf is
-ledger row **BAL-524**'s, owned by plan step ``balance:X-ct`` (filed
-2026-09-18).
+one walk).  Six more spellings of the family remain, four with a fallback of their
+own and two with this leaf's ``None`` -- three in
+:mod:`app.services.rate_period_engine` (``_rate_at_date``,
+``_recorded_pi_at_date``, ``period_for_date``), one in
+:mod:`app.services.amortization_engine._projection` (``_governing_terms``)
+and two in :mod:`app.services.template_amount_service`
+(``_version_in_effect``, ``build_amount_history``) -- and folding them onto
+this leaf is ledger row **BAL-524**'s, owned by plan step ``balance:X-ct``
+(filed 2026-09-18; the row lists each with its fallback).
 
 A leaf: the standard library only.
 """
