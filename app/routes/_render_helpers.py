@@ -348,17 +348,21 @@ def _page_account_override() -> int | None:
 
     **What makes reading ``account_id`` off ANY host page safe is a census,
     and the census is this paragraph** (the re-review of CC-4-2 asked for
-    it): the fragments that reach :func:`fragment_balance_line` are issued
-    only from ``/grid`` (where ``?account_id=`` IS the balance line) and from
-    ``/companion/*`` (no ``account_id``, and a companion is answered ``None``
-    before the header is read).  ``/analytics/calendar`` reads an
-    ``account_id`` with another meaning and issues no such fragment; every
-    ``accounts.*`` page carries its id as a PATH parameter, so its query is
-    empty.  A page that later gains both a cell fragment and an
-    ``account_id`` filter of its own -- the dashboard's bills at CC-4-3 are
-    the candidate -- must either name the balance line's meaning for that
-    parameter or scope this read to the grid's path; it is a deliberate
-    decision, not a free ride.
+    it; re-taken at CC-4-3): the fragments that reach
+    :func:`fragment_balance_line` are issued only from ``/grid`` (where
+    ``?account_id=`` IS the balance line) and from ``/companion/*`` (no
+    ``account_id``, and a companion is answered ``None`` before the header is
+    read).  ``/analytics/calendar`` reads an ``account_id`` with the SAME
+    meaning since plan step CC-4-3 -- the balance line within the set -- and
+    issues no such fragment; the dashboard reads the set with no
+    ``account_id`` of its own and issues no cell fragment (its two fragments,
+    the anchor form and the pulse section, carry no id on the PAGE's URL;
+    the anchor form's rides on the FRAGMENT's);
+    every ``accounts.*`` page carries its id as a PATH parameter, so its
+    query is empty.  A page that later gains both a cell fragment and an
+    ``account_id`` with another meaning must either name the balance line's
+    meaning for that parameter or scope this read to the grid's path; it is
+    a deliberate decision, not a free ride.
 
     Returns:
         The page's ``account_id`` query value, or ``None``.
