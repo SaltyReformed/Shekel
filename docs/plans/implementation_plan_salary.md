@@ -11,16 +11,17 @@ rules are `conventions.md`, its findings are `ledger.md` rows whose `arc` reads 
 **`R18-c` shipped 2026-09-16 (`34ad4bda`, ticked 2026-09-18): every payroll line carries a start and
 an optional end on its own rule** -- after `R18-a` (`ef0dc831`) renamed the storage to
 `salary.paycheck_lines` and `R18-b` (`ad9fed61`) seeded the two EARNING kinds with the engine's one
-line pass. `R18-d`, the operator runbook that moves the phone allowance onto a line, is the
-developer's act and NOW; `S9` (the blank start stored as blank, **R-SAL39**) waits on
-`recurrence:R21`. Before `R18`, `R15` (`77901fe0`) made a deduction's FREQUENCY a recurrence rule on
-the row and `S3-f-4` (`329b663d`) shipped `S3`. Archived spans, all under `historical/`: `R15`
-(`salary_r15_as_built_2026-09-14.md`), `S3` and `S3-f` (`salary_s3_as_built_2026-09-13.md`,
-`salary_s3f_as_built_2026-09-13.md`), `C12` (`salary_c12_as_built_2026-09-18.md`), `R14`
-(`salary_r14_as_built_2026-09-11.md`), `S3-e-2` (`salary_s3e2_as_built_2026-09-11.md`) and `S2`
-(`salary_s2_as_built_2026-09-04.md`). Nine steps were re-filed or minted into this arc when it was
-created (**R-SAL1**), with their ledger rows and the four `balance:X-au-d` findings that had no arc
-to go to.
+line pass. `R18-d`, the operator act, was PERFORMED 2026-09-19 (`0345fbae`; the line nets `$40.73`
+in the app against `$39.54` on the stub, **SAL-564**, a fork for the developer); **S11** (the stub
+transcribed, **R-SAL41**, absorbing `S1`) is next at #11; `S9` (the blank start stored as blank,
+**R-SAL39**) waits on `recurrence:R21`. Before `R18`, `R15` (`77901fe0`) made a deduction's
+FREQUENCY a recurrence rule on the row and `S3-f-4` (`329b663d`) shipped `S3`. Archived spans, all
+under `historical/`: `R15` (`salary_r15_as_built_2026-09-14.md`), `S3` and `S3-f`
+(`salary_s3_as_built_2026-09-13.md`, `salary_s3f_as_built_2026-09-13.md`), `C12`
+(`salary_c12_as_built_2026-09-18.md`), `R14` (`salary_r14_as_built_2026-09-11.md`), `S3-e-2`
+(`salary_s3e2_as_built_2026-09-11.md`) and `S2` (`salary_s2_as_built_2026-09-04.md`). Nine steps
+were re-filed or minted into this arc when it was created (**R-SAL1**), with their ledger rows and
+the four `balance:X-au-d` findings that had no arc to go to.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** Section 0 states this
 arc's own reasons, which that table resolves against. Which steps are in production is a MEASUREMENT
@@ -128,24 +129,31 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
 - [x] **S2** `08638f61` -- the `-$19.28` was a DELETED calibration, not the engine; no single
       calibration reproduces the record. Closed **N-442**, opened **N-535**, ruled **R-SAL9**.
       As-built: `historical/salary_s2_as_built_2026-09-04.md`.
-- [ ] **S1 -- a calibration is a DATED OBSERVATION and is never destroyed** (**R-SAL9**, amending
-      **R-SAL4**; findings **N-441**, **N-535**, and **N-530**'s calibration kind).
-      `salary.calibration_overrides` carries effective rates derived from ONE stub on ONE date and
-      stores no date, so entering a stub restates every paycheck the owner ever had: `+$29.09` on
-      each of seven RECEIVED paychecks, visible since `balance:X-au-d` made a settled row's plan a
-      derivation. **And the write door REPLACES**, so the stub that priced the eleven earlier
-      paychecks is already gone (**N-535**, measured at S2). Three parts, ruled 2026-09-04: an
-      effective date on the row, backfilled at its stub's date; the calibration deleted 2026-08-28
-      RESTORED from `system.audit_log` id 4212's `old_data` as a second dated row; and the door made
-      to ADD rather than replace. The engine then resolves the calibration in force for each period
-      as it resolves a raise, and all 12 settled paychecks re-derive to their generated figure.
-      **Dating the survivor ALONE was rejected**: it resolves no calibration before 2026-08-27 and
-      costs `-$334.32` on the 2026 net total the projection page and the cockpit show.
-      **It can never move a balance** (a settled row is worth what it recorded); what moves is the
-      EXPECTED figure and the variance beside it. The row's "derived effective rates" that nothing
-      recomputes (**N-530**) are decided here: the rates derive from the stub's stated figures at
-      read, or the stub's figures are the stored fact and the rates go (**balance:R-IY**). A
-      migration; own review pass.
+- [ ] **S11 -- a calibration is the STUB TRANSCRIBED, line by line, dated** (**R-SAL41**, amending
+      **R-SAL9**; finding **SAL-564**; absorbs `S1`'s **N-441**, **N-535**, **N-530**). Today a
+      calibration is four whole-paycheck EFFECTIVE rates read off one stub and applied to every
+      paycheck, so a `$45.00` taxable line is withheld at 9.481% (`$4.27`, net `$40.73`) where the
+      employer withholds the marginal dollar near the statutory 11.64% (`$5.24`; the stub's `$5.46`,
+      net `$39.54`) -- measured at `R18-d` (`historical/salary_r18d_as_performed_2026-09-19.md`).
+      **Design (the developer, 2026-09-19):** a calibration is a DATED STUB entered line by line --
+      base gross, each earning line, each pre-tax deduction, each tax, each post-tax deduction,
+      net -- stored as the stub's figures (the rate columns go, **N-530**, `balance:R-IY`). A
+      projected paycheck of the SAME SHAPE as a stub (the same lines present) is priced at that
+      stub's exact amounts, base pay scaled by the raise in force; a shape no stub shows is priced
+      from the nearest stub plus the statutory marginal rates (FICA, the state's flat rate, the
+      federal bracket's marginal rate) for the lines that differ; where two stubs bracket a line,
+      the line's true net is READ as their difference and no rate is applied.
+      **`S1`'s three clauses stand here:** every stub row is dated at its stub's date and applies
+      FORWARD (**R-SAL4**); no row is ever destroyed and the door ADDS (the 2026-08-28 deletion,
+      audit 4212, and the 2026-09-19 one, audit 12422, are RESTORED from `old_data` as dated rows;
+      two stubs on one date is a state the door must rule on); all 12 settled paychecks re-derive to
+      their generated figure, measured before the old table goes.
+      **Decomposed by its lane's design loop** (the table, the door, the engine's calibrated path,
+      the migration and the restore each a leaf); the first leaf opens with the developer's
+      2026-08-27 and 2026-10-08 stubs transcribed. **Verification:** the 2026-10-08 paycheck prices
+      at its stub's net once entered; the 2026-09-24 paycheck at the 2026-08-27 stub's; the phone
+      line's net reads `$39.54` off the pair; `tests/manual/measure_r18d_phone_line.py` before and
+      after.
 - [x] **R14** `e0f0c05f` -- the DECOMPOSED parent of a deduction's gross (**R-SAL6**); closed
       **D45**. Archived: `historical/salary_r14_as_built_2026-09-11.md`.
   - [x] **R14-a** `9e81d9e7` -- an employer contribution NAMES its funding profile (**R-SAL5**);
@@ -213,12 +221,12 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
       `compute_gap_net_biweekly` and the take-home-rate chip scale BASE by a net-over-gross ratio
       that mixes two figures since R-SAL38; the final-year net becomes the engine's own. `$0.00`
       until an earning line exists; its own step because R18's leaves were ruled.
-- [ ] **R18 -- a paycheck is BASE PAY plus a LIST OF LINES** (finding **D59**; ruling **R-SAL38**,
-      six forks, 2026-09-15): the DECOMPOSED parent, R-SAL35's shape, four leaves. A line's kind is
-      its position in the waterfall (taxable earning, pre-tax deduction, post-tax deduction,
-      after-tax earning); a percentage line is a percentage of BASE PAY, never of gross (worked:
-      base `$3,631.74`, +`$45` taxable phone allowance, 6% of base `$217.90` against `$220.60` of
-      gross). One deposit becomes one app row, the population `bank_import:X-gj-3a` was built for.
+- [x] **R18 -- a paycheck is BASE PAY plus a LIST OF LINES.** `0345fbae` -- ticked with R18-d, its
+      last leaf (finding **D59** closed; ruling **R-SAL38**, six forks, 2026-09-15): the DECOMPOSED
+      parent, R-SAL35's shape, four leaves. A line's kind is its position in the waterfall (taxable
+      earning, pre-tax deduction, post-tax deduction, after-tax earning); a percentage line is a
+      percentage of BASE PAY, never of gross (worked: base `$3,631.74`, +`$45` taxable, 6% of base
+      `$217.90` against `$220.60` of gross). One deposit is one app row (`bank_import:X-gj-3a`).
   - [x] **R18-a** `ef0dc831` -- the storage rename (`paycheck_lines`, `paycheck_line_kinds`;
         migration `0a4d2c3e89f8`), byte-identical over the 64 saved paychecks; `$0.00`.
   - [x] **R18-b** `ad9fed61` -- the two earning kinds (migration `6c15d2a97b78`), the engine's one
@@ -227,8 +235,11 @@ readers of one paycheck disagreeing. Each is a state the model cannot express.
   - [x] **R18-c** `34ad4bda` -- every line's start and optional end on its own rule (R-SAL30 /
         R-SAL31 amended; no migration, no engine change: the door was missing); the drive
         `d97ca1b5`; `$0.00`. Surfaced the blank-start question -> **R-SAL39**, **SAL-562**, `S9`.
-  - [ ] **R18-d** the OPERATOR runbook: Josh ends the Phone template as of August 2026 and enters
-        the `$45.00` taxable line, monthly first paycheck, start 2026-09-01. **MOVES MONEY**.
+  - [x] **R18-d** `0345fbae` -- the OPERATOR act, performed 2026-09-19: the Phone template ends
+        2026-09-18 after its Received September row; the `$45.00` taxable line runs from the 09-10
+        period, first paycheck of a month. **MOVED MONEY** (23 projected paychecks `+$40.73`; the
+        stub nets `$39.54`, **SAL-564**). Record:
+        `historical/salary_r18d_as_performed_2026-09-19.md`.
 - [x] **C12** `945651c2` -- one current-paycheck producer (**R-SAL25**-**R-SAL28**); closed **P62**,
       **P63**, **P64**'s engine half. As it stood: `historical/salary_c12_as_built_2026-09-18.md`.
 - [x] **C12-a** `26a7b816` -- the engine package (**R-SAL27**, **R-SAL28**); NO FIGURE MOVED.
