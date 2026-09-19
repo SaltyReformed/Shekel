@@ -41,6 +41,7 @@ from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    create_account_of_type,
     create_transfer,
     one_off_row_of,
     record_paydays_across_a_hole,
@@ -1048,6 +1049,166 @@ class TestPulseStillDue:
 
 
 # ── Street: period day-span and today's offset, shared basis ────────
+
+
+class TestTheBillsAreThePaychecksAcrossTheSet:
+    """The upcoming bills read the owner's cash-flow set (plan step CC-4-3).
+
+    Developer ruling ``credit_card:R-CC16``: a plan item's ``account_id`` is
+    the account its money is expected to move through, so the phone bill
+    that is always paid by card is a row ON the card -- and a dashboard
+    that read one account's rows dropped it from what the paycheck still
+    owes.  The bills are the set's now, through the one clause
+    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`); the hero,
+    the chart and the trough stay the BALANCE line's, the primary.  Every
+    case below plants a card, because an owner with none is a set of one
+    and cannot tell the clause from the filter it replaced.
+    """
+
+    @staticmethod
+    def _card(seed_user, db_session):
+        """Create an active Credit Card account for *seed_user*."""
+        return create_account_of_type(
+            seed_user, db_session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+
+    @staticmethod
+    def _expense_on(seed_user, period, account, name, amount, due_date):
+        """Place a projected one-off EXPENSE row on *account* in *period*."""
+        return one_off_row_of(
+            period, name=name, amount=Decimal(amount),
+            user_id=seed_user["user"].id, account_id=account.id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            due_date=due_date,
+        )
+
+    def test_a_bill_on_the_card_is_a_bill_the_paycheck_owes(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A projected expense ON the card is due-soon and still-due.
+
+        Rent $300.00 on checking due 03-22 and the phone bill $45.00 on the
+        card due 03-25, both in the current period: still-due for the
+        current period is 300.00 + 45.00 = $345.00, the due-soon list holds
+        both rows in due-date order, and the hero is still checking's --
+        the balance line is one account's whatever the rows are.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            period = seed_periods[_CURRENT_IDX]
+            self._expense_on(
+                seed_user, period, seed_user["account"], "Rent", "300.00",
+                date(2026, 3, 22),
+            )
+            self._expense_on(
+                seed_user, period, card, "Phone", "45.00", date(2026, 3, 25),
+            )
+            db.session.commit()
+
+            section = dashboard_section(seed_user["user"].id)
+            assert section.cash_flow.member_ids == (
+                seed_user["account"].id, card.id,
+            )
+            assert section.account.id == seed_user["account"].id
+
+            result = dashboard_service.compute_pulse_section(section)
+            assert result["still_due"]["current_period"] == Decimal("345.00")
+            assert [b["name"] for b in result["due_soon"]] == ["Rent", "Phone"]
+            assert result["hero"]["account_id"] == seed_user["account"].id
+
+    def test_a_transfer_between_members_is_one_bill_from_the_balance_lines_side(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Ruling R-CC23 on the bills: the far leg is not a bill.
+
+        A $165.00 checking -> card payment is ONE obligation, checking's
+        expense shadow (the Gate B4b transfer-out rule); the card's income
+        shadow is income-typed and the far leg, twice excluded.  A $40.00
+        card -> checking transfer is NO bill: checking's shadow is income
+        and the card's expense shadow is the far leg -- the second view of an
+        act the balance line's side already shows.  Still-due is $165.00 and
+        the due-soon list holds exactly the one transfer row.  Under the
+        ``account_id IN members`` filter without the far-leg arm the card's
+        $40.00 shadow would be a bill and the total $205.00.
+
+        The transfer doors refuse a transfer OUT of a card (plan step CC-10),
+        so the $40.00 card -> checking transfer is the representable-but-
+        refused shape and its state is PLANTED, the way the legacy-source
+        tests plant theirs: created from a helper Savings account INTO
+        checking (allowed), then its source and its expense shadow re-pointed
+        onto the card by assignment, past the door.  The savings account is
+        not a member of the set and holds no transaction row once the shadow
+        has moved.  The plant carries its own tell, because an UN-planted
+        fixture (helper -> checking, never re-pointed) reads the same $165.00
+        with or without the far-leg arm and would grade nothing.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            period = seed_periods[_CURRENT_IDX]
+            create_transfer(
+                seed_user, db.session, seed_user["account"], card, period,
+                amount=Decimal("165.00"), due_date=date(2026, 3, 24),
+            )
+            helper = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            out_of_card = create_transfer(
+                seed_user, db.session, helper, seed_user["account"], period,
+                amount=Decimal("40.00"), due_date=date(2026, 3, 21),
+            )
+            db.session.flush()
+            out_of_card.from_account = card
+            next(
+                s for s in out_of_card.shadow_transactions
+                if s.account_id == helper.id
+            ).account = card
+            db.session.commit()
+            assert out_of_card.from_account_id == card.id
+            assert {s.account_id for s in out_of_card.shadow_transactions} == {
+                card.id, seed_user["account"].id,
+            }
+
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
+            )
+            assert result["still_due"]["current_period"] == Decimal("165.00")
+            bills = result["due_soon"]
+            assert len(bills) == 1
+            assert bills[0]["is_transfer"] is True
+            assert bills[0]["amount"] == Decimal("165.00")
+
+    def test_a_set_of_one_is_the_old_filter(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """With no card the bills are checking's alone, as before the step.
+
+        The byte-identity claim in a unit test's shape: a $300.00 checking
+        row and a $75.00 row on a SAVINGS account (an owned cash-flow
+        account that is not a member) -- still-due reads $300.00 and the
+        savings row is not a bill.
+        """
+        with app.app_context():
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+            )
+            period = seed_periods[_CURRENT_IDX]
+            self._expense_on(
+                seed_user, period, seed_user["account"], "Rent", "300.00",
+                date(2026, 3, 22),
+            )
+            self._expense_on(
+                seed_user, period, savings, "Fee", "75.00", date(2026, 3, 23),
+            )
+            db.session.commit()
+
+            section = dashboard_section(seed_user["user"].id)
+            assert section.cash_flow.member_ids == (seed_user["account"].id,)
+
+            result = dashboard_service.compute_pulse_section(section)
+            assert result["still_due"]["current_period"] == Decimal("300.00")
+            assert [b["name"] for b in result["due_soon"]] == ["Rent"]
 
 
 class TestPulseStreet:

@@ -22,6 +22,7 @@ from app.models.category import Category
 from app.models.ref import Status
 from app.routes._render_helpers import (
     fragment_amounts,
+    fragment_balance_line,
     render_transaction_cell,
 )
 from app.schemas.validation import (
@@ -248,6 +249,12 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         ),
         can_edit=can_edit,
         id_prefix=card_prefix,
+        # The BALANCE LINE the card's account chip is decided against (plan
+        # step credit_card:CC-4-2): the balance line of the page this card
+        # lands on, or ``None`` for a companion -- by the row's OWNER, not by
+        # ``can_edit``, which is a render-routing field the form posts.  The
+        # one resolution the desktop cell and the transfer cell share.
+        account=fragment_balance_line(owner_id),
         # The USER's civil day, never the process's.  This reaches
         # ``grid/_transaction_entries.html``'s add-purchase form as the
         # ``purchased_on`` default and both pickers' ``max``, and

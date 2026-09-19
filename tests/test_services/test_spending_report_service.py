@@ -24,6 +24,7 @@ from sqlalchemy import event
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -32,7 +33,9 @@ from app.services import (
     spending_analysis,
     spending_report_service,
     status_seam,
+    transfer_service,
 )
+from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import PayCalendar
 from app.utils.dates import display_today
 from app.services.cash_ledger import derived_amount_basis
@@ -67,6 +70,7 @@ from app.services.spending_report_service._window import (
 )
 from tests._test_helpers import (
     add_entry,
+    create_account_of_type,
     create_envelope_txn,
     create_savings_account,
     create_settled_transfer,
@@ -80,6 +84,7 @@ from tests._test_helpers import (
     pay_periods_hydrated,
     record_paydays_across_a_hole,
     rhythm_of,
+    set_default_grid_account,
     settle_day_columns,
     settlement_columns,
     settlement_if_settling,
@@ -93,9 +98,12 @@ from tests._test_helpers import (
 def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db, seed_user, period, name, category_key, estimated,
     *, actual=None, status_enum=StatusEnum.DONE, is_income=False,
-    is_deleted=False, due_date=None, settled_on=None,
+    is_deleted=False, due_date=None, settled_on=None, account=None,
 ):
     """Create one transaction for report testing (settled expense by default).
+
+    *account* places the row on another of the owner's accounts (a card, a
+    savings account); the seed's checking account by default.
 
     A row in a SETTLED status carries the whole record -- the day, the figure
     and how that figure is known -- resolved through the one door a bare-built
@@ -119,7 +127,7 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         name=name,
         amount=planned,
         user_id=period.user_id,
-        account_id=seed_user["account"].id,
+        account_id=(account or seed_user["account"]).id,
         scenario_id=seed_user["scenario"].id,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         category_id=cat_id,
@@ -212,6 +220,7 @@ class TestBreakdown:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report.hero.spent_total == Decimal("2000.00")
             # Ordered by amount descending.
@@ -249,6 +258,7 @@ class TestBreakdown:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             auto = _group(report, "Auto")
             assert auto.amount == Decimal("400.00")
@@ -288,6 +298,7 @@ class TestBreakdown:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             home = _group(report, "Home")
             tied = [
@@ -323,6 +334,7 @@ class TestBreakdown:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report.hero.spent_total == Decimal("500.00")
             assert len(report.breakdown) == 1
@@ -345,6 +357,7 @@ class TestBreakdown:
             report = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="month", month=1, year=2026),
+                user_settings=None,
             )
             assert report.hero.spent_total == Decimal("1200.00")
             assert report.scope.window_label == "January 2026"
@@ -368,6 +381,7 @@ class TestBreakdown:
             february = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="month", month=2, year=2026),
+                user_settings=None,
             )
             assert february.hero.spent_total == Decimal("150.00")
             assert february.breakdown[0].items[0].item_name == "Rent"
@@ -375,6 +389,7 @@ class TestBreakdown:
             january = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="month", month=1, year=2026),
+                user_settings=None,
             )
             assert january.hero.spent_total == Decimal("0")
 
@@ -406,6 +421,7 @@ class TestSurprises:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             rows = report.surprises.rows
             assert [r.name for r in rows] == ["Rent", "Car"]
@@ -431,6 +447,7 @@ class TestSurprises:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert len(report.surprises.rows) == _MAX_SURPRISES
             assert report.surprises.rows[0].delta == Decimal("60.00")
@@ -457,6 +474,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             assert report.hero.spent_total == Decimal("1500.00")
             assert report.hero.vs_prior.baseline == Decimal("1000.00")
@@ -471,6 +489,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report.hero.vs_prior.baseline is None
             assert report.hero.vs_prior.delta is None
@@ -488,6 +507,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             assert report.hero.vs_prior.baseline == Decimal("0")
             assert report.hero.vs_prior.delta == Decimal("800.00")
@@ -509,6 +529,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[6]),
+                user_settings=None,
             )
             assert report.hero.vs_average.baseline == Decimal("350.00")
             assert report.hero.vs_average.delta == Decimal("650.00")
@@ -522,6 +543,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report.hero.vs_average.baseline is None
             assert report.hero.vs_average.pct is None
@@ -548,6 +570,7 @@ class TestHero:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             timing = report.hero.payment_timing
             assert timing["total_bills_paid"] == 2
@@ -565,11 +588,13 @@ def _calendar_scope(paydays, cadence_days=14, user_id=1):
     ``_series_windows`` reads the scope's CALENDAR and nothing else, so the
     three window arms are exercised over hand-written paydays rather than
     through a fixture -- which is what lets the cases below name an exact
-    expected id list per slot.  The account and scenario ids are never read
-    on this path.
+    expected id list per slot.  The cash-flow set and the scenario id are
+    never read on this path: the set is one unsaved account row, the
+    placeholder ``account_id=1`` was until plan step CC-4-3.
     """
     return _ScopeIds(
-        user_id=user_id, account_id=1, scenario_id=1,
+        user_id=user_id, cash_flow=CashFlowSet.single(Account(id=1)),
+        scenario_id=1,
         calendar=PayCalendar.from_paydays(paydays, eras_of(paydays, cadence_days), user_id, history_opens_on=None),
     )
 
@@ -801,6 +826,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                 seed_user["user"].id,
                 SpendingWindow(window_type="pay_period",
                                period_id=foreign[5].id),
+                               user_settings=None,
             )
 
             assert [point.window for point in report.series[:-1]] == (
@@ -852,6 +878,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                     pay_periods_hydrated() as hydrated:
                 compute_spending_report(
                     seed_user["user"].id, _pp_window(seed_periods[9]),
+                    user_settings=None,
                 )
 
             assert len(selects) == 1, "\n".join(selects)
@@ -886,14 +913,17 @@ class TestTheChartReadsTheDerivedOrdinal:
             _txn(db, seed_user, seed_periods[1], "B", "Rent", "200.00")
             db.session.commit()
 
+            # The set of one account is the old single-account filter, byte
+            # for byte (plan step CC-4-3); the assertion is about the loader.
+            cash_flow = CashFlowSet.single(seed_user["account"])
             with pay_periods_hydrated() as hydrated:
                 by_period = spending_analysis.query_settled_expenses(
                     seed_user["scenario"].id,
                     [seed_periods[0].id, seed_periods[1].id],
-                    seed_user["account"].id,
+                    cash_flow,
                 )
                 by_span = spending_analysis.query_settled_expenses_in_span(
-                    seed_user["scenario"].id, seed_user["account"].id,
+                    seed_user["scenario"].id, cash_flow,
                     seed_user["user"].id,
                     seed_periods[0].start_date, last_covered_day(seed_periods[1]),
                 )
@@ -934,6 +964,7 @@ class TestSeries:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[2]),
+                user_settings=None,
             )
             series = report.series
             assert len(series) == _CHART_WINDOW_COUNT
@@ -965,6 +996,7 @@ class TestSeries:
             report = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="month", month=3, year=2026),
+                user_settings=None,
             )
             series = report.series
             # Apr 2025 .. Dec 2025: before the user's first period.
@@ -995,6 +1027,7 @@ class TestSeries:
             report = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="year", year=2026),
+                user_settings=None,
             )
 
             assert [p.window.year for p in report.series] == list(
@@ -1026,6 +1059,7 @@ class TestSeries:
             report = compute_spending_report(
                 seed_user["user"].id,
                 SpendingWindow(window_type="month", month=3, year=2026),
+                user_settings=None,
             )
             assert report.hero.vs_prior.baseline == Decimal("0")
             assert report.hero.vs_prior.delta == Decimal("300.00")
@@ -1059,6 +1093,7 @@ class TestDeltas:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             assert [g.group_name for g in report.breakdown] == ["Home", "Auto"]
             home = _group(report, "Home")
@@ -1099,6 +1134,7 @@ class TestDeltas:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             home = _group(report, "Home")
             assert home.amount == Decimal("150.00")
@@ -1124,6 +1160,7 @@ class TestDeltas:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             rows = report.changes
             assert [r.item_name for r in rows] == [
@@ -1154,6 +1191,7 @@ class TestDeltas:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[1]),
+                user_settings=None,
             )
             assert [r.item_name for r in report.changes] == [
                 "Car Payment", "Rent",
@@ -1180,6 +1218,7 @@ class TestDeltas:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             tied = [
                 row.group_name for row in report.breakdown
@@ -1254,6 +1293,7 @@ class TestScopeAndContracts:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report.scope.account_id == seed_user["account"].id
             assert report.scope.account_name == "Checking"
@@ -1271,6 +1311,7 @@ class TestScopeAndContracts:
         with app.app_context():
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
             assert report is not None
             assert report.breakdown == []
@@ -1288,11 +1329,12 @@ class TestScopeAndContracts:
         """No resolvable checking account -> None (empty state, not a crash)."""
         with app.app_context():
             with patch(
-                "app.services.spending_report_service.resolve_analytics_account",
+                "app.services.spending_report_service.resolve_cash_flow_set",
                 return_value=None,
             ):
                 report = compute_spending_report(
                     seed_user["user"].id, _pp_window(seed_periods[0]),
+                    user_settings=None,
                 )
             assert report is None
 
@@ -1305,6 +1347,7 @@ class TestScopeAndContracts:
             ):
                 report = compute_spending_report(
                     seed_user["user"].id, _pp_window(seed_periods[0]),
+                    user_settings=None,
                 )
             assert report is None
 
@@ -1316,10 +1359,185 @@ class TestScopeAndContracts:
                 compute_spending_report(
                     seed_user["user"].id,
                     SpendingWindow(window_type="bogus"),
+                    user_settings=None,
                 )
 
 
 # ── Comparison value object ──────────────────────────────────────────
+
+
+class TestTheReportReadsTheCashFlowSet:
+    """Where the money went is the paycheck's across the set (plan step CC-4-3).
+
+    Developer ruling ``credit_card:R-CC16``: the phone bill that is always
+    paid by card is a row ON the card, so a report that read one account's
+    settled rows left it out of where the money went.  Both window queries
+    read the owner's cash-flow set now, through the one clause
+    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`) -- graded
+    once per query, a pay-period window and a month window -- and the scope
+    names the BALANCE account, the primary.  Every case plants a card,
+    because an owner with none is a set of one and cannot tell the clause
+    from the filter it replaced.
+    """
+
+    @staticmethod
+    def _card(seed_user, db_session):
+        """Create an active Credit Card account for *seed_user*."""
+        return create_account_of_type(
+            seed_user, db_session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+
+    def test_a_settled_bill_on_the_card_is_where_the_money_went(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A pay-period window: Rent 500.00 on checking + Phone 45.00 on the card.
+
+        spent_total = 500.00 + 45.00 = 545.00, both categories in the
+        breakdown, and the scope still names Checking -- the rows are the
+        set's, the name one member's.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            _txn(db, seed_user, seed_periods[0], "Rent", "Rent", "500.00")
+            _txn(
+                db, seed_user, seed_periods[0], "Phone", "Groceries", "45.00",
+                account=card,
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("545.00")
+            assert {g.group_name for g in report.breakdown} == {"Home", "Family"}
+            assert report.scope.account_id == seed_user["account"].id
+            assert report.scope.account_name == "Checking"
+
+    def test_the_month_window_reads_the_same_set(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The span query too: January 2026 holds both rows, 545.00.
+
+        ``seed_periods[0]`` starts 2026-01-02, so both rows attribute to
+        January by the COALESCE rule; the sibling query above is the
+        pay-period arm, this is the one every live render runs.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            _txn(db, seed_user, seed_periods[0], "Rent", "Rent", "500.00")
+            _txn(
+                db, seed_user, seed_periods[0], "Phone", "Groceries", "45.00",
+                account=card,
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="month", month=1, year=2026),
+                user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("545.00")
+
+    def test_a_transfer_between_members_is_counted_once_from_the_lines_side(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Ruling R-CC23 on the report: the far leg is not spending.
+
+        A settled $165.00 checking -> card payment is one settled expense,
+        checking's shadow (the card's is income-typed and the far leg).  A
+        settled $40.00 card -> checking transfer is NO spending here:
+        checking's shadow is income and the card's expense shadow is the far
+        leg.  spent_total = 165.00; without the far-leg arm the card's 40.00
+        shadow would count too, 205.00.
+
+        The transfer doors refuse a transfer OUT of a card (plan step CC-10),
+        so the $40.00 card -> checking transfer is the representable-but-
+        refused shape and its state is PLANTED, the way the legacy-source
+        tests plant theirs: created Projected from a helper Savings account
+        INTO checking (allowed), its source and its expense shadow re-pointed
+        onto the card by assignment, and only THEN settled through
+        ``update_transfer`` -- the settle half of ``create_settled_transfer``,
+        split out because the order is load-bearing: the covering movement
+        a settle writes on each shadow's own account (plan step
+        balance:X-bi-3a) would FOLLOW a later re-point (the parent-account
+        key cascades ON UPDATE), but the posted ledger books the pair off
+        ``xfer.from_account_id`` at settle time and does not follow one, so
+        settle-then-re-point would leave a leg on the helper's ledger
+        account.  Neither reader here reads postings; the order is kept so
+        the planted state is whole.  The savings account is
+        not a member of the set and holds no transaction row once the shadow
+        has moved.  The plant carries its own tell, because an UN-planted
+        fixture (helper -> checking, never re-pointed) reads the same $165.00
+        with or without the far-leg arm and would grade nothing.
+        """
+        with app.app_context():
+            card = self._card(seed_user, db.session)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], card,
+                seed_periods[0], amount=Decimal("165.00"),
+            )
+            helper = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            out_of_card = create_transfer(
+                seed_user, db.session, helper, seed_user["account"],
+                seed_periods[0], amount=Decimal("40.00"),
+            )
+            db.session.flush()
+            out_of_card.from_account = card
+            next(
+                s for s in out_of_card.shadow_transactions
+                if s.account_id == helper.id
+            ).account = card
+            db.session.flush()
+            transfer_service.update_transfer(
+                out_of_card.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            assert out_of_card.from_account_id == card.id
+            assert {s.account_id for s in out_of_card.shadow_transactions} == {
+                card.id, seed_user["account"].id,
+            }
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("165.00")
+
+    def test_the_default_reads_the_saved_default_grid_account(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The scope is the set's PRIMARY, read off the settings row passed.
+
+        ``resolve_analytics_account`` read "first active checking" and no
+        settings row.  With the row passed, an HYSA saved as the default is
+        the scope; with ``None`` the chain runs without that layer and
+        checking answers.
+        """
+        with app.app_context():
+            hysa = create_account_of_type(
+                seed_user, db.session, "HYSA", "Rainy Day",
+                anchor_balance=Decimal("1000.00"),
+            )
+            settings = set_default_grid_account(
+                db.session, seed_user["user"].id, hysa.id,
+            )
+            db.session.commit()
+
+            with_layer = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=settings,
+            )
+            without = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
+            )
+            assert with_layer.scope.account_name == "Rainy Day"
+            assert without.scope.account_name == "Checking"
 
 
 class TestComparison:
@@ -1925,6 +2143,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),
+                user_settings=None,
             )
 
             assert report is not None

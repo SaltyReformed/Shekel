@@ -21,6 +21,7 @@ from flask_login import current_user
 
 from app import ref_cache
 from app.enums import EmployerContributionTypeEnum, RecurrenceUnitEnum
+from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
@@ -319,8 +320,20 @@ def create_contribution_transfer(account_id):
     # ``IntegrityError`` instead of that helper's redirect.
     author_rule(contribution_cadence, calendar, template)
 
-    # Generate transfers for existing pay periods.
-    generate_transfers_for_all_periods(template)
+    # Generate transfers for existing pay periods.  The recurrence engine
+    # fans out through ``create_transfer``, which refuses a transfer OUT of
+    # an amortizing loan and, since plan step credit_card:CC-10, out of a
+    # credit card -- and the dashboard's "From" picker offers every active
+    # account, so a user can choose either.  Roll back the flushed rule /
+    # template and flash, exactly as ``loan.create_payment_transfer`` does;
+    # unhandled, the refusal was a 500 on a clean user action (found by
+    # CC-10's adversarial review; the loan case had the same hole).
+    try:
+        generate_transfers_for_all_periods(template)
+    except (NotFoundError, ShekelValidationError) as exc:
+        db.session.rollback()
+        flash(f"Could not create the recurring transfer: {exc}", "danger")
+        return redirect(url_for("investment.dashboard", account_id=account_id))
 
     db.session.commit()
 

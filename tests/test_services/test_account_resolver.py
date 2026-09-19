@@ -21,11 +21,13 @@ from app.models.user import UserSettings
 from app.services.account_resolver import (
     is_cash_flow_account,
     list_grid_accounts,
-    resolve_analytics_account,
+    resolve_analytics_cash_flow_set,
+    resolve_cash_flow_set,
     resolve_grid_account,
     serves_cash_detail,
 )
 from app.services import account_service
+from tests._test_helpers import create_account_of_type, set_default_grid_account
 
 
 def _create_mortgage_account(seed_user, name="Mortgage", sort_order=0):
@@ -358,10 +360,16 @@ class TestAnalyticsKindGate:
     ``$178,103.41`` against ``$177,277.97`` owed.  That is finding B-3
     on the surface ruling D4's enumeration missed.
 
-    Unlike the grid resolver, this one does NOT fall through to
-    checking: an explicit ``account_id`` asks about THAT account, so
+    Unlike the grid resolver, this one does NOT fall through to the
+    primary: an explicit ``account_id`` asks about THAT account, so
     answering with another account's balance would be a wrong answer
     rather than a missing one.
+
+    **The resolver is ``resolve_analytics_cash_flow_set`` since plan step
+    credit_card:CC-4-3** (``resolve_analytics_account`` before it): the same
+    four claims, graded on the set twin -- and two the twin adds, the
+    saved-default layer the old resolver never read and a member on the
+    line.
     """
 
     def test_explicit_amortizing_loan_returns_none(self, app, db, seed_user):
@@ -369,8 +377,8 @@ class TestAnalyticsKindGate:
         with app.app_context():
             loan = _create_mortgage_account(seed_user)
 
-            assert resolve_analytics_account(
-                seed_user["user"].id, loan.id,
+            assert resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, loan.id,
             ) is None
 
     def test_refused_loan_does_not_fall_through_like_the_grid(
@@ -386,7 +394,8 @@ class TestAnalyticsKindGate:
         resolvers against one loan in one test is what gives the
         distinction teeth -- asserting ``None`` alone would still pass
         if the analytics gate were changed to fall through and then
-        happened to return ``None`` for another reason.
+        happened to return ``None`` for another reason.  The grid's SET
+        entry is driven too, because that is the walk the twin shares.
         """
         with app.app_context():
             loan = _create_mortgage_account(seed_user)
@@ -395,16 +404,24 @@ class TestAnalyticsKindGate:
             grid = resolve_grid_account(
                 seed_user["user"].id, None, override_account_id=loan.id,
             )
-            analytics = resolve_analytics_account(
-                seed_user["user"].id, loan.id,
+            grid_set = resolve_cash_flow_set(
+                seed_user["user"].id, None, loan.id,
+            )
+            analytics = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, loan.id,
             )
 
             assert grid is not None
             assert grid.id == checking_id
+            assert grid_set.balance.id == checking_id
             assert analytics is None
 
     def test_explicit_cash_account_still_resolves(self, app, db, seed_user):
-        """The gate refuses ONLY amortizing kinds, not every explicit id."""
+        """The gate refuses ONLY amortizing kinds, not every explicit id.
+
+        A savings account is an owned cash-flow account OUTSIDE the set, so
+        the answer is its own single-account view: a set of one.
+        """
         with app.app_context():
             savings_type = db.session.query(AccountType).filter_by(
                 name="Savings",
@@ -421,24 +438,83 @@ class TestAnalyticsKindGate:
             db.session.add(savings)
             db.session.commit()
 
-            result = resolve_analytics_account(
-                seed_user["user"].id, savings.id,
+            result = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, savings.id,
             )
             assert result is not None
-            assert result.id == savings.id
+            assert result.balance.id == savings.id
+            assert result.member_ids == (savings.id,)
 
     def test_fallback_branch_unaffected_by_a_loan(self, app, db, seed_user):
         """``account_id=None`` still resolves checking when a loan exists.
 
-        The fallback is CHECKING-typed by construction, so the gate has
+        The primary chain never lands on an amortizing kind, so the gate has
         nothing to add there; this pins that adding it changed nothing.
         """
         with app.app_context():
             _create_mortgage_account(seed_user)
 
-            result = resolve_analytics_account(seed_user["user"].id, None)
+            result = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, None,
+            )
             assert result is not None
-            assert result.id == seed_user["account"].id
+            assert result.balance.id == seed_user["account"].id
+            assert result.member_ids == (seed_user["account"].id,)
+
+    def test_default_reads_the_saved_default_grid_account(
+        self, app, db, seed_user,
+    ):
+        """The default is the set's PRIMARY: the saved default grid account.
+
+        ``resolve_analytics_account`` read "first active checking" and no
+        settings row, so a saved ``default_grid_account_id`` moved the grid
+        and not the calendar (plan step CC-4-3 closes that second spelling).
+        With the settings row passed, an HYSA saved as the default is the
+        balance line; with ``None`` passed the chain runs without that layer
+        and checking answers -- the two arms of one call, so the test can
+        tell the layer apart from the seed's own order.
+        """
+        with app.app_context():
+            hysa = create_account_of_type(
+                seed_user, db.session, "HYSA", "Rainy Day",
+                anchor_balance=Decimal("1000.00"),
+            )
+            settings = set_default_grid_account(
+                db.session, seed_user["user"].id, hysa.id,
+            )
+
+            with_layer = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, settings, None,
+            )
+            without = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, None,
+            )
+
+            assert with_layer.balance.id == hysa.id
+            assert without.balance.id == seed_user["account"].id
+
+    def test_a_member_goes_on_the_line_behind_the_sets_rows(
+        self, app, db, seed_user,
+    ):
+        """An explicit id naming a CARD keeps the set and puts the card on the line.
+
+        The grid's meaning of ``?account_id=`` (ruling R-CC16): the same
+        paycheck, seen from the card.  Graded on the twin because its
+        refusal arm sits in front of the shared walk, and a refusal written
+        one comparison too wide would turn every member into a 404.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+
+            result = resolve_analytics_cash_flow_set(
+                seed_user["user"].id, None, card.id,
+            )
+
+            assert result.balance.id == card.id
+            assert result.member_ids == (seed_user["account"].id, card.id)
 
 
 class TestServesCashDetail:
