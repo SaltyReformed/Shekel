@@ -33,6 +33,7 @@ from app.services import (
     spending_analysis,
     spending_report_service,
     status_seam,
+    transfer_service,
 )
 from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import PayCalendar
@@ -1450,6 +1451,22 @@ class TestTheReportReadsTheCashFlowSet:
         checking's shadow is income and the card's expense shadow is the far
         leg.  spent_total = 165.00; without the far-leg arm the card's 40.00
         shadow would count too, 205.00.
+
+        The transfer doors refuse a transfer OUT of a card (plan step CC-10),
+        so the $40.00 card -> checking transfer is the representable-but-
+        refused shape and its state is PLANTED, the way the legacy-source
+        tests plant theirs: created Projected from a helper Savings account
+        INTO checking (allowed), its source and its expense shadow re-pointed
+        onto the card by assignment, and only THEN settled through
+        ``update_transfer`` -- the settle half of ``create_settled_transfer``,
+        split out so the covering movement a settle writes on each shadow's
+        own account (plan step balance:X-bi-3a; the money the fold and the
+        posting writer read since X-bi-4a, ruling R-BAL80) lands on the
+        planted accounts rather than on the helper.  The savings account is
+        not a member of the set and holds no transaction row once the shadow
+        has moved.  The plant carries its own tell, because an UN-planted
+        fixture (helper -> checking, never re-pointed) reads the same $165.00
+        with or without the far-leg arm and would grade nothing.
         """
         with app.app_context():
             card = self._card(seed_user, db.session)
@@ -1457,11 +1474,29 @@ class TestTheReportReadsTheCashFlowSet:
                 seed_user, db.session, seed_user["account"], card,
                 seed_periods[0], amount=Decimal("165.00"),
             )
-            create_settled_transfer(
-                seed_user, db.session, card, seed_user["account"],
+            helper = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            out_of_card = create_transfer(
+                seed_user, db.session, helper, seed_user["account"],
                 seed_periods[0], amount=Decimal("40.00"),
             )
+            db.session.flush()
+            out_of_card.from_account = card
+            next(
+                s for s in out_of_card.shadow_transactions
+                if s.account_id == helper.id
+            ).account = card
+            db.session.flush()
+            transfer_service.update_transfer(
+                out_of_card.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
             db.session.commit()
+            assert out_of_card.from_account_id == card.id
+            assert {s.account_id for s in out_of_card.shadow_transactions} == {
+                card.id, seed_user["account"].id,
+            }
 
             report = compute_spending_report(
                 seed_user["user"].id, _pp_window(seed_periods[0]),

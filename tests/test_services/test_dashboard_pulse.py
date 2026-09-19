@@ -1132,6 +1132,17 @@ class TestTheBillsAreThePaychecksAcrossTheSet:
         the due-soon list holds exactly the one transfer row.  Under the
         ``account_id IN members`` filter without the far-leg arm the card's
         $40.00 shadow would be a bill and the total $205.00.
+
+        The transfer doors refuse a transfer OUT of a card (plan step CC-10),
+        so the $40.00 card -> checking transfer is the representable-but-
+        refused shape and its state is PLANTED, the way the legacy-source
+        tests plant theirs: created from a helper Savings account INTO
+        checking (allowed), then its source and its expense shadow re-pointed
+        onto the card by assignment, past the door.  The savings account is
+        not a member of the set and holds no transaction row once the shadow
+        has moved.  The plant carries its own tell, because an UN-planted
+        fixture (helper -> checking, never re-pointed) reads the same $165.00
+        with or without the far-leg arm and would grade nothing.
         """
         with app.app_context():
             card = self._card(seed_user, db.session)
@@ -1140,11 +1151,24 @@ class TestTheBillsAreThePaychecksAcrossTheSet:
                 seed_user, db.session, seed_user["account"], card, period,
                 amount=Decimal("165.00"), due_date=date(2026, 3, 24),
             )
-            create_transfer(
-                seed_user, db.session, card, seed_user["account"], period,
+            helper = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            out_of_card = create_transfer(
+                seed_user, db.session, helper, seed_user["account"], period,
                 amount=Decimal("40.00"), due_date=date(2026, 3, 21),
             )
+            db.session.flush()
+            out_of_card.from_account = card
+            next(
+                s for s in out_of_card.shadow_transactions
+                if s.account_id == helper.id
+            ).account = card
             db.session.commit()
+            assert out_of_card.from_account_id == card.id
+            assert {s.account_id for s in out_of_card.shadow_transactions} == {
+                card.id, seed_user["account"].id,
+            }
 
             result = dashboard_service.compute_pulse_section(
                 dashboard_section(seed_user["user"].id),
