@@ -9,7 +9,7 @@
 `b141e779`'s pure move of the loan anchor doors into `app/services/loan_anchor_service.py`;
 migration `22b23085394d`) -- moved here under conventions.md rule 7, because a ticked entry holds six
 lines and this one carried the argument `R-R72`'s row was trimmed of on 2026-09-12. The `[ ]` below
-is `[x]` at that hash.
+is the entry as it stood before the tick.
 
 ## As built (what the entry below does not say)
 
@@ -35,18 +35,23 @@ is `[x]` at that hash.
 * **What moves.** A loan set up after this ships gets a `tracking_start` at the "as of" day
   (default the display-day today) carrying the "Balance today" whenever it originated before that
   day, and replays from THAT assertion (R-R71 charges only the months after it). No existing loan's
-  figure moves: `tests/manual/verify_loan_plan_sum.py` byte-identical, base vs branch (3,617 lines).
+  figure moves: the leaf's commit message reports `tests/manual/verify_loan_plan_sum.py` byte-identical,
+  base vs branch (3,617 lines).
 * **Four censuses moved, not the one the leaf reported**: `get_baseline_scenario(` 10 -> 9
   (steps.md X-y), `date.today()` in tests 198 -> 205 (ledger.md N-138: the leaf's tests read the
   process clock where its door reads the display day), `Numeric(12, 2)` 48 -> 47 (the column) and
   `due_date` files 62 -> 61; measured with `_census.census_violations()` on `b4da8068` against a clean
   dev `8819185a`.
-* **The review's Lows** (no Critical / High; two Mediums fixed in `b4da8068`) are questions for the
-  developer, held in the coordinator's batch: the prefill's two dates (balance asserted for the
+* **The review's Lows** (the leaf's commit message reports no Critical / High and two Mediums fixed in
+  `b4da8068`) are questions for the developer, held in the coordinator's batch: the prefill's two dates (balance asserted for the
   account's `observed_on`, date defaulting to today); a stated balance ON the origination day that
   contradicts `original_principal` is dropped in silence (lane recommends a refusal); the dashboard's
   sibling forms prefill `today_iso` from `date.today()` where the setup form reads `display_today()`
-  (the clock-split class, pre-existing); `seed_dast_users.py:332` still constructs
+  (the clock-split class, pre-existing) -- and the setup door itself straddles both clocks in one
+  request: `LoanParamsCreateSchema` refuses a future `anchor_date` against `date.today()` while the
+  form's default and `max` and the origination exemption read `display_today()`, so between 20:00 and
+  midnight America/New_York the schema accepts a crafted date one day past the form's `max` (N-138 /
+  C10's class; the tick's review); `seed_dast_users.py:332` still constructs
   `LoanParams(current_principal=...)` (a dated audit tool, already broken since `interest_rate` went).
 
 ## The entry, verbatim
