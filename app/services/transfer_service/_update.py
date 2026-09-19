@@ -40,7 +40,7 @@ from app.services.transfer_service._ownership import (
     _get_owned_category,
     _get_owned_period,
 )
-from app.services.row_valuation import recorded_figure
+from app.services.row_valuation import settled_figure
 from app.services.status_seam import (
     correction_record,
     figure_for_status,
@@ -162,7 +162,7 @@ def _grade_submitted_figure(
         rows.transfer,
         updates.get("status_id", rows.transfer.status_id),
         updates["figure"],
-        recorded_figure(rows.expense),
+        settled_figure(rows.expense),
     )
     if figure is None:
         del updates["figure"]
@@ -250,8 +250,6 @@ def _apply_remaining_fields(
         ValidationError: From an ownership check, an illegal transition, or
             the settle-day correction door.
         NotFoundError: From an unowned period or category.
-        AmountUnresolvable: From the correction's echo comparison, for a
-            settled leg whose settlement record is incomplete.
     """
     # ── status_id + the settlement RECORD ─────────────────────────
     # ONE seam pass carrying both, mirroring

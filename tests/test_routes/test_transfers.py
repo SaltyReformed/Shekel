@@ -13,7 +13,11 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
-    AcctTypeEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum,
+    AcctTypeEnum,
+    MovementFigureSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
 )
 from app.extensions import db
 from app.models.account import Account
@@ -58,7 +62,7 @@ from tests._test_helpers import (
     state_template_price,
     transfer_repriced_by_the_owner,
 )
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
@@ -5140,20 +5144,30 @@ class TestTransferActualBox:
         repairing anything.  Stating both is the repair, and the Actual box is
         what makes it expressible.
 
-        The popover must therefore RENDER for such a pair, with both boxes
-        empty: a surface that refuses to draw cannot repair the row it is the
-        only repair path for.
+        The popover must therefore RENDER for such a pair: a surface that
+        refuses to draw cannot repair the row it is the only repair path for.
+        **Its Actual box reads ``0`` for the pair, not empty** (plan step
+        ``balance:X-bi-4b-1``): the record is the leg's entries and a settled
+        leg holding none is the ``$0.00`` record (ruling **R-BAL82**), so the
+        legacy shape is staged with the covering movements gone as well as
+        the columns -- with the movements standing, the box would rightly
+        prefill their ``$200.00`` -- and the repair is graded on the
+        movements the save writes.
         """
         with app.app_context():
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
             # The legacy shape, reproduced the only way it can be: straight at
-            # the columns, behind the seam's back.
+            # the columns and the movements, behind the seam's back.  A
+            # shadow's movement posts nowhere (ruling R-BAL45), so there is
+            # no leg to reverse before it goes.
             for leg in self._legs(xfer.id):
                 record_settle_day(leg, None)
                 leg.settled_amount = None
                 leg.settled_basis_id = None
+                for movement in leg.covering_movements:
+                    leg.entries.remove(movement)
             db.session.commit()
             db.session.expire_all()
 
@@ -5163,16 +5177,14 @@ class TestTransferActualBox:
             assert 'name="settled_amount"' in body, (
                 "the popover hid the Actual box from the pair that needs it"
             )
-            # Sliced to the INPUT TAG, because ``value=""`` appears
-            # unconditionally elsewhere in this body -- the Category select's
-            # "-- None --" option, and the empty notes / due-date / settle-day
-            # inputs.  A bare membership test on the whole body is a constant
-            # ``True`` and grades nothing, which is what a neutral review
-            # measured this assertion doing (2026-08-18).
+            # Sliced to the INPUT TAG: a bare membership test on the whole
+            # body grades nothing, which is what a neutral review measured
+            # this assertion doing (2026-08-18).
             box = body[body.index('name="settled_amount"'):]
             box = box[:box.index(">")]
-            assert 'value=""' in box, (
-                "a figure was pre-filled onto a pair that records none: " + box
+            assert 'value="0"' in box, (
+                "the box did not read the $0.00 record of a pair holding no "
+                "entry: " + box
             )
 
             version = db.session.get(Transfer, xfer.id).version_id
@@ -5207,12 +5219,15 @@ class TestTransferActualBox:
 
             assert repair.status_code == 200, repair.get_data(as_text=True)
             db.session.expire_all()
+            typed_id = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
+            )
             for leg in self._legs(xfer.id):
                 assert leg.settled_on == display_today()
-                assert leg.settled_amount == Decimal("200.00")
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.CORRECTED,
-                )
+                assert settled_figure(leg) == Decimal("200.00")
+                (movement,) = leg.covering_movements
+                assert movement.settled_on == display_today()
+                assert movement.figure_source_id == typed_id
 
     def test_the_rebook_notice_shows_what_a_re_settle_will_book(
         self, app, auth_client, seed_user, seed_periods_today,

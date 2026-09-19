@@ -95,9 +95,10 @@ def fixed_settle_amount(txn: Transaction) -> "Decimal | None":
     from THIS function rather than from a second reading of the same columns, so
     what a screen promises and what a tick books cannot drift.
 
-    Pure and cheap: a status test, a relationship read for an entries row, and
-    one ``ref_cache`` lookup.  No producer runs, so a whole grid costs no
-    paycheck engine.
+    Pure and cheap: a status test and a read of the row's ``entries`` (its
+    purchases for the first arm, its covering movement for the second, since
+    plan step ``balance:X-bi-4b-1``).  No producer runs, so a whole grid costs
+    no paycheck engine, and every batch caller loads the entries once.
 
     Args:
         txn: The row being priced.
@@ -337,7 +338,10 @@ def settle_transaction(
        control the user pressed.  **And why the plan and the record are two
        columns**: a machine's recompute and a human's correction are different
        facts, and until plan step X-au-c3 three subsystems read one column's
-       NULL-ness to tell them apart, and ``settled_basis_id`` is what says it now.
+       NULL-ness to tell them apart; the record's SOURCE says it now (the
+       covering movement's ``figure_source_id``, read through
+       ``status_seam.recorded_settlement`` since plan step
+       ``balance:X-bi-4b-1``).
     2. **The status**, through the single seam, so the transition is verified
        and the settle day stamped by the one door that owns both -- and, since
        plan step **X-bi-3a** (ruling **R-BAL39**), the COVERING MOVEMENT
@@ -408,8 +412,8 @@ def settle_transaction(
             full-edit door refuses one on such a row rather than dropping it
             silently.  **It is named for what it IS rather than for a column**
             since plan step X-au-c3: it was ``actual_amount``, and the column
-            of that name is gone -- a settled row records what moved in
-            ``settled_amount`` beside a ``settled_basis_id`` that says whether
+            of that name is gone -- a settled row records what moved on its
+            covering movement, beside a ``figure_source_id`` that says whether
             this figure is why.
         settle_day: The civil day the money moved and HOW that day is known
             (:class:`app.services.settle_day.SettleDay`), when the CALLER knows
@@ -455,10 +459,12 @@ def settle_transaction(
     # OVERWROTE its record: measured, a settle booking a human's ``$90.00``
     # against a ``$500.00`` plan came back ``$90.00`` on the ``derived`` basis,
     # so the figure survived and the stored answer to "did a human correct this"
-    # was destroyed.  That answer is the entire reason ``settled_basis_id``
-    # exists (finding **N-241**, ruling **R-FH**), and the reconcile writer's
-    # correction count is read from this verb's return, so the replay also
-    # un-counted a correction that had really been made.
+    # was destroyed.  That answer is the entire reason the record names its
+    # writer (finding **N-241**, ruling **R-FH**; the covering movement's
+    # ``figure_source_id`` now, the row's ``settled_basis_id`` through
+    # ``X-bi-4a``), and the reconcile writer's correction count is read from
+    # this verb's return, so the replay also un-counted a correction that had
+    # really been made.
     #
     # **``Settlement.from_settle`` closed that measurement independently** by
     # honouring a RETAINED ``corrected`` record, so the manual branch would now

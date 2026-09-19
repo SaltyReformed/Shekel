@@ -9,6 +9,18 @@ believing they were is the error this module now grades the correction of.
 ``reconciled_by_id``) is the ASSERTION that it moved on a named day, and a
 revert withdraws the assertion while KEEPING what moved.
 
+**Since plan step ``balance:X-bi-4b-1`` (ruling R-BAL80) WHAT MOVED is read
+off the row's ENTRIES** -- its one covering movement (``status_seam._covering``)
+or its purchases -- by both tiers, ``row_valuation.settled_figure`` and
+``posting_reads.settled_figure_clause``; the two columns are the covering
+movement's stale cache, still WRITTEN by the seam through this interval (so
+the CHECKs below still have a subject) and deleted at ``X-bi-4b-2``.  The
+cases here that read a figure therefore lay the movement beside the columns
+(:func:`~tests._test_helpers.cover_bare_settled_row`), and the case that
+graded the reader's REFUSAL of a settled row recording nothing grades its
+answer now: a settled row holding no entry is the ``$0.00`` record (ruling
+R-BAL82), on both tiers.
+
 Two CHECKs state the half of that which is expressible:
 ``ck_transactions_settled_amount_needs_basis`` (a stored figure names its
 provenance) and ``ck_transactions_settle_day_needs_a_record`` (a row asserting a
@@ -69,7 +81,6 @@ from app.enums import (
     SettlementBasisEnum,
     StatusEnum,
 )
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.ref import TransactionType
 from app.models.amount_ownership import AmountOwnership
@@ -79,6 +90,7 @@ from app.services.row_valuation import settled_figure
 from app.services.status_seam import Settlement, apply_status_change
 from tests._test_helpers import (
     bare_expense_template,
+    cover_bare_settled_row,
     load_migration_module,
     settle_day_columns,
 )
@@ -267,31 +279,25 @@ class TestTheRecordIsOneFactInThreeColumns:
             assert txn.settled_amount == Decimal("300.00")
             assert settled_figure(txn) is None
 
-    def test_a_SETTLED_row_that_records_nothing_is_refused_by_the_READER(
+    def test_a_SETTLED_row_holding_no_entry_records_ZERO_and_never_its_plan(
         self, app, db, seed_user, seed_periods,
     ):
-        """The state every settled row was in before this step, refused loudly.
+        """The state every settled row was in before X-au-c3, read as ``$0.00``.
 
-        Dated and settled with no record: every reader used to fall back to the
-        row's PLAN here, which is the silent substitution this step removes -- a
-        forecast published as a fact about money that has already moved.
+        Settled with no record and no entry: every reader used to fall back to
+        the row's PLAN here, which is the silent substitution X-au-c3 removed
+        -- a forecast published as a fact about money that has already moved.
+        Through ``X-bi-4a`` the reader REFUSED this row (``AmountUnresolvable``,
+        "records no settlement"); since plan step ``balance:X-bi-4b-1`` the
+        record is the row's entries and a settled row holding none IS the
+        ``$0.00`` record (ruling **R-BAL82**: a movement of nothing is not
+        one, so a close of nothing has no entry), which is what both tiers
+        answer.  What this case still grades is the substitution: the answer is
+        ``0``, not the ``$300.00`` plan, whatever the columns say.
 
-        **The refusal is the READER's and cannot be a CHECK**, which is why it
-        is graded here rather than by an ``IntegrityError``.  The predicate is
-        ``ref.statuses.is_settled``; a constraint cannot join, and hardcoding the
-        settled ids would be the magic number ``balance_predicates`` exists to
-        avoid.  ``status_seam.apply_status_change`` refuses to CREATE the state
-        and ``row_valuation.settled_figure`` refuses to VALUE it, so the row
-        below can only be built the way it is built here -- around both doors.
-
-        **The row carries no settle DAY, and that is what leaves this reachable
-        at all.**  ``ck_transactions_settle_day_needs_a_record`` now refuses the
-        DATED half of this state outright (the test above), so what survives for
-        the reader to catch is the UNDATED one: a settled status with neither a
-        day nor a record.  That is exactly the row
-        ``balance_predicates.settled_day`` refuses in its own right, and the two
-        refusals are why a bulk ``query.update({status_id: paid})`` fails loudly
-        on the read side instead of publishing the row's plan as a fact.
+        **The row carries no settle DAY**, which is what leaves it storable
+        under ``ck_transactions_settle_day_needs_a_record``; a settled row with
+        no day is ``integrity_check`` DC-11's first arm, not this reader's.
         """
         with app.app_context():
             txn = _make_transaction(
@@ -304,8 +310,7 @@ class TestTheRecordIsOneFactInThreeColumns:
             db.session.add(txn)
             db.session.flush()
 
-            with pytest.raises(AmountUnresolvable, match="records no settlement"):
-                settled_figure(txn)
+            assert settled_figure(txn) == Decimal("0")
 
     def test_the_whole_record_together_is_accepted(
         self, app, db, seed_user, seed_periods,
@@ -328,6 +333,12 @@ class TestTheRecordIsOneFactInThreeColumns:
             db.session.flush()
 
             assert txn.id is not None
+            # The figure is read off the covering movement the seam mirrors
+            # beside these columns (plan step balance:X-bi-4b-1), so the
+            # movement is laid as the seam lays it; the columns alone read 0.
+            cover_bare_settled_row(
+                db.session, txn, "300.00", submitted="287.31",
+            )
             assert settled_figure(txn) == Decimal("287.31")
             db.session.rollback()
 
@@ -468,29 +479,41 @@ class TestPurchasesIffNoStoredFigure:
             )
             assert record.basis is basis
 
-    def test_the_reader_refuses_a_record_written_around_the_rule(
-        self, app, db, seed_user, seed_periods,
+    @pytest.mark.parametrize(
+        ("source", "stated"),
+        [
+            (None, False),
+            (MovementFigureSourceEnum.RESOLVED, False),
+            (MovementFigureSourceEnum.TYPED, True),
+            (MovementFigureSourceEnum.OBSERVED, True),
+        ],
+    )
+    def test_stated_is_a_person_or_the_bank_and_never_the_settle_itself(
+        self, app, source, stated,
     ):
-        """A ``derived`` record with no figure raises rather than reading the plan.
+        """``stated`` is what a re-settle HONOURS, stated once (X-bi-4b-1).
 
-        The database admits this row -- the rule the constructor holds is the one
-        a CHECK cannot state -- so the accessor is the second half of the same
-        guard, and this is what proves it does not quietly fall back.
+        ``Settlement.from_settle`` keeps a retained record and
+        ``status_seam.honoured_correction`` publishes it exactly when somebody
+        stated the figure -- a person (``typed``) or the bank's line
+        (``observed``); the settle's own ``resolved`` pricing is re-derived,
+        and a ``purchases`` record states nothing.  It read ``basis is
+        CORRECTED`` off the row's column through ``X-bi-4a``.
         """
         with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=seed_periods[0].start_date,
-                settled_amount=None,
-                settled_basis_id=_basis_id(SettlementBasisEnum.DERIVED),
+            record = Settlement(
+                amount=None if source is None else Decimal("48.98"),
+                source=source,
             )
-            db.session.add(txn)
-            db.session.flush()
+            assert record.stated is stated
 
-            with pytest.raises(AmountUnresolvable, match="stores none"):
-                settled_figure(txn)
-            db.session.rollback()
+    # ``test_the_reader_refuses_a_record_written_around_the_rule`` -- a
+    # ``derived`` record with no stored figure, which ``settled_figure`` refused
+    # rather than reading the plan -- is DELETED with its subject at plan step
+    # ``balance:X-bi-4b-1``: the reader no longer reads the row's columns, so
+    # a record "written around the rule" in them is invisible to it, and what
+    # it reads (the entries) has no malformed shape to refuse.  The
+    # constructor's own two refusals above are the whole of the guard now.
 
 
 class TestTheSeamRefusesAnUnrecordedSettle:
@@ -675,37 +698,36 @@ class TestTheUpgradeRefusesASettledRowWithNoFigure:
                 )
 
 
-class TestTheSQLTierDispatchesOnTheSameColumnAsPython:
-    """``posting_reads.settled_figure_clause``'s ``CASE``, which nothing graded.
+class TestTheSQLTierReadsTheSameHomeAsPython:
+    """``posting_reads.settled_figure_clause`` and ``settled_figure`` agree.
 
-    **Measured 2026-08-17 by an adversarial mutation pass**: reverting the whole
-    expression to the ``COALESCE(settled_amount, Sigma(entries))`` it replaced
-    left the entire suite green -- so the function's stated reason to exist ("a
-    defect fixed rather than a style choice") had no firing control at all.
+    **Measured 2026-08-17 by an adversarial mutation pass**: reverting the SQL
+    expression of the time to the ``COALESCE(settled_amount, Sigma(entries))``
+    it replaced left the entire suite green -- so its stated reason to exist
+    had no firing control at all, and this class became one.  Through
+    ``X-bi-4a`` the two tiers disagreed on exactly ONE row, a settled row
+    recording NOTHING (Python refused, SQL had to be made to answer ``NULL``
+    rather than ``0``), and that difference was money:
+    ``posting_service._settle_effective`` is a LOOKUP, not a fold -- it
+    refuses a ``None`` and posts nothing, where a ``0`` is a figure it would
+    post.
 
-    The two expressions differ on exactly ONE row: a settled row recording
-    NOTHING.  ``COALESCE`` walks past the NULL figure into the entry sum, whose
-    own ``COALESCE`` answers ``0``; the ``CASE`` dispatches on
-    ``settled_basis_id`` -- the same column ``row_valuation.settled_figure``
-    reads -- takes no arm, and answers NULL.
-
-    That difference is money.  ``posting_service._settle_effective`` is a
-    LOOKUP, not a fold: it refuses a ``None`` and posts nothing, where a ``0``
-    is a figure it would post.  A refusal on the Python tier beside a silent
-    zero on the SQL tier, with the SQL tier writing the ledger, is the
-    disagreement this step exists to end.
+    **Since plan step ``balance:X-bi-4b-1`` both tiers read the row's ENTRIES**
+    (ruling **R-BAL80**), and a settled row holding none is the ``$0.00``
+    record on both (ruling **R-BAL82**); the row the two disagreed about has
+    one answer.  The cases grade that agreement from both sides: the empty
+    row, and a row whose covering movement carries its figure while its
+    columns say something the readers must NOT be reading.
     """
 
-    def test_a_settled_row_with_no_record_answers_NULL_not_zero(
+    def test_a_settled_row_holding_no_entry_answers_ZERO_on_both_tiers(
         self, app, db, seed_user, seed_periods,
     ):
-        """The one row the two expressions disagree about.
+        """The one row the two expressions used to disagree about.
 
         It carries no settle DAY, which is what makes it storable at all:
         ``ck_transactions_settle_day_needs_a_record`` refuses the dated half of
-        this state, so what survives for the readers to disagree about is the
-        undated one.  ``row_valuation.settled_figure`` RAISES for it; the
-        assertion below is that SQL does not quietly answer ``0``.
+        this state.  Both tiers answer the ``$0.00`` record.
         """
         with app.app_context():
             txn = _make_transaction(
@@ -723,24 +745,21 @@ class TestTheSQLTierDispatchesOnTheSameColumnAsPython:
                 .filter(Transaction.id == txn.id)
                 .scalar()
             )
-            assert answered is None, (
-                f"the SQL tier answered {answered} for a settled row that "
-                "records nothing, where row_valuation.settled_figure raises -- "
-                "a zero here is money leaving the ledger in silence"
-            )
+            assert answered == Decimal("0")
+            assert settled_figure(txn) == Decimal("0")
 
-            # The Python twin, in the same case, so the two tiers are asserted
-            # to AGREE rather than each being graded alone.
-            with pytest.raises(AmountUnresolvable):
-                settled_figure(txn)
-
-    def test_a_well_formed_row_still_answers_its_figure(
+    def test_both_tiers_read_the_movement_and_neither_reads_the_columns(
         self, app, db, seed_user, seed_periods,
     ):
-        """The accepting case, without which the refusal above proves nothing.
+        """A row whose columns and movement DISAGREE is read off the movement.
 
-        An expression that answered NULL for everything would satisfy the test
-        above and break every fold that reads it.
+        The seam writes both from one value, so the state below is written
+        around it -- and that is the point: a reader still dispatching on
+        ``settled_basis_id`` or reading ``settled_amount`` would answer
+        ``$300.00`` here, where the covering movement (the record's one home
+        after ``X-bi-4b-2``) carries ``$287.31``.  Both tiers must answer the
+        movement.  An expression that answered ``0`` for everything would pass
+        the case above and fail this one.
         """
         with app.app_context():
             txn = _make_transaction(
@@ -752,10 +771,14 @@ class TestTheSQLTierDispatchesOnTheSameColumnAsPython:
             )
             db.session.add(txn)
             db.session.flush()
+            cover_bare_settled_row(
+                db.session, txn, "300.00", submitted="287.31",
+            )
 
             answered = (
                 db.session.query(settled_figure_clause())
                 .filter(Transaction.id == txn.id)
                 .scalar()
             )
-            assert answered == Decimal("300.00")
+            assert answered == Decimal("287.31")
+            assert settled_figure(txn) == Decimal("287.31")

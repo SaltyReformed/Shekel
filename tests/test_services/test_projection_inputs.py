@@ -59,6 +59,7 @@ from app.services.recorded_contributions import (
 from tests._test_helpers import (
     an_entered_day,
     basis_for,
+    cover_bare_settled_row,
     make_line_cadence_rule,
     pricing_over,
     settlement_columns,
@@ -1192,6 +1193,14 @@ class TestShadowContributionBoundary:
                 row.status_id = cancelled_id
             transfer.status_id = cancelled_id
         db_session.flush()
+        if settled:
+            # The record's home is each leg's COVERING MOVEMENT (plan step
+            # balance:X-bi-4b-1); the columns above are the seam's cache.
+            for row in rows:
+                cover_bare_settled_row(
+                    db_session, row, shadow_amount(row),
+                    None if actual is None else Decimal(str(actual)),
+                )
         return account, shadow
 
     @staticmethod

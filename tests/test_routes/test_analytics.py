@@ -26,6 +26,7 @@ from app.services import account_service, status_seam
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    cover_bare_settled_row,
     create_account_of_type,
     one_off_row_of,
     record_paydays_across_a_hole,
@@ -115,6 +116,9 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         setattr(txn, _column, _value)
     for _column, _value in settlement_columns(seed_periods[0].start_date, amount).items():
         setattr(txn, _column, _value)
+    db.session.flush()
+    # The record's home is the covering movement (X-bi-4b-1).
+    cover_bare_settled_row(db.session, txn, amount)
     db.session.commit()
 
 
@@ -2114,6 +2118,11 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         ).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    # The record's home is the covering movement (X-bi-4b-1).
+    cover_bare_settled_row(
+        db.session, txn, Decimal(estimated),
+        Decimal(actual) if actual is not None else None,
+    )
     return txn
 
 

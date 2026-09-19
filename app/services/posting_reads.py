@@ -27,7 +27,7 @@ from decimal import Decimal
 from sqlalchemy import case
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.exceptions import ShekelError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
@@ -51,63 +51,48 @@ def settled_figure_clause():
     is this arc's own root cause 1.  (A third, ``settled_transaction_effect``,
     went at plan step ``balance:X-bi-4a`` with the row's own leg.)
 
-    A ``CASE`` on ``settled_basis_id``, which is the SAME column the Python twin
-    dispatches on.  A ``purchases`` record stores no figure and sums the row's
-    entries; every other basis stores its figure in ``settled_amount``.
+    **The record is the row's entries, and the figure is their sum** (plan
+    step ``balance:X-bi-4b-1``, ruling **R-BAL80**): ``COALESCE(SUM(amount),
+    0)`` over ``budget.transaction_entries`` correlated to the row -- a
+    transfer leg's one covering movement for the two readers above, an
+    envelope's purchases, nothing for a close of nothing (ruling
+    **R-BAL82**).  It was a ``CASE`` on ``settled_basis_id`` through
+    ``X-bi-4a`` -- the stored ``settled_amount`` for a ``derived`` /
+    ``corrected`` record, the entry sum for ``purchases``, ``NULL`` for a row
+    recording nothing -- dispatching on the same column the Python twin
+    read; both columns are the covering movement's stale cache, written by
+    the seam and read by no money reader since this step, and deleted at
+    ``X-bi-4b-2``.
 
-    **It reads the basis rather than testing ``settled_amount IS NULL``, and
-    that is a defect fixed rather than a style choice.**  The expression was
-    ``COALESCE(settled_amount, Sigma(entries))``, which is right for every
-    WELL-FORMED row -- the two states are disjoint by
-    :class:`app.services.status_seam.Settlement`'s constructor -- and wrong for
-    the one row that is not: a settled row recording NOTHING has no stored
-    figure and (typically) no entries, so the ``COALESCE`` answered ``0`` where
-    :func:`app.services.row_valuation.settled_figure` RAISES.  A refusal on one
-    tier and a zero on the other is money leaving a balance in silence, and it
-    is the SQL side that writes the ledger.  Dispatching on the basis makes the
-    broken row take NO arm and answer ``NULL``, which a fold drops and
-    ``posting_service._settle_effective`` refuses -- and
-    ``ck_transactions_settle_day_needs_a_record`` is what makes it unstorable in the
-    first place, so this arm is the belt to that constraint's braces rather than
-    the only guard.
+    **The ``NULL`` arm is gone with the state it named.**  A settled row
+    "recording nothing" -- no basis, no figure, typically no entries -- was
+    the one row the Python tier REFUSED and this tier could only drop or
+    zero; that history (the ``COALESCE(actual_amount, estimated_amount)``
+    fallback to the PLAN, the freeze it forced, the undercount findings
+    **N-242** and **N-298** a per-kind cutover would have produced through a
+    silent ``SUM``) is the reason the record became mandatory at X-au-c3.
+    Under R-BAL82 a settled row with no entries IS the ``$0.00`` record,
+    which both tiers answer ``0`` -- an envelope closed empty cost nothing,
+    which is what its records say -- and a settled row's figure is never its
+    plan on either tier.
 
-    **What it replaced was a fallback, and the difference is the point.**  This
-    read was ``COALESCE(actual_amount, estimated_amount)`` -- the settled figure
-    falling back to the row's PLAN, because ``actual_amount`` was populated only
-    when a human had typed a correction.  Two consequences followed, and both are
-    why the FREEZE this step was originally specified to build existed at all: a
-    plan is a derivation, so the fold's answer for a historical row could move
-    when a price series gained a backdated version; and once a per-kind cutover
-    (plan steps X-au-d..X-au-i) emptied that plan, a ``SUM`` over the expression
-    would DROP the row silently rather than raise -- the undercount findings
-    **N-242** and **N-298** describe.  Neither is reachable now: a settled row's
-    figure is its own record, and a row with no record has not settled.
-
-    Callers must still filter to settled rows themselves.  A ``purchases`` row
-    with no entries answers ``0`` rather than ``NULL`` -- the entry sum's own
-    ``COALESCE`` -- and that is correct: an envelope closed empty cost nothing,
-    which is what its records say.
+    Callers must still filter to settled rows themselves: the expression
+    reads no status, so over an unsettled row it sums whatever the row holds
+    (a reverted row's kept movement, an open envelope's purchases), which is
+    not a figure that moved.
 
     Returns:
         A SQLAlchemy expression over :class:`~app.models.transaction.Transaction`
-        evaluating to the recorded figure, or ``NULL`` for a row that records no
-        settlement at all.
+        evaluating to the recorded figure, ``0`` for a settled row holding no
+        entry.
     """
-    purchases_sum = (
+    return (
         db.session.query(
             db.func.coalesce(db.func.sum(TransactionEntry.amount), Decimal("0"))
         )
         .filter(TransactionEntry.transaction_id == Transaction.id)
         .correlate(Transaction)
         .scalar_subquery()
-    )
-    purchases_basis_id = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
-    return case(
-        (Transaction.settled_basis_id.is_(None), None),
-        (Transaction.settled_basis_id == purchases_basis_id, purchases_sum),
-        else_=Transaction.settled_amount,
     )
 
 

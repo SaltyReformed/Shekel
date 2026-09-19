@@ -37,6 +37,7 @@ from app.services.cash_ledger import (
     AmountBasis,
     contributions_by_id,
     planned_leg_contribution,
+    settlement_load_options,
     transfer_pricing_load_options,
 )
 from app.services.investment_projection import (
@@ -147,7 +148,13 @@ def load_shadow_income_contributions_for_accounts(
     settled = (
         db.session.query(Transaction, PayPeriod.start_date)
         .join(PayPeriod, PayPeriod.id == Transaction.pay_period_id)
-        .options(joinedload(Transaction.status))
+        .options(
+            joinedload(Transaction.status),
+            # A settled shadow is valued from its record -- its ENTRIES since
+            # plan step balance:X-bi-4b-1 (``contributions_by_id`` reaches
+            # ``row_valuation.settled_figure``).
+            *settlement_load_options(),
+        )
         .filter(
             Transaction.account_id.in_(account_ids),
             Transaction.transfer_id.isnot(None),

@@ -24,8 +24,7 @@ raise or ``None`` out; no Flask import, no writes.
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import MovementFigureSourceEnum, SettlementBasisEnum
+from app.enums import MovementFigureSourceEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -76,9 +75,10 @@ from app.utils.dates import display_today
 #: step ``balance:X-bi-4a`` an un-dated purchase is in flight and a dated one
 #: a movement on its day, the row itself booking nothing), and the two
 #: always sum to the same total.  That is the SAME split plan step X-au-c3 is
-#: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
-#: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
-#: down, on the purchase instead of on the row.
+#: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and the
+#: figure is WHAT MOVED (the covering movement's, since plan step
+#: ``balance:X-bi-4b-1``; the row's own two columns through ``X-bi-4a``) --
+#: read one level down, on the purchase instead of on the row.
 _COST_BEARING_FIELDS = frozenset({"figure", "is_credit"})
 
 
@@ -192,9 +192,10 @@ def _reject_settled_parent(
 
     That split is this step's own three-lifetime model read one level down.  A
     purchase's amount is WHAT MOVED and its posting day is an ASSERTION about
-    when -- the same two facts ``settled_amount`` and ``settled_on`` are on the
-    parent, with the same answer: the assertion may be recorded, corrected and
-    withdrawn long after the figure is final.
+    when -- the same two facts a covering movement's ``amount`` and the
+    parent's ``settled_on`` are for a bill, with the same answer: the
+    assertion may be recorded, corrected and withdrawn long after the figure
+    is final.
 
     ``Status.is_settled`` is the band, and since plan step **X-am** the band is
     exactly Paid and Received.  It carried a third member, the terminal
@@ -240,41 +241,50 @@ def _reject_settled_addition(txn: Transaction) -> None:
     """Refuse a NEW purchase against a settled row that cannot record one.
 
     **The rule is about the row's FIGURE, not its status** (plan step
-    ``bank_import:X-f6a-3b``, on measurement).  A settled row records what
-    moved in one of two ways
-    (:class:`~app.enums.SettlementBasisEnum`), and a new purchase means opposite
-    things to them:
+    ``bank_import:X-f6a-3b``, on measurement), and the figure is the row's
+    ENTRIES (plan step ``balance:X-bi-4b-1``, ruling **R-BAL80**): a settled
+    row records what moved either as its purchases or as ONE covering
+    movement the seam wrote for it (``status_seam._covering``), and a new
+    purchase means opposite things to the two:
 
-    * a ``purchases`` settlement stores NO figure -- the row's cost IS
-      ``Sigma(entries)`` (:func:`app.services.row_valuation.settled_figure`), so
-      a new purchase raises that cost by its own amount and is a movement of
-      its own: a DATED one books its cash on its own day, an UN-DATED one is
-      in flight in the projection (ruling **R-BAL77**, plan step
+    * a row holding NO covering movement records its cost as
+      ``Sigma(entries)`` (:func:`app.services.row_valuation.settled_figure`),
+      so a new purchase raises that cost by its own amount and is a movement
+      of its own: a DATED one books its cash on its own day, an UN-DATED one
+      is in flight in the projection (ruling **R-BAL77**, plan step
       ``balance:X-bi-4a``), and the row itself books nothing either way.
       Measured 2026-08-18, under the row-leg fold of the time: adding
       `$18.64` to the 2026-05-21 Groceries close shrank that day's anchor
-      true-up by exactly `$18.64`;
-    * a ``derived`` or ``corrected`` settlement STORES its figure, fixed before
-      the purchase existed, so the purchase's movement would post BESIDE the
-      covering movement that already carries the close -- money counted twice
-      (ruling **R-BAL80**).  Measured through ``X-bi-3e``, when the row's own
-      leg subtracted the purchase from a gross that never held it: adding
-      `$367.62` to a `$163.95` close moved that leg to **`+203.67`** -- an
-      EXPENSE row
-      publishing an inflow -- while the true-up moved `$0.00`.  Both legs still
-      net to `-163.95`, which is why the balance instrument is BLIND to it.
+      true-up by exactly `$18.64`.  A close of NOTHING is such a row too
+      (ruling **R-BAL82**: a ``$0.00`` close holds no entry, since a movement
+      of nothing is not one), so it ADMITS a later purchase and then records
+      exactly that purchase, counted once -- where the column read this
+      replaced refused it as "a fixed figure";
+    * a row holding a covering movement carries its whole close on it, fixed
+      before the purchase existed, so the purchase's movement would post
+      BESIDE the movement that already carries the close -- money counted
+      twice (ruling **R-BAL80**).  Measured through ``X-bi-3e``, when the
+      row's own leg subtracted the purchase from a gross that never held it:
+      adding `$367.62` to a `$163.95` close moved that leg to **`+203.67`**
+      -- an EXPENSE row publishing an inflow -- while the true-up moved
+      `$0.00`.  Both legs still net to `-163.95`, which is why the balance
+      instrument is BLIND to it.
 
     **Nothing else keeps that state unrepresentable** (finding **N-318**):
     :func:`app.services.cash_ledger.cash_leg_of` is total in every other
     direction, states no precondition and cannot see one, so THIS function is
     the guarantee.  Production holds no instance -- measured 2026-08-19, 137
     settled rows carry a stored-figure settlement (8 of them envelopes on the
-    developer's checking account) and every one holds ZERO purchases -- and a
-    row that HAS purchases always settles on the ``purchases`` basis, because
+    developer's checking account) and every one holds ZERO purchases; 0 rows
+    hold a covering movement beside a purchase on the 2026-09-19 restore --
+    and a row that HAS purchases always settles on them, because
     ``settles_from_entries`` is ``bool(txn.purchases)`` (the flag's half
     dropped under ruling **R-BAL78** at plan step ``balance:X-bi-4a``, which
-    also refuses a stated figure over purchases at the seam) and
-    ``carry_forward``'s direct call writes that basis unconditionally.
+    also refuses a stated figure over purchases at the seam, and the seam
+    WITHDRAWS a kept movement when a ``purchases`` record lands) and
+    ``carry_forward``'s direct call writes that record unconditionally.
+    It read the row's ``settled_basis_id`` through ``X-bi-4a``; that column
+    is the movement's stale cache, deleted at ``X-bi-4b-2``.
 
     **The purchase no longer has to state the day the BANK TOOK IT** (ruling
     **R-BAL77**, plan step ``balance:X-bi-4a``, lifting the developer's
@@ -312,18 +322,14 @@ def _reject_settled_addition(txn: Transaction) -> None:
     Args:
         txn: The parent transaction the new entry would belong to.  Its
             ``status`` relationship is read (``lazy="joined"``) and then its
-            settlement record.
+            ``entries``.
 
     Raises:
-        ValidationError: When *txn* has settled and its recorded figure is not
-            its purchases.
+        ValidationError: When *txn* has settled and holds a covering movement.
     """
     if txn.status is None or not txn.status.is_settled:
         return
-    purchases_basis = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
-    if txn.settled_basis_id == purchases_basis:
+    if not txn.covering_movements:
         return
     raise ValidationError(
         f"Transaction {txn.id} has settled and records a fixed figure, so a "
@@ -370,11 +376,14 @@ def removal_refusal(txn: Transaction) -> "str | None":
     and removing it removes a movement in flight, which is the ordinary
     direction of every other removal here.
 
-    **A settled row recording a STORED figure is refused whatever the purchase
-    is**, for :func:`_reject_settled_addition`'s own reason: a ``derived`` or
-    ``corrected`` settlement stores a figure fixed before this purchase was
-    weighed, so its movement would be counted beside the covering movement
-    that already carries the whole close (ruling **R-BAL80**).
+    **A settled row holding a COVERING MOVEMENT is refused whatever the
+    purchase is**, for :func:`_reject_settled_addition`'s own reason: that
+    movement carries a figure fixed before this purchase was weighed, so the
+    purchase's own movement would be counted beside it (ruling **R-BAL80**).
+    The row's ``settled_basis_id`` said the same through ``X-bi-4a``; the
+    predicate reads the movement since plan step ``balance:X-bi-4b-1``, and
+    a close of nothing -- which holds no movement (ruling **R-BAL82**) --
+    admits the removal exactly as it admits the addition.
 
     **It was TWO sentences until plan step X-am** (ruling **balance:R-HA**).
     The terminal ``Settled`` ARCHIVE got one of its own, because that message's
@@ -432,8 +441,7 @@ def removal_refusal(txn: Transaction) -> "str | None":
 
     Args:
         txn: The parent transaction the entry belongs to.  Its ``status``
-            relationship is read (``lazy="joined"``) and then its settlement
-            record.
+            relationship is read (``lazy="joined"``) and then its ``entries``.
 
     Returns:
         The sentence explaining the refusal, or ``None`` where the removal is
@@ -441,14 +449,11 @@ def removal_refusal(txn: Transaction) -> "str | None":
     """
     if txn.status is None or not txn.status.is_settled:
         return None
-    purchases_basis = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
     # The ARCHIVE branch that stood here is deleted with its status (plan step
     # X-am); the docstring carries why.  What is left is the STORED-figure
     # refusal, whose *set the row back to Projected* remedy is now reachable
     # from every status a row can hold when it gets here.
-    if txn.settled_basis_id != purchases_basis:
+    if txn.covering_movements:
         return (
             f"Transaction {txn.id} has settled and records a fixed figure, so "
             "a purchase cannot be removed from it: the row's cost would not "

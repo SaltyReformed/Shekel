@@ -57,6 +57,7 @@ from tests._test_helpers import (
     last_covered_day,
     open_books_before_the_first_assertion,
     resolved_amount,
+    typed,
 )
 
 from ._builders import (
@@ -1392,6 +1393,29 @@ class TestWhatTheScreenMayOFFER:
                 SettlementBasisEnum.DERIVED,
             )
             assert envelope.id not in self._offered(seed_user)
+
+    def test_an_envelope_closed_at_NOTHING_is_offered(self, app, db, seed_user):
+        """A ``$0.00`` close holds no covering movement, so it is a destination.
+
+        Ruling **R-BAL82** (plan step ``balance:X-bi-4b-1``): the money
+        clause reads the covering movement, and a movement of nothing is not
+        one -- so a ``$0.00`` close is a close with no entries, a later
+        purchase under it is counted exactly once, and the door
+        (``_reject_settled_addition``) admits it.  The column read this
+        replaced filed the same row under "a fixed figure" and refused it.
+        """
+        with app.app_context():
+            envelope = a_transaction(
+                seed_user, name="Waived Fee", amount="45.00",
+                is_envelope=True, status=StatusEnum.DONE,
+                settled_on=seed_user["bootstrap_period"].start_date,
+            )
+            transaction_service.apply_requested_status(
+                envelope, envelope.status_id, submitted=typed(Decimal("0.00")),
+            )
+            db.session.flush()
+            assert envelope.covering_movements == []
+            assert envelope.id in self._offered(seed_user)
 
     def test_a_CANCELLED_envelope_is_not(self, app, db, seed_user):
         """A cancelled row records no cash, so a purchase under it posts none."""

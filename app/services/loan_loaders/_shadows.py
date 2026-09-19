@@ -251,8 +251,11 @@ def settled_income_shadows(
         scenario_id: The budget scenario to scope to.
         options: The loader options for every relationship the CALLER will
             traverse (see :func:`query_shadow_income`) -- ``()`` for a consumer
-            reading columns and dates, ``pricing_load_options()`` for one that
-            prices the rows.
+            reading columns and dates, ``settlement_load_options()`` for one
+            that values the rows through their settlement record (the row's
+            ENTRIES since plan step ``balance:X-bi-4b-1``: the fold's event
+            stream, its confirmed history, the asset contribution pass),
+            ``pricing_load_options()`` for one that prices the rows.
 
     Returns:
         Every settled income shadow, ascending by ``(pay_period.start_date, id)``;
