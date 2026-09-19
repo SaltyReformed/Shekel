@@ -56,6 +56,8 @@ from app.services.investment_dashboard_service._context import (
 )
 from app.services.pay_calendar import PayCalendar
 from tests._test_helpers import (
+    create_account_of_type,
+    create_loan_account,
     make_investment_account,
     open_books_before_the_first_assertion,
     read_pass_over_paydays,
@@ -1831,6 +1833,96 @@ class TestContributionPrompt:
             flashes = sess.get("_flashes", [])
         assert any(
             "inactive" in message.lower() for _category, message in flashes
+        )
+
+    def _post_contribution_from(self, auth_client, seed_user, db, source):
+        """POST a contribution transfer funded from *source*; return the response.
+
+        Shared by the two source-kind refusal tests below so the request is
+        identical to the success case's and only the source's KIND varies.
+        """
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="Roth IRA",
+            name="My Roth IRA", balance="5000.00",
+        )
+        _create_investment_params(
+            db.session, acct.id,
+            annual_contribution_limit=Decimal("7000.00"),
+        )
+        db.session.commit()
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/investment/create-contribution-transfer",
+            data={
+                "source_account_id": str(source.id),
+                "amount": "269.23",
+            },
+        )
+        return acct, resp
+
+    def _assert_refused_with_flash(
+        self, auth_client, seed_user, db, acct, resp, phrase,
+    ):
+        """The door rolled back, flashed *phrase*, and persisted no template."""
+        from app.models.transfer_template import TransferTemplate as TT
+
+        assert resp.status_code == 302, resp.status_code
+        assert f"/accounts/{acct.id}/investment" in resp.headers.get(
+            "Location", "",
+        )
+        assert (
+            db.session.query(TT)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        ) is None
+        with auth_client.session_transaction() as sess:
+            flashes = sess.get("_flashes", [])
+        assert any(
+            phrase in message for _category, message in flashes
+        ), flashes
+
+    def test_create_transfer_from_a_credit_card_flashes_not_500(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A CARD as the funding source is refused with a flash, not a 500.
+
+        The dashboard's "From" picker offers every active account, and plan
+        step credit_card:CC-10 refuses a transfer OUT of a card inside
+        ``create_transfer`` (design 3.8) -- which the recurrence fan-out this
+        door runs reaches.  Found by CC-10's adversarial review: this door
+        ran the fan-out bare while ``loan.create_payment_transfer`` translated
+        it, so a clean UI action ended in a 500.  Now it rolls back, flashes
+        the refusal and persists no template.
+        """
+        card = create_account_of_type(
+            seed_user, db.session, "Credit Card", "Visa",
+            anchor_balance=Decimal("-500.00"),
+        )
+        acct, resp = self._post_contribution_from(
+            auth_client, seed_user, db, card,
+        )
+        self._assert_refused_with_flash(
+            auth_client, seed_user, db, acct, resp, "out of a credit card",
+        )
+
+    def test_create_transfer_from_a_loan_flashes_not_500(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """A LOAN as the funding source is refused with a flash, not a 500.
+
+        The same hole the card test above names, for the source kind the
+        transfer service has refused since the loan ledger was built: no test
+        had ever posted a loan through this door.
+        """
+        loan = create_loan_account(
+            seed_user, db.session, name="Mortgage",
+            principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+            origination_date=date(2025, 1, 1), term=360,
+        )
+        acct, resp = self._post_contribution_from(
+            auth_client, seed_user, db, loan,
+        )
+        self._assert_refused_with_flash(
+            auth_client, seed_user, db, acct, resp, "out of a loan",
         )
 
     def test_create_transfer_idor(

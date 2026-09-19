@@ -43,6 +43,7 @@ from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     rhythm_of,
     all_periods,
+    create_account_of_type,
     create_loan_account,
     freeze_today,
     make_line_cadence_rule,
@@ -538,6 +539,101 @@ class TestProfileCreate:
             assert (
                 db.session.query(Transaction)
                 .filter_by(account_id=loan.id).count() == 0
+            )
+
+    def test_create_profile_refuses_a_card_only_user(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """With only a credit card active, /salary refuses and posts nothing to it.
+
+        The loan twin above, for plan step credit_card:CC-10 (design 3.8): a
+        card's balance IS the cash fold, so a paycheck deposited onto it would
+        be counted as income paying the card down.  The picker asks
+        ``active_accounts_query``'s orthogonal ``revolving=False``, so a user
+        whose only active account is a card is told to create a real account,
+        and no profile, template or transaction lands on the card.
+        """
+        with app.app_context():
+            for acct in (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, is_active=True).all()
+            ):
+                acct.is_active = False
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Only Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            resp = auth_client.post("/salary", data={
+                "name": "Day Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"not a loan or a credit card" in resp.data
+            assert (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id).count() == 0
+            )
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=card.id).count() == 0
+            )
+
+    def test_create_profile_picks_a_non_card_over_a_card(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The picker skips a card EVEN WHEN the card would win query order.
+
+        The loan twin's exact shape: every seeded account deactivated, the
+        card created FIRST (the lowest active id an unordered ``.first()``
+        returns), a Savings account AFTER it.  Without ``revolving=False`` the
+        picker would return the card and generate income onto it; with it
+        the deposit lands on the later Savings.  Reverting the kwarg makes
+        this test pick the card and fail.
+        """
+        with app.app_context():
+            for acct in (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, is_active=True).all()
+            ):
+                acct.is_active = False
+            db.session.flush()
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "First Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            deposit_account = create_account_of_type(
+                seed_user, db.session, "Savings", "Late Savings",
+                anchor_balance=Decimal("0.00"),
+            )
+            db.session.commit()
+            # The card is the lower-id active account, so an unordered .first()
+            # would return it if the exclusion were removed.
+            assert card.id < deposit_account.id
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            resp = auth_client.post("/salary", data={
+                "name": "Day Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            assert b"created" in resp.data
+            profile = db.session.query(SalaryProfile).filter_by(
+                user_id=seed_user["user"].id, name="Day Job",
+            ).one()
+            assert profile.template.account_id == deposit_account.id
+            assert profile.template.account_id != card.id
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=card.id).count() == 0
             )
 
     def test_create_profile_double_submit(self, app, auth_client, seed_user, seed_periods):
