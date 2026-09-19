@@ -58,11 +58,11 @@ fold's result rather than present with a guess -- the same direction
 :func:`~._anchor.recorded_opening_before` already fails in, and for the same
 reason.
 
-**The spans it reads are trustworthy only because deletion releases anchors**
-(:func:`~._anchor.release_anchors_from`): an import's span claims days its lines
-covered, and ``delete_import`` takes those lines while a later overlapping
-import keeps its own span.  Before that release existed this reported "covered"
-over a `$150.00` hole.
+**The windows it reads are trustworthy only because deletion releases
+anchors** (:func:`~._anchor.release_anchors_from`): an import's window claims
+days its lines covered, and ``delete_import`` takes the lines only it sighted
+while a later overlapping import keeps its own window.  Before that release
+existed this reported "covered" over a `$150.00` hole.
 
 Services-boundary discipline: no Flask import, no clock read.  It queries, which
 is this package's shape (:mod:`._identity`, :mod:`._anchor`) and for the same
@@ -93,7 +93,7 @@ class BankAnchor:
     **A value rather than the :class:`~app.models.account.AccountAnchorHistory`
     row it came from**, because what a derivation needs is the three facts
     below and nothing else -- and handing a reader the ORM row invites it to
-    reach through to the import's ``period_start`` and grow a dependency on
+    reach through to the import's ``declared_start`` and grow a dependency on
     which import happened to win.  The fourth field derives nothing: it is
     the statement's NAME, carried so the agreement page can say which file
     a run walks from (ruling **R-BAL63**), because a re-import legitimately
@@ -395,47 +395,48 @@ def _strongest_then_latest(
 
 
 def covered_runs(account_id: int) -> "list[tuple[date, date]]":
-    """Return this account's recorded spans, merged into contiguous runs.
+    """Return this account's declared windows, merged into contiguous runs.
 
     Args:
         account_id: The account whose imports to read.
 
     Returns:
         ``[(first_day, last_day), ...]`` ascending and disjoint, with
-        overlapping or ADJACENT spans merged into one run.  Two runs in the
+        overlapping or ADJACENT windows merged into one run.  Two runs in the
         list are therefore separated by at least one day nobody has imported.
 
-    **Adjacent counts as contiguous** -- a span ending on the 4th and one
+    **Adjacent counts as contiguous** -- a window ending on the 4th and one
     starting on the 5th leave no day unimported between them -- which is what
     makes a run's interior a stretch the recorded lines fully describe.
 
-    **Only an import that still OWNS at least one line contributes its span**,
-    and that is a defect an adversarial review reproduced end to end on
-    2026-08-24 rather than a precaution.  A span is a claim that every line in
-    those days is recorded, and a RE-IMPORT of an identical file records zero
-    fresh lines while keeping the full span (``recorded_count 0`` -- the
-    developer's own second import is exactly that shape).  Deleting the import
-    that actually owned those lines then left the re-import's span still
-    claiming them: the walk crossed 28 unimported days and reported ``$1,000.00``
-    where the truth was ``$850.00``, and because
-    :func:`~._anchor.recorded_opening_before` reads this, the next import solved
-    its own effective day against an opening ``$150.00`` wrong -- storing a
-    stored day under a *corroborated* badge, which is verbatim the defect ruling
-    **R-GF**'s second amendment was written to close.  An import owning no lines
-    has nothing left to vouch for; the import that still owns them is what
-    carries the claim, and where none does the days are honestly uncovered.
+    **Coverage is the window each import DECLARES, for as long as the import
+    exists** (ruling **R-BAL71**, amending **R-BAL53**; plan step
+    ``bank_import:X-f6b-1``): a CSV declares its first..last line day, a feed
+    sync the window it requested, so a quiet day inside a sync is covered and
+    a sync that returned no line still covers what it asked for.  **No
+    import is excluded for owning no line**, and the gate that excluded one
+    was scaffolding around a defect the sighting relation removed.  An
+    adversarial review reproduced that defect end to end on 2026-08-24: a
+    re-import of an identical file recorded zero fresh lines while keeping
+    the full span, deleting the import that owned the lines took them and
+    left the re-import's span claiming 28 unimported days, and the walk
+    reported ``$1,000.00`` where the truth was ``$850.00``.  Under the
+    sighting relation the re-import SIGHTED those lines, so deleting the
+    first import removes nothing they rested on: an import's deletion takes
+    only the lines no other import sighted.  What a surviving window claims
+    is therefore ITS OWN evidence -- the lines it sighted, and the quiet days
+    it declared -- never a line only the deleted import showed; where the
+    survivor did not sight a line the deleted import alone held inside its
+    window (a same-source disappearance, or a second source that missed
+    it), the window stands on what the survivor said, which is what a
+    declared window means.
     """
     spans = (
         db.session.query(
-            StatementImport.period_start, StatementImport.period_end,
+            StatementImport.declared_start, StatementImport.declared_end,
         )
-        .filter(
-            StatementImport.account_id == account_id,
-            db.session.query(BankStatementLine.id)
-            .filter(BankStatementLine.import_id == StatementImport.id)
-            .exists(),
-        )
-        .order_by(StatementImport.period_start)
+        .filter(StatementImport.account_id == account_id)
+        .order_by(StatementImport.declared_start)
         .all()
     )
     runs: "list[tuple[date, date]]" = []

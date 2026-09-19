@@ -802,7 +802,7 @@ Over the 951 live rows of `budget.transactions` on the restore:
 |---|---|---|
 | template-linked | 636 | 40 definitions, every one with a rule |
 | transfer shadows (`transfer_id`) | 252 | `X-bi-6` deletes them |
-| CC paybacks (`credit_payback_for_id`) | 29 | the card arc's `CC3b` / `CC3c` delete the payback; `X-au-i` is WITHDRAWN |
+| CC paybacks (`credit_payback_for_id`) | 29 | the card arc's `CC-7` (re-minted 2026-09-18; was `CC3b` / `CC3c`) deletes the payback; `X-au-i` is WITHDRAWN |
 | **link-less (the true one-offs)** | **34** | 0 soft-deleted; all baseline scenario; all OWN their figure |
 
 **The handoff's "~417 one-off rows (315 live)" is wrong, and so is the 315.** Both figures counted

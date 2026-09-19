@@ -3227,9 +3227,9 @@ class TestDebtSummaryDisplay:
         """The rendered footer names the debt the payoff date cannot cover.
 
         Plan step X-q3, finding N-99.  The date is derived over amortizing
-        loans -- the only debts with a payoff model -- so a Credit Card, which
-        the seam holds FLAT at its owed magnitude and which therefore never
-        reaches zero, is invisible to it.  The page says both: when the loans
+        loans -- the only debts with a payoff model -- so a Credit Card, whose
+        forward balance is its cash fold (plan step credit_card:CC-1) with no
+        schedule to pay it off, is invisible to it.  The page says both: when the loans
         are paid off, and what that does not speak for.
         """
         # pylint: disable=import-outside-toplevel

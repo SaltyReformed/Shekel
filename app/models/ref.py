@@ -62,6 +62,28 @@ class AccountType(db.Model):
                              physical asset (Property) is not mistaken
                              for an investment.  Applies to Asset-category
                              physical assets like Property.
+        has_revolving_credit -- This type is a revolving credit line (a
+                             Credit Card): an ordinary Liability whose
+                             balance is ``opening + SUM(movements)``, folded
+                             by the same cash fold every non-loan account
+                             rides, with the card's statement cycle, payment
+                             rule and refusals layered on top by the
+                             credit-card arc.  It is a FLAG and not a
+                             projection kind (``classify_account`` never
+                             reads it; a card stays PLAIN), read through the
+                             ONE predicate
+                             :func:`app.services.account_projection.is_revolving`.
+                             Seed-only, like ``has_appreciation``: no user
+                             door sets it.  ``ck_account_types_revolving_is_plain``
+                             makes a revolving type that also carries
+                             ``has_amortization`` / ``has_interest`` /
+                             ``has_appreciation`` / ``has_parameters``
+                             UNREPRESENTABLE rather than resolved by
+                             precedence -- the card's params row is optional
+                             by design, so the type carries
+                             ``has_parameters = FALSE`` (design
+                             ``docs/design/credit_card_from_scratch.md``
+                             3.1, plan step credit_card:CC-1).
 
     Display / validation metadata:
 
@@ -119,6 +141,15 @@ class AccountType(db.Model):
             postgresql_where=text("user_id IS NOT NULL"),
         ),
         db.Index("ix_account_types_user_id", "user_id"),
+        # A revolving type is PLAIN: the "both flags" type the 2026-07-19
+        # plan resolved by precedence is refused by the schema instead
+        # (design 3.1, plan step credit_card:CC-1).
+        db.CheckConstraint(
+            "NOT has_revolving_credit OR NOT ("
+            "has_amortization OR has_interest OR has_appreciation "
+            "OR has_parameters)",
+            name="ck_account_types_revolving_is_plain",
+        ),
         {"schema": "ref"},
     )
 
@@ -162,6 +193,10 @@ class AccountType(db.Model):
         server_default=db.text("false"),
     )
     has_appreciation = db.Column(
+        db.Boolean, nullable=False, default=False,
+        server_default=db.text("false"),
+    )
+    has_revolving_credit = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )

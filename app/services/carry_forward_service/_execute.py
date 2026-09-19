@@ -281,10 +281,12 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # **The DISCRETE rows need one too, since plan step X-f3b** (ruling
     # **R-FM**).  They are RELOCATED rather than settled -- the bulk UPDATEs
     # above set ``pay_period_id`` to the target -- and a posting carries the
-    # BUDGET column its source row is attributed to, so a LEGACY link-less
-    # envelope (which ``_context`` routes here, moving whole with its
-    # entries, until the family's cutover mints it a definition) would
-    # leave its purchases' legs filed under the period it left.  The comment above used to
+    # BUDGET column its source row is attributed to, so a link-less
+    # envelope (which ``_context`` routed here, moving whole with its
+    # entries, until the family's cutover ``X-bi-7d-2`` minted every one a
+    # definition) left its purchases' legs filed under the period it left.
+    # The discrete rows are still relocated, so the reconcile stays; what
+    # the cutover retired is the row that carried purchases into it.  The comment above used to
     # justify skipping them with "carry-forward moves only Projected rows",
     # which was sound while only a settled row held postings and is the same
     # premise ``routes/transactions/mutations`` re-listed ``pay_period_id``

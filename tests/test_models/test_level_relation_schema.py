@@ -48,10 +48,8 @@ def _import(db, account, *, stated="1085.00", stated_on=date(2026, 3, 9),
         ),
         file_name=file_name,
         file_digest=file_name.ljust(64, "0")[:64],
-        period_start=period[0],
-        period_end=period[1],
-        line_count=1,
-        recorded_count=1,
+        declared_start=period[0],
+        declared_end=period[1],
         stated_balance=None if stated is None else Decimal(stated),
         stated_balance_on=None if stated is None else stated_on,
     )
@@ -244,9 +242,11 @@ class TestABankLevelLiesInsideItsFile:
     ):
         """The UPDATE arm: the hole an insert-only trigger would have left.
 
-        ``UPDATE statement_imports SET period_end = ...`` beneath a placement
-        committed cleanly under a trigger on the level alone; this is the
-        control the design review asked for.
+        ``UPDATE statement_imports SET declared_end = ...`` beneath a
+        placement committed cleanly under a trigger on the level alone; this
+        is the control the design review asked for.  The bounding columns
+        are the DECLARED window since plan step ``bank_import:X-f6b-1``
+        (ruling **R-BAL71**).
         """
         mine = _import(db, seed_user["account"])
         _level(db, seed_user["account"], mine, day=date(2026, 3, 3))
@@ -257,8 +257,8 @@ class TestABankLevelLiesInsideItsFile:
         import_id = mine.id
 
         for column, value in (
-            ("period_end", "2026-03-02"),
-            ("period_start", "2026-03-05"),
+            ("declared_end", "2026-03-02"),
+            ("declared_start", "2026-03-05"),
             ("stated_balance_on", "2026-03-02"),
         ):
             with pytest.raises(InternalError, match="level_lies_within_file"):
@@ -276,7 +276,7 @@ class TestABankLevelLiesInsideItsFile:
         _level(db, seed_user["account"], mine, day=date(2026, 3, 3))
 
         db.session.execute(text(
-            "UPDATE budget.statement_imports SET period_end = '2026-03-08' "
+            "UPDATE budget.statement_imports SET declared_end = '2026-03-08' "
             "WHERE id = :id"
         ), {"id": mine.id})
         db.session.flush()

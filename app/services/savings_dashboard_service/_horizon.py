@@ -33,11 +33,11 @@ the P-AC1 ruling fixed on worked real-data examples:
   walking the paycheck axis, because it carries no contributions and so has
   nothing an axis decides -- see :func:`_asset_bands`.
 * **Liability band** = the :mod:`app.services.balance_at` seam's liability view
-  (:func:`app.services.balance_at.liability_owed_at_dates`), which owns both
-  forward rules -- an amortizing loan follows its resolver schedule, a debt with
-  no forward model (a revolving Credit Card) holds flat -- so this module only
-  SUMS what the seam returns.  Same amortization the ``2 years`` band and the
-  debt card consume.
+  (:func:`app.services.balance_at.liability_owed_at_dates`), which reads every
+  debt's kind-correct forward balance -- an amortizing loan follows its resolver
+  schedule, every other liability (a revolving Credit Card) its cash fold, the
+  planned rows included -- so this module only SUMS what the seam returns.  Same
+  amortization the ``2 years`` band and the debt card consume.
 
 The today point (index 0) is each band's real today balance, so the horizon
 net at index 0 equals the net-worth hero and the ``2 years`` series' current
@@ -610,9 +610,10 @@ def _liability_band(
     just amortizing loans -- so the today point reconciles to the net-worth
     hero's liability total.
 
-    The two forward models (an amortizing loan follows its resolver schedule; a
-    liability with no forward model holds flat at its current owed magnitude)
-    are the SEAM's rules, not this module's -- a balance-at-T boundary rule
+    The forward models (an amortizing loan follows its resolver schedule; every
+    other liability follows its cash fold, planned rows included, since plan
+    step credit_card:CC-1 -- it held flat before) are the SEAM's rules, not this
+    module's -- a balance-at-T boundary rule
     living in a presentation module is the exact pattern the balance seam exists
     to prevent, and this band held half of one until the seam grew the liability
     view (``followup_fence_loan_owed_at_dates.md``).  The seam also owns the
@@ -745,8 +746,9 @@ def _structural_milestones(
             })
     # The label says what the date MEASURES (plan step X-q3, finding N-99):
     # the derivation behind it covers amortizing loans, the only debts with a
-    # payoff model, and a revolving balance on the same chart's liability band
-    # never reaches zero.
+    # payoff MODEL; a revolving balance on the same chart's liability band
+    # follows its fold (plan step credit_card:CC-1) but no schedule names the
+    # day it reaches zero.
     result.append({
         "date": debt_free_date,
         "label": _DEBT_FREE_MILESTONE_LABEL,

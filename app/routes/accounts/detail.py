@@ -61,6 +61,7 @@ from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.credit_card_params import CreditCardParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
@@ -78,6 +79,7 @@ from app.services import (
     home_equity_service,
     property_equity_chart,
 )
+from app.services.account_projection import is_revolving
 from app.services.balance_at import BalanceContext
 from app.utils.account_validation import (
     _appreciation_params_schema,
@@ -188,6 +190,32 @@ def _interest_params(account: Account) -> InterestParams:
             f"no-op."
         )
     return params
+
+
+def _card_terms(account: Account) -> CreditCardParams | None:
+    """Return the card's terms row, or ``None`` while the card is dormant.
+
+    The opposite disposition to :func:`_interest_params`, and deliberately so
+    (plan step credit_card:CC-2, design 3.4): an interest-bearing account's
+    params row is written by every door that makes it interest-bearing, so a
+    missing one is corrupt data and the page refuses; a card's row is written
+    by the OWNER alone, through the terms door, and no door creates it on
+    their behalf, so a missing one is the ordinary state of a card whose
+    terms are not yet stated.  The page renders the terms form blank in that
+    state and every card feature stays dormant.
+
+    Args:
+        account: The revolving account being rendered.
+
+    Returns:
+        Its :class:`~app.models.credit_card_params.CreditCardParams`, or
+        ``None``.
+    """
+    return (
+        db.session.query(CreditCardParams)
+        .filter_by(account_id=account.id)
+        .first()
+    )
 
 
 def _build_horizons(
@@ -528,6 +556,7 @@ def cash_detail(account_id):
     # to one.  (This comment named X-i1 as that half's owner; X-i4 reached it
     # first, by making the pass hand out the fold.)
     ctx = BalanceContext.build(current_user.id)
+    is_card = is_revolving(account)
     return render_template(
         "accounts/cash_detail.html",
         # Under ONE name rather than splatted: ``reconcile_context`` inside
@@ -549,6 +578,13 @@ def cash_detail(account_id):
         # also serves the BAND fragment, which re-renders on every
         # ``balanceChanged`` and carries neither card.
         books_difference=outstanding_context(account, ctx),
+        # The Card terms card (plan step credit_card:CC-2, ruling R-CC25),
+        # composed here for the reason the two above are: the band fragment
+        # ``_cash_detail_context`` also serves never renders it.  Gated by the
+        # ONE card predicate (CC-1); the row is read only for a card, and
+        # ``None`` is the dormant state the partial renders blank.
+        is_card=is_card,
+        card_terms=_card_terms(account) if is_card else None,
         **_cash_detail_context(account, ctx),
     )
 

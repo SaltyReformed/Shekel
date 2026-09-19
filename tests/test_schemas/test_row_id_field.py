@@ -484,10 +484,18 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # stale-entry arm refuses.
     "other_dependents",
     "payment_day",
+    # ``payment_due_day`` and ``statement_close_day`` are the two DAYS OF THE
+    # MONTH a card's cycle turns on (plan step credit_card:CC-2, design 3.4):
+    # the day the issuer closes a statement and the day its payment is due.
+    # 1..31 here, exactly as ``payment_day`` is for a loan, refused again by
+    # ``ck_credit_card_params_payment_due_day`` /
+    # ``ck_credit_card_params_statement_close_day``.
+    "payment_due_day",
     "qualifying_children",
     "rolling_target_periods",
     "second_day_of_month",
     "sort_order",
+    "statement_close_day",
     "tax_year",
     "term_months",
     # ``terminal_year`` is a CALENDAR YEAR, not a row: the last year a

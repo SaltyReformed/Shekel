@@ -386,7 +386,7 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
             SettledDayBasisEnum.OBSERVED,
         )
         assert row.settled_amount == Decimal("0.05")
-        assert row.is_envelope is False
+        assert row.tracks_purchases is False
         # It is a ONE-OFF since plan step balance:X-bi-7b (R-BAL20 / R-BAL24):
         # a rule-less DEFINITION carrying the name, type and figure plus this
         # placed row, priced by it -- where it used to OWN its figure as a

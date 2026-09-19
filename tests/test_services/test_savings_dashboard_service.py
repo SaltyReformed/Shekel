@@ -16,6 +16,7 @@ import pytest
 from app.exceptions import BaselineMissingError
 
 from app import ref_cache
+from app.services.cash_flow_set import CashFlowSet
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
@@ -2942,7 +2943,7 @@ class TestCanonicalProducerRouting:
             # point of the test is that the two surfaces read ONE producer --
             # and this account is PLAIN, where they agree by construction.
             grid_current_balance = balance_at.grid_balance_view(
-                seed_user["account"],
+                CashFlowSet.single(seed_user["account"]),
                 BalanceContext.build(seed_user["user"].id),
             ).columns[current_period.id].balance
 
@@ -3439,9 +3440,8 @@ class TestNetWorthSeries:
 
         The per-period reduction (``_sum_composition_at_period``) has its own
         ``abs`` -- a SECOND site from the hero's -- and this is what pins it.
-        A Credit Card's cash balance is stored negative, and it carries no
-        amortization schedule, so it holds flat at its anchor across every
-        point:
+        A Credit Card's cash balance is stored negative, and with no rows its
+        fold holds its anchor across every point:
           liabilities[i]                = abs(-500.00) = 500.00
           composition["liability"][i]   = 500.00
           net[i]                        = 1000.00 - 500.00 = 500.00
@@ -3473,7 +3473,7 @@ class TestNetWorthSeries:
 
             assert len(series.composition["liability"]) > 0
             for i in range(len(series.composition["liability"])):
-                # abs(-500.00) = 500.00 at every point (the card holds flat).
+                # abs(-500.00) = 500.00 at every point (no rows move the fold).
                 assert series.composition["liability"][i] == Decimal(
                     "500.00",
                 )
@@ -4506,11 +4506,12 @@ class TestNetWorthHorizon:
     def test_non_amortizing_liability_stays_in_the_band(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A revolving Credit Card debt appears in the liability band, flat.
+        """A revolving Credit Card debt appears in the liability band at its fold.
 
         A liability with no amortization schedule (Credit Card, no
-        ``loan_params``) has no forward model, so it holds flat at its owed
-        magnitude -- but it must NOT vanish from the horizon: the today point
+        ``loan_params``) reads its cash fold forward (plan step credit_card:CC-1),
+        which with no planned rows is its asserted magnitude at every date --
+        and it must NOT vanish from the horizon: the today point
         still reconciles to the net-worth hero, and the $3,000 debt does not
         disappear when the range toggles from ``2 years`` to ``Horizon``.
         """
@@ -4543,7 +4544,8 @@ class TestNetWorthHorizon:
             #   total_liabilities = 3000.00 ; net = 5000 - 3000 = 2000.
             assert hero.today.total_liabilities == Decimal("3000.00")
             assert horizon["net"][0] == hero.today.net_worth
-            # The card is in the band at index 0 and holds flat (no schedule).
+            # The card is in the band at index 0, and with no planned rows its
+            # fold reads the asserted 3,000.00 at the far end too.
             assert liability[0] == Decimal("3000.00")
             assert liability[-1] == Decimal("3000.00")
             # A card carries no payoff model, so the domain is the fixed
@@ -6469,9 +6471,10 @@ class TestTheDebtFreeDateIsOneDerivation:
 
         Developer ruling on finding N-99 (plan step X-q3): the derivation
         stays over the debts that HAVE a payoff model, and the surfaces say
-        so.  A revolving Credit Card has no forward model -- the seam holds it
-        FLAT at its owed magnitude, so it never reaches zero -- and it is
-        invisible to :func:`.._debt_line.loan_payoff_outlook`.  Without the
+        so.  A revolving Credit Card has no PAYOFF model -- its forward balance
+        is its cash fold (plan step credit_card:CC-1), which no schedule pays
+        off -- and it is invisible to :func:`.._debt_line.loan_payoff_outlook`.
+        Without the
         caveat a borrower reads a payoff month on a page whose own liability
         band never touches zero.
 

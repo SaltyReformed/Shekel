@@ -667,10 +667,11 @@ def hard_delete_template(template_id):
          removed -- ``definition_delete.permanently_delete_definition``, the
          one act, shared with the account hard-delete since plan step
          ``balance:X-bi-7a``.  ``Transaction.template_id`` is a FK with ON
-         DELETE SET NULL, so any row that survived the filtered delete
-         would keep its financial data with a NULL template_id rather than
-         cascading away; guard 1 is what makes that set empty (ruling
-         **R-JE**).
+         DELETE RESTRICT (plan step ``balance:X-bi-7d-2``; SET NULL before
+         it), so any row that survived the filtered delete would refuse the
+         definition's delete rather than keep its financial data with a
+         NULL link; guard 1 is what makes that set empty (ruling **R-JE**),
+         so the refusal is a designed 4xx rather than the database's.
 
     Defense in depth (CRIT-05 / E-22): the bulk delete is constrained to
     non-settled rows via the semantic ``Status.is_settled`` boolean.

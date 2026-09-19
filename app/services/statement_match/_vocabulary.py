@@ -28,7 +28,11 @@ from __future__ import annotations
 from app import ref_cache
 from app.enums import StatementSourceEnum
 from app.extensions import db
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 
 
 #: Which of each SOURCE's own category strings name a payment to an account the
@@ -79,17 +83,28 @@ def account_payment_merchants(account_id: int) -> "frozenset[int]":
     whose every line is already matched is still one the owner may want to
     answer for, and the next statement will bring more of it.
 
-    The SOURCE is joined rather than assumed, because
-    :attr:`~app.models.statement_import.BankStatementLine.source_category` is
-    one source's private vocabulary and this account may hold lines from
-    several (ruling **R-FP**'s adapter seam).  **What narrows the read to this
-    account is the explicit filter on the LINE**, not the join: an adversarial
-    review 2026-08-24 measured a first version of this sentence claiming the
-    composite ``fk_bank_statement_lines_import_account`` made the narrowing
-    structural, and reducing the join to the bare ``import_id`` left the
-    account test green.  The composite half is still stated, because a join
-    that could pair a line with another account's import would be wrong even
-    where a filter saves it -- but the filter is the guard, and
+    The SOURCE is joined rather than assumed, because a category is one
+    source's private vocabulary
+    (:attr:`~app.models.statement_import.StatementLineSighting.source_category`)
+    and this account may hold lines from several (ruling **R-FP**'s adapter
+    seam).  **A line is filed under a category by a SIGHTING of it** since
+    plan step ``bank_import:X-f6b-1``: the read walks line -> sighting ->
+    import, and a line qualifies when ANY import of a source filed it under
+    that source's card-payment words.  **The merchant it answers with is the
+    LINE's** -- the earliest surviving sighting's, the read
+    :attr:`~app.models.statement_import.BankStatementLine.merchant_id` is
+    (ruling **R-BI16**) -- and not the filing sighting's, because the bar
+    this set feeds is asked of a line's merchant
+    (:meth:`~._bars.CreationBars.bar_for`); the two are one sighting's
+    except where two sources named a known line two words, and the line's
+    answer is the one the bar is asked about.  **What narrows the read to this
+    account is the explicit filter on the LINE**, not the joins: an
+    adversarial review 2026-08-24 measured a first version of this sentence
+    claiming a composite key made the narrowing structural, and reducing the
+    join to the bare id left the account test green.  The composite halves
+    are still stated, because a join that could pair a line with another
+    account's sighting or import would be wrong even where a filter saves it
+    -- but the filter is the guard, and
     ``test_ANOTHER_accounts_lines_do_not_reach_this_accounts_bars`` is what
     grades it.
 
@@ -105,22 +120,20 @@ def account_payment_merchants(account_id: int) -> "frozenset[int]":
     filed_as = [
         db.and_(
             StatementImport.source_id == ref_cache.statement_source_id(source),
-            BankStatementLine.source_category.in_(sorted(categories)),
+            StatementLineSighting.source_category.in_(sorted(categories)),
         )
         for source, categories in ACCOUNT_PAYMENT_CATEGORIES.items()
     ]
     rows = (
         db.session.query(BankStatementLine.merchant_id)
-        .join(
-            StatementImport,
-            db.and_(
-                StatementImport.id == BankStatementLine.import_id,
-                StatementImport.account_id == BankStatementLine.account_id,
-            ),
-        )
+        .join(StatementLineSighting, StatementLineSighting.of_its_line())
+        .join(StatementImport, StatementLineSighting.of_its_import())
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant_id.isnot(None),
+            # Pylint: ``no-member`` -- a false positive on a hybrid: pylint
+            # infers the getter function, where at class level this is the
+            # sealed ``column_property``'s own expression (R-BI16).
+            BankStatementLine.merchant_id.isnot(None),  # pylint: disable=no-member
             db.or_(*filed_as),
         )
         .distinct()

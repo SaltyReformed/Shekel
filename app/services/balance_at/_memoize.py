@@ -201,8 +201,8 @@ def require_scenario(ctx: "BalanceContext") -> None:
     * :func:`app.services.balance_at.liability_owed_at_dates` -- the ONE seam
       entry that does not run this guard at all, because a missing baseline
       there is not an error but the degenerate case of its own rule (no loan is
-      resolvable, so every liability holds flat); its docstring owns that
-      rationale.
+      resolvable and no plan can be folded, so every liability holds flat); its
+      docstring owns that rationale.
 
     Args:
         ctx: The read pass's :class:`~._context.BalanceContext`.

@@ -449,7 +449,7 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         assert edges, "no step carries a blocker -- rule 13 grades nothing"
 
     def test_an_annotated_blocker_parses_to_its_key(self):
-        """``CC3b`` carries a real annotation, and the key is parsed OUT of it.
+        """``CC-5`` carries a real annotation, and the key is parsed OUT of it.
 
         A naive reader would take the whole cell as the key and report the one
         row that documents WHY its blocker is already shipped as broken -- the
@@ -463,12 +463,12 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         worth holding is that EVERY parsed key is bare.
         """
         by_key = {row.key: row for row in registry.step_rows()}
-        annotated = by_key["credit_card:CC3b"]
+        annotated = by_key["credit_card:CC-5"]
         assert "(" in annotated.blocked, (
-            "CC3b no longer carries an annotated blocker, so this control has "
+            "CC-5 no longer carries an annotated blocker, so this control has "
             f"lost its subject: {annotated.blocked!r}"
         )
-        assert "balance:X-f1" in annotated.blocked_keys()
+        assert "balance:X-bi-4" in annotated.blocked_keys()
         for row in registry.step_rows():
             for key in row.blocked_keys():
                 assert "(" not in key and " " not in key, (
@@ -510,17 +510,17 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
     def test_the_control_fires_on_a_cycle(self, stage):
         """The control fires on a cycle.
 
-        Both edges are STAGED -- ``CC3a`` blocked by ``X-bi-4`` and ``X-bi-4``
-        blocked by ``CC3a`` -- so the control no longer rests on a live edge a
+        Both edges are STAGED -- ``CC-5`` blocked by ``X-bi-4`` and ``X-bi-4``
+        blocked by ``CC-5`` -- so the control no longer rests on a live edge a
         later tick retires: it staged ``R5`` until 2026-09-03 (R-R52 moved R5's
-        gate off X-f4) and ``CC0a <- X-f4`` until 2026-09-18 (the R-CC13 trace
-        made CC0a ``NOW``).  A loop across two arcs is the shape no single arc
-        document could have seen.
+        gate off X-f4), ``CC0a <- X-f4`` to 2026-09-18 (the R-CC13 trace made
+        CC0a ``NOW``) and ``CC3a`` to that day's re-mint.  A loop across two
+        arcs is the shape no single arc document could have seen.
         """
-        cc3a = row_of("steps", "| credit_card | CC3a |")
-        stage("steps", cc3a, with_cell(cc3a, -1, "balance:X-bi-4"))
+        cc5 = row_of("steps", "| credit_card | CC-5 |")
+        stage("steps", cc5, with_cell(cc5, -1, "balance:X-bi-4"))
         line = row_of("steps", "| balance | X-bi-4 |")
-        stage("steps", line, with_cell(line, -1, "credit_card:CC3a"))
+        stage("steps", line, with_cell(line, -1, "credit_card:CC-5"))
         problems = registry.blocked_by_violations()
         assert any("CYCLE" in p for p in problems), problems
 
@@ -841,11 +841,15 @@ class TestTheParserSurvivesTheShapesTheRealFilesUse:
         rows = {row.key: row for row in registry.ledger_rows()}
         assert "balance:N-73" not in rows or "|" in rows["balance:N-73"].finding
 
-    def test_a_fenced_heading_does_not_truncate_a_checkbox_scan(self):
-        """A ``##`` inside a fence must not end the steps scan."""
-        # credit_card's steps section contains fenced blocks; if fencing were
-        # mishandled the scan would stop early and lose its later phases.
-        assert "CC5b" in registry.arc_checkboxes("credit_card")
+    def test_a_fenced_checkbox_is_a_sample_and_not_a_step(self, stage_arc):
+        """A checkbox inside a fence is a code sample, not a step.  STAGED, since
+        no live steps section carries a fence (0 on 2026-09-18) and this control's
+        earlier form read the live card document for a fence it never had."""
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        first = [ln for ln in text.splitlines() if ln.startswith("- [") and "**CC-" in ln][:1]
+        assert len(first) == 1, first
+        stage_arc("credit_card", first[0], first[0] + "\n```text\n- [ ] **CC-99**\n```\n")
+        assert "CC-99" not in registry.arc_checkboxes("credit_card")
 
     def test_a_duplicate_checkbox_does_not_silently_un_tick_a_shipped_step(
         self, stage_arc,

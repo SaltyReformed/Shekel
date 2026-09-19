@@ -41,8 +41,9 @@ from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
+    create_savings_account,
+    create_transfer,
     default_settle_day,
-    legacy_link_less_row_of,
     one_off_row_of,
     open_books_before_the_first_assertion,
     settle_day_columns,
@@ -879,27 +880,26 @@ class TestDaysUntilDue:
             assert txn.days_until_due is None
 
     def test_days_until_due_no_due_date(self, app, db, seed_user, seed_periods):
-        """A LEGACY undated row returns None.
+        """An UNDATED row returns None.
 
-        The undated shape is what the cutover dates away (a placed row is
-        due on its paycheck's start, R-BAL22), so the row is the legacy
-        one on its transitional home (plan step balance:X-bi-7c, ruling
-        R-BAL59); 7d retires this case with the arm.
+        The undated row is a transfer's shadow made without a due date: a
+        placed one-off is dated on its paycheck's start (R-BAL22) and the
+        cutover (plan step balance:X-bi-7d-2) dated every legacy one the
+        same way, so a row NO definition prices is what still reaches the
+        ``None`` arm.
         """
         with app.app_context():
-            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            txn = legacy_link_less_row_of(
-                seed_periods[0],
-                name="Test Due",
-                amount=Decimal("100.00"),
-                user_id=seed_periods[0].user_id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=seed_user["categories"]["Groceries"].id,
-                due_date=None,
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
             )
-            assert txn.days_until_due is None
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
+            )
+            db.session.flush()
+            shadow = xfer.shadow_transactions[0]
+            assert shadow.due_date is None
+            assert shadow.days_until_due is None
 
 
 class TestSettleDayRefusesAnInstant:

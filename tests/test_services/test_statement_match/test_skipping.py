@@ -67,6 +67,7 @@ from tests.test_services.test_statement_import.test_anchor import _seed_import
 from ._builders import (
     a_bank_line,
     a_scope,
+    a_sighting,
     a_submission,
     a_transaction,
     an_answers,
@@ -1131,6 +1132,41 @@ class TestTheReaderOverWhatTheDoorsRecorded:
         assert [act.skip_id for act in listed] == [recorded.skip_id]
         assert unskip_line(listed[0].skip_id, owner_id, account_id) == line.id
         assert skipped_acts(owner_id, account_id).shown == ()
+
+    def test_a_line_TWO_imports_sighted_is_one_act_and_the_bound_counts_it_once(
+        self, app, db, seed_user,
+    ):
+        """The window count and the bound are over LINES, not joined rows.
+
+        The line's ``sightings`` ride its query as a JOIN (plan step
+        ``bank_import:X-f6b-1``), so a line two imports showed is two joined
+        rows; ``count() OVER ()`` and ``LIMIT`` have to see one.  Two skipped
+        lines, each sighted twice, at a bound of two: both shown, nothing
+        withheld -- where a count over joined rows would report two withheld.
+        """
+        owner_id, account_id = _owner(seed_user)
+        lines = [
+            self._skipped_line(
+                seed_user, db, amount="-9.99", sequence_in_group=ordinal,
+                description=f"LINE {ordinal}",
+            )[0]
+            for ordinal in range(2)
+        ]
+        # Staged AFTER the two imports above, so by act order it is the
+        # LATEST and its wording is what each line reads.
+        again = an_import(seed_user)
+        for ordinal, line in enumerate(lines):
+            a_sighting(seed_user, again, line, description=f"LINE {ordinal} AGAIN")
+        db.session.flush()
+
+        acts = skipped_acts(owner_id, account_id, limit=2)
+
+        assert len(acts.shown) == 2
+        assert len({act.line.line_id for act in acts.shown}) == 2
+        assert acts.withheld_count == 0
+        assert {act.line.description for act in acts.shown} == {
+            "LINE 0 AGAIN", "LINE 1 AGAIN",
+        }
 
     def test_it_carries_the_BANK_facts_the_card_prints(
         self, app, db, seed_user,

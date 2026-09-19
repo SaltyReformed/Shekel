@@ -86,6 +86,9 @@ from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._cash_fold import assembled_fold
+from app.services.balance_at._cash_periods import period_view_of
+from app.services.cash_flow_set import CashFlowSet
 from app.services.balance_at._inputs import (
     _contribution_inputs_for_account,
     _contribution_inputs_for_accounts,
@@ -104,8 +107,10 @@ from tests._test_helpers import (
     create_account_via_service,
     create_hysa_account,
     create_loan_account,
+    create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    create_transfer,
     current_pay_period,
     derived_span,
     generate_row_of,
@@ -2634,7 +2639,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
             )
             db.session.commit()
 
-            view = balance_at.grid_balance_view(hysa, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
             current = current_pay_period(user_id)
 
@@ -2774,13 +2779,22 @@ def _assert_grid_view_reconciles(view):
     """Assert the view's rows reconcile to the cent, off the view alone.
 
     For every adjacent pair of periods the displayed balance delta must equal
-    the column's own net plus BOTH remainders plus BOTH modelled tiers -- ruling
-    R-K's identity in the form ruling R-AH measured, with ruling R-DH (f)'s
-    split applied::
+    the column's own net plus the "On other accounts" term plus BOTH remainders
+    plus BOTH modelled tiers -- ruling R-K's identity in the form ruling R-AH
+    measured, with ruling R-DH (f)'s split applied and ruling
+    ``credit_card:R-CC16``'s term (plan step CC-4-1)::
 
         balance[p] - balance[p-1]
-            == net[p] + period_timing[p] + book_vs_bank[p]
+            == net[p] + elsewhere[p] + period_timing[p] + book_vs_bank[p]
                + contribution[p] + accrual[p]
+
+    **The ELSEWHERE term is what lets a paycheck-wide net reconcile with a
+    one-account balance**: ``net`` sums every member of the owner's cash-flow
+    set (checking and its cards) and ``balance`` is one member's, so what the
+    paycheck budgets on the other members -- their expense less their income
+    -- is the term between them.  ``TestTheRemainderOracleSeesEveryTerm``
+    carries the control that a delta short its elsewhere term must not
+    reconcile, beside the two it already carried for the modelled tiers.
 
     The CONTRIBUTION term is not decoration: dropping it breaks the identity on
     53 of 59 period pairs on the real Empower 401(k), worst $181.59 a column (a
@@ -2811,16 +2825,290 @@ def _assert_grid_view_reconciles(view):
     assert len(items) >= 2, "need >= 2 periods to reconcile a delta"
     for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
         expected = (
-            column.net + column.period_timing + column.book_vs_bank
+            column.net + column.elsewhere
+            + column.period_timing + column.book_vs_bank
             + column.contribution + column.accrual
         )
         assert column.balance - prev.balance == expected, (
             f"period {pid}: balance delta "
             f"{column.balance - prev.balance} != net {column.net} + "
+            f"elsewhere {column.elsewhere} + "
             f"period_timing {column.period_timing} + book_vs_bank "
             f"{column.book_vs_bank} + contribution "
             f"{column.contribution} + accrual {column.accrual}"
         )
+
+
+class TestTheSubtotalsAreThePaychecksAcrossTheSet:
+    """Plan step credit_card:CC-4-1's PRODUCER-side control for the fifth term.
+
+    Developer ruling ``credit_card:R-CC16``: the grid reads the owner's
+    cash-flow set -- checking and its cards -- as ONE paycheck, so its
+    subtotals sum every member's rows while the Projected End Balance stays one
+    account's, and the identity gains ``elsewhere[p]``.  Ruling
+    ``credit_card:R-CC23``: a transfer between two members counts ONCE, from
+    the balance line's side.  ``TestTheRemainderOracleSeesEveryTerm`` grades
+    the term on hand-built columns; this class puts a figure in it through
+    :func:`~app.services.balance_at.grid_balance_view` itself.
+
+    **The fixture is the ruling's own worked example**, on the paycheck
+    ``seed_periods_today[6]``: the phone bill ``$45.00`` expected on the card,
+    the grocery envelope ``$500.00`` on checking, and the ``$165.00`` card
+    payment (checking -> card) in the same paycheck.  Hand-computed, with
+    checking as the balance line::
+
+        Total Income      0.00
+        Total Expenses  710.00   (500 grocery + 45 phone + 165 payment leg)
+        Net Cash Flow  -710.00
+        On other accts   45.00   (the card's expense less its income;
+                                  its payment leg is the FAR leg, excluded)
+        checking moves -665.00 = -710.00 + 45.00
+
+    and with the CARD as the balance line, the same paycheck seen from the
+    card::
+
+        Total Income    165.00   (the payment, now the near leg)
+        Total Expenses  545.00   (500 grocery + 45 phone)
+        Net Cash Flow  -380.00
+        On other accts  500.00   (checking's expense less its income; ITS
+                                  payment leg is now the far leg)
+        the card moves  120.00 = -380.00 + 500.00
+
+    Every row is placed PROJECTED in a paycheck that opens after the pass's
+    ``as_of`` (asserted, not assumed: the fixture's periods 0-3 are PAST, and
+    ruling R-G's clamp lands a past-period plan row on ``as_of + 1``, in
+    today's column, which the identity absorbs through ``period_timing`` and
+    a hand delta on the row's own column would not see), so each row lands on
+    its own day and the column's balance delta is exactly the rows'.
+
+    **What grades what.**  The identity oracle cannot grade the composition:
+    ``net`` and ``elsewhere`` are built from the same other-member legs, so
+    ``net + elsewhere`` is the balance account's own net ALGEBRAICALLY,
+    whatever those legs hold -- the leaf's adversarial review named this.  The
+    composition is graded two ways instead: the hand figures on the fixture
+    column, and
+    ``test_the_composition_is_each_members_own_cash_column_over_the_window``,
+    which reads every member's OWN column off :func:`period_view_of` (the
+    pre-CC-4-1 producer, an independent path) and checks every column of the
+    window against it.
+    """
+
+    _PHONE = Decimal("45.00")
+    _GROCERY = Decimal("500.00")
+    _PAYMENT = Decimal("165.00")
+
+    @staticmethod
+    def _set(balance, other):
+        """The two-member set with *balance* on the line."""
+        return CashFlowSet(balance=balance, members=(balance, other))
+
+    def _world(self, db, seed_user, periods):
+        """Build the worked example; return ``(checking, card, paycheck)``."""
+        user_id = seed_user["user"].id
+        scenario_id = get_baseline_scenario(user_id).id
+        checking = seed_user["account"]
+        card = create_account_of_type(
+            seed_user, db.session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+        paycheck = periods[6]
+        assert paycheck.start_date > BalanceContext.build(user_id).as_of + timedelta(days=1)
+        expense = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+        one_off_row_of(
+            paycheck, name="Phone", amount=self._PHONE, user_id=user_id,
+            account_id=card.id, scenario_id=scenario_id,
+            transaction_type_id=expense,
+        )
+        one_off_row_of(
+            paycheck, name="Grocery", amount=self._GROCERY, user_id=user_id,
+            account_id=checking.id, scenario_id=scenario_id,
+            transaction_type_id=expense,
+        )
+        create_transfer(
+            seed_user, db.session, checking, card, paycheck,
+            amount=self._PAYMENT,
+        )
+        db.session.commit()
+        return checking, card, paycheck
+
+    @staticmethod
+    def _delta(view, paycheck):
+        """Return the paycheck column's balance change from its predecessor."""
+        items = _all_columns(view)
+        index = [pid for pid, _ in items].index(paycheck.id)
+        return items[index][1].balance - items[index - 1][1].balance
+
+    def test_checking_as_the_balance_line(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            view = balance_at.grid_balance_view(self._set(checking, card), bctx)
+
+            column = view.columns[paycheck.id]
+            assert column.income == Decimal("0.00")
+            assert column.expense == Decimal("710.00")
+            assert column.net == Decimal("-710.00")
+            assert column.elsewhere == Decimal("45.00")
+            assert self._delta(view, paycheck) == Decimal("-665.00")
+            _assert_grid_view_reconciles(view)
+            assert view.row_flags(
+                [derived_span(paycheck)],
+            ).elsewhere is True
+
+    def test_the_card_as_the_balance_line(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            view = balance_at.grid_balance_view(self._set(card, checking), bctx)
+
+            column = view.columns[paycheck.id]
+            assert column.income == Decimal("165.00")
+            assert column.expense == Decimal("545.00")
+            assert column.net == Decimal("-380.00")
+            assert column.elsewhere == Decimal("500.00")
+            assert self._delta(view, paycheck) == Decimal("120.00")
+            _assert_grid_view_reconciles(view)
+
+    def test_a_settled_far_leg_is_excluded_too(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        """The far leg of a PAID payment is a fact in the card's walk, keyed by its shadow.
+
+        A settled shadow reads as ``0 + its covering movement``
+        (``CashSourceFact`` carries no transfer id), so the seam's exclusion
+        has to reach it by the shadow's ``transaction_id`` -- the second
+        identity ``FarLegs`` carries.  Paid in the fixture paycheck: the
+        card's balance delta is the same ``+120.00`` and its income the same
+        ``165.00`` whether the payment is still projected or settled.
+        """
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            create_settled_transfer(
+                seed_user, db.session, checking, card, seed_periods_today[5],
+                amount=Decimal("80.00"),
+            )
+            db.session.commit()
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            from_checking = balance_at.grid_balance_view(self._set(checking, card), bctx)
+            from_card = balance_at.grid_balance_view(self._set(card, checking), bctx)
+
+            earlier = seed_periods_today[5].id
+            # Seen from checking, the paid $80 is checking's own expense leg
+            # in its paycheck and NOT the card's income; seen from the card,
+            # the reverse.
+            assert from_checking.columns[earlier].expense == Decimal("80.00")
+            assert from_checking.columns[earlier].income == Decimal("0.00")
+            assert from_checking.columns[earlier].elsewhere == Decimal("0.00")
+            assert from_card.columns[earlier].income == Decimal("80.00")
+            assert from_card.columns[earlier].expense == Decimal("0.00")
+            assert from_card.columns[earlier].elsewhere == Decimal("0.00")
+            _assert_grid_view_reconciles(from_checking)
+            _assert_grid_view_reconciles(from_card)
+
+    def test_a_transfer_with_one_endpoint_in_the_set_counts_from_that_endpoint(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        """Savings -> card is the card's INCOME on the paycheck grid (R-CC23's kept case)."""
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("5000.00"),
+            )
+            create_transfer(
+                seed_user, db.session, savings, card, paycheck,
+                amount=Decimal("300.00"),
+            )
+            db.session.commit()
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            view = balance_at.grid_balance_view(self._set(checking, card), bctx)
+
+            column = view.columns[paycheck.id]
+            assert column.income == Decimal("300.00")
+            assert column.expense == Decimal("710.00")
+            # 45 phone - 300 from savings: the card's net budget is income.
+            assert column.elsewhere == Decimal("-255.00")
+            assert self._delta(view, paycheck) == Decimal("-665.00")
+            _assert_grid_view_reconciles(view)
+
+    def test_a_set_of_one_is_the_accounts_own_cash_column_unchanged(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        """A set of one: checking's own columns, ``elsewhere`` zero, the row hidden.
+
+        Compared column by column against the pre-CC-4-1 reading of the
+        subtotals -- :func:`period_view_of` over checking's own fold, which
+        is what the grid view read verbatim before the composition -- so the
+        single-account view is shown unchanged rather than assumed.  The
+        composition rounds each subtotal once over the composed legs where
+        the cash column carried them verbatim; equal here in every column,
+        which is the seam's cent-quantized premise measured rather than
+        quoted.
+        """
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            del card
+            bctx = BalanceContext.build(seed_user["user"].id)
+            window = bctx.reported_periods()
+
+            view = balance_at.grid_balance_view(CashFlowSet.single(checking), bctx)
+            own = period_view_of(assembled_fold(checking, bctx), window)
+
+            for period in window:
+                composed = view.columns[period.period_id]
+                cash = own.columns[period.period_id]
+                assert (composed.income, composed.expense, composed.net) == (
+                    cash.income, cash.expense, cash.net,
+                ), period.period_id
+                assert composed.elsewhere == Decimal("0.00")
+            assert view.columns[paycheck.id].expense == Decimal("665.00")
+            assert view.row_flags(window).elsewhere is False
+            _assert_grid_view_reconciles(view)
+
+    def test_the_composition_is_each_members_own_cash_column_over_the_window(
+        self, app, db, seed_user, seed_periods_today,
+    ):  # pylint: disable=unused-argument
+        """Every column: the subtotals are the members' own columns summed, less the far leg.
+
+        The independent path: each member's OWN :func:`period_view_of` column
+        (the pre-CC-4-1 producer) gives what that member budgets per period.
+        With the ``$165`` payment intra-set, the card's own column counts its
+        income leg and the composed view must not, so on the fixture paycheck
+        the composed income is the card's own income LESS ``$165`` and the
+        term is the card's own ``expense - income`` PLUS ``$165``; on every
+        other column the two agree exactly.  A composition that double-counted
+        a member, folded the wrong one, or leaked a far leg into another
+        period fails here where the identity oracle cannot see it.
+        """
+        with app.app_context():
+            checking, card, paycheck = self._world(db, seed_user, seed_periods_today)
+            bctx = BalanceContext.build(seed_user["user"].id)
+            window = bctx.reported_periods()
+
+            view = balance_at.grid_balance_view(self._set(checking, card), bctx)
+            checking_own = period_view_of(assembled_fold(checking, bctx), window)
+            card_own = period_view_of(assembled_fold(card, bctx), window)
+
+            for period in window:
+                composed = view.columns[period.period_id]
+                mine = checking_own.columns[period.period_id]
+                theirs = card_own.columns[period.period_id]
+                far_income = (
+                    self._PAYMENT if period.period_id == paycheck.id
+                    else Decimal("0.00")
+                )
+                assert composed.income == mine.income + theirs.income - far_income, period.period_id
+                assert composed.expense == mine.expense + theirs.expense, period.period_id
+                assert composed.elsewhere == theirs.expense - theirs.income + far_income, period.period_id
+                assert composed.net == composed.income - composed.expense, period.period_id
+                assert composed.balance == mine.balance, period.period_id
 
 
 class TestTheContributionRowOnARealFeed:
@@ -2880,7 +3168,7 @@ class TestTheContributionRowOnARealFeed:
             periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
 
             assert view.columns[periods[2].id].contribution == Decimal("0.00")
             assert view.columns[periods[3].id].contribution == self._EMPLOYEE
@@ -2926,7 +3214,7 @@ class TestTheContributionRowOnARealFeed:
                 match_cap_pct=Decimal("0.0600"),
             )
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
 
             assert view.columns[periods[3].id].contribution == Decimal("400.00")
             _assert_grid_view_reconciles(view)
@@ -2951,7 +3239,7 @@ class TestTheContributionRowOnARealFeed:
             periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
             previous = view.columns[periods[3].id]
             column = view.columns[periods[4].id]
             delta = column.balance - previous.balance
@@ -2980,7 +3268,7 @@ class TestGridBalanceView:
             bctx = BalanceContext.build(user_id)
             account = seed_user["account"]
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
             cash = balance_at.cash_balance_map(account, bctx)
 
             assert {
@@ -3013,7 +3301,7 @@ class TestGridBalanceView:
                 date(2024, 1, 1),
             )
 
-            view = balance_at.grid_balance_view(mortgage, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(mortgage), bctx)
             cash = balance_at.cash_balance_map(mortgage, bctx)
 
             assert {
@@ -3054,7 +3342,7 @@ class TestGridBalanceView:
             )
             db.session.commit()
 
-            view = balance_at.grid_balance_view(hysa, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
             kc = balance_at.balance_map(hysa, bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
 
@@ -3121,7 +3409,7 @@ class TestGridBalanceView:
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
 
-            view = balance_at.grid_balance_view(inv, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(inv), bctx)
             cash = balance_at.cash_balance_map(inv, bctx)
             modelled = balance_at.balance_map(inv, bctx)
 
@@ -3160,7 +3448,7 @@ class TestGridBalanceView:
                 Decimal("0.03000"),
             )
 
-            view = balance_at.grid_balance_view(prop, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(prop), bctx)
             cash = balance_at.cash_balance_map(prop, bctx)
             modelled = balance_at.balance_map(prop, bctx)
 
@@ -3187,7 +3475,7 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             with pytest.raises(ValueError):
                 balance_at.grid_balance_view(
-                    seed_user["account"], _no_baseline(user_id),
+                    CashFlowSet.single(seed_user["account"]), _no_baseline(user_id),
                 )
 
     def test_an_interest_account_with_no_params_models_no_accrual(
@@ -3222,7 +3510,7 @@ class TestGridBalanceView:
             db.session.refresh(hysa)
 
             cash = balance_at.cash_balance_map(hysa, bctx)
-            view = balance_at.grid_balance_view(hysa, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
 
             assert {
                 pid: column.balance for pid, column in _all_columns(view)
@@ -3269,7 +3557,7 @@ class TestGridBalanceView:
             db.session.commit()
             assert income_txn.estimated_amount is None
 
-            view = balance_at.grid_balance_view(hysa, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(hysa), bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
             last = periods[-1].id
 
@@ -3299,7 +3587,7 @@ class TestGridBalanceView:
 
 def _column(
     *, balance="0.00", income="0.00", expense="0.00", net="0.00",
-    period_timing="0.00", book_vs_bank="0.00",
+    elsewhere="0.00", period_timing="0.00", book_vs_bank="0.00",
     contribution="0.00", accrual="0.00",
 ):
     """Build one hand-specified :class:`GridColumn` for the flag tests.
@@ -3327,6 +3615,7 @@ def _column(
         income=Decimal(income),
         expense=Decimal(expense),
         net=Decimal(net),
+        elsewhere=Decimal(elsewhere),
         period_timing=Decimal(period_timing),
         book_vs_bank=Decimal(book_vs_bank),
         contribution=Decimal(contribution),
@@ -3384,13 +3673,34 @@ class TestGridRowFlags:
         ]
 
     def test_all_zero_window_renders_no_row(self):
-        """Every column zero -> all four rows hidden (the ordinary cash grid)."""
+        """Every column zero -> all five rows hidden (the ordinary cash grid)."""
         view = self._view({1: _column(), 2: _column()})
         flags = view.row_flags(self._periods(1, 2))
+        assert flags.elsewhere is False
         assert flags.period_timing is False
         assert flags.book_vs_bank is False
         assert flags.contribution is False
         assert flags.accrual is False
+
+    def test_the_elsewhere_row_is_asked_its_own_question(self):
+        """Plan step CC-4-1: "On other accounts" takes R-O's rule, per ROW.
+
+        Asserted in both directions like the two remainders: a card bill in one
+        column turns the row on for the window and no other row with it, and a
+        timing figure alone leaves it off.  A negative figure -- income
+        expected on a card, a refund -- is non-zero and renders.
+        """
+        card_bill = self._view({1: _column(), 2: _column(elsewhere="45.00")})
+        flags = card_bill.row_flags(self._periods(1, 2))
+        assert flags.elsewhere is True
+        assert flags.period_timing is False
+        assert flags.book_vs_bank is False
+
+        timing_only = self._view({1: _column(period_timing="10.00"), 2: _column()})
+        assert timing_only.row_flags(self._periods(1, 2)).elsewhere is False
+
+        card_refund = self._view({1: _column(elsewhere="-12.50")})
+        assert card_refund.row_flags(self._periods(1)).elsewhere is True
 
     def test_one_non_zero_column_renders_the_row_for_the_window(self):
         """A single non-zero column turns the row on for the whole window."""
@@ -3570,21 +3880,25 @@ class TestTheRemainderOracleSeesEveryTerm:
     # period pairs on the Empower 401(k) -- and $95.98 is the HYSA accrual this
     # file hand-derives elsewhere.
     _NET = "100.00"
+    # Ruling credit_card:R-CC23's worked example: the $45 phone bill expected
+    # on the card is budgeted in the paycheck's net and never leaves checking.
+    _ELSEWHERE = "45.00"
     _PERIOD_TIMING = "10.00"
     _BOOK_VS_BANK = "-4.00"
     _CONTRIBUTION = "181.59"
     _ACCRUAL = "95.98"
 
-    def _two_columns(self, *, contribution):
+    def _two_columns(self, *, contribution, elsewhere=_ELSEWHERE):
         """Return an opening column whose successor's delta is every term."""
         opening = _column(balance="1000.00")
         moved = _column(
             balance=str(
-                Decimal("1000.00") + Decimal(self._NET)
+                Decimal("1000.00") + Decimal(self._NET) + Decimal(elsewhere)
                 + Decimal(self._PERIOD_TIMING) + Decimal(self._BOOK_VS_BANK)
                 + Decimal(contribution) + Decimal(self._ACCRUAL)
             ),
             net=self._NET,
+            elsewhere=elsewhere,
             period_timing=self._PERIOD_TIMING,
             book_vs_bank=self._BOOK_VS_BANK,
             contribution=contribution,
@@ -3615,6 +3929,7 @@ class TestTheRemainderOracleSeesEveryTerm:
             income=moved.income,
             expense=moved.expense,
             net=moved.net,
+            elsewhere=moved.elsewhere,
             period_timing=moved.period_timing,
             book_vs_bank=moved.book_vs_bank,
             contribution=Decimal("0.00"),
@@ -3645,6 +3960,7 @@ class TestTheRemainderOracleSeesEveryTerm:
             income=moved.income,
             expense=moved.expense,
             net=moved.net,
+            elsewhere=moved.elsewhere,
             period_timing=moved.period_timing,
             book_vs_bank=moved.book_vs_bank,
             contribution=moved.contribution,
@@ -3652,6 +3968,32 @@ class TestTheRemainderOracleSeesEveryTerm:
         )
 
         with pytest.raises(AssertionError, match=r"\+ accrual "):
+            _assert_grid_view_reconciles(self._view(columns))
+
+    def test_dropping_the_elsewhere_term_breaks_the_identity(self):
+        """The control for the term plan step CC-4-1 added (ruling R-CC16).
+
+        The same shape as the contribution control: the ``$45.00`` the
+        paycheck budgets on the card stays in the balance delta and leaves the
+        column, which a five-term oracle would wave through.  The message must
+        name the term.
+        """
+        broken = self._two_columns(contribution=self._CONTRIBUTION)
+        columns = OrderedDict(broken.columns)
+        moved = columns[2]
+        columns[2] = balance_at.GridColumn(
+            balance=moved.balance,
+            income=moved.income,
+            expense=moved.expense,
+            net=moved.net,
+            elsewhere=Decimal("0.00"),
+            period_timing=moved.period_timing,
+            book_vs_bank=moved.book_vs_bank,
+            contribution=moved.contribution,
+            accrual=moved.accrual,
+        )
+
+        with pytest.raises(AssertionError, match=r"\+ elsewhere "):
             _assert_grid_view_reconciles(self._view(columns))
 
 
@@ -3704,7 +4046,7 @@ class TestTheViewIsBuiltOnOneAmountModel:
             )
             db.session.commit()
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
             budgets = cash_ledger.amounts_by_id([income_txn], bctx.amounts())
 
             assert income_txn.estimated_amount is None
@@ -3758,7 +4100,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             account = seed_user["account"]
             _seed_grid_activity(db, seed_user, periods)
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
 
             assert view.columns
             moved = [
@@ -3809,7 +4151,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             )
             db.session.commit()
 
-            view = balance_at.grid_balance_view(account, bctx)
+            view = balance_at.grid_balance_view(CashFlowSet.single(account), bctx)
 
             assert view.columns[periods[1].id].net == Decimal("-300.00")
             assert view.columns[periods[1].id].period_timing == Decimal(
@@ -3871,8 +4213,12 @@ class TestLiabilityOwedAtDates:
     (``docs/audits/balance_architecture/followup_fence_loan_owed_at_dates.md``):
     the horizon liability band used to reach past the seam into
     ``net_worth_kernel.loan_owed_at_dates`` and hold half the boundary rule (the
-    non-amortizing flat carry) itself.  These tests pin BOTH forward rules, the
-    today-point source, the sign convention, and the forward-only domain.
+    non-amortizing flat carry) itself.  Since plan step credit_card:CC-1 (ruling
+    R-CC14) the band is kind-blind -- every liability's future is the
+    kind-correct read, a loan's schedule or any other liability's cash fold --
+    and the flat hold survives only for the no-baseline case.  These tests pin
+    both arms of that read, the one-read-per-liability shape, the today-point
+    source, the sign convention, and the forward-only domain.
     """
 
     def test_amortizing_loan_amortizes_across_future_dates(
@@ -3954,26 +4300,31 @@ class TestLiabilityOwedAtDates:
 
             assert owed[acct.id] == [sentinel]
 
-    def test_non_amortizing_liability_holds_flat(
+    def test_a_card_with_no_rows_reads_its_opening_flat(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A revolving Credit Card has no forward model: flat owed magnitude.
+        """A revolving Credit Card with nothing planned reads its fold: the opening, flat.
 
-        The rule that used to live in the horizon consumer.  Also pins the sign
-        convention: a card's cash balance is NEGATIVE, and the seam returns the
-        POSITIVE owed magnitude (matching the net-worth reduction's
-        liability-minus rule, ``abs(bal)`` subtracted from the asset side).
+        The CONTROL for the case below.  Since plan step credit_card:CC-1
+        (ruling R-CC14) the band reads every non-loan liability's cash fold at
+        each future date rather than holding it flat; a card with no rows folds
+        to its asserted ``-500.00`` on every day, so the figures here are the
+        ones the old flat hold gave -- which is exactly why this case alone
+        cannot tell the two rules apart, and the sibling with planned rows can.
+        Also pins the sign convention: a card's cash balance is NEGATIVE, and
+        the seam returns the POSITIVE owed magnitude (matching the net-worth
+        reduction's liability-minus rule, ``abs(bal)`` subtracted from the
+        asset side).
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
             )
             db.session.commit()
-            today = date.today()
+            today = bctx.as_of
             samples = [today, date(today.year + 1, 12, 31),
                        date(today.year + 5, 12, 31)]
 
@@ -3981,16 +4332,202 @@ class TestLiabilityOwedAtDates:
                 [card], bctx, samples, {card.id: Decimal("-500.00")},
             )
 
-            # abs(-500) held flat at every sample -- no forward model.
+            # abs(-500) at every sample: today from the caller, the future from
+            # a fold that holds no row to move it.
             assert owed[card.id] == [Decimal("500.00")] * 3
+
+    def test_a_cards_planned_rows_move_it_across_the_horizon(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A card's projected purchase and payment move its owed balance by date.
+
+        THE rule plan step credit_card:CC-1 ships (ruling ``credit_card:R-CC14``,
+        design ``credit_card_from_scratch.md`` 3.1): a non-loan liability's
+        forward model is its cash fold -- opening plus recorded movements plus
+        the still-projected plan -- read at each future sample date, where the
+        seam used to hold it flat "because it has no forward model".  This test
+        REPLACES ``test_non_amortizing_liability_holds_flat``, which pinned that
+        flat hold; the developer ruled the behaviour changed (R-CC14,
+        2026-09-18), the one exception CLAUDE.md rule 5 allows.
+
+        The card is asserted at ``-500.00``.  A ``$120.00`` purchase is planned
+        in period 6 and a ``$200.00`` payment (an income row on the card) in
+        period 8; the samples are today, the START of period 7 (after the
+        purchase, before the payment) and the year end after next (after
+        both).  Hand-computed, owed magnitude = ``abs(fold)``::
+
+            today                 caller's -500.00              ->  500.00
+            period 7 start        -500.00 - 120.00 = -620.00    ->  620.00
+            Dec 31 next year      -620.00 + 200.00 = -420.00    ->  420.00
+
+        The second future point differs from the first, so a band that read
+        ONE forward figure and repeated it, or that still held flat, fails
+        here.  Every future point also equals the kind-correct scalar's own
+        answer at that date: the band and ``balance_at`` are readings of ONE
+        producer (``_kind_correct.balance_at_dates``), so the horizon cannot
+        drift from the account page.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
+            periods = seed_periods_today
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            one_off_row_of(
+                periods[6],
+                name="Groceries on the card",
+                amount=Decimal("120.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            )
+            one_off_row_of(
+                periods[8],
+                name="Card payment",
+                amount=Decimal("200.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+            )
+            db.session.commit()
+            today = bctx.as_of
+            between = periods[7].start_date
+            assert periods[6].start_date < between <= periods[8].start_date - timedelta(days=1)
+            assert between > today
+            year_end = date(today.year + 1, 12, 31)
+            samples = [today, between, year_end]
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], bctx, samples, {card.id: Decimal("-500.00")},
+            )
+
+            assert owed[card.id] == [
+                Decimal("500.00"), Decimal("620.00"), Decimal("420.00"),
+            ]
+            # The same producer answers the scalar, so the band's future
+            # points ARE the account page's figures for those days.
+            for sample, magnitude in zip(samples[1:], owed[card.id][1:]):
+                assert magnitude == abs(balance_at.balance_at(card, bctx, sample))
+
+    def test_no_baseline_holds_a_card_with_planned_rows_flat(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """With no baseline scenario a card holds flat even with rows planned.
+
+        The no-baseline hold is a gate OLDER than plan step credit_card:CC-1
+        and outside it: without a scenario there is no plan to fold, so the
+        band answers the caller's current magnitude at every date rather than
+        raising into ruling R-BW's handler.  Pinned on a card carrying planned
+        rows so that the case is not vacuous -- under a baseline those rows
+        move the band (the sibling above), and here they must not.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            periods = seed_periods_today
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            one_off_row_of(
+                periods[6],
+                name="Groceries on the card",
+                amount=Decimal("120.00"),
+                user_id=user_id,
+                account_id=card.id,
+                scenario_id=scenario.id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            )
+            db.session.commit()
+            no_baseline = _no_baseline(user_id)
+            today = no_baseline.as_of
+            samples = [today, periods[7].start_date, date(today.year + 1, 12, 31)]
+
+            owed = balance_at.liability_owed_at_dates(
+                [card], no_baseline, samples, {card.id: Decimal("-500.00")},
+            )
+
+            assert owed[card.id] == [Decimal("500.00")] * 3
+
+    def test_each_liability_is_folded_once_per_pass(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The band reads each liability's producer ONCE over the whole future axis.
+
+        Plan step credit_card:CC-1's condition on its own shape: the band hands
+        the kind-correct producer the LIST of future dates, so a loan costs one
+        ``positions`` walk and a card one ``fold_asset_balances`` assembly, not
+        one per sample date.  Counted on the two producers the dispatch reaches,
+        with the dates each was handed, because a per-date loop would return the
+        identical figures and only the count can see it.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = all_periods(user_id)
+            mortgage, params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("200000.00"),
+                date.today() - timedelta(days=365),
+            )
+            insert_trueup_event(
+                params, Decimal("200000.00"), anchor_date=date.today(),
+            )
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            today = bctx.as_of
+            future = [
+                date(today.year + 1, 12, 31),
+                date(today.year + 2, 12, 31),
+                date(today.year + 3, 12, 31),
+            ]
+            samples = [today, *future]
+
+            # pylint: disable=import-outside-toplevel -- the private seam
+            # modules are reached only to count the producers' calls.
+            from app.services.balance_at import _asset_fold, _kind_correct
+
+            positions_calls: list[list[date]] = []
+            fold_calls: list[list[date]] = []
+            real_positions = _kind_correct.positions
+            real_fold = _asset_fold.fold_asset_balances
+
+            def counting_positions(account, ctx, dates):
+                positions_calls.append(list(dates))
+                return real_positions(account, ctx, dates)
+
+            def counting_fold(account, ctx, dates, inputs):
+                fold_calls.append(list(dates))
+                return real_fold(account, ctx, dates, inputs)
+
+            monkeypatch.setattr(_kind_correct, "positions", counting_positions)
+            monkeypatch.setattr(
+                _asset_fold, "fold_asset_balances", counting_fold,
+            )
+
+            owed = balance_at.liability_owed_at_dates(
+                [mortgage, card], bctx, samples,
+                {mortgage.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
+            )
+
+            assert positions_calls == [future], positions_calls
+            assert fold_calls == [future], fold_calls
+            assert len(owed[mortgage.id]) == len(owed[card.id]) == 4
 
     def test_no_baseline_scenario_holds_every_liability_flat(
         self, app, db, seed_user, seed_periods_today,
     ):
         """``scenario=None`` is the degenerate case of the SAME rule, not an error.
 
-        No baseline means no loan is resolvable, so every liability -- including
-        an amortizing mortgage -- falls to the no-forward-model flat hold.  This
+        No baseline means no loan is resolvable and no plan can be folded, so
+        every liability -- including an amortizing mortgage -- holds flat.  This
         is the one public seam entry that does NOT raise on a None scenario: it
         has a correct answer, and raising would force each caller to re-derive
         the flat hold (the very duplication the seam exists to prevent).
@@ -4104,11 +4641,11 @@ class TestLiabilityOwedAtDates:
     def test_mixed_liability_set_in_one_call(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A loan and a card in ONE call: both forward rules coexist in one result.
+        """A loan and a card in ONE call: both arms of the read coexist in one result.
 
         The batch shape the sole caller actually passes.  The amortizing account
-        must amortize while the non-amortizing one holds flat, in the same result
-        dict -- the case where the splice and the flat carry have to coexist.
+        must amortize while the card -- which carries no planned row here --
+        folds to its asserted figure at every date, in the same result dict.
         The mortgage's $200,000 is asserted today so that it amortizes (see
         :meth:`test_amortizing_loan_amortizes_across_future_dates`).
         """
@@ -4139,7 +4676,8 @@ class TestLiabilityOwedAtDates:
             )
 
             assert set(owed) == {acct.id, card.id}
-            # The loan amortizes; the card has no forward model and holds flat.
+            # The loan amortizes; the card's fold holds no row, so it reads
+            # its asserted 500.00 at every date.
             assert owed[acct.id][1] < owed[acct.id][0]
             assert owed[card.id] == [Decimal("500.00"), Decimal("500.00")]
 
@@ -5989,7 +6527,7 @@ class TestTheReadPassOwnsTheReportingDomain:
             assert list(balance_at.cash_balance_map(account, ctx)) == expected
             assert list(balance_at.balance_map(account, ctx)) == expected
             assert list(
-                balance_at.grid_balance_view(account, ctx).columns
+                balance_at.grid_balance_view(CashFlowSet.single(account), ctx).columns
             ) == expected
 
     def test_an_owner_with_no_pay_periods_gets_empty_maps_not_an_error(
@@ -6010,7 +6548,7 @@ class TestTheReadPassOwnsTheReportingDomain:
             assert len(ctx.reported_periods()) == 0
             assert balance_at.cash_balance_map(seed_user["account"], ctx) == {}
             assert balance_at.grid_balance_view(
-                seed_user["account"], ctx,
+                CashFlowSet.single(seed_user["account"]), ctx,
             ).columns == {}
 
 

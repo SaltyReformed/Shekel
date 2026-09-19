@@ -202,9 +202,13 @@ def configured_loan(
 
     The seam's ONE spelling of "does this account's balance come from an
     amortization schedule?", and the gate every balance surface splits on: the
-    scalar (:func:`._kind_correct.balance_at`), the per-period map
-    (:func:`._inputs._account_balance_map`) and the forward liability band
-    (:func:`._liability.liability_owed_at_dates`) all ask it here.
+    kind-correct dispatch (:func:`._kind_correct.balance_at_dates`, which the
+    scalar :func:`._kind_correct.balance_at` and the forward liability band
+    :func:`._liability.liability_owed_at_dates` both read) and the per-period
+    map (:func:`._inputs._account_balance_map`) ask it here -- TWO call sites
+    in ``app/`` since plan step credit_card:CC-1 (a grep of
+    ``configured_loan(`` at that step's as-built), which folded the band's own
+    ask into the dispatch it was duplicating.
 
     **It is one function because it was three spellings** (plan step X-g3b-0).
     The scalar wrote ``classify_account(...) is AMORTIZING and
@@ -229,8 +233,8 @@ def configured_loan(
 
     It returns the RESOLUTION rather than a bool because that is what
     :func:`resolved_loan` already hands back; narrowing it to a bool would throw
-    information away for nothing.  All three call sites discard it today and
-    test it against ``None``.
+    information away for nothing.  Both call sites discard it today and test it
+    against ``None``.
 
     Args:
         account: The account to test.  Must belong to ``ctx.user_id`` (the

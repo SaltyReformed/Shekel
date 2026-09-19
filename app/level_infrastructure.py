@@ -1,11 +1,14 @@
 """Shared definitions for the level relation's cross-table bound.
 
 **A bank level's day is one its FILE could have pinned** (ruling **R-GF**,
-plan step ``bank_import:X-f6e-1``; moved here by ``balance:X-bj-1``).  The
-solved day ranges over {the day before the file's first line} + {every day the
-file covers}, so ``period_start - 1`` is its floor and ``period_end`` its
-ceiling; and a bank cannot state a balance for a day after the one it wrote on
-the header, so the claimed day is its other ceiling.  Measured on the
+plan step ``bank_import:X-f6e-1``; moved here by ``balance:X-bj-1``; the
+window it reads is the one the import DECLARES since ``bank_import:X-f6b-1``,
+ruling **R-BAL71**).  The solved day lies in {the day before the declared
+window's first day} .. {the window's last day}, so ``declared_start - 1`` is
+its floor and ``declared_end`` its ceiling; and a bank cannot state a balance
+for a day after the one it wrote on the header, so the claimed day is its
+other ceiling.  (Which days inside that range the solve CONSIDERS is
+``statement_import._anchor``'s rule; this is the bound.)  Measured on the
 developer's exports: 08-22 solves at 08-21 under a header dated 08-22, and
 08-16 at 08-13 under one dated 08-16.  It was
 ``ck_statement_imports_effective_day_within_file`` while the solved day lived
@@ -16,18 +19,18 @@ tables, so PostgreSQL cannot state it as a row-level CHECK.
 the FACT lives on ``budget.account_anchor_history`` and the BOUNDS on
 ``budget.statement_imports``, so either can move without the other.  A
 trigger on the level alone would have let
-``UPDATE budget.statement_imports SET period_end = ...`` under a placement
+``UPDATE budget.statement_imports SET declared_end = ...`` under a placement
 commit into the state the CHECK used to refuse -- the exact hole
 :mod:`app.opening_infrastructure` records being found on its matched-line arm
 by adversarial review, and the one the design review of this step named.  No
-app writer updates a file's span; this is what makes that true of a bulk
+app writer updates a file's window; this is what makes that true of a bulk
 ``UPDATE``, a psql session and a writer nobody enumerated.
 
 **Immediate ``BEFORE`` row triggers, not deferred constraint triggers**, and
 the difference from :mod:`app.opening_infrastructure` is deliberate: that
 module defers because the account-10 repair legitimately re-dates movements and
 restates the books in ONE transaction, so statement order would refuse it.
-Nothing reorders here -- the import door writes the file's span, flushes, and
+Nothing reorders here -- the import door writes the file's window, flushes, and
 only then writes the level solved inside it -- so an immediate arm is exact,
 fires without a commit, and names the offending row at the statement.
 
@@ -91,15 +94,15 @@ BEGIN
     SELECT * INTO file FROM budget.statement_imports
     WHERE id = NEW.statement_import_id;
     IF NOT {_RULE_FUNCTION}(
-        NEW.observed_on, file.period_start, file.period_end,
+        NEW.observed_on, file.declared_start, file.declared_end,
         file.stated_balance_on
     ) THEN
         RAISE EXCEPTION
-            'level % for account % is dated % but its statement % covers '
+            'level % for account % is dated % but its statement % declares '
             '%..% and states its balance as of %: a placed day must lie '
-            'inside the file (rule budget.level_lies_within_file)',
+            'inside the declared window (rule budget.level_lies_within_file)',
             NEW.id, NEW.account_id, NEW.observed_on, file.id,
-            file.period_start, file.period_end, file.stated_balance_on;
+            file.declared_start, file.declared_end, file.stated_balance_on;
     END IF;
     RETURN NEW;
 END;
@@ -115,16 +118,16 @@ BEGIN
     SELECT * INTO stranded FROM budget.account_anchor_history
     WHERE statement_import_id = NEW.id
       AND NOT {_RULE_FUNCTION}(
-          observed_on, NEW.period_start, NEW.period_end,
+          observed_on, NEW.declared_start, NEW.declared_end,
           NEW.stated_balance_on
       )
     LIMIT 1;
     IF FOUND THEN
         RAISE EXCEPTION
-            'statement % cannot cover %..% as of %: its level % is placed on '
-            '%, which that span would leave outside the file (rule '
+            'statement % cannot declare %..% as of %: its level % is placed '
+            'on %, which that window would leave outside it (rule '
             'budget.level_lies_within_file)',
-            NEW.id, NEW.period_start, NEW.period_end, NEW.stated_balance_on,
+            NEW.id, NEW.declared_start, NEW.declared_end, NEW.stated_balance_on,
             stranded.id, stranded.observed_on;
     END IF;
     RETURN NEW;
@@ -138,8 +141,9 @@ def _create_trigger_sql() -> tuple[str, ...]:
 
     The level arm fires on INSERT only, because the table is append-only and
     an UPDATE is refused one trigger over; the import arm fires on an UPDATE
-    OF the three bounding columns, which is the only write that can move the
-    bounds out from under a placed level.
+    OF the three bounding columns -- the declared window and the stated day
+    -- which is the only write that can move the bounds out from under a
+    placed level.
     """
     (level_trigger, level_table), (import_trigger, import_table) = (
         LEVEL_TRIGGERS
@@ -149,7 +153,7 @@ def _create_trigger_sql() -> tuple[str, ...]:
         f"BEFORE INSERT ON {level_table} "
         f"FOR EACH ROW EXECUTE FUNCTION {_LEVEL_TRIGGER_FUNCTION}()",
         f"CREATE TRIGGER {import_trigger} "
-        f"BEFORE UPDATE OF period_start, period_end, stated_balance_on "
+        f"BEFORE UPDATE OF declared_start, declared_end, stated_balance_on "
         f"ON {import_table} "
         f"FOR EACH ROW EXECUTE FUNCTION {_IMPORT_TRIGGER_FUNCTION}()",
     )

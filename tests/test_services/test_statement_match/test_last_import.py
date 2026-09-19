@@ -23,10 +23,45 @@ from app.services.statement_match._last_import import last_import
 
 from ._builders import (
     a_bank_line,
+    a_sighting,
     an_envelope,
     an_import,
     filed_by,
 )
+
+
+def _an_import_that_sighted(
+    seed_user, *, fresh, again=(), created_at=None, ordinal_from=0,
+):
+    """Stage an import with *fresh* new lines and re-sightings of *again*.
+
+    What the two stored counts meant, stated as the rows they are derived
+    from since plan step ``bank_import:X-f6b-1``: the lines this import was
+    the FIRST to sight are its *recorded* count; every line it sighted, first
+    or again, is what the file held.
+
+    Args:
+        seed_user: The seeded user bundle.
+        fresh: How many lines this import is the first to sight.
+        again: Lines an earlier import recorded, which this one sights too.
+        created_at: The instant the import ran, or ``None``.
+        ordinal_from: The first ordinal the fresh lines take -- every fresh
+            line here posts on the seeded day for the builder's default
+            amount, so the ordinal is what keeps their identity keys apart.
+
+    Returns:
+        ``(statement, lines)`` -- the import and its fresh lines.
+    """
+    statement = an_import(seed_user, created_at=created_at)
+    lines = [
+        a_bank_line(
+            seed_user, statement, sequence_in_group=ordinal_from + offset,
+        )
+        for offset in range(fresh)
+    ]
+    for line in again:
+        a_sighting(seed_user, statement, line)
+    return statement, lines
 
 
 def _a_filed_line(seed_user, db, statement, envelope, *, merchant,
@@ -82,12 +117,12 @@ class TestWhichImportItIsAbout:
 
     def test_the_LATER_instant_is_the_one_reported(self, app, db, seed_user):
         """Ordered by when the import RAN, newest first."""
-        an_import(
-            seed_user, line_count=9, recorded_count=9,
+        _an_import_that_sighted(
+            seed_user, fresh=9,
             created_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
         )
-        an_import(
-            seed_user, line_count=4, recorded_count=4,
+        _an_import_that_sighted(
+            seed_user, fresh=4, ordinal_from=9,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -104,11 +139,11 @@ class TestWhichImportItIsAbout:
         left to the default, so the case says what it is about.
         """
         together = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
-        first = an_import(
-            seed_user, line_count=9, recorded_count=9, created_at=together,
+        first, _lines = _an_import_that_sighted(
+            seed_user, fresh=9, created_at=together,
         )
-        second = an_import(
-            seed_user, line_count=4, recorded_count=4, created_at=together,
+        second, _lines = _an_import_that_sighted(
+            seed_user, fresh=4, ordinal_from=9, created_at=together,
         )
         db.session.commit()
         assert second.id > first.id
@@ -130,8 +165,8 @@ class TestWhichImportItIsAbout:
         self, app, db, seed_user, seed_second_user,
     ):
         """Bounded by the account, which is what the route proved."""
-        an_import(
-            seed_user, line_count=9, recorded_count=9,
+        _an_import_that_sighted(
+            seed_user, fresh=9,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -147,16 +182,23 @@ class TestWhatItSaysWasRecorded:
     def test_a_re_import_reports_what_it_ADDED_and_not_the_file_s_size(
         self, app, db, seed_user,
     ):
-        """The two columns differ, and the line prints the smaller one.
+        """The two counts differ, and the line prints the smaller one.
 
         Measured on a restored production clone 2026-08-30: the developer's
         newest import recorded **2** of the **42** lines its file contained,
-        because the rest were already known.  Printing ``line_count`` would
-        tell him 42 lines had just landed when 40 of them were months old --
-        which is the fact ``recorded_count`` exists to make visible.
+        because the rest were already known.  Printing what the file held
+        would tell him 42 lines had just landed when 40 of them were months
+        old -- which is the fact the *recorded* count exists to make visible.
+        Both are DERIVED from the sightings since plan step
+        ``bank_import:X-f6b-1``: the newest import sighted 42 lines and was
+        the first to sight 2 of them.
         """
-        an_import(
-            seed_user, line_count=42, recorded_count=2,
+        _older, held = _an_import_that_sighted(
+            seed_user, fresh=40,
+            created_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+        )
+        _an_import_that_sighted(
+            seed_user, fresh=2, again=held, ordinal_from=40,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -165,8 +207,12 @@ class TestWhatItSaysWasRecorded:
 
     def test_an_import_that_added_NOTHING_says_so(self, app, db, seed_user):
         """Zero is a real answer and the honest one for a repeat upload."""
-        an_import(
-            seed_user, line_count=40, recorded_count=0,
+        _older, held = _an_import_that_sighted(
+            seed_user, fresh=3,
+            created_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+        )
+        _an_import_that_sighted(
+            seed_user, fresh=0, again=held,
             created_at=datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -188,7 +234,7 @@ class TestWhatItSaysWasFiledByRules:
     ):
         """One import, two lines filed, one of them by hand."""
         statement = an_import(
-            seed_user, line_count=2, recorded_count=2,
+            seed_user,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         envelope = an_envelope(seed_user)
@@ -217,7 +263,7 @@ class TestWhatItSaysWasFiledByRules:
         firing on a pass where no rule fired.
         """
         older = an_import(
-            seed_user, line_count=1, recorded_count=1,
+            seed_user,
             created_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
         )
         envelope = an_envelope(seed_user)
@@ -225,8 +271,8 @@ class TestWhatItSaysWasFiledByRules:
             seed_user, db, older, envelope,
             merchant="Amazon", sequence=0, by_rule=True,
         )
-        an_import(
-            seed_user, line_count=1, recorded_count=1,
+        _an_import_that_sighted(
+            seed_user, fresh=1, ordinal_from=1,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -245,7 +291,7 @@ class TestWhatItSaysWasFiledByRules:
         already states.
         """
         statement = an_import(
-            seed_user, line_count=1, recorded_count=1,
+            seed_user,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         envelope = an_envelope(seed_user)
@@ -276,7 +322,7 @@ class TestTheInstantIsCarriedWhole:
         """Not a date, and not shifted."""
         ran_at = datetime(2026, 8, 31, 1, 0, tzinfo=timezone.utc)
         an_import(
-            seed_user, line_count=1, recorded_count=1, created_at=ran_at,
+            seed_user, created_at=ran_at,
         )
         db.session.commit()
 

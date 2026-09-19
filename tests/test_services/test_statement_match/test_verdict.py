@@ -75,6 +75,8 @@ def _destination(transaction_id=ENVELOPE_ID):
             end_is_projected=False,
         ),
         is_settled=False,
+        # Every destination names its DEFINITION (plan step balance:X-bi-7d-2).
+        template_id=9,
     )
 
 

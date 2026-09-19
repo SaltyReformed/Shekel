@@ -13,7 +13,7 @@ import pytest
 from marshmallow import ValidationError as MarshmallowValidationError
 
 from app.extensions import db
-from app.models.ref import Status, TransactionType
+from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
@@ -24,7 +24,6 @@ from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
 from app.services import (
-    account_service,
     cash_ledger,
     status_seam,
 )
@@ -34,9 +33,10 @@ from tests._test_helpers import (
     typed,
     account_never_asserted,
     an_entered_day,
+    create_savings_account,
+    create_transfer,
     figure_source_columns,
     generate_row_of,
-    legacy_link_less_row_of,
     make_expense_template,
     make_income_template,
     purchases_of,
@@ -48,7 +48,6 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from tests._test_helpers import mark_purchase_settled
-from app.models.amount_ownership import AmountOwnership
 
 
 # ── Helper ────────────────────────────────────────────────────────
@@ -166,131 +165,43 @@ class TestCreateEntry:
                     ),
                 )
 
-    def test_create_entry_rejects_no_template(
+    def test_create_entry_rejects_a_transfer_shadow(
         self, app, db, seed_user, seed_periods,
     ):
-        """Reject an entry on a LEGACY link-less transaction (template_id=None).
+        """Reject an entry on a transfer's shadow: it tracks no purchases.
 
-        The ``template_id is None`` arm of ``Transaction.tracks_purchases``
-        reads the row's own cell; production holds that shape until the
-        cutover (X-bi-7d), so the row is built on its one transitional home
-        (plan step balance:X-bi-7c, ruling R-BAL59) and 7d retires this case
-        with the arm.  A one-off placed today reads its definition's flag,
-        which is the case above.
+        A shadow names its transfer and no definition, so
+        ``tracks_purchases`` answers ``False`` (ruling **R-BAL73**) and the
+        envelope guard refuses it before anything else is asked.  Until the
+        family's cutover (plan step ``balance:X-bi-7d-2``) this class held
+        two cases in its place: a LEGACY link-less row refused by the same
+        guard off its own cell, and a hand-built shadow carrying
+        ``is_envelope=True`` so the door's TRANSFER guard, one check later,
+        was the one to fire.  Neither shape can be stored now -- the cell is
+        gone and ``ck_transactions_one_pricing_link`` reads ``= 1`` -- so the
+        transfer guard in ``entry_service`` is unreachable by construction
+        (reported at 7d-2, not deleted there) and this case grades the
+        refusal a real shadow meets.
         """
         with app.app_context():
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
             )
-            txn = legacy_link_less_row_of(
-                seed_periods[0], name="Ad-hoc expense", amount="100.00",
-                user_id=seed_periods[0].user_id,
-                account_id=seed_user["account"].id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=expense_type.id,
-                category_id=seed_user["categories"]["Rent"].id,
+            xfer = create_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0],
             )
             db.session.flush()
+            shadow = next(
+                row for row in xfer.shadow_transactions
+                if row.account_id == seed_user["account"].id
+            )
+            assert shadow.tracks_purchases is False
 
             with pytest.raises(ValidationError, match="does not support"):
                 entry_service.create_entry(
-                    transaction_id=txn.id,
+                    transaction_id=shadow.id,
                     user_id=seed_user["user"].id,
-                    details=entry_service.EntryDetails(
-                        figure=typed(Decimal("50.00")),
-                        description="Test",
-                        purchased_on=date(2026, 1, 5),
-                    ),
-                )
-
-    def test_create_entry_rejects_transfer(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Reject entry on a transaction that is a transfer shadow.
-
-        **The row under test is an AD-HOC envelope row carrying a
-        ``transfer_id``, and it used to be a TEMPLATE-linked row given one.**
-        That earlier shape set ``template_id`` and ``transfer_id`` on one row,
-        which ``ck_transactions_one_pricing_link`` forbids as of plan step
-        X-au-c1 -- the balance README documented that exclusivity as a convention
-        and the amount model makes it structural (0 of 997 production rows held
-        two links).  The assertion is unchanged; only the shape reaching it is,
-        and it is now a shape the schema admits.
-
-        **What this test can and cannot claim, stated because the guard's
-        reachability is narrower than it looks.**  ``create_entry`` asks
-        ``tracks_purchases`` BEFORE it asks about ``transfer_id``, and a real
-        transfer shadow carries no template and its own ``is_envelope`` default
-        of False -- so a genuine shadow is refused by the ENVELOPE guard and
-        never reaches the transfer one.  This row is envelope-flagged so the
-        transfer guard is the one that fires, which is what the test is for; that
-        the guard is otherwise unreachable is reported rather than papered over.
-        """
-        with app.app_context():
-            from app.models.transfer import Transfer
-            from app.models.ref import AccountType
-
-            user_id = seed_user["user"].id
-            account_id = seed_user["account"].id
-            scenario_id = seed_user["scenario"].id
-            period_id = seed_periods[0].id
-
-            # Create a second account for the transfer (different accounts required).
-            checking_type = (
-                db.session.query(AccountType).filter_by(name="Checking").one()
-            )
-            second_account = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user_id,
-                    account_type_id=checking_type.id,
-                    name="Savings",
-                    anchor_balance=Decimal("500.00"),
-                ),
-            )
-            db.session.add(second_account)
-            db.session.flush()
-
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            transfer = Transfer(
-                user_id=user_id,
-                from_account_id=account_id,
-                to_account_id=second_account.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                pay_period_id=period_id,
-                scenario_id=scenario_id,
-                status_id=projected.id,
-                name="Test Transfer",
-            )
-            db.session.add(transfer)
-            db.session.flush()
-
-            # Ad-hoc (no template), so ``tracks_purchases`` reads the row's own
-            # ``is_envelope`` and the transfer guard is what refuses it.
-            txn = Transaction(
-                user_id=user_id,
-                pay_period_id=period_id,
-                scenario_id=scenario_id,
-                account_id=account_id,
-                status_id=projected.id,
-                name="Shadow with tracking on",
-                category_id=seed_user["categories"]["Groceries"].id,
-                transaction_type_id=expense_type.id,
-                amount_ownership=AmountOwnership.own(Decimal("100.00")),
-                is_envelope=True,
-                transfer_id=transfer.id,
-            )
-            db.session.add(txn)
-            db.session.flush()
-
-            with pytest.raises(ValidationError, match="transfer"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=user_id,
                     details=entry_service.EntryDetails(
                         figure=typed(Decimal("50.00")),
                         description="Test",

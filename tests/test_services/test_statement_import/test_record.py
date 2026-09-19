@@ -39,6 +39,7 @@ from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
     StatementImport,
+    StatementLineSighting,
 )
 from app.models.journal_entry import Posting
 from app.models.transaction import Transaction
@@ -80,6 +81,21 @@ def _file(entries=None, start="100.00", account_number=None):
         kwargs["account_number"] = account_number
     rows = build.chained(start, entries or _ENTRIES, **kwargs)
     return build.build(rows)
+
+
+def _counts(db, account_id):
+    """Return ``{import_id: (sighted, first)}`` -- the ONE derived count.
+
+    What ``statement_imports.line_count`` / ``recorded_count`` stored until
+    plan step ``bank_import:X-f6b-1``, read the way the imports table reads
+    it.
+    """
+    return {
+        import_id: (sighted, first)
+        for import_id, sighted, first in db.session.execute(
+            StatementLineSighting.counts_by_import(account_id),
+        )
+    }
 
 
 def _record(seed_user, payload, file_name="statement.csv", account=None):
@@ -167,10 +183,11 @@ class TestItRecordsWhatTheBankSaid:
 
         row = db.session.query(StatementImport).one()
         assert row.file_name == "march.csv"
-        assert row.line_count == 3
-        assert row.recorded_count == 3
-        assert row.period_start == date(2026, 3, 2)
-        assert row.period_end == date(2026, 3, 4)
+        # The counts are DERIVED from the sightings (ruling **R-IY**): three
+        # sighted, three of them first sighted by this import.
+        assert _counts(db, row.account_id) == {row.id: (3, 3)}
+        assert row.declared_start == date(2026, 3, 2)
+        assert row.declared_end == date(2026, 3, 4)
         assert row.user_id == seed_user["user"].id
 
     def test_a_chained_file_is_PROVED_by_itself_and_the_ROW_says_so(
@@ -231,7 +248,7 @@ class TestItRecordsWhatTheBankSaid:
         )
 
         row = db.session.query(StatementImport).one()
-        assert row.period_end == date(2026, 3, 4)
+        assert row.declared_end == date(2026, 3, 4)
         assert row.stated_balance_on == date(2026, 3, 9)
         [(level, _release)] = bank_levels(seed_user["account"].id)
         assert level.statement_import_id == row.id
@@ -436,13 +453,15 @@ class TestItRecordsWhatTheBankSaid:
     def test_every_line_belongs_to_its_import_and_its_account(
         self, app, db, seed_user,
     ):
-        """The composite key's two columns, as written."""
+        """The line's account, and ONE sighting per line naming the import."""
         _record(seed_user, _file())
 
         statement = db.session.query(StatementImport).one()
         for row in db.session.query(BankStatementLine).all():
-            assert row.import_id == statement.id
             assert row.account_id == seed_user["account"].id
+            [sighting] = row.sightings
+            assert sighting.import_id == statement.id
+            assert sighting.account_id == seed_user["account"].id
 
     def test_a_files_digest_is_the_digest_OF_THE_BYTES(
         self, app, db, seed_user,
@@ -623,14 +642,32 @@ class TestItIsIdempotent:
     def test_a_line_keeps_the_import_that_FIRST_recorded_it(
         self, app, db, seed_user,
     ):
-        """Provenance survives a re-import rather than being overwritten."""
-        first = _record(seed_user, _file())
-        _record(seed_user, _file(), file_name="again.csv")
+        """Provenance ACCUMULATES: the second import sights every line.
 
-        assert {
-            row.import_id
-            for row in db.session.query(BankStatementLine).all()
-        } == {first.import_id}
+        Under the sighting relation (plan step ``bank_import:X-f6b-1``) a
+        re-import records what it saw beside what the first import saw; which
+        import was FIRST is a derivation over the two, and it still names the
+        first.
+        """
+        first = _record(seed_user, _file())
+        second = _record(seed_user, _file(), file_name="again.csv")
+
+        for row in db.session.query(BankStatementLine).all():
+            assert {sighting.import_id for sighting in row.sightings} == {
+                first.import_id, second.import_id,
+            }
+        first_by = db.session.execute(
+            StatementLineSighting.first_import_of_each_line(
+                seed_user["account"].id,
+            ).select(),
+        ).all()
+        assert len(first_by) == 3
+        assert {import_id for _line, import_id in first_by} == {
+            first.import_id,
+        }
+        assert _counts(db, seed_user["account"].id) == {
+            first.import_id: (3, 3), second.import_id: (3, 0),
+        }
 
     def test_two_identical_charges_on_one_day_are_both_recorded(
         self, app, db, seed_user,
@@ -688,35 +725,77 @@ class TestItAbsorbsWhatALaterExportAdds:
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
         assert recorded.transaction_on == stated
-        # Stand in for a row an older adapter wrote, which knew no such day.
-        recorded.transaction_on = None
+        # Stand in for a SIGHTING an older adapter wrote, which knew no such
+        # day (plan step ``bank_import:X-f6b-1``: the day is the sighting's).
+        [older] = recorded.sightings
+        older.transaction_on = None
         db.session.flush()
+        db.session.expire_all()
+        assert db.session.query(BankStatementLine).one().transaction_on is None
 
         second = _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
 
         assert second.recorded_count == 0
+        db.session.expire_all()
         assert db.session.query(BankStatementLine).one().transaction_on == stated
 
     def test_a_DISAGREEING_transaction_day_is_left_alone(
         self, app, db, seed_user,
     ):
-        """Only NULL is filled -- a stated day is an observation, not a draft.
+        """Two sightings state two days, and the line reads the EARLIEST.
 
-        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
-        unconditional write and this fails.
+        A stated day is an observation, not a draft: the later sighting
+        overwrites nothing (it is its own row), and the day a match writes
+        onto a purchase is the earliest any source states -- money cannot be
+        spent after the earliest day a source says it was.  THE FIRING
+        CONTROL for ``BankStatementLine.transaction_on``'s ``min``: read the
+        LATEST sighting's day instead and this fails.
         """
         entries = [(date(2026, 3, 2), "-25.00",
                     "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
-        recorded.transaction_on = date(2026, 2, 27)
+        [older] = recorded.sightings
+        older.transaction_on = date(2026, 2, 27)
         db.session.flush()
 
         _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
+
+        db.session.expire_all()
+        line = db.session.query(BankStatementLine).one()
+        assert sorted(
+            sighting.transaction_on for sighting in line.sightings
+        ) == [date(2026, 2, 27), date(2026, 3, 1)]
+        assert line.transaction_on == date(2026, 2, 27)
+
+    def test_a_LATER_sighting_stating_an_EARLIER_day_moves_the_line(
+        self, app, db, seed_user,
+    ):
+        """The other direction of the same rule, so "earliest" is not "first".
+
+        A first sighting states 03-01; the re-import's sighting states
+        02-27.  Reading the FIRST sighting's day would leave 03-01; reading
+        the earliest across both gives 02-27.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+        db.session.expire_all()
+        line = db.session.query(BankStatementLine).one()
+        [later] = [
+            sighting for sighting in line.sightings
+            if sighting.import_id == second.import_id
+        ]
+        later.transaction_on = date(2026, 2, 27)
+        db.session.flush()
+        db.session.expire_all()
 
         assert db.session.query(
             BankStatementLine,
@@ -777,38 +856,52 @@ class TestItAbsorbsWhatALaterExportAdds:
         chooser forever -- even after an export that DOES name one had been
         imported over it.  Same rule, same direction, as the transaction-day
         arm above; the consequence here is a decision the owner has to make
-        again rather than a date left wrong.
+        again rather than a date left wrong.  **Since plan step
+        ``bank_import:X-f6b-1b`` (ruling R-BI16) the second import writes
+        the key onto ITS OWN sighting and nothing onto the line or the first
+        sighting**: the line's merchant is the earliest sighting that names
+        one, which is now the second's.
         """
         entries = [(date(2026, 3, 2), "-25.00",
                     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
         assert recorded.merchant_name == "Big Cheese Clayton"
-        # Stand in for a row an older adapter wrote, which named no merchant.
-        # The MERCHANT ROW stays: it outlives the lines that named it, which
-        # is what makes the second import's fill a re-point rather than a
-        # create (plan step ``bank_import:X-gd-1``).
-        recorded.merchant_id = None
+        # Stand in for a sighting an older adapter wrote, which named no
+        # merchant.  The MERCHANT ROW stays: it outlives the sightings that
+        # named it, which is what makes the second import's sighting a
+        # re-point rather than a create (plan step ``bank_import:X-gd-1``).
+        [first] = recorded.sightings
+        first.merchant_id = None
         db.session.flush()
+        db.session.expire_all()
+        assert db.session.query(BankStatementLine).one().merchant_id is None
 
         second = _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
 
         assert second.recorded_count == 0
-        assert db.session.query(BankStatementLine).one().merchant_name == (
-            "Big Cheese Clayton"
-        )
+        db.session.expire_all()
+        line = db.session.query(BankStatementLine).one()
+        assert line.merchant_name == "Big Cheese Clayton"
+        # The first sighting still names none: the fact is the second's.
+        assert sorted(
+            (sighting.import_id, sighting.merchant_id)
+            for sighting in line.sightings
+        ) == [(first.import_id, None), (second.import_id, line.merchant_id)]
 
     def test_a_DISAGREEING_merchant_is_left_alone(
         self, app, db, seed_user,
     ):
-        """Only NULL is filled, and here that is a POLICY's key.
+        """The line's merchant is the EARLIEST naming sighting's, whatever comes later.
 
-        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
-        unconditional write and this fails.  Overwriting would silently
-        re-point every destination policy the owner had stated against the old
-        name, which is a decision moving without anyone deciding it.
+        A re-export naming a different word records that word's key on its
+        own sighting and moves nothing: overwriting would silently re-point
+        every destination policy the owner had stated against the old name,
+        which is a decision moving without anyone deciding it (ruling
+        **R-BI16**).  THE FIRING CONTROL for the producer's ORDER: flip
+        ``_stated_by_the_naming_sighting`` to newest-first and this fails.
         """
         entries = [(date(2026, 3, 2), "-25.00",
                     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
@@ -817,7 +910,9 @@ class TestItAbsorbsWhatALaterExportAdds:
         renamed = Merchant(account_id=recorded.account_id, name="Cheese Shop")
         db.session.add(renamed)
         db.session.flush()
-        recorded.merchant_id = renamed.id
+        # Stand in for a first sighting that named a different word.
+        [first] = recorded.sightings
+        first.merchant_id = renamed.id
         db.session.flush()
 
         _record(seed_user, build.build(build.chained(
@@ -825,14 +920,20 @@ class TestItAbsorbsWhatALaterExportAdds:
         )), file_name="again.csv")
 
         # **Read back from the DATABASE, not from the instance this test just
-        # re-pointed.**  ``BankStatementLine.merchant`` is a relationship, and
-        # assigning the ``merchant_id`` COLUMN does not move a relationship
-        # that is already loaded -- so the in-session object would still name
-        # the merchant it was loaded with, whatever the arm under test did.
-        # What the next request sees is what is persisted.
+        # re-pointed.**  The line's merchant projections are loaded with the
+        # row, so the in-session object would still answer what it was loaded
+        # with, whatever the door wrote.  What the next request sees is what
+        # is persisted.
         db.session.expire_all()
-        assert db.session.query(BankStatementLine).one().merchant_name == (
-            "Cheese Shop"
+        line = db.session.query(BankStatementLine).one()
+        assert line.merchant_name == "Cheese Shop"
+        assert line.merchant_id == renamed.id
+        # The re-import's own sighting carries ITS word's key, untouched by
+        # the line's answer.
+        later = max(line.sightings, key=lambda sighting: sighting.import_id)
+        assert later.merchant_id != renamed.id
+        assert db.session.get(Merchant, later.merchant_id).name == (
+            "Big Cheese Clayton"
         )
 
 
@@ -880,7 +981,8 @@ class TestTheMerchantWordsBecomeRows:
 
         Re-importing an overlapping span records no line
         (``recorded_count == 0``), and the merchant resolution runs anyway --
-        the absorb arm needs it.  ``ON CONFLICT DO NOTHING`` is what makes that
+        every sighting names its merchant's row (ruling **R-BI16**).  ``ON
+        CONFLICT DO NOTHING`` is what makes that
         a no-op instead of an ``IntegrityError`` that would fail an import
         which had nothing to add.
         """
@@ -902,7 +1004,7 @@ class TestTheMerchantWordsBecomeRows:
         between them was covered by neither, which an adversarial review found
         on 2026-08-25 (the case it replaces asserted an empty table over a
         merchant that was never going to be created, and no mutation could fail
-        it).  Delete ``_merchant_words``' truthiness test or ``_stage_lines``'
+        it).  Delete ``_merchant_words``' truthiness test or ``_sighting_of``'s
         ``if line.merchant else None`` and this account gains a merchant named
         for nothing.
         """
@@ -946,16 +1048,65 @@ class TestTheMerchantWordsBecomeRows:
         )
 
 
+class TestAHeldLineReadsItsNewSightingInTheSameUnitOfWork:
+    """The door's expire of ``BankStatementLine.READS_OVER_SIGHTINGS``, graded.
+
+    A held line's eager ``sightings`` collection and its two merchant
+    projections were loaded BEFORE the re-import's sighting existed, and a
+    row staged by its ids joins neither.  The door expires exactly that set
+    on every held line (plan step ``bank_import:X-f6b-1b``, ruling
+    **R-BI16**), so a reader holding the instance in the SAME unit of work
+    -- the route's, before its commit -- reads the row and not the instance
+    as it was.  **This class is the firing control that claim never had**:
+    delete the ``expire`` loop at the end of ``_write_records`` and every
+    assertion below reads the pre-import ``None``.
+    """
+
+    _ENTRIES = [
+        (date(2026, 3, 2), "-25.00",
+         "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE (Big Cheese Clayton)"),
+    ]
+
+    def test_the_merchant_and_the_day_a_re_import_states_are_read_off_the_held_instance(
+        self, app, db, seed_user,
+    ):
+        """One held line, its first sighting naming nothing, the second naming both."""
+        _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
+        held = db.session.query(BankStatementLine).one()
+        # Stand in for a first import that named neither fact.
+        [first] = held.sightings
+        first.merchant_id = None
+        first.transaction_on = None
+        db.session.flush()
+        db.session.expire_all()
+        held = db.session.query(BankStatementLine).one()
+        assert held.merchant_id is None
+        assert held.merchant_name is None
+        assert held.transaction_on is None
+
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", self._ENTRIES,
+        )), file_name="again.csv")
+
+        # The SAME instance, no expire_all: what the door left it able to say.
+        assert second.recorded_count == 0
+        assert held.merchant_name == "Big Cheese Clayton"
+        assert held.merchant_id == db.session.query(Merchant).one().id
+        assert held.transaction_on == date(2026, 3, 1)
+        assert len(held.sightings) == 2
+
+
 class TestARefusedImportLeavesTheSessionUNTOUCHED:
     """The claim ``_reconcile`` exists for, and the only refusal that sees it.
 
     Plan step ``bank_import:X-gd-1`` split DECIDING from WRITING:
     :func:`_reconcile` returns the partition and :func:`_write_records` writes
-    it, after the file's last refusal.  Before that split,
-    :func:`_absorb_gained_facts` ran inside the reconciliation's own loop, so a
-    refusal raised on group *k* left groups 1..*k*-1 dirty in the session and
-    the route's rollback is what discarded them -- the caveat the module
-    docstring carried since an adversarial review found it on 2026-08-20.
+    it, after the file's last refusal.  Before that split, the door's
+    absorbing arm (deleted at ``bank_import:X-f6b-1b``) ran inside the
+    reconciliation's own loop, so a refusal raised on group *k* left groups
+    1..*k*-1 dirty in the session and the route's rollback is what discarded
+    them -- the caveat the module docstring carried since an adversarial
+    review found it on 2026-08-20.
 
     **THE REFUSAL HAS TO FIRE AFTER THE RECONCILIATION, and the two obvious
     ones do not.**  Two adversarial reviews on 2026-08-25 measured a first
@@ -999,20 +1150,25 @@ class TestARefusedImportLeavesTheSessionUNTOUCHED:
     def test_it_absorbs_NOTHING_from_a_group_it_had_already_walked(
         self, app, db, seed_user,
     ):
-        """THE firing control for moving the absorb after the last refusal.
+        """THE firing control for every write sitting after the last refusal.
 
-        Restore the inline absorb inside ``_reconcile``'s ``pairing.held``
-        loop and this fails: the day is written, and only the route's rollback
-        takes it back.
+        ONE write remains for a held line (plan step ``bank_import:X-f6b-1b``,
+        ruling **R-BI16**): its sighting, carrying the merchant key its word
+        names.  Move it into ``_reconcile``'s loop and this fails: the row is
+        written, the line's merchant reads the refused file's word, and only
+        the route's rollback takes it back.
         """
         _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
         recorded = db.session.query(BankStatementLine).order_by(
             BankStatementLine.posted_on,
         ).first()
-        assert recorded.transaction_on == date(2026, 3, 1)
-        # Stand in for a row an older adapter wrote, which knew no such day.
-        recorded.transaction_on = None
+        assert recorded.merchant_name is not None
+        # Stand in for a sighting an older adapter wrote, which named no
+        # merchant, so the refused file's sighting would be the one naming it.
+        [first] = recorded.sightings
+        first.merchant_id = None
         db.session.flush()
+        sightings_before = db.session.query(StatementLineSighting).count()
 
         with pytest.raises(StatementBalanceUnexplained):
             _record(
@@ -1020,9 +1176,13 @@ class TestARefusedImportLeavesTheSessionUNTOUCHED:
                 file_name="refused.csv",
             )
 
+        db.session.expire_all()
         assert db.session.query(BankStatementLine).order_by(
             BankStatementLine.posted_on,
-        ).first().transaction_on is None
+        ).first().merchant_id is None
+        assert db.session.query(StatementLineSighting).count() == (
+            sightings_before
+        )
 
     def test_it_creates_NO_merchant_row(self, app, db, seed_user):
         """A refused file may not leave a merchant behind, and nothing sweeps one.
