@@ -313,21 +313,26 @@ def _rate_change_records_from(
 
 
 def load_rate_history(account_id: int) -> list:
-    """Load a loan's raw :class:`RateHistory` rows, newest first.
+    """Load an account's raw :class:`RateHistory` rows, newest first.
 
-    The one query definition behind BOTH rate-history consumers: the
-    feed-only loader (:func:`load_rate_changes`) and
+    The one query definition behind EVERY rate-history consumer: the
+    feed-only loader (:func:`load_rate_changes`),
     :func:`app.services.loan_payment_service.load_loan_context`, which keeps
     the raw ORM rows for its ``rate_history`` display field alongside the
     mapped feed -- so the two cannot drift on how a loan's rate history is
-    read (ordering, soft-delete handling).
+    read (ordering, soft-delete handling) -- and, since plan step
+    credit_card:CC-3, the card's :func:`app.services.card_apr.load_card_aprs`,
+    which maps the same rows to the card's own record instead of the loan
+    engine's feed.  The table is account-scoped, not loan-scoped
+    (:mod:`app.models.loan_features`), and so is this read; which KIND of
+    account the rows belong to is the caller's question.
 
     Args:
-        account_id: The loan account whose rate history to load.
+        account_id: The account whose rate history to load.
 
     Returns:
         The account's :class:`RateHistory` rows, ``effective_date`` DESC
-        (possibly empty for an unconfigured loan).
+        (possibly empty: an unconfigured loan, or a card with no APR stated).
     """
     return (
         db.session.query(RateHistory)

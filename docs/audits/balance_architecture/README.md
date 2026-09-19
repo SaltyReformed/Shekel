@@ -1031,8 +1031,14 @@ section 4, under their unchanged ids.*
   declared `_RATE_FRACTION_RANGE` and `_DAY_OF_MONTH_RANGE` in `schemas/validation/_helpers.py` and
   re-pointed only its own fields; 19 inline `[0, 1]` and 3 inline `1..31` spellings remain across seven
   modules, and `_pay_rhythm.py:96` already held a `_DAY_OF_MONTH_RANGE` reading the model's constants,
-  so the day bound has two same-named constants until this folds `_helpers.py`'s onto it. A schema-only
-  sweep, its census re-run first; `$0.00`.
+  so the day bound has two same-named constants until this folds `_helpers.py`'s onto it. A schema-only sweep,
+  its census re-run first; `$0.00`.
+* [ ] **X-ct** `refactor(services): one effective-dated walk` -- closes **BAL-524**: CC-3 extracted
+  `app/utils/effective_dated.in_effect_on` for the escrow versions and the card's APR; six more
+  spellings stand (`rate_period_engine` x3, `amortization_engine/_projection` x1,
+  `template_amount_service` x2; four with a fallback of their own, listed in the row) and fold onto it,
+  each fallback stated at its call; three walk `start_date` or dict keys, so the leaf gains a `key=` or
+  the caller adapts, not a drop-in; `$0.00`.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
@@ -1235,7 +1241,7 @@ section 4, under their unchanged ids.*
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites (census 111 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
+  **N-212** cites (census 112 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its
