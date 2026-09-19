@@ -1819,15 +1819,46 @@ class TestTheDeletePost:
         assert "RELEASES the checked balance" not in form
         assert "merchant(s) nothing else names" not in form
 
+    def test_a_re_imports_confirmation_removes_NOTHING(
+        self, auth_client, db, seed_user,
+    ):
+        """Two imports of one file: each confirmation says 0 lines go.
+
+        Plan step ``bank_import:X-f6b-1``, ruling **R-BI10**: both imports
+        sighted both lines, so neither holds one alone and deleting either
+        removes none.  The FIRST import's ``recorded_count`` is still 2 --
+        which is what its confirmation printed before this step, and what
+        the delete would not have done.  Found by adversarial review
+        2026-09-18.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+        _upload(
+            auth_client, seed_user["account"].id, _payload(),
+            filename="again.csv",
+        )
+        first, again = (
+            db.session.query(StatementImport).order_by(StatementImport.id).all()
+        )
+
+        body = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        assert "This removes 0 bank line(s)" in _delete_form_for(body, first.id)
+        assert "This removes 0 bank line(s)" in _delete_form_for(body, again.id)
+        assert "This removes 2 bank line(s)" not in body
+
     def test_the_page_offers_the_control_with_what_it_would_remove(
         self, auth_client, db, seed_user,
     ):
-        """The confirmation names a LIVE count, not the historical one.
+        """The confirmation names what the delete would REMOVE.
 
-        ``recorded_count`` is what the act wrote on the day it ran and
-        ``lines_held`` is what it still owns; putting the first on a
-        destructive control would be a stored value standing in for a live one
-        -- on the one sentence the owner reads before pressing delete.
+        ``recorded_count`` is how many lines the act was the first to sight
+        and ``removes.lines`` is how many it alone holds today; putting the
+        first on a destructive control would state a figure the delete does
+        not perform -- on the one sentence the owner reads before pressing
+        delete.  One import, so the two agree here; the two-import case is
+        ``test_a_re_imports_confirmation_removes_NOTHING``.
         """
         _upload(auth_client, seed_user["account"].id, _payload())
 

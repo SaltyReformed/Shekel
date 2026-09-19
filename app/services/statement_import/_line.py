@@ -113,6 +113,15 @@ class ParsedStatement:
             its name and masked number.  Ruling **R-FP** makes the mapping from
             this to a Shekel account a recorded fact rather than a guess.
         lines: The file's lines in CHRONOLOGICAL order, oldest first.
+        declared_start: The first day the source DECLARES this file answers
+            for (ruling **R-BAL71**, plan step ``bank_import:X-f6b-1``).
+            **What coverage reads, and it is the adapter's to state**: a CSV
+            export states no range, so its adapter declares the first..last
+            line day; a feed sync declares the window it requested, so a
+            quiet day inside it is covered and a sync that returned no line
+            still covers what it asked for.  Every recorded line falls inside
+            it.
+        declared_end: The last such day, inclusive.
         stated_balance: The balance the file's own header CLAIMS, or ``None``
             for a source that states none.  **It is the bank's claim, and the
             day it is the balance FOR is a second fact the lines solve**
@@ -129,6 +138,8 @@ class ParsedStatement:
 
     external_account_id: str
     lines: "list[StatementLine]"
+    declared_start: date
+    declared_end: date
     stated_balance: "Decimal | None" = None
     stated_balance_on: "date | None" = None
 
@@ -280,13 +291,16 @@ def pair_by_statement(
     leaves the other unclaimed.  Neither is a contradiction and neither is a
     duplicate.
 
-    **``external_id`` is deliberately not consulted**, and today that decision
-    changes no outcome.  A source carrying one cannot claim it twice
-    (``uq_bank_statement_lines_external_id``), and the only adapter that exists
-    carries none -- so an id-aware pairing would be a rule for data this app
-    cannot yet receive.  A second adapter that HAS ids (``X-f6b``) is where
-    pairing on one becomes worth its own decision, and finding **N-303** is the
-    row that owns how the wording compare behaves across two adapters.
+    **``external_id`` is not consulted HERE, and since plan step
+    ``bank_import:X-f6b-1`` it is consulted BEFORE here** (ruling
+    **R-BI10**): the reconciliation pairs an incoming line carrying an id to
+    the line a sighting of the same source already carries that id on, and
+    hands this function only what that step left.  The id breaks ties within
+    a group; it is never the identity, and a source that carries none
+    (SECU's CSV) is not thereby unidentifiable.  Both sides given here are
+    ONE source's wordings -- what this source called the lines it has already
+    sighted -- because a wording compare across sources is what finding
+    **N-303** measured as a false restatement.
 
     Args:
         incoming: The file's descriptions for this group, in file order.

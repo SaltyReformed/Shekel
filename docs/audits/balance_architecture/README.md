@@ -313,8 +313,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       the latest assertion's own day so that assertion clears it and the balance line does not move
       (R-DH (a)); amount DERIVED from the postings OTHER than itself until the owner categorises
       it; offered only where a `statement_imports` row covers the span at a zero residue -- which
-      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is
-      bounded by an import's LINE DAYS rather than the period its file declares (**N-434**). The
+      X-f3c-3 now answers as `outstanding_difference.SpanAgreement`, whose `imported` count is bounded by the window an import DECLARES (**R-BAL71**, `bank_import:X-f6b-1`; N-434 closed there). The
       posted ledger, the Book-vs-bank row and the income statement all move. Closes **N-171** --
       a figure this step must RE-DERIVE rather than quote, because the plug is the net of every
       correction and moves with each one: `$1,776.88` when this entry was written and `$2,370.02`
@@ -376,21 +375,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [x] **X-bi-7c** `4f15f222` -- the suite's one-off builder on 7b's producer, the DECOMPOSED parent
-      split 2026-09-16 into the builder and four leaves by file group (the AST census in
-      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
-      the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5. The five leaves'
-      records: `archive/shipped_steps_archived_2026-09-18.md`.
-    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM, split 2026-09-18 into the
-      suite's bare CHECK builders and the migration; ticked with 7d-2.
-      * [x] **X-bi-7d-1** `08230752` -- six bare CHECK builders and seven Core / raw-SQL writers
-        (outside 7c's constructor census) take a rule-less definition each, dated on the paycheck's
-        start; tests only; the two link-less controls in `test_template_row_needs_due_date.py` stay
-        bare for 7d-2.
-      * [x] **X-bi-7d-2** `829c2c26` (fix `9cf27a3a`) -- the migration: 34 definitions, 26 rows dated (**R-BAL25**),
-        both cells dropped, the CHECK `= 1`, both keys RESTRICT (**R-BAL67**, **R-BAL73**); dump, grid and
-        companion pages byte-identical; 7 Paid rows read 6-11 days late (**R-BAL22**); grid statements
-        23 before and after. **MOVED MONEY**; disclosed **CC-352**. Closed **BAL-484**, **BAL-511**.
+    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM: 7d-1 `08230752` (the
+      suite's bare CHECK builders) and 7d-2 `829c2c26` (the migration, **MOVED MONEY**: 34 definitions,
+      26 rows dated, **R-BAL25**; 7 Paid rows 6-11 days late, **R-BAL22**); ticked with 7d-2. Records,
+      7c's too: `archive/shipped_steps_archived_2026-09-18b.md`.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [x] **X-bi-3** `d1e3f7a6` -- the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**), ticked
@@ -1030,8 +1018,21 @@ section 4, under their unchanged ids.*
   asymmetry the horizon always had (loans amortize, checking holds flat) ends with it. Reward tier: a
   figure the developer reads moves to the correct one. Minted 2026-09-18 at CC-1's tick.
 * [ ] **X-cg** `fix(scripts): DC-06's dated arm stops exempting the re-priced row` -- closes **BAL-481**.
-  The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its
-  `is_override` term; the undated arm keeps the term because its index does. Script and test only.
+  The dated arm mirrors the occurrence index as it stood before `e7c3a1f9b482` dropped its `is_override` term;
+  the undated arm keeps the term because its index does. Script and test only.
+* [ ] **X-cr** `test(conftest): each request runs in its own app context` -- closes **BAL-521**: the `db`
+  fixture's one app context makes Flask reuse `g` across a test's requests, and Flask-Login's cached
+  principal then makes a second client's every request run as the FIRST login's user (seven two-client
+  tests, three of them IDOR or security tests, green for the wrong reason). The test client pushes a fresh app
+  context per request, as production does; the outer context stays for `db.session`. A test-only hook
+  clearing the login cache was rejected (developer 2026-09-18): it leaves every other `g`-cached value
+  shared. First upkeep row below the horizon by the developer's word.
+* [ ] **X-cs** `refactor(schemas): the two shared bounds have one spelling` -- closes **BAL-522**: CC-2
+  declared `_RATE_FRACTION_RANGE` and `_DAY_OF_MONTH_RANGE` in `schemas/validation/_helpers.py` and
+  re-pointed only its own fields; 19 inline `[0, 1]` and 3 inline `1..31` spellings remain across seven
+  modules, and `_pay_rhythm.py:96` already held a `_DAY_OF_MONTH_RANGE` reading the model's constants,
+  so the day bound has two same-named constants until this folds `_helpers.py`'s onto it. A schema-only
+  sweep, its census re-run first; `$0.00`.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
@@ -1229,12 +1230,12 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 45 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 48 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites (census 106 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
+  **N-212** cites (census 111 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its

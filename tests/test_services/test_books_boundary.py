@@ -1305,31 +1305,34 @@ class TestAMatchedLineBoundsTheBooksToo:
             statement = _db.session.execute(sa.text(
                 "INSERT INTO budget.statement_imports "
                 "(account_id, user_id, source_id, file_name, file_digest, "
-                " period_start, period_end, line_count, recorded_count) "
+                " declared_start, declared_end) "
                 "SELECT :a, :u, "
                 " (SELECT id FROM ref.statement_sources ORDER BY id LIMIT 1), "
-                " 'unmatched-probe.csv', :digest, :d, :d, 1, 1 "
+                " 'unmatched-probe.csv', :digest, :d, :d "
                 "RETURNING id"
             ), {
                 "a": account.id, "u": seed_user["user"].id,
                 "digest": f"unmatched-{account.id}",
                 "d": opened + timedelta(days=10),
             }).scalar()
-            _db.session.execute(sa.text(
+            line = _db.session.execute(sa.text(
                 "INSERT INTO budget.bank_statement_lines "
-                "(account_id, import_id, posted_on, amount, description, "
-                " sequence_in_group) "
-                "VALUES (:a, :i, :d, -1.00, 'UNMATCHED', 0)"
-            ), {
-                "a": account.id, "i": statement,
-                "d": opened + timedelta(days=10),
-            })
+                "(account_id, posted_on, amount, sequence_in_group) "
+                "VALUES (:a, :d, -1.00, 0) RETURNING id"
+            ), {"a": account.id, "d": opened + timedelta(days=10)}).scalar()
+            # The line is held by its import's SIGHTING (plan step
+            # ``bank_import:X-f6b-1``); the wording lives there.
+            _db.session.execute(sa.text(
+                "INSERT INTO budget.statement_line_sightings "
+                "(account_id, line_id, import_id, description) "
+                "VALUES (:a, :l, :i, 'UNMATCHED')"
+            ), {"a": account.id, "l": line, "i": statement})
             _db.session.commit()
 
             _db.session.execute(sa.text(
                 "UPDATE budget.bank_statement_lines SET posted_on = :d "
-                "WHERE account_id = :a AND description = 'UNMATCHED'"
-            ), {"d": opened - timedelta(days=5), "a": account.id})
+                "WHERE id = :l"
+            ), {"d": opened - timedelta(days=5), "l": line})
             _db.session.commit()
 
             # It moved, and it bounds nothing: no match names it.

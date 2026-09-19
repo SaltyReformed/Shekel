@@ -17,10 +17,11 @@ figure rendered to the user and it was asserted nowhere, so summing absolute
 values instead of signed ones would have gone unnoticed.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from app.enums import (
     StatementBalanceEvidenceEnum,
@@ -29,6 +30,7 @@ from app.enums import (
 from app.models.merchant import Merchant
 from app.models.merchant_rule import MerchantRule
 from app.models.ref import AccountType, StatementSource
+from app.models.statement_import import BankStatementLine
 from app.ref_seeds import _REF_TABLE_SEEDS
 from app.services import account_service
 from app.services.statement_import import (
@@ -46,7 +48,15 @@ from app.services.statement_import import (
 from app.services.statement_import._reads import (
     OwnedLines,
     lines_by_import,
+    matches_by_import,
     orphan_merchants_by_import,
+)
+
+from tests.test_services.test_statement_match._builders import (
+    a_bank_line,
+    a_merchant,
+    a_sighting,
+    an_import,
 )
 
 from . import _csv_builder as build
@@ -191,8 +201,13 @@ class TestTheTwoReadsTheDeleteConfirmationSharesWithTheAct:
     ):
         """Three facts per import: it is keyed, counted and dated from its lines.
 
-        The re-import owns no line and is ABSENT rather than zero, which is
-        the reading the act gives it: nothing removed, so nothing released.
+        **A line two imports sighted is neither's to lose** (plan step
+        ``bank_import:X-f6b-1``, ruling **R-BI10**): the first import and its
+        re-import both vouch for the three March lines, so deleting either
+        removes nothing, and BOTH are absent rather than zero -- which is the
+        reading the act gives an absence: nothing removed, so nothing
+        released.  *Until that step the first import owned the three and the
+        re-import owned none.*  The later import alone holds its one line.
         """
         account = seed_user["account"]
         first = _record(seed_user, account, _ENTRIES)
@@ -204,12 +219,10 @@ class TestTheTwoReadsTheDeleteConfirmationSharesWithTheAct:
 
         owned = lines_by_import(account.id)
 
-        assert owned[first.import_id] == OwnedLines(
-            count=3, earliest=date(2026, 3, 2),
-        )
-        assert owned[later.import_id] == OwnedLines(
-            count=1, earliest=date(2026, 3, 9),
-        )
+        assert owned == {
+            later.import_id: OwnedLines(count=1, earliest=date(2026, 3, 9)),
+        }
+        assert first.import_id not in owned
         assert again.import_id not in owned
 
     def test_lines_by_import_reads_only_ITS_OWN_account(
@@ -252,6 +265,37 @@ class TestTheTwoReadsTheDeleteConfirmationSharesWithTheAct:
 
         assert orphans == {first.import_id: [big_cheese.id]}
         assert second.import_id not in orphans
+
+    def test_a_merchant_only_ONE_imports_sighting_names_is_that_imports_even_where_the_line_survives(
+        self, app, db, seed_user,
+    ):
+        """The read is over the SIGHTINGS, not the lines' derived merchant.
+
+        One line two imports showed under two words (ruling **R-BI16**):
+        deleting the first takes its sighting, the line survives on the
+        second's, and ``COFFEE`` is then named by nothing -- so it is the
+        first import's to orphan, although the LINE is not the first
+        import's to remove.  A read grouped by the line's derived merchant
+        would attribute ``COFFEE`` to neither (two imports sight the line)
+        and the delete door would leave a merchant no sighting names.
+        """
+        account = seed_user["account"]
+        first = an_import(
+            seed_user, created_at=datetime(2026, 4, 1, 12, tzinfo=timezone.utc),
+        )
+        second = an_import(
+            seed_user, created_at=datetime(2026, 4, 2, 12, tzinfo=timezone.utc),
+        )
+        line = a_bank_line(seed_user, first, amount="-4.50", merchant="COFFEE")
+        a_sighting(seed_user, second, line, merchant="Coffee Shop")
+        db.session.flush()
+        coffee = a_merchant(seed_user, "COFFEE")
+        coffee_shop = a_merchant(seed_user, "Coffee Shop")
+
+        orphans = orphan_merchants_by_import(account.id)
+
+        assert orphans == {first.id: [coffee.id], second.id: [coffee_shop.id]}
+        assert lines_by_import(account.id) == {}
 
     def test_an_ANSWERED_merchant_is_attributed_to_NO_import(
         self, app, db, seed_user,
@@ -440,6 +484,71 @@ class TestTheLineListIsOrderedAndBounded:
 
         assert [row.file_name for row in
                 import_history(seed_user["user"].id, seed_user["account"].id)][0] == "two.csv"
+
+    def test_the_counts_and_the_window_are_DERIVED_per_import(
+        self, app, db, seed_user,
+    ):
+        """What a file held, what it added, and the window it declared.
+
+        Plan step ``bank_import:X-f6b-1``, ruling **R-IY**: the two counts
+        were columns and are the sightings now.  A first import of three
+        lines held three and added three; a re-import held three and added
+        none; a later file of one held one and added one.  The window is the
+        CSV's own line extremes.
+        """
+        account = seed_user["account"]
+        _record(seed_user, account, _ENTRIES, file_name="first.csv")
+        _record(seed_user, account, _ENTRIES, file_name="again.csv")
+        _record(
+            seed_user, account,
+            [(date(2026, 3, 9), "-99.00", "LATER")], file_name="later.csv",
+        )
+
+        rows = import_history(seed_user["user"].id, account.id)
+
+        assert [
+            (row.file_name, row.line_count, row.recorded_count,
+             row.declared_start, row.declared_end)
+            for row in rows
+        ] == [
+            ("later.csv", 1, 1, date(2026, 3, 9), date(2026, 3, 9)),
+            ("again.csv", 3, 0, date(2026, 3, 2), date(2026, 3, 4)),
+            ("first.csv", 3, 3, date(2026, 3, 2), date(2026, 3, 4)),
+        ]
+
+    def test_a_match_on_a_line_TWO_imports_hold_is_neither_imports_to_release(
+        self, app, db, seed_user,
+    ):
+        """The delete preview and the act read one derivation (**R-BI10**).
+
+        A re-import re-sighted the matched line, so deleting either import
+        leaves the line -- and the match -- standing; the confirmation must
+        preview no release for either.  *Until plan step ``bank_import:
+        X-f6b-1`` the first import owned the line and its match was released
+        by that import's deletion even though the re-import had shown it.*
+        """
+        account = seed_user["account"]
+        first = _record(seed_user, account, _ENTRIES, file_name="first.csv")
+        again = _record(seed_user, account, _ENTRIES, file_name="again.csv")
+        line = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).first()
+        db.session.execute(text(
+            "WITH act AS ("
+            "  INSERT INTO budget.statement_matches "
+            "  (account_id, user_id, applied_by_rule) "
+            "  VALUES (:a, :u, false) RETURNING id) "
+            "INSERT INTO budget.statement_match_members "
+            "  (match_id, account_id, bank_statement_line_id) "
+            "SELECT id, :a, :l FROM act"
+        ), {"a": account.id, "u": seed_user["user"].id, "l": line.id})
+        db.session.flush()
+
+        assert matches_by_import(account.id) == {}
+        assert {
+            row.import_id: row.matches_affected
+            for row in import_history(seed_user["user"].id, account.id)
+        } == {first.import_id: 0, again.import_id: 0}
 
 
 class TestTheOfferedSourcesAreTheUSABLEOnes:

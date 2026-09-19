@@ -18,7 +18,7 @@ import _archive as archive
 import _order as order
 import _registry as registry
 from _classes import decomposition_leaf_keys
-from _staging import row_of, stage_a_live_container, with_cell
+from _staging import a_prefix_trap, row_of, stage_a_live_container, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -176,17 +176,30 @@ class TestTheStartsCellIsDerivedAndReconciled:
         that is this suite's own subject applied to itself: the literals ``#5``
         and ``#32`` were a stored copy of a value the live table decides, and
         they rotted on the first commit that renumbered it.
+
+        **The SUBJECT is derived as well, since 2026-09-18.**  This named
+        `credit_card:CC-2` until that step shipped, and a shipped row carries no
+        `starts` cell to stage -- the rot its sibling below records for
+        `balance:X-ap`.  The state the control needs is "any open, ranked step",
+        which the table can be asked for; the two blockers it names are read
+        out of the live table too and asserted open, or the arm is blind.
         """
-        line = row_of("steps", "| credit_card | CC-2 |")
-        stage("steps", line, with_cell(
-            line, 6, "after #1 / balance:X-f4 / balance:X-aj2",
-        ))
-        latest = max(
-            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-aj2")
+        blockers = ("balance:X-f4", "balance:X-aj2")
+        rows = {row.key: row for row in registry.step_rows()}
+        assert all(key in rows and not rows[key].shipped for key in blockers), blockers
+        subject = next(
+            row for row in registry.step_rows()
+            if not row.shipped and not row.is_container
+            and row.rank is not None and row.key not in blockers
         )
+        line = row_of("steps", f"| {subject.arc} | {subject.ident} |")
+        stage("steps", line, with_cell(
+            line, 6, f"after #1 / {' / '.join(blockers)}",
+        ))
+        latest = max(order.rank_map()[key] for key in blockers)
         problems = order.starts_violations()
         assert any(
-            "credit_card:CC-2" in p and f"#{latest}" in p for p in problems
+            subject.key in p and f"#{latest}" in p for p in problems
         ), problems
 
     def test_the_control_fires_when_a_ready_row_claims_to_be_blocked(self, stage):
@@ -771,6 +784,29 @@ class TestTheOrderTableIsSorted:
             "balance:X-f4" in p and "INSIDE the order table" in p
             for p in problems
         ), problems
+
+
+class TestTheIdPrefixTrapSpecimenIsANumberContinuation:
+    """``_staging.a_prefix_trap`` grades the NUMBER-continuing trap and nothing else."""
+
+    def test_a_letter_suffixed_follow_up_is_not_the_specimen(self, stage):
+        """A follow-up spelled ``<shipped id>b`` is related, so it never grabs the slot.
+
+        STAGED: an open ``credit_card:CC-1b`` beside SHIPPED ``CC-1``, the live
+        specimen against ``CC-10`` / ``CC-11``.  On 2026-09-18 ``X-f6b-1b``
+        (open, letter-suffixed) followed ``X-f6b-1`` (shipped) into the table
+        ahead of ``CC-1``, the fixture chose that pair, and the leaf derivation
+        -- reading a letter suffix as related, by design -- turned the
+        number-boundary control red over a pair that is no trap at all.
+        """
+        shipped, sharers = a_prefix_trap()
+        assert shipped == "credit_card:CC-1", (shipped, sharers)
+        line = row_of("steps", "| credit_card | CC-1 |")
+        follow_up = with_cell(with_cell(with_cell(
+            line.replace("| credit_card | CC-1 |", "| credit_card | CC-1b |", 1),
+            4, "#999"), 5, "--"), 6, "NOW")
+        stage("steps", line, line + "\n" + follow_up)
+        assert a_prefix_trap() == (shipped, sharers)
 
 
 class TestThePathIsTheLeadingBlockAndTheHorizonIsAKey:

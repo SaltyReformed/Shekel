@@ -18,7 +18,11 @@ from app import ref_cache
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
 from app.models.ref import StatementSource
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import (
+    BankStatementLine,
+    StatementImport,
+    StatementLineSighting,
+)
 from app.models.statement_line_skip import StatementLineSkip
 from app.models.statement_match import StatementMatchMember
 from app.services.statement_match import removals_by_match
@@ -117,7 +121,7 @@ def recorded_span(account_id: int) -> RecordedSpan:
 
 
 def matches_by_import(account_id: int) -> "dict[int, list[int]]":
-    """Return which accepted matches name a line each of *account_id*'s imports owns.
+    """Return which accepted matches name a line each of *account_id*'s imports ALONE holds.
 
     **ONE statement, and ONE spelling of the question**, because two callers
     ask it for different reasons and a confirmation that counted differently
@@ -126,26 +130,32 @@ def matches_by_import(account_id: int) -> "dict[int, list[int]]":
     would release, and :func:`~._undo.delete_import` iterates the list to
     release them.
 
+    **A line another import also sighted is not this import's to lose**
+    (ruling **R-BI10**, plan step ``bank_import:X-f6b-1``): deleting this
+    import leaves that line standing, so a match naming it is released by
+    nothing and is absent here.  *It read every line this import FIRST
+    recorded until that step*, which released matches on lines a later
+    re-import had sighted and would now keep.
+
     Args:
         account_id: The account whose imports to read.
 
     Returns:
         ``{import_id: [match_id, ...]}``, each list ascending, covering only
-        the imports that own a matched line.  An import with none is absent,
-        and both callers read that as the empty list -- which is the honest
-        answer rather than an absence to branch on.
+        the imports that alone hold a matched line.  An import with none is
+        absent, and both callers read that as the empty list -- which is the
+        honest answer rather than an absence to branch on.
     """
+    sole = StatementLineSighting.sole_import_of_each_line(account_id)
     rows = (
-        db.session.query(
-            BankStatementLine.import_id, StatementMatchMember.match_id,
-        )
+        db.session.query(sole.c.import_id, StatementMatchMember.match_id)
         .join(
             StatementMatchMember,
-            StatementMatchMember.bank_statement_line_id == BankStatementLine.id,
+            StatementMatchMember.bank_statement_line_id == sole.c.line_id,
         )
-        .filter(BankStatementLine.account_id == account_id)
+        .filter(StatementMatchMember.account_id == account_id)
         .distinct()
-        .order_by(BankStatementLine.import_id, StatementMatchMember.match_id)
+        .order_by(sole.c.import_id, StatementMatchMember.match_id)
         .all()
     )
     by_import: "dict[int, list[int]]" = {}
@@ -155,13 +165,17 @@ def matches_by_import(account_id: int) -> "dict[int, list[int]]":
 
 
 def skips_by_import(account_id: int) -> "dict[int, int]":
-    """Return how many SKIP decisions each of this account's imports holds.
+    """Return how many SKIP decisions each import's own lines hold.
 
     Plan step ``bank_import:X-gj-4a``, ruling **bank_import:R-JG**.  A skip
     claims nothing but its own line, so
     ``fk_statement_line_skips_line_account`` CASCADES rather than refusing a
     delete -- which means deleting an import destroys the owner's own answers,
-    silently, unless something counts them.
+    silently, unless something counts them.  Its OWN lines are the ones no
+    other import sighted (:meth:`~app.models.statement_import
+    .StatementLineSighting.sole_import_of_each_line`), for the reason
+    :func:`matches_by_import` gives: a line another import holds survives
+    the delete, and its skip with it.
 
     **ONE derivation for the confirmation and the act**, which is
     :func:`matches_by_import`' own rule and for its own reason: the page reads
@@ -173,25 +187,19 @@ def skips_by_import(account_id: int) -> "dict[int, int]":
         account_id: The account whose imports to read.
 
     Returns:
-        ``{import_id: count}``, covering only the imports that own a skipped
-        line.  An import with none is absent, and both callers read that as
-        zero -- the honest answer rather than an absence to branch on.
+        ``{import_id: count}``, covering only the imports that alone hold a
+        skipped line.  An import with none is absent, and both callers read
+        that as zero -- the honest answer rather than an absence to branch on.
     """
+    sole = StatementLineSighting.sole_import_of_each_line(account_id)
     rows = (
-        db.session.query(
-            BankStatementLine.import_id,
-            db.func.count(StatementLineSkip.id),
-        )
+        db.session.query(sole.c.import_id, db.func.count(StatementLineSkip.id))
         .join(
             StatementLineSkip,
-            db.and_(
-                StatementLineSkip.bank_statement_line_id
-                == BankStatementLine.id,
-                StatementLineSkip.account_id == BankStatementLine.account_id,
-            ),
+            StatementLineSkip.bank_statement_line_id == sole.c.line_id,
         )
-        .filter(BankStatementLine.account_id == account_id)
-        .group_by(BankStatementLine.import_id)
+        .filter(StatementLineSkip.account_id == account_id)
+        .group_by(sole.c.import_id)
         .all()
     )
     return dict(rows)
@@ -199,10 +207,10 @@ def skips_by_import(account_id: int) -> "dict[int, int]":
 
 @dataclass(frozen=True)
 class OwnedLines:
-    """The lines one import FIRST recorded, as the two facts a delete needs.
+    """The lines one import ALONE holds, as the two facts a delete needs.
 
     Attributes:
-        count: How many there are.
+        count: How many there are -- the lines that GO with the import.
         earliest: The earliest day any of them posts on -- what a placement
             release is keyed on, because a placement rests on the lines at or
             before its day and these are the lines that go.
@@ -213,7 +221,7 @@ class OwnedLines:
 
 
 def lines_by_import(account_id: int) -> "dict[int, OwnedLines]":
-    """Return, per import that owns a line, how many and from which day.
+    """Return, per import that alone holds a line, how many and from which day.
 
     Plan step ``bank_import:X-gr``, finding **BI-490**.  **ONE derivation for
     the confirmation and the act**, which is :func:`matches_by_import`' rule
@@ -225,23 +233,31 @@ def lines_by_import(account_id: int) -> "dict[int, OwnedLines]":
     spelling of *the earliest day this import's lines post on*, and two
     spellings that agree today are still two spellings.
 
+    **The lines an import holds ALONE, since plan step ``bank_import:X-f6b-1``**
+    (ruling **R-BI10**): deleting the import removes exactly those
+    (``budget.remove_line_left_unsighted``), so this is what the receipt
+    counts and the day the release is keyed on.  A line another import also
+    sighted stays, and an import that sighted nothing on its own -- a
+    re-import of a span already held -- is absent, which both callers read
+    as *no lines, no day*: it removes nothing and so releases nothing.
+
     Args:
         account_id: The account whose imports to read.
 
     Returns:
-        ``{import_id: OwnedLines}``, covering only the imports that own a
-        line.  An import that recorded nothing -- a re-import of a span
-        already held -- is absent, and both callers read that as *no lines,
-        no day*: it removes nothing and so releases nothing.
+        ``{import_id: OwnedLines}``, covering only the imports that alone
+        hold a line.
     """
+    sole = StatementLineSighting.sole_import_of_each_line(account_id)
     rows = (
         db.session.query(
-            BankStatementLine.import_id,
+            sole.c.import_id,
             db.func.count(BankStatementLine.id),
             db.func.min(BankStatementLine.posted_on),
         )
+        .join(BankStatementLine, BankStatementLine.id == sole.c.line_id)
         .filter(BankStatementLine.account_id == account_id)
-        .group_by(BankStatementLine.import_id)
+        .group_by(sole.c.import_id)
         .all()
     )
     return {
@@ -254,29 +270,40 @@ def orphan_merchants_by_import(account_id: int) -> "dict[int, list[int]]":
     """Return which merchants each import is the ONLY thing still naming.
 
     Plan step ``bank_import:X-gr``, finding **BI-490**.  A merchant is swept
-    when no surviving line names it and no standing rule is about it (plan
-    step ``bank_import:X-gd-1``), so deleting an import orphans exactly the
-    unanswered merchants named by its lines and by no other import's.  **ONE
-    derivation for the confirmation and the act**, :func:`matches_by_import`'
-    rule: :func:`import_history` takes ``len()`` of each list to say what a
-    delete would forget, and :func:`~._undo.delete_import` deletes the list.
-    The act swept the table AFTER the rows were gone until this step, which
-    answered a different question -- *what is orphaned now* -- and a preview
-    could only have agreed with it by an invariant rather than by being the
-    same read.  Over one stored state the two are one count; across the
-    window between the page's GET and the act's POST a concurrent write makes
-    the act REFUSE rather than diverge (:func:`~._undo._forget_merchants`).
+    when no surviving sighting names it and no standing rule is about it
+    (plan step ``bank_import:X-gd-1``; the key moved onto the sighting at
+    ``bank_import:X-f6b-1b``, ruling **R-BI16**), so deleting an import
+    orphans exactly the unanswered merchants that only its own sightings
+    name.  **ONE derivation for the confirmation and the act**,
+    :func:`matches_by_import`' rule: :func:`import_history` takes ``len()``
+    of each list to say what a delete would forget, and
+    :func:`~._undo.delete_import` deletes the list.  The act swept the table
+    AFTER the rows were gone until this step, which answered a different
+    question -- *what is orphaned now* -- and a preview could only have
+    agreed with it by an invariant rather than by being the same read.  Over
+    one stored state the two are one count; across the window between the
+    page's GET and the act's POST a concurrent write makes the act REFUSE
+    rather than diverge (:func:`~._undo._forget_merchants`).
 
-    A merchant named by NO line is not attributed to any import, and none
-    exists to attribute: :func:`~._merchants.resolve_merchants` creates a row
-    only for a word this pass then writes onto a line, in the same statement
-    pass, and nothing rewrites a line's merchant afterwards.  Measured on the
-    developer's own database 2026-09-12: 67 merchants, 0 named by no line.
+    **Read over the SIGHTINGS and not over the lines' derived merchant**,
+    because that is the question: an import's deletion takes its sightings,
+    and a merchant no surviving sighting names is one no line's read can
+    answer -- so a merchant named on a line only by THIS import's sighting is
+    orphaned even where another import also sighted the line under another
+    word, and the line's read moves to the survivor's word with nothing to
+    repair (finding **BI-504**, which the stored key made a stale copy of).
+
+    A merchant named by NO sighting is not attributed to any import, and
+    none exists to attribute: :func:`~._merchants.resolve_merchants` creates
+    a row only for a word this pass then writes onto a sighting, in the same
+    statement pass, and nothing rewrites a sighting's merchant afterwards.
+    Measured on the developer's own database 2026-09-12: 67 merchants, 0
+    named by no line.
 
     Args:
-        account_id: The account whose imports to read.  The lines' account
-            is what scopes it; a line's merchant is held to the line's account
-            by ``fk_bank_statement_lines_merchant_account``.
+        account_id: The account whose imports to read.  The sightings'
+            account is what scopes it; a sighting's merchant is held to its
+            account by ``fk_statement_line_sightings_merchant_account``.
 
     Returns:
         ``{import_id: [merchant_id, ...]}``, each list ascending, covering
@@ -287,19 +314,26 @@ def orphan_merchants_by_import(account_id: int) -> "dict[int, list[int]]":
         db.session.query(MerchantRule.merchant_id)
         .filter(MerchantRule.account_id == account_id)
     )
+    # ONE distinct import across every sighting naming the merchant means
+    # that import's sightings are all that name it, so its deletion takes the
+    # last one.  A merchant two imports' sightings name survives either
+    # import's deletion and is absent here.  Served by
+    # ``idx_statement_line_sightings_account_merchant``.
     rows = (
         db.session.query(
-            db.func.min(BankStatementLine.import_id),
-            BankStatementLine.merchant_id,
+            db.func.min(StatementLineSighting.import_id),
+            StatementLineSighting.merchant_id,
         )
         .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant_id.isnot(None),
-            BankStatementLine.merchant_id.notin_(answered),
+            StatementLineSighting.account_id == account_id,
+            StatementLineSighting.merchant_id.isnot(None),
+            StatementLineSighting.merchant_id.notin_(answered),
         )
-        .group_by(BankStatementLine.merchant_id)
-        .having(db.func.count(db.distinct(BankStatementLine.import_id)) == 1)
-        .order_by(BankStatementLine.merchant_id)
+        .group_by(StatementLineSighting.merchant_id)
+        .having(
+            db.func.count(db.distinct(StatementLineSighting.import_id)) == 1,
+        )
+        .order_by(StatementLineSighting.merchant_id)
         .all()
     )
     by_import: "dict[int, list[int]]" = {}
@@ -326,6 +360,16 @@ class ImportRemovalPreview:
     review 2026-08-24 in one ordinary edit of a created purchase.
 
     Attributes:
+        lines: How many bank lines the delete would remove -- the lines this
+            import ALONE holds (:func:`lines_by_import`), which is what goes
+            (plan step ``bank_import:X-f6b-1``, ruling **R-BI10**).  **Not
+            the import's recorded count**: that is how many lines it was the
+            FIRST to sight, and the two part the moment a later import
+            re-sights one -- the developer's own re-import of his 306-line
+            CSV makes the first import's confirmation say 306 while its
+            delete removes 0.  Found by adversarial review 2026-09-18; the
+            confirmation printed ``recorded_count`` until then, which was
+            exact while an import owned its lines.
         rows: How many rows the delete would destroy.
         cash: The signed money the account would stop recording, positive INTO
             the account.  Beside the count for the reason ruling **R-GD(a)**
@@ -357,6 +401,7 @@ class ImportRemovalPreview:
             (:func:`orphan_merchants_by_import`).  Same step, same ruling.
     """
 
+    lines: int
     rows: int
     cash: Decimal
     blocked: "str | None"
@@ -365,19 +410,25 @@ class ImportRemovalPreview:
     merchants: int
 
 
-def _removal_preview(
-    match_ids, removals, skips: int, anchors: int, merchants: int,
+def _removal_preview(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    match_ids, removals, lines: int, skips: int, anchors: int, merchants: int,
 ) -> ImportRemovalPreview:
     """Fold one import's acts into what deleting it would do.
 
+    Pylint: ``too-many-arguments``, ``too-many-positional-arguments`` (6/5)
+    -- six because the confirmation states six facts, each from the ONE read
+    the act itself counts with; a parameter object for them would be this
+    very value built twice.
+
     Args:
-        match_ids: The acts naming a line this import owns.
+        match_ids: The acts naming a line this import alone holds.
         removals: ``{match_id: PlannedRemovals}`` from
             ``statement_match.removals_by_match``.
-        skips: How many SKIP decisions this import's lines carry
+        lines: How many lines it alone holds (:func:`lines_by_import`).
+        skips: How many SKIP decisions those lines carry
             (:func:`skips_by_import`).
-        anchors: How many other imports' placements rest on its lines.
-        merchants: How many merchants its lines alone name, rule aside.
+        anchors: How many other imports' placements rest on those lines.
+        merchants: How many merchants those lines alone name, rule aside.
 
     Returns:
         Its :class:`ImportRemovalPreview`.
@@ -386,6 +437,7 @@ def _removal_preview(
         removals[match_id] for match_id in match_ids if match_id in removals
     ]
     return ImportRemovalPreview(
+        lines=lines,
         rows=sum(len(one.rows) for one in planned),
         cash=sum((one.cash_amount for one in planned), Decimal("0.00")),
         skips=skips,
@@ -419,28 +471,29 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
     ``PurchaseDestination`` carry the same disable for the same reason: a row
     that genuinely states N things is not improved by hiding ``N - 7`` of them.
 
-    **The line count on the destructive control is `recorded_count`, and a
-    "live" count beside it was DELETED as a guard against an unreachable
-    state.**  A first version carried both, on the reasoning that a stored
-    figure must not stand in for a live one.  Adversarial review measured the
-    premise false: the only things that remove a ``bank_statement_lines`` row
-    are the import's own cascade and the account's, so for any import this page
-    can render the two are identically equal, always.  CLAUDE.md rule 13
-    forbids handling an impossible scenario, and a "live" number that can never
-    differ is a claim to freshness the schema does not support.
-    :attr:`matches_affected` is genuinely live -- a match can be released
-    independently -- and earns its query.
+    **Its two counts and its window are DERIVED** (plan step
+    ``bank_import:X-f6b-1``, ruling **R-IY**): what a file held is how many
+    sightings its import wrote, what it added is how many of those lines it
+    sighted FIRST (:meth:`~app.models.statement_import.StatementLineSighting
+    .counts_by_import`), and the window is the one the import declared.  The
+    columns that stored the counts were a cache with no reconciler, and this
+    class's earlier paragraph about a "live" count beside them argued from a
+    premise -- that only the import's own cascade removes a line -- which the
+    sighting relation made false: a line goes with its LAST sighting, so an
+    import's own line count is exactly the kind of figure a stored column
+    could drift from.  :attr:`matches_affected` is genuinely live -- a match
+    can be released independently -- and earns its query as it always did.
 
     Attributes:
         import_id: The act, so a delete control can name it.
         created_at: When it ran.
         file_name: What was uploaded.
-        period_start: The earliest day it covered.
-        period_end: The latest.
-        line_count: Lines the file held.
-        recorded_count: Lines this act wrote.  The difference from
-            :attr:`line_count` is the overlap with what was already known, and
-            showing it is what makes idempotency VISIBLE.
+        declared_start: The first day the import declared it answers for.
+        declared_end: The last.
+        line_count: Lines the file held -- the sightings this import wrote.
+        recorded_count: Lines this act was the first to sight.  The
+            difference from :attr:`line_count` is the overlap with what was
+            already known, and showing it is what makes idempotency VISIBLE.
         matches_affected: Accepted matches naming at least one of those lines.
             Each would be RELEASED by a delete, so the control says so before
             it is pressed.
@@ -457,8 +510,8 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
     import_id: int
     created_at: datetime
     file_name: str
-    period_start: date
-    period_end: date
+    declared_start: date
+    declared_end: date
     line_count: int
     recorded_count: int
     matches_affected: int
@@ -485,9 +538,9 @@ def import_history(
             did while the section heading was the bare word "Imports".**  That
             became load-bearing when plan step ``bank_import:X-f6a-4`` put a
             destructive control inside the truncated table and wrote two
-            refusal messages promising it is there: a line names the import
-            that FIRST recorded it, so the oldest import owns nearly every line
-            and is the first to fall off a newest-first list.  Finding
+            refusal messages promising it is there: the oldest import is
+            the one that first sighted nearly every line and is the first
+            to fall off a newest-first list.  Finding
             **N-330** owns raising or paging the bound; saying it is what stops
             the truncation being silent meanwhile.  Found by adversarial
             financial review 2026-08-20.
@@ -503,12 +556,21 @@ def import_history(
     imports = (
         db.session.query(StatementImport)
         .filter(StatementImport.account_id == account_id)
-        .order_by(StatementImport.created_at.desc(), StatementImport.id.desc())
+        .order_by(*(column.desc() for column in StatementImport.act_order()))
         .limit(limit)
         .all()
     )
     if not imports:
         return []
+    # ONE aggregate for the two counts of every import on the page (plan
+    # step ``bank_import:X-f6b-1``); an import absent from it wrote no
+    # sighting, which is the zero-line sync R-BAL71 admits.
+    counts = {
+        import_id: (sighted, first)
+        for import_id, sighted, first in db.session.execute(
+            StatementLineSighting.counts_by_import(account_id),
+        )
+    }
     by_import = matches_by_import(account_id)
     # ONE derivation, shared with the act: the delete releases every match
     # naming one of this import's lines, and what each release removes is that
@@ -553,13 +615,15 @@ def import_history(
             import_id=row.id,
             created_at=row.created_at,
             file_name=row.file_name,
-            period_start=row.period_start,
-            period_end=row.period_end,
-            line_count=row.line_count,
-            recorded_count=row.recorded_count,
+            declared_start=row.declared_start,
+            declared_end=row.declared_end,
+            line_count=counts.get(row.id, (0, 0))[0],
+            recorded_count=counts.get(row.id, (0, 0))[1],
             matches_affected=len(by_import.get(row.id, ())),
             removes=_removal_preview(
-                by_import.get(row.id, ()), removals, skips.get(row.id, 0),
+                by_import.get(row.id, ()), removals,
+                lines=owned[row.id].count if row.id in owned else 0,
+                skips=skips.get(row.id, 0),
                 anchors=(
                     len(resting_on(standing, owned[row.id].earliest, row.id))
                     if row.id in owned else 0

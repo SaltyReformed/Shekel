@@ -1817,7 +1817,7 @@ class TestTheHeroSaysWhatTheLastImportDid:
     ):
         """One import, two lines recorded, one of them filed by a rule."""
         statement = an_import(
-            seed_user, line_count=42, recorded_count=2,
+            seed_user,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         envelope = an_envelope(seed_user)
@@ -1856,7 +1856,7 @@ class TestTheHeroSaysWhatTheLastImportDid:
         rule for every ``timestamptz`` it renders.
         """
         an_import(
-            seed_user, line_count=1, recorded_count=1,
+            seed_user,
             created_at=datetime(2026, 8, 31, 1, 0, tzinfo=timezone.utc),
         )
         db.session.commit()
@@ -1894,7 +1894,7 @@ class TestTheHeroSaysWhatTheLastImportDid:
         the case renders BOTH surfaces: the href here, and the ``id`` there.
         """
         statement = an_import(
-            seed_user, line_count=1, recorded_count=1,
+            seed_user,
             created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
         )
         envelope = an_envelope(seed_user)

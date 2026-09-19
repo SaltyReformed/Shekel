@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
+from app.services.cash_flow_set import CashFlowSet
 from app.exceptions import BaselineMissingError
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
@@ -1659,7 +1660,7 @@ class TestBalanceContributingPredicate:
             db.session.commit()
 
             column = balance_at.grid_balance_view(
-                seed_user["account"],
+                CashFlowSet.single(seed_user["account"]),
                 BalanceContext.build(seed_user["user"].id),
             ).columns[p0.id]
             # 500.00 reservation + 200.00 confirmed cash leg; the Cancelled

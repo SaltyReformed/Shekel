@@ -27,6 +27,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import BalanceContext
+from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 
 
@@ -112,7 +113,7 @@ def _resolve_low_balance_threshold() -> int:
     return settings.low_balance_threshold
 
 
-def _build_grid_view(account, balance_ctx):
+def _build_grid_view(cash_flow: CashFlowSet | None, balance_ctx):
     """Compute the grid's per-period column set and its latest anchor assertion.
 
     Routes through the balance-at seam's kind-aware grid view
@@ -120,9 +121,18 @@ def _build_grid_view(account, balance_ctx):
     :class:`~app.services.balance_at.GridColumn` per period carrying every
     figure the grid renders for it -- the projected end balance, the income /
     expense / net subtotals, ruling R-K's two remainders ("Period timing" and
-    "Book vs bank", split at ruling R-DH (f)), and
+    "Book vs bank", split at ruling R-DH (f)), the "On other accounts" term
+    (plan step CC-4-1), and
     the two modelled tiers (the contribution and the accrual, rendered as their
     own conditional rows and labelled per kind by :func:`_accrual_row_label`).
+
+    **It takes the owner's CASH-FLOW SET, not an account** (developer ruling
+    ``credit_card:R-CC16``, plan step CC-4-1): the balance and the anchor are
+    the set's balance account's, and the subtotals are the paycheck's across
+    every member -- checking and its cards -- which the seam composes off each
+    member's own fold.  One producer call, still: the seam takes the set as
+    one value, so the columns and the reconciliation term come back as one
+    record per period and no route sums two views.
 
     **One producer pass, not three** (plan step X-c2b1, finding N-48).  The
     route used to call the balance producer once and the subtotal producer
@@ -145,8 +155,9 @@ def _build_grid_view(account, balance_ctx):
     balance row cannot price the same row differently.
 
     Args:
-        account: The grid account, or ``None`` for the user-with-zero-accounts
-            edge case.
+        cash_flow: The owner's :class:`~app.services.cash_flow_set.CashFlowSet`
+            (:func:`~app.services.account_resolver.resolve_cash_flow_set`), or
+            ``None`` for the user-with-zero-accounts edge case.
         balance_ctx: The read pass's
             :class:`~app.services.balance_at.BalanceContext`.  It carries the
             projection domain too since plan step C2-c: the seam reads the
@@ -170,11 +181,11 @@ def _build_grid_view(account, balance_ctx):
         -- the caption moved on any account edit and stopped moving entirely
         once a true-up no longer wrote the row.  An AnchorPoint cannot split.
     """
-    if account is None:
+    if cash_flow is None:
         return balance_at.empty_grid_view(), None
     return (
-        balance_at.grid_balance_view(account, balance_ctx),
-        cash_ledger.resolve_anchor(account),
+        balance_at.grid_balance_view(cash_flow, balance_ctx),
+        cash_ledger.resolve_anchor(cash_flow.balance),
     )
 
 

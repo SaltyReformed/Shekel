@@ -75,10 +75,7 @@ from app.append_only_infrastructure import (
     apply_append_only_infrastructure,
     remove_append_only_infrastructure,
 )
-from app.level_infrastructure import (
-    apply_level_infrastructure,
-    remove_level_infrastructure,
-)
+from app.level_infrastructure import remove_level_infrastructure
 
 # revision identifiers, used by Alembic.
 revision = "d2e9f4a17c63"
@@ -192,6 +189,111 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql
 """
+
+
+# ---------------------------------------------------------------------------
+# The within-file bound AS OF THIS REVISION, frozen here on 2026-09-18.
+#
+# This revision installed it by calling ``app.level_infrastructure
+# .apply_level_infrastructure`` -- the LIVE module -- and that was a latent
+# defect the next revision to touch the bound armed: ``af07125d00f1``
+# (plan step ``bank_import:X-f6b-1``) renames ``period_start`` /
+# ``period_end`` to ``declared_start`` / ``declared_end`` and the live module
+# followed, so replaying the chain from scratch had this revision create a
+# trigger ``BEFORE UPDATE OF declared_start`` on a table that did not have
+# the column yet.  A migration reads the tree as it WAS; the text below is
+# the module's text at this revision, verbatim, and installs exactly what a
+# database migrated on or after 2026-09-16 received.  The ``remove`` half is still
+# imported: it drops by NAME, and the names have not moved.
+# ---------------------------------------------------------------------------
+_LEVEL_RULE_FUNCTION_SQL = """
+CREATE OR REPLACE FUNCTION budget.level_lies_within_file(
+    level_day date, first_line date, last_line date, stated_on date
+) RETURNS boolean AS $$
+    SELECT level_day >= first_line - 1
+       AND level_day <= last_line
+       AND level_day <= stated_on
+$$ LANGUAGE sql IMMUTABLE
+"""
+
+_LEVEL_TRIGGER_FUNCTION_SQL = """
+CREATE OR REPLACE FUNCTION budget.refuse_level_outside_its_file()
+RETURNS TRIGGER AS $$
+DECLARE
+    file budget.statement_imports%ROWTYPE;
+BEGIN
+    -- An owner-declared level names no file and is bounded by nothing here.
+    IF NEW.statement_import_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    SELECT * INTO file FROM budget.statement_imports
+    WHERE id = NEW.statement_import_id;
+    IF NOT budget.level_lies_within_file(
+        NEW.observed_on, file.period_start, file.period_end,
+        file.stated_balance_on
+    ) THEN
+        RAISE EXCEPTION
+            'level % for account % is dated % but its statement % covers '
+            '%..% and states its balance as of %: a placed day must lie '
+            'inside the file (rule budget.level_lies_within_file)',
+            NEW.id, NEW.account_id, NEW.observed_on, file.id,
+            file.period_start, file.period_end, file.stated_balance_on;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"""
+
+_IMPORT_TRIGGER_FUNCTION_SQL = """
+CREATE OR REPLACE FUNCTION budget.refuse_file_span_leaving_its_level()
+RETURNS TRIGGER AS $$
+DECLARE
+    stranded budget.account_anchor_history%ROWTYPE;
+BEGIN
+    SELECT * INTO stranded FROM budget.account_anchor_history
+    WHERE statement_import_id = NEW.id
+      AND NOT budget.level_lies_within_file(
+          observed_on, NEW.period_start, NEW.period_end,
+          NEW.stated_balance_on
+      )
+    LIMIT 1;
+    IF FOUND THEN
+        RAISE EXCEPTION
+            'statement % cannot cover %..% as of %: its level % is placed on '
+            '%, which that span would leave outside the file (rule '
+            'budget.level_lies_within_file)',
+            NEW.id, NEW.period_start, NEW.period_end, NEW.stated_balance_on,
+            stranded.id, stranded.observed_on;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"""
+
+_LEVEL_TRIGGERS_AT_THIS_REVISION = (
+    (
+        "ck_level_within_file", "budget.account_anchor_history",
+        "BEFORE INSERT", "budget.refuse_level_outside_its_file",
+    ),
+    (
+        "ck_file_span_holds_level", "budget.statement_imports",
+        "BEFORE UPDATE OF period_start, period_end, stated_balance_on",
+        "budget.refuse_file_span_leaving_its_level",
+    ),
+)
+
+
+def _apply_level_infrastructure_at_this_revision() -> None:
+    """Install the within-file bound exactly as this revision shipped it."""
+    op.execute(_LEVEL_RULE_FUNCTION_SQL)
+    op.execute(_LEVEL_TRIGGER_FUNCTION_SQL)
+    op.execute(_IMPORT_TRIGGER_FUNCTION_SQL)
+    for name, table, event, function in _LEVEL_TRIGGERS_AT_THIS_REVISION:
+        op.execute(f"DROP TRIGGER IF EXISTS {name} ON {table}")
+        op.execute(
+            f"CREATE TRIGGER {name} {event} ON {table} "
+            f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+        )
 
 
 def _uncorroborated_id() -> int:
@@ -363,7 +465,7 @@ def upgrade():
     apply_append_only_infrastructure(
         op.execute, tables=_APPEND_ONLY_TABLES_AT_THIS_REVISION,
     )
-    apply_level_infrastructure(op.execute)
+    _apply_level_infrastructure_at_this_revision()
 
 
 def downgrade():
