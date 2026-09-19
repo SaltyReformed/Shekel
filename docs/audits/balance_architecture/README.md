@@ -375,21 +375,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [x] **X-bi-7c** `4f15f222` -- the suite's one-off builder on 7b's producer, the DECOMPOSED parent
-      split 2026-09-16 into the builder and four leaves by file group (the AST census in
-      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
-      the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5. The five leaves'
-      records: `archive/shipped_steps_archived_2026-09-18.md`.
-    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM, split 2026-09-18 into the
-      suite's bare CHECK builders and the migration; ticked with 7d-2.
-      * [x] **X-bi-7d-1** `08230752` -- six bare CHECK builders and seven Core / raw-SQL writers
-        (outside 7c's constructor census) take a rule-less definition each, dated on the paycheck's
-        start; tests only; the two link-less controls in `test_template_row_needs_due_date.py` stay
-        bare for 7d-2.
-      * [x] **X-bi-7d-2** `829c2c26` (fix `9cf27a3a`) -- the migration: 34 definitions, 26 rows dated (**R-BAL25**),
-        both cells dropped, the CHECK `= 1`, both keys RESTRICT (**R-BAL67**, **R-BAL73**); dump, grid and
-        companion pages byte-identical; 7 Paid rows read 6-11 days late (**R-BAL22**); grid statements
-        23 before and after. **MOVED MONEY**; disclosed **CC-352**. Closed **BAL-484**, **BAL-511**.
+    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM: 7d-1 `08230752` (the
+      suite's bare CHECK builders) and 7d-2 `829c2c26` (the migration, **MOVED MONEY**: 34 definitions,
+      26 rows dated, **R-BAL25**; 7 Paid rows 6-11 days late, **R-BAL22**); ticked with 7d-2. Records,
+      7c's too: `archive/shipped_steps_archived_2026-09-18b.md`.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [x] **X-bi-3** `d1e3f7a6` -- the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**), ticked
@@ -1038,6 +1027,12 @@ section 4, under their unchanged ids.*
   context per request, as production does; the outer context stays for `db.session`. A test-only hook
   clearing the login cache was rejected (developer 2026-09-18): it leaves every other `g`-cached value
   shared. First upkeep row below the horizon by the developer's word.
+* [ ] **X-cs** `refactor(schemas): the two shared bounds have one spelling` -- closes **BAL-522**: CC-2
+  declared `_RATE_FRACTION_RANGE` and `_DAY_OF_MONTH_RANGE` in `schemas/validation/_helpers.py` and
+  re-pointed only its own fields; 19 inline `[0, 1]` and 3 inline `1..31` spellings remain across seven
+  modules, and `_pay_rhythm.py:96` already held a `_DAY_OF_MONTH_RANGE` reading the model's constants,
+  so the day bound has two same-named constants until this folds `_helpers.py`'s onto it. A schema-only
+  sweep, its census re-run first; `$0.00`.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
