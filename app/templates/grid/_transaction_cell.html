@@ -14,6 +14,10 @@
                  `t.due_date != t.pay_period.start_date`, until pay-calendar
                  plan step C4-a-1 -- a database query issued from a template,
                  once per distinct paycheck on the page.
+     account  -- the BALANCE LINE's Account, or none (plan step
+                 credit_card:CC-4-2): a row on another account carries an
+                 account chip.  REQUIRED as a key, `none` allowed as a value;
+                 read with `is not none` so a forgotten publish raises.
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
      wrap_oob -- if true (requires wrap_div), the wrapper div also
@@ -202,6 +206,23 @@
           title="Mark paid">&#10003;</button>
   {% endif %}
 </div>
+{#- Account chip (plan step credit_card:CC-4-2, ruling R-CC16): a row whose
+    money is expected to move on ANOTHER account than the balance line's --
+    the phone bill that lives on the card, seen from checking's grid -- says
+    so under its amount.  `account` is the balance line's Account and is read
+    with `is not none` rather than by truth: a surface that forgets to publish
+    it RAISES on `.id` (the grid's row macro and `_render_helpers` both
+    publish it), while a legitimate `none` (no balance line) draws no chip.
+    The label is the row's own account (`Transaction.account` is a joined
+    load, so this reads no query); the chip is the shared non-money marker's
+    NEUTRAL variant (`.flag-chip--neutral`, components.css: an informational
+    marker with no state to signal), told apart by its text, never by
+    colour -- neutral rather than accent because it recurs on every card row
+    and the number beside it is the hero.
+    Whitespace-controlled so a row on the balance line emits NO bytes here. -#}
+{%- if account is not none and t.account_id != account.id %}
+<div class="mt-1"><span class="flag-chip flag-chip--neutral mw-100 text-truncate" title="On {{ t.account.name }}">{{ t.account.name }}</span></div>
+{%- endif %}
 
 {# Due date indicator.  The DECISION is the route's -- whether this row's due
    date says anything its paycheck's own payday does not -- so this draws the

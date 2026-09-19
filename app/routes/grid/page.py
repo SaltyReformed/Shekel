@@ -208,6 +208,17 @@ class _GridContext(NamedTuple):
         """
         return self.cash_flow.balance if self.cash_flow is not None else None
 
+    @property
+    def members(self) -> tuple[Account, ...]:
+        """The set's members, in picker order; empty for the no-account owner.
+
+        What the Add Transaction modal's account picker offers (plan step
+        ``credit_card:CC-4-2``): every account a paycheck's plan item may live
+        on, the balance line's among them.  ONE member is the pre-card grid,
+        and the template renders the hidden input it always did for that case.
+        """
+        return self.cash_flow.members if self.cash_flow is not None else ()
+
 
 def _resolve_grid_context(user_id, request_args, settings):
     """Resolve scenario, account, and period range from the request.
@@ -843,8 +854,14 @@ def index():
         # the seam now answers before the render, and one more reader of the
         # nullable this step exists to stop handing out.
         scenario_id=ctx.balance_ctx.scenario_id,
-        # The BALANCE line's account; the rows above are the whole set's.
+        # The BALANCE line's account; the rows above are the whole set's.  The
+        # row macros read it too: a cell or card whose row is on another
+        # member carries an account chip (plan step CC-4-2).
         account=ctx.account,
+        # The set's members, for the Add Transaction modal's account picker
+        # (plan step CC-4-2): a picker over more than one, the hidden input
+        # as before over one.
+        accounts=ctx.members,
         # The door into what the BANK said, beside the anchor it agrees
         # with: both answer "what did this account really do", and the
         # import is how the anchor stops being typed from memory.
