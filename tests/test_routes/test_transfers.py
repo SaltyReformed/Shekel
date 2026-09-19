@@ -570,6 +570,41 @@ class TestTemplateCreate:
                 .first()
             ) is None
 
+    def test_create_recurring_template_from_card_flashes_not_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A recurring template with a CREDIT CARD source flashes, not a 500.
+
+        The loan pin's twin for plan step credit_card:CC-10 (design 3.8): a
+        transfer OUT of a card is a cash advance or balance transfer, refused
+        by ``create_transfer`` through the same composed source refusal as
+        the loan's, so it reaches this door by the same fan-out and must land
+        as the same flash -- rolled back, no template persisted.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Visa",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            response = auth_client.post("/transfers", data={
+                "name": "Cash Advance",
+                "default_amount": "100.00",
+                "from_account_id": str(card.id),        # card as SOURCE
+                "to_account_id": str(seed_user["account"].id),
+                **cadence_payload(),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Could not create transfer" in response.data
+            assert b"out of a credit card" in response.data
+            assert (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id, name="Cash Advance")
+                .first()
+            ) is None
+
     def test_create_template_double_submit(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transfers twice with the same name returns a flash warning
         on the second attempt instead of a 500 error, and creates exactly

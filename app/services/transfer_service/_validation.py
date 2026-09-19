@@ -2,9 +2,11 @@
 Shekel Budget App -- Transfer Service validate-and-load guards
 
 The input-validation and entity-loading guards for
-:mod:`app.services.transfer_service`: validate a submitted amount, load the
-owned/active :class:`~app.models.transfer.Transfer`, and load-and-verify the
-two shadow :class:`~app.models.transaction.Transaction` rows of a transfer.
+:mod:`app.services.transfer_service`: validate a submitted amount, refuse a
+transfer OUT of a source no engine models one from (the composed loan-or-card
+set both doors call), load the owned/active
+:class:`~app.models.transfer.Transfer`, and load-and-verify the two shadow
+:class:`~app.models.transaction.Transaction` rows of a transfer.
 Each is a precondition check the mutation entry points run before they touch
 any row, raising the project's domain exceptions
 (:class:`~app.exceptions.ValidationError` for a bad amount or a shadow-pair
@@ -44,7 +46,11 @@ from app.models.transfer import Transfer
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services.account_projection import is_revolving
 from app.services.state_machine import allowed_transitions
+from app.services.transfer_service._loan_posting import (
+    _reject_transfer_out_of_loan,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
@@ -144,6 +150,95 @@ def _validate_positive_amount(amount):
             "Transfer amount must be positive."
         )
     return amount
+
+
+def _reject_transfer_out_of_revolving(from_account: Account) -> None:
+    """Reject a transfer whose SOURCE is a revolving credit line (a credit card).
+
+    A transfer OUT of a card is a cash advance (into a cash account) or a
+    balance transfer (into another card), and the card refuses both rather
+    than modelling them (design ``docs/design/credit_card_from_scratch.md``
+    3.8, plan step ``credit_card:CC-10``).  The card's whole model rests on
+    money leaving it ONLY as a purchase -- a movement on the card (3.2) -- and
+    a transfer touching it only as its PAYMENT, into it (3.5): the statement's
+    grace test is graded on the credits INTO the card
+    (:func:`app.services.card_statement.grace_kept`), and its finance charge
+    prices one APR per date (``budget.rate_history`` through
+    :func:`app.services.card_apr.apr_in_effect`) over the balance path (3.6).
+    A cash advance carries its own APR, a fee and no grace, which one APR row
+    per date and one grace rule cannot express, so admitting it would price
+    every later statement of that card wrong -- the same reason a disbursement
+    out of a loan is refused (:func:`._loan_posting._reject_transfer_out_of_loan`).
+
+    **Asked at BOTH doors that can put a transfer on a source account**, which
+    is the loan refusal's discipline: :func:`app.services.transfer_service.create_transfer`,
+    and :func:`._endpoints._resolve_endpoints`, where an update MOVES a
+    source.  Refusing at only the first would leave the second a way straight
+    past it -- and neither door names this function.  Both call
+    :func:`_reject_unmodeled_source`, the ONE set of source refusals, so a
+    door cannot hold the loan's refusal and miss the card's.
+
+    **It lives here, not beside the loan refusal in** :mod:`._loan_posting`,
+    because that module's responsibility is the loan's genesis-ledger glue and
+    a card has none -- it classifies PLAIN and rides the cash fold -- while
+    this module's is exactly this: a precondition a mutation asks before it
+    touches a row.  It reads :func:`app.services.account_projection.is_revolving`,
+    the ONE predicate every card feature gates on (plan step CC-1, ruling
+    ``credit_card:R-CC14``).
+
+    What stays ALLOWED, and is pinned beside the refusals: a transfer INTO the
+    card (its payment), a move of a transfer's DESTINATION onto a card, and
+    direct income on the card at the transaction-create doors (a refund, a
+    redemption), which refuse an amortizing loan only
+    (:func:`app.routes.transactions.create._reject_transaction_on_loan`).
+
+    Args:
+        from_account: The transfer's source account (already ownership-checked,
+            with its ``account_type`` loaded).
+
+    Raises:
+        ValidationError: When *from_account* is a credit card.
+    """
+    if is_revolving(from_account):
+        raise ValidationError(
+            f"Cannot transfer money out of a credit card: source account "
+            f"'{from_account.name}' is a credit card.  A card is paid by a "
+            f"transfer INTO it; money leaves it only as a purchase on the card."
+        )
+
+
+def _reject_unmodeled_source(from_account: Account) -> None:
+    """Refuse a SOURCE no engine models a transfer out of: a loan or a card.
+
+    **The ONE set of source refusals, and the only name either door calls.**
+    A transfer's source is refused at two doors --
+    :func:`app.services.transfer_service.create_transfer` and
+    :func:`._endpoints._resolve_endpoints`, where an update moves a source --
+    and the loan refusal's own docstring records why refusing at one door
+    leaves the other a way straight past it.  Two refusals spelled at two
+    doors is the same defect one level up: a third refusal added at one door
+    and forgotten at the other, with nothing but a test per door to notice.
+    Composing the set here gives it ONE home: a refusal joins this body and
+    reaches both doors (plan step ``credit_card:CC-10``, CLAUDE.md rule 14).
+    It does not make a one-door refusal unrepresentable -- a call added
+    directly at either door still is one -- which is why neither door names
+    an arm of this set, and why the arms have no other caller.
+
+    The order is immaterial: ``ck_account_types_revolving_is_plain`` makes a
+    type that is both amortizing and revolving unrepresentable, so at most one
+    arm can fire for any real row.
+
+    Args:
+        from_account: The transfer's source account (already ownership-checked,
+            with its ``account_type`` loaded).
+
+    Raises:
+        ValidationError: When *from_account* is an amortizing loan
+            (:func:`._loan_posting._reject_transfer_out_of_loan`) or a credit
+            card (:func:`_reject_transfer_out_of_revolving`).
+    """
+    _reject_transfer_out_of_loan(from_account)
+    _reject_transfer_out_of_revolving(from_account)
 
 
 def _get_transfer_or_raise(transfer_id, user_id, allow_deleted=False):
