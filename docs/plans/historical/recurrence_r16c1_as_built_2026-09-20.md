@@ -180,3 +180,9 @@ separately folded principal. The row as it stood:
 | arc | id | also | finding (one line) | worst measured | status | owner |
 |---|---|---|---|---|---|---|
 | recurrence | D61 (`balance:N-243`'s census 2026-08-11, dissolved 2026-09-03) | -- | **`loan_params.current_principal` is a stored copy of a figure the loan's own walk derives.** The balance the replay reaches from the origination through every recorded payment is the loan's principal; the column stores it beside that walk with no reconciler | `$0.00` on both live loans today; the exposure is a principal that stops agreeing with the ledger the day a payment is corrected without the column being re-stamped | **OPEN, born with an owner** (re-filed 2026-09-03 from N-243). It goes where the past and the future become one event STREAM with one seed, since the seed is what the column was pretending to be | R16-c |
+
+**balance:N-180** CLOSED at R16-c-1 (`c88ed6ba`): its question -- whether the tax reader's two sets can still differ -- has no referent once `_due_slot` and the second set are gone; `loan_interest_in_year` is one sum over the timeline (settled by display-tz paid year, projected by `visible_on.year`). The row as it stood (owner X-e, whose index row and README entry now say so):
+
+| arc | id | also | finding (one line) | worst measured | status | owner |
+|---|---|---|---|---|---|---|
+| balance | N-180 | -- | A de-duplication rationale in `balance_at/_loan_interest.py` was falsified by R-DH, and whether the two sets can still differ for any other reason is UNVERIFIED | `$0.00` -- the code was never wrong, only the reason beside it | OPEN; the paragraph is replaced in place, the question survives | X-e |

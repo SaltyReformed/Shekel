@@ -16,9 +16,8 @@ stated balance is an assertion) and `R16-c-1` 2026-09-20 (`c88ed6ba`, **R-R90**:
 future are ONE event stream, byte-identical). `R16-c-2` (the contract calendar, **R-R89**; MOVES
 POSTED MONEY) is next.
 
-**What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
-section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
-`verification.md` are the shared registries in `docs/plans/`.
+**What to do next is `steps.md`'s order table; do not re-derive it here.** Section 4 is the steps;
+the findings, the index, the rules and `verification.md` are the shared registries in `docs/plans/`.
 
 ## The rulings
 
@@ -656,11 +655,11 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       (c-2, the money move). Ticks with its last leaf.
 
 - [x] **R16-c-1 -- the MERGE.** `c88ed6ba` -- as built: ONE builder, ONE replay seeded at the
-      origination, ONE record type (`PaymentOutcome`); a projected event never placed before a
-      recorded fact; a pass replays the facts visible by its `as_of` (**R-R91**); the RESET arm
-      clears standing charges (**R-R72** (2)); `projection_seed`, `fold_forward`, `_split_plan`,
-      `exclude_slots`, `LoanPaymentSplit` deleted; byte-identical (3,952 + 919 harness lines, 0
-      diff). Closed **D61**. Record: `historical/recurrence_r16c1_as_built_2026-09-20.md`.
+      origination, ONE record type (`PaymentOutcome`); no projected event before a recorded fact; a
+      pass replays the facts visible by its `as_of` (**R-R91**); the RESET arm clears standing
+      charges (**R-R72** (2)); `projection_seed`, `fold_forward`, `LoanPaymentSplit` deleted;
+      byte-identical on the 09-19 clone (3,952 + 919 harness lines, 0 diff). Closed **D61**,
+      **balance:N-180**. Record: `historical/recurrence_r16c1_as_built_2026-09-20.md`.
 
 - [ ] **R16-c-2 -- the CALENDAR: every contractual installment charged, from origination, in the one
       stream.** **MOVES POSTED MONEY, OWN PR, OWN RELEASE**; **R-R89** (the accrual period is the
@@ -674,10 +673,12 @@ What this step owes is the same rule for the PAST. **MOVES POSTED MONEY, OWN PR.
 `$1,629.94` on which side of a boundary an extra payment falls); **D54** closed at `R16-b-2`, whose
 contract calendar never charges a slot the seed charged.
 **It applies R-R72 parts (1) and (2) to the settled walk**: the walk charges only the months it saw
-paid (`loan_ledger._charges.charges_for_due_dates`, D53's past half), so a read AT `as_of` holds the
-seed flat where the read after it carries the skipped months' interest; the one stream charges every
-contractual installment after the loan's latest assertion, and an assertion clears the charges
-standing before it (the ruling `_replay.py` says it owes).
+paid (`loan_ledger._charges.charges_for_due_dates`, D53's past half), so a read AT `as_of` omits a
+skipped month's interest until the catch-up payment where the read after it carries it; the one
+stream charges every contractual installment after the loan's latest assertion, and an assertion
+clears the charges standing before it -- the reset arm `_replay.py` applies since R16-c-1
+(`c88ed6ba`), pinned on a hand-built stream and unreachable until this step charges every
+installment.
 
 **What it owes, as decomposed at R16-c-1's handoff (rulings R-R72 (1)+(2), R-R89, D53's past half,
 D55):**
@@ -706,11 +707,19 @@ D55):**
    R16-f (walk 3's).
 4. **Posted money**: the settled walk's splits change wherever a month between two facts (or between
    origination and the first fact, before the latest assertion) went unpaid: the next payment clears
-   the arrears first (the Van case in **R-R89**'s row). The release's migration RE-SYNCS every
-   loan's postings (`sync_loan_postings_all_scenarios` per loan, inside the Alembic migration -- the
-   backfill rule) and PRINTS per-loan the count of payments whose split moved and the net principal
-   delta; the harness that reads that count is written FIRST (the coordinator's standing constraint
-   for a money-moving leaf). Rehearse up / down / up on a FRESH production clone.
+   the arrears first. The Van (`$14,745.51` at 5.668%, `$531.94`/mo; August 22 skipped, September 22
+   paid, read September 30): today and after R16-c-1 the September fact pays `$69.65` interest /
+   `$462.29` principal, balance `$14,283.22` at the read, the overdue August row pays August's
+   `$67.46`, `$13,352.07` after October 22; after this step the September fact clears August AND
+   September, `$139.30` / `$392.64`, `$14,352.87` at the read (`+$69.65`, the skipped month), the
+   August row pays pure principal, `$13,354.27` after October 22 (`+$2.20`, September's interest on
+   the un-reduced balance), and the posted September interest leg moves `$69.65` -> `$139.30`
+   (computed 2026-09-19 with `accrue_monthly_interest` / `apply_payment_cash`). The release's
+   migration RE-SYNCS every loan's postings (`sync_loan_postings_all_scenarios` per loan, inside the
+   Alembic migration -- the backfill rule) and PRINTS per-loan the count of payments whose split
+   moved and the net principal delta; the harness that reads that count is written FIRST, so the
+   migration's production effect is a prediction graded before it runs rather than after. Rehearse
+   up / down / up on a FRESH production clone.
 5. **Harness**: extend `verify_loan_plan_sum.py` (or a sibling) to print the SETTLED splits per
    payment and the posted per-date nets, so the diff shows the ruled move and nothing else; the
    expected production move is bounded by "both live loans carry a 2026 assertion" (any skipped
