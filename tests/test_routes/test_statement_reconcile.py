@@ -1631,7 +1631,7 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
         ) in body
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 0
-        assert txn.settled_amount == Decimal("178.32"), (
+        assert settled_figure(txn) == Decimal("178.32"), (
             "the refused press re-priced the row"
         )
 

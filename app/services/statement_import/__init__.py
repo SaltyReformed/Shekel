@@ -51,6 +51,7 @@ difference at the cash cutover (``balance:X-f3c``).
 """
 
 from ._adapters import parse_statement, supported_sources
+from ._identity import record_identity
 from ._anchor import (
     ImportedBalance,
     KnownOpening,
@@ -134,6 +135,7 @@ __all__ = [
     "recent_lines",
     "record_statement",
     "recorded_opening_before",
+    "record_identity",
     "recorded_span",
     "release_anchors_from",
     "resolve_anchor",

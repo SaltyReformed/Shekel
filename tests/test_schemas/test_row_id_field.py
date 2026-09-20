@@ -412,7 +412,7 @@ _NON_INTEGER_FIELD_SPELLINGS = frozenset({
 #: and asserts it IS a ``RowId`` subclass -- otherwise widening this set would
 #: be a way to smuggle a lax field past the gate below.
 _STRICT_ROW_ID_SPELLINGS = frozenset({
-    "RowId", "RecurrenceUnitField", "PeriodPlacementField",
+    "RowId", "RecurrenceUnitField", "PeriodPlacementField", "OptionalRowId",
 })
 
 #: Every ``fields.Integer`` in the validation package that is NOT a row id,
