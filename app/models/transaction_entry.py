@@ -165,8 +165,8 @@ class TransactionEntry(
     returning for a transfer shadow's entries, because a shadow's movement
     posts nowhere until the ledger takes its ruled shape (ruling
     **R-BAL45**, plan step **X-bi-6**).
-    ``balance:X-bi-5`` dissolves the bill / envelope distinction and the flag
-    with it.
+    The bill / envelope distinction is the plan item's KIND, kept on its
+    definition (ruling **R-BAL85**); no reader of this table derives it here.
 
     **The stored ``is_cleared`` boolean this replaced is DELETED** (ruling
     R-DH (d), migration ``d7c1f4a9e603``).  It was written as a side effect of
