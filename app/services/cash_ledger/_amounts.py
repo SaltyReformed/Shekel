@@ -130,6 +130,7 @@ from decimal import Decimal
 # Pylint: ``unused-import`` -- the re-export IS the use; ``__init__`` names it.
 from app.services.row_valuation import (  # pylint: disable=unused-import
     fixed_contribution,
+    leg_fixed_contribution,
     settled_contribution,
 )
 from app.utils.balance_predicates import is_projected
@@ -371,6 +372,62 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
     if fixed is not None:
         return fixed
     return resolve_transaction_amount(txn, basis)
+
+
+def leg_contributions_by_key(
+    legs, basis: AmountBasis,
+) -> dict[tuple[int, int], Decimal]:
+    """Return ``{leg.cell_key: what the leg contributes}`` for transfer legs.
+
+    :func:`contributions_by_id`'s twin for a display reader's transfer legs
+    (leaf ``X-bi-6-1b``), keyed by
+    :attr:`~app.services.transfer_legs.TransferLeg.cell_key` so the one
+    ``contributions`` map the dashboard's bills and the calendar's day cells
+    index holds rows and legs side by side.  One :func:`leg_contribution_of`
+    per leg, exactly as its sibling is one :func:`contribution_of` per row;
+    every key in *legs* appears, so a caller indexes it with ``[]``.
+
+    Args:
+        legs: The :class:`~app.services.transfer_legs.TransferLeg` values a
+            surface is about to render, records loaded, their parents loaded
+            with :func:`~app.utils.amount_relationships.transfer_pricing_load_options`.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+
+    Returns:
+        ``{(transfer_id, account_id): Decimal}`` covering every leg.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a parent whose rule cannot
+            answer.  A refusal is never a fallback.
+    """
+    return {leg.cell_key: leg_contribution_of(leg, basis) for leg in legs}
+
+
+def leg_contribution_of(leg: TransferLeg, basis: AmountBasis) -> Decimal:
+    """Value one leg against *basis*, resolving its parent only if it must.
+
+    :func:`contribution_of`'s twin over a transfer leg (leaf ``X-bi-6-1b``),
+    the same two steps in the same order: what the leg is worth WITHOUT a
+    producer -- ``0`` for a parent that does not contribute, its covering
+    movement's figure once its money has moved
+    (:func:`~app.services.row_valuation.leg_fixed_contribution`) -- else the
+    parent's resolved amount through :func:`planned_leg_contribution`, the
+    ONE plan-half producer the cash fold prices a leg with.  A display leg
+    that carries a record therefore reads it, where the fold's legs never
+    carry one; on a still-planned leg the two answers are one call.
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`.
+        basis: The read pass's :class:`~._amount_source.AmountBasis`.
+
+    Returns:
+        What the leg contributes to the account it is on, as a magnitude;
+        ``leg.is_income`` says which way it moves the account.
+    """
+    fixed = leg_fixed_contribution(leg)
+    if fixed is not None:
+        return fixed
+    return planned_leg_contribution(leg, basis)
 
 
 def planned_leg_contribution(

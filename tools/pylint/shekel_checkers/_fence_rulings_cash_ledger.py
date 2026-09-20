@@ -112,6 +112,16 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # the per-leg twin of ``contribution_of`` for the plan half ruling
     # R-BAL13 derives from ``budget.transfers``.
     "planned_leg_contribution",
+    # ``leg_contribution_of`` and ``leg_contributions_by_key`` (leaf
+    # X-bi-6-1b) are the one-leg and batch twins of ``contribution_of`` and
+    # ``contributions_by_id`` for a DISPLAY reader's legs, which carry a
+    # record where the fold's never do: each composes the leg's fixed worth
+    # (its parent's status, its own covering movement) with
+    # ``planned_leg_contribution``, and the batch is a dict keyed by the
+    # leg's ``(transfer id, account id)`` -- nothing folded, dated, summed
+    # or anchored, and nothing per account.
+    "leg_contribution_of",
+    "leg_contributions_by_key",
     # ``_amount_source`` / ``_amount_rule`` -- WHERE one row's amount comes
     # from (plan step X-au-b, ruling R-FI).  FIVE names, one ruling, because
     # they are one question at two tiers: ``amount_basis`` resolves the live

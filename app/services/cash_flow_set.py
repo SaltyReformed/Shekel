@@ -47,16 +47,24 @@ balance seam's composed subtotal (:func:`far_legs_of`), and since leaf
 transfer's legs from the parent rather than loading its shadow rows, and asks
 this module which of its two sides the set shows), so the cells a reader draws
 and the subtotal the seam sums cannot disagree about which rows are the
-paycheck's.  The grid's rows themselves are the set's OWN
-(:func:`own_rows_clause`) -- every member's plan rows less every shadow -- and
-:func:`paycheck_rows_clause` serves the readers that still draw a transfer
-from its shadow rows until ``X-bi-6``'s next display leaf moves them.
+paycheck's.  Every display reader's rows are the set's OWN
+(:func:`own_rows_clause`) -- every member's plan rows less every shadow --
+beside the LEGS of every transfer the set touches
+(:func:`touched_transfers_clause`, then :func:`set_transfer_legs`), the two
+halves one :class:`PlanItems` carries: the grid since leaf ``X-bi-6-1``, the
+dashboard's bills, the calendar and the Spending report since leaf
+``X-bi-6-1b``.  :func:`paycheck_rows_clause` has no reader left that draws a
+transfer from its shadow rows; :func:`far_legs_of` still reads the SETTLED
+far-leg shadows for the balance seam's subtotal (Transfer Invariant 5's
+record half) until ``X-bi-6``'s remaining leaves move that join.
 
 Services boundary (``CLAUDE.md``): no Flask symbol.  The clauses are built,
 never executed, here; :func:`far_legs_of` holds the seam's two queries.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from sqlalchemy import and_, not_, or_
 
@@ -64,6 +72,12 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
+from app.services.transfer_legs import (
+    PlanItem,
+    TransferLeg,
+    grid_transfer_legs,
+)
+from app.utils.amount_relationships import transfer_pricing_load_options
 from app.utils.balance_predicates import settled_status_ids
 
 
@@ -285,6 +299,133 @@ def leg_accounts_shown(cash_flow: CashFlowSet, transfer: Transfer) -> tuple[int,
     if on_to:
         return (transfer.to_account_id,)
     return ()
+
+
+def touched_transfers_clause(cash_flow: CashFlowSet):
+    """Return the clause selecting every transfer the set TOUCHES.
+
+    ``Transfer.from_account_id IN members OR Transfer.to_account_id IN
+    members``: the transfer twin of :func:`own_rows_clause` (leaf
+    ``X-bi-6-1b``), and the ONE spelling of which parents a reader of the
+    set's plan items loads before :func:`leg_accounts_shown` decides which
+    side -- if any -- it draws.  Every display reader appends THIS to its
+    transfer query beside :func:`own_rows_clause` on its row query, exactly
+    as each appends its own window and status filters to both; the grid's
+    loader spelled it inline until this leaf gave it three more readers.
+
+    Args:
+        cash_flow: The set.
+
+    Returns:
+        A SQLAlchemy boolean clause over :class:`Transfer`.
+    """
+    member_ids = cash_flow.member_ids
+    return or_(
+        Transfer.from_account_id.in_(member_ids),
+        Transfer.to_account_id.in_(member_ids),
+    )
+
+
+def set_transfer_legs(
+    cash_flow: CashFlowSet, transfers: Iterable[Transfer],
+) -> list[TransferLeg]:
+    """Return the legs the set draws for *transfers*, records attached.
+
+    :func:`~app.services.transfer_legs.grid_transfer_legs` under the set's
+    own rule: one leg per account :func:`leg_accounts_shown` names for each
+    transfer.  The leaf's loader takes the rule as a function so that it
+    states no set of its own; this is where the set supplies it, ONCE, for
+    every reader (leaf ``X-bi-6-1b``) -- the period-windowed ones through
+    :func:`set_transfer_legs_in_periods`, the rest with their own query.
+
+    Args:
+        cash_flow: The set.
+        transfers: The parents a reader loaded for its window, with the
+            relationships its render will read.
+
+    Returns:
+        The legs, in transfer order then side order; ``[]`` for none.
+    """
+    return grid_transfer_legs(
+        transfers, lambda transfer: leg_accounts_shown(cash_flow, transfer),
+    )
+
+
+def set_transfer_legs_in_periods(
+    cash_flow: CashFlowSet, scenario_id: int, period_ids, *filters,
+) -> list[TransferLeg]:
+    """Load the legs of every live transfer the set touches in *period_ids*.
+
+    The ONE query behind every reader windowed by PERIOD MEMBERSHIP -- the
+    grid window, the dashboard's bills, the calendar and the Spending
+    report's pay-period arm (leaf ``X-bi-6-1b``): the parents through
+    :func:`touched_transfers_clause`, in *scenario_id*, filed in
+    *period_ids*, live, narrowed by whatever *filters* the reader's own
+    question adds (``is_projected_clause(Transfer)`` for a bill,
+    ``balance_contributing_clause(Transfer)`` for a calendar cell, the
+    settled statuses for spent money; nothing for the grid), then
+    :func:`set_transfer_legs` over them.  Each parent carries
+    :func:`~app.utils.amount_relationships.transfer_pricing_load_options`
+    (the chain a leg's price walks, and the period a bill reads); the
+    endpoints, status and category are ``lazy="joined"`` on the model.  A
+    reader windowed some other way -- the Spending report's calendar span,
+    selected by attribution day -- builds its own query and calls
+    :func:`set_transfer_legs` directly.
+
+    Args:
+        cash_flow: The set.
+        scenario_id: The budget scenario the transfers live in.
+        period_ids: The pay period ids the window holds; empty loads none.
+        *filters: Further SQLAlchemy clauses over :class:`Transfer`.
+
+    Returns:
+        The legs, in transfer id order then side order; ``[]`` for none.
+    """
+    if not period_ids:
+        return []
+    transfers = (
+        db.session.query(Transfer)
+        .options(*transfer_pricing_load_options())
+        .filter(
+            touched_transfers_clause(cash_flow),
+            Transfer.scenario_id == scenario_id,
+            Transfer.pay_period_id.in_(period_ids),
+            Transfer.is_deleted.is_(False),
+            *filters,
+        )
+        .order_by(Transfer.id)
+        .all()
+    )
+    return set_transfer_legs(cash_flow, transfers)
+
+
+class PlanItems(NamedTuple):
+    """What a reader of the set's plan items draws: its own rows and the legs.
+
+    The one shape the grid window (``routes/grid/_items.load_grid_items``),
+    the dashboard's unpaid bills, the calendar's period rows and the Spending
+    report's settled expenses each answer (leaves ``X-bi-6-1`` and
+    ``X-bi-6-1b``): the rows :func:`own_rows_clause` selected and the legs
+    :func:`set_transfer_legs` drew, kept apart because the per-item maps are
+    built by a row producer and its leg twin, and together because every
+    row-key, match and fold over them takes one list.
+
+    Attributes:
+        rows: The plan rows, :class:`~app.models.transaction.Transaction`.
+        legs: One :class:`~app.services.transfer_legs.TransferLeg` per
+            transfer the set shows, from the side it shows.
+        items: ``rows + legs``, the list every reader that treats the two
+            alike iterates.
+    """
+
+    rows: list[Transaction]
+    legs: list[TransferLeg]
+    items: list[PlanItem]
+
+    @classmethod
+    def of(cls, rows: list[Transaction], legs: list[TransferLeg]) -> "PlanItems":
+        """Build the value with ``items`` derived, so it cannot disagree."""
+        return cls(rows=rows, legs=legs, items=[*rows, *legs])
 
 
 @dataclass(frozen=True)

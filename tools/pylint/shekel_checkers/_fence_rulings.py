@@ -294,8 +294,17 @@ _FENCED_MODULE_RULINGS = {
         # the same loop over the grid's transfer LEGS: each answers from the
         # leg's own covering movement and the parent's status, keyed by the
         # leg's ``(transfer id, account id)``; it dates nothing and sums
-        # nothing.
+        # nothing.  Leaf X-bi-6-1b split its per-leg body out as
+        # ``leg_settled_figure`` (``settled_figure``'s twin: the parent's
+        # status decides, the record states the figure) and added
+        # ``leg_fixed_contribution`` / ``leg_settled_contribution``, the twins
+        # of ``fixed_contribution`` / ``settled_contribution`` arm for arm --
+        # each answers about ONE LEG from its parent's columns and its own
+        # movement, and none folds, dates, sums or reads an anchor.
+        "leg_fixed_contribution",
         "leg_settled_amounts_by_key",
+        "leg_settled_contribution",
+        "leg_settled_figure",
         "purchases_total",
         "settled_amounts_by_id",
         "settled_figure",

@@ -44,17 +44,23 @@ from datetime import date
 
 
 from app.models.category import Category
-from app.models.transaction import Transaction
 from app.services.pay_calendar import DerivedPeriod
 from app.services.transfer_legs import (
     TRANSFER_FROM_PREFIX,
     TRANSFER_TO_PREFIX,
+    PlanItem,
     TransferLeg,
+    cell_key,
 )
 from app.utils.balance_predicates import is_cancelled
 
-#: A grid item: a plan row, or one side of a transfer read off its parent.
-GridItem = Transaction | TransferLeg
+#: A grid item is a :data:`~app.services.transfer_legs.PlanItem`: a plan
+#: row, or one side of a transfer read off its parent.  Named here for the
+#: signatures below; :func:`~app.services.transfer_legs.cell_key` -- the
+#: one place the two are told apart for identity -- moved down to that leaf
+#: at leaf ``X-bi-6-1b`` and is imported above for the Jinja global that
+#: still names it here.
+GridItem = PlanItem
 
 
 # Lightweight struct for a single row in the budget grid.  Rows of a
@@ -93,29 +99,6 @@ def _short_display_name(name: str) -> str:
     if lower.startswith("cc payback: "):
         return name[len("CC Payback: "):]
     return name
-
-
-def cell_key(item: GridItem):
-    """Return the key a grid publishes *item*'s per-cell facts under.
-
-    **The ONE place a row and a leg are told apart for identity** (leaf
-    ``X-bi-6-1``, ruling **R-BAL87**): a plan row is keyed by its ``id`` and
-    a transfer leg by :attr:`~app.services.transfer_legs.TransferLeg.cell_key`,
-    the ``(transfer id, account id)`` pair.  An ``int`` and a tuple cannot
-    collide, so the page's ``budgets`` / ``settled`` / ``retained`` /
-    ``due_captions`` maps hold both shapes in one dict and a template
-    subscripts them with the same expression -- the Jinja global of the
-    same name (``app.jinja_filters``) is this function.
-
-    Args:
-        item: A row or a leg.
-
-    Returns:
-        ``item.id`` for a row, ``item.cell_key`` for a leg.
-    """
-    if isinstance(item, TransferLeg):
-        return item.cell_key
-    return item.id
 
 
 def leg_dom_id(transfer_id: int, account_id: int) -> str:

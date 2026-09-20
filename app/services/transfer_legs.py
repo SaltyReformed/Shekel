@@ -121,6 +121,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.utils.balance_predicates import is_projected_clause
+from app.utils.dates import days_paid_before_due
 
 #: The two label prefixes :func:`leg_label` composes with.  Published so the
 #: one reader that PARSES a label back out (``grid_view_service
@@ -299,6 +300,80 @@ class TransferLeg:
     def due_date(self) -> date | None:
         """The parent's due date, or ``None`` for an undated transfer."""
         return self.transfer.due_date
+
+    @property
+    def tracks_purchases(self) -> bool:
+        """``False``: a transfer's leg is not an envelope.
+
+        The question the dashboard's bill surfaces ask of every item they
+        price (``dashboard_service._bills``, ``_pulse._row_still_due``), stated
+        here from what a leg IS rather than answered by a branch at each of
+        those sites (leaf ``X-bi-6-1b``).  A shadow row answered the same
+        ``False`` through ``Transaction.tracks_purchases``' link-less arm
+        (ruling **R-BAL73**).  Every reader of a row's ``purchases`` asks
+        this first, so a leg needs no ``purchases`` of its own.
+        """
+        return False
+
+    @property
+    def settled_on(self) -> date | None:
+        """The civil day this leg's money moved, or ``None``.
+
+        Read off the leg's RECORD -- its covering movement's ``settled_on``
+        (ruling **R-BAL80**: a settled leg's money is its dated movement) --
+        and never off the parent or a shadow row: a settled leg carries a
+        dated movement (ruling **R-BAL79**), a reverted one a movement kept
+        un-dated, a planned one none, so this reads ``None`` exactly when the
+        money has not moved.  What ``Transaction.settled_on`` states as a
+        column for a row, for the readers that ask both shapes when a bill
+        was paid (``spending_analysis.payment_timeliness_from_txns``).
+        """
+        if self.record is None:
+            return None
+        return self.record.settled_on
+
+    @property
+    def days_paid_before_due(self) -> int | None:
+        """Days between the due date and the day the money moved, or ``None``.
+
+        :func:`app.utils.dates.days_paid_before_due` over this leg's two
+        days -- the ONE arithmetic ``Transaction.days_paid_before_due`` also
+        calls.
+        """
+        return days_paid_before_due(self.due_date, self.settled_on)
+
+
+#: A plan item as the display readers hold one: a plan row, or one side of a
+#: transfer read off its parent.  The grid's window, the dashboard's bills,
+#: the calendar's day cells and the Spending report's settled spend are each a
+#: list of these since leaves ``X-bi-6-1`` and ``X-bi-6-1b``.
+PlanItem = Transaction | TransferLeg
+
+
+def cell_key(item: PlanItem):
+    """Return the key a surface publishes *item*'s per-item facts under.
+
+    **The ONE place a row and a leg are told apart for identity** (leaf
+    ``X-bi-6-1``, ruling **R-BAL87**): a plan row is keyed by its ``id`` and
+    a transfer leg by :attr:`TransferLeg.cell_key`, the ``(transfer id,
+    account id)`` pair.  An ``int`` and a tuple cannot collide, so a page's
+    ``budgets`` / ``settled`` / ``retained`` / ``due_captions`` maps, the
+    dashboard's ``contributions`` and the calendar's hold both shapes in one
+    dict and every reader subscripts them with the same expression -- the
+    Jinja global of the same name (``app.jinja_filters``) is this function.
+    It lived in ``grid_view_service`` until leaf ``X-bi-6-1b`` gave it three
+    readers below the grid; the leaf both shapes are defined against is its
+    home.
+
+    Args:
+        item: A row or a leg.
+
+    Returns:
+        ``item.id`` for a row, ``item.cell_key`` for a leg.
+    """
+    if isinstance(item, TransferLeg):
+        return item.cell_key
+    return item.id
 
 
 def leg_of(

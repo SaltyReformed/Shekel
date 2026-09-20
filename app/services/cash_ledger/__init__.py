@@ -215,6 +215,8 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
+    leg_contribution_of,
+    leg_contributions_by_key,
     planned_leg_contribution,
     settled_contribution,
 )
@@ -303,6 +305,8 @@ __all__ = [
     "contributed_amount",
     "contribution_of",
     "contributions_by_id",
+    "leg_contribution_of",
+    "leg_contributions_by_key",
     "credit_entry_sum",
     "dated_deltas",
     "earliest_assertion_day",

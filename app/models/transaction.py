@@ -22,6 +22,7 @@ from app.models.mixins import (
     SoftDeleteOverridableMixin,
     TimestampMixin,
 )
+from app.utils.dates import days_paid_before_due
 
 
 class Transaction(
@@ -771,7 +772,10 @@ class Transaction(
         Positive means paid early, negative means paid late, zero means
         paid on the due date.  Returns None when either field is missing --
         which for :attr:`settled_on` means the row is not settled, so its
-        timeliness is not yet a question.
+        timeliness is not yet a question.  The arithmetic is
+        :func:`app.utils.dates.days_paid_before_due` since plan step
+        ``balance:X-bi-6-1b``, where a transfer leg answers the same question
+        off its covering movement's day.
 
         **Both operands are civil dates, and no timezone enters this.**  It
         subtracted ``to_display_date(paid_at)`` until plan step X-f1: an instant
@@ -797,9 +801,7 @@ class Transaction(
         trading a soft metric for a 500 on the grid.  The resolution is plan step
         X-f1c's edit door, which lets those 8 legacy days be corrected.
         """
-        if self.due_date is None or self.settled_on is None:
-            return None
-        return (self.due_date - self.settled_on).days
+        return days_paid_before_due(self.due_date, self.settled_on)
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

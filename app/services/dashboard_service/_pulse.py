@@ -18,10 +18,10 @@ from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
 
-from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import balance_at, cash_ledger
 from app.services.entry_service import compute_remaining
+from app.services.transfer_legs import PlanItem, cell_key
 from app.utils.money import round_money
 from app.utils.period_projections import SIX_MONTHS
 
@@ -224,42 +224,53 @@ def compute_pulse_section(
     end_balances = balance_at.cash_balance_map(account, balance_ctx)
     forward_periods = list(all_periods)[current_index:]
 
-    # ONE unpaid-row query for the still-due totals AND the due-soon list:
-    # both read the current period's rows (due-soon is exactly that subset)
+    # ONE unpaid-item load for the still-due totals AND the due-soon list:
+    # both read the current period's items (due-soon is exactly that subset)
     # and still-due additionally reads the next period's, so loading the
     # current+next set once -- with its single ``selectinload(entries)``
     # round trip -- and splitting it in memory avoids a second identical
-    # query on the ``balanceChanged`` refresh path.  The rows are the
+    # load on the ``balanceChanged`` refresh path.  The items are the
     # paycheck's across the owner's cash-flow set (ruling R-CC16, plan step
     # CC-4-3) where the hero, the chart and the trough above are the balance
     # account's alone: a bill on the card is still a bill this paycheck owes.
+    # Since leaf X-bi-6-1b they are the set's own ROWS and the expense LEGS
+    # of its transfers, read off the parents (the loader's docstring).
     period_ids = [current_period.period_id]
     if next_period is not None:
         period_ids.append(next_period.period_id)
-    unpaid_rows = _query_unpaid_expense_rows(
+    unpaid = _query_unpaid_expense_rows(
         section.cash_flow, balance_ctx.scenario_id, period_ids,
     )
-    # ONE valuation of that one row set, for the same reason the query is
+    # ONE valuation of that one item set, for the same reason the load is
     # shared (plan step X-au-c2): the due-soon list and the still-due totals
-    # both price the SAME rows, and two valuations of one row are how two
-    # figures on one screen come to disagree.  Built here rather than per row
+    # both price the SAME items, and two valuations of one item are how two
+    # figures on one screen come to disagree.  Built here rather than per item
     # because the salary producer runs the paycheck engine over the owner's
     # whole pay-period set (finding **N-228**).  The line that used to sit here
     # claimed this set "makes no query at all, every row being an expense": the
-    # salary half indeed answers nothing, but the row set carries transfer-out
-    # shadows by design (see the query's own docstring), so the LOAN half is
-    # asked and resolves its config map.
-    contributions = cash_ledger.contributions_by_id(
-        unpaid_rows, balance_ctx.amounts(),
-    )
-    # The second question the same rows must answer, off the SAME basis (plan
+    # salary half indeed answers nothing, but the legs are priced off their
+    # parents (a loan payment's through rule 4), so the LOAN half is asked
+    # and resolves its config map.  Each map is the row producer's answer
+    # merged with its leg twin's, keyed by ``cell_key`` -- an ``int`` and a
+    # tuple cannot collide, so one dict serves both shapes (leaf X-bi-6-1's
+    # shape, ``routes/grid/_items.build_amount_maps``).
+    contributions = {
+        **cash_ledger.contributions_by_id(unpaid.rows, balance_ctx.amounts()),
+        **cash_ledger.leg_contributions_by_key(
+            unpaid.legs, balance_ctx.amounts(),
+        ),
+    }
+    # The second question the same items must answer, off the SAME basis (plan
     # step X-au-c2b): what an envelope's BUDGET is, which ruling E-21 fixes on
     # the row's own amount unconditionally -- never the entered actual, never
     # status-dependent -- so a contribution cannot stand in for it.
-    budgets = cash_ledger.amounts_by_id(unpaid_rows, balance_ctx.amounts())
+    budgets = {
+        **cash_ledger.amounts_by_id(unpaid.rows, balance_ctx.amounts()),
+        **cash_ledger.leg_amounts_by_key(unpaid.legs, balance_ctx.amounts()),
+    }
 
     due_soon = _due_soon(
-        unpaid_rows, contributions, budgets, current_period, balance_ctx.as_of,
+        unpaid.items, contributions, budgets, current_period, balance_ctx.as_of,
     )
 
     return {
@@ -289,7 +300,7 @@ def compute_pulse_section(
             forward_periods, end_balances, current_period,
         ),
         "still_due": _still_due(
-            unpaid_rows, contributions, budgets, current_period, next_period,
+            unpaid.items, contributions, budgets, current_period, next_period,
         ),
         "street": _street(current_period, balance_ctx.as_of),
         "due_soon": due_soon,
@@ -656,9 +667,9 @@ def _extremum(
 
 
 def _still_due(
-    rows: list[Transaction],
-    contributions: dict[int, Decimal],
-    budgets: dict[int, Decimal],
+    rows: list[PlanItem],
+    contributions: dict,
+    budgets: dict,
     current_period: "DerivedPeriod",
     next_period: "DerivedPeriod | None",
 ) -> dict:
@@ -674,30 +685,32 @@ def _still_due(
         AT ZERO -- an over-budget envelope contributes ``0``, never a
         negative that would understate the total (its overspend already
         left the as-of-today balance).
-      * Transfer-out shadow rows ARE included (B4b): a still-due total is
+      * A transfer's EXPENSE LEG IS included (B4b): a still-due total is
         an obligation figure -- what the paycheck still owes across the
         owner's cash-flow set (plan step CC-4-3), a card's bill included --
-        and the shadow query carries them in as expense rows.
+        and the loader carries each transfer in as the leg on the side its
+        money leaves (leaf X-bi-6-1b; it was the transfer-out shadow row).
 
     Each period's total is summed in full ``Decimal`` precision and
     rounded once at the boundary with :func:`round_money`.
 
     Args:
-        rows: The current+next periods' unpaid expense rows from the
-            shared :func:`_query_unpaid_expense_rows` query (loaded once
-            by :func:`compute_pulse_section` and shared with
-            :func:`_due_soon`); each row is bucketed by its
+        rows: The current+next periods' unpaid expense items -- rows and
+            expense legs -- from the shared :func:`_query_unpaid_expense_rows`
+            load (made once by :func:`compute_pulse_section` and shared with
+            :func:`_due_soon`); each item is bucketed by its
             ``pay_period_id``.
-        contributions: ``{transaction_id: Decimal}`` over exactly those
-            rows, from the caller's one
-            :func:`~app.services.cash_ledger.contributions_by_id` call and
-            shared with :func:`_due_soon`.  Indexed with ``[]``: a
-            row missing from it is a caller that priced a different set,
-            and a default here would be a fabricated figure in a total.
-        budgets: ``{transaction_id: Decimal}`` over the same rows, from the
+        contributions: ``{cell_key: Decimal}`` over exactly those items,
+            from the caller's one :func:`~app.services.cash_ledger
+            .contributions_by_id` call merged with its leg twin's, and
+            shared with :func:`_due_soon`.  Indexed with ``[]``: an item
+            missing from it is a caller that priced a different set, and a
+            default here would be a fabricated figure in a total.
+        budgets: ``{cell_key: Decimal}`` over the same items, from the
             caller's one :func:`~app.services.cash_ledger.amounts_by_id` call
-            -- the E-21 base an entry-tracked row's remaining is computed
-            against.  Indexed with ``[]`` for the reason the contributions are.
+            merged the same way -- the E-21 base an entry-tracked row's
+            remaining is computed against.  Indexed with ``[]`` for the
+            reason the contributions are.
         current_period: The period containing today.
         next_period: The period after the current one, or ``None``.
 
@@ -713,9 +726,8 @@ def _still_due(
     current_total = _ZERO
     next_total = _ZERO
     for txn in rows:
-        contribution = _row_still_due(
-            txn, contributions[txn.id], budgets[txn.id],
-        )
+        key = cell_key(txn)
+        contribution = _row_still_due(txn, contributions[key], budgets[key])
         if txn.pay_period_id == current_period.period_id:
             current_total += contribution
         elif next_period is not None and txn.pay_period_id == next_period.period_id:
@@ -734,7 +746,7 @@ def _still_due(
 
 
 def _row_still_due(
-    txn: Transaction, contribution: Decimal, budget: Decimal,
+    txn: PlanItem, contribution: Decimal, budget: Decimal,
 ) -> Decimal:
     """Return one row's still-due contribution on the locked basis (B4a).
 
@@ -757,8 +769,9 @@ def _row_still_due(
     unrounded; the caller rounds the period sum once at the boundary.
 
     Args:
-        txn: A projected expense :class:`Transaction` with ``entries``
-            eager-loaded (the canonical query loads them).
+        txn: A projected expense row with ``entries`` eager-loaded (the
+            canonical load loads them), or a transfer's expense leg, which
+            tracks no purchases and so contributes what it is worth.
         contribution: What this row contributes, from the caller's one
             :func:`~app.services.cash_ledger.contributions_by_id` call --
             the replacement for ``txn.effective_amount``, which could not
@@ -822,9 +835,9 @@ def _street(current_period: "DerivedPeriod", as_of: date) -> dict:
 
 
 def _due_soon(
-    rows: list[Transaction],
-    contributions: dict[int, Decimal],
-    budgets: dict[int, Decimal],
+    rows: list[PlanItem],
+    contributions: dict,
+    budgets: dict,
     current_period: "DerivedPeriod",
     as_of: date,
 ) -> list[dict]:
@@ -849,18 +862,18 @@ def _due_soon(
     the list reads chronologically.
 
     Args:
-        rows: The current+next periods' unpaid expense rows from the
-            shared :func:`_query_unpaid_expense_rows` query (loaded once
-            by :func:`compute_pulse_section` and shared with
+        rows: The current+next periods' unpaid expense items -- rows and
+            expense legs -- from the shared :func:`_query_unpaid_expense_rows`
+            load (made once by :func:`compute_pulse_section` and shared with
             :func:`_still_due`).  This helper filters to the current
-            period's rows -- the next-period rows in the shared set are
+            period's items -- the next-period items in the shared set are
             the still-due totals' concern, not the due-soon list's.
-        contributions: ``{transaction_id: Decimal}`` over exactly those
-            rows, from the caller's one
-            :func:`~app.services.cash_ledger.contributions_by_id` call and
-            shared with :func:`_still_due`, so a bill's amount cell
-            and the still-due total it feeds price the row ONCE.
-        budgets: ``{transaction_id: Decimal}`` over the same rows, shared the
+        contributions: ``{cell_key: Decimal}`` over exactly those items,
+            from the caller's one :func:`~app.services.cash_ledger
+            .contributions_by_id` call merged with its leg twin's, and
+            shared with :func:`_still_due`, so a bill's amount cell and the
+            still-due total it feeds price the item ONCE.
+        budgets: ``{cell_key: Decimal}`` over the same items, shared the
             same way -- the E-21 base an entry-tracked bill's amount cell and
             its progress fields both answer on.
         current_period: The period containing the pass's day.
@@ -879,9 +892,8 @@ def _due_soon(
     for txn in rows:
         if txn.pay_period_id != current_period.period_id:
             continue
-        bill = txn_to_bill_dict(
-            txn, as_of, contributions[txn.id], budgets[txn.id],
-        )
+        key = cell_key(txn)
+        bill = txn_to_bill_dict(txn, as_of, contributions[key], budgets[key])
         if txn.due_date is not None:
             bill["day_offset"] = (txn.due_date - current_period.start_date).days
             bill["undated"] = False

@@ -244,19 +244,44 @@ def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     return {row.id: settled_figure(row) for row in rows}
 
 
+def leg_settled_figure(leg) -> "Decimal | None":
+    """Return what *leg* RECORDS as having moved, or ``None`` if it has not settled.
+
+    :func:`settled_figure`'s twin over a transfer leg's shape (leaf
+    ``X-bi-6-1``, ruling **R-BAL87**; a function of its own since leaf
+    ``X-bi-6-1b``, where the calendar and the Spending report ask it per
+    item beside the grid's map).  The same rule: ``None`` while the parent
+    has not settled, whatever the leg still remembers (**THE STATUS DECIDES,
+    NOT THE RECORD**, as for a row); once it has, the figure its covering
+    movement states -- the record of what left or entered the account -- and
+    ``Decimal("0")`` for a settled leg holding no movement, which is the
+    ``$0.00`` record (ruling **R-BAL82**) exactly as a settled row with no
+    entries is.
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`, its
+            record loaded (``grid_transfer_legs`` loads it; the fold's
+            ``planned_transfer_legs`` never does and never asks this).
+
+    Returns:
+        The recorded figure, or ``None`` when the parent is not settled.
+    """
+    if leg.status_id not in settled_status_ids():
+        return None
+    if leg.record is None:
+        return Decimal("0")
+    return leg.record.amount
+
+
 def leg_settled_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]":
     """Return ``{leg.cell_key: what the leg's money DID}`` for transfer legs.
 
     :func:`settled_amounts_by_id`'s twin for the grid's transfer legs (leaf
     ``X-bi-6-1``, ruling **R-BAL87**), keyed by
     :attr:`~app.services.transfer_legs.TransferLeg.cell_key` so the one
-    ``settled`` map a page publishes holds rows and legs side by side.  The
-    same rule as :func:`settled_figure` over the leg's shape: ``None`` while
-    the parent has not settled, whatever the leg still remembers; once it has,
-    the figure its covering movement states -- the record of what left or
-    entered the account -- and ``Decimal("0")`` for a settled leg holding no
-    movement, which is the ``$0.00`` record (ruling **R-BAL82**) exactly as a
-    settled row with no entries is.
+    ``settled`` map a page publishes holds rows and legs side by side.  One
+    :func:`leg_settled_figure` per leg, exactly as its sibling is one
+    :func:`settled_figure` per row.
 
     Args:
         legs: The :class:`~app.services.transfer_legs.TransferLeg` values a
@@ -265,15 +290,7 @@ def leg_settled_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]":
     Returns:
         ``{(transfer_id, account_id): Decimal | None}`` covering every leg.
     """
-    settled = settled_status_ids()
-    return {
-        leg.cell_key: (
-            None if leg.status_id not in settled
-            else Decimal("0") if leg.record is None
-            else leg.record.amount
-        )
-        for leg in legs
-    }
+    return {leg.cell_key: leg_settled_figure(leg) for leg in legs}
 
 
 def fixed_contribution(txn) -> "Decimal | None":
@@ -329,6 +346,32 @@ def fixed_contribution(txn) -> "Decimal | None":
     if not is_balance_contributing(txn):
         return Decimal("0")
     return settled_figure(txn)
+
+
+def leg_fixed_contribution(leg) -> "Decimal | None":
+    """Return what *leg* is worth WITHOUT resolving its parent, or ``None``.
+
+    :func:`fixed_contribution`'s twin over a transfer leg (leaf
+    ``X-bi-6-1b``), arm for arm: a leg whose parent does not contribute --
+    soft-deleted, Credit or Cancelled -- is worth ``0``, whatever prices it;
+    one whose money has MOVED is worth what it recorded
+    (:func:`leg_settled_figure`); ``None`` means neither applies and the
+    parent's own amount decides, which is the resolver's question
+    (``cash_ledger.planned_leg_contribution``).  The same order for the same
+    reason: an excluded leg is worth ``0`` even if it settled first and was
+    cancelled after.
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`.  Its
+            parent's ``is_deleted`` and ``status`` are read through the leg,
+            then the record.
+
+    Returns:
+        The leg's worth when it needs no resolution, else ``None``.
+    """
+    if not is_balance_contributing(leg):
+        return Decimal("0")
+    return leg_settled_figure(leg)
 
 
 def settled_contribution(txn) -> Decimal:
@@ -450,5 +493,41 @@ def settled_contribution(txn) -> Decimal:
             "resolves it. Three statement_match readers CATCH this on purpose "
             "and answer around it (finding N-302); reaching it anywhere else "
             "means a settled-only reader was handed a row outside its scope."
+        )
+    return fixed
+
+
+def leg_settled_contribution(leg) -> Decimal:
+    """Return what a leg that has SETTLED contributes, refusing one that has not.
+
+    :func:`settled_contribution`'s twin over a transfer leg (leaf
+    ``X-bi-6-1b``): the Spending report's settled-spend readers load their
+    legs with ``Transfer.status_id IN settled`` in SQL, exactly as they load
+    their rows, so a refusal here states that precondition rather than a
+    docstring asserting it, and a leg handed to a settled-only reader outside
+    its scope fails loud instead of publishing its PLAN as money that moved.
+
+    Args:
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`, its
+            record loaded.
+
+    Returns:
+        ``0`` for a leg whose parent contributes nothing -- soft-deleted,
+        Credit or Cancelled -- else the figure its covering movement RECORDED.
+
+    Raises:
+        AmountUnresolvable: When the parent has NOT settled, so the leg
+            recorded nothing.
+    """
+    fixed = leg_fixed_contribution(leg)
+    if fixed is None:
+        raise AmountUnresolvable(
+            f"Transfer {leg.transfer.id}'s leg on account {leg.account_id} "
+            "has not settled, so it recorded nothing as having moved. This "
+            "accessor answers what a leg's money DID, and there is "
+            "deliberately no fall back to the parent's PLAN: a caller that "
+            "means the plan asks cash_ledger.leg_contribution_of(leg, basis). "
+            "Reaching this means a settled-only reader was handed a leg "
+            "outside its scope."
         )
     return fixed

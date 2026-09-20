@@ -11,24 +11,26 @@ crossed pylint's 1000-line ceiling under that widening, and this is the
 responsibility that grew -- so it is the one that moved, by the sibling-split
 convention rather than by shaving prose.
 
-Two producers and their two value types: :func:`load_grid_items` answers
-"what does this render draw" (rows, legs, and both as one list), and
-:func:`build_amount_maps` answers "what does each item's cell say its amount
-IS, what its money DID, and what a tick WOULD book" -- each map holding both
-shapes under :func:`~app.services.grid_view_service.cell_key`.  Only
+Two producers and one value type: :func:`load_grid_items` answers "what
+does this render draw" -- a :class:`~app.services.cash_flow_set.PlanItems`,
+the shape every reader of the set's plan items answers since leaf
+``X-bi-6-1b`` -- and :func:`build_amount_maps` answers "what does each
+item's cell say its amount IS, what its money DID, and what a tick WOULD
+book" -- each map holding both shapes under
+:func:`~app.services.transfer_legs.cell_key`.  Only
 :func:`~app.routes.grid.page.index` calls them; the partials read the balance
 seam, not the window.
 """
 
 from typing import NamedTuple
 
-from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
-
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.models.transfer import Transfer
-from app.services.cash_flow_set import leg_accounts_shown, own_rows_clause
+from app.services.cash_flow_set import (
+    PlanItems,
+    own_rows_clause,
+    set_transfer_legs_in_periods,
+)
 from app.services.cash_ledger import (
     amounts_by_id,
     leg_amounts_by_key,
@@ -39,31 +41,11 @@ from app.services.transaction_service import (
     leg_retained_amounts_by_key,
     retained_settle_amounts_by_id,
 )
-from app.services.transfer_legs import TransferLeg, grid_transfer_legs
-from app.utils.amount_relationships import (
-    transfer_pricing_load_options,
-    valuation_load_options,
-)
+from app.services.transfer_legs import TransferLeg
+from app.utils.amount_relationships import valuation_load_options
 
 
-class GridItems(NamedTuple):
-    """What the grid draws: the set's own rows and the transfers' legs.
-
-    Attributes:
-        rows: The plan rows, :class:`~app.models.transaction.Transaction`.
-        legs: One :class:`~app.services.transfer_legs.TransferLeg` per
-            transfer the set shows, from the side it shows (leaf
-            ``X-bi-6-1``, ruling **R-BAL87**).
-        items: ``rows + legs``, the list every row-key, match and map
-            builder takes.
-    """
-
-    rows: list[Transaction]
-    legs: list[TransferLeg]
-    items: list
-
-
-def load_grid_items(cash_flow, balance_ctx, all_periods) -> GridItems:
+def load_grid_items(cash_flow, balance_ctx, all_periods) -> PlanItems:
     """Load the set's own rows and the legs of every transfer it shows.
 
     **The rows are the PAYCHECK's across the set -- checking and its cards --
@@ -84,22 +66,25 @@ def load_grid_items(cash_flow, balance_ctx, all_periods) -> GridItems:
     legs, so the result is naturally empty.
 
     **Two statements where there was one, both windowed by the same period
-    ids**: the rows' ``pay_period_id IN (...)`` and the transfers'.  The
-    legs' records (a settled leg's covering movement) are one more load
-    inside :func:`~app.services.transfer_legs.grid_transfer_legs`.
+    ids**: the rows' ``pay_period_id IN (...)`` here and the transfers' in
+    :func:`~app.services.cash_flow_set.set_transfer_legs_in_periods`, the
+    one period-windowed transfer load every display reader shares since
+    leaf ``X-bi-6-1b``.  The legs' records (a settled leg's covering
+    movement) are one more load inside it.
 
     ``all_periods`` is the pass's reported window, every member of which is
     MATERIALISED -- so ``period_id`` is never ``None`` and the ``IN`` clause
     cannot be silently scoped by a null.
 
     Eager-loads the rows' ``entries`` (for entry-sum rendering) and
-    ``template`` (for row-key generation), and the transfers' pricing chain
-    plus both endpoints (a leg's label and account chip read them) -- all
-    read in the row-data helper and the cell template, so the eager-loads
-    avoid per-item N+1 queries in the grid render loop.
+    ``template`` (for row-key generation); the transfers carry their pricing
+    chain, and their endpoints (a leg's label and account chip read them)
+    are ``lazy="joined"`` -- all read in the row-data helper and the cell
+    template, so the loads avoid per-item N+1 queries in the grid render
+    loop.
 
     Returns:
-        The :class:`GridItems` for this render.
+        The :class:`~app.services.cash_flow_set.PlanItems` for this render.
     """
     period_ids = [p.period_id for p in all_periods]
     txn_filters = [
@@ -120,29 +105,10 @@ def load_grid_items(cash_flow, balance_ctx, all_periods) -> GridItems:
     )
     legs: list[TransferLeg] = []
     if cash_flow is not None:
-        transfers = (
-            db.session.query(Transfer)
-            .options(
-                *transfer_pricing_load_options(),
-                joinedload(Transfer.from_account),
-                joinedload(Transfer.to_account),
-            )
-            .filter(
-                Transfer.pay_period_id.in_(period_ids),
-                Transfer.scenario_id == balance_ctx.scenario_id,
-                Transfer.is_deleted.is_(False),
-                or_(
-                    Transfer.from_account_id.in_(cash_flow.member_ids),
-                    Transfer.to_account_id.in_(cash_flow.member_ids),
-                ),
-            )
-            .order_by(Transfer.id)
-            .all()
+        legs = set_transfer_legs_in_periods(
+            cash_flow, balance_ctx.scenario_id, period_ids,
         )
-        legs = grid_transfer_legs(
-            transfers, lambda transfer: leg_accounts_shown(cash_flow, transfer),
-        )
-    return GridItems(rows=rows, legs=legs, items=[*rows, *legs])
+    return PlanItems.of(rows, legs)
 
 
 class GridAmountMaps(NamedTuple):
@@ -163,7 +129,7 @@ class GridAmountMaps(NamedTuple):
     retained: dict
 
 
-def build_amount_maps(items: GridItems, basis) -> GridAmountMaps:
+def build_amount_maps(items: PlanItems, basis) -> GridAmountMaps:
     """Build the three amount maps over the rows AND the legs.
 
     Each map is its row producer's answer merged with its leg producer's --
@@ -173,7 +139,7 @@ def build_amount_maps(items: GridItems, basis) -> GridAmountMaps:
     what lets one dict hold both.
 
     Args:
-        items: The page's :class:`GridItems`.
+        items: The page's :class:`~app.services.cash_flow_set.PlanItems`.
         basis: The read pass's amount basis (``balance_ctx.amounts()``).
 
     Returns:

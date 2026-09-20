@@ -45,16 +45,32 @@ from app.services.cash_ledger import (
 from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_account,
 )
+from app.exceptions import AmountUnresolvable
 from app.services.cash_flow_set import (
     CashFlowSet,
+    PlanItems,
     leg_accounts_shown,
     own_rows_clause,
     paycheck_rows_clause,
+    set_transfer_legs,
+    set_transfer_legs_in_periods,
+    touched_transfers_clause,
 )
-from app.services.cash_ledger import leg_amounts_by_key, leg_settled_amounts_by_key
+from app.services.cash_ledger import (
+    leg_amounts_by_key,
+    leg_contribution_of,
+    leg_contributions_by_key,
+    leg_settled_amounts_by_key,
+)
+from app.services.row_valuation import (
+    leg_fixed_contribution,
+    leg_settled_contribution,
+    leg_settled_figure,
+)
 from app.services.transaction_service import leg_retained_amounts_by_key
 from app.services.transfer_legs import (
     TransferLeg,
+    cell_key,
     covering_movements_by_leg,
     grid_transfer_leg,
     grid_transfer_legs,
@@ -68,6 +84,7 @@ from app.services.transfer_service import (
     delete_transfer,
     update_transfer,
 )
+from app.utils.balance_predicates import is_projected_clause
 from tests._test_helpers import (
     cover_bare_settled_row,
     basis_for,
@@ -1113,6 +1130,246 @@ class TestTheLegMapProducers:
             assert leg_settled_amounts_by_key([typed_leg, resolved_leg]) == {
                 typed_leg.cell_key: None, resolved_leg.cell_key: None,
             }
+
+
+class TestTheLegContributionTwins:
+    """The per-leg valuation twins leaf X-bi-6-1b gave the display readers.
+
+    ``leg_settled_figure`` / ``leg_fixed_contribution`` / ``leg_settled_contribution``
+    beside ``settled_figure`` / ``fixed_contribution`` / ``settled_contribution``,
+    and ``leg_contribution_of`` / ``leg_contributions_by_key`` beside
+    ``contribution_of`` / ``contributions_by_id``, over the four states a
+    display leg can be in: planned, settled with a movement, settled with none
+    (the $0.00 record), and excluded.
+    """
+
+    def test_a_planned_leg_is_worth_its_parents_plan_and_records_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            leg = grid_transfer_leg(transfer, checking.id)
+            basis = basis_for(checking, seed_user["scenario"])
+
+            assert leg_settled_figure(leg) is None
+            assert leg_fixed_contribution(leg) is None
+            assert leg_contribution_of(leg, basis) == _AMOUNT
+            assert leg_contributions_by_key([leg], basis) == {leg.cell_key: _AMOUNT}
+            with pytest.raises(AmountUnresolvable):
+                leg_settled_contribution(leg)
+
+    def test_a_settled_leg_is_worth_its_record_and_not_its_plan(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The contribution is the movement's $240.00 where the plan says $250.00."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            leg = grid_transfer_leg(settled, checking.id)
+            basis = basis_for(checking, seed_user["scenario"])
+
+            assert leg_settled_figure(leg) == Decimal("240.00")
+            assert leg_fixed_contribution(leg) == Decimal("240.00")
+            assert leg_settled_contribution(leg) == Decimal("240.00")
+            assert leg_contribution_of(leg, basis) == Decimal("240.00")
+            assert leg_amounts_by_key([leg], basis) == {leg.cell_key: _AMOUNT}
+
+    def test_a_settled_leg_with_no_movement_is_the_zero_record(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            leg = TransferLeg(
+                transfer=settled, account_id=checking.id, is_income=False,
+                record=None,
+            )
+            assert leg_settled_figure(leg) == Decimal("0")
+            assert leg_settled_contribution(leg) == Decimal("0")
+            assert leg_contribution_of(
+                leg, basis_for(checking, seed_user["scenario"]),
+            ) == Decimal("0")
+
+    def test_an_excluded_leg_is_worth_zero_whatever_it_remembers(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A Cancelled parent's leg contributes 0 and is not refused."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            cancelled = _cancelled_transfer(
+                seed_user, checking, savings, seed_periods[2],
+            )
+            db.session.commit()
+            leg = grid_transfer_leg(cancelled, checking.id)
+
+            assert leg_settled_figure(leg) is None
+            assert leg_fixed_contribution(leg) == Decimal("0")
+            assert leg_settled_contribution(leg) == Decimal("0")
+            assert leg_contribution_of(
+                leg, basis_for(checking, seed_user["scenario"]),
+            ) == Decimal("0")
+
+
+class TestALegsSettleDayAndTimeliness:
+    """``settled_on`` and ``days_paid_before_due`` read the leg's MOVEMENT."""
+
+    def test_a_settled_leg_reads_its_movements_day_and_agrees_with_the_row(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The leg's day is the movement's, and the arithmetic is the row's.
+
+        Parity with the shadow row is a real check rather than one producer
+        read twice: the row's ``settled_on`` is its own column and the leg's
+        is the covering movement's, two stored days the seam writes together.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+                due_date=date(2026, 2, 6),
+            )
+            db.session.commit()
+            leg = grid_transfer_leg(settled, checking.id)
+            shadow = _shadow_on(settled, checking)
+
+            assert leg.settled_on == date(2026, 2, 3)
+            assert leg.days_paid_before_due == 3
+            assert leg.days_paid_before_due == shadow.days_paid_before_due
+            assert leg.tracks_purchases is False
+
+    def test_a_planned_and_an_undated_leg_answer_none(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            planned = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, due_date=date(2026, 2, 6),
+            )
+            undated = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT, settled_on=date(2026, 2, 17),
+            )
+            db.session.commit()
+            planned_leg = grid_transfer_leg(planned, checking.id)
+            undated_leg = grid_transfer_leg(undated, checking.id)
+
+            assert planned_leg.settled_on is None
+            assert planned_leg.days_paid_before_due is None
+            assert undated_leg.settled_on == date(2026, 2, 17)
+            assert undated_leg.days_paid_before_due is None
+
+
+class TestTheSetsTransferHalf:
+    """``touched_transfers_clause``, ``set_transfer_legs`` and ``PlanItems``."""
+
+    def test_the_clause_selects_a_transfer_touching_any_member_and_no_other(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            other = _savings(seed_user, name="Other")
+            touching = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            elsewhere = create_transfer(
+                seed_user, db.session, savings, other, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+
+            selected = (
+                db.session.query(Transfer.id)
+                .filter(touched_transfers_clause(cash_flow)).all()
+            )
+            assert {row.id for row in selected} == {touching.id}
+            assert elsewhere.id not in {row.id for row in selected}
+
+    def test_set_transfer_legs_draws_the_sets_side_and_plan_items_derives_items(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+
+            legs = set_transfer_legs(cash_flow, [transfer])
+            assert [(leg.transfer.id, leg.account_id, leg.is_expense) for leg in legs] == [
+                (transfer.id, checking.id, True),
+            ]
+            rows = db.session.query(Transaction).filter(
+                own_rows_clause(cash_flow), Transaction.is_deleted.is_(False),
+            ).all()
+            items = PlanItems.of(rows, legs)
+            assert items.items == [*rows, *legs]
+            assert [cell_key(item) for item in items.items] == [
+                *[row.id for row in rows], (transfer.id, checking.id),
+            ]
+
+
+    def test_the_period_loader_windows_by_membership_and_takes_the_readers_filter(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            in_window = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[4],
+                amount=_AMOUNT,
+            )
+            # A second endpoint: ``uq_transfers_adhoc_dedupe`` refuses two
+            # identical ad-hoc transfers in one period.
+            cancelled = _cancelled_transfer(
+                seed_user, checking, _savings(seed_user, name="Other"),
+                seed_periods[2],
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+            scenario_id = seed_user["scenario"].id
+            period_ids = [seed_periods[2].id]
+
+            every = set_transfer_legs_in_periods(cash_flow, scenario_id, period_ids)
+            assert [leg.transfer.id for leg in every] == sorted(
+                [in_window.id, cancelled.id],
+            )
+            projected = set_transfer_legs_in_periods(
+                cash_flow, scenario_id, period_ids, is_projected_clause(Transfer),
+            )
+            assert [leg.transfer.id for leg in projected] == [in_window.id]
+            assert set_transfer_legs_in_periods(cash_flow, scenario_id, []) == []
 
 
 class TestALegsDisplayProjections:

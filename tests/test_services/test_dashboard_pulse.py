@@ -34,8 +34,8 @@ from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
-from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
-from app.services.dashboard_service import _pulse
+from app.services import account_service, cash_ledger, dashboard_service
+from app.services.dashboard_service import _bills, _pulse
 from app.services.pay_calendar import PayCadence
 from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
@@ -1208,6 +1208,117 @@ class TestTheBillsAreThePaychecksAcrossTheSet:
             result = dashboard_service.compute_pulse_section(section)
             assert result["still_due"]["current_period"] == Decimal("300.00")
             assert [b["name"] for b in result["due_soon"]] == ["Rent"]
+
+
+class TestTheBillsAreLegsReadOffTheParent:
+    """The bills draw a transfer as a LEG of its parent (leaf X-bi-6-1b, R-BAL86).
+
+    ``_query_unpaid_expense_rows`` answers the set's OWN rows through
+    ``own_rows_clause`` -- no shadow row -- beside the EXPENSE leg of every
+    projected transfer the set touches, read off ``budget.transfers``; the
+    still-due total and the due-soon list price both through one map keyed
+    by ``cell_key``.  The money cases above (B4b, R-CC23) already grade what
+    a transfer is WORTH here; these grade what it IS.
+    """
+
+    @staticmethod
+    def _expense_on(seed_user, period, account, name, amount, due_date):
+        """Place a projected one-off EXPENSE row on *account* in *period*."""
+        return one_off_row_of(
+            period, name=name, amount=Decimal(amount),
+            user_id=seed_user["user"].id, account_id=account.id,
+            scenario_id=seed_user["scenario"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            due_date=due_date,
+        )
+
+    def test_the_loader_answers_own_rows_and_expense_legs_and_no_shadow(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            period = seed_periods[_CURRENT_IDX]
+            savings = create_savings_account(
+                seed_user, db.session, "Sweep Target", Decimal("0.00"),
+            )
+            self._expense_on(
+                seed_user, period, checking, "Rent", "300.00", date(2026, 3, 22),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("400.00"), due_date=date(2026, 3, 24),
+            )
+            db.session.commit()
+            section = dashboard_section(seed_user["user"].id)
+
+            unpaid = _bills._query_unpaid_expense_rows(  # pylint: disable=protected-access
+                section.cash_flow, seed_user["scenario"].id, [period.id],
+            )
+
+            assert [row.name for row in unpaid.rows] == ["Rent"]
+            assert all(row.transfer_id is None for row in unpaid.rows)
+            assert [
+                (leg.transfer.id, leg.account_id, leg.is_expense)
+                for leg in unpaid.legs
+            ] == [(transfer.id, checking.id, True)]
+            assert unpaid.items == [*unpaid.rows, *unpaid.legs]
+
+    def test_a_leg_bill_is_keyed_by_the_pair_and_named_from_its_endpoints(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            period = seed_periods[_CURRENT_IDX]
+            savings = create_savings_account(
+                seed_user, db.session, "Sweep Target", Decimal("0.00"),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("400.00"), due_date=date(2026, 3, 24),
+            )
+            db.session.commit()
+
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
+            )
+
+            assert result["still_due"]["current_period"] == Decimal("400.00")
+            [bill] = result["due_soon"]
+            assert bill["id"] == (transfer.id, checking.id)
+            assert bill["is_transfer"] is True
+            assert bill["name"] == "Transfer to Sweep Target"
+            assert bill["amount"] == Decimal("400.00")
+            assert bill["amount_base"] is None
+            assert bill["is_tracked"] is False
+            assert bill["days_until_due"] == (date(2026, 3, 24) - _TODAY).days
+
+    def test_a_transfer_into_the_set_is_no_bill(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The set shows a savings -> checking transfer from checking's side,
+        where it is an INCOME leg -- money arriving, not a bill -- so the
+        loader draws no leg for it and the totals ignore it, as the income
+        shadow row's type did."""
+        with app.app_context():
+            checking = seed_user["account"]
+            period = seed_periods[_CURRENT_IDX]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("900.00"),
+            )
+            create_transfer(
+                seed_user, db.session, savings, checking, period,
+                amount=Decimal("250.00"), due_date=date(2026, 3, 24),
+            )
+            db.session.commit()
+            section = dashboard_section(seed_user["user"].id)
+
+            unpaid = _bills._query_unpaid_expense_rows(  # pylint: disable=protected-access
+                section.cash_flow, seed_user["scenario"].id, [period.id],
+            )
+            assert unpaid.legs == [] and unpaid.rows == []
+            result = dashboard_service.compute_pulse_section(section)
+            assert result["still_due"]["current_period"] == Decimal("0.00")
+            assert result["due_soon"] == []
 
 
 class TestPulseStreet:

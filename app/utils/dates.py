@@ -128,6 +128,38 @@ def display_today() -> date:
     return to_display_tz(datetime.now(timezone.utc)).date()
 
 
+def days_paid_before_due(
+    due_date: date | None, settled_on: date | None,
+) -> int | None:
+    """Return how many days before its due date a settled item's money moved.
+
+    Positive means paid early, negative paid late, zero paid on the day;
+    ``None`` when either day is missing -- and for *settled_on* a missing day
+    means the item has not settled, so its timeliness is not yet a question.
+    **Both operands are civil dates, and no timezone enters this** (ruling
+    **R-EC**, plan step X-f1).
+
+    **ONE arithmetic for two shapes** (plan step ``balance:X-bi-6-1b``).  It
+    was the body of ``Transaction.days_paid_before_due`` alone; a transfer's
+    LEG answers the same question off its covering movement's day
+    (``TransferLeg.days_paid_before_due``), and two properties each spelling
+    ``(due_date - settled_on).days`` would be rule 14's two spellings, so
+    both call this.  It lives here beside :func:`has_settled_by` for that
+    function's reason: two ``date`` values and a subtraction, no status, no
+    row, no reference cache.
+
+    Args:
+        due_date: The item's due date, or ``None`` for an undated one.
+        settled_on: The civil day its money moved, or ``None``.
+
+    Returns:
+        ``(due_date - settled_on).days``, or ``None``.
+    """
+    if due_date is None or settled_on is None:
+        return None
+    return (due_date - settled_on).days
+
+
 def has_settled_by(settled_on: date | None, as_of: date) -> bool:
     """Return whether a row's cash had already moved on or before *as_of*.
 
