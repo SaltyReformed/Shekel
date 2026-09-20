@@ -24,19 +24,20 @@ Bridge.  A second claim racing the first past the pre-check is refused by
 another on request, and the docstring says so rather than adding a lock for
 a race one owner cannot run against themselves except by double-submitting.
 
-**Every URL this module is handed is Bridge's host, or refused** (ruling
-**R-BI28**, the host pin).  The pasted token and Bridge's answered access
-URL are both URLs this module would otherwise send requests to unread, so
-each is refused unless the host ``requests`` would reach is
-:data:`BRIDGE_HOST` or a subdomain of it -- read by ``requests``' own
-preparation of the URL, because ``urlsplit`` and ``requests`` disagree on a
-crafted authority and a check over the wrong parser is no check
-(:func:`_refuse_unless_bridge`).  The listing and, later, the sync read the
-stored URL and need no check of their own: the claim refused a foreign one
-before storing it, and the claim is the only writer.  What the pin bounds
-is the URL each request STARTS at: ``requests`` follows a redirect on its
-own (dropping the credential when the host changes), so where a request
-ends up is Bridge's host's word, not this module's.
+**Every request goes to Bridge's host and nowhere else** (rulings
+**R-BI28**, the host pin, and **R-BI29**, no redirect is followed).  The
+pasted token and Bridge's answered access URL are both URLs this module
+would otherwise send requests to unread, so each is refused unless the host
+``requests`` would reach is :data:`BRIDGE_HOST` or a subdomain of it --
+read by ``requests``' own preparation of the URL, because ``urlsplit`` and
+``requests`` disagree on a crafted authority and a check over the wrong
+parser is no check (:func:`_refuse_unless_bridge`).  The listing and,
+later, the sync read the stored URL and need no check of their own: the
+claim refused a foreign one before storing it, and the claim is the only
+writer.  And a request ENDS where it started: ``requests`` would follow a
+redirect to any host the ``Location`` named, so every request is sent with
+``allow_redirects=False`` and a ``3xx`` answer is refused -- spelled once,
+in :func:`_ask_bridge`, the module's only request site.
 
 **The credential never reaches a sentence, by construction rather than by
 the scrubber** (the 3b review's M1: the log scrubber cannot see a
@@ -466,6 +467,80 @@ def _refused(exc: requests.RequestException, doing: str) -> BridgeRefused:
     return BridgeRefused(sentence, status=status, error_class=error_class)
 
 
+def _ask_bridge(method: str, url: str, doing: str, **kwargs) -> requests.Response:
+    """Send the ONE kind of request this module makes, or refuse.
+
+    **The only ``requests`` call site under this module**, so what every
+    request to Bridge carries and refuses is spelled once: the claim, the
+    listing, and the sync's request when it lands, all come through here.
+
+    * ``timeout=BRIDGE_TIMEOUT_SECONDS``.
+    * ``allow_redirects=False`` (ruling **R-BI29**): ``requests`` would
+      otherwise follow a redirect to any host and any scheme the
+      ``Location`` named, which is exactly the reach ruling **R-BI28** pins
+      away; with the flag off it sends NOTHING after a ``3xx`` (read
+      2026-09-20 on requests 2.34.2: ``Session.send`` skips the
+      ``resolve_redirects`` send loop and the adapter is called with
+      ``redirect=False``; pinned at the adapter by
+      ``test_a_redirect_sends_nothing_after_the_first_request``).
+    * A transport failure or an error status is :func:`_refused` -- the
+      class and the status, never the exception's text or URL.
+    * A ``3xx`` answer, which ``raise_for_status`` lets through, is
+      refused HERE as ``Redirect`` carrying its status, before a body that
+      is not Bridge's answer can be read as one.  Every ``3xx``, not only
+      the five ``requests`` calls a redirect: a ``300`` or a ``304`` is not
+      Bridge's answer either.
+    * A ``3xx`` whose ``Location`` ``requests`` cannot decode or parse
+      raises OUTSIDE ``RequestException`` even with redirects off, because
+      ``Session.send`` still builds the unsent ``Response.next`` from it
+      (measured 2026-09-20: a latin-1 byte in the header raises
+      ``UnicodeDecodeError``, ``http://[::1`` raises ``ValueError``; the
+      ``Response`` is lost with the exception, so no status survives).
+      That is refused as its own class rather than escaping as a 500 htmx
+      cannot swap; nothing was sent to the ``Location`` either way.
+
+    Args:
+        method: ``"post"`` or ``"get"``; looked up on ``requests`` at call
+            time, which is where the tests' spy stands in for Bridge.
+        url: Where to.  Every URL that reaches here passed
+            :func:`_refuse_unless_bridge`, at the claim.
+        doing: The act, as a noun phrase: ``"the claim"``, ``"the account
+            listing"``.
+        **kwargs: The request's own arguments (``params``).
+
+    Returns:
+        Bridge's answer: a ``2xx``, past ``raise_for_status``.
+
+    Raises:
+        BridgeRefused: Bridge could not be reached, answered an error,
+            answered a redirect, or answered a redirect this app could not
+            read.
+    """
+    try:
+        response = getattr(requests, method)(
+            url, timeout=BRIDGE_TIMEOUT_SECONDS, allow_redirects=False,
+            **kwargs,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise _refused(exc, doing) from None
+    except ValueError as exc:
+        raise BridgeRefused(
+            f"Bridge answered {doing} with a redirect this app could not "
+            f"read ({type(exc).__name__}), which it would not have followed, "
+            f"so nothing was changed.",
+            status=None, error_class=type(exc).__name__,
+        ) from None
+    if 300 <= response.status_code < 400:
+        raise BridgeRefused(
+            f"Bridge answered {doing} with a redirect (HTTP "
+            f"{response.status_code}), which this app does not follow, "
+            f"rather than an answer; nothing was changed.",
+            status=response.status_code, error_class="Redirect",
+        )
+    return response
+
+
 def claim_feed(user_id: int, setup_token: str) -> BankFeed:
     """Claim *setup_token* at Bridge and stage the access URL as ciphertext.
 
@@ -488,17 +563,14 @@ def claim_feed(user_id: int, setup_token: str) -> BankFeed:
             (ruling **R-BI28**); refused before the request like the rest.
         FeedAlreadyConnected: A feed stands; disconnect first.  Checked
             before the request so a standing feed never burns a token.
-        BridgeRefused: Bridge could not be reached, answered an error, or
-            answered something other than an access URL on its own host.
+        BridgeRefused: Bridge could not be reached, answered an error or a
+            redirect (ruling **R-BI29**: never followed), or answered
+            something other than an access URL on its own host.
     """
     claim_url = _claim_url_from(setup_token)
     if _feed_of(user_id) is not None:
         raise FeedAlreadyConnected()
-    try:
-        response = requests.post(claim_url, timeout=BRIDGE_TIMEOUT_SECONDS)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        raise _refused(exc, "the claim") from None
+    response = _ask_bridge("post", claim_url, "the claim")
     access_url = _access_url_from(response.text, response.status_code)
     feed = BankFeed(
         user_id=user_id, access_url_encrypted=encrypt_secret(access_url),
@@ -574,8 +646,9 @@ def list_bridge_accounts(user_id: int) -> BridgeListing:
         NoFeedConnected: No feed stands for the owner.
         FeedUnreadable: The stored URL cannot be decrypted under the current
             key list.
-        BridgeRefused: Bridge could not be reached, answered an error, or
-            answered a shape this app does not read.
+        BridgeRefused: Bridge could not be reached, answered an error or a
+            redirect (ruling **R-BI29**: never followed), or answered a
+            shape this app does not read.
     """
     feed = _feed_of(user_id)
     if feed is None:
@@ -588,14 +661,10 @@ def list_bridge_accounts(user_id: int) -> BridgeListing:
         # key since pruned (``InvalidToken``).  A designed refusal, so the
         # panel can say so; a 500 is one htmx cannot swap.
         raise FeedUnreadable() from exc
-    try:
-        response = requests.get(
-            f"{access_url}/accounts", params=_LISTING_PARAMS,
-            timeout=BRIDGE_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        raise _refused(exc, "the account listing") from None
+    response = _ask_bridge(
+        "get", f"{access_url}/accounts", "the account listing",
+        params=_LISTING_PARAMS,
+    )
     try:
         answer = response.json()
     except requests.JSONDecodeError as exc:

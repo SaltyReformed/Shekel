@@ -1,7 +1,7 @@
 """The bank feed panel's four doors, driven the way a browser drives them.
 
 Plan step ``bank_import:X-f6b-2``, leaf (3c); rulings **R-BI12**, **R-BI26**,
-**R-BI27**, **R-BI28**; ledger row **BI-499**.  Bridge is a fake at
+**R-BI27**, **R-BI28**, **R-BI29**; ledger row **BI-499**.  Bridge is a fake at
 ``requests.post`` / ``requests.get`` (the service tests' spy, shared, behind
 the same net: every fake URL names Bridge's real host because the pin admits
 no other, so an unstubbed request fails at ``Session.send`` rather than
@@ -377,6 +377,27 @@ class TestTheClaimDoor:
         refused = _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
         assert [record.refusal_class for record in refused] == ["BridgeRefused"]
         assert (refused[0].status, refused[0].error_class) == (200, "ForeignHost")
+        _no_secret_anywhere(caplog, body)
+
+    def test_a_redirected_claim_is_refused_and_logged(
+        self, auth_client, db, seed_user, bridge, caplog,
+    ):
+        """Ruling R-BI29 at the door: Bridge answers the claim with a 302;
+        a designed 400 saying so, nothing stored, the paste form offered
+        again, and BI-499's record carrying ``(302, "Redirect")``."""
+        bridge.post_answer = _FakeResponse(_CLAIM_URL, status_code=302)
+        with caplog.at_level(logging.WARNING):
+            response = _connect(auth_client, seed_user)
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 400
+        assert "redirect (HTTP 302)" in body
+        assert 'name="setup_token"' in body
+        assert db.session.query(BankFeed).count() == 0
+        assert bridge.gets == []
+        refused = _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
+        assert [record.refusal_class for record in refused] == ["BridgeRefused"]
+        assert (refused[0].status, refused[0].error_class) == (302, "Redirect")
         _no_secret_anywhere(caplog, body)
 
     def test_another_owners_page_is_a_404(

@@ -1,6 +1,6 @@
 """The bank feed's doors: claim, list, map, disconnect (plan step X-f6b-2, leaf 3c).
 
-Rulings **R-BI12**, **R-BI26**, **R-BI27**, **R-BI28**.  Bridge is a fake at
+Rulings **R-BI12**, **R-BI26**, **R-BI27**, **R-BI28**, **R-BI29**.  Bridge is a fake at
 ``requests.post`` / ``requests.get``, the shape ``test_auth_service``'s HIBP
 tests stub.  Every fake URL names Bridge's REAL host, because the host pin
 (R-BI28) refuses any other; so a forgotten stub would reach the real Bridge,
@@ -22,16 +22,20 @@ cannot**:
   record is asserted free of it;
 * **the host that is checked is the host that is reached** -- the pin is
   fed the URL whose host ``urlsplit`` and ``requests`` read differently, and
-  refuses it.
+  refuses it; and no redirect is followed (R-BI29): every call carries
+  ``allow_redirects=False`` and a ``3xx`` answer is a refusal of its own.
 """
 
 import base64
+import io
 import traceback
 from decimal import Decimal
 from urllib.parse import urlsplit
 
 import pytest
 import requests
+from requests.adapters import HTTPAdapter
+from requests.structures import CaseInsensitiveDict
 
 from app import ref_cache
 from app.enums import StatementSourceEnum
@@ -155,6 +159,13 @@ class _Bridge:
         return self.get_answer
 
 
+#: ``requests.Session.send`` as imported, before the net below replaces it:
+#: the adapter-level cases put it back so ``requests`` itself runs down to a
+#: fake ``HTTPAdapter.send``, which is the only place "what ``requests`` does
+#: after a 3xx" can be seen.
+_REAL_SESSION_SEND = requests.Session.send
+
+
 def block_real_requests(monkeypatch) -> None:
     """Make any real ``requests`` call in this test fail loudly.
 
@@ -187,6 +198,42 @@ def _no_real_bridge(monkeypatch):
 def bridge(monkeypatch):
     """Bridge, faked and spied."""
     return _Bridge(monkeypatch)
+
+
+def _bridge_at_the_adapter(monkeypatch, *, status, location):
+    """Fake Bridge one layer DOWN, at ``HTTPAdapter.send``, for one test.
+
+    The :class:`_Bridge` spy replaces ``requests.post``/``get`` and so cannot
+    see what ``requests`` does after a ``3xx``; this restores the real
+    ``Session.send`` (the net sits there) and answers every adapter send
+    with *status* and a ``Location`` of *location*, so ``requests``' own
+    redirect handling runs and every request it would make is counted.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+        status: The status every send is answered with.
+        location: The ``Location`` header, as ``http.client`` would hand it
+            over (a ``str``).
+
+    Returns:
+        The list every send appends ``(method, host)`` to.
+    """
+    sent = []
+
+    def _send(self, request, **kwargs):
+        sent.append((request.method, urlsplit(request.url).hostname))
+        answer = requests.Response()
+        answer.status_code = status
+        answer.headers = CaseInsensitiveDict({"Location": location})
+        answer.raw = io.BytesIO(b"")
+        answer.url = request.url
+        answer.request = request
+        answer.reason = "Found"
+        return answer
+
+    monkeypatch.setattr(requests.Session, "send", _REAL_SESSION_SEND)
+    monkeypatch.setattr(HTTPAdapter, "send", _send)
+    return sent
 
 
 def _connect(seed_user, bridge):
@@ -419,6 +466,122 @@ class TestTheHostPin:
             bank_feed.claim_feed(seed_user["user"].id, token)
 
         assert bridge.posts == []
+
+
+class TestNoRedirectIsFollowed:
+    """Ruling R-BI29: a request ends where it started, or is refused.
+
+    ``requests`` follows a redirect on its own, to any host the ``Location``
+    names; here every call is sent with ``allow_redirects=False`` and a
+    ``3xx`` answer -- which ``raise_for_status`` lets through -- is refused
+    with its status and the class ``Redirect``, before its body is read as
+    an answer.
+    """
+
+    def test_both_calls_are_sent_with_redirects_off(
+        self, app, db, seed_user, bridge,
+    ):
+        """The flag itself, on the claim POST and the listing GET: what
+        keeps ``requests`` from following is the argument, so the argument
+        is what is asserted -- on both doors, although one function sends
+        for both, because that is the claim the module makes."""
+        _connect(seed_user, bridge)
+        db.session.flush()
+        bank_feed.list_bridge_accounts(seed_user["user"].id)
+
+        assert bridge.posts[0][1]["allow_redirects"] is False
+        assert bridge.gets[0][1]["allow_redirects"] is False
+
+    @pytest.mark.parametrize(
+        "status", [300, 301, 302, 304, 307, 308, 399], ids=str,
+    )
+    def test_a_redirected_claim_is_refused_and_stores_nothing(
+        self, app, db, seed_user, bridge, status,
+    ):
+        """A ``3xx`` claim answer with an empty body: refused as
+        ``Redirect`` carrying the status -- not as an unreadable body, which
+        is what reading the empty body as an answer would have said -- and
+        one POST only.  ``300``, ``304`` and ``399`` are not among the five
+        statuses ``requests`` calls a redirect; the ruling says "a 3xx", and
+        none of them is Bridge's answer either."""
+        bridge.post_answer = _FakeResponse(_CLAIM_URL, status_code=status)
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            _connect(seed_user, bridge)
+
+        assert excinfo.value.error_class == "Redirect"
+        assert excinfo.value.status == status
+        assert f"HTTP {status}" in str(excinfo.value)
+        assert "DEMO-TOKEN-1234" not in str(excinfo.value)
+        assert len(bridge.posts) == 1
+        assert db.session.query(BankFeed).count() == 0
+
+    def test_a_redirected_listing_is_refused(
+        self, app, db, seed_user, bridge,
+    ):
+        """The listing's ``302`` with no JSON body: ``Redirect``, not the
+        decode error reading the body would have raised; one GET only."""
+        _connect(seed_user, bridge)
+        db.session.flush()
+        bridge.get_answer = _FakeResponse(
+            f"{_ACCESS_URL}/accounts", status_code=302,
+        )
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            bank_feed.list_bridge_accounts(seed_user["user"].id)
+
+        assert excinfo.value.error_class == "Redirect"
+        assert excinfo.value.status == 302
+        assert len(bridge.gets) == 1
+        _no_secret_in(str(excinfo.value))
+
+    def test_a_redirect_sends_nothing_after_the_first_request(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """FIRING CONTROL for the ruling's "no second request", graded
+        where it can be.  The spy at ``requests.post`` counts the service's
+        own calls and cannot see what ``requests`` does after a ``3xx``, so
+        this case lets ``requests`` run and fakes Bridge at the adapter,
+        answering every send with a 302 to a FOREIGN host: exactly one
+        send, to Bridge's host, and the refusal is ``Redirect``.  With the
+        flag mutated to ``True`` the same fake is asked again for
+        ``evil.invalid``, thirty times, and this fails."""
+        sent = _bridge_at_the_adapter(
+            monkeypatch, status=302, location="https://evil.invalid/x",
+        )
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            bank_feed.claim_feed(seed_user["user"].id, _SETUP_TOKEN)
+
+        assert sent == [("POST", "bridge.simplefin.org")]
+        assert (excinfo.value.status, excinfo.value.error_class) == (
+            302, "Redirect",
+        )
+        assert db.session.query(BankFeed).count() == 0
+
+    def test_a_redirect_requests_cannot_read_is_refused_not_a_500(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """Even with redirects off, ``Session.send`` builds the unsent
+        ``Response.next`` from the ``Location``, and a header it cannot
+        decode raises ``UnicodeDecodeError`` -- not a ``RequestException``
+        -- out of ``requests.post`` (measured 2026-09-20 on requests
+        2.34.2; ``/\xe9`` is what ``http.client`` hands over for a
+        latin-1 byte).  A designed refusal carrying the class, no status
+        (the response is lost with the exception), one send, nothing
+        stored, no cause chained, and the token nowhere in the sentence."""
+        sent = _bridge_at_the_adapter(monkeypatch, status=302, location="/\xe9")
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            bank_feed.claim_feed(seed_user["user"].id, _SETUP_TOKEN)
+
+        assert excinfo.value.error_class == "UnicodeDecodeError"
+        assert excinfo.value.status is None
+        assert len(sent) == 1
+        assert excinfo.value.__cause__ is None
+        assert excinfo.value.__suppress_context__
+        assert "DEMO-TOKEN-1234" not in str(excinfo.value)
+        assert db.session.query(BankFeed).count() == 0
 
 
 class TestTheClaimStoresWhatBridgeAnswers:

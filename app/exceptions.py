@@ -751,9 +751,11 @@ class BridgeRefused(BankFeedError):
             answer arrived.
         error_class: The ``requests`` exception class name, or the feed
             service's own name for an answer of the wrong shape
-            (``UnexpectedBody``, ``UnexpectedShape``) or, under ruling
-            **R-BI28**, for a claim answered with an access URL on a server
-            other than Bridge's (``ForeignHost``).
+            (``UnexpectedBody``, ``UnexpectedShape``), under ruling
+            **R-BI28** for a claim answered with an access URL on a server
+            other than Bridge's (``ForeignHost``), or under ruling
+            **R-BI29** for an answer that is a redirect, which the feed
+            never follows (``Redirect``).
     """
 
     def __init__(self, sentence: str, *, status: "int | None", error_class: str):
