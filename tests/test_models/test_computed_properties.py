@@ -94,7 +94,8 @@ class TestTransactionEffectiveAmount:
 
         A row built in a SETTLED status carries the whole record -- the day, the
         figure and how the figure is known -- through the one door a bare-built
-        fixture uses (``_test_helpers.settlement_columns``).  *actual* is the
+        fixture uses (``_test_helpers.cover_bare_settled_row``, which writes the
+        covering movement; plan step balance:X-bi-4b-2).  *actual* is the
         figure a human typed, which makes the record a ``corrected`` one; with
         no *actual* the record is ``derived`` at the row's own plan, which is
         what a settle with nothing to correct records.

@@ -88,7 +88,8 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
 
     A row built in a SETTLED status carries the whole record -- the day, the
     figure and how the figure is known -- through the one door a bare-built
-    fixture uses (``_test_helpers.settlement_columns``, plan step X-au-c3).
+    fixture uses (``_test_helpers.cover_bare_settled_row``, which writes the
+    covering movement; plan steps X-au-c3 and balance:X-bi-4b-2).
     *settled_amount* is a figure a HUMAN typed, which makes the record
     ``corrected``; with none the record is ``derived`` at the row's own plan.
     """

@@ -597,8 +597,10 @@ class TestDataConsistency:
         **What such a row looks like changed at plan step X-au-c3.**  It carried
         no figure at all and every reader fell back to its estimate; it now
         RECORDS what the settle booked, on the ``derived`` basis, and the
-        estimate beside it is the plan.  The check must pass on that shape,
-        which is what routing the fixture through ``settlement_columns`` builds.
+        estimate beside it is the plan; since plan step balance:X-bi-4b-2 that
+        record IS the covering movement.  The check must pass on that shape,
+        which is what routing the fixture through ``cover_bare_settled_row``
+        builds.
         """
         status_done = db.session.query(Status).filter_by(name="Paid").one()
         txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
