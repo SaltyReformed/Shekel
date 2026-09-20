@@ -121,7 +121,8 @@ class TestBaseComposeHardeningFields:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed base compose document.
 
         ``yaml.safe_load`` is the standard tool here: we never need
@@ -430,7 +431,8 @@ class TestBundledNginxConfigForReadOnlyRoot:
     """
 
     @pytest.fixture(scope="class")
-    def conf_text(self) -> str:
+    @classmethod
+    def conf_text(cls) -> str:
         """Return the raw text of the bundled nginx config so the
         per-test substring assertions can match against it.
         """
@@ -519,7 +521,8 @@ class TestDevComposeNoImplicitAllInterfaceBind:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed dev compose document.
 
         Class-scoped so the YAML is parsed once and reused across
@@ -600,7 +603,8 @@ class TestProdComposeOverrideInheritsHardening:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed shared-mode override document.
 
         Class-scoped so the YAML is parsed once and reused across
@@ -655,7 +659,8 @@ class TestMergedComposeHardeningSurvivesOverride:
     """
 
     @pytest.fixture(scope="class")
-    def merged(self) -> dict:
+    @classmethod
+    def merged(cls) -> dict:
         """Return the merged base + shared-mode override compose
         document as a parsed dict.
 
