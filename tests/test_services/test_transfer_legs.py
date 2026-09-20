@@ -84,10 +84,12 @@ from app.services.transfer_service import (
     update_transfer,
 )
 from app.utils.balance_predicates import is_projected_clause
+from app.services.account_resolver import resolve_cash_flow_set
 from tests._test_helpers import (
     cover_bare_settled_row,
     basis_for,
     capture_sql_statements,
+    create_account_of_type,
     create_loan_account,
     create_savings_account,
     create_settled_transfer,
@@ -1340,6 +1342,45 @@ class TestTheSetsTransferHalf:
             assert [(leg.account_id, leg.is_income) for leg in set_transfer_legs(
                 from_card, [payment],
             )] == [(card.id, True)]
+
+    def test_one_endpoint_in_the_set_shows_from_that_endpoint_even_off_the_balance_line(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """R-CC23's second arm under a set of TWO, through the resolver.
+
+        A savings -> card transfer is drawn on the CARD, a member that is not
+        the balance line; a checking -> savings one on checking.  Sets of
+        one cannot grade this arm (the one member IS the line), and the
+        rejected option 3 -- hide every transfer leg on a non-balance member
+        -- passes them; the deleted row case graded it, and this is its leg
+        twin (the second review of leaf X-bi-6-1b).
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            savings = _savings(seed_user)
+            into_card = create_transfer(
+                seed_user, db.session, savings, card, seed_periods[2],
+                amount=Decimal("300.00"),
+            )
+            into_savings = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            cash_flow = resolve_cash_flow_set(seed_user["user"].id, None)
+            assert cash_flow.member_ids == (checking.id, card.id)
+            assert cash_flow.balance.id == checking.id
+
+            assert leg_accounts_shown(cash_flow, into_card) == (card.id,)
+            assert leg_accounts_shown(cash_flow, into_savings) == (checking.id,)
+            assert [
+                (leg.account_id, leg.is_income)
+                for leg in set_transfer_legs(cash_flow, [into_card, into_savings])
+            ] == [(card.id, True), (checking.id, False)]
 
     def test_the_period_loader_windows_by_membership_and_takes_the_readers_filter(
         self, app, db, seed_user, seed_periods,

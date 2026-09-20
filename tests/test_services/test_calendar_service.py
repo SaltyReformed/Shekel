@@ -1863,6 +1863,38 @@ class TestATransferIsALegOfItsParent:
             assert entry.is_income is True
             assert savings_view.total_income == Decimal("240.00")
 
+    def test_a_transfer_into_a_member_off_the_balance_line_is_that_members_cell(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A $300.00 savings -> card transfer on checking's calendar (set
+        ``(checking, card)``): one INCOME cell, the card's leg, 300.00 in --
+        R-CC23's one-endpoint arm end to end, the reader-level twin of
+        ``test_transfer_legs``' case (the second review of leaf X-bi-6-1b)."""
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("900.00"),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, savings, card, seed_periods[0],
+                amount=Decimal("300.00"), due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+
+            view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
+            )
+            [entry] = view.day_entries[6]
+            assert entry.item_key == (transfer.id, card.id)
+            assert entry.is_income is True
+            assert entry.amount == Decimal("300.00")
+            assert view.total_income == Decimal("300.00")
+            assert view.total_expenses == Decimal("0")
+
     def test_a_cancelled_transfers_leg_is_not_a_cell(
         self, app, seed_user, seed_periods, db,
     ):

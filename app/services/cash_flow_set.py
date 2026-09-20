@@ -59,7 +59,10 @@ the SETTLED far-leg shadows for the balance seam's subtotal (Transfer
 Invariant 5's record half) until ``X-bi-6``'s remaining leaves move that join.
 
 Services boundary (``CLAUDE.md``): no Flask symbol.  The clauses are built,
-never executed, here; :func:`far_legs_of` holds the seam's two queries.
+never executed, here; the queries this module DOES run are
+:func:`set_transfer_legs_in_periods` (the readers' period-windowed transfer
+load, with the record load :func:`set_transfer_legs` reaches through
+``transfer_legs``) and :func:`far_legs_of`'s two for the seam.
 """
 
 from collections.abc import Iterable
