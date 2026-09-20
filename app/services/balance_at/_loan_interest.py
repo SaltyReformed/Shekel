@@ -78,7 +78,7 @@ from collections.abc import Callable
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.loan_ledger import LoanLedgerWalk, LoanPaymentSplit
+from app.services.loan_ledger import LoanLedgerWalk, PaymentOutcome
 from app.services.loan_loaders import loan_payment_due_date
 from app.utils.balance_predicates import settled_day
 
@@ -136,7 +136,7 @@ def loan_interest_paid_in_year(
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
-        ctx.loan_walk(account), year, lambda split: split.interest,
+        ctx.loan_walk(account), year, lambda outcome: outcome.interest,
     )
 
 
@@ -175,14 +175,14 @@ def loan_principal_paid_in_year(
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
-        ctx.loan_walk(account), year, lambda split: split.principal,
+        ctx.loan_walk(account), year, lambda outcome: outcome.principal,
     )
 
 
 def _settled_sum_in_year(
     walk: LoanLedgerWalk,
     year: int,
-    part: Callable[[LoanPaymentSplit], Decimal],
+    part: Callable[[PaymentOutcome], Decimal],
 ) -> Decimal:
     """Sum a settled-payment split PART attributed to the display-tz paid *year*.
 
@@ -197,8 +197,8 @@ def _settled_sum_in_year(
     Args:
         walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`.
         year: The DISPLAY-tz civil year to sum within.
-        part: The split field to sum -- ``lambda split: split.interest`` or
-            ``lambda split: split.principal``.
+        part: The split field to sum -- ``lambda outcome: outcome.interest``
+            or ``lambda outcome: outcome.principal``.
 
     Returns:
         The cent-quantized sum of *part* over the payments paid in *year*
@@ -206,9 +206,9 @@ def _settled_sum_in_year(
     """
     return sum(
         (
-            part(split)
-            for split in walk.payment_splits
-            if _paid_year(split.income_shadow) == year
+            part(outcome)
+            for outcome in walk.settled_splits
+            if _paid_year(outcome.source) == year
         ),
         _ZERO_MONEY,
     )
@@ -223,7 +223,8 @@ def loan_interest_in_year(
     same total producer the balance derives from (see the module docstring):
 
     * **SETTLED (past) interest -- the FOLD.**  Each settled payment's ACTUAL
-      accrued interest (:attr:`~app.services.loan_ledger.LoanPaymentSplit.interest`,
+      accrued interest (the ``split.interest`` of its
+      :class:`~app.services.loan_ledger.PaymentOutcome`,
       the interest the payment's real cash paid on the reset-aware running balance --
       correct even for an off-schedule extra / short payment, where the schedule's
       replayed figure is not), attributed to the DISPLAY-timezone civil YEAR of its
@@ -282,15 +283,15 @@ def loan_interest_in_year(
     walk = ctx.loan_walk(account)
     payment_day = resolved_loan(account, ctx).params.payment_day
     settled_interest = _settled_sum_in_year(
-        walk, year, lambda split: split.interest,
+        walk, year, lambda outcome: outcome.interest,
     )
     # The installments a settled payment already satisfies -- excluded from the
     # projected half so no installment counts in both.  The set is the WALK's own
     # (every settled payment, the settled half's set), NOT the plan's
     # ``confirmed_shadows_through`` cut: see the module docstring's two-clock note.
     settled_slots = frozenset(
-        _due_slot(split.income_shadow, payment_day)
-        for split in walk.payment_splits
+        _due_slot(outcome.source, payment_day)
+        for outcome in walk.settled_splits
     )
     projected_interest = plan_interest_in_year(
         debt_schedule.projection_seed, memoized_plan(account, ctx), year,

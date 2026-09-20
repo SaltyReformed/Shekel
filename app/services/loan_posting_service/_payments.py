@@ -68,7 +68,7 @@ from app.services.user_write_lock import lock_user_writes
 from app.utils.balance_predicates import settled_day
 
 from app.services.loan_ledger import (
-    LoanPaymentSplit,
+    PaymentOutcome,
     compute_loan_payment_splits,
 )
 
@@ -173,7 +173,7 @@ def _posted_loan_payment_legs(
 
 
 def _loan_payment_target(
-    split: LoanPaymentSplit,
+    outcome: PaymentOutcome,
 ) -> dict[int, tuple[Decimal, int]]:
     """Build the target ledger legs for one payment's real-split correction.
 
@@ -198,7 +198,10 @@ def _loan_payment_target(
     Step-2 cash leg, so no correction is owed.
 
     Args:
-        split: The payment's :class:`LoanPaymentSplit`.
+        outcome: The payment's :class:`~app.services.loan_ledger.PaymentOutcome`
+            -- a RECORDED payment's, whose ``event.source`` is its settled
+            income shadow (the walk this writer books from carries no
+            projection: :func:`~app.services.loan_ledger.walk_loan_ledger`).
 
     Returns:
         ``{ledger_account_id: (amount, posting_kind_id)}`` for the non-zero
@@ -208,7 +211,7 @@ def _loan_payment_target(
         PostingError: If the loan account has no linked ledger account (a broken
             chart-of-accounts pairing).
     """
-    shadow = split.income_shadow
+    shadow = outcome.source
     # The shadow's OWN owner column (plan step ``pay_calendar:C13-b``); it
     # walked ``shadow.pay_period.user_id`` until then, and a shadow states its
     # parent transfer's owner directly since ``C13-a``.
@@ -219,14 +222,14 @@ def _loan_payment_target(
     # The loan-linked leg backs the non-principal cash out of the loan; its
     # magnitude mirrors the interest + escrow + refund legs, so the four sum to
     # zero and the loan nets to the real principal.
-    loan_leg = -(split.interest + split.escrow + split.excess)
+    loan_leg = -(outcome.interest + outcome.escrow + outcome.excess)
     if loan_leg != 0:
         loan_linked = _ledger_account_for(loan_account_id)
         target[loan_linked.id] = (
             loan_leg, ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
         )
     for ledger_kind, posting_kind, attr in _LOAN_CORRECTION_COMPONENTS:
-        amount = getattr(split, attr)
+        amount = getattr(outcome, attr)
         if amount != 0:
             ledger = ledger_account_service.get_or_create_loan_ledger_account(
                 owner_id, loan_account_id, ledger_kind,
@@ -390,7 +393,7 @@ def _stale_loan_payment_shadows(
 def reconcile_loan_payment_splits(
     loan_account_id: int,
     scenario_id: int,
-    splits: list[LoanPaymentSplit],
+    splits: list[PaymentOutcome],
 ) -> None:
     """Reconcile a loan's per-payment corrections to a PRE-WALKED split list.
 
@@ -423,11 +426,10 @@ def reconcile_loan_payment_splits(
             it replays every settled payment).
     """
     synced_shadow_ids: set[int] = set()
-    for split in splits:
-        synced_shadow_ids.add(split.income_shadow.id)
-        _reconcile_loan_payment(
-            split.income_shadow, _loan_payment_target(split),
-        )
+    for outcome in splits:
+        shadow = outcome.source
+        synced_shadow_ids.add(shadow.id)
+        _reconcile_loan_payment(shadow, _loan_payment_target(outcome))
 
     # A payment that was posted but has since left the confirmed set (reverted
     # or un-settled) keeps a stale correction; an empty target reverses it to

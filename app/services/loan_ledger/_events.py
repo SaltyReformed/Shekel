@@ -178,13 +178,22 @@ def loan_event_stream(
             carries the escrow in force on its own date.
 
     Returns:
-        The loan's :class:`~._replay.LoanEventStream`.
+        The loan's :class:`~._replay.LoanEventStream` -- its RECORDED facts.
+        It carries no projection: the seam appends the forward plan's to a
+        copy of this stream (``balance_at._loan_stream``) for a read, and the
+        posted ledger replays it as it is.
     """
     payments = [
         LoanCashEvent(
             on_date=loan_loaders.loan_payment_due_date(shadow, payment_day),
             cash=settled_contribution(shadow),
             source=shadow,
+            # The ONE clock, read once here: the settled day the posting
+            # writer stamps the entry with, and the day the fold counts the
+            # principal from (plan step recurrence:R16-c-1 moved the read
+            # from ``dated_deltas`` onto the event, so the projections the
+            # seam appends carry their own day under the same name).
+            visible_on=payment_visible_on(shadow),
         )
         for shadow in shadows
     ]
@@ -201,4 +210,5 @@ def loan_event_stream(
             )
             for anchor in anchor_facts
         ],
+        periods=periods,
     )

@@ -713,10 +713,10 @@ def _assert_completeness(
     )
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
-        entries = loan_correction_entries(_db.session, split.income_shadow.id)
+        entries = loan_correction_entries(_db.session, split.source.id)
         if non_principal != Decimal("0"):
             assert entries, (
-                f"settled payment shadow {split.income_shadow.id} has non-"
+                f"settled payment shadow {split.source.id} has non-"
                 f"principal {non_principal} but no correction -- an uncorrected "
                 f"Step-2 cash entry"
             )

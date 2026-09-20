@@ -55,7 +55,6 @@ from app.models.account import Account
 from app.services.loan_ledger import (
     LoanLedgerWalk,
     anchor_visible_on,
-    payment_visible_on,
 )
 from app.services.loan_resolver import ConfirmedLedgerView
 from app.services.amortization_engine import AmortizationRow
@@ -154,13 +153,16 @@ def _history_rows_from_walk(
         The chronological confirmed :class:`~app.services.amortization_engine.AmortizationRow`
         list (possibly empty for a configured loan with no confirmed payment yet).
     """
-    # Every event VISIBLE by as_of, tagged for the contract-order sort.  A payment
-    # is visible from its settled date, an anchor from its own date (the ONE clock,
-    # :mod:`app.services.loan_ledger._visible`).
+    # Every RECORDED event VISIBLE by as_of, tagged for the contract-order sort.
+    # A payment is visible from its settled date (carried on its event as
+    # ``visible_on``), an anchor from its own date (the ONE clock,
+    # :mod:`app.services.loan_ledger._visible`).  ``settled_splits`` rather than
+    # the whole list: the seam's walk carries the loan's projections behind its
+    # facts since plan step recurrence:R16-c-1, and a confirmed row is a fact.
     events: list[tuple[date, int, object]] = [
-        (split.due_date, _TAG_PAYMENT, split)
-        for split in walk.payment_splits
-        if payment_visible_on(split.income_shadow) <= as_of
+        (outcome.due_date, _TAG_PAYMENT, outcome)
+        for outcome in walk.settled_splits
+        if outcome.visible_on <= as_of
     ] + [
         (correction.anchor.anchor_date, _TAG_ANCHOR, correction)
         for correction in walk.anchor_corrections

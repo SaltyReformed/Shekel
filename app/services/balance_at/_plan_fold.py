@@ -188,17 +188,20 @@ def _split_plan(
         seed,
         LoanEventStream(
             charges=plan.charges,
-            payments=[
+            payments=[],
+            projections=[
                 LoanCashEvent(
                     on_date=payment.due_date,
                     cash=payment.cash,
                     source=payment,
+                    visible_on=payment.effective_date,
                 )
                 for payment in sorted(
                     plan.payments,
                     key=lambda record: (record.due_date, record.effective_date),
                 )
             ],
+            periods=plan.periods,
         ),
         extra_per_period=extra_monthly,
     )

@@ -596,8 +596,10 @@ def _apply_contractual_payment(
     **The split is :func:`~app.utils.money.apply_payment_cash`, the ONE
     allocation, since plan step X-au-g-2c-3a.**  This restated it inline
     before, and the restatement was forced rather than chosen: the rule lived
-    in ``loan_ledger._split``, which this package sits BELOW in the import
-    graph, so calling it was a cycle.  ``is_last_month`` is not part of the
+    in ``loan_ledger._split`` (the walk's split module, folded into
+    ``loan_ledger._replay`` at plan step recurrence:R16-c-1), which this
+    package sits BELOW in the import graph, so calling it was a cycle.
+    ``is_last_month`` is not part of the
     allocation and stays here: it is a SCHEDULE-closing rule (the final row
     absorbs the residue), not a statement about how cash divides.
 

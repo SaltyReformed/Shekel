@@ -112,7 +112,8 @@ class PaymentInstallment:
             not a row of its own).  Carried so a caller that ALSO needs the
             source -- pricing it, or keying a map by its id -- takes it from
             here rather than issuing a second query, the same reason
-            :class:`~app.services.loan_ledger.LoanPaymentSplit` carries one.
+            :class:`~app.services.loan_ledger.PaymentOutcome` carries one on
+            its event.
             Which of the two it is says which relation the payment came from,
             and therefore whether it has happened, exactly as ``dates`` does.
         dates: The payment's

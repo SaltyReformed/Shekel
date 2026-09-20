@@ -13,11 +13,24 @@ seam boundary.
 ```text
 LoanEvent = (event_date, kind, payload)
 
-kind = ASSERTION   balance := anchor_balance       (the opening + every true-up)
-     | PAYMENT     balance -= split(cash).principal (settled transfer shadows)
+kind = CHARGE      standing += (interest, escrow)    (one per accrual period)
+     | ASSERTION   balance := anchor_balance         (the opening + every true-up;
+                                                      clears what stands)
+     | PAYMENT     balance -= split(cash).principal  (settled transfer shadows,
+                                                      then the plan's projections)
 
-walk_loan_ledger(loan, scenario) = replay(events, seeded at 0.00)
+walk_loan_ledger(loan, scenario) = replay(facts, seeded at 0.00)
+replay_loan_stream(facts + projections) = the same replay, the whole timeline
 ```
+
+**Since plan step recurrence:R16-c-1 the stream is ONE list, past and future**
+(ruling **R-R90**): the seam appends a loan's forward plan -- its projected
+rows and estimated occurrences -- to a copy of the recorded stream, behind
+every fact, and :func:`replay_loan_stream` replays it from the same seed the
+posted ledger's walk uses, the origination.  A projection cannot be placed
+ahead of a fact (:func:`projection_boundary`), so the fact prefix of that
+replay IS :func:`walk_loan_ledger`'s output and the two cannot disagree on a
+recorded payment.
 
 ## Why it is a leaf, and what depends on it
 
@@ -54,10 +67,9 @@ walk needs no fence (plan step D-fold).
   since plan step R16-a, because fusing them made the payment COUNT the clock:
   charging a month's interest inside the per-payment step means N payments charge
   N months however far apart they fall.
-* :mod:`._split` -- the loan's per-payment FACT
-  (:class:`LoanPaymentSplit`): the four economic parts a payment's cash turned
-  out to be, the record they came from, the installment they satisfy and the rate
-  period they accrued at.  Pure, and it computes nothing.
+* ``_split`` -- DELETED at plan step recurrence:R16-c-1.  It copied the
+  replay's :class:`PaymentOutcome` field for field into a ``LoanPaymentSplit``;
+  the outcome is the record now, for a settled and a projected payment alike.
 * :mod:`._events` -- the event stream: which of the loan's rows are facts, which
   date governs each, and what figure each carries.  Reads no clock, and decides
   no order -- that is :mod:`._replay`'s.
@@ -116,6 +128,7 @@ from ._walk import (
     LoanLedgerWalk,
     compute_loan_payment_splits,
     dated_deltas,
+    replay_loan_stream,
     walk_loan_ledger,
 )
 from ._charges import (
@@ -130,11 +143,8 @@ from ._replay import (
     LoanResetEvent,
     PaymentOutcome,
     ResetOutcome,
+    projection_boundary,
     replay_loan_events,
-)
-from ._split import (
-    LoanPaymentSplit,
-    split_one_payment,
 )
 from ._visible import (
     anchor_visible_on,
@@ -147,7 +157,6 @@ __all__ = [
     "LoanCashEvent",
     "LoanEventStream",
     "LoanLedgerWalk",
-    "LoanPaymentSplit",
     "LoanReplay",
     "LoanResetEvent",
     "PaymentInstallment",
@@ -162,7 +171,8 @@ __all__ = [
     "loan_event_stream",
     "payment_installments",
     "payment_visible_on",
+    "projection_boundary",
     "replay_loan_events",
-    "split_one_payment",
+    "replay_loan_stream",
     "walk_loan_ledger",
 ]

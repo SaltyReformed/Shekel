@@ -385,8 +385,12 @@ _FENCED_MODULE_RULINGS = {
             # goes with it.  It was correct only while a loan took ONE payment per
             # accrual period, which is the assumption that step exists to remove;
             # the composition survives only as a test oracle, outside ``app/``.
+            #
+            # ``split_one_payment`` -- the per-field copy of a replay outcome into
+            # a ``LoanPaymentSplit`` -- is DELETED at plan step recurrence:R16-c-1
+            # and its ruling goes with it: the outcome IS the record now, and the
+            # ten read-through properties below are how its parts are read.
             "compute_loan_payment_splits",
-            "split_one_payment",
             # The ONE loan replay (plan step X-au-g-2c-3b-2) and the stream it
             # folds.  Chronology and cash decomposition, not balance-at-T.
             #
@@ -421,6 +425,39 @@ _FENCED_MODULE_RULINGS = {
             #     exposure rather than resisting one.
             "loan_event_stream",
             "replay_loan_events",
+            #   * ``replay_loan_stream`` (plan step recurrence:R16-c-1) is that
+            #     same replay handed a stream and returning the walk --
+            #     ``walk_loan_ledger`` without the loads -- so it carries BOTH
+            #     rulings above and adds nothing to either: the seam calls it
+            #     over a stream holding the loan's projections behind its facts,
+            #     and what comes back is still keyed by contract time.
+            #   * ``projection_boundary`` returns a ``date`` -- the day after the
+            #     loan's latest recorded fact -- and cannot yield a figure.
+            "projection_boundary",
+            "replay_loan_stream",
+            # ``LoanLedgerWalk``'s two views (recurrence:R16-c-1) and
+            # ``PaymentOutcome``'s ten read-through properties.  Not one of them
+            # derives anything: ``settled_splits`` / ``projected_splits`` filter
+            # the walk's own outcome list by its ``is_projected`` flag, and each
+            # property returns a field of the outcome's ``event`` or ``split``
+            # under the flat name every reader spells (``outcome.principal`` for
+            # ``outcome.split.principal``).  ``balance_after`` is the replay's
+            # contract-time running balance, the exposure ``replay_loan_events``'s
+            # ruling above already owns; ``charge_date`` / ``due_date`` /
+            # ``visible_on`` are dates; ``source`` is the caller's own record
+            # handed back; the other five are the cash decomposition.
+            "balance_after",
+            "cash",
+            "charge_date",
+            "due_date",
+            "escrow",
+            "excess",
+            "interest",
+            "principal",
+            "projected_splits",
+            "settled_splits",
+            "source",
+            "visible_on",
             # Chronology, not balance: each answers WHEN a fact becomes
             # countable, and the walk answers what it COST.  Each returns a
             # ``date`` and cannot yield a figure at all.  **Three names left this
