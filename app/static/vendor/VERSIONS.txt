@@ -12,8 +12,10 @@
 # / font-src; with the assets self-hosted, every front-end resource
 # ships from this repo.
 #
-# Format per line: <relative path> | <upstream URL> | <sha384 hex hash>
-# Hashes computed via:
+# Format per line: <relative path> | <upstream URL> | sha384-<base64 hash>
+# Hashes computed via (the value is BASE64, not hex; the manifest test
+# tests/test_adversarial/test_cache_control.py::test_vendor_manifest_matches_the_bytes_served
+# recomputes every line):
 #   openssl dgst -sha384 -binary <file> | openssl base64 -A
 
 # ── Bootstrap 5.3.8 ───────────────────────────────────────────────────
@@ -24,27 +26,27 @@ bootstrap/bootstrap.min.css.map       | https://cdn.jsdelivr.net/npm/bootstrap@5
 bootstrap/bootstrap.bundle.min.js     | https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js      | sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI
 bootstrap/bootstrap.bundle.min.js.map | https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js.map  | sha384-QB4naBpk637xz9/VYF2efmUFYCi3L/fh1z0dHyy3J2/lh/CQ5Xk7VRdBI59Qbkxv
 
-# ── Bootstrap Icons 1.11.3 ────────────────────────────────────────────
+# ── Bootstrap Icons 1.13.1 ────────────────────────────────────────────
 # Distribution: https://icons.getbootstrap.com/
 # License: MIT (https://github.com/twbs/icons/blob/main/LICENSE)
 # The CSS references fonts/bootstrap-icons.woff{,2} via relative URL;
 # both font files must travel with the CSS.
-bootstrap-icons/bootstrap-icons.min.css      | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css        | sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+
-bootstrap-icons/bootstrap-icons.css          | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css            | sha384-tViUnnbYAV00FLIhhi3v/dWt3Jxw4gZQcNoSCxCIFNJVCx7/D55/wXsrNIRANwdD
-bootstrap-icons/fonts/bootstrap-icons.woff2  | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff2   | sha384-QV+/zNG6sFIQ/qAWRxaR4sjpF37wr046d3pTS5QlogmJfbmyeiWip4YIIGmdK4pa
-bootstrap-icons/fonts/bootstrap-icons.woff   | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff    | sha384-jiOBsoZ7OEMAq7BXRR05+D5H/5Lna7TAlXVGHhkfH68p5P1eKJTeI4KCIOfBzG/O
+bootstrap-icons/bootstrap-icons.min.css      | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css        | sha384-CK2SzKma4jA5H/MXDUU7i1TqZlCFaD4T01vtyDFvPlD97JQyS+IsSh1nI2EFbpyk
+bootstrap-icons/bootstrap-icons.css          | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.css            | sha384-Bk5cbLkZQ5raZ0+H2/+VbfYx3WpvxvQK4zqXZr7sYODuaX7bKXoSOnipQxkaS8sv
+bootstrap-icons/fonts/bootstrap-icons.woff2  | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/fonts/bootstrap-icons.woff2   | sha384-xEoI56EFpIZiDZZKBZxsn3gO3u/FvXtOpHbtkMWmSdfzDw3x9XdVc3i70O9hm4SC
+bootstrap-icons/fonts/bootstrap-icons.woff   | https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/fonts/bootstrap-icons.woff    | sha384-IYfD9pNP/nesQsPyYtTdGCb4uhEWUmNF8GxaCvqcJFH+Of3c1b0VbH6hdHUonDSC
 
-# ── htmx 2.0.4 ────────────────────────────────────────────────────────
+# ── htmx 2.0.10 ───────────────────────────────────────────────────────
 # Distribution: https://htmx.org/
 # License: BSD 2-Clause (https://github.com/bigskysoftware/htmx/blob/master/LICENSE)
-htmx/htmx.min.js                       | https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js                                  | sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+
+htmx/htmx.min.js                       | https://unpkg.com/htmx.org@2.0.10/dist/htmx.min.js                                 | sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V
 
-# ── Chart.js 4.4.7 ────────────────────────────────────────────────────
+# ── Chart.js 4.5.1 ────────────────────────────────────────────────────
 # Distribution: https://www.chartjs.org/
 # License: MIT (https://github.com/chartjs/Chart.js/blob/master/LICENSE.md)
 # Used only on dashboards (analytics, debt_strategy, investment, loan,
 # retirement); not required for the core app.
-chart-js/chart.umd.min.js              | https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js                 | sha384-vsrfeLOOY6KuIYKDlmVH5UiBmgIdB1oEf7p01YgWHuqmOHfZr374+odEv96n9tNC
+chart-js/chart.umd.min.js              | https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js                 | sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ
 
 # ── zxcvbn 4.4.2 ──────────────────────────────────────────────────────
 # Distribution: https://github.com/dropbox/zxcvbn (archived but stable)

@@ -168,8 +168,8 @@ Two claims survive any partition and they are the ones that carry the argument:
    not a comparison against the reset and no partition can rescue it. *(An earlier draft added
    "including the days the reset does not touch"; the same paragraph proves that set is EMPTY.)*
 
-And one sentence about the step this began with: **`X-f3c-4` as specified would book
-`-$1,777.31` on 2026-08-28, the single day `e_a = $0.00` proves the app already correct.**
+And one sentence about the step this began with: **`X-f3c-4` as specified would book `-$1,777.31` on
+2026-08-28, the single day `e_a = $0.00` proves the app already correct.**
 
 ### 1.5 The import is money-neutral, rehearsed on production
 
