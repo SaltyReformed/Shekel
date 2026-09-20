@@ -171,6 +171,17 @@ _SENSITIVE_KEY_NAMES = (
     # puts the old spelling back here first.
     r"secret[_-]key",
     r"field[_-]encryption[_-]key(?:[_-]old)?",
+    # The bank feed's credentials (plan step ``bank_import:X-f6b-2``,
+    # ruling R-BI12).  ``access_url`` is the SimpleFIN access URL -- a
+    # URL whose userinfo IS the credential -- and ``access_url_encrypted``
+    # its ciphertext column on ``budget.bank_feeds``; ``setup_token`` is
+    # the one-time base64 token the owner pastes to claim it.  Each
+    # needs its own entry: the ``_`` before ``url`` / ``token`` blocks
+    # the bare ``token`` key below from matching ``setup_token``, and
+    # nothing else here names a URL by key.  A bare access URL with no
+    # key before it is ``_URL_USERINFO``'s, below.
+    r"access[_-]url(?:[_-]encrypted)?",
+    r"setup[_-]token",
     # MFA backup codes.  ``backup_code`` (singular) is the form-field
     # accepted at /mfa/verify; ``backup_codes`` (plural) is the JSON
     # array column on auth.mfa_configs.
@@ -211,6 +222,36 @@ _KEY_GROUP = "(?:" + "|".join(_SENSITIVE_KEY_NAMES) + ")"
 # libraries' debug output).  Surrounding whitespace is optional.
 _SEP = r"\s*[:=]=?\s*"
 
+# A credential carried INSIDE a URL: ``scheme://user:password@host``
+# (ruling ``bank_import:R-BI25``).  The two key=value forms in
+# ``_SENSITIVE_PATTERNS`` find a secret by the KEY before it, and a URL
+# in a message has none -- a ``requests`` exception's text, a connection
+# string in an ``error=str(exc)`` extra.  The SimpleFIN access URL
+# (``bank_import:X-f6b-2``) is exactly this shape, and so is
+# ``DATABASE_URL``, which ``database[_-]url`` catches only when spelled
+# with its key.  The ``key`` group is the scheme and ``://`` so
+# ``_redact_value`` keeps them; the value is the userinfo up to (not
+# including) the ``@``, matched by lookahead so the host survives:
+# ``https://[REDACTED]@bridge.example``.  The user part may be EMPTY
+# (``redis://:password@host``, the Redis convention).  Idempotent for the
+# same reason as the bare-value form: ``[REDACTED]`` holds no ``:``, so
+# the rewritten text does not match again.  A URL with a user and no
+# ``:`` is a name, not a credential, and is left alone.
+#
+# THE SURFACE NONE OF THESE PATTERNS REACH: a traceback.  ``exc_info`` /
+# ``exc_text`` are reserved record attributes (``_RESERVED_RECORD_ATTRS``)
+# the filter skips, and the formatter renders the traceback AFTER the
+# filter ran -- so ``logger.exception(...)`` under a ``requests`` error,
+# whose text names the URL it was for, emits the credential (measured by
+# adversarial review 2026-09-19).  A caller that may hold a credential
+# URL logs ``error=str(exc)`` through ``log_event`` and never
+# ``exc_info=True``; closing the surface itself is a scrub at
+# ``formatException``, a step of its own.
+_URL_USERINFO = re.compile(
+    r'(?P<key>(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://)'
+    r'(?P<value>[^\s/@:]*:[^\s/@]*)(?=@)',
+)
+
 _SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Quoted-value form.  Either single or double quotes; greedy
     # match to the matching closing quote so embedded delimiter
@@ -239,6 +280,7 @@ _SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r'(?P<value>[^%\[\s,;}\]&|"\'][^\s,;}\]&|"\']*)',
         re.IGNORECASE,
     ),
+    _URL_USERINFO,
 )
 
 # Field names whose values should be replaced wholesale when they
@@ -265,6 +307,9 @@ _SENSITIVE_EXTRA_FIELDS = frozenset({
     # process holds a value under them.
     "field_encryption_key",
     "field_encryption_key_old",
+    "access_url",
+    "access_url_encrypted",
+    "setup_token",
     "pending_secret",
     "pending_secret_encrypted",
     "secret_key",

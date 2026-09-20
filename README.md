@@ -44,7 +44,7 @@ Edit `.env` and set these values:
 |---|---|---|
 | `POSTGRES_PASSWORD` | Yes | Choose a strong database password. |
 | `SECRET_KEY` | Yes | Run `openssl rand -hex 32` and paste the output. |
-| `FIELD_ENCRYPTION_KEY` | Yes | Fernet key for the app's encrypted columns (the MFA/TOTP secret); production refuses to start without one. See [MFA Setup](#mfa-setup) for the generation command. |
+| `FIELD_ENCRYPTION_KEY` | Yes | Fernet key for the app's encrypted columns (the MFA/TOTP secret, the bank feed's access URL); production refuses to start without one. See [MFA Setup](#mfa-setup) for the generation command. |
 | `REGISTRATION_ENABLED` | No | Set to `true` to enable the `/register` endpoint. Default in production: `false` (see [Security](#security)). |
 | `SEED_USER_EMAIL` | No | Login email. Default: `admin@shekel.local`. **Remove from `.env` after the first successful boot** (see [Security](#security)). |
 | `SEED_USER_PASSWORD` | No | Login password (min 12 characters). Default: `ChangeMe!2026`. **Remove from `.env` after the first successful boot** (see [Security](#security)). |

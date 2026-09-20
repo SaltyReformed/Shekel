@@ -1,10 +1,12 @@
 """
 Shekel Budget App -- Field Encryption Key Rotation
 
-One-shot operations utility that re-wraps every
-``auth.mfa_configs.totp_secret_encrypted`` blob under the current
-primary key (``FIELD_ENCRYPTION_KEY``).  Intended to be run AFTER an
-operator has:
+One-shot operations utility that re-wraps every ciphertext column the
+app stores under the current primary key (``FIELD_ENCRYPTION_KEY``):
+``auth.mfa_configs.totp_secret_encrypted`` and, since plan step
+``bank_import:X-f6b-2`` (ruling R-BI12), ``budget.bank_feeds
+.access_url_encrypted`` -- the registry is ``_ciphertext_columns``.
+Intended to be run AFTER an operator has:
 
     1. Generated a new primary key
        (``Fernet.generate_key().decode()``).
@@ -37,8 +39,9 @@ Exit codes:
     1  ``--confirm`` flag was not supplied.
     2  Successful run but at least one row could not be decrypted
        under any configured key.  Operator action required: do NOT
-       remove ``FIELD_ENCRYPTION_KEY_OLD`` until the row is recovered
-       or the user re-enrolls MFA.
+       remove ``FIELD_ENCRYPTION_KEY_OLD`` until the row is recovered,
+       the user re-enrolls MFA, or the owner reconnects the feed --
+       the ERROR line names the table and the row.
 
 Test entry point:
     ``execute_rotation(db.session)`` returns a
@@ -68,7 +71,7 @@ from scripts._script_lib import (  # pylint: disable=wrong-import-position
 )
 
 
-# Per-row outcome sentinels.  Returned by ``_rotate_one_config`` and
+# Per-row outcome sentinels.  Returned by ``_rotate_one`` and
 # tallied by ``execute_rotation``.  Module-level constants rather than
 # magic strings so a typo at the call site fails the linter.
 _OUTCOME_ALREADY_CURRENT = "already_current"
@@ -76,8 +79,42 @@ _OUTCOME_ROTATED = "rotated"
 _OUTCOME_SKIPPED = "skipped"
 
 
-def _rotate_one_config(config, primary_only, multi, logger) -> str:
-    """Rotate a single ``MfaConfig`` row in place.
+def _ciphertext_columns() -> tuple[tuple[type, str], ...]:
+    """The ciphertext columns the rotation re-wraps: ``(model, attribute)``.
+
+    ONE registry, so a column the key protects and this script does not
+    visit is a diff against this tuple rather than a silence.  The
+    imports are deferred for the reason ``execute_rotation`` states.
+
+    Not listed, deliberately: ``auth.mfa_configs.pending_secret_encrypted``,
+    the in-flight enrolment secret.  It lives for ``MFA_SETUP_PENDING_TTL``
+    and ``/mfa/confirm`` clears one no configured key can read and sends
+    the user back to setup, so a key pruned between setup and confirm
+    costs a restart of a minutes-long enrolment rather than a locked-out
+    user.  Adding it is a change to the MFA rotation's behaviour and its
+    counts, outside ``bank_import:X-f6b-2``'s scope; reported in that
+    step's handoff (``HANDOFF-X-f6b.md`` s.0.2) for the coordinator's
+    ledger batch.
+
+    Returns:
+        The ``(model, attribute name)`` pairs, MFA first.
+    """
+    # Pylint: import-outside-toplevel -- importing anything under ``app``
+    # executes ``app.config``, which reads ``os.environ`` at import time;
+    # deferring to call time keeps this module import side-effect-free
+    # (the same reason ``execute_rotation`` gives for its own imports).
+    # pylint: disable=import-outside-toplevel
+    from app.models.bank_feed import BankFeed
+    from app.models.user import MfaConfig
+    # pylint: enable=import-outside-toplevel
+    return (
+        (MfaConfig, "totp_secret_encrypted"),
+        (BankFeed, "access_url_encrypted"),
+    )
+
+
+def _rotate_one(row, column: str, primary_only, multi, logger) -> str:
+    """Rotate one ciphertext column of one row in place.
 
     Encapsulates the per-row classification logic so
     ``execute_rotation`` only has to drive the loop and aggregate
@@ -91,15 +128,16 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
         idempotency guard.
       - ``_OUTCOME_ROTATED`` -- the ciphertext required a retired key
         for decryption; ``MultiFernet.rotate`` re-wrapped it under the
-        primary.  ``config.totp_secret_encrypted`` is mutated in place.
+        primary.  The column is mutated in place.
       - ``_OUTCOME_SKIPPED`` -- no configured key could decrypt the
-        ciphertext.  Logged at ERROR level naming the row id; no
-        mutation.
+        ciphertext.  Logged at ERROR level naming the table, the column
+        and the row id; no mutation.
 
     Args:
-        config: The ``MfaConfig`` row whose
-            ``totp_secret_encrypted`` blob will be classified and
-            optionally re-wrapped.
+        row: The model instance (an ``MfaConfig``, a ``BankFeed``) whose
+            ciphertext will be classified and optionally re-wrapped.
+        column: The attribute holding the ciphertext, from
+            ``_ciphertext_columns``.
         primary_only: A bare ``Fernet`` initialised on the primary
             key.  Used as the idempotency probe.
         multi: The ``MultiFernet`` initialised on primary plus any
@@ -110,7 +148,7 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
     Returns:
         One of the ``_OUTCOME_*`` sentinel strings.
     """
-    ciphertext = config.totp_secret_encrypted
+    ciphertext = getattr(row, column)
 
     # Idempotency probe: does the ciphertext already decrypt under
     # the primary alone?  If yes, no rotation is needed; skip.
@@ -127,17 +165,19 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
     # tries primary first and then each retired key; on success it
     # re-encrypts under the primary with a fresh IV and timestamp.
     try:
-        config.totp_secret_encrypted = multi.rotate(ciphertext)
+        setattr(row, column, multi.rotate(ciphertext))
     except InvalidToken:
-        # No configured key matches.  Log the row id (NEVER the
-        # ciphertext or any plaintext) and report the skip so the
-        # remaining rows still get migrated.  The non-zero exit
-        # code on the CLI side surfaces this to the operator.
+        # No configured key matches.  Log the table, column and row id
+        # (NEVER the ciphertext or any plaintext) and report the skip
+        # so the remaining rows still get migrated.  The non-zero exit
+        # code on the CLI side surfaces this to the operator, and the
+        # table tells them which remedy applies (reset MFA, or
+        # reconnect the feed).
         logger.error(
-            "MFA config id=%d cannot be decrypted under any "
+            "%s.%s id=%d cannot be decrypted under any "
             "configured key. Row left untouched. Investigate "
             "before removing FIELD_ENCRYPTION_KEY_OLD.",
-            config.id,
+            row.__table__.fullname, column, row.id,
         )
         return _OUTCOME_SKIPPED
 
@@ -145,27 +185,28 @@ def _rotate_one_config(config, primary_only, multi, logger) -> str:
 
 
 def execute_rotation(db_session) -> tuple[int, int, int]:
-    """Re-encrypt every MFA config under the current primary key.
+    """Re-encrypt every ciphertext column under the current primary key.
 
     The core data operation, separated from app creation so tests can
-    call it directly with the test database session.  The function
-    fetches every ``MfaConfig`` row whose ``totp_secret_encrypted``
-    column is non-NULL and dispatches each to ``_rotate_one_config``,
-    which classifies it as already-current, rotated, or skipped.  The
-    classification rules and the choice to use ``MultiFernet.rotate``
-    (rather than a manual decrypt+encrypt) are documented in
-    ``_rotate_one_config``.
+    call it directly with the test database session.  For each
+    ``(model, column)`` in ``_ciphertext_columns`` the function fetches
+    every row whose column is non-NULL and dispatches each to
+    ``_rotate_one``, which classifies it as already-current, rotated,
+    or skipped.  The classification rules and the choice to use
+    ``MultiFernet.rotate`` (rather than a manual decrypt+encrypt) are
+    documented in ``_rotate_one``.
 
     Args:
         db_session (sqlalchemy.orm.Session): A SQLAlchemy session
             bound to a database that already has the
-            ``auth.mfa_configs`` table.
+            ``auth.mfa_configs`` and ``budget.bank_feeds`` tables.
 
     Returns:
-        A ``(rotated, already_current, skipped)`` triple of row counts.
-        The three values always sum to the number of MFA configs with
-        a non-NULL ``totp_secret_encrypted`` column at the time the
-        query was issued.
+        A ``(rotated, already_current, skipped)`` triple of row counts,
+        ONE triple over every column: each value counts rows by outcome
+        across ``auth.mfa_configs`` and ``budget.bank_feeds`` together.
+        The three values always sum to the number of rows with a
+        non-NULL ciphertext column at the time the queries were issued.
 
     Raises:
         RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
@@ -177,7 +218,7 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
             raises, since both build the list the same way.
 
     Side effects:
-        - Mutates ``totp_secret_encrypted`` on rows that need rotation.
+        - Mutates the ciphertext column on rows that need rotation.
         - Commits the transaction once at the end (single commit so
           either the whole rotation succeeds or the whole rotation
           rolls back on a database error).
@@ -191,7 +232,6 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
     # load app config) and preserves run_in_app_context's pre-import
     # DATABASE_URL override contract.
     # pylint: disable=import-outside-toplevel
-    from app.models.user import MfaConfig
     from app.utils.field_encryption import build_fernet_list
     from app.utils.log_events import AUTH, log_event
     # pylint: enable=import-outside-toplevel
@@ -213,14 +253,15 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
         _OUTCOME_ALREADY_CURRENT: 0,
         _OUTCOME_SKIPPED: 0,
     }
-    configs = (
-        db_session.query(MfaConfig)
-        .filter(MfaConfig.totp_secret_encrypted.isnot(None))
-        .all()
-    )
-    for config in configs:
-        outcome = _rotate_one_config(config, primary_only, multi, logger)
-        counts[outcome] += 1
+    for model, column in _ciphertext_columns():
+        rows = (
+            db_session.query(model)
+            .filter(getattr(model, column).isnot(None))
+            .all()
+        )
+        for row in rows:
+            outcome = _rotate_one(row, column, primary_only, multi, logger)
+            counts[outcome] += 1
 
     db_session.commit()
 
@@ -267,7 +308,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parse_confirm_args(
         argv,
         description=(
-            "Re-wrap every auth.mfa_configs ciphertext under the "
+            "Re-wrap every ciphertext column (auth.mfa_configs, "
+            "budget.bank_feeds) under the "
             "current FIELD_ENCRYPTION_KEY primary key.  Run during a "
             "key rotation, after the new key has been promoted to "
             "FIELD_ENCRYPTION_KEY and the previous key has been moved "
@@ -276,7 +318,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
         acknowledgment=(
             "Acknowledge that the script will mutate every MFA "
-            "configuration row."
+            "configuration row and every bank feed row."
         ),
     )
 

@@ -12,12 +12,13 @@ rotation script read it at call time.
 
 The key was ``TOTP_ENCRYPTION_KEY`` until plan step ``bank_import:X-f6b-2``
 renamed it (ledger row BI-503): it encrypts every ciphertext column the
-app stores (``auth.mfa_configs``' TOTP secret), and ``TOTP`` named one of
-them.  The cipher pair lived in ``app.services.mfa_service`` until the same
-step ruled the key a second column to protect (``budget.bank_feeds``, ruling
-**R-BI12**, the commit after this move); a cipher for every encrypted
-column has no business under an MFA-named module, so the pair moved here
-to the key it is built from, and every caller reaches it at this one home.
+app stores (``auth.mfa_configs``' TOTP secret, ``budget.bank_feeds``' access
+URL), and ``TOTP`` named one of them.  The cipher pair lived in
+``app.services.mfa_service`` until the same step gave the key that second
+column to protect (ruling **R-BI12**); a cipher for every encrypted column
+has no business under an MFA-named module, so the pair moved here to the
+key it is built from (ruling **R-BI24**), and every caller reaches it at
+this one home.  ``scripts/rotate_field_key.py`` re-wraps both columns.
 """
 
 import os
@@ -176,7 +177,8 @@ def encrypt_secret(plaintext_secret: str) -> bytes:
     """Encrypt a secret for storage in a ciphertext column.
 
     Args:
-        plaintext_secret: The secret as text (a base32 TOTP secret).
+        plaintext_secret: The secret as text -- a base32 TOTP secret,
+            a bank feed's access URL.
 
     Returns:
         bytes: The Fernet-encrypted ciphertext, written under the

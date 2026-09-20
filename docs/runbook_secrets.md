@@ -9,7 +9,7 @@ non-sensitive.
 | Secret | Purpose | Generation Command | Rotation Impact |
 |--------|---------|-------------------|-----------------|
 | `SECRET_KEY` | Flask session cookie encryption | `python -c "import secrets; print(secrets.token_hex(32))"` | All active sessions are invalidated; users must log in again |
-| `FIELD_ENCRYPTION_KEY` | Fernet encryption of the ciphertext columns stored in the database (the MFA/TOTP secret).  Named `TOTP_ENCRYPTION_KEY` until `bank_import:X-f6b-2`; see "Renaming TOTP_ENCRYPTION_KEY to FIELD_ENCRYPTION_KEY" below | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | Non-destructive when rotated via the documented procedure: place the previous value in `FIELD_ENCRYPTION_KEY_OLD`, then run `scripts/rotate_field_key.py --confirm` to re-wrap every ciphertext under the new primary |
+| `FIELD_ENCRYPTION_KEY` | Fernet encryption of the ciphertext columns stored in the database (the MFA/TOTP secret in `auth.mfa_configs`, the bank feed's access URL in `budget.bank_feeds`).  Named `TOTP_ENCRYPTION_KEY` until `bank_import:X-f6b-2`; see "Renaming TOTP_ENCRYPTION_KEY to FIELD_ENCRYPTION_KEY" below | `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` | Non-destructive when rotated via the documented procedure: place the previous value in `FIELD_ENCRYPTION_KEY_OLD`, then run `scripts/rotate_field_key.py --confirm` to re-wrap every ciphertext under the new primary |
 | `FIELD_ENCRYPTION_KEY_OLD` | Optional comma-separated list of retired Fernet keys used during rotation | -- (existing primary value, moved here at rotation time) | Empty in steady state.  Populated transiently during a key rotation; pruned again after `scripts/rotate_field_key.py` completes |
 | `POSTGRES_PASSWORD` | PostgreSQL superuser password (owner role `shekel_user`).  Used by `entrypoint.sh` for schema creation, migrations, seed scripts | `python -c "import secrets; print(secrets.token_urlsafe(32))"` | Requires updating both the db service and app service configs simultaneously; restart both containers |
 | `APP_ROLE_PASSWORD` | Least-privilege PostgreSQL DML-only role password (`shekel_app`).  Constructed into `DATABASE_URL_APP` by `entrypoint.sh` and used by Gunicorn at runtime so an in-process RCE cannot drop tables or audit triggers (audit finding F-081, Commit C-13) | `python -c "import secrets; print(secrets.token_urlsafe(32))"` | `entrypoint.sh` reprovisions the `shekel_app` role with the new password on every restart; rotate by updating the source-of-truth secret and recreating the app container |
@@ -484,8 +484,11 @@ The full rotation has four steps and one optional cleanup deploy:
      safe).
    - `skipped` -- rows that could not be decrypted under any configured key.
      **A non-zero `skipped` count means the script exits with code 2.** Do not proceed to step 5;
-     instead inspect the application log for the row id(s) and reconcile manually (typically by
-     resetting MFA for the affected user via `scripts/reset_mfa.py`).
+     instead inspect the application log for the table and row id(s) and reconcile manually: an
+     `auth.mfa_configs` row by resetting MFA for the affected user via `scripts/reset_mfa.py`, a
+     `budget.bank_feeds` row by removing it so the owner can claim a fresh setup token, which writes
+     a new row under the current primary -- the disconnect door once `bank_import:X-f6b-2`'s claim
+     leaf ships, a `DELETE` of the row by hand until then.
 
 5. **Prune `FIELD_ENCRYPTION_KEY_OLD` at the next deploy** (optional but recommended). Once
    `scripts/rotate_field_key.py` reports zero skipped rows, the retired key is no longer needed.
@@ -601,7 +604,8 @@ If the Proxmox host is lost and must be rebuilt from scratch:
    - **Posture 1 (env-backed):** rebuild `.env` using `.env.example` as a template:
      - `SECRET_KEY`: generate a new one. Users will need to log in again.
      - `FIELD_ENCRYPTION_KEY`: if you have the original key backed up (see recommendation below),
-       use it. If not, generate a new one and all users must re-enroll MFA.
+       use it. If not, generate a new one: all users must re-enroll MFA, and every owner must
+       reconnect their bank feed (`budget.bank_feeds` holds ciphertext under the lost key).
      - `POSTGRES_PASSWORD`: use the password from the restored backup, or set a new one and update
        the PostgreSQL user password.
      - `APP_ROLE_PASSWORD`: any sufficiently random secret; `entrypoint.sh` reprovisions the

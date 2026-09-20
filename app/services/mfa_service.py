@@ -4,8 +4,8 @@ Handles TOTP secret generation, verification and backup code management.
 No Flask imports -- pure service module.  The cipher the TOTP secret is
 stored under is :mod:`app.utils.field_encryption`'s (``encrypt_secret`` /
 ``decrypt_secret``), the one home of every ciphertext column's key; it
-lived here until plan step ``bank_import:X-f6b-2`` ruled that key a second
-column to protect (**R-BI12**).
+lived here until plan step ``bank_import:X-f6b-2`` gave that key a second
+column to protect (``budget.bank_feeds``, **R-BI12**; the move **R-BI24**).
 """
 
 import hmac

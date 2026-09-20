@@ -13,6 +13,13 @@ infrastructure) addressed in commit C-04.  The rotation script is
 the operational control that lets an operator move every existing
 ciphertext forward to a freshly-generated primary key without
 requiring users to re-enroll MFA.
+
+Since ``bank_import:X-f6b-2`` (ruling R-BI12) the script re-wraps a
+SECOND column, ``budget.bank_feeds.access_url_encrypted``, through the
+same loop; ``TestExecuteRotationOverTheFeedColumn`` grades that column
+on the same four facts the MFA cases above grade: rotated under the
+primary alone, idempotent, a skipped row named by table and id, and one
+count triple over both columns.
 """
 
 import logging
@@ -21,6 +28,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.extensions import db
+from app.models.bank_feed import BankFeed
 from app.models.user import MfaConfig, User
 from app.services import mfa_service
 from app.services.auth_service import hash_password
@@ -81,6 +89,23 @@ def _make_mfa_config(user_id: int, ciphertext: bytes) -> MfaConfig:
     db.session.add(config)
     db.session.flush()
     return config
+
+
+def _make_feed(user_id: int, ciphertext: bytes) -> BankFeed:
+    """Insert a bank feed row carrying a specific ciphertext.
+
+    Args:
+        user_id:    FK target; one feed per owner, so one per user here.
+        ciphertext: The exact bytes to store, built by the test under a
+                    chosen Fernet key.
+
+    Returns:
+        The flushed BankFeed instance.
+    """
+    feed = BankFeed(user_id=user_id, access_url_encrypted=ciphertext)
+    db.session.add(feed)
+    db.session.flush()
+    return feed
 
 
 class TestExecuteRotation:
@@ -392,6 +417,110 @@ class TestExecuteRotation:
         monkeypatch.delenv("FIELD_ENCRYPTION_KEY", raising=False)
         with pytest.raises(RuntimeError, match="FIELD_ENCRYPTION_KEY"):
             execute_rotation(db.session)
+
+
+class TestExecuteRotationOverTheFeedColumn:
+    """The feed's access URL rotates through the same loop as the MFA secret.
+
+    ``bank_import:X-f6b-2``, ruling R-BI12: "rotate_totp_key.py extends
+    to the column".  Every case seeds an MFA row beside the feed row so
+    the count triple is graded as ONE triple over both columns, never a
+    per-table figure a caller would have to sum.
+    """
+
+    def test_a_feed_url_under_a_retired_key_is_re_wrapped_under_the_primary(
+        self, app, db, monkeypatch,
+    ):
+        """After the rotation the feed's ciphertext decrypts under the new
+        primary ALONE and the plaintext URL is preserved -- the same two
+        facts the MFA case grades, on the second column."""
+        old_key = Fernet.generate_key()
+        new_key = Fernet.generate_key()
+        url = "https://alice:s3cr3t@beta-bridge.simplefin.org/simplefin"
+        owner = _make_user("feed-owner@example.com")
+        feed = _make_feed(owner.id, Fernet(old_key).encrypt(url.encode("utf-8")))
+        other = _make_user("mfa-user@example.com")
+        _make_mfa_config(other.id, Fernet(old_key).encrypt(b"MFASECRET"))
+        db.session.commit()
+
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
+
+        rotated, already_current, skipped = execute_rotation(db.session)
+
+        assert (rotated, already_current, skipped) == (2, 0, 0)
+        stored = db.session.get(BankFeed, feed.id).access_url_encrypted
+        assert Fernet(new_key).decrypt(stored).decode("utf-8") == url
+
+    def test_a_feed_url_already_under_the_primary_is_left_untouched(
+        self, app, db, monkeypatch,
+    ):
+        """Idempotency on the second column: a second run counts the feed
+        as already current and rewrites nothing (the ciphertext bytes are
+        identical, which a re-encrypt with a fresh IV would not be)."""
+        old_key = Fernet.generate_key()
+        new_key = Fernet.generate_key()
+        owner = _make_user("feed-owner@example.com")
+        feed = _make_feed(owner.id, Fernet(old_key).encrypt(b"https://u:p@h/x"))
+        db.session.commit()
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
+        assert execute_rotation(db.session) == (1, 0, 0)
+        after_first = db.session.get(BankFeed, feed.id).access_url_encrypted
+
+        assert execute_rotation(db.session) == (0, 1, 0)
+
+        assert db.session.get(BankFeed, feed.id).access_url_encrypted == after_first
+
+    def test_a_feed_url_under_no_configured_key_is_skipped_and_named(
+        self, app, db, monkeypatch, caplog,
+    ):
+        """A feed row no key can read is counted as skipped, left byte for
+        byte as it was, and named at ERROR by its TABLE and id -- the
+        operator's remedy differs by table (reset MFA, or reconnect the
+        feed), so the log line must say which."""
+        unknown_key = Fernet.generate_key()
+        new_key = Fernet.generate_key()
+        owner = _make_user("feed-owner@example.com")
+        original = Fernet(unknown_key).encrypt(b"https://u:p@h/x")
+        feed = _make_feed(owner.id, original)
+        db.session.commit()
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.delenv("FIELD_ENCRYPTION_KEY_OLD", raising=False)
+
+        with caplog.at_level(logging.ERROR, logger="scripts.rotate_field_key"):
+            counts = execute_rotation(db.session)
+
+        assert counts == (0, 0, 1)
+        assert db.session.get(BankFeed, feed.id).access_url_encrypted == original
+        naming = [
+            r for r in caplog.records
+            if r.levelno == logging.ERROR
+            and f"id={feed.id}" in r.getMessage()
+            and "budget.bank_feeds" in r.getMessage()
+        ]
+        assert len(naming) == 1, [r.getMessage() for r in caplog.records]
+
+    def test_the_triple_sums_both_columns_by_outcome(
+        self, app, db, monkeypatch,
+    ):
+        """One MFA row rotated, one feed row already current, one feed row
+        skipped: the triple is (1, 1, 1), one figure per OUTCOME across
+        both columns."""
+        old_key = Fernet.generate_key()
+        new_key = Fernet.generate_key()
+        unknown_key = Fernet.generate_key()
+        mfa_user = _make_user("mfa@example.com")
+        _make_mfa_config(mfa_user.id, Fernet(old_key).encrypt(b"MFASECRET"))
+        current_owner = _make_user("current@example.com")
+        _make_feed(current_owner.id, Fernet(new_key).encrypt(b"https://u:p@h/1"))
+        lost_owner = _make_user("lost@example.com")
+        _make_feed(lost_owner.id, Fernet(unknown_key).encrypt(b"https://u:p@h/2"))
+        db.session.commit()
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY", new_key.decode())
+        monkeypatch.setenv("FIELD_ENCRYPTION_KEY_OLD", old_key.decode())
+
+        assert execute_rotation(db.session) == (1, 1, 1)
 
 
 class TestMain:
