@@ -44,7 +44,7 @@ alembic==1.18.4
 bcrypt==5.0.0
 pyotp==2.9.0
 qrcode[pil]==8.2
-cryptography==46.0.7
+cryptography==50.0.1
 
 # Input validation
 marshmallow==4.3.0
@@ -70,4 +70,4 @@ redis==7.4.0
 # reliable timeout semantics and its already-pervasive presence in
 # the wider Python ecosystem (matches what most operators expect to
 # audit).
-requests==2.32.5
+requests==2.34.2
