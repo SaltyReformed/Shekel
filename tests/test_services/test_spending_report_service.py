@@ -20,18 +20,18 @@ from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import event
 
 from app import ref_cache
+from app.exceptions import AmountUnresolvable
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
-    pay_period_write,
     spending_analysis,
-    spending_report_service,
     status_seam,
     transfer_service,
 )
@@ -40,6 +40,7 @@ from app.services.pay_calendar import PayCalendar
 from app.utils.dates import display_today
 from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
+from app.services.transfer_legs import grid_transfer_leg
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -926,9 +927,13 @@ class TestTheChartReadsTheDerivedOrdinal:
                     seed_periods[0].start_date, last_covered_day(seed_periods[1]),
                 )
 
-            # Both queries must actually return rows, or "nothing was
-            # hydrated" is true of a query that loaded nothing at all.
-            assert len(by_period) == 2 and len(by_span) == 2
+            # Both loads must actually return rows, or "nothing was
+            # hydrated" is true of a query that loaded nothing at all.  Each
+            # answers a PlanItems since leaf balance:X-bi-6-1b; no transfer
+            # is seeded, so the legs half loads nothing and the claim below
+            # is about the ROW query (a leg's parent carries its period by
+            # design: rule 4's derive arm reads it).
+            assert len(by_period.items) == 2 and len(by_span.items) == 2
             assert hydrated == [], (
                 "a settled-expense query hydrated a PayPeriod.  This asserts "
                 "the QUERY's loader, not that nothing downstream reads the "
@@ -1266,7 +1271,7 @@ class TestDeltas:
                 ),
             )
 
-            ids = [row.transaction_id for row in surprises.rows]
+            ids = [row.item_key for row in surprises.rows]
             assert len(ids) == _MAX_SURPRISES, "the cap is five"
             assert ids == sorted(ids), (
                 "tied surprises must rank by a total key: fed in reverse, an "
@@ -1536,6 +1541,168 @@ class TestTheReportReadsTheCashFlowSet:
             )
             assert with_layer.scope.account_name == "Rainy Day"
             assert without.scope.account_name == "Checking"
+
+
+class TestATransferIsALegOfItsParent:
+    """The report draws a settled transfer as a LEG read off its parent (leaf X-bi-6-1b).
+
+    Both window loads answer the set's OWN rows -- no shadow -- beside the
+    EXPENSE leg of every settled transfer the set touches, and the package's
+    kernels (``recorded_spend``, ``planned_spend``, ``resolved_actual_amount``)
+    route a leg to its producers.  The money case above (R-CC23) already
+    grades what a transfer is WORTH here; these grade what it IS, and every
+    figure the report derives from a leg.
+    """
+
+    def test_both_loaders_answer_own_rows_and_settled_expense_legs_and_no_shadow(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            _txn(db, seed_user, seed_periods[0], "Rent", "Rent", "100.00")
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"),
+            )
+            # A still-planned transfer is not spend; a settled transfer INTO
+            # checking is its income leg on this set, not spend either.
+            create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("75.00"),
+            )
+            create_settled_transfer(
+                seed_user, db.session, savings, checking, seed_periods[0],
+                amount=Decimal("60.00"),
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+
+            by_period = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [seed_periods[0].id], cash_flow,
+            )
+            by_span = spending_analysis.query_settled_expenses_in_span(
+                seed_user["scenario"].id, cash_flow, seed_user["user"].id,
+                seed_periods[0].start_date, last_covered_day(seed_periods[0]),
+            )
+            for items in (by_period, by_span):
+                assert [row.name for row in items.rows] == ["Rent"]
+                assert all(row.transfer_id is None for row in items.rows)
+                assert [
+                    (leg.transfer.id, leg.account_id, leg.is_expense)
+                    for leg in items.legs
+                ] == [(settled.id, checking.id, True)]
+
+    def test_every_figure_the_report_derives_from_a_leg(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """$250.00 planned, $240.00 moved, due the day after it settled.
+
+        spent_total 240.00 (the record, not the plan); the Uncategorized
+        bucket holds it; the surprise is keyed by the pair with delta
+        -10.00; timing counts one bill paid 1 day early.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+                settled_on=period.start_date,
+                due_date=period.start_date + timedelta(days=1),
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("240.00")
+            [group] = report.breakdown
+            assert group.group_name == "Uncategorized"
+            assert group.amount == Decimal("240.00")
+            [surprise] = report.surprises.rows
+            assert surprise.item_key == (settled.id, checking.id)
+            assert surprise.name == "Transfer to Savings"
+            assert (surprise.estimated, surprise.actual, surprise.delta) == (
+                Decimal("250.00"), Decimal("240.00"), Decimal("-10.00"),
+            )
+            assert report.hero.payment_timing == {
+                "total_bills_paid": 1,
+                "paid_on_time": 1,
+                "paid_late": 0,
+                "avg_days_before_due": Decimal("1.00"),
+            }
+
+    def test_the_kernels_route_a_leg_to_its_producers(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+            )
+            planned = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[1],
+                amount=Decimal("75.00"),
+            )
+            db.session.commit()
+            basis = derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            settled_leg = grid_transfer_leg(settled, checking.id)
+            planned_leg = grid_transfer_leg(planned, checking.id)
+
+            assert spending_analysis.recorded_spend(settled_leg) == Decimal("240.00")
+            assert spending_analysis.planned_spend(settled_leg, basis) == Decimal("250.00")
+            assert spending_analysis.resolved_actual_amount(settled_leg, basis) == Decimal("240.00")
+            # An unsettled leg reads back its plan, so its variance is zero
+            # by construction -- and it recorded nothing to spend.
+            assert spending_analysis.resolved_actual_amount(planned_leg, basis) == Decimal("75.00")
+            with pytest.raises(AmountUnresolvable):
+                spending_analysis.recorded_spend(planned_leg)
+
+    def test_tied_surprises_rank_rows_before_legs_by_a_total_order(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """P74's total key over both shapes: a row's id and a leg's pair
+        cannot be compared, so the tiebreak is ``key_order``."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+            )
+            row = _txn(
+                db, seed_user, period, "Rent", "Rent", "100.00", actual="90.00",
+            )
+            db.session.commit()
+            items = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [period.id], CashFlowSet.single(checking),
+            ).items
+            basis = derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            surprises = _build_surprises(list(reversed(items)), basis)
+            assert [s.delta for s in surprises.rows] == [
+                Decimal("-10.00"), Decimal("-10.00"),
+            ]
+            assert [s.item_key for s in surprises.rows] == [
+                row.id, (settled.id, checking.id),
+            ]
 
 
 class TestComparison:

@@ -13,22 +13,34 @@ defined once rather than re-implemented per surface (coding-standards rule
 13; the T-P3 ``projection_inputs`` precedent, which closed a cross-file
 ``duplicate-code`` finding the same way):
 
-* :func:`query_settled_expenses` -- the settled-expense ORM query selected by
+* :func:`query_settled_expenses` -- the settled-expense load selected by
   a PERIOD SET (settled status, expense type, not deleted, scoped to the
   owner's cash-flow set / scenario / period set).  Its one caller is the Spending report's
   pay-period arm, which no route reaches today; the sibling below is what a
-  live render runs.  The two share their row filters, so a change to what
-  "settled spending" selects is still a single edit.
-* :func:`query_settled_expenses_in_span` -- the same row filters selected
+  live render runs.  The two share their filters, so a change to what
+  "settled spending" selects is still a single edit.  **Each answers the
+  set's OWN rows beside the EXPENSE LEG of every settled transfer the set
+  touches, read off the parent in ``budget.transfers``** (leaf
+  ``balance:X-bi-6-1b``, ruling **R-BAL86**): a
+  :class:`~app.services.cash_flow_set.PlanItems`, where it was the rows
+  with the settled transfer-out shadow among them.
+* :func:`query_settled_expenses_in_span` -- the same filters selected
   by the attribution rule instead of a period set: COALESCE(due_date,
   owning period start) inside a calendar span, across ALL the user's pay
-  periods.  The Spending report's calendar windows read through it so a
-  bill due in month M is attributed to M even when its funding period does
-  not overlap M.
-* :func:`resolved_actual_amount` -- the settled-surprises kernel's
-  plan-at-entry vs recorded-at-settle rule (a settled row is worth what it
-  RECORDED as having moved; an unsettled row has recorded nothing, so it asks
-  the amount model for its plan and shows zero variance BY CONSTRUCTION).
+  periods, over both tables.  The Spending report's calendar windows read
+  through it so a bill due in month M is attributed to M even when its
+  funding period does not overlap M.
+* :func:`recorded_spend`, :func:`planned_spend` and
+  :func:`resolved_actual_amount` -- the per-item kernels, and since leaf
+  ``balance:X-bi-6-1b`` **the ONE place this package tells a row and a leg
+  apart for a FIGURE**: each routes to the producer of its shape
+  (``row_valuation`` / ``cash_ledger`` for a row, their leg twins for a leg)
+  and derives nothing itself, so the consumers that reduce a window's
+  items ask one question each.  ``resolved_actual_amount`` is the
+  settled-surprises kernel's plan-at-entry vs recorded-at-settle rule (a
+  settled item is worth what it RECORDED as having moved; an unsettled one
+  has recorded nothing, so it asks the amount model for its plan and shows
+  zero variance BY CONSTRUCTION).
 * :func:`signed_pct` -- the guarded "signed value as a percentage of a
   base" helper (``None`` when the base is zero), shared by the surprises
   figures and the Spending hero's vs-prior / vs-average chips.
@@ -52,10 +64,29 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
+from app.models.transfer import Transfer
+from app.services.cash_flow_set import (
+    CashFlowSet,
+    PlanItems,
+    own_rows_clause,
+    set_transfer_legs,
+    set_transfer_legs_in_periods,
+    touched_transfers_clause,
+)
 from app.services.pay_calendar import DerivedPeriod
-from app.services.cash_ledger import AmountBasis, resolve_transaction_amount
-from app.services.row_valuation import settled_figure
+from app.services.cash_ledger import (
+    AmountBasis,
+    resolve_transaction_amount,
+    resolve_transfer_amount,
+    settled_contribution,
+)
+from app.services.row_valuation import (
+    leg_settled_contribution,
+    leg_settled_figure,
+    settled_figure,
+)
+from app.services.transfer_legs import PlanItem, TransferLeg
+from app.utils.amount_relationships import transfer_pricing_load_options
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import pay_period_range_label
 from app.utils.money import CENTS, HUNDRED, ZERO
@@ -108,24 +139,30 @@ def query_settled_expenses(
     scenario_id: int,
     period_ids: list[int],
     cash_flow: CashFlowSet,
-) -> list[Transaction]:
-    """Load settled expense transactions across the cash-flow set over given periods.
+) -> PlanItems:
+    """Load the settled expense items across the cash-flow set over given periods.
 
     Filters: settled status only (Paid/Received -- so Cancelled and
     Credit, which are not settled, are excluded), expense type only, not
     deleted, the owner's cash-flow set, one scenario, and ``pay_period_id``
-    in *period_ids*.  Transfer shadows are included: they are ordinary
-    ``Transaction`` rows that participate in spending.
+    in *period_ids* -- over the rows, and over the parents of the legs.
 
-    **The rows are the PAYCHECK's across the set -- checking and its cards
+    **The items are the PAYCHECK's across the set -- checking and its cards
     -- not one account's** (developer ruling ``credit_card:R-CC16``, plan
-    step CC-4-3), through the ONE clause every plan-item reader appends,
-    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
-    rows, less the far leg of a transfer between two members (ruling
-    ``R-CC23``), so a card payment is one settled row, on the balance
-    account's side.  It was ``Transaction.account_id == account_id``, which
-    left the phone bill that lives on the card out of where the money went; a
-    set of one member is that filter, row for row.
+    step CC-4-3), and since leaf ``balance:X-bi-6-1b`` (ruling **R-BAL86**)
+    they are the set's OWN rows plus one LEG per settled transfer, read off
+    the parent in ``budget.transfers`` rather than off a shadow row:
+    :func:`~app.services.cash_flow_set.own_rows_clause` selects every
+    member's rows and no shadow, and :func:`~app.services.cash_flow_set
+    .set_transfer_legs_in_periods` draws each transfer the set touches from
+    the side :func:`~app.services.cash_flow_set.leg_accounts_shown` names
+    (ruling ``R-CC23``: once, from the balance line's side, when both
+    endpoints are members), kept where it is the EXPENSE leg -- money that
+    left, which is what spending is; the income leg on the far endpoint is
+    not spend, as the income shadow's type never was.  A card payment is
+    therefore one settled leg, on the balance account's side.  It was
+    ``Transaction.account_id == account_id``, then the paycheck-rows clause
+    that carried the settled transfer-out shadow in as a row.
 
     **It eager-loads ``category`` and NOT ``pay_period``**, and the second half
     of that changed at pay-calendar plan step **C2-f3d** -- in BOTH queries,
@@ -175,10 +212,12 @@ def query_settled_expenses(
             baseline).
         period_ids: The pay-period ids to include.  An empty list yields
             an empty result.
-        cash_flow: The owner's cash-flow set, whose members' rows to load.
+        cash_flow: The owner's cash-flow set, whose members' items to load.
 
     Returns:
-        The matching settled expense :class:`Transaction` rows.
+        The :class:`~app.services.cash_flow_set.PlanItems`: the matching
+        settled expense :class:`Transaction` rows and the expense legs of
+        the matching settled transfers, records loaded.
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
@@ -190,7 +229,7 @@ def query_settled_expenses(
     # logic (coding-standards rule 13).  One-sided ``duplicate-code``
     # disable, mirroring the journal_entry/transfer FK-block precedent.
     # pylint: disable=duplicate-code
-    return (
+    rows = (
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
@@ -203,7 +242,7 @@ def query_settled_expenses(
             selectinload(Transaction.entries),
         )
         .filter(
-            paycheck_rows_clause(cash_flow),
+            own_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
@@ -213,6 +252,16 @@ def query_settled_expenses(
         .all()
     )
     # pylint: enable=duplicate-code
+    legs = _expense_legs(set_transfer_legs_in_periods(
+        cash_flow, scenario_id, period_ids,
+        Transfer.status_id.in_(settled_status_ids()),
+    ))
+    return PlanItems.of(rows, legs)
+
+
+def _expense_legs(legs: list[TransferLeg]) -> list[TransferLeg]:
+    """Return the legs on which money LEFT: the spending half of a transfer."""
+    return [leg for leg in legs if leg.is_expense]
 
 
 def query_settled_expenses_in_span(
@@ -221,44 +270,52 @@ def query_settled_expenses_in_span(
     user_id: int,
     first_day: date,
     last_day: date,
-) -> list[Transaction]:
-    """Load the settled expenses ATTRIBUTED to a calendar span.
+) -> PlanItems:
+    """Load the settled expense items ATTRIBUTED to a calendar span.
 
-    The same row filters as :func:`query_settled_expenses` -- the cash-flow
-    set's rows through the one clause, plan step CC-4-3 -- selected by the
-    attribution rule instead of a period set: rows whose
-    ``COALESCE(due_date, owning period start)`` falls inside
-    ``[first_day, last_day]``, across ALL the user's pay periods.  The
-    former period-overlap pre-filter under-fetched at window boundaries: a
-    settled bill due in month M whose funding period did not overlap M was
-    attributed to NO month window at all (its own period's months excluded
-    it by date; M never loaded its period).  Selecting by the attribution
-    day itself makes every settled expense belong to exactly one calendar
-    window, and the result no longer depends on which window is viewed.
+    The same filters as :func:`query_settled_expenses` -- the cash-flow
+    set's own rows and its settled transfers' expense legs, plan steps
+    CC-4-3 and ``balance:X-bi-6-1b`` -- selected by the attribution rule
+    instead of a period set: rows, and parents, whose ``COALESCE(due_date,
+    owning period start)`` falls inside ``[first_day, last_day]``, across
+    ALL the user's pay periods.  The former period-overlap pre-filter
+    under-fetched at window boundaries: a settled bill due in month M whose
+    funding period did not overlap M was attributed to NO month window at
+    all (its own period's months excluded it by date; M never loaded its
+    period).  Selecting by the attribution day itself makes every settled
+    expense belong to exactly one calendar window, and the result no longer
+    depends on which window is viewed.
 
     The COALESCE runs in SQL on the joined period row -- the same rule
     consumers previously applied in Python -- so the filter and the
-    attribution stay one definition.
+    attribution stay one definition; the transfer query joins the same
+    table on ``Transfer.pay_period_id`` and states the same COALESCE over
+    the parent's ``due_date``, which is the leg's.  It builds its own
+    query rather than calling :func:`~app.services.cash_flow_set
+    .set_transfer_legs_in_periods`, because that loader windows by period
+    MEMBERSHIP and this reader does not.
 
     Args:
         scenario_id: The budget scenario to scope to (the caller's
             baseline).
-        cash_flow: The owner's cash-flow set, whose members' rows to load.
+        cash_flow: The owner's cash-flow set, whose members' items to load.
         user_id: The owning user (scopes the pay-period join).
         first_day: The span's first calendar day (inclusive).
         last_day: The span's last calendar day (inclusive).
 
     Returns:
-        The matching settled expense :class:`Transaction` rows, with
-        ``category`` eager-loaded like the sibling query.  ``pay_period`` is
-        JOINED and not loaded: the join carries the COALESCE filter above, and
-        no consumer reads the relationship (plan step C2-f3d).
+        The :class:`~app.services.cash_flow_set.PlanItems`: the matching
+        settled expense :class:`Transaction` rows, with ``category``
+        eager-loaded like the sibling query (``pay_period`` is JOINED and
+        not loaded: the join carries the COALESCE filter above, and no
+        consumer reads the relationship, plan step C2-f3d), and the expense
+        legs of the matching settled transfers, records loaded.
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     attribution_day = db.func.coalesce(
         Transaction.due_date, PayPeriod.start_date,
     )
-    return (
+    rows = (
         db.session.query(Transaction)
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .options(
@@ -268,7 +325,7 @@ def query_settled_expenses_in_span(
             selectinload(Transaction.entries),
         )
         .filter(
-            paycheck_rows_clause(cash_flow),
+            own_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             PayPeriod.user_id == user_id,
             Transaction.is_deleted.is_(False),
@@ -279,16 +336,88 @@ def query_settled_expenses_in_span(
         )
         .all()
     )
+    transfer_attribution_day = db.func.coalesce(
+        Transfer.due_date, PayPeriod.start_date,
+    )
+    transfers = (
+        db.session.query(Transfer)
+        .join(PayPeriod, Transfer.pay_period_id == PayPeriod.id)
+        .options(*transfer_pricing_load_options())
+        .filter(
+            touched_transfers_clause(cash_flow),
+            Transfer.scenario_id == scenario_id,
+            PayPeriod.user_id == user_id,
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_status_ids()),
+            transfer_attribution_day >= first_day,
+            transfer_attribution_day <= last_day,
+        )
+        .order_by(Transfer.id)
+        .all()
+    )
+    return PlanItems.of(rows, _expense_legs(set_transfer_legs(cash_flow, transfers)))
 
 
-def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
+def recorded_spend(item: PlanItem) -> Decimal:
+    """Return what a settled item RECORDED as having moved, refusing one that has not.
+
+    The spending readers' one question of a settled item (leaf
+    ``balance:X-bi-6-1b``): :func:`~app.services.row_valuation
+    .settled_contribution` for a row, its twin
+    :func:`~app.services.row_valuation.leg_settled_contribution` for a leg
+    -- ``0`` for an excluded one, the recorded figure otherwise, and a
+    refusal for one that has not settled, which no reader here can hand it
+    (both loaders filter to the settled statuses in SQL).
+
+    Args:
+        item: A row or a transfer leg from one of this module's loaders.
+
+    Returns:
+        The signed recorded figure (a refunded envelope's is negative,
+        ruling **bank_import:R-II**).
+
+    Raises:
+        AmountUnresolvable: The item has not settled.
+    """
+    if isinstance(item, TransferLeg):
+        return leg_settled_contribution(item)
+    return settled_contribution(item)
+
+
+def planned_spend(item: PlanItem, basis: AmountBasis) -> Decimal:
+    """Return what an item's amount IS -- its plan -- by the producer of its shape.
+
+    :func:`~app.services.cash_ledger.resolve_transaction_amount` for a
+    row; :func:`~app.services.cash_ledger.resolve_transfer_amount` over the
+    PARENT for a leg (ruling **R-BAL10**: a transfer's amount lives on the
+    parent and each leg reads it).  The estimate half of a surprise.
+
+    Args:
+        item: A row or a transfer leg.
+        basis: The read pass's :class:`~app.services.cash_ledger.AmountBasis`.
+
+    Returns:
+        The resolved plan.
+
+    Raises:
+        AmountUnresolvable: From the resolver, when the item's rule cannot
+            answer.
+    """
+    if isinstance(item, TransferLeg):
+        return resolve_transfer_amount(item.transfer, basis)
+    return resolve_transaction_amount(item, basis)
+
+
+def resolved_actual_amount(txn: PlanItem, basis: AmountBasis) -> Decimal:
     """Return the 'actual' amount for an estimate-vs-actual comparison.
 
-    The Variance/surprises kernel's rule: a settled transaction is worth what it
-    RECORDED as having moved (:func:`~app.services.row_valuation.settled_figure`),
-    and an unsettled one has recorded nothing, so it reads back its own PLAN and
-    its individual variance is exactly zero.  A "surprise" is a row whose
-    recorded figure differs from its plan.
+    The Variance/surprises kernel's rule: a settled item is worth what it
+    RECORDED as having moved (:func:`~app.services.row_valuation.settled_figure`,
+    or its leg twin :func:`~app.services.row_valuation.leg_settled_figure`
+    for a transfer leg since leaf ``balance:X-bi-6-1b``), and an unsettled
+    one has recorded nothing, so it reads back its own PLAN
+    (:func:`planned_spend`) and its individual variance is exactly zero.  A
+    "surprise" is an item whose recorded figure differs from its plan.
 
     **Which rows can produce one changed at plan step X-au-c3, and it is a
     widening the surprises list wanted.**  The old rule read
@@ -329,9 +458,9 @@ def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
     same row against a different pass.
 
     Args:
-        txn: The transaction to resolve.  Its settlement record is read, and
-            ``txn.status`` is declared ``lazy="joined"`` so nothing here needs an
-            explicit load.
+        txn: The row or transfer leg to resolve.  Its settlement record is
+            read, and ``status`` is declared ``lazy="joined"`` on both models
+            so nothing here needs an explicit load.
         basis: The read pass's
             :class:`~app.services.cash_ledger.AmountBasis`, built once by the
             caller.  REQUIRED rather than optional for the same reason
@@ -349,10 +478,13 @@ def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
             is not the derived-plan refusal this function used to carry, which
             plan step X-bu removed from here.
     """
-    recorded = settled_figure(txn)
+    recorded = (
+        leg_settled_figure(txn) if isinstance(txn, TransferLeg)
+        else settled_figure(txn)
+    )
     if recorded is not None:
         return recorded
-    return resolve_transaction_amount(txn, basis)
+    return planned_spend(txn, basis)
 
 
 def calendar_window_bounds(
@@ -437,16 +569,16 @@ def window_label(
     return str(year)
 
 
-def category_names(txn: Transaction) -> tuple[str, str]:
-    """Return the ``(group_name, item_name)`` labels for a transaction.
+def category_names(txn: PlanItem) -> tuple[str, str]:
+    """Return the ``(group_name, item_name)`` labels for a row or a leg.
 
-    Reads the transaction's category, falling back to
+    Reads the item's category (a leg's is its parent's), falling back to
     ``("Uncategorized", "Uncategorized")`` for a row with no category.
     Shared by the year-end spending section and the unified Spending report
     so both bucket an uncategorized row under the same label.
 
     Args:
-        txn: The transaction whose category labels to resolve.
+        txn: The row or transfer leg whose category labels to resolve.
 
     Returns:
         The ``(group_name, item_name)`` pair.
@@ -491,16 +623,19 @@ def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
     return (numerator / base * HUNDRED).quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
-def payment_timeliness_from_txns(txns: list[Transaction]) -> dict | None:
+def payment_timeliness_from_txns(txns: list[PlanItem]) -> dict | None:
     """Compute on-time / late / average-days metrics over settled expenses.
 
     Examines the subset of *txns* that carry both ``settled_on`` and
-    ``due_date`` (the only rows whose timing is knowable -- an unsettled row
-    has no settle day by construction).  A bill paid on or before its due date
-    (``days_paid_before_due >= 0``) is on time; the average is signed
-    (positive = paid early on average).  Routes through
-    ``Transaction.days_paid_before_due``, which since plan step X-f1 subtracts
-    two civil dates rather than converting an instant (ruling R-EC).
+    ``due_date`` (the only items whose timing is knowable -- an unsettled
+    one has no settle day by construction; a transfer leg's is its covering
+    movement's, leaf ``balance:X-bi-6-1b``).  A bill paid on or before its
+    due date (``days_paid_before_due >= 0``) is on time; the average is
+    signed (positive = paid early on average).  Routes through the
+    ``days_paid_before_due`` property both shapes carry, which since plan
+    step X-f1 subtracts two civil dates rather than converting an instant
+    (ruling R-EC) -- one arithmetic, :func:`app.utils.dates
+    .days_paid_before_due`.
 
     The caller supplies transactions already attributed to the reporting
     window (the year-end section pre-filters by attribution year; the
@@ -508,7 +643,7 @@ def payment_timeliness_from_txns(txns: list[Transaction]) -> dict | None:
     core owns only the paid-at/due-date gate and the counting.
 
     Args:
-        txns: Settled expense transactions attributed to the window.
+        txns: Settled expense items attributed to the window.
 
     Returns:
         A dict with ``total_bills_paid``, ``paid_on_time``, ``paid_late``,

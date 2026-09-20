@@ -376,6 +376,27 @@ def cell_key(item: PlanItem):
     return item.id
 
 
+def key_order(key) -> tuple[int, int, int]:
+    """Return a TOTAL order over :func:`cell_key` values, for a mixed sort.
+
+    A row's key is an ``int`` and a leg's a pair, and Python refuses to
+    compare the two, so a reader that ranks rows and legs together on their
+    identity -- the Spending report's surprises, whose cap follows a rank
+    that must be a function of the data (finding **P74**) -- orders by this:
+    every row before every leg, rows by id, legs by ``(transfer id, account
+    id)``.  The ONE spelling of that order (leaf ``X-bi-6-1b``).
+
+    Args:
+        key: A :func:`cell_key` value.
+
+    Returns:
+        A three-int tuple that sorts as stated.
+    """
+    if isinstance(key, tuple):
+        return (1, key[0], key[1])
+    return (0, key, 0)
+
+
 def leg_of(
     transfer: Transfer, account_id: int, *,
     record: TransactionEntry | None = None,
