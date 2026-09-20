@@ -444,10 +444,11 @@ def _recent_settled_expenses_monthly(
             Transaction.status_id.in_(settled_status_ids()),
         )
         # ``settled_contribution`` resolves through
-        # ``row_valuation.settled_figure``, which sums a ``purchases``-basis
-        # row's OWN entries rather than reading a stored copy (plan step
-        # X-au-c3).  Without this the metric issues one SELECT per settled
-        # envelope where it used to read a column.
+        # ``row_valuation.settled_figure``, which sums EVERY settled row's
+        # entries rather than reading a stored copy (plan step X-au-c3 for
+        # an envelope; balance:X-bi-4b-1 for every row, ruling R-BAL80).
+        # Without this the metric issues one SELECT per settled row where it
+        # used to read a column.
         .options(selectinload(Transaction.entries))
         .all()
     )

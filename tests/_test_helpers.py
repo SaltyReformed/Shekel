@@ -801,7 +801,7 @@ def _sync_loan_ledger(loan_account_id):
       :func:`~app.services.loan_posting_service.sync_loan_postings_all_scenarios`
       (``app/routes/loan/params.py:125`` and ``:177``).
     * The balance true-up and the tracking-start opening both route through
-      :func:`app.services.anchor_service._append_loan_anchor_and_sync`, which
+      :func:`app.services.loan_anchor_service._append_loan_anchor_and_sync`, which
       appends the event, re-syncs, and commits (``anchor_service.py:390``).
 
     The property that matters, and the one this helper reproduces, is that the
@@ -947,7 +947,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
 
     Mirrors the production balance-trueup path
-    (:func:`app.services.anchor_service.apply_loan_anchor_true_up`,
+    (:func:`app.services.loan_anchor_service.apply_loan_anchor_true_up`,
     E-18 / Commit 16): the operator asserts a new dated balance and the
     resolver replays forward from this latest event.  Under the
     contractual-schedule balance model, a cash overpayment does NOT
@@ -960,7 +960,7 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     Like production, the event is RECONCILED INTO POSTINGS in the same
     transaction (:func:`_sync_loan_ledger`): ``apply_loan_anchor_true_up`` appends
     the row and re-syncs every scenario
-    (``anchor_service._append_loan_anchor_and_sync``, which then commits; this
+    (``loan_anchor_service._append_loan_anchor_and_sync``, which then commits; this
     helper leaves the commit to its caller).  An un-reconciled true-up
     does not exist as far as the ledger is concerned -- and the ledger is what
     every loan surface now reads -- so a fixture that only wrote the event left
@@ -1005,10 +1005,12 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
 def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
     """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life import).
 
-    Mirrors the production tracking-start path
-    (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
-    began tracking an already-amortizing loan and asserts its real balance as of a
-    date at/before the first recorded payment.  It is loaded as an ordinary
+    Mirrors the production tracking-start paths (the setup door's
+    :func:`app.services.loan_anchor_service.stage_loan_tracking_start` since plan
+    step ``recurrence:R20``, and the dashboard's
+    :func:`app.services.loan_anchor_service.record_loan_tracking_start`): the
+    operator began tracking an already-amortizing loan and asserts its real
+    balance as of a date.  It is loaded as an ordinary
     ``is_opening=False`` balance ASSERTION
     (:func:`app.services.loan_loaders.load_loan_anchor_facts`) that RESETS the
     genesis walk's running balance at its own date -- the loan still opens at its
@@ -1018,14 +1020,13 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
     Like production, the event is RECONCILED INTO POSTINGS in the same
     transaction (:func:`_sync_loan_ledger`): ``record_loan_tracking_start``
     appends the row and re-syncs every scenario (it shares
-    ``anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
+    ``loan_anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
     commits; this helper leaves the commit to its caller).
 
     Args:
         loan_params: The :class:`LoanParams` ORM instance, already flushed.
-        anchor_balance: The asserted opening balance (Decimal).
-        anchor_date: The date the balance was asserted (at/before the first
-            recorded payment).
+        anchor_balance: The asserted balance (Decimal).
+        anchor_date: The date the balance was asserted.
 
     Returns:
         The newly added :class:`LoanAnchorEvent` (added and reconciled into
@@ -1056,6 +1057,7 @@ def create_loan_account(
     principal=None, rate=None, term=24,
     origination_date=None, payment_day=1,
     *, account_type=None, anchor_balance=None,
+    tracked_balance=None, tracked_from=None,
 ):
     """Create a loan account with LoanParams, origination event, and rate.
 
@@ -1063,8 +1065,10 @@ def create_loan_account(
     Routes the account through the canonical ``account_service.create_account``
     factory (so it gets its origination ``AccountAnchorHistory`` row), inserts a
     ``LoanParams`` row, seeds the origination ``RateHistory`` the loan resolver
-    requires, and OPENS the genesis posting ledger -- so a caller never has to
-    repeat that dance, and cannot accidentally omit a step.
+    requires, records the balance stated at setup as the ``tracking_start``
+    assertion the setup door writes (when a caller states one), and OPENS the
+    genesis posting ledger -- so a caller never has to repeat that dance, and
+    cannot accidentally omit a step.
 
     Seventeen suites used to hand-roll this block (a ``LoanParams(...)`` insert
     beside a copy of the account-factory call).  Every one of them omitted the
@@ -1088,13 +1092,29 @@ def create_loan_account(
 
     Commits before returning so the loan is fully resolvable.
 
+    **It writes what ``loan.create_params`` writes, and no more** (plan step
+    ``recurrence:R20``, ruling **R-R72** part 3).  The setup form asks for the
+    balance "as of" a date, and the door appends a ``tracking_start``
+    :class:`LoanAnchorEvent` for it in the same transaction as the params
+    whenever the loan originated BEFORE that date -- the mid-life-import
+    shape, a loan whose balance today is not what amortizing its origination
+    would say.  ``tracked_balance`` / ``tracked_from`` are that pair; given,
+    the assertion is appended through :func:`insert_tracking_start_event`
+    (the row the door writes, reconciled into the ledger the way the door
+    does) before the ledger opens.  Omitted, the loan carries only its
+    synthesized origination assertion -- the shape of a loan set up on its
+    origination day -- and under ruling R-R71 every contractual month after
+    origination that a test leaves unrecorded is CHARGED, so a fixture that
+    means "a loan in good standing, mid-life" states its balance.  Until R20
+    this factory seeded ``LoanParams.current_principal`` to ``principal``, a
+    column the door required and nothing read (finding **REC-519**).
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
         name: The account name.
-        principal: The original principal (and the account anchor); both
-            ``original_principal`` and ``current_principal`` are seeded
-            to it.  Defaults to ``Decimal("1000.00")``.
+        principal: The original principal (and the account anchor).
+            Defaults to ``Decimal("1000.00")``.
         rate: The origination annual rate as a Decimal fraction.  Defaults
             to ``Decimal("0.05000")`` (5%).
         term: The loan term in months (default 24).
@@ -1127,11 +1147,23 @@ def create_loan_account(
             that needs to prove the loan path is driving a balance -- rather than
             the generic account-anchor path -- makes them differ, so the anchor is
             a distinguishable decoy rather than the same number twice.
+        tracked_balance: The balance the owner states at setup (Decimal), to be
+            recorded as a ``tracking_start`` dated *tracked_from*.  Keyword-only;
+            the two go together.
+        tracked_from: The date that balance is stated for.  Must fall strictly
+            AFTER *origination_date*, the one case the door writes for; a
+            fixture asking for an assertion on or before origination is asking
+            for a row the door never writes, and is refused rather than
+            silently given no row.
 
     Returns:
         The created loan :class:`~app.models.account.Account`.  Its
         :class:`LoanParams` row is reachable via :func:`loan_params_for` when a
         caller needs to append an anchor event to it.
+
+    Raises:
+        ValueError: When exactly one of *tracked_balance* / *tracked_from* is
+            given, or *tracked_from* is not after *origination_date*.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above; these pull the models/services
@@ -1151,6 +1183,17 @@ def create_loan_account(
         account_type = AcctTypeEnum.AUTO_LOAN
     if anchor_balance is None:
         anchor_balance = principal
+    if (tracked_balance is None) != (tracked_from is None):
+        raise ValueError(
+            "tracked_balance and tracked_from state one assertion; give both "
+            "or neither"
+        )
+    if tracked_from is not None and tracked_from <= origination_date:
+        raise ValueError(
+            f"tracked_from {tracked_from} is not after origination "
+            f"{origination_date}: the setup door writes no assertion for a "
+            "loan originating on or after the stated date"
+        )
 
     account = account_service.create_account(
         account_service.AccountSpec(
@@ -1192,7 +1235,6 @@ def create_loan_account(
     params = LoanParams(
         account_id=account.id,
         original_principal=principal,
-        current_principal=principal,
         term_months=term,
         origination_date=origination_date,
         payment_day=payment_day,
@@ -1200,7 +1242,12 @@ def create_loan_account(
     db_session.add(params)
     db_session.flush()
     insert_origination_rate(params, rate)
-    _sync_loan_ledger(account.id)
+    if tracked_from is not None:
+        # The door's own order: the assertion is staged before the one ledger
+        # open, and this helper's re-sync IS that open.
+        insert_tracking_start_event(params, tracked_balance, tracked_from)
+    else:
+        _sync_loan_ledger(account.id)
     db_session.commit()
     return account
 

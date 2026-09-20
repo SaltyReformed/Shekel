@@ -41,6 +41,7 @@ from app.services.row_valuation import settled_contribution
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
+    cover_bare_settled_row,
     create_savings_account,
     create_transfer,
     default_settle_day,
@@ -118,6 +119,9 @@ class TestTransactionEffectiveAmount:
         for _column, _value in settlement_columns(settled_on, estimated, submitted=actual).items():
             setattr(txn, _column, _value)
         db.session.flush()
+        if settled_on is not None:
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, estimated, actual)
         return txn
 
     def test_projected_returns_estimated(self, app, db, seed_user, seed_periods):
@@ -949,6 +953,7 @@ class TestSettleDayRefusesAnInstant:
                 ).items():
                 setattr(txn, _column, _value)
             db.session.flush()
+            cover_bare_settled_row(db.session, txn, "100.00")
 
             # The BARE column assignment, which is exactly the path the
             # validator exists for: ``SettleDay`` refuses an instant at
@@ -1029,6 +1034,9 @@ class TestDaysPaidBeforeDue:
         for _column, _value in settlement_columns(settled_on_val, Decimal("100.00")).items():
             setattr(txn, _column, _value)
         db.session.flush()
+        if settled_on_val is not None:
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "100.00")
         return txn
 
     def test_days_paid_before_due_early(self, app, db, seed_user, seed_periods):

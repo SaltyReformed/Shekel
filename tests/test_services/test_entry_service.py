@@ -26,6 +26,7 @@ from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
 from app.services import (
     cash_ledger,
     status_seam,
+    transaction_service,
 )
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
@@ -2421,6 +2422,57 @@ class TestASettledRowMayStillGAINAPurchase:
 
             # No purchase landed; the covering movement is not one (X-bi-3a).
             assert purchases_of(txn.id) == []
+
+    def test_a_close_of_NOTHING_admits_a_new_purchase_and_then_records_it(
+        self, app, db, seed_user, seed_entry_template,
+    ):
+        """A ``$0.00`` close holds no covering movement, so nothing doubles.
+
+        Ruling **R-BAL82** (plan step ``balance:X-bi-4b-1``): the rule reads
+        the covering movement, and ``ck_transaction_entries_positive_amount``
+        admits no movement of nothing -- so a row closed at a typed ``$0.00``
+        is a close with no entries, the door ADMITS a later purchase, the row
+        then records exactly that purchase (``settled_figure``), the family
+        moves it once, and its removal is admitted by the same reading.  The
+        column read this replaced filed the row under "a fixed figure" and
+        refused both.
+        """
+        with app.app_context():
+            txn = db.session.get(
+                Transaction, seed_entry_template["transaction"].id,
+            )
+            self._close(txn)
+            transaction_service.apply_requested_status(
+                txn, txn.status_id, submitted=typed(Decimal("0.00")),
+            )
+            db.session.flush()
+            assert txn.covering_movements == []
+            assert settled_figure(txn) == Decimal("0")
+            account_id, scenario_id = txn.account_id, txn.scenario_id
+            facts_before = sum(
+                (fact.delta for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)),
+                Decimal("0.00"),
+            )
+
+            entry = entry_service.create_entry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    figure=typed(Decimal("12.00")),
+                    description="Late fee after all",
+                    purchased_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
+                ),
+            )
+            db.session.flush()
+
+            assert purchases_of(txn.id) == [entry]
+            assert settled_figure(txn) == Decimal("12.00")
+            assert sum(
+                (fact.delta for fact in cash_ledger.settled_cash_facts(account_id, scenario_id)),
+                Decimal("0.00"),
+            ) == facts_before - Decimal("12.00")
+            assert entry_service.removal_refusal(txn) is None
 
     def test_the_state_the_refusal_prevents_publishes_a_DOUBLE_COUNT(
         self, app, db, seed_user, seed_entry_template,

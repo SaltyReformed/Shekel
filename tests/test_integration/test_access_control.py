@@ -731,7 +731,9 @@ class TestLoanAccessControl:
             response = second_auth_client.post(
                 f"/accounts/{target_id}/loan/setup",
                 data={
-                    "current_principal": "200000",
+                    "original_principal": "250000",
+                    "anchor_balance": "200000",
+                    "anchor_date": "2024-01-01",
                     "interest_rate": "6.5",
                     "term_months": "360",
                     "origination_date": "2024-01-01",
@@ -750,7 +752,7 @@ class TestLoanAccessControl:
             target_id = seed_full_user_data["account"].id
             response = second_auth_client.post(
                 f"/accounts/{target_id}/loan/params",
-                data={"current_principal": "999999"},
+                data={"payment_day": "28"},
             )
             _assert_not_found(
                 response,

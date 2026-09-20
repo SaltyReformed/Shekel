@@ -4,7 +4,7 @@ Commit 4 built the loan-payment split-posting service (pure, unwired); Commit 5
 WIRES it into every chokepoint that changes a loan's confirmed payments -- the
 transfer settle / revert / edit / delete / restore paths
 (:mod:`app.services.transfer_service`), the balance true-up
-(:func:`app.services.anchor_service.apply_loan_anchor_true_up`), the ARM rate
+(:func:`app.services.loan_anchor_service.apply_loan_anchor_true_up`), the ARM rate
 change and origination-rate / params edit routes, and loan-params creation (the
 N1 back-post).  These integration tests drive each chokepoint through its REAL
 entry point (the service call or the HTTP route), with NO manual
@@ -36,7 +36,7 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry
 from app.models.scenario import Scenario
 from app.services import (
-    anchor_service,
+    loan_anchor_service,
     posting_service,
     transfer_service,
 )
@@ -389,7 +389,7 @@ class TestTrueUpWiring:
             )
             assert checking_before == Decimal("-1000.00")
 
-            outcome = anchor_service.apply_loan_anchor_true_up(
+            outcome = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("90000.00"),
                 anchor_date=date(2026, 2, 15),
             )
@@ -435,7 +435,7 @@ class TestTrueUpWiring:
                 db.session, interest_ledger_id, whatif.id,
             ) == Decimal("500.00")
 
-            outcome = anchor_service.apply_loan_anchor_true_up(
+            outcome = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("90000.00"),
                 anchor_date=date(2026, 1, 15),
             )
@@ -467,7 +467,7 @@ class TestTrueUpWiring:
             _settle(seed_user, loan, seed_periods[_P1])
             db.session.commit()
 
-            first = anchor_service.apply_loan_anchor_true_up(
+            first = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("90000.00"),
                 anchor_date=date(2026, 1, 15),
             )
@@ -477,7 +477,7 @@ class TestTrueUpWiring:
             )
             assert interest_after_first == Decimal("450.00")
 
-            second = anchor_service.apply_loan_anchor_true_up(
+            second = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("90000.00"),
                 anchor_date=date(2026, 1, 15),
             )
@@ -665,7 +665,12 @@ class TestRouteChokepointWiring:
                 f"/accounts/{loan.id}/loan/setup",
                 data={
                     "original_principal": "100000.00",
-                    "current_principal": "100000.00",
+                    # Stated for the origination day: the setup door then
+                    # records no assertion (plan step R20), and the loan's
+                    # only anchor stays the synthesized origination the
+                    # back-posted split is measured against.
+                    "anchor_balance": "100000.00",
+                    "anchor_date": "2026-01-01",
                     "interest_rate": "6.000",
                     # <= the Auto Loan type's 120-month cap; the split's interest
                     # is balance*rate/12, independent of the term.

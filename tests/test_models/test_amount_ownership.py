@@ -75,6 +75,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from tests._test_helpers import (
     bare_expense_template,
+    cover_bare_settled_row,
     generate_row_of,
     generate_transfer_of,
     load_migration_module,
@@ -975,6 +976,9 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
             )
             db.session.add(txn)
             db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1): the
+            # stated $412.55, under a plan the row cannot price itself.
+            cover_bare_settled_row(db.session, txn, "0", submitted="412.55")
 
             assert settled_contribution(txn) == Decimal("412.55")
 

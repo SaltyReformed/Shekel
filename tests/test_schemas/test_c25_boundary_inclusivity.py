@@ -149,7 +149,8 @@ class TestLoanParamsOriginalPrincipal:
         """
         return {
             "original_principal": original_principal,
-            "current_principal": "100000.00",
+            "anchor_balance": "100000.00",
+            "anchor_date": "2020-01-01",
             "interest_rate": "5.50000",
             "term_months": "360",
             "origination_date": "2020-01-01",

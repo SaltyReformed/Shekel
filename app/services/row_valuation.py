@@ -76,17 +76,16 @@ make; it simply lives in a file both tiers can reach.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01): ORM rows in,
 ``Decimal`` out; no Flask import, no writes, and no query this module ISSUES.
-:func:`settled_figure` reads the ``entries`` relationship for a
-``purchases``-basis row, which lazy-loads if a caller did not eager-load it --
-the same access ``status_seam.covered_cash_leg`` makes for a settled row,
-and the fold's own loader issues ``selectinload(Transaction.entries)`` so
-no routed caller pays for it per row.
+:func:`settled_figure` reads the ``entries`` relationship for EVERY settled
+row since plan step ``balance:X-bi-4b-1``, which lazy-loads if a caller did
+not eager-load it -- the same access ``status_seam.covered_cash_leg`` makes
+for a settled row, and the fold's own loader, the grid's and the companion's
+issue ``selectinload(Transaction.entries)`` so no routed caller pays for it
+per row.
 """
 
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import SettlementBasisEnum
 from app.exceptions import AmountUnresolvable
 from app.utils.balance_predicates import (
     is_balance_contributing,
@@ -97,11 +96,13 @@ from app.utils.balance_predicates import (
 def purchases_total(entries) -> Decimal:
     """Return the sum of a row's purchases -- ALL of them, debit and credit.
 
-    The figure a ``purchases``-basis settlement records
-    (:class:`app.enums.SettlementBasisEnum`), and the one statement of it.  Both
-    kinds of entry count: the credit portion leaves the account through its CC
-    Payback sibling rather than through this row: the fold and the ledger
-    read it as a movement that moves nothing
+    The figure an envelope's close BOOKS (``transaction_service.
+    settle_from_entries``), and the one statement of it; since plan step
+    ``balance:X-bi-4b-1`` :func:`settled_figure` below is the same reduction
+    over the row's whole family, so the two cannot part on a row that holds
+    purchases alone.  Both kinds of entry count: the credit portion leaves
+    the account through its CC Payback sibling rather than through this row:
+    the fold and the ledger read it as a movement that moves nothing
     (:func:`~app.services.cash_ledger.movement_cash_leg`) and the reconcile
     panel subtracts it (:func:`~app.services.cash_ledger.off_statement_sum`),
     so removing it here would take it out twice.
@@ -135,167 +136,69 @@ def settled_figure(txn) -> "Decimal | None":
     **The one accessor for the settlement record** (plan step X-au-c3), and the
     reason the amount model needs no freeze.  A row is a PLAN --
     ``estimated_amount`` priced by ``amount_source_id`` -- until its money moves,
-    and once it has, it also carries a RECORD: the day, the figure, and how that
-    figure is known.  Every money reader of a settled row asks this and never
-    the plan, so a definition's price series may gain a version dated into the
-    past -- which it legitimately does, because a series records what a price
-    WAS -- without moving a figure the bank already took.
+    and once it has, it also carries a RECORD.  Every money reader of a settled
+    row asks this and never the plan, so a definition's price series may gain
+    a version dated into the past -- which it legitimately does, because a
+    series records what a price WAS -- without moving a figure the bank
+    already took.
 
-    The three bases (:class:`app.enums.SettlementBasisEnum`) answer two ways:
+    **THE RECORD IS THE ROW'S ENTRIES, and the figure is their sum** (plan
+    step ``balance:X-bi-4b-1``, ruling **R-BAL80**; the readers move here,
+    the columns go at ``X-bi-4b-2``).  A bill's, a paycheck's or a transfer
+    leg's money is its one covering movement (``status_seam._covering``,
+    ruling **R-BAL39**); an envelope's is its purchases; a close of nothing
+    holds no entry and records ``$0.00`` (ruling **R-BAL82**: a movement of
+    nothing is not one, so a ``$0.00`` close is a close with no entries).  One
+    kind-blind reduction, the same one :func:`purchases_total` performs for
+    the close that books it and ``posting_reads.settled_figure_clause``
+    performs in SQL, over the same rows the fold books one by one on their
+    own days (``cash_ledger._events.settled_cash_facts`` reads the movements
+    and nothing of the row, ruling **R-BAL80**; a card purchase is a row of
+    the record that moves no cash of its own, :func:`purchases_total` says
+    why) -- so the figure a screen shows and the money the balance counts
+    are read off ONE home.  Through ``X-bi-4a`` this read the
+    row's own ``settled_amount`` / ``settled_basis_id`` -- a ``derived`` or
+    ``corrected`` record's stored figure, a ``purchases`` record's entry sum
+    -- and REFUSED a settled row recording nothing; the columns were the
+    covering movement's stale cache (rule 14), and the refusal guarded a
+    state that has no spelling here: a settled row with no entries IS the
+    ``$0.00`` record.
 
-      * ``derived`` and ``corrected`` STORE the figure in ``settled_amount``,
-        because neither is re-derivable -- the app's resolution at the moment of
-        settle is a point in time, and a human's reading of a statement is not
-        computable at all;
-      * ``purchases`` stores NOTHING and sums the row's entries, because those
-        entries are themselves the records.  A stored copy would need a
-        reconciler to keep it in step with its own children, which is the shape
-        ruling **R-FI** deletes.
-
-    **THE STATUS DECIDES, NOT THE COLUMNS** (plan step X-au-c3, developer
+    **THE STATUS DECIDES, NOT THE RECORD** (plan step X-au-c3, developer
     2026-08-17).  A row that has been reverted out of the settled band still
     CARRIES what it recorded -- a revert releases the assertion (``settled_on``
-    and the clearing link) and keeps what moved, so the revert / edit /
-    re-settle round trip the full-edit popover instructs the user to perform
-    does not destroy a figure they read off a statement
-    (``status_seam.apply_status_change``).  What keeps that retained figure out
-    of every balance is this gate: a row that is not settled is worth its PLAN,
-    whatever it still remembers.
-
-    Reading ``settled_basis_id IS NOT NULL`` here instead would be the same
-    question answered by the wrong column -- and it is the reason a first
-    version of this step had to DESTROY the figure on a revert, because with the
-    valuation inferring settled-ness from the record, the record had to go for
-    the inference to come out right.  A CHECK constraint was written to enforce
-    that pairing.  Deleting the inference deleted the constraint, the release
-    and the data loss together.
-
-    **It refuses rather than answering ``None`` for a broken record.**  A
-    ``derived`` or ``corrected`` settlement with no stored figure has
-    ``ck_transactions_settled_amount_needs_basis`` intact and the write-door rule
-    broken -- the one half of the pairing a CHECK cannot state, because saying it
-    needs the constraint to name a ref id.  Answering ``None`` there would send
-    the caller to the row's PLAN, which is the exact fallback this step exists to
-    remove, and it would do it silently.
+    and the clearing link) and keeps what moved (the covering movement,
+    un-dated, ruling **R-BAL61**), so the revert / edit / re-settle round trip
+    the full-edit popover instructs the user to perform does not destroy a
+    figure they read off a statement (``status_seam.apply_status_change``).
+    What keeps that retained figure out of every balance is this gate: a row
+    that is not settled is worth its PLAN, whatever it still remembers.
+    Reading the record's presence here instead would be the same question
+    answered by the wrong fact -- and it is the reason a first version of
+    X-au-c3 had to DESTROY the figure on a revert.
 
     Args:
         txn: The row being asked.  ``status_id`` is read first, so a row that
             has not settled costs one frozenset membership test; the ``entries``
-            relationship is read only for a SETTLED ``purchases``-basis row.
-            Callers that value many rows should eager-load it --
-            ``cash_ledger._facts._unwindowed_contributing_rows``,
-            ``routes/grid/page``, ``spending_analysis.query_settled_expenses``,
-            ``query_settled_expenses_in_span`` and
-            ``savings_dashboard_service._metrics`` all issue
-            ``selectinload(Transaction.entries)`` for that reason.
+            relationship is read for every SETTLED row.  Callers that value
+            many rows eager-load it through
+            :func:`app.utils.amount_relationships.settlement_load_options`
+            (alone for a settled-only reader -- the loan ledger's walk and
+            confirmed history, the asset and investment contribution passes
+            -- or inside ``valuation_load_options`` for a pass that prices
+            too: the fold's loader, the grid's, the companion's); the
+            reconcile panel, the matcher, ``spending_analysis`` and
+            ``savings_dashboard_service._metrics`` spell the same
+            ``selectinload(Transaction.entries)``.
 
     Returns:
-        The recorded figure, or ``None`` when this row is not settled.
-
-    Raises:
-        AmountUnresolvable: When the row records a basis that stores a figure
-            and stores none.
+        The recorded figure -- the sum of the row's entries, ``Decimal("0")``
+        for a settled row holding none -- or ``None`` when this row is not
+        settled.
     """
     if txn.status_id not in settled_status_ids():
         return None
-    if txn.settled_basis_id is None:
-        raise AmountUnresolvable(
-            f"Transaction {txn.id} is in a settled status and records no "
-            "settlement, so there is nothing to say what moved. "
-            "status_seam.apply_status_change refuses to put a row in this "
-            "state -- it is the ONE door that writes status_id, and it writes "
-            "the record in the same call -- so a row here was written around "
-            "that door. There is deliberately no fall back to the row's plan: "
-            "the plan is a forecast and this row's money has already moved, "
-            "which is the substitution this step exists to remove."
-        )
-    if txn.settled_basis_id == ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    ):
-        # The PURCHASES, never the family (ruling R-BAL68); a ``purchases``
-        # record holds no covering movement, so the two agree today, and
-        # the reading says what the figure IS.
-        return purchases_total(txn.purchases)
-    if txn.settled_amount is None:
-        raise AmountUnresolvable(
-            f"Transaction {txn.id} records a settlement whose basis stores its "
-            "figure, and stores none. Only the 'purchases' basis leaves "
-            "settled_amount NULL -- there the row's own entries state the "
-            "figure -- so this row was written around that rule. There is "
-            "deliberately no fall back to the row's plan: the plan is a "
-            "derivation and can have moved since the money did, which is the "
-            "substitution this step exists to remove."
-        )
-    return txn.settled_amount
-
-
-def recorded_figure(row) -> "Decimal | None":
-    """Return what *row* records as having moved, or ``None`` if it records none.
-
-    **:func:`settled_figure`'s TOTAL twin, for the EDIT DOORS**, and the one
-    clause between them is the whole difference: a settled row that records
-    NOTHING answers ``None`` here and RAISES there.
-
-    **The two answer different questions, which is why this is not a softened
-    copy.**  :func:`settled_figure` is asked by everything that COUNTS money,
-    and for those callers "nothing recorded" must be a refusal -- answering
-    ``None`` would send them to the row's PLAN and publish a forecast as a fact,
-    which is the substitution plan step X-au-c3 exists to remove.  This is asked
-    by the two full-edit popovers, which do not count anything: they PREFILL a
-    box, and for a row that records nothing the true prefill is an empty box.
-
-    **The row it exists for is the one that most needs repairing.**  A settled
-    row carrying no settlement record predates the record entirely (finding
-    **N-181**); ``status_seam.apply_status_change`` refuses to create one and
-    the X-au-c3 migration backfilled every instance, so production holds zero
-    (measured on the 2026-08-17 clone: 166 settled rows, 0 without a basis).
-    But such a row cannot be repaired from a surface that refuses to draw, and
-    it cannot be repaired by stating its DAY alone either --
-    ``ck_transactions_settle_day_needs_a_record`` pairs the two, so a day written
-    without a record violates it.  The repair is to state BOTH, which is what
-    the Actual box beside the day box is for.
-
-    An INCOHERENT record -- a basis that stores its figure, storing none --
-    still raises, deliberately.  That is not "nothing recorded", it is a record
-    contradicting itself, and no door can produce one:
-    ``status_seam.Settlement.__post_init__`` refuses to construct it and the
-    seam writes both columns from that one value.
-
-    Args:
-        row: The row being asked.
-
-    Returns:
-        The recorded figure; ``None`` when the row has not settled or records
-        nothing at all.
-
-    Raises:
-        AmountUnresolvable: From :func:`settled_figure`, when the row's record
-            contradicts itself.
-    """
-    if row.settled_basis_id is None:
-        return None
-    return settled_figure(row)
-
-
-def recorded_amounts_by_id(rows) -> "dict[int, Decimal | None]":
-    """Return ``{transaction_id: what the row records}``, total where it records none.
-
-    The batch the EDIT surfaces read, and :func:`settled_amounts_by_id`'s twin
-    in exactly the way :func:`recorded_figure` is :func:`settled_figure`'s --
-    see that function for why the two questions are different rather than one
-    question with a lenient mode.
-
-    Args:
-        rows: The rows a full-edit form is about to render.
-
-    Returns:
-        ``{transaction_id: Decimal | None}`` covering every row.
-
-    Raises:
-        AmountUnresolvable: From :func:`recorded_figure`, for a row whose
-            record contradicts itself.
-    """
-    return {row.id: recorded_figure(row) for row in rows}
+    return purchases_total(txn.entries)
 
 
 def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
@@ -319,20 +222,24 @@ def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     module's 1,000-line cap refused it: the cap did its job.
 
     ``None`` for a row that has not settled, which is what a template branches
-    on.  It is published as a MAP rather than read off the row because the answer
-    needs ``ref_cache`` to tell a ``purchases`` record from one that stores its
-    figure, and a Jinja template comparing a ref id would be exactly the
-    string-versus-id defect the project-wide ref rule forbids.
+    on.  It is published as a MAP rather than read off the row because a
+    settled row's figure is a reduction over its entries, which a Jinja
+    template has no business performing -- and because the popovers'
+    Actual prefill (``routes/_render_helpers``) reads the SAME map since plan
+    step ``balance:X-bi-4b-1``.  That prefill had a TOTAL twin of its own,
+    ``recorded_amounts_by_id`` over ``recorded_figure``, whose one clause was
+    "``None`` for a settled row that RECORDS NOTHING" (finding **N-181**'s
+    legacy shape, which the box existed to repair) where this map raised;
+    a settled row with no entries is the ``$0.00`` record now (ruling
+    **R-BAL82**), so the state the twin answered differently has no
+    spelling, and two names for one reduction is rule 14's two spellings.
+    The twin is deleted; every reader of the record asks this.
 
     Args:
         rows: The rows a surface is about to render.
 
     Returns:
         ``{transaction_id: Decimal | None}`` covering every row.
-
-    Raises:
-        AmountUnresolvable: From :func:`settled_figure`, for a row whose
-            settlement record is incomplete.
     """
     return {row.id: settled_figure(row) for row in rows}
 
@@ -386,10 +293,6 @@ def fixed_contribution(txn) -> "Decimal | None":
 
     Returns:
         The row's worth when it needs no resolution, else ``None``.
-
-    Raises:
-        AmountUnresolvable: Propagated from :func:`settled_figure` for a row
-            whose settlement record is incomplete.
     """
     if not is_balance_contributing(txn):
         return Decimal("0")
@@ -501,9 +404,7 @@ def settled_contribution(txn) -> Decimal:
 
     Raises:
         AmountUnresolvable: When the row has NOT settled, so it recorded
-            nothing and this reader was handed a row outside its own scope;
-            and from :func:`settled_figure`, when a settled row's record is
-            incomplete.
+            nothing and this reader was handed a row outside its own scope.
     """
     fixed = fixed_contribution(txn)
     if fixed is None:

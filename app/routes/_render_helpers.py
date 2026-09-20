@@ -26,8 +26,8 @@ from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     derived_amount_basis,
     amounts_by_id,
-    recorded_amounts_by_id,
     resolve_transfer_amount,
+    settled_amounts_by_id,
 )
 from app.services.account_resolver import resolve_cash_flow_set
 from app.services.entry_service import build_entry_sums_dict
@@ -68,12 +68,17 @@ class RenderAmounts:
         budgets: ``{transaction_id: what the row's amount IS}`` --
             :func:`~app.services.cash_ledger.amounts_by_id`.
         settled: ``{transaction_id: what its money DID}``, ``None`` per row that
-            has not settled or records nothing --
-            :func:`~app.services.cash_ledger.recorded_amounts_by_id`.  The
-            TOTAL read, not the refusing one, because a FRAGMENT is an edit
-            control: a settled row carrying no record can only be repaired from
-            a surface that draws, and the surfaces that COUNT money
-            (``routes/grid/page``) keep the refusal.
+            has not settled --
+            :func:`~app.services.cash_ledger.settled_amounts_by_id`, the SAME
+            map the grid counts from.  It read a TOTAL twin
+            (``recorded_amounts_by_id``) through ``X-bi-4a``, whose one
+            difference was ``None`` for a settled row that RECORDED NOTHING --
+            a legacy shape (finding **N-181**) this fragment's Actual box
+            existed to repair, and one the counting map refused; a settled
+            row's record is the sum of its entries since plan step
+            ``balance:X-bi-4b-1`` (ruling **R-BAL80**), so such a row is the
+            ``$0.00`` record (ruling **R-BAL82**), the box shows ``0.00``, and
+            typing the real figure is still the repair.
         retained: ``{transaction_id: what a tick WOULD book}``, ``None`` per row
             where that is already on screen --
             :func:`~app.services.transaction_service.retained_settle_amounts_by_id`.
@@ -141,7 +146,7 @@ def fragment_amounts(txn: Transaction) -> RenderAmounts:
     basis = derived_amount_basis(txn.account.user_id, txn.scenario_id)
     return RenderAmounts(
         budgets=amounts_by_id([txn], basis),
-        settled=recorded_amounts_by_id([txn]),
+        settled=settled_amounts_by_id([txn]),
         retained=retained_settle_amounts_by_id([txn]),
     )
 
@@ -278,8 +283,8 @@ def transfer_settlement_amounts(
     how one click shows a different figure from another.
 
     **It asks the two published producers rather than reading the columns.**
-    :func:`~app.services.cash_ledger.recorded_amounts_by_id` is what every other
-    EDIT surface prefills a settled row's figure from, and
+    :func:`~app.services.cash_ledger.settled_amounts_by_id` is what every other
+    surface shows a settled row's figure from, and
     :func:`~app.services.transaction_service.retained_settle_amounts_by_id` is
     built from the same function the settle verb honours
     (``status_seam.honoured_correction``) -- so what this popover promises and
@@ -308,12 +313,9 @@ def transfer_settlement_amounts(
         NotFoundError: If *xfer* is not *user_id*'s or is soft-deleted.
         ValidationError: If the shadow pair is corrupt -- fail loud, because a
             popover drawn over a broken pair offers controls that cannot work.
-        AmountUnresolvable: From the settlement read, for a leg whose record
-            CONTRADICTS itself.  A leg that records nothing answers ``None``
-            instead: that row is the one the popover exists to repair.
     """
     rows = load_transfer_rows(xfer.id, user_id)
-    settled = recorded_amounts_by_id([rows.expense])
+    settled = settled_amounts_by_id([rows.expense])
     retained = retained_settle_amounts_by_id([rows.expense])
     return TransferSettlementAmounts(
         settled={xfer.id: settled[rows.expense.id]},

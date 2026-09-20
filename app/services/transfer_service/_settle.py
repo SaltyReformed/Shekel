@@ -320,9 +320,11 @@ def settle(
     **The figure lands in the row's OWN settlement record, and that is what
     closed finding N-241.**  It went to ``actual_amount`` -- a column ruling
     **R-FH** reserves for a figure a HUMAN supplied -- so a machine-derived
-    freeze written there manufactured a correction nobody made.  A record with
-    its own ``settled_basis_id`` says which it is, so the freeze had nothing
-    left to overwrite and the column it was hiding in is gone.
+    freeze written there manufactured a correction nobody made.  A record
+    that says WHO wrote its figure (the covering movement's
+    ``figure_source_id`` since plan step ``balance:X-bi-4b-1``; the row's
+    ``settled_basis_id`` through ``X-bi-4a``) leaves the freeze nothing to
+    overwrite, and the column it was hiding in is gone.
 
     Mutates in place.  Does NOT flush, commit, or reconcile the posted ledger
     -- ``update_transfer``'s tail owns all three, so a settle and an ordinary
@@ -393,9 +395,10 @@ def settle(
     # ``actual_amount`` -- which ruling **R-FH** reserves for a figure somebody
     # read off a statement, and which three subsystems read the NULL-ness of as
     # meaning exactly that -- so every derive-mode loan settle manufactured a
-    # correction nobody had made.  The two are different columns now, and which
-    # one a figure is stands in ``settled_basis_id`` rather than being inferred
-    # from a column being populated.
+    # correction nobody had made.  The two are different facts now, and which
+    # one a figure is stands in the record's SOURCE (the covering movement's
+    # ``figure_source_id``, plan step balance:X-bi-4b-1) rather than being
+    # inferred from a column being populated.
     #
     # The pair's RETAINED record is read from the expense leg -- the same leg the
     # figures above come from, and for the same reason (Transfer Invariant 3:
@@ -426,10 +429,11 @@ def settle(
     # its predicate, its ``log_events`` registration and its integration test
     # rather than being kept as a green check that measures nothing.
     #
-    # What it recorded is not lost: ``settled_basis_id`` says whether a booked
-    # figure was the app's own resolution or a human's correction, on the row,
-    # for every settle rather than for the subset a predicate happened to
-    # select (plan step X-au-c3).
+    # What it recorded is not lost: the record says whether a booked figure
+    # was the app's own resolution or a human's correction (the covering
+    # movement's ``figure_source_id``; the row's ``settled_basis_id`` through
+    # ``X-bi-4a``), for every settle rather than for the subset a predicate
+    # happened to select (plan step X-au-c3).
     return correction is not None
 
 

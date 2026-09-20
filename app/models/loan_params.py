@@ -6,24 +6,26 @@ rate, term, payment day, and optional ARM fields.  One row per
 amortizing account, linked one-to-one via account_id.
 
 E-18 / Commit 15 demoted ``current_principal`` and ``interest_rate``
-from authoritative storage to non-authoritative seed columns.  DH-#56
-then completed the OPT-1 drop for ``interest_rate``: the column is
-gone, and the loan's base / period-0 rate now lives in its origination
+from authoritative storage to non-authoritative seed columns, and both
+are GONE.  DH-#56 completed the OPT-1 drop for ``interest_rate``: the
+loan's base / period-0 rate lives in its origination
 :class:`RateHistory` row (``create_params`` seeds one for every loan;
-the DH-#56 migration backfilled pre-existing loans).  The loan resolver
-(``app/services/loan_resolver``) derives the displayed current balance
-from the latest :class:`LoanAnchorEvent` plus the confirmed payment
-stream, and derives the current applicable rate from the
-:class:`RateHistory` series.  Display and money surfaces (loan
+the DH-#56 migration backfilled pre-existing loans).  Plan step
+``recurrence:R20`` (ruling **R-R72** part 3, finding **REC-519**)
+dropped ``current_principal``: the balance the owner states at setup is
+a dated ASSERTION and is recorded as one -- a ``tracking_start``
+:class:`LoanAnchorEvent` the setup door appends in the same transaction
+as this row -- where the column held it as a value nothing read.  The
+loan resolver (``app/services/loan_resolver``) derives the displayed
+current balance from the latest :class:`LoanAnchorEvent` plus the
+confirmed payment stream, and derives the current applicable rate from
+the :class:`RateHistory` series.  Display and money surfaces (loan
 dashboard card, /savings debt card, /savings account card, year-end
 net-worth liability, debt strategy) read the resolver's
 ``state.current_rate`` and the ``balance_at`` seam's folded balance,
-never a stored scalar.  ``current_principal`` remains a nullable, non-authoritative
-seed (its OPT-1 drop is still deferred); the origination
-``LoanAnchorEvent`` derives ``anchor_balance`` from
-``original_principal``, not ``current_principal``, so that seed is
-independent (see ``docs/audits/financial_calculations/
-remediation_plan.md`` Section 5 OPT-1).
+never a stored scalar.  The origination anchor is synthesized from
+``original_principal`` and ``origination_date``, the two immutable
+figures this row still carries.
 """
 
 from app.extensions import db
@@ -37,11 +39,12 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
     (mortgage, auto loan, student loan, personal loan, HELOC, etc.).
     ARM-specific columns are nullable and cost nothing when unused.
 
-    E-18 demotion: ``current_principal`` is a nullable,
-    non-authoritative seed column; DH-#56 dropped ``interest_rate``
-    entirely (the origination :class:`RateHistory` row is the source of
-    truth for the loan's rate).  See the module docstring for the
-    resolver-as-source-of-truth contract.
+    Neither ``current_principal`` nor ``interest_rate`` is a column any
+    longer: DH-#56 dropped the rate (the origination :class:`RateHistory`
+    row is the source of truth for it) and plan step ``recurrence:R20``
+    dropped the balance (a ``tracking_start`` :class:`LoanAnchorEvent`
+    records the balance stated at setup).  See the module docstring for
+    the resolver-as-source-of-truth contract.
     """
 
     __tablename__ = "loan_params"
@@ -54,19 +57,14 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
             "original_principal > 0",
             name="ck_loan_params_orig_principal",
         ),
-        # CHECK constraints survive demotion to nullable: PostgreSQL
-        # treats NULL as "unknown" under boolean predicates, so
-        # ``CHECK(current_principal >= 0)`` permits NULL and rejects
-        # any non-NULL negative.
-        db.CheckConstraint(
-            "current_principal >= 0",
-            name="ck_loan_params_curr_principal",
-        ),
         # DH-#56 dropped ``interest_rate`` (and its two CHECKs
         # ``ck_loan_params_interest_rate`` / ``..._upper``); the rate
         # domain ``[0, 1]`` is now enforced on ``rate_history.interest_rate``
         # (``ck_rate_history_valid_interest_rate``), the single source
-        # of truth for the loan's rate.
+        # of truth for the loan's rate.  Plan step ``recurrence:R20``
+        # dropped ``current_principal`` and ``ck_loan_params_curr_principal``
+        # with it; a stated balance is a ``LoanAnchorEvent`` row, whose
+        # ``ck_loan_anchor_events_balance_nonneg`` bounds it.
         db.CheckConstraint(
             "term_months > 0",
             name="ck_loan_params_term_months",
@@ -76,16 +74,13 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     original_principal = db.Column(db.Numeric(12, 2), nullable=False)
-    # Non-authoritative seed; the balance seam is the source of truth
-    # (E-18; plan step D2a folded the balance out of the resolver).
-    # Demoted to nullable by migration ``c4f0a5b71e83`` (Commit 15).
-    # Display surfaces MUST read ``balance_at.balance_at`` instead of
-    # this column.  Remains populated by the setup flow so the
-    # origination ``LoanAnchorEvent`` backfill has a known starting
-    # value; Commit 16 retargets the dashboard "edit principal" UX
-    # at a true-up event so this column is never written by humans
-    # again.
-    current_principal = db.Column(db.Numeric(12, 2), nullable=True)
+    # ``current_principal`` sat here until plan step ``recurrence:R20``
+    # (ruling **R-R72** part 3): demoted to a nullable seed by migration
+    # ``c4f0a5b71e83`` (Commit 15), written by the setup door and read by
+    # nothing after E-18, dropped by R20's migration.  The balance the
+    # owner states at setup is a dated assertion -- a ``tracking_start``
+    # ``LoanAnchorEvent`` -- and display surfaces read
+    # ``balance_at.balance_at``, never a column here.
     # DH-#56 dropped the ``interest_rate`` column.  The loan's base /
     # period-0 rate lives in its origination :class:`RateHistory` row
     # (the resolver derives ``state.current_rate`` from the RateHistory

@@ -22,8 +22,9 @@ purchases are the record has neither.  Two stated fields for one fact would be
 rule 14's two homes with a fence between them; one field and a property is the
 value type holding the invariant by construction.
 
-Pure: reads columns and the ref cache, constructs values.  No session, no
-mutation, no Flask.
+Pure: reads a row's ``entries`` relationship (its covering movement) and the
+ref cache, constructs values.  No query of its own, no session, no mutation,
+no Flask.
 """
 
 from dataclasses import dataclass
@@ -33,8 +34,9 @@ from typing import Optional
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum, SettlementBasisEnum
 from app.models.transaction import Transaction
-from app.services.row_valuation import recorded_figure
+from app.services.row_valuation import settled_figure
 from app.services.stated_figure import StatedFigure
+from app.utils.balance_predicates import settled_status_ids
 
 
 @dataclass(frozen=True)
@@ -65,7 +67,9 @@ class Settlement:
     (``derived``, ``corrected``, ``purchases``); the second is a function of
     the first, so the value carries one and answers the other.  The row's
     column is that answer's projection through the interval ruling
-    **R-BAL40** accepts, and plan step ``X-bi-4`` deletes it.
+    **R-BAL40** accepts: written by the seam and read by no money reader
+    since plan step ``balance:X-bi-4b-1`` (every read below asks the
+    movement), and deleted with :attr:`basis` at ``X-bi-4b-2``.
 
     Attributes:
         amount: What moved.  ``None`` exactly when the row's own purchases
@@ -105,6 +109,27 @@ class Settlement:
             )
 
     @property
+    def stated(self) -> bool:
+        """Return whether somebody STATED this figure: a person or the bank.
+
+        **The one reading of "a correction"** (plan step ``balance:X-bi-4b-1``),
+        asked by :meth:`from_settle` to honour a retained record and by
+        :func:`honoured_correction` to publish it: a figure the settle
+        priced itself (``resolved``) is an inference about a moment that has
+        passed, re-derived rather than reused; a figure a person typed or
+        the bank's line stated is a FACT, and it outlives the settle that
+        recorded it.  A ``purchases`` record states nothing (its entries do).
+        It was read as ``basis is CORRECTED`` off the row's column through
+        ``X-bi-4a``; the column's catalogue has no member for the bank, and
+        the movement's has.
+
+        Returns:
+            ``True`` for a ``typed`` or ``observed`` source; ``False`` for
+            ``resolved`` or none.
+        """
+        return self.source not in (None, MovementFigureSourceEnum.RESOLVED)
+
+    @property
     def basis(self) -> SettlementBasisEnum:
         """Return HOW the figure is known, derived from who wrote it.
 
@@ -115,7 +140,10 @@ class Settlement:
         *a human typed it* in its own docstring, and a bank-stated figure files
         under it through the interval because the row's column has no member
         for the bank -- the catalogue that does, ``figure_source_id``'s, is on
-        the movement, and it is the one that outlives ``X-bi-4``.
+        the movement, and it is the one that outlives ``X-bi-4``.  **Its one
+        reader is the seam's column write** (``_seam.apply_status_change``)
+        since plan step ``balance:X-bi-4b-1``; it goes with the column at
+        ``X-bi-4b-2``.
 
         Returns:
             The :class:`~app.enums.SettlementBasisEnum` member.
@@ -166,11 +194,15 @@ class Settlement:
         retained record is returned WHOLE, its source with it: who wrote a
         figure does not change because the row was reverted.
 
-        Only a ``corrected`` record is honoured.  A ``derived`` one is the app's
-        own inference about a moment that has passed, and re-resolving it is
-        strictly better than reusing it -- the plan may legitimately have been
-        re-priced meanwhile.  A ``purchases`` record stores no figure at all, so
-        there is nothing to retain: its entries still state it.
+        Only a STATED record is honoured (:attr:`stated`).  A ``resolved`` one
+        is the app's own inference about a moment that has passed, and
+        re-resolving it is strictly better than reusing it -- the plan may
+        legitimately have been re-priced meanwhile.  A ``purchases`` record
+        stores no figure at all, so there is nothing to retain: its entries
+        still state it.  And a ``$0.00`` stated figure is retained by
+        NOTHING (ruling **R-BAL82**): a movement of nothing is not one, so
+        the revert keeps no movement and the re-settle re-prices; the owner
+        re-types ``$0.00`` if that is still what the bank took.
 
         Args:
             booked: What the app resolved this row to be worth at the moment of
@@ -189,33 +221,24 @@ class Settlement:
         """
         if correction is not None:
             return cls(amount=correction.amount, source=correction.source)
-        if retained is not None and retained.basis is (
-            SettlementBasisEnum.CORRECTED
-        ):
+        if retained is not None and retained.stated:
             return retained
         return cls(amount=booked, source=MovementFigureSourceEnum.RESOLVED)
 
 
-def _recorded_basis(row: Transaction) -> Optional[SettlementBasisEnum]:
-    """Return HOW *row*'s recorded figure is known, or ``None`` for no record.
-
-    The ONE decode of ``settled_basis_id``, shared by the two reads over it:
-    :func:`recorded_settlement`, which goes on to read the movement for the
-    source, and :func:`honoured_correction`, which needs only the basis and
-    must stay a column read (it prices a whole grid).
+def _source_of(movement) -> MovementFigureSourceEnum:
+    """Return WHO wrote *movement*'s figure, decoded from its ref id.
 
     Raises:
-        KeyError: When ``settled_basis_id`` names no
-            :class:`~app.enums.SettlementBasisEnum` member.  Unreachable
+        KeyError: When ``figure_source_id`` names no
+            :class:`~app.enums.MovementFigureSourceEnum` member.  Unreachable
             through the FK, which admits only the seeded rows; it is how a
             member ADDED without this map being extended fails loudly.
     """
-    if row.settled_basis_id is None:
-        return None
     return {
-        ref_cache.settlement_basis_id(member): member
-        for member in SettlementBasisEnum
-    }[row.settled_basis_id]
+        ref_cache.movement_figure_source_id(member): member
+        for member in MovementFigureSourceEnum
+    }[movement.figure_source_id]
 
 
 def recorded_settlement(row: Transaction) -> Optional[Settlement]:
@@ -228,59 +251,64 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     shadow's record from its SIBLING's -- Transfer Invariant 3 read rather than
     maintained, the exact rule the pair's settle DAY already follows.
 
-    **The figure and its basis are the row's columns; the SOURCE is the
-    covering movement's** (plan step **X-bi-3e-1**, ruling **R-BAL61**).  The
-    row stores no writer -- it never did -- and the movement the seam wrote
-    for the record is where that fact lives (``figure_source_id``, the
-    column that outlives ``X-bi-4``).  A row reverted out of the band KEEPS
-    that movement, un-dated, since plan step ``X-bi-3e-2``
-    (:attr:`~app.models.transaction.Transaction.covering_movements`), so a
-    reverted row's source is read where it was written.
+    **The record is read off the COVERING MOVEMENT** (plan step
+    ``balance:X-bi-4b-1``, ruling **R-BAL80**): the row stores no writer --
+    it never did -- and the movement the seam wrote for the record is where
+    the figure and its source live (``amount``, ``figure_source_id``; the
+    row's own ``settled_amount`` / ``settled_basis_id`` are the stale cache
+    ``X-bi-4b-2`` deletes, written by the seam and read by nothing here).  A
+    row reverted out of the band KEEPS that movement, un-dated, since plan
+    step ``X-bi-3e-2`` (ruling **R-BAL61**,
+    :attr:`~app.models.transaction.Transaction.covering_movements`), so a
+    reverted row's retained record is read where it was written, whatever
+    its status.  Three answers, total over what a row can hold:
 
-    **A record with NO covering movement reads by ruling R-BAL61's cutover
-    mapping** (ruling **R-BAL70**): a ``derived`` record was the settle's own
-    pricing (``resolved``) and a ``corrected`` one was stated (``typed``) --
-    the classification the cutover migration ``ad573b07bede`` gave every row
-    whose writer was never stored, applied here to the records it could not
-    reach.  Two such records exist: a ``$0.00`` figure, which
-    ``ck_transaction_entries_positive_amount`` lets no movement carry (so its
-    writer is stored nowhere, and a re-settle writes none again), and a row
-    reverted on production before ``X-bi-3e-2`` deployed, when a revert still
-    deleted the movement (0 such rows at the 2026-09-18 12:35 EDT deploy of
-    ``ad573b07bede``; the count is this leaf's to re-measure at its own).  It
-    is a mapping over the record's BASIS, never over the day beside it -- the
-    inference R-BAL61 refutes -- and it retires with the row's columns at
-    ``X-bi-4``.
+    * a covering movement -- its figure and its source, dated or kept;
+    * none, and the row is SETTLED -- ``Settlement(None, None)``: the row's
+      entries ARE its record (an envelope's purchases; a close of nothing,
+      ruling **R-BAL82**).  This is what lets ``restore_transfer`` repair a
+      drifted shadow of a pair settled at ``$0.00`` from its sibling: the
+      seam takes the record and mirrors nothing, which is that pair's state;
+    * none, and the row is not settled -- ``None``: it records nothing a
+      re-settle could honour.  A ``$0.00`` stated figure lands here after a
+      revert, and is honoured by nothing (R-BAL82): a movement of nothing
+      is not one, so nothing carried it across.
+
+    Ruling **R-BAL70**'s cutover mapping -- a record with no movement read
+    ``derived`` -> ``resolved``, ``corrected`` -> ``typed`` off the row's
+    basis -- answered the two states a movement could not carry through
+    ``X-bi-4a``: the ``$0.00`` record and a row reverted on the 3d-only tree
+    before 3e-2 deployed.  Both are R-BAL82's now (0 of either on the
+    2026-09-19 production restore), and the mapping retires here with its
+    column read, one leaf ahead of the column.
 
     Args:
         row: The transaction to read, with ``entries`` loaded or loadable.
 
     Returns:
-        The recorded :class:`Settlement`, or ``None`` when the row has not
-        settled.
+        The recorded :class:`Settlement`, or ``None``.
 
     Raises:
-        KeyError: When ``settled_basis_id`` or the movement's
-            ``figure_source_id`` names no member of its enum.  Unreachable
-            through the foreign keys, which admit only the seeded rows; it is
-            how a member ADDED without this map being extended fails loudly.
+        KeyError: When the movement's ``figure_source_id`` names no member
+            of its enum (:func:`_source_of`).
+        ValueError: When the row holds more than one covering movement --
+            unstorable under ``uq_transaction_entries_one_settlement_record``,
+            so reaching it means a second was written around the index and
+            the seam (``_covering._cover`` refuses the same state).
     """
-    basis = _recorded_basis(row)
-    if basis is None:
-        return None
-    if basis is SettlementBasisEnum.PURCHASES:
-        return Settlement(amount=None, source=None)
     movements = row.covering_movements
     if movements:
-        source = {
-            ref_cache.movement_figure_source_id(member): member
-            for member in MovementFigureSourceEnum
-        }[movements[0].figure_source_id]
-    elif basis is SettlementBasisEnum.DERIVED:
-        source = MovementFigureSourceEnum.RESOLVED
-    else:
-        source = MovementFigureSourceEnum.TYPED
-    return Settlement(amount=row.settled_amount, source=source)
+        movement, *extra = movements
+        if extra:
+            raise ValueError(
+                f"Transaction {row.id} holds {len(movements)} covering "
+                "movements; a settle writes exactly one, so a second can only "
+                "have reached the table around the status seam."
+            )
+        return Settlement(amount=movement.amount, source=_source_of(movement))
+    if row.status_id in settled_status_ids():
+        return Settlement(amount=None, source=None)
+    return None
 
 
 def honoured_correction(row: Transaction) -> Optional[Decimal]:
@@ -309,29 +337,35 @@ def honoured_correction(row: Transaction) -> Optional[Decimal]:
     plan".  Answering here fixes both -- the offer equals the booking, and
     typing any other number is a genuine correction that displaces this one.
 
-    Only a ``corrected`` record is honoured.  A ``derived`` one is the app's own
-    inference about a moment that has passed, and re-resolving it is strictly
-    better -- the plan may legitimately have been re-priced meanwhile.  A
-    ``purchases`` record stores no figure, and this is not reached for such a
-    row: :func:`settle_amount` takes the entries branch above it.
+    Only a STATED record is honoured (:attr:`Settlement.stated`): the
+    retained movement's figure when a person typed it or the bank's line
+    stated it.  A ``resolved`` one is the app's own inference about a moment
+    that has passed, and re-resolving it is strictly better -- the plan may
+    legitimately have been re-priced meanwhile.  A ``purchases`` record
+    stores no figure, and this is not reached for such a row:
+    :func:`settle_amount` takes the entries branch above it.
 
-    Pure: a column read plus one ``ref_cache`` lookup.  No producer runs, which
-    is why an honoured row costs no paycheck engine at all -- and no
-    ``entries`` load either: the figure's SOURCE lives on the movement
-    (:func:`recorded_settlement`), but this read asks only whether a
-    correction stands and what it says, which the row's own columns answer.
-    A whole grid asks it per row (``retained_settle_amounts_by_id``).
+    **It reads the covering movement, as :func:`recorded_settlement` does,
+    and is that read's one-line projection** (plan step ``balance:X-bi-4b-1``)
+    -- it read the row's two columns through ``X-bi-4a`` "so a whole grid
+    costs no ``entries`` load", and the grid loads them
+    (``routes/grid/page._load_grid_transactions`` through
+    ``valuation_load_options``; ``companion_service`` likewise), as every
+    batch reader of :func:`~app.services.row_valuation.settled_figure` does
+    since the same step.  A whole grid asks it per unsettled row
+    (``retained_settle_amounts_by_id``).
 
     Args:
         row: The row about to be offered or settled.
 
     Returns:
         The retained correction's figure, or ``None`` when the row holds no
-        ``corrected`` record.
+        stated record.
     """
-    if _recorded_basis(row) is not SettlementBasisEnum.CORRECTED:
+    recorded = recorded_settlement(row)
+    if recorded is None or not recorded.stated:
         return None
-    return row.settled_amount
+    return recorded.amount
 
 
 def correction_record(
@@ -359,13 +393,17 @@ def correction_record(
     telling a figure somebody stated from one the app resolved.
 
     **The comparison is against what the row RECORDS, not its plan**
-    (:func:`app.services.row_valuation.recorded_figure`).  The two differ
-    whenever a correction stands, so comparing against the plan would read every
-    re-save of a corrected row as a fresh correction of the same figure.  The
-    TOTAL read answers rather than the refusing one because **a row that records
-    NOTHING cannot echo**: that row predates the settlement record (finding
-    **N-181**) and the only way to repair it is to state what moved, so the
-    refusing read would make the repair surface raise instead of repairing.
+    (:func:`app.services.row_valuation.settled_figure`, the sum of its
+    entries -- the same map the box was PREFILLED from).  The two differ
+    whenever a correction stands, so comparing against the plan would read
+    every re-save of a corrected row as a fresh correction of the same
+    figure.  It read a TOTAL twin, ``recorded_figure``, through ``X-bi-4a``,
+    whose one clause was ``None`` for a settled row that RECORDS NOTHING
+    (finding **N-181**'s legacy shape, which the box existed to repair) where
+    the counting read raised; a settled row with no entries is the ``$0.00``
+    record since plan step ``balance:X-bi-4b-1`` (ruling **R-BAL82**), so the
+    box shows ``0.00`` for it and any other figure typed there is a
+    correction, which is the repair.
 
     Args:
         row: The settled row being corrected -- a plain transaction, or either
@@ -376,16 +414,9 @@ def correction_record(
             (:class:`~app.services.stated_figure.StatedFigure`).
 
     Returns:
-        A ``corrected`` :class:`Settlement`, or ``None`` when *submitted*'s
-        figure equals what the row already records.
-
-    Raises:
-        AmountUnresolvable: From
-            :func:`~app.services.row_valuation.recorded_figure`, for a row whose
-            record CONTRADICTS itself -- a basis that stores its figure, storing
-            none.  Deliberately not caught: no door can produce that state, so
-            reaching it means something wrote around the seam.
+        A stated :class:`Settlement`, or ``None`` when *submitted*'s figure
+        equals what the row already records.
     """
-    if recorded_figure(row) == submitted.amount:
+    if settled_figure(row) == submitted.amount:
         return None
     return Settlement(amount=submitted.amount, source=submitted.source)

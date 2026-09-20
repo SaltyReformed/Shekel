@@ -414,7 +414,7 @@ class TestTheOneAnchorChronology:
 
             # Under the total key the later INSERT governs -- the same "last
             # one recorded is that day's closing balance" rule this table's
-            # write door (``anchor_service._governing_loan_anchor``) applies.
+            # write door (``loan_anchor_service._governing_loan_anchor``) applies.
             governing = loan_resolver.select_latest_anchor(facts)
             assert governing is tied[1]
             assert governing.anchor_balance == Decimal("140000.00")

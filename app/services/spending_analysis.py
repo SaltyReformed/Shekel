@@ -195,9 +195,10 @@ def query_settled_expenses(
         .options(
             joinedload(Transaction.category),
             # ``resolved_actual_amount`` asks ``row_valuation.settled_figure``,
-            # which sums a ``purchases``-basis row's OWN entries rather than
-            # reading a stored copy (plan step X-au-c3).  Without this the
-            # Spending report issues one SELECT per settled envelope where it
+            # which sums EVERY settled row's entries rather than reading a
+            # stored copy (plan step X-au-c3 for an envelope; balance:X-bi-4b-1
+            # for every row, ruling R-BAL80).  Without this the
+            # Spending report issues one SELECT per settled row where it
             # used to read a column; production carries 29 such rows.
             selectinload(Transaction.entries),
         )
@@ -298,7 +299,8 @@ def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
     payment-date escrow) recorded nothing and reported a variance of zero.  A
     settled row now always records what moved, so the comparison finally answers
     the question the list is named for.  Whether the figure came from a human is
-    a separate fact and has its own column (``settled_basis_id``).
+    a separate fact with its own home: the covering movement's
+    ``figure_source_id`` (the row's ``settled_basis_id`` through ``X-bi-4a``).
 
     **THE FALL-THROUGH ASKS THE AMOUNT MODEL since plan step X-bu, and that is
     what makes the zero variance STRUCTURAL rather than an agreement between two
@@ -341,11 +343,11 @@ def resolved_actual_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
         The comparison actual as a ``Decimal``.
 
     Raises:
-        AmountUnresolvable: When a SETTLED row records a settlement whose basis
-            stores a figure and stores none -- a row written around the status
-            seam -- or when the amount model cannot price an UNSETTLED row.
-            Neither is the derived-plan refusal this function used to carry:
-            that is what plan step X-bu removed from here.
+        AmountUnresolvable: When the amount model cannot price an UNSETTLED
+            row.  A settled row never raises since plan step
+            ``balance:X-bi-4b-1``: its record is the sum of its entries.  That
+            is not the derived-plan refusal this function used to carry, which
+            plan step X-bu removed from here.
     """
     recorded = settled_figure(txn)
     if recorded is not None:

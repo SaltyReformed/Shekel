@@ -103,7 +103,7 @@ def income_shadows(
     order"** (plan step **balance:X-bl-2a**).  Every settled-payment consumer
     reaches this one -- the fold's event stream
     (:func:`app.services.loan_ledger.loan_event_stream`), the ledger's
-    per-payment principal reader, the anchor-ordering guards, the resolver's
+    per-payment principal reader, the escrow forward-only guard, the resolver's
     payment feed -- so no two of them can classify a payment differently.  It was
     two narrowed queries and a third rule in
     ``loan_payment_service.get_payment_history``, which read ``txn.status.is_settled``
@@ -186,8 +186,10 @@ def settled_income_shadows(
     (:func:`app.services.loan_ledger.walk_loan_ledger`), the fold's display bound
     (:func:`app.services.loan_ledger.confirmed_shadows_through`), the ledger's
     per-payment principal reader, and :func:`_settled_payment_due_dates` (the
-    anchor-ordering guards AND, since finding N-34, the escrow forward-only
-    guard's boundary :func:`latest_settled_payment_due_date`).
+    escrow forward-only guard's boundary
+    :func:`latest_settled_payment_due_date`, since finding N-34; the
+    tracking-start ordering guard that also read it was deleted at plan step
+    ``recurrence:R20``).
 
     **The narrowing is ``NOT Projected`` in SQL and ``settled`` in Python, and
     the gap between the two is the refusal** (plan step balance:X-bi-6a).
@@ -249,8 +251,11 @@ def settled_income_shadows(
         scenario_id: The budget scenario to scope to.
         options: The loader options for every relationship the CALLER will
             traverse (see :func:`query_shadow_income`) -- ``()`` for a consumer
-            reading columns and dates, ``pricing_load_options()`` for one that
-            prices the rows.
+            reading columns and dates, ``settlement_load_options()`` for one
+            that values the rows through their settlement record (the row's
+            ENTRIES since plan step ``balance:X-bi-4b-1``: the fold's event
+            stream, its confirmed history, the asset contribution pass),
+            ``pricing_load_options()`` for one that prices the rows.
 
     Returns:
         Every settled income shadow, ascending by ``(pay_period.start_date, id)``;
@@ -259,7 +264,7 @@ def settled_income_shadows(
     Raises:
         ValueError: When a shadow carries a status that is neither settled nor
             ``Projected``.  Named here because this view is the door the fold's
-            walk, the posting reader and the anchor-ordering guards reach it
+            walk, the posting reader and the escrow forward-only guard reach it
             through, so a broken status seed surfaces on every loan surface at
             once rather than on one.
     """

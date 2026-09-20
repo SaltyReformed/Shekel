@@ -1727,9 +1727,7 @@ class TestDebtSummary:
         A short-term loan (24 months) and a long-term mortgage (360
         months).  The debt-free date should match the mortgage's payoff.
         """
-        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-            create_loan_account, insert_trueup_event, loan_params_for,
-        )
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             # Short-term loan
@@ -1738,10 +1736,11 @@ class TestDebtSummary:
             )
 
             # Long-term mortgage, originated 2024 and owing its full $200,000
-            # TODAY (asserted; the mid-life-import shape).  Without the
+            # TODAY (stated at setup, the way the setup door records it --
+            # plan step R20; the mid-life-import shape).  Without the
             # assertion the two unrecorded years since origination are charged
             # (plan step R16-b-2, ruling R-R71) and the loan never clears.
-            mortgage = create_loan_account(
+            create_loan_account(
                 seed_user, db.session, name="Long Mortgage",
                 principal=Decimal("200000.00"),
                 rate=Decimal("0.06500"),  # DH-#56 origination rate
@@ -1750,12 +1749,8 @@ class TestDebtSummary:
                 payment_day=1,
                 account_type=AcctTypeEnum.MORTGAGE,
                 anchor_balance=Decimal("0"),
+                tracked_balance=Decimal("200000.00"), tracked_from=date.today(),
             )
-            insert_trueup_event(
-                loan_params_for(db.session, mortgage.id),
-                Decimal("200000.00"), anchor_date=date.today(),
-            )
-            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),
@@ -3147,7 +3142,9 @@ def _add_savings_account(seed_user, balance):
     return acct
 
 
-def _add_mortgage_account(seed_user, balance, origination_date=None):
+def _add_mortgage_account(
+    seed_user, balance, origination_date=None, *, tracked_from=None,
+):
     """Create a Mortgage (liability) account with a loan schedule.
 
     Mortgage at 6.5%, 30-year, defaulting to a 2025-01-01 origination so the
@@ -3160,9 +3157,10 @@ def _add_mortgage_account(seed_user, balance, origination_date=None):
     balance GROWS until the plan's payments have cleared the arrears.  A test that
     needs a loan to amortize cleanly to ZERO must leave no unrecorded month
     behind the loan's latest assertion: originate it today (pass
-    ``date.today()``, the on-schedule case) or assert its balance today with
-    ``insert_trueup_event(..., anchor_date=date.today())`` (the mid-life-import
-    case, the shape production's tracking-start door writes).
+    ``date.today()``, the on-schedule case) or state *balance* as the balance
+    today at setup (pass ``tracked_from=date.today()``; the mid-life-import
+    case, the ``tracking_start`` production's setup door writes -- plan step
+    R20).
 
     Routed through the shared ``create_loan_account`` factory rather than
     re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
@@ -3183,6 +3181,8 @@ def _add_mortgage_account(seed_user, balance, origination_date=None):
         principal=balance, rate=Decimal("0.06500"), term=360,
         origination_date=origination_date or _date(2025, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
+        tracked_balance=balance if tracked_from is not None else None,
+        tracked_from=tracked_from,
     )
 
 
@@ -3532,7 +3532,8 @@ class TestNetWorthSeries:
         and $240,000 is the only true answer.  Both producers now read the confirmed
         ledger for a period that has begun, so both give it.
 
-        The $240,000 is ASSERTED today (the mid-life-import shape) so that the
+        The $240,000 is STATED today at setup (the mid-life-import shape, the
+        setup door's own ``tracking_start`` since plan step R20) so that the
         future amortizes: since plan step R16-b-2 (ruling R-R71) the plan
         charges every contractual month after the loan's latest assertion, and
         with only its 2025 origination the fourteen unrecorded months would
@@ -3544,20 +3545,10 @@ class TestNetWorthSeries:
           series[current] = 1000.00 - 240000.00 = -239000.00  (agrees)
           series[future]  = 1000.00 - (amortized < 240000.00) > -239000.00
         """
-        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
-        # this module's convention of importing them where used.
-        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-            insert_trueup_event, loan_params_for,
-        )
         with app.app_context():
-            mortgage = _add_mortgage_account(
-                seed_user, Decimal("240000.00"),
+            _add_mortgage_account(
+                seed_user, Decimal("240000.00"), tracked_from=date.today(),
             )
-            insert_trueup_event(
-                loan_params_for(db.session, mortgage.id),
-                Decimal("240000.00"), anchor_date=date.today(),
-            )
-            db.session.commit()
 
             nw = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),

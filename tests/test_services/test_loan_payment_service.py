@@ -36,6 +36,7 @@ from tests._test_helpers import (
     one_off_row_of,
     open_books_before_the_first_assertion,
     settlement_basis_id,
+    typed,
 )
 from app.services.cash_ledger import _resolve_loan_basis
 from app.services.cash_ledger import derived_amount_basis
@@ -49,6 +50,7 @@ from app.services.transfer_service import (
     TransferSpec,
     create_transfer,
     delete_transfer,
+    update_transfer,
 )
 from app.services import account_service
 from app.services.rate_period_engine import monthly_due_date
@@ -89,10 +91,15 @@ _ORIGINATION = date(2024, 1, 1)
 def _create_loan_account(seed_user):
     """Create a mortgage account with LoanParams for the test user.
 
-    A LOCAL factory rather than ``tests._test_helpers.create_loan_account``,
-    because this suite needs ``original_principal`` and ``current_principal``
-    to DIFFER (250,000 against 200,000) so a producer reading the wrong one is
-    visible, and the shared factory writes one figure into both.
+    A LOCAL factory rather than ``tests._test_helpers.create_loan_account``.
+    It existed so that ``original_principal`` and ``current_principal`` would
+    DIFFER (250,000 against 200,000) and a producer reading the wrong one be
+    visible; plan step R20 dropped that column, so no producer can read it and
+    the account's cash anchor (200,000) is the one remaining decoy.  What still
+    tells the two factories apart is that this one does NOT open the loan's
+    genesis posting ledger -- the shared one always does -- and moving this
+    suite onto the shared factory is a change to what its producers read, not
+    a tidy-up, so it is left as it was.
 
     Returns:
         Account: the mortgage account.
@@ -121,7 +128,6 @@ def _create_loan_account(seed_user):
     params = LoanParams(
         account_id=account.id,
         original_principal=Decimal("250000.00"),
-        current_principal=Decimal("200000.00"),
         term_months=360,
         origination_date=_ORIGINATION,
         payment_day=1,
@@ -312,10 +318,14 @@ class TestGetPaymentHistory:
     def test_uses_effective_amount_with_actual(
         self, app, db, seed_user, seed_periods,
     ):
-        """Shadow with actual_amount populated: PaymentRecord uses actual.
+        """A shadow with a CORRECTED figure: PaymentRecord uses the correction.
 
-        The effective_amount property prefers actual_amount when
-        populated (per the 5A.1 fix).
+        The record is the leg's covering movement (plan step
+        ``balance:X-bi-4b-1``, ruling **R-BAL80**), so the correction is
+        stated through the transfer's own door -- a person typing ``$1,450.00``
+        over the ``$1,500.00`` plan -- which re-records both legs' movements.
+        This wrote ``shadow.settled_amount`` straight at the column through
+        ``X-bi-4a``, the seam's cache no reader asks now.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -325,18 +335,10 @@ class TestGetPaymentHistory:
             )
             db.session.commit()
 
-            # Set actual_amount on the income shadow to a different value.
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(
-                    transfer_id=transfer.id,
-                    transaction_type_id=income_type_id,
-                    is_deleted=False,
-                )
-                .one()
+            update_transfer(
+                transfer.id, seed_user["user"].id,
+                figure=typed(Decimal("1450.00")),
             )
-            shadow.settled_amount = Decimal("1450.00")
             db.session.commit()
 
             result = get_payment_history(
@@ -764,7 +766,6 @@ class TestComputeContractualPi:
             params = LoanParams(
                 account_id=1,
                 original_principal=Decimal("240000.00"),
-                current_principal=Decimal("237000.00"),
                 term_months=360,
                 origination_date=date(2025, 1, 1),
                 payment_day=1,
@@ -810,7 +811,6 @@ class TestComputeContractualPi:
             params = LoanParams(
                 account_id=1,
                 original_principal=Decimal("250000.00"),
-                current_principal=Decimal("230000.00"),
                 term_months=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
@@ -874,7 +874,6 @@ class TestComputeContractualPiArmAware:
         params = LoanParams(
             account_id=1,
             original_principal=Decimal("202000.00"),
-            current_principal=Decimal("177999.54"),
             term_months=360,
             origination_date=date(2018, 12, 1),
             payment_day=1,
@@ -919,7 +918,6 @@ class TestComputeContractualPiArmAware:
         params = LoanParams(
             account_id=1,
             original_principal=Decimal("240000.00"),
-            current_principal=Decimal("200000.00"),
             term_months=360,
             origination_date=date(2025, 1, 1),
             payment_day=1,
@@ -954,7 +952,6 @@ class TestComputeContractualPiArmAware:
         params = LoanParams(
             account_id=1,
             original_principal=Decimal("240000.00"),
-            current_principal=Decimal("200000.00"),
             term_months=360,
             origination_date=date(2025, 1, 1),
             payment_day=1,

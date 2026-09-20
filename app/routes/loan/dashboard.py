@@ -45,10 +45,10 @@ from app.routes.loan._helpers import (
     build_band_chart,
     build_baseline_scenarios,
     planned_periods,
+    render_loan_setup,
 )
 from app.services import (
     balance_at,
-    cash_ledger,
     escrow_calculator,
     loan_loaders,
     loan_recurrence_sync,
@@ -716,12 +716,7 @@ def dashboard(account_id):
         abort(404)
 
     if params is None:
-        return render_template(
-            "loan/setup.html",
-            account=account,
-            account_type=account_type,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-        )
+        return render_loan_setup(account, account_type)
 
     ctx = _load_route_context(account, params)
     scenario_id = ctx.balance_ctx.scenario_id

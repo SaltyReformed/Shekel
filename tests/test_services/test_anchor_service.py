@@ -1,9 +1,11 @@
 """
 Shekel Budget App -- Anchor Service Tests
 
-Unit tests for :mod:`app.services.anchor_service`.  Pins both outcomes of
-:func:`apply_anchor_true_up` and its loan twin, ruling **R-EQ**'s duplicate
-rule, and the contract that an unexpected ``IntegrityError`` propagates.
+Unit tests for :mod:`app.services.anchor_service` and its loan half,
+:mod:`app.services.loan_anchor_service` (split out at plan step
+``recurrence:R20``).  Pins both outcomes of :func:`apply_anchor_true_up` and
+its loan twin, ruling **R-EQ**'s duplicate rule, and the contract that an
+unexpected ``IntegrityError`` propagates.
 
 Pre-extraction these branches were covered indirectly by the grid
 HTMX-route test suites (``TestTrueUpSameDayDuplicate`` and
@@ -46,6 +48,8 @@ from app.services import (
 from app.services.anchor_service import (
     AnchorTrueUpOutcome,
     apply_anchor_true_up,
+)
+from app.services.loan_anchor_service import (
     apply_loan_anchor_true_up,
     record_loan_tracking_start,
 )
@@ -1261,7 +1265,6 @@ def _make_loan_account(seed_user, name="Helper Loan",
     params = LoanParams(
         account_id=account.id,
         original_principal=Decimal(original_principal),
-        current_principal=Decimal(original_principal),
         term_months=term_months,
         origination_date=origination_date,
         payment_day=1,
@@ -1302,9 +1305,9 @@ class TestApplyLoanAnchorTrueUpCommitted:
           * The origination event is byte-identical (no UPDATE).
             Compared by primary key + every persisted column to
             prove append-only semantics.
-          * :class:`LoanParams.current_principal` is unchanged
-            (the column is non-authoritative seed; the trueup writes
-            an event, not the column).
+          * :class:`LoanParams` is unchanged: the trueup writes an
+            event, never a params column (the balance has none since
+            plan step R20 dropped the demoted seed).
         """
         with app.app_context():
             account = _make_loan_account(seed_user)
@@ -1327,7 +1330,11 @@ class TestApplyLoanAnchorTrueUpCommitted:
                 .filter_by(account_id=account.id)
                 .one()
             )
-            seed_principal = params_before.current_principal
+            params_snapshot = (
+                params_before.original_principal, params_before.term_months,
+                params_before.origination_date, params_before.payment_day,
+                params_before.updated_at,
+            )
 
             outcome = apply_loan_anchor_true_up(
                 account=account,
@@ -1369,14 +1376,18 @@ class TestApplyLoanAnchorTrueUpCommitted:
             assert trueup.anchor_balance == Decimal("18500.00")
             assert trueup.anchor_date == date.today()
 
-            # :class:`LoanParams.current_principal` is non-authoritative
-            # seed (E-18) -- the trueup must NOT mutate it.
+            # The trueup must NOT mutate :class:`LoanParams`: the balance
+            # is the event's, and the params row is not written at all.
             params_after = (
                 db.session.query(LoanParams)
                 .filter_by(account_id=account.id)
                 .one()
             )
-            assert params_after.current_principal == seed_principal
+            assert (
+                params_after.original_principal, params_after.term_months,
+                params_after.origination_date, params_after.payment_day,
+                params_after.updated_at,
+            ) == params_snapshot
 
 
 class TestRecordLoanTrackingStart:

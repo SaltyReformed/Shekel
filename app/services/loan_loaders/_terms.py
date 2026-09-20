@@ -79,13 +79,15 @@ class LoanAnchorFact:
       tracked, so the ledger opens at origination and there is no date it reads
       the loan out of existence (plan step C1).
     * **A tracking-start is a real stored fact** (the ``tracking_start``
-      :class:`LoanAnchorEvent` a mid-life import appends): the operator's real
-      balance as of a date at/before the first recorded payment.  It is an
-      ordinary balance ASSERTION (``is_opening=False``, ``is_tracking_start=True``)
-      that RESETS the running balance at its own date -- NOT the opening.  The
-      window between origination and it carries no payment record, so the walk
-      holds the opening balance flat across it (the honest ACTUAL fold; the
-      contractual back-projection that fills it is a separate ESTIMATED tier).
+      :class:`LoanAnchorEvent` the setup door writes for the balance stated at
+      setup, plan step ``recurrence:R20``, or the dashboard's tracking-start
+      door appends after the fact): the operator's real balance as of a date.
+      It is an ordinary balance ASSERTION (``is_opening=False``,
+      ``is_tracking_start=True``) that RESETS the running balance at its own
+      date -- NOT the opening.  Where the window between origination and it
+      carries no payment record, the walk holds the opening balance flat across
+      it (the honest ACTUAL fold; the contractual back-projection that fills it
+      is a separate ESTIMATED tier).
     * **A user true-up is a real stored fact** (the ``user_trueup``
       :class:`LoanAnchorEvent` the balance-edit flow appends): the operator's
       dated balance assertion, the source document the self-healing TRUEUP
@@ -155,7 +157,7 @@ def load_loan_anchor_facts(params: LoanParams) -> list[LoanAnchorFact]:
       ``(anchor_date, created_at)`` does not order them.  ``event_id`` does, and
       the later INSERT wins -- the same "the last one recorded is that day's
       closing balance" rule the cash walk and this table's own write door
-      (:func:`app.services.anchor_service._governing_loan_anchor`) already apply.
+      (:func:`app.services.loan_anchor_service._governing_loan_anchor`) already apply.
     * **It is ONE statement, not a rule each consumer re-derives.**  This list
       had no ``ORDER BY`` and its two consumers each broke a tie their own way:
       the fold's walk (:func:`app.services.loan_ledger.walk_loan_ledger`) reset
@@ -673,15 +675,18 @@ def _settled_payment_due_dates(
     """Return the monthly due dates of a loan's SETTLED payments (shared derivation).
 
     The settled-payment-due-date derivation behind
-    :func:`earliest_settled_payment_due_date` (the tracking-start guard), built on
-    the same :func:`settled_income_shadows` set and the same
+    :func:`latest_settled_payment_due_date` (the escrow effective-date guard),
+    built on the same :func:`settled_income_shadows` set and the same
     :func:`loan_payment_due_date` per-payment rule the fold's event stream walks --
     so the guard, the walk, and the Schedule A interest merge
     (:func:`app.services.balance_at.loan_interest_in_year`, which derives its
     settled slots from that same fold walk) provably agree on WHICH payments are
     settled and on each one's due date.  Each shadow is dated by
     :func:`loan_payment_due_date` (its stored ``due_date``, falling back to a
-    derivation from its pay-period start).
+    derivation from its pay-period start).  It also served
+    ``earliest_settled_payment_due_date``, the tracking-start door's ordering
+    guard, until plan step ``recurrence:R20`` deleted that refusal (ruling
+    **R-R72** part 3) and the loader with it.
 
     Args:
         account_id: The loan account whose settled payments to scan.
@@ -707,40 +712,6 @@ def _settled_payment_due_dates(
     ]
 
 
-def earliest_settled_payment_due_date(
-    account_id: int, scenario_id: int,
-) -> date | None:
-    """Return the earliest settled payment's monthly due date, or ``None``.
-
-    The lower bound the tracking-start opening flow validates against: a
-    ``tracking_start`` opening must sort BEFORE every recorded payment in the
-    genesis walk (which orders a payment before an anchor on an equal date), or
-    the earliest payment would be subsumed by the opening's reset and dropped.
-    The route rejects a tracking-start whose date is not strictly earlier than
-    this.  Built on :func:`_settled_payment_due_dates`, whose per-payment due-date
-    rule the fold's event stream and the Schedule A interest merge share, so the
-    guard, the walk, and the tax figure provably agree on each payment's date.
-
-    NOTE: point-in-time -- this scans only payments settled at record time.  A
-    payment recorded LATER with a due date before the tracking-start would be
-    subsumed by the walk; that requires contradictory operator input (a payment
-    predating when they began tracking) and is the same structural property the
-    origination opening already carries.
-
-    Args:
-        account_id: The loan account whose settled payments to scan.
-        scenario_id: The budget scenario to scope to (the baseline, where the
-            recorded payments live).
-
-    Returns:
-        The earliest ``monthly_due_date`` over the loan's settled income
-        shadows, or ``None`` when the loan is unconfigured (no
-        :class:`LoanParams`) or has no settled payment.
-    """
-    due_dates = _settled_payment_due_dates(account_id, scenario_id)
-    return min(due_dates) if due_dates else None
-
-
 def latest_settled_payment_due_date(
     account_id: int, scenario_id: int,
 ) -> date | None:
@@ -758,20 +729,17 @@ def latest_settled_payment_due_date(
     cash freeze
     (:func:`app.services.cash_ledger._loan_installment._installment_cash`) resolve each
     payment's escrow at (ruling D5, finding N-34).  It is the SAME
-    :func:`_settled_payment_due_dates` derivation the anchor-ordering guards
-    read, so the escrow guard, the walk, and the tax figure provably agree on
-    each payment's date -- the mirror of
-    :func:`earliest_settled_payment_due_date`, differing only in the bound taken.
+    :func:`_settled_payment_due_dates` derivation the fold walks, so the escrow
+    guard, the walk, and the tax figure provably agree on each payment's date.
 
     **A pay-period-start boundary is what this must not be:** a period begins up
     to ~2 weeks before the installment it pays, so a version effective inside
     that window clears a period-start guard yet still governs the settled
     payment's split.
 
-    NOTE: point-in-time -- scans only payments settled at call time, mirroring
-    :func:`earliest_settled_payment_due_date`.  A payment settled LATER against an
-    earlier installment is the same structural property the tracking-start guard
-    carries; a settled payment's escrow is additionally frozen by
+    NOTE: point-in-time -- scans only payments settled at call time.  A payment
+    settled LATER against an earlier installment is not seen by a guard that ran
+    before it; a settled payment's escrow is additionally frozen by
     capture-on-settle
     (amount rule 4, via :func:`app.services.cash_ledger.amounts_by_id`).
 

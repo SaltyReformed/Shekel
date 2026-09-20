@@ -222,14 +222,40 @@ def transfer_pricing_load_options() -> tuple:
     )
 
 
+def settlement_load_options() -> tuple:
+    """Return the load a reader of a SETTLED row's RECORD needs: its entries.
+
+    **The record is the row's entries** (plan step ``balance:X-bi-4b-1``,
+    ruling **R-BAL80**): ``row_valuation.settled_figure`` sums them for every
+    settled row, and ``status_seam.recorded_settlement`` / ``honoured_correction``
+    read the covering movement among them.  A settled-only reader -- the loan
+    ledger's event stream and its confirmed history, the asset and investment
+    contribution passes -- prices nothing and so takes no pricing load, but it
+    values every row through the record, so it takes THIS; through ``X-bi-4a``
+    those readers stated ``options=()`` because the record was the row's own
+    two columns, and the first cut of 4b-1 left them so, at one
+    ``transaction_entries`` SELECT per settled payment on the loan walk (six
+    on the production Mortgage, measured by that leaf's adversarial review).
+    :func:`valuation_load_options` composes it, so the entries load has ONE
+    spelling.
+
+    Returns:
+        A tuple of SQLAlchemy loader options, splatted into ``Query.options``
+        or handed to a loader's ``options=``.
+    """
+    return (selectinload(Transaction.entries),)
+
+
 def valuation_load_options() -> tuple:
     """Return the loads a CONTRIBUTION pass needs: pricing, plus the entries.
 
     :func:`pricing_load_options` covers what the five amount RULES read -- what
     a row's amount IS.  A pass that asks what a row is WORTH reads one more
     relationship on top: ``Transaction.entries``, for the envelope reservation
-    (``cash_ledger._amounts._entry_aware_amount``) and for a ``purchases``-basis
-    settlement (``row_valuation.settled_figure``, which sums them).
+    (``cash_ledger._amounts._entry_aware_amount``) and for every settled row's
+    record (``row_valuation.settled_figure``, which sums them since plan step
+    ``balance:X-bi-4b-1``; a ``purchases``-basis close's before it) --
+    :func:`settlement_load_options`, the one spelling of that load.
 
     **It is a separate function rather than more of the one above, because the
     two questions have two answers** -- the same split
@@ -248,4 +274,4 @@ def valuation_load_options() -> tuple:
     Returns:
         A tuple of SQLAlchemy loader options, splatted into ``Query.options``.
     """
-    return (selectinload(Transaction.entries), *pricing_load_options())
+    return (*settlement_load_options(), *pricing_load_options())

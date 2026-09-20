@@ -1,17 +1,19 @@
 """
 Shekel Budget App -- Loan route package: parameter management.
 
-Initial loan-parameter creation, parameter updates, and the dated balance
-true-up (an append-only ``user_trueup`` :class:`LoanAnchorEvent`; the
+Initial loan-parameter creation (which records the balance stated at setup
+as the ``tracking_start`` :class:`LoanAnchorEvent` it is, plan step
+``recurrence:R20``), parameter updates, and the dated balance true-up and
+tracking-start doors (each an append-only :class:`LoanAnchorEvent`; the
 origination event write is retired -- the origination anchor is synthesized
-from the immutable :class:`LoanParams`).  All three are
-redirect-style POST handlers that flash and return to the dashboard.
+from the immutable :class:`LoanParams`).  All are redirect-style POST
+handlers that flash and return to the dashboard.
 """
 
 import logging
 from decimal import Decimal
 
-from flask import abort, flash, redirect, render_template, request, url_for
+from flask import abort, flash, redirect, request, url_for
 from flask_login import current_user
 
 from app.extensions import db
@@ -28,20 +30,16 @@ from app.routes.loan._helpers import (
     _require_configured_loan,
     _trueup_schema,
     _update_schema,
+    render_loan_setup,
 )
-from app.services import (
-    anchor_service,
-    cash_ledger,
-    loan_loaders,
-    loan_posting_service,
-)
+from app.services import loan_anchor_service, loan_posting_service
 from app.services.anchor_service import AnchorTrueUpOutcome
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.account_validation import (
     INVALID_COLLATERAL_LINK,
     _validate_collateral_link,
 )
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.utils.digit_strings import parse_row_id
 
 logger = logging.getLogger(__name__)
@@ -50,7 +48,37 @@ logger = logging.getLogger(__name__)
 @loan_bp.route("/accounts/<int:account_id>/loan/setup", methods=["POST"])
 @require_owner
 def create_params(account_id):
-    """Create initial loan parameters."""
+    """Create initial loan parameters, recording the stated balance as an assertion.
+
+    The loan's genesis, in ONE transaction: the :class:`LoanParams` row, the
+    origination :class:`RateHistory` row, the ``tracking_start``
+    :class:`LoanAnchorEvent` for the balance the owner states (when the loan
+    originated before the date it is stated for), the genesis posting ledger
+    reconciled over all of it, and the standing payment's start brought onto
+    the contract -- then the single commit.  A refusal anywhere ahead of the
+    commit rolls the whole write back.
+
+    **The balance stated at setup IS an assertion and is recorded as one**
+    (plan step ``recurrence:R20``, ruling **R-R72** part 3, finding
+    **REC-519**).  The form asks for the balance "as of" a date the owner
+    picks (the setup date by default) and this door appends a
+    ``tracking_start`` for it through
+    :func:`app.services.loan_anchor_service.stage_loan_tracking_start` -- the same
+    row the dashboard's tracking-start door writes, so a loan configured
+    mid-life reads its stated balance from that day and the contract's
+    calendar charges only the months after it (ruling R-R71).  Until R20 the
+    form REQUIRED that balance and stored it in ``LoanParams.current_principal``,
+    which nothing read: the loan's only assertion was its synthesized
+    origination, and every unrecorded month since read as unpaid.  The date
+    is bounded ``[origination_date, today]``.  The future half is the
+    schema's; the origination half is refused HERE, the way the two dashboard
+    doors refuse a pre-origination date, and it applies only to a loan that
+    HAS originated: for one originating after today no date on or before
+    today could satisfy it, and there is no balance to assert yet.  A loan
+    originating ON the stated date asserts nothing either -- its origination
+    IS the assertion (``original_principal`` on ``origination_date``), and a
+    second row saying so would be the synthesized opening's twin.
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
@@ -69,24 +97,19 @@ def create_params(account_id):
     errors = _create_schema.validate(request.form)
     if errors:
         flash("Please correct the highlighted errors and try again.", "danger")
-        return render_template(
-            "loan/setup.html", account=account, account_type=account_type,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-        )
+        return render_loan_setup(account, account_type)
 
     data = _create_schema.load(request.form)
 
-    # Type-specific term validation.
-    max_term = account_type.max_term_months
-    if max_term and data.get("term_months", 0) > max_term:
-        flash(
-            f"Term cannot exceed {max_term} months for {account_type.name}.",
-            "danger",
-        )
-        return render_template(
-            "loan/setup.html", account=account, account_type=account_type,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-        )
+    refusal = _setup_refusal(data, account_type)
+    if refusal is not None:
+        flash(refusal, "danger")
+        return render_loan_setup(account, account_type)
+
+    # The stated balance and its date are the assertion's, not the params'
+    # (plan step R20): pop them before constructing LoanParams.
+    anchor_balance = Decimal(str(data.pop("anchor_balance")))
+    anchor_date = data.pop("anchor_date")
 
     # DH-#56: ``interest_rate`` is no longer a LoanParams column -- it
     # seeds the loan's origination RateHistory row (the resolver's
@@ -117,18 +140,29 @@ def create_params(account_id):
     # commit retired it): the origination anchor is a verbatim copy of the
     # immutable LoanParams fields, so every consumer -- the genesis posting
     # walk and the resolver's replay fallback -- SYNTHESIZES it from the
-    # params via ``loan_loaders.load_loan_anchor_facts``.  Only a user
-    # balance true-up appends a ``user_trueup`` event (the operator's
-    # assertion, a real fact with no other home).
+    # params via ``loan_loaders.load_loan_anchor_facts``.  The balance the
+    # owner states at setup is a different fact with no other home (plan
+    # step R20): a ``tracking_start`` assertion, staged here in this same
+    # transaction whenever the loan originated BEFORE the day it is stated
+    # for.  Its row is constructed by the anchor service, the one place a
+    # loan anchor is written; the ledger re-sync and the commit below are
+    # the door's, as they were.
+    if params.origination_date < anchor_date:
+        loan_anchor_service.stage_loan_tracking_start(
+            account=account,
+            anchor_balance=anchor_balance,
+            anchor_date=anchor_date,
+        )
 
     # Posting ledger (read switch): now that the params / origination rate
     # exist, reconcile the loan's full genesis ledger.  For a brand-new
     # loan this posts the OPENING (-original_principal onto the loan, its
     # positive onto a per-loan opening-equity account) in the baseline scenario
     # -- the payment-less case the all-scenarios sync covers by including the
-    # baseline.  A loan that had payments settled before it was configured (not
-    # yet resolvable, so uncorrected) also gets those payments' split
-    # corrections back-posted here.
+    # baseline -- and the stated balance's TRUEUP correction at its date.  A
+    # loan that had payments settled before it was configured (not yet
+    # resolvable, so uncorrected) also gets those payments' split corrections
+    # back-posted here.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     # A recurring transfer that already pays into this account is the loan's
     # standing payment from this moment, and its start is the contract's
@@ -146,6 +180,42 @@ def create_params(account_id):
     logger.info("Created loan params for account %d", account.id)
     flash("Loan parameters configured.", "success")
     return redirect(url_for("loan.dashboard", account_id=account_id))
+
+
+def _setup_refusal(data, account_type):
+    """Return the sentence refusing a schema-valid setup submission, or ``None``.
+
+    The two rules the schema cannot state because each reads something beyond
+    the fields themselves:
+
+    * the account TYPE's term cap (``ref.account_types.max_term_months``; the
+      schema's universal 600 is the outer bound);
+    * the ORIGINATION half of the stated balance's date bound (plan step
+      ``recurrence:R20``).  ``anchor_date`` may not precede
+      ``origination_date`` -- a loan has no balance before it exists, the
+      refusal the two dashboard doors make in the same words -- but only for a
+      loan that HAS originated: one originating after today has no date on or
+      before today that could satisfy it, and asserts nothing.  Today is the
+      DISPLAY day, the civil day the owner is typing on, the same day the
+      form's date defaulted to.
+
+    Args:
+        data: The schema-loaded setup form.
+        account_type: The account's :class:`AccountType` row.
+
+    Returns:
+        The flash sentence, or ``None`` when the submission stands.
+    """
+    max_term = account_type.max_term_months
+    if max_term and data.get("term_months", 0) > max_term:
+        return f"Term cannot exceed {max_term} months for {account_type.name}."
+    origination_date = data["origination_date"]
+    if data["anchor_date"] < origination_date <= display_today():
+        return (
+            "Balance date cannot be before the loan's origination "
+            f"date ({origination_date.isoformat()})."
+        )
+    return None
 
 
 @loan_bp.route("/accounts/<int:account_id>/loan/params", methods=["POST"])
@@ -290,9 +360,10 @@ def true_up_balance(account_id):
         until ruling R-EQ** (plan step X-f1c4b), which could not tell that
         retry from a deliberate re-assertion and refused both.
 
-    The function does NOT mutate :class:`LoanParams.current_principal`.
-    The column is non-authoritative seed (E-18 / Commit 15) and the
-    resolver reads the event log, not the column.
+    The function does NOT mutate :class:`LoanParams`: the balance has no
+    column there (the E-18 / Commit 15 ``current_principal`` seed was
+    dropped at plan step ``recurrence:R20``) and the seam reads the event
+    log.
     """
     account, params, _ = _require_configured_loan(account_id)
 
@@ -321,7 +392,7 @@ def true_up_balance(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    outcome = anchor_service.apply_loan_anchor_true_up(
+    outcome = loan_anchor_service.apply_loan_anchor_true_up(
         account=account,
         anchor_balance=anchor_balance,
         anchor_date=anchor_date,
@@ -358,7 +429,7 @@ def true_up_balance(account_id):
 @loan_bp.route("/accounts/<int:account_id>/loan/tracking-start", methods=["POST"])
 @require_owner
 def record_tracking_start(account_id):
-    """Record a mid-life-import tracking-start opening (a ``tracking_start`` event).
+    """Record a mid-life-import tracking-start (a ``tracking_start`` event).
 
     For an already-amortizing loan the operator began tracking mid-life: the user
     asserts "when I started tracking, my real balance was $X as of date D."  The
@@ -377,32 +448,34 @@ def record_tracking_start(account_id):
     ALWAYS: opening at a mid-life tracking-start read the loan out of existence
     for its whole pre-tracking window (the false pre-opening zero, finding B-11).
 
-    Validation chain (mirrors :func:`true_up_balance`, plus the ordering guard):
+    **Since plan step ``recurrence:R20`` the setup door writes this same row
+    for the balance the owner states at setup**, so the common mid-life import
+    never reaches this door at all; it remains for a tracking-start recorded
+    after the fact.  *The route also refused a date not STRICTLY BEFORE the
+    earliest recorded payment's due date until R20* (ruling **R-R72** part 3),
+    on the ground that the payment "would sort before the opening in the walk
+    and be subsumed" -- the opening claim step C1 had already retired.  An
+    assertion dated after payments is exactly what a true-up already is, the
+    two sources differ in label alone
+    (:func:`app.services.loan_anchor_service._append_loan_anchor_and_sync`), and the
+    walk resets on both identically; the refusal, and the loader that served
+    only it, are gone.
+
+    Validation chain (mirrors :func:`true_up_balance`):
 
       1. ``_require_configured_loan`` rejects cross-owner / non-loan / unconfigured
          accounts.
       2. :class:`LoanAnchorTrueupSchema` (reused -- identical fields) enforces
          ``anchor_balance >= 0`` and ``anchor_date <= today``.
       3. The route enforces ``anchor_date >= params.origination_date`` (a loan
-         cannot be tracked before it existed) and ``anchor_date`` STRICTLY BEFORE
-         the earliest recorded payment's due date -- otherwise that payment would
-         sort before the opening in the walk and be subsumed (dropped).  Both are
-         route-level because the schema has no access to the loan.
+         cannot be tracked before it existed), route-level because the schema
+         has no access to the loan.
 
     Outcomes mirror the true-up: COMMITTED (success flash + redirect) or
     UNCHANGED (idempotent success when the governing ``tracking_start`` already
     asserts this ``(date, balance)``).  The comparison is scoped to the
-    ``tracking_start`` source, so a re-submitted opening is recognised even
-    after true-ups have been recorded on later dates -- which a
-    latest-row-of-any-source rule would have missed, because an opening is by
-    definition the earliest anchor.
-
-    A tracking-start is meant to be the FIRST anchor recorded (the opening).  A
-    ``user_trueup`` dated earlier than the tracking-start is not rejected here;
-    its only effect is cosmetic (the drift scorecard would show the opening's
-    ``computed`` as that true-up's balance rather than 0) -- the genesis walk's
-    reset-at-every-anchor still reconstructs the correct final balance, and both
-    correction legs still sum to zero.
+    ``tracking_start`` source, so a re-submitted tracking-start is recognised
+    even after true-ups have been recorded on later dates.
     """
     account, params, _ = _require_configured_loan(account_id)
 
@@ -426,21 +499,7 @@ def record_tracking_start(account_id):
         )
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    earliest_due = (
-        loan_loaders.earliest_settled_payment_due_date(account.id, scenario_id)
-        if scenario_id is not None else None
-    )
-    if earliest_due is not None and anchor_date >= earliest_due:
-        flash(
-            "Tracking-start date must be before your earliest recorded "
-            f"payment ({earliest_due.strftime('%b %-d, %Y')}).",
-            "danger",
-        )
-        return redirect(url_for("loan.dashboard", account_id=account_id))
-
-    outcome = anchor_service.record_loan_tracking_start(
+    outcome = loan_anchor_service.record_loan_tracking_start(
         account=account,
         anchor_balance=anchor_balance,
         anchor_date=anchor_date,

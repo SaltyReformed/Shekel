@@ -76,6 +76,7 @@ from tests._test_helpers import (
     an_observed_day,
     append_balance_assertion,
     bare_expense_template,
+    cover_bare_settled_row,
     figure_source_columns,
     last_covered_day,
     load_migration_module,
@@ -716,6 +717,8 @@ class TestTheDayBasisMovesNoMoney:
             )
             db.session.add(txn)
             db.session.flush()
+            # The record's home is the covering movement (X-bi-4b-1).
+            cover_bare_settled_row(db.session, txn, "300.00")
 
             figures = set()
             for basis in SettledDayBasisEnum:

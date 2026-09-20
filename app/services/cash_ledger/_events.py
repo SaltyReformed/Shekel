@@ -443,7 +443,7 @@ def governing_account_opening(account_id: int) -> CashOpeningFact | None:
     therefore commit in the opposite order to their instants, and the second
     one's row sorts BELOW the row it was meant to supersede: the owner is told
     "Books restated" and nothing moves.
-    :func:`app.services.anchor_service._governing_loan_anchor` already stated
+    :func:`app.services.loan_anchor_service._governing_loan_anchor` already stated
     the ``now()`` fact for the loan twin; this door never carried it across.
 
     ``id`` is a sequence value allocated when the INSERT executes, and
