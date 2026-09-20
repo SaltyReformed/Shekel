@@ -98,6 +98,16 @@
                             ships a headless row.  Companion supplies neither
                             -- and supplies no `columns` either, which is what
                             suppresses the whole summary block.
+     account *           -- the BALANCE LINE's Account, or None (plan step
+                            credit_card:CC-4-2, ruling R-CC16): forwarded
+                            to `render_row_card`, which marks a card whose
+                            row is on another account with an account
+                            chip.  The owner's grid passes `ctx.account`;
+                            the companion passes None -- it reads the
+                            owner's plan with no balance line, so no card
+                            of its own carries the chip.  Required as a
+                            KEY: an undefined one reaches the macro and
+                            raises on the first row it decides.
      can_edit            -- (optional) bool, default True; forwarded
                             to `render_row_card` so companion
                             (`can_edit=False`) drops the
@@ -230,7 +240,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, account, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>
@@ -285,7 +295,7 @@
                 {% endif %}
               {% endif %}
             {% endif %}
-            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, can_edit, 'tp', entry_lists, today) }}
+            {{ render_row_card(rk, period, matched_by_row_period, entry_sums, budgets, settled, retained, account, can_edit, 'tp', entry_lists, today) }}
           {% endif %}
         {% endfor %}
       </ul>

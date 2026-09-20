@@ -39,6 +39,7 @@ from tests._test_helpers import (
     create_account_of_type,
     one_off_row_of,
     settle_day_columns,
+    cover_bare_settled_row,
     settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
@@ -153,6 +154,7 @@ def _settled(db, seed_user, period, name, amount, day):
     for _column, _value in settle_day_columns(day).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    cover_bare_settled_row(db.session, txn, amount, amount)
     return txn
 
 

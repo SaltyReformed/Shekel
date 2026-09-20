@@ -37,7 +37,13 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.services import balance_at, entry_service, statement_match
+from app.services import (
+    balance_at,
+    entry_service,
+    statement_match,
+    status_seam,
+    transaction_service,
+)
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission, ReviewedLine
 
@@ -66,7 +72,6 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
-from app.services.amount_ownership import state_own_amount
 
 
 def _balance_on(seed_user, day):
@@ -374,7 +379,18 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
     """
 
     def test_a_row_whose_FIGURE_moved_is_refused(self, app, db, seed_user):
-        """The reproduced case, through the real door."""
+        """The reproduced case, through the real door.
+
+        **What moves is the covering MOVEMENT's figure**, because that is
+        what a settled row is worth to this door (ruling **R-BAL81**,
+        ``covered_cash_leg``), and the movement's row carries no version of
+        the parent's: the FIGURE coordinate alone moves.  Through plan step
+        ``balance:X-bi-4a``'s first cut this moved ``settled_amount`` and
+        the ownership, which the price no longer reads and which bump the
+        row's ``version_id`` -- so the case passed on the REVISION arm and
+        the figure coordinate of a settled row was unpinned (adversarial
+        review 2026-09-18).
+        """
         line = a_bank_line(seed_user, an_import(seed_user), amount="-178.29")
         txn = a_transaction(
             seed_user, name="Geico", amount="178.32",
@@ -382,17 +398,20 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         )
         scope = a_scope(seed_user)
         submission = a_submission(scope, lines=[line], transactions=[txn])
+        version_reviewed = txn.version_id
 
-        # ...and the row moves after the screen was rendered.
-        txn.settled_amount = Decimal("500.00")
-        state_own_amount(txn, Decimal("500.00"))
+        # ...and what the row is worth moves after the screen was rendered,
+        # with the row's own revision untouched.
+        [movement] = txn.covering_movements
+        movement.amount = Decimal("500.00")
         db.session.flush()
+        assert txn.version_id == version_reviewed
 
         with pytest.raises(ValidationError, match="reviewed against different"):
             statement_match.accept_match(submission, a_scope(seed_user))
 
         assert db.session.query(StatementMatch).count() == 0
-        assert txn.settled_amount == Decimal("500.00"), (
+        assert movement.amount == Decimal("500.00"), (
             "the refused act wrote the bank's figure over the edit"
         )
 
@@ -436,14 +455,19 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         guard in this door reads.
         """
         line = a_bank_line(seed_user, an_import(seed_user), amount="-25.00")
+        # Closed FROM the purchase through the verb (ruling R-BAL78), as the
+        # developer's near misses are.
         envelope = a_transaction(
-            seed_user, name="Groceries", amount="200.00",
-            status=StatusEnum.DONE, settled_on=line.posted_on,
+            seed_user, name="Groceries", amount="200.00", is_envelope=True,
         )
         purchase = a_purchase(
             seed_user, envelope, amount="25.00",
             purchased_on=line.posted_on, description="Walmart",
         )
+        transaction_service.settle_transaction(
+            envelope, settle_day=an_entered_day(line.posted_on),
+        )
+        db.session.flush()
         scope = a_scope(seed_user)
         submission = a_submission(scope, lines=[line], entries=[purchase])
 
@@ -678,10 +702,16 @@ class TestEveryOtherRefusalFires:
     def test_an_envelope_and_its_own_purchase_is_refused(
         self, app, db, seed_user,
     ):
-        """It would count the same money twice, and no CHECK can see it.
+        """It cannot count the same money twice: the ROW is not offered.
 
-        An envelope's cash leg already INCLUDES its outstanding purchases, so
-        naming both sums that purchase in two terms.
+        Through plan step ``balance:X-bi-4a``'s first cut an envelope's cash
+        leg INCLUDED its outstanding purchases, so naming both summed that
+        purchase in two terms and ``_reject_parent_and_its_own_purchase``
+        stood between.  Under ruling **R-BAL81** a row that settles from its
+        purchases is worth ``0`` to the offer and is not a candidate at all
+        -- its purchases are -- so the row is refused as unavailable before
+        that guard is asked, and the double count is unrepresentable rather
+        than refused.
         """
         statement = an_import(seed_user)
         envelope = a_transaction(
@@ -690,11 +720,14 @@ class TestEveryOtherRefusalFires:
         purchase = a_purchase(seed_user, envelope, amount="25.00")
         line = a_bank_line(seed_user, statement, amount="-125.00")
 
-        with pytest.raises(ValidationError, match="count the same money twice"):
+        with pytest.raises(ValidationError, match="no longer available"):
             _submit(
                 seed_user, lines=[line],
                 transactions=[envelope], entries=[purchase],
             )
+
+        assert purchase.settled_on is None
+        assert envelope.settled_on is None
 
     def test_an_envelope_matched_SEPARATELY_from_its_purchase_is_refused(
         self, app, db, seed_user,
@@ -711,12 +744,19 @@ class TestEveryOtherRefusalFires:
         line-sets worth `-284.33` end up backed by `-265.69` of ledger and the
         projected balance reads `$18.64` HIGH.  The hand-build form lists an
         envelope and its purchases side by side, so it is two clicks.
+
+        **Under ruling R-BAL81 the first click cannot land**: envelope 2280
+        is worth ``0`` to the offer while it holds purchases and is refused
+        as unavailable, so there is no first match for the second to
+        falsify; the purchase matches on its own, at its own figure.  The
+        cross-match arm of ``_reject_parent_and_its_own_purchase`` is not
+        reached from THIS shape any more; its live shape is an envelope
+        matched EMPTY, reverted, and then given a purchase -- the case below.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
-        # An ENVELOPE settles at sum(entries) (``settles_from_entries``), so
-        # its cash leg is that sum rather than its estimate -- two purchases,
-        # so the envelope's own figure is distinguishable from either of them.
+        # Two purchases, so the envelope's figure at its purchases (`-55.00`)
+        # is distinguishable from either of them.
         envelope = a_transaction(
             seed_user, name="Groceries", amount="100.00", is_envelope=True,
         )
@@ -734,9 +774,59 @@ class TestEveryOtherRefusalFires:
             seed_user, statement, amount="-25.00", posted_on=bank_day,
             sequence_in_group=1,
         )
-        _submit(seed_user, lines=[envelope_line], transactions=[envelope])
 
-        with pytest.raises(ValidationError, match="already accepted"):
+        with pytest.raises(ValidationError, match="no longer available"):
+            _submit(seed_user, lines=[envelope_line], transactions=[envelope])
+        assert envelope.settled_on is None
+
+        _submit(seed_user, lines=[purchase_line], entries=[purchase])
+
+        assert purchase.settled_on == bank_day
+        assert envelope.settled_on is None
+
+    def test_a_purchase_under_a_REVERTED_matched_envelope_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The cross-match guard's one live shape under ruling R-BAL81.
+
+        An EMPTY envelope is worth its plan and is matched WHOLE.  The owner
+        then reverts it: the match still names it (nothing in the status
+        seam touches ``statement_match_members``), its covering movement is
+        kept un-dated, and the row is Projected again, so a purchase may be
+        recorded against it.  Submitting THAT purchase is the pairing the
+        guard exists for -- the match already explains the envelope's money
+        against one bank line, and the purchase would explain part of it
+        against a second -- and it is refused by
+        ``_reject_parent_and_its_own_purchase``'s cross-match arm, which no
+        other case reaches now (adversarial review 2026-09-18 found the
+        guard's raise with no pin after the envelope-holding-purchases cases
+        became their negatives).
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        whole_line = a_bank_line(
+            seed_user, statement, amount="-100.00", posted_on=bank_day,
+        )
+        _submit(seed_user, lines=[whole_line], transactions=[envelope])
+        assert envelope.status.is_settled
+
+        status_seam.apply_status_change(
+            envelope, ref_cache.status_id(StatusEnum.PROJECTED),
+        )
+        db.session.flush()
+        assert envelope.status.is_settled is False
+        purchase = a_purchase(
+            seed_user, envelope, amount="25.00", purchased_on=bank_day,
+        )
+        purchase_line = a_bank_line(
+            seed_user, statement, amount="-25.00", posted_on=bank_day,
+            sequence_in_group=1,
+        )
+
+        with pytest.raises(ValidationError, match="count the same money twice"):
             _submit(seed_user, lines=[purchase_line], entries=[purchase])
 
         assert purchase.settled_on is None
@@ -746,10 +836,14 @@ class TestEveryOtherRefusalFires:
     ):
         """The same clash approached from the other side.
 
-        Asked in both orders because the guard reads two relations -- a
+        Asked in both orders because the guard read two relations -- a
         submitted purchase against already-matched parents, and a submitted
         envelope against already-matched purchases -- and one of them being
-        right proves nothing about the other.
+        right proves nothing about the other.  Under ruling **R-BAL81** the
+        envelope is worth ``0`` to the offer whether or not one of its
+        purchases has matched, so this order too refuses the ROW as
+        unavailable rather than as a clash; the `-30.00` line is the other
+        purchase's, and it matches.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -759,23 +853,28 @@ class TestEveryOtherRefusalFires:
         purchase = a_purchase(
             seed_user, envelope, amount="25.00", purchased_on=bank_day,
         )
-        a_purchase(
+        aldi = a_purchase(
             seed_user, envelope, amount="30.00", description="Aldi",
             purchased_on=bank_day,
         )
         purchase_line = a_bank_line(
             seed_user, statement, amount="-25.00", posted_on=bank_day,
         )
-        # The envelope books only what its purchases did NOT (ruling R-FM), so
-        # once the 25.00 purchase has posted its close is worth 30.00.
+        # Through X-bi-4a's first cut the envelope booked only what its
+        # purchases did NOT, so once the 25.00 purchase posted its close was
+        # worth 30.00 and this line was offered the ROW; it is Aldi's line.
         envelope_line = a_bank_line(
             seed_user, statement, amount="-30.00", posted_on=bank_day,
             sequence_in_group=1,
         )
         _submit(seed_user, lines=[purchase_line], entries=[purchase])
 
-        with pytest.raises(ValidationError, match="already accepted"):
+        with pytest.raises(ValidationError, match="no longer available"):
             _submit(seed_user, lines=[envelope_line], transactions=[envelope])
+        assert envelope.settled_on is None
+
+        _submit(seed_user, lines=[envelope_line], entries=[aldi])
+        assert aldi.settled_on == bank_day
 
     def test_a_cancelled_row_is_refused(self, app, db, seed_user):
         """Not money this account moved, so not a candidate and not matchable."""
@@ -1191,12 +1290,13 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
     def test_an_EXPENSE_row_agrees_while_it_holds(self, app, db, seed_user):
         """The same control on the kind plan step X-bi-3a covers.
 
-        A settled bill's own cash leg is ZERO since that leaf -- its covering
-        movement carries the money -- and the register read
-        ``settled_cash_leg`` alone, so every accepted bill match reported
+        A settled bill's covering movement carries the money since that leaf,
+        and the register read the row's own leg alone (``settled_cash_leg``,
+        zero for a covered bill), so every accepted bill match reported
         itself as no longer holding, while the income control above stayed
-        green (adversarial review, 2026-09-16).  The register prices the
-        FAMILY now, as the offer and the post-apply check do.
+        green (adversarial review, 2026-09-16).  The register prices the row
+        at its covering movement now (``covered_cash_leg``, ruling
+        **R-BAL81**), as the offer and the post-apply check do.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -2181,6 +2281,18 @@ class TestAOneToOneMatchTakesTheBanksFigure:
     07-02 AND `-178.32` on 07-06, `$356.61` for one `$178.29` movement.
 
     A refusal is not neutral when the screen beside it offers to duplicate.
+
+    **A case left this class at plan step ``balance:X-bi-4a``**:
+    ``test_a_row_carrying_a_CARD_purchase_corrects_its_GROSS`` built a
+    ``derived`` bill holding a card purchase and graded that the bank's
+    figure corrected the row's GROSS with the card purchase still subtracted.
+    Ruling **R-BAL78** makes a stated figure beside purchases unrepresentable
+    (a row holding purchases records its money AS them; the settle verb and
+    the seam refuse a figure over them, and the entry doors refuse a purchase
+    on a stored-figure row -- ``test_entry_service`` grades both), so the
+    row that case corrected cannot exist and the case had no subject left.
+    What a card purchase does to a row's cash leg is the card arc's
+    (``credit_card:CC-5``), on the card's own account.
     """
 
     @staticmethod
@@ -2254,6 +2366,51 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             MovementFigureSourceEnum.OBSERVED,
         )
 
+    def test_a_settled_PAYCHECK_five_cents_off_is_corrected_the_same_way(
+        self, app, db, seed_user,
+    ):
+        """The income arm of finding BAL-523, on the developer's own payroll line.
+
+        A settled paycheck is worth its covering movement in its own direction
+        (``+figure``, ruling **R-BAL81**), and the bank's figure corrects it
+        exactly as it corrects a bill: the record and the movement both read
+        the bank's `$2,473.43`.  Through plan step ``balance:X-bi-4a``'s
+        first cut ``_landing.corrected_figure`` added ``off_statement_sum``,
+        whose posted-purchase term walked the FAMILY and summed the paycheck's
+        own dated covering movement as a purchase that had posted, so the
+        correction booked `2,473.43 + 2,473.38 = 4,946.81` onto the movement
+        and the post-apply check refused the act -- production's payroll
+        line 259 against rows 1625 + 787, 2026-09-18 23:15 UTC, in the
+        observer's record.  The bill cases above cover the expense arm; this
+        is the control for the income one, and it is RED on the walk over
+        ``entries``.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        paycheck = a_transaction(
+            seed_user, name="Payroll", amount="2473.38", income=True,
+            status=StatusEnum.RECEIVED, settled_on=bank_day,
+        )
+        [movement] = paycheck.covering_movements
+        assert movement.amount == Decimal("2473.38")
+        line = a_bank_line(
+            seed_user, statement, amount="2473.43", posted_on=bank_day,
+        )
+
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[paycheck], residual="0.05",
+        )
+
+        assert accepted.match_id is not None
+        assert paycheck.settled_amount == Decimal("2473.43")
+        assert paycheck.settled_basis_id == ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        )
+        assert [m.amount for m in paycheck.covering_movements] == [
+            Decimal("2473.43"),
+        ]
+        assert status_seam.covered_cash_leg(paycheck) == Decimal("2473.43")
+
     def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
         """The control, and it is what makes the test above mean anything.
 
@@ -2315,47 +2472,6 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             "of what N-335 measures the loss of"
         )
 
-    def test_a_row_carrying_a_CARD_purchase_corrects_its_GROSS(
-        self, app, db, seed_user,
-    ):
-        """The bank constrains the CASH LEG, and the stored figure is GROSS.
-
-        A row whose card purchase never touches checking is worth
-        ``gross - that purchase`` in cash, so writing the bank's figure
-        STRAIGHT into ``settled_amount`` would book the card spend a second
-        time.  Every one of the developer's own 8 transaction near misses
-        carries no entries, so nothing on that data can tell the two apart --
-        which is exactly why this case is written.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        txn = a_transaction(
-            seed_user, name="Groceries", amount="180.00",
-            status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        a_purchase(
-            seed_user, txn, amount="30.00", is_credit=True,
-            purchased_on=bank_day,
-        )
-        db.session.flush()
-        # Cash leg is 180.00 - 30.00 = 150.00 out; the bank took 149.00.
-        line = a_bank_line(
-            seed_user, statement, amount="-149.00", posted_on=bank_day,
-        )
-
-        # Stating 1.00 is what -149.00 bank against a -150.00 cash leg comes to, and every
-        # match carries the difference it was reviewed against since
-        # plan step bank_import:X-gj-1b -- the near tier's own card
-        # renders it as a hidden field (the stated_difference filter).
-        _submit(
-            seed_user, lines=[line], transactions=[txn], residual="1.00",
-        )
-
-        assert txn.settled_amount == Decimal("179.00"), (
-            "the GROSS moves by the difference; the card purchase is still "
-            "subtracted from it"
-        )
-
 
 class TestWhatAOneToOneMatchSTILLRefuses:
     """The four indeterminacies R-GD(a) did NOT dissolve.
@@ -2381,7 +2497,15 @@ class TestWhatAOneToOneMatchSTILLRefuses:
         assert txn.settled_on is None
 
     def test_an_ENVELOPE_is_refused(self, app, db, seed_user):
-        """Its figure IS its purchases, so there is nothing here to correct."""
+        """Its figure IS its purchases, so it is not offered at all.
+
+        Through plan step ``balance:X-bi-4a``'s first cut the row reached
+        ``_reject_uncorrectable_row``'s "no figure of its own" clause; under
+        ruling **R-BAL81** a row that settles from its purchases is worth
+        ``0`` and is not a candidate, so it is refused as unavailable one
+        refusal earlier.  That clause's remaining subject is the CC payback,
+        the next case.
+        """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
         envelope = a_transaction(
@@ -2395,7 +2519,7 @@ class TestWhatAOneToOneMatchSTILLRefuses:
             seed_user, statement, amount="-30.00", posted_on=bank_day,
         )
 
-        with pytest.raises(ValidationError, match="no figure of its own"):
+        with pytest.raises(ValidationError, match="no longer available"):
             _submit(seed_user, lines=[line], transactions=[envelope])
 
         assert envelope.settled_on is None
@@ -2464,16 +2588,27 @@ class TestASettledPurchaseTakesTheBanksFigure:
 
     @staticmethod
     def _settled_envelope_with_a_purchase(seed_user, day):
-        """Stage a SETTLED envelope holding one purchase the bank will correct."""
+        """Stage an envelope CLOSED FROM one purchase the bank will correct.
+
+        Through the verb, so the close is a ``purchases`` record with no
+        covering movement (ruling **R-BAL78**: a stated figure beside
+        purchases is unrepresentable) -- the state the developer's two
+        near misses are in.  Laid on bare with ``settled_on`` this was a
+        ``derived`` close holding a purchase, and once ``a_transaction``
+        covered its settled rows, a mirror beside the purchase as well.
+        """
         envelope = a_transaction(
             seed_user, name="Groceries", amount="121.12", is_envelope=True,
-            status=StatusEnum.DONE, settled_on=day,
         )
         purchase = a_purchase(
             seed_user, envelope, amount="121.12", description="Walmart",
             purchased_on=day,
         )
+        transaction_service.settle_transaction(
+            envelope, settle_day=an_entered_day(day),
+        )
         db.session.flush()
+        assert envelope.covering_movements == []
         return envelope, purchase
 
     def test_the_purchase_is_RECOSTED_from_a_match(self, app, db, seed_user):

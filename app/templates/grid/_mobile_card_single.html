@@ -11,7 +11,9 @@
    This is a thin wrapper around the ``render_one_card`` macro so the
    route and the page share one card producer.  All required context
    (``rk``, ``txn``, ``entry_sums``, ``can_edit``, ``id_prefix``,
-   ``entry_lists``, ``today``) is supplied by the route.
+   ``entry_lists``, ``today``, and ``account`` -- the balance line the
+   card's account chip is decided against, or ``None`` for a companion,
+   plan step credit_card:CC-4-2) is supplied by the route.
    ``error`` (optional) is a rejection message: the card re-renders
    with current data plus a danger banner (see ``render_one_card``).
 
@@ -21,5 +23,5 @@
    transaction sits in is not something its card renders.
 #}
 {% from "grid/_grid_row_macros.html" import render_one_card %}
-{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, can_edit, id_prefix, entry_lists, today,
+{{ render_one_card(rk, txn, entry_sums, budgets, settled, retained, account, can_edit, id_prefix, entry_lists, today,
                    error=error if error is defined else none) }}

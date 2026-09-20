@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from flask import abort, flash, redirect, url_for
+from flask import abort, flash, redirect, render_template, url_for
 from flask_login import current_user
 
 from app.extensions import db
@@ -33,7 +33,12 @@ from app.schemas.validation import (
     RateChangeSchema,
     RefinanceSchema,
 )
-from app.services import balance_at, escrow_calculator, loan_resolver
+from app.services import (
+    balance_at,
+    cash_ledger,
+    escrow_calculator,
+    loan_resolver,
+)
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import LoanFigures, LoanTerms
 from app.services.loan_ledger import installment_slot
@@ -45,28 +50,22 @@ from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.rate_period_engine import payment_number
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404
-from app.utils.dates import add_months
+from app.utils.dates import add_months, display_today
 from app.utils.money import round_money
 
 
 # Field allowlist for the loan-params update route -- the LoanParams
-# columns the update form may set directly.  ``current_principal`` is
-# excluded (E-18 / D-C): it is non-authoritative seed and the resolver
-# derives the displayed balance from :class:`LoanAnchorEvent`.
-# ``interest_rate`` is excluded (DH-#56): the column was retired, and the
-# form's rate field edits the loan's origination RateHistory row through
-# ``update_params``'s ``_upsert_origination_rate`` instead of a column set.
+# columns the update form may set directly.  The balance is not one: the
+# seam derives it from :class:`LoanAnchorEvent`, and the demoted
+# ``current_principal`` seed (E-18 / D-C) was dropped at plan step
+# ``recurrence:R20``.  ``interest_rate`` is excluded (DH-#56): the column
+# was retired, and the form's rate field edits the loan's origination
+# RateHistory row through ``update_params``'s ``_upsert_origination_rate``
+# instead of a column set.
 _PARAM_FIELDS = {
     "payment_day", "term_months",
     "is_arm", "arm_first_adjustment_months", "arm_adjustment_interval_months",
 }
-
-# Name of the composite unique constraint that backstops the
-# loan rate-history double-submit fix (F-104 / C-22).  Mirrors the
-# literal in ``app/models/loan_features.py:RateHistory.__table_args__``
-# and ``migrations/versions/<C-22 revision>.py``; renaming the
-# constraint requires a coordinated edit across all three sites.
-_RATE_HISTORY_UNIQUE_CONSTRAINT = "uq_rate_history_account_effective_date"
 
 _create_schema = LoanParamsCreateSchema()
 _update_schema = LoanParamsUpdateSchema()
@@ -104,6 +103,37 @@ def _load_loan_account(account_id):
         .first()
     )
     return account, params, account_type
+
+
+def render_loan_setup(account, account_type):
+    """Render the loan setup form for an account that has no ``LoanParams`` yet.
+
+    The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
+    unconfigured loan, and ``create_params`` re-shows it on a refused POST --
+    so the two prefills are spelled once: the "balance today" field opens on
+    the account's latest cash assertion
+    (:func:`app.services.cash_ledger.resolve_anchor`, the ONE answer to "what
+    balance has this account been asserted to hold"; plan step X-f1c3a), and
+    its "as of" date on today, the setup date (plan step ``recurrence:R20``,
+    ruling **R-R72** part 3: the stated balance is a dated assertion, dated by
+    the owner and defaulting to the day it is typed).  Today is the DISPLAY
+    day (:func:`app.utils.dates.display_today`), the civil day the owner is
+    typing on; the form's ``max`` is the same day.
+
+    Args:
+        account: The loan :class:`Account` being configured.
+        account_type: Its :class:`AccountType` row (labels, icon, term cap).
+
+    Returns:
+        The rendered setup page.
+    """
+    return render_template(
+        "loan/setup.html",
+        account=account,
+        account_type=account_type,
+        anchor_balance=cash_ledger.resolve_anchor(account).balance,
+        today_iso=display_today().isoformat(),
+    )
 
 
 def _require_configured_loan(account_id):

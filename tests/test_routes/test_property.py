@@ -1078,7 +1078,10 @@ class TestPropertyEquityChartProducer:
         loan's forward plan charges every contractual installment after its
         LATEST assertion, so a balance asserted in 2005 and never paid since
         would carry 255 months of standing interest -- a delinquent balloon,
-        which is not what "still owing $50,000" means here.
+        which is not what "still owing $50,000" means here.  It is stated at
+        SETUP, the way the setup door records it (plan step R20: a
+        ``tracking_start``); it was a true-up appended after the fact until
+        then, and the two differ in label alone.
         """
         freeze_today(monkeypatch, date(2026, 4, 20))
         today = date(2026, 4, 20)
@@ -1092,12 +1095,9 @@ class TestPropertyEquityChartProducer:
                 seed_user, db.session, name="Matured Balloon",
                 principal=Decimal("240000.00"), term=120,
                 origination_date=date(2005, 1, 1), payment_day=1,
+                tracked_balance=Decimal("50000.00"), tracked_from=today,
             )
             loan.collateral_account_id = prop.id
-            db.session.commit()
-            insert_trueup_event(
-                load_loan_params(loan.id), Decimal("50000.00"), anchor_date=today,
-            )
             db.session.commit()
 
             ctx = BalanceContext.build(prop.user_id, as_of=today)

@@ -181,6 +181,7 @@ def _calendar(user_id, account_id):
             f"year_overview:{year}",
             lambda y=year: calendar_service.get_year_overview(
                 user_id, y, account_id,
+                user_settings=None,
             ),
         )
         if isinstance(overview, dict):
@@ -254,6 +255,7 @@ def _spending(user_id, account_id):
                 spending_report_service.SpendingWindow(
                     window_type="month", period_id=None, month=m, year=y,
                 ),
+                user_settings=None,
             ),
         )
         out[f"{year}-{month:02d}"] = (

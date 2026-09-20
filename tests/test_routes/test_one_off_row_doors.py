@@ -1271,7 +1271,7 @@ def _settled_envelope_with_a_posted_purchase(auth_client, seed_user, period, *, 
         db.session, seed_user, row, Decimal("40.00"),
         period.start_date, settled_on=period.start_date,
     )
-    posting_service.sync_transaction_postings(row, settled=False)
+    posting_service.sync_transaction_postings(row)
     db.session.commit()
     resp = auth_client.post(f"/transactions/{row.id}/mark-done")
     assert resp.status_code == 200, resp.data

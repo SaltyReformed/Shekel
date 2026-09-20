@@ -80,7 +80,7 @@ import sqlalchemy.exc
 from app import ref_cache
 from app.enums import AmountSourceEnum, StatusEnum
 from app.exceptions import AmountUnresolvable
-from app.services.cash_ledger import _amounts
+from app.services.cash_ledger import _amounts, in_flight_movements
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
     contribution_of,
@@ -183,12 +183,44 @@ def _envelope(db_session, seed_user, period, estimated, entries=()):
     return txn
 
 
+def _in_flight(txn):
+    """Return what the IN-FLIGHT tier holds for *txn*'s un-dated purchases.
+
+    Ruling **R-BAL77** (plan step ``balance:X-bi-4a``) split the three-bucket
+    reservation in two: :func:`_entry_aware_amount` holds the envelope's
+    UNSPENT budget and the plan's in-flight tier holds each un-dated non-card
+    purchase at its own figure, ``-delta`` under an expense.  The cases below
+    assert both halves and their sum, which is the figure each asserted of
+    the one function through ``X-bi-3e``.
+    """
+    return sum(
+        (
+            -fact.delta
+            for fact in in_flight_movements(txn.account_id, txn.scenario_id)
+            if fact.transaction_id == txn.id
+        ),
+        Decimal("0"),
+    )
+
+
+def _held_back(txn):
+    """Return ``(unspent budget, in flight, their sum)`` for *txn*."""
+    unspent = _entry_aware_amount(txn, _basis(txn))
+    in_flight = _in_flight(txn)
+    return unspent, in_flight, unspent + in_flight
+
+
 class TestTheEntryAwareReservation:
-    """The three-bucket reservation for a still-Projected envelope expense.
+    """The reservation for a still-Projected envelope expense, in its two halves.
 
     The six scope-doc scenarios (Section 4.2) plus the boundary shapes.  Every
-    figure is the reservation itself; before X-c2c2a each was asserted as
-    ``5000.00 - reservation`` through the balance walk.
+    figure was the three-bucket reservation itself until plan step
+    ``balance:X-bi-4a``; since ruling **R-BAL77** each case asserts the
+    UNSPENT budget (:func:`_entry_aware_amount`), the IN-FLIGHT purchases
+    (the plan tier's own item per un-dated purchase) and their sum, which is
+    the old figure: ``max(E - P - C, U) == U + max(E - SUM(entries), 0)``.
+    Before X-c2c2a each was asserted as ``5000.00 - reservation`` through the
+    balance walk.
     """
 
     def test_no_entries_holds_the_full_estimate(
@@ -219,7 +251,9 @@ class TestTheEntryAwareReservation:
                 [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
+            assert _held_back(txn) == (
+                Decimal("300.00"), Decimal("200.00"), Decimal("500.00"),
+            )
 
     def test_a_credit_entry_reduces_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -235,7 +269,9 @@ class TestTheEntryAwareReservation:
                 [("300.00", False, None), ("100.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
+            assert _held_back(txn) == (
+                Decimal("100.00"), Decimal("300.00"), Decimal("400.00"),
+            )
 
     def test_all_credit_leaves_only_the_uncovered_portion(
         self, app, db, seed_user, seed_periods,
@@ -267,7 +303,9 @@ class TestTheEntryAwareReservation:
                 [("530.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("530.00")
+            assert _held_back(txn) == (
+                Decimal("0.00"), Decimal("530.00"), Decimal("530.00"),
+            )
 
     def test_mixed_overspend_takes_the_debit_floor_over_the_reduction(
         self, app, db, seed_user, seed_periods,
@@ -283,7 +321,9 @@ class TestTheEntryAwareReservation:
                 [("400.00", False, None), ("200.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
+            assert _held_back(txn) == (
+                Decimal("0.00"), Decimal("400.00"), Decimal("400.00"),
+            )
 
     def test_zero_estimate_with_a_debit_reserves_the_debit(
         self, app, db, seed_user, seed_periods,
@@ -299,7 +339,9 @@ class TestTheEntryAwareReservation:
                 [("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("50.00")
+            assert _held_back(txn) == (
+                Decimal("0.00"), Decimal("50.00"), Decimal("50.00"),
+            )
 
     def test_credit_exceeding_the_estimate_floors_at_the_debits(
         self, app, db, seed_user, seed_periods,
@@ -315,7 +357,9 @@ class TestTheEntryAwareReservation:
                 [("100.00", False, None), ("600.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("100.00")
+            assert _held_back(txn) == (
+                Decimal("0.00"), Decimal("100.00"), Decimal("100.00"),
+            )
 
     def test_one_cent_debit_does_not_disturb_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -331,7 +375,9 @@ class TestTheEntryAwareReservation:
                 [("0.01", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
+            assert _held_back(txn) == (
+                Decimal("499.99"), Decimal("0.01"), Decimal("500.00"),
+            )
 
     def test_values_near_the_column_limit_do_not_overflow(
         self, app, db, seed_user, seed_periods,
@@ -349,7 +395,9 @@ class TestTheEntryAwareReservation:
                 [(large, False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal(large)
+            assert _held_back(txn) == (
+                Decimal("0.00"), Decimal(large), Decimal(large),
+            )
 
     def test_a_row_with_no_template_is_worth_its_effective_amount(
         self, app, db, seed_user, seed_periods,
@@ -433,7 +481,9 @@ class TestTheRecordedPostingDay:
                 [("100.00", False, _POSTED_ON), ("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("400.00")
+            assert _held_back(txn) == (
+                Decimal("350.00"), Decimal("50.00"), Decimal("400.00"),
+            )
 
     def test_settled_overspend_floors_at_zero(
         self, app, db, seed_user, seed_periods,
@@ -467,7 +517,9 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
+            assert _held_back(txn) == (
+                Decimal("300.00"), Decimal("200.00"), Decimal("500.00"),
+            )
 
     def test_settled_debit_plus_credit_both_reduce(
         self, app, db, seed_user, seed_periods,
@@ -513,7 +565,9 @@ class TestTheRecordedPostingDay:
             db.session.commit()
 
             assert txn.entries[0].settled_on is None
-            assert _entry_aware_amount(txn, _basis(txn)) == Decimal("500.00")
+            assert _held_back(txn) == (
+                Decimal("300.00"), Decimal("200.00"), Decimal("500.00"),
+            )
 
     def test_a_purchase_posted_after_the_statement_still_releases(
         self, app, db, seed_user, seed_periods,

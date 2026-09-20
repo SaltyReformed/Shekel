@@ -9,7 +9,7 @@ Tests each Marshmallow schema's load() method directly for:
   - @validates_schema cross-field rules
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -27,6 +27,8 @@ from app.schemas.validation import (
     PaycheckLineCreateSchema,
     FicaConfigSchema,
     InlineTransactionCreateSchema,
+    LoanAnchorTrueupSchema,
+    LoanParamsCreateSchema,
     PayHistorySchema,
     PayPeriodGenerateSchema,
     RaiseCreateSchema,
@@ -1983,3 +1985,89 @@ class TestErrorsByRailControl:
                 if isinstance(field, (fields.Dict, fields.Nested, fields.List, fields.Mapping))
             }
             assert nested == {"raise_probes"}, (type(schema).__name__, nested)
+
+
+class TestLoanParamsCreateSchemaStatedBalance:
+    """The setup schema's stated-balance pair (plan step recurrence:R20, ruling R-R72 part 3).
+
+    ``anchor_balance`` / ``anchor_date`` replaced the required
+    ``current_principal`` nothing read; they are the true-up schema's pair,
+    bounded the same way, and the not-in-the-future rule is ONE function both
+    schemas call.
+    """
+
+    @staticmethod
+    def _payload(**overrides):
+        """Return a complete, valid setup payload with *overrides* applied."""
+        payload = {
+            "original_principal": "250000.00",
+            "anchor_balance": "200000.00",
+            "anchor_date": "2020-06-01",
+            "interest_rate": "6.500",
+            "term_months": "360",
+            "origination_date": "2020-01-01",
+            "payment_day": "1",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_the_pair_loads_as_a_decimal_and_a_date(self):
+        """A valid pair loads typed, beside the params fields."""
+        data = LoanParamsCreateSchema().load(self._payload())
+        assert data["anchor_balance"] == Decimal("200000.00")
+        assert data["anchor_date"] == date(2020, 6, 1)
+        assert "current_principal" not in data
+
+    def test_both_are_required(self):
+        """Omitting either half is a validation error naming it."""
+        for missing in ("anchor_balance", "anchor_date"):
+            payload = self._payload()
+            del payload[missing]
+            with pytest.raises(ValidationError) as exc:
+                LoanParamsCreateSchema().load(payload)
+            assert missing in exc.value.messages
+
+    def test_a_stray_current_principal_is_dropped_not_read(self):
+        """A stale client's retired field is excluded; it does not stand in for the pair."""
+        payload = self._payload(current_principal="150000.00")
+        data = LoanParamsCreateSchema().load(payload)
+        assert "current_principal" not in data
+        assert data["anchor_balance"] == Decimal("200000.00")
+        del payload["anchor_balance"]
+        with pytest.raises(ValidationError) as exc:
+            LoanParamsCreateSchema().load(payload)
+        assert "anchor_balance" in exc.value.messages
+
+    def test_a_negative_balance_is_rejected_and_zero_accepted(self):
+        """``anchor_balance >= 0``: the true-up's bound, and the table's CHECK."""
+        with pytest.raises(ValidationError) as exc:
+            LoanParamsCreateSchema().load(self._payload(anchor_balance="-0.01"))
+        assert "anchor_balance" in exc.value.messages
+        data = LoanParamsCreateSchema().load(self._payload(anchor_balance="0"))
+        assert data["anchor_balance"] == Decimal("0")
+
+    def test_a_future_date_is_rejected_by_both_schemas_alike(self):
+        """Tomorrow is refused with the true-up schema's own sentence; today is accepted."""
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        today = date.today().isoformat()
+        with pytest.raises(ValidationError) as setup_exc:
+            LoanParamsCreateSchema().load(self._payload(anchor_date=tomorrow))
+        with pytest.raises(ValidationError) as trueup_exc:
+            LoanAnchorTrueupSchema().load(
+                {"anchor_date": tomorrow, "anchor_balance": "1.00"},
+            )
+        assert setup_exc.value.messages["anchor_date"] == [
+            "Anchor date cannot be in the future.",
+        ]
+        assert trueup_exc.value.messages["anchor_date"] == [
+            "Anchor date cannot be in the future.",
+        ]
+        assert (
+            LoanParamsCreateSchema().load(self._payload(anchor_date=today))["anchor_date"]
+            == date.today()
+        )
+
+    def test_the_origination_half_of_the_bound_is_not_the_schemas(self):
+        """A date before origination loads here: the route refuses it, the way the doors do."""
+        data = LoanParamsCreateSchema().load(self._payload(anchor_date="2019-12-31"))
+        assert data["anchor_date"] < data["origination_date"]

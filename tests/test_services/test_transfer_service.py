@@ -13,7 +13,12 @@ import pytest
 import sqlalchemy.exc
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    MovementFigureSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -1340,6 +1345,16 @@ class TestRestoreTransfer:
         preference is unobservable, which is why the shape survived a suite
         whose only drifted leg was stripped bare
         (``test_a_repair_takes_the_siblings_settle_day`` above).
+
+        **The record is each leg's COVERING MOVEMENT** (plan step
+        ``balance:X-bi-4b-1``, ruling **R-BAL80**): the repair reads it
+        (``status_seam.recorded_settlement``) and the seam re-records onto it,
+        so the drift is staged on the movements -- the live leg's dated one
+        at ``$100.00``, the reverted leg's kept, un-dated one at ``$25.00``
+        (the state ``X-bi-3e-2``'s revert leaves) -- and graded there.
+        Through ``X-bi-4a`` this case staged and graded the legs' own
+        ``settled_amount`` columns, which the seam still writes from the same
+        value through this interval and ``X-bi-4b-2`` deletes.
         """
         with app.app_context():
             td = transfer_data
@@ -1362,20 +1377,24 @@ class TestRestoreTransfer:
             expense = next(s for s in shadows if s.is_expense)
             income = next(s for s in shadows if s is not expense)
 
-            # The LIVE leg keeps the pair's real record.
-            income.settled_amount = Decimal("100.00")
-            income.settled_basis_id = settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            typed_id = ref_cache.movement_figure_source_id(
+                MovementFigureSourceEnum.TYPED,
             )
+            # The LIVE leg keeps the pair's real record, on its movement.
+            (live,) = income.covering_movements
+            live.amount = Decimal("100.00")
+            live.figure_source_id = typed_id
             # The DRIFTED leg is reverted exactly as the seam reverts: the
-            # ASSERTION released, the RECORD retained -- and stale.
+            # ASSERTION released on the row and its movement, the RECORD
+            # retained on the kept movement -- and stale.
             expense.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
             record_settle_day(expense, None)
             expense.reconciled_by_id = None
-            expense.settled_amount = Decimal("25.00")
-            expense.settled_basis_id = settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
-            )
+            (stale,) = expense.covering_movements
+            record_settle_day(stale, None)
+            stale.reconciled_by_id = None
+            stale.amount = Decimal("25.00")
+            stale.figure_source_id = typed_id
             db.session.flush()
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
@@ -1383,14 +1402,18 @@ class TestRestoreTransfer:
             db.session.refresh(expense)
             db.session.refresh(income)
 
-            assert income.settled_amount == Decimal("100.00"), (
+            assert settled_figure(income) == Decimal("100.00"), (
                 "the repair overwrote the LIVE leg's record with the reverted "
-                f"leg's stale one: {income.settled_amount}"
+                f"leg's stale one: {settled_figure(income)}"
             )
-            assert expense.settled_amount == Decimal("100.00"), (
+            assert settled_figure(expense) == Decimal("100.00"), (
                 "the repaired leg did not take its sibling's record: "
-                f"{expense.settled_amount}"
+                f"{settled_figure(expense)}"
             )
+            (repaired,) = expense.covering_movements
+            assert repaired.id == stale.id
+            assert repaired.settled_on == income.settled_on
+            assert repaired.figure_source_id == typed_id
 
     def test_a_repair_into_a_projected_status_clears_the_instant(
         self, app, db, transfer_data,

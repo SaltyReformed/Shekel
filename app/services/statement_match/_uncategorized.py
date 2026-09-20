@@ -13,7 +13,7 @@ is decided by the same fact, which is that a BANK STATEMENT is why the row
 exists at all:
 
 * it carries **NO category by default**, so
-  ``posting_service._settled_target`` books its counter leg to the
+  ``_posting_purchases._purchase_target`` books its movements' counter legs to the
   per-(owner, class) Uncategorized fallback -- the app does not know what this
   money was, and saying so is what makes it categorisable later rather than
   misfiled now (**R-FN**).  **The one exception is a deposit a standing INCOME

@@ -45,10 +45,13 @@ The arm is maintained rather than deleted because plan step **C4-c** dropped the
 read, and an arm that reads it owes that conversion whichever surface reaches it
 (developer ruling 2026-08-19, at plan step C2-f3d).
 
-The Spending surface is MEASURED: settled-only, scoped to the user's active
-checking account (the audit's target-IA row).  It carries the account
-name / id and the settled-only flag so the template can label the scope on
-screen.  Settled-only is why figures price through ``settled_contribution`` (X-au-c2).
+The Spending surface is MEASURED: settled-only, scoped to the owner's
+CASH-FLOW SET -- the primary grid account and its active cards, read through
+the one clause every plan-item reader appends (ruling ``credit_card:R-CC16``,
+plan step CC-4-3; the audit's target-IA row scoped it to the first active
+checking account before that).  It carries the balance account's name / id
+and the settled-only flag so the template can label the scope on screen.
+Settled-only is why figures price through ``settled_contribution`` (X-au-c2).
 
 Boundary discipline: no Flask import.  The route resolves the window from
 query params and passes a :class:`SpendingWindow`; every figure is a
@@ -81,8 +84,9 @@ or a template names, so no consumer reaches into a submodule.
 """
 
 from app.models.transaction import Transaction
+from app.models.user import UserSettings
 from app.services import spending_analysis
-from app.services.account_resolver import resolve_analytics_account
+from app.services.account_resolver import resolve_cash_flow_set
 from app.services.cash_ledger import derived_amount_basis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
@@ -132,23 +136,44 @@ __all__ = [
 def compute_spending_report(
     user_id: int,
     window: SpendingWindow,
+    *,
+    user_settings: UserSettings | None,
 ) -> SpendingReport | None:
     """Compute the Spending surface dataset for *user_id* over *window*.
 
-    Resolves the user's active checking account and baseline scenario, then
-    builds the trailing window series, the category breakdown with
+    Resolves the owner's cash-flow set and baseline scenario, then builds
+    the trailing window series, the category breakdown with
     window-over-window deltas, the By-change rows, the estimate surprises,
     and the hero band over the chosen window's settled expenses.  The
     hero's vs-prior and vs-average baselines are derived from the series,
     so the chart and the chips agree by construction.
 
+    **The scope is the owner's cash-flow set since plan step CC-4-3** --
+    the primary grid account plus its active cards, resolved by
+    :func:`~app.services.account_resolver.resolve_cash_flow_set`, the ONE
+    call the grid and the dashboard make, with no override (the surface
+    takes none).  It was ``resolve_analytics_account(user_id, None)``: the
+    first active checking account with no settings layer, a second spelling
+    of the primary that agreed with the grid's only while no
+    ``default_grid_account_id`` was saved.  The report's default therefore
+    follows the owner's saved default grid account now, and an owner with
+    no checking account but another grid-eligible one gets a report on it
+    where they got the empty state.
+
     Args:
         user_id: The owning user (scopes every query).
         window: The chosen :class:`SpendingWindow`.
+        user_settings: The owner's ``UserSettings`` row, or ``None`` when
+            they have none -- the saved-default layer the primary reads.
+            Keyword-only and REQUIRED, ``None`` being a value a caller states
+            rather than a default it can fall into: an omitted row would
+            resolve a different primary than the grid's for an owner with a
+            saved default, silently, and a missing argument fails at the
+            call instead.  The route passes the row it holds.
 
     Returns:
         The populated :class:`SpendingReport`, or ``None`` when the user has
-        no active checking account or no baseline scenario (the template
+        no grid-eligible account or no baseline scenario (the template
         renders an empty state).  A resolvable user whose window simply has
         no settled spend gets a populated report with an empty breakdown and
         a zero spent total (the documented empty shape), never ``None``.
@@ -165,20 +190,19 @@ def compute_spending_report(
         window.window_type, window.period_id, window.month, window.year,
     )
 
-    account = resolve_analytics_account(user_id, None)
-    if account is None:
+    cash_flow = resolve_cash_flow_set(user_id, user_settings)
+    if cash_flow is None:
         return None
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return None
 
     ids = _ScopeIds(
-        user_id=user_id, account_id=account.id, scenario_id=scenario.id,
+        user_id=user_id, cash_flow=cash_flow, scenario_id=scenario.id,
         calendar=calendar_for(user_id),
     )
     resolved = _resolve_window(ids, window)
     txns = _window_transactions(ids, resolved)
-    viewed_total = _window_total(resolved, txns)
 
     # The chart's twelve windows are DERIVED once, off the calendar the
     # scope already carries (plan step C2-f3d): the prior window is the
@@ -198,7 +222,7 @@ def compute_spending_report(
 
     series = _build_series(
         ids, windows,
-        viewed_total=viewed_total,
+        viewed_total=_window_total(resolved, txns),
         prior_total=prior_total,
     )
 
@@ -207,8 +231,8 @@ def compute_spending_report(
 
     return SpendingReport(
         scope=SpendingScope(
-            account_id=account.id,
-            account_name=account.name,
+            account_id=cash_flow.balance.id,
+            account_name=cash_flow.balance.name,
             settled_only=True,
             window_label=resolved.label,
         ),

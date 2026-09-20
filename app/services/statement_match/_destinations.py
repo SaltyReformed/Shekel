@@ -26,10 +26,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
-from app import ref_cache
-from app.enums import SettlementBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import balance_contributing_clause
@@ -86,14 +84,21 @@ def destinations_for(
       (:func:`~app.utils.balance_predicates.balance_contributing_clause`) -- a
       Credit or Cancelled row records no cash, so a purchase filed under one
       would post nothing (ruling **R-FM**);
-    * if it has SETTLED, its recorded figure IS its purchases.  **This is the
-      money clause** (:func:`~app.services.entry_service._doors
-      ._reject_settled_addition`): on a ``purchases`` basis a new purchase
-      raises what the row cost by exactly its own amount and the row's cash leg
-      does not move, so the movement is recorded; on a stored-figure basis the
-      gross cannot rise, and ``settled_cash_leg`` then subtracts money the gross
-      never held -- measured on a production clone, `-163.95` became `+203.67`
-      while the anchor true-up moved `$0.00`.
+    * if it has SETTLED, it holds NO covering movement: its recorded figure
+      IS its purchases (or nothing, ruling **R-BAL82**).  **This is the money
+      clause** (:func:`~app.services.entry_service._doors
+      ._reject_settled_addition`, the same predicate over the same fact since
+      plan step ``balance:X-bi-4b-1``; both read the row's ``settled_basis_id``
+      through ``X-bi-4a``): under no movement a new purchase raises what the
+      row cost by exactly its own amount and is a movement of its own, so it
+      is recorded; under a covering movement the purchase's movement would
+      post beside the one that already carries the close (ruling **R-BAL80**)
+      -- measured on a production clone through ``X-bi-3e``, when the row's
+      own leg subtracted it from a gross that never held it: `-163.95` became
+      `+203.67` while the anchor true-up moved `$0.00`.  The rows' ``entries``
+      travel with the scan for it (``selectinload``), as
+      :func:`~._candidates._transaction_candidates` loads them: a predicate in
+      the comprehension must not cost a query per row.
 
     **A SIXTH clause stood here until plan step balance:X-am** (ruling
     **balance:R-HA**): the row must not be ARCHIVED, because an archived row's
@@ -126,8 +131,8 @@ def destinations_for(
     projected envelope holding no entries, whose leg moves `+111.02` when a
     purchase is added, and adversarial review measured that shape unreachable
     through this clause: a match SETTLES the envelope it names, and a
-    zero-entry settle records a STORED FIGURE, which the money clause above
-    already refuses.
+    zero-entry settle at the bank's figure writes a COVERING MOVEMENT, which
+    the money clause above already refuses.
 
     Args:
         account_id: The cash account the statement is for.
@@ -153,9 +158,6 @@ def destinations_for(
         MID-SCHEDULE by design, which would give the newest row the newest id
         in the middle of the sequence.
     """
-    purchases_basis = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
     # The owner's SAVED paychecks, keyed the way a row names one.  This ONE
     # mapping is both halves of the answer -- the scan's ownership scope on the
     # line below, and the span every offered row is labelled by -- so the two
@@ -172,6 +174,9 @@ def destinations_for(
             # pay-calendar plan step C4-a-4: the relationship was here to read
             # the period's stored span, and the span now comes off ``spans``.
             joinedload(Transaction.template),
+            # The money clause reads ``covering_movements`` off every settled
+            # row (plan step balance:X-bi-4b-1), for the same reason.
+            selectinload(Transaction.entries),
         )
         .filter(
             Transaction.account_id == account_id,
@@ -203,10 +208,7 @@ def destinations_for(
         for txn in rows
         if txn.tracks_purchases
         and not txn.is_income
-        and (
-            not txn.status.is_settled
-            or txn.settled_basis_id == purchases_basis
-        )
+        and (not txn.status.is_settled or not txn.covering_movements)
     ]
     offered.sort(key=lambda d: (d.period.start_date, d.label))
     return offered

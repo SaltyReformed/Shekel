@@ -106,7 +106,7 @@ _OPENINGS_TABLE = "budget.account_openings"
 #: ``created_at`` is set on INSERT and so is monotone in recording order.  It is
 #: not: :class:`app.models.mixins.CreatedAtMixin` defaults it to
 #: ``db.func.now()``, which in PostgreSQL is ``transaction_timestamp()`` -- the
-#: instant the transaction BEGAN.  ``anchor_service._governing_loan_anchor``
+#: instant the transaction BEGAN.  ``loan_anchor_service._governing_loan_anchor``
 #: already says so in as many words about the loan twin, and this door never
 #: carried the implication across.  **The failure it produced is a SILENT NO-OP
 #: on the level every balance rests on**: two restatements from two tabs, the

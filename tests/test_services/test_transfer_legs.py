@@ -55,6 +55,7 @@ from app.services.transfer_service import (
     delete_transfer,
 )
 from tests._test_helpers import (
+    cover_bare_settled_row,
     basis_for,
     capture_sql_statements,
     create_loan_account,
@@ -538,32 +539,35 @@ def _settle_shadow_around_the_service(shadow, day, amount):
     shadow.status_id = ref_cache.status_id(StatusEnum.DONE)
 
 
-class TestAStatusDriftIsCountedByBothHalvesUntilXBi4:
-    """PINNED, NOT ENDORSED: what the two relations answer when their statuses part.
+class TestAStatusDriftIsCountedOnce:
+    """A leg is planned exactly while its own dated movement does not exist (R-BAL79).
 
-    **The instrument before the measurement** (the X-g2b-0 idiom).  Since plan
-    step balance:X-bi-6a the record half keys settled-ness on the SHADOW's
-    status and the plan half on the PARENT's, so a status drift -- forbidden by
-    Transfer Invariants 3 and 4, written by no door, 0 of 350 shadow rows on
-    the 2026-09-15 snapshot -- is read by both halves or by neither, where the
-    shadow-reading fold counted it exactly once.  These cases pin both
-    directions so that ``balance:X-bi-4``, which re-keys the record half onto
-    movements, moves a NUMBER here rather than an argument; the structural end
-    is X-bi-4 + X-bi-6, after which a transfer's status lives in one row and
-    the state cannot be written at all.  Developer ruling 2026-09-15 on
-    X-bi-6a's review: disclose and pin, build nothing to tear down.
+    **The instrument before the measurement** (the X-g2b-0 idiom), inverted
+    at plan step ``balance:X-bi-4a``.  Since plan step balance:X-bi-6a the
+    record half keyed settled-ness on the SHADOW's status and the plan half
+    on the PARENT's, so a status drift -- forbidden by Transfer Invariants 3
+    and 4, written by no door, 0 of 350 shadow rows on the 2026-09-15
+    snapshot -- was read by both halves (``-$500.00`` on a `$250.00`
+    transfer, ledger row **BAL-500**) or by neither.  Since X-bi-4a the
+    record half is the shadow's DATED covering movement and the plan half
+    emits a leg only for a side whose dated movement does not exist (ruling
+    **R-BAL79**), so the movement, not the status, decides which relation a
+    leg is in and no leg is counted by both; drift B still reads by neither.
+    The structural end is X-bi-6, after which a transfer's status lives in
+    one row and the state cannot be written at all.
     """
 
-    def test_a_settled_shadow_under_a_projected_parent_is_counted_twice(
+    def test_a_settled_shadow_under_a_projected_parent_is_counted_once(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Drift A: $250.00 folds checking at -$500.00 and savings at +$250.00.
+        """Drift A: $250.00 folds checking at -$250.00 and savings at +$250.00.
 
-        Checking's shadow is a settled RECORD (-$250.00 on its settle day) and
-        the parent is still a PLAN (its from-side leg, -$250.00 on the same
-        day).  Savings is right: its shadow is still Projected, so it is
-        excluded from the plan, and its leg lands once.  X-bi-4 is expected to
-        move the first figure to -$250.00.
+        Checking's shadow carries a DATED covering movement (-$250.00 on its
+        settle day, the record half) and the parent is still a PLAN, whose
+        from-side leg the plan half now SKIPS because that side's movement
+        exists (ruling **R-BAL79**).  Savings is right either way: its shadow
+        holds no movement, so its leg lands once.  Through ``X-bi-3e`` the
+        first figure read -$500.00.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -578,9 +582,10 @@ class TestAStatusDriftIsCountedByBothHalvesUntilXBi4:
                 amount=_AMOUNT,
             )
             db.session.commit()
-            _settle_shadow_around_the_service(
-                _shadow_on(transfer, checking), day, _AMOUNT,
-            )
+            shadow = _shadow_on(transfer, checking)
+            _settle_shadow_around_the_service(shadow, day, _AMOUNT)
+            db.session.flush()
+            cover_bare_settled_row(db.session, shadow, _AMOUNT)
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(Transfer, transfer.id).status_id == (
@@ -588,10 +593,42 @@ class TestAStatusDriftIsCountedByBothHalvesUntilXBi4:
             ), "the drift did not land: the parent must stay Projected"
 
             assert _balance_on(checking, scenario, day) - checking_before == (
-                -_AMOUNT * 2
+                -_AMOUNT
             )
             assert _balance_on(savings, scenario, day) - savings_before == (
                 _AMOUNT
+            )
+
+    def test_a_settled_shadow_with_no_movement_is_counted_once_by_the_plan(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Drift A without the mirror: the plan leg alone carries the -$250.00.
+
+        A shadow settled bare -- record columns and no covering movement,
+        the pre-``X-bi-3d`` shape -- is worth nothing to the record half,
+        and its side's plan leg is emitted because no dated movement exists.
+        Once, by the other relation; never twice.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            scenario = seed_user["scenario"]
+            period = seed_periods[2]
+            day = period.start_date
+            checking_before = _balance_on(checking, scenario, day)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            _settle_shadow_around_the_service(
+                _shadow_on(transfer, checking), day, _AMOUNT,
+            )
+            db.session.commit()
+            db.session.expire_all()
+
+            assert _balance_on(checking, scenario, day) - checking_before == (
+                -_AMOUNT
             )
 
     def test_a_projected_shadow_under_a_settled_parent_is_counted_by_neither(

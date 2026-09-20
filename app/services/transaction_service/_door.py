@@ -20,7 +20,7 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
-from app.services.row_valuation import recorded_figure
+from app.services.row_valuation import settled_figure
 from app.services.settle_day import SettleDay
 from app.services.stated_figure import StatedFigure
 from app.services.status_seam import (
@@ -176,9 +176,7 @@ def apply_requested_status(
     apply_status_change(
         txn, new_status_id, settle_day=settle_day, settlement=settlement,
     )
-    posting_service.sync_transaction_postings(
-        txn, settled=txn.status.is_settled,
-    )
+    posting_service.sync_transaction_postings(txn)
 
 
 def _correction_for_status(
@@ -231,7 +229,7 @@ def _correction_for_status(
     # route because only here is the row in hand, and the comparison is against
     # what the row RECORDS -- which is what the box was prefilled from.
     figure = figure_for_status(
-        txn, new_status_id, submitted, recorded_figure(txn),
+        txn, new_status_id, submitted, settled_figure(txn),
     )
     if figure is None:
         return None

@@ -31,8 +31,11 @@ producers, is what stops a snapshot offering a row an earlier item in the same
 pass has just matched.
 
 **Pricing is the cash ledger's, never restated here.**  A settled row is worth
-``cash_ledger.settled_cash_leg``; a projected one is worth
-``cash_ledger.cash_leg_of`` over what its own settle verb says it would book --
+what its covering movement moves (``status_seam.covered_cash_leg``, ruling
+**R-BAL81**); a projected one that settles from its purchases is worth ``0``
+to the offer, its purchases being the candidates; any other projected one is
+worth ``cash_ledger.cash_leg_of`` over what its own settle verb says it would
+book --
 ``transaction_service.settle_amount`` for an ordinary row and
 ``transfer_service.settle_amount`` for a shadow leg, which is the same
 partition ``reconcile_service``'s two arms are built on.  A matcher that
@@ -243,13 +246,29 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     """Return *txn*'s signed cash effect, or ``None`` when no rule prices it.
 
     The one branch in this module, and it is the settled / projected split
-    rather than a money rule of its own:
+    rather than a money rule of its own (ruling **R-BAL81**, plan step
+    ``balance:X-bi-4a``: a row candidate is worth what its covering movement
+    moves):
 
-    * a SETTLED row RECORDED its figure, which
-      :func:`~app.services.cash_ledger.settled_cash_leg` reads;
-    * a PROJECTED row is worth what settling it would book, which is its own
-      arm's ``settle_amount`` -- the transfer service's for a shadow leg and
-      the transaction service's for its complement.
+    * a SETTLED row is worth what its covering movement moves
+      (:func:`~app.services.status_seam.covered_cash_leg`) -- a covered bill
+      its figure, a ``purchases``-basis envelope ``0``, so it is not offered
+      and its purchases are;
+    * a PROJECTED row that settles from its purchases
+      (``transaction_service.settles_from_entries``, the verb's own
+      predicate) is worth ``0`` to the offer for the same reason: the bank
+      line it could be is one of its purchases, each a candidate of its own;
+    * any other PROJECTED row is worth what settling it would book, which is
+      its own arm's ``settle_amount`` -- the transfer service's for a shadow
+      leg and the transaction service's for its complement -- signed by
+      :func:`~app.services.cash_ledger.cash_leg_of`.
+
+    Through ``X-bi-4a``'s first cut a settled envelope was priced at its
+    UN-DATED purchases (``settled_family_leg``), so the screen offered the
+    row beside the very purchases it was worth, and accepting the row dated
+    the ROW -- a day the fold, reading movements alone, never saw: the
+    actual read high by the purchase and the projected end low by it after
+    the statement's assertion (X-bi-4a's review H1).
 
     **Neither ``settle_amount`` can refuse a row this module's scope admits**,
     and that is why there is no guard against one here.  Both refuse exactly a
@@ -260,12 +279,12 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
     project has twice measured as worse than none.
 
     **``AmountUnresolvable`` is a different thing and is REPORTED rather than
-    swallowed or raised, and BOTH branches are inside the guard.**  A first
-    draft put the settled branch outside it, which is the defect the paragraph
-    below describes happening anyway: ``settled_cash_leg`` reaches
-    ``settled_contribution``, which RAISES for a derived row (since plan step
-    X-bx, for ANY unsettled row), so the first per-kind cutover would have taken
-    the whole review screen down for one settled row.  Adversarial review 2026-08-17.
+    swallowed or raised.**  Only the projected arm's ``settle_amount`` can
+    raise it now; the settled arm reads a stored movement and cannot.  (Through
+    ``X-bi-4a``'s first cut both branches sat inside the guard because
+    ``settled_cash_leg`` reached ``settled_contribution``, which RAISES for
+    any unsettled row since plan step X-bx; a first draft had put the settled
+    branch outside it, adversarial review 2026-08-17.)
 
     It means the amount model had no rule for the row
     -- latent today, because every production row still owns its figure, and
@@ -298,15 +317,20 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
         transfer_service.settle_amount if txn.transfer_id is not None
         else transaction_service.settle_amount
     )
+    if txn.status.is_settled:
+        # **A settled row is worth its covering movement** (ruling
+        # **R-BAL81**; the mirror since plan step **X-bi-3a**, ruling
+        # **R-BAL39**): the settle mirrors the figure as one movement, the
+        # bank sees one line for the pair, and the row is the subject the
+        # owner matches it to; its mirror is kept out of the purchase
+        # candidates by ``status_seam.covering_clause``.  An envelope closed
+        # from its purchases has none and is worth ``0`` here.
+        return status_seam.covered_cash_leg(txn)
+    if transaction_service.settles_from_entries(txn):
+        # Its purchases ARE the figure (ruling **R-BAL78**) and each is a
+        # candidate of its own, so the row is worth nothing to the offer.
+        return Decimal("0")
     try:
-        if txn.status.is_settled:
-            # **A settled row is worth its FAMILY** (plan step **X-bi-3a**,
-            # ruling **R-BAL39**): the settle mirrors the figure as a covering
-            # movement, so the row's own leg reads zero and the money sits one
-            # row down.  The bank sees one line for the pair, and the row is
-            # the subject the owner matches it to; its mirror is kept out of
-            # the purchase candidates by ``status_seam.covering_clause``.
-            return status_seam.settled_family_leg(txn)
         return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
@@ -661,7 +685,7 @@ def _transaction_candidates(
       soft-deleted parent (measured 2026-08-17) -- so the clause changes no
       answer today and the scope stops depending on a writer keeping a
       convention.  That is the same argument
-      ``cash_ledger.settled_cash_leg`` makes for its own total guard.
+      ``cash_ledger.movement_cash_leg`` makes for its own total guard.
 
     **What is ALREADY MATCHED is NOT a clause here** (plan step
     ``bank_import:X-f6a-3c-2``); it is :func:`unmatched_rows`, applied by each

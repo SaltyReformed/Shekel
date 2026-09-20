@@ -38,7 +38,7 @@ MUST move there.
   mid-rebuild.  It prints the window on both sides of the hole.
 * **DOOR 3 (planted) -- the template-edit MAINTAIN pass after the loan's
   payoff has MOVED EARLIER**: a balance true-up is appended and reconciled
-  into the ledger (the shape ``anchor_service.apply_loan_anchor_true_up``
+  into the ledger (the shape ``loan_anchor_service.apply_loan_anchor_true_up``
   records) WITHOUT the chokepoint's column sync, so the column still says the
   old payoff while the loan folds to zero sooner.  ``transfer_recurrence.
   regenerate_for_template`` is the one pass that can RETIRE rows: on the
@@ -80,7 +80,7 @@ Every door runs from the SAME base state: each opens a nested transaction and
 it is pointed at is unchanged and no door sees another's writes.
 
 **DOOR 3's stale state is planted by construction, and the class it stands in
-for is reachable.**  The true-up door itself (``anchor_service.
+for is reachable.**  The true-up door itself (``loan_anchor_service.
 apply_loan_anchor_true_up``) always runs the column sync, so "a true-up with
 the column left behind" is not a state THAT door leaves.  What is reachable is
 the class: a chokepoint that moves the payoff without running the sync -- a

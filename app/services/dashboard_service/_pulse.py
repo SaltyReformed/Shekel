@@ -229,12 +229,15 @@ def compute_pulse_section(
     # and still-due additionally reads the next period's, so loading the
     # current+next set once -- with its single ``selectinload(entries)``
     # round trip -- and splitting it in memory avoids a second identical
-    # query on the ``balanceChanged`` refresh path.
+    # query on the ``balanceChanged`` refresh path.  The rows are the
+    # paycheck's across the owner's cash-flow set (ruling R-CC16, plan step
+    # CC-4-3) where the hero, the chart and the trough above are the balance
+    # account's alone: a bill on the card is still a bill this paycheck owes.
     period_ids = [current_period.period_id]
     if next_period is not None:
         period_ids.append(next_period.period_id)
     unpaid_rows = _query_unpaid_expense_rows(
-        account.id, balance_ctx.scenario_id, period_ids,
+        section.cash_flow, balance_ctx.scenario_id, period_ids,
     )
     # ONE valuation of that one row set, for the same reason the query is
     # shared (plan step X-au-c2): the due-soon list and the still-due totals
@@ -672,8 +675,9 @@ def _still_due(
         negative that would understate the total (its overspend already
         left the as-of-today balance).
       * Transfer-out shadow rows ARE included (B4b): a still-due total is
-        an obligation / checking-depletion figure, and the shadow query
-        carries them in as expense rows.
+        an obligation figure -- what the paycheck still owes across the
+        owner's cash-flow set (plan step CC-4-3), a card's bill included --
+        and the shadow query carries them in as expense rows.
 
     Each period's total is summed in full ``Decimal`` precision and
     rounded once at the boundary with :func:`round_money`.

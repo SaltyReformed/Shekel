@@ -168,10 +168,7 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 # never name this package.  Re-exported here so a consumer asking what a row's
 # money DID names the same module it asks what the row's amount IS -- the same
 # reason ``_amounts`` re-exports ``settled_contribution``.
-from app.services.row_valuation import (
-    recorded_amounts_by_id,
-    settled_amounts_by_id,
-)
+from app.services.row_valuation import settled_amounts_by_id
 # Re-exported so a caller ABOVE the amount model asks the MODEL for the
 # model's own eager load and never has to know the relationship graph (plan
 # step X-au-g-2c-2).  It is DEFINED a tier down, in ``app.utils``, because
@@ -179,6 +176,7 @@ from app.services.row_valuation import (
 # is the loader that most needs it and cannot import this package back.
 from app.utils.amount_relationships import (
     pricing_load_options,
+    settlement_load_options,
     transfer_pricing_load_options,
     valuation_load_options,
 )
@@ -223,7 +221,6 @@ from ._cash_leg import (
     movement_figure_for,
     off_statement_sum,
     posted_purchase_sum,
-    settled_cash_leg,
 )
 from ._clearing import (
     ClearableLine,
@@ -245,10 +242,12 @@ from ._events import (
     CashAnchorFact,
     CashOpeningFact,
     CashSourceFact,
+    InFlightMovement,
     account_opening_fact,
     cash_anchor_facts,
     coverage_for,
     governing_account_opening,
+    in_flight_movements,
     settled_cash_facts,
 )
 from ._facts import (
@@ -273,12 +272,14 @@ __all__ = [
     "AnchorPoint",
     "LoanPricing",
     "governing_account_opening",
+    "in_flight_movements",
     "governing_anchor",
     "governing_anchor_on",
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashOpeningFact",
     "CashSourceFact",
+    "InFlightMovement",
     "ClearableLine",
     "ReconciledThrough",
     "StatementCoverage",
@@ -315,18 +316,17 @@ __all__ = [
     "resolve_anchor",
     "resolve_transaction_amount",
     "resolve_transfer_amount",
-    "recorded_amounts_by_id",
     "reject_books_open_after_an_assertion",
     "reject_books_open_on_or_after_matched_lines",
     "reject_books_open_on_or_after_movements",
     "pricing_load_options",
+    "settlement_load_options",
     "transfer_pricing_load_options",
     "valuation_load_options",
     "reject_line_before_books_open",
     "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",
-    "settled_cash_leg",
     "statement_coverage",
     "sum_projected",
     "walk_cash_ledger",

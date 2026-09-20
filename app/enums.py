@@ -324,11 +324,14 @@ class LoanAnchorSourceEnum(enum.Enum):
 
     ORIGINATION = "origination"
     USER_TRUEUP = "user_trueup"
-    # A mid-life loan's first tracked balance: the operator started
-    # tracking an already-amortizing loan and recorded its real balance
-    # as of a date at/before the first recorded payment.  It is an
-    # ordinary balance ASSERTION (is_opening=False) that RESETS the
-    # running balance at its own date, exactly like a user true-up.
+    # A mid-life loan's tracked balance: the operator started tracking an
+    # already-amortizing loan and recorded its real balance as of a date
+    # -- at setup, the balance the setup door asks for (plan step
+    # recurrence:R20), or after the fact through the dashboard's
+    # tracking-start form.  It is an ordinary balance ASSERTION
+    # (is_opening=False) that RESETS the running balance at its own
+    # date, exactly like a user true-up, whatever payments are recorded
+    # around it.
     # It does NOT open the ledger: since plan step C1 the loan's ONE
     # opening is ALWAYS the synthesized ORIGINATION, because opening at
     # a mid-life tracking start read the loan out of existence for its
@@ -744,6 +747,14 @@ class SettlementBasisEnum(enum.Enum):
     :class:`AmountSourceEnum` has no ``own`` member.  Whether the row is settled
     NOW is a different question with a different answer: its STATUS
     (``row_valuation.settled_figure``), because a revert keeps what moved.
+
+    **RETIRING** (plan step ``balance:X-bi-4b``, ruling **R-BAL80**).  Since
+    ``X-bi-4b-1`` every reader of the record asks the row's covering
+    movement -- its figure and :class:`MovementFigureSourceEnum` -- and this
+    catalogue's one remaining reader is the seam's write of the row's column
+    (``status_seam.apply_status_change``), the movement's stale cache through
+    the interval; ``X-bi-4b-2`` deletes the column, the ref table and this
+    enum together.
     """
 
     DERIVED = "derived"

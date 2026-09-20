@@ -16,6 +16,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.services import spending_analysis
+from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import PayCalendar
 
 
@@ -321,7 +322,11 @@ class SpendingScope:
     """The page-context facts the template renders as scope labels.
 
     Attributes:
-        account_id: The checking account the report is scoped to.
+        account_id: The BALANCE account of the cash-flow set the report reads
+            -- the owner's primary grid account (plan step CC-4-3; the first
+            active checking account before it).  The rows are the whole
+            set's, checking and its cards (ruling ``R-CC16``); this names the
+            member whose balance every other cash-flow surface renders.
         account_name: That account's display name (the on-screen scope
             label the audit's cross-cutting fix requires).
         settled_only: Always ``True`` -- the surface is measured
@@ -389,16 +394,21 @@ class _CategoryTotal:
 class _ScopeIds:
     """The scope every settled-spend window load reads through.
 
-    One cohesive concept -- WHOSE data a window reads (the owner, the checking
-    account, the baseline scenario) and the pay CALENDAR they resolve against,
-    which rides here because one report resolves TWELVE windows against it and
-    it varies with none of them -- twelve derivations of one value otherwise
-    (C2-f1).  A ``"pay_period"`` report asks it twice more, for the chart's own
-    run of preceding paychecks (:func:`._window._series_windows`, C2-f3d);
-    those two reads replaced eleven ``budget.pay_periods`` QUERIES.
+    One cohesive concept -- WHOSE data a window reads (the owner, the
+    cash-flow set, the baseline scenario) and the pay CALENDAR they resolve
+    against, which rides here because one report resolves TWELVE windows
+    against it and it varies with none of them -- twelve derivations of one
+    value otherwise (C2-f1).  A ``"pay_period"`` report asks it twice more,
+    for the chart's own run of preceding paychecks
+    (:func:`._window._series_windows`, C2-f3d); those two reads replaced
+    eleven ``budget.pay_periods`` QUERIES.
+
+    ``cash_flow`` was ``account_id`` until plan step CC-4-3: the rows a
+    window loads are the paycheck's across checking and its cards (ruling
+    ``R-CC16``), read through the one clause every plan-item reader appends.
     """
 
     user_id: int
-    account_id: int
+    cash_flow: CashFlowSet
     scenario_id: int
     calendar: PayCalendar

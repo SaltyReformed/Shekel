@@ -156,18 +156,17 @@ principal, which is what the servicer's books say too; the assertion is the
 boundary because the owner's own statement of the balance supersedes every
 month before it.  **That boundary is the design of record** (ruling
 **R-R72**): a loan's balance is the replay from its LATEST assertion over the
-CONTRACT's calendar.  Two halves of it are later steps'.  ``R16-c`` applies
-this same predicate in the settled walk (D53's past half): until then the
+CONTRACT's calendar.  One half of it is a later step's: ``R16-c`` applies
+this same predicate in the settled walk (D53's past half); until then the
 walk charges only the months it saw paid, so a read AT ``as_of`` holds the
-seed flat where the read after it carries the skipped months' interest.  And
-``R20`` records the balance the owner states at SETUP as the assertion it is
-(a ``tracking_start``), where today the setup door stores it in the params
-row's demoted current-principal column and nothing reads it (finding
-**REC-519**):
-a loan configured mid-life without a separate tracking-start therefore has
-only its origination assertion, and this calendar reads it as unpaid since
-origination -- which is what its records say, and not a bound this module
-guesses around.
+seed flat where the read after it carries the skipped months' interest.  The
+other half shipped at ``R20``: the setup door records the balance the owner
+states at SETUP as the assertion it is (a ``tracking_start``), where it used
+to store it in the params row's demoted current-principal column that
+nothing read (finding **REC-519**).  A loan configured mid-life BEFORE R20
+without a separate tracking-start therefore has only its origination
+assertion, and this calendar reads it as unpaid since origination -- which
+is what its records say, and not a bound this module guesses around.
 
 **Why in the seam, not the ``loan_ledger`` leaf.**  The plan composes the loan's
 projected records, its live D3 cash, and the resolver's contractual schedule --
@@ -324,9 +323,10 @@ def _planned_from_legs(
     declarable; had only the named one moved, the cutover would have 500'd
     every surface that folds a loan's forward plan.
 
-    **The other seven callers of that accessor really are settled-only**, which
-    is what makes "two" a census rather than a second guess:
-    ``cash_ledger.settled_cash_leg``, ``loan_ledger._events.loan_event_stream``
+    **The other six callers of that accessor really are settled-only**, which
+    is what makes "two" a census rather than a second guess (a seventh,
+    ``cash_ledger.settled_cash_leg``, is deleted at plan step
+    ``balance:X-bi-4a``): ``loan_ledger._events.loan_event_stream``
     (``._split.split_one_payment`` until plan step X-au-g-2c-3b-2),
     ``loan_posting_service._sync`` and ``._display``,
     ``savings_dashboard_service._metrics``, and the spending report's

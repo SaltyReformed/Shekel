@@ -54,7 +54,7 @@ class StatementLine:  # pylint: disable=too-many-instance-attributes
             developer's own SECU export carry an OFX ``DTUSER`` one day AFTER
             their ``DTPOSTED``, both ACH deposits.
         amount: Signed, positive INTO the account -- the same convention
-            ``cash_ledger.settled_cash_leg`` uses, so a later match compares
+            ``cash_ledger.movement_cash_leg`` uses, so a later match compares
             two figures that already agree about direction.
         description: What the bank called it, verbatim.  **This is the field a
             re-import PAIRS on** (:func:`pair_by_statement`): it is what the

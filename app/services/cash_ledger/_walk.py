@@ -65,9 +65,11 @@ stream, and the cash-flow seam view deliberately consults no kind -- its balance
 must reconcile with the transaction rows rendered beside it, whatever the
 account.  What keeps a LOAN out of that view is a gate at the SOURCE, on every
 resolver that feeds it: ``resolve_grid_account`` since ruling D4 / plan step A1,
-and ``resolve_analytics_account`` since plan step X-a1, which closed the calendar
-door finding N-38 measured open (the Van Loan rendered at ``$531.94`` against
-``$15,663.59`` owed).  So this walk stays total and kind-blind, the writer keeps
+and the analytics resolver (``resolve_analytics_cash_flow_set``;
+``resolve_analytics_account`` until plan step CC-4-3) since plan step X-a1,
+which closed the calendar door finding N-38 measured open (the Van Loan
+rendered at ``$531.94`` against ``$15,663.59`` owed).  So this walk stays total
+and kind-blind, the writer keeps
 the guard it needs, and no screen reaches a cash-basis loan balance through
 either.  (3) It sees no RESIDUE.  The posting walk reads a third source bucket --
 entries whose ``transaction_id`` / ``transfer_id`` were SET-NULLed by a hard
@@ -292,11 +294,12 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     ledger, in the same sign -- NOT their negatives.**  The loan twin says
     "negated" and is right to, because a loan walk tracks OWED against a
     credit-normal liability ledger; cash does not.
-    :func:`app.services.cash_ledger.settled_cash_leg` is debit-positive, so
+    :func:`app.services.cash_ledger.movement_cash_leg` is debit-positive, so
     these steps ARE the linked ledger's movements in one convention, for assets
     and liabilities alike.  Verified against the writer:
-    ``posting_service._settled_target`` books ``settled_cash_leg(txn)`` -- this
-    module's :attr:`~._events.CashSourceFact.delta` -- onto the linked ledger.
+    ``_posting_purchases._purchase_target`` books ``movement_cash_leg(txn,
+    entry)`` -- this module's :attr:`~._events.CashSourceFact.delta` -- onto
+    the linked ledger.
     The NEGATIVES are the counter legs (the category ledger, the anchor-equity
     account).  Getting this backwards is not a cosmetic error: plan step X-d
     wires the writer onto this walk, and a sign flip there still balances every

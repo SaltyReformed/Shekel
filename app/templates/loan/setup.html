@@ -30,16 +30,38 @@
           </div>
         </div>
         <div class="col-6">
-          <label for="current_principal" class="form-label">Current Principal</label>
+          <label for="origination_date" class="form-label">Origination Date</label>
+          <input type="date" class="form-control" id="origination_date"
+                 name="origination_date" required>
+        </div>
+      </div>
+
+      {# The balance the owner states at setup IS a dated assertion and is
+         recorded as one (plan step recurrence:R20, ruling R-R72 part 3): a
+         tracking-start on the "as of" day, whenever the loan originated
+         before it.  It replaced a "Current Principal" field the form
+         required and nothing read.  The balance prefills from the account's
+         latest cash assertion (plan step X-f1c3a) and the date from today,
+         the setup date; both are the route's. #}
+      <div class="row mb-3">
+        <div class="col-6">
+          <label for="anchor_balance" class="form-label">Balance today</label>
           <div class="input-group">
             <span class="input-group-text">$</span>
-            <input type="number" class="form-control" id="current_principal"
-                   name="current_principal" step="0.01" min="0" required
-                   {# The account's latest balance ASSERTION, resolved by the
-                      route (plan step X-f1c3a).  It seeds the loan's opening
-                      principal on the setup form only; the loan's own balance
-                      is ledger-derived and is never this value afterwards. #}
+            <input type="number" class="form-control" id="anchor_balance"
+                   name="anchor_balance" step="0.01" min="0" required
                    value="{{ "%.2f"|format(anchor_balance) if anchor_balance is not none else '' }}">
+          </div>
+        </div>
+        <div class="col-6">
+          <label for="anchor_date" class="form-label">As of</label>
+          <input type="date" class="form-control" id="anchor_date"
+                 name="anchor_date" required
+                 max="{{ today_iso }}" value="{{ today_iso }}">
+          <div class="form-text">
+            The lender's balance on this date. Started tracking mid-life?
+            Enter the balance from your latest statement and its date, on or
+            after the origination date.
           </div>
         </div>
       </div>
@@ -72,11 +94,6 @@
       </div>
 
       <div class="row mb-3">
-        <div class="col-6">
-          <label for="origination_date" class="form-label">Origination Date</label>
-          <input type="date" class="form-control" id="origination_date"
-                 name="origination_date" required>
-        </div>
         <div class="col-6">
           <label for="payment_day" class="form-label">Payment Day of Month</label>
           <input type="number" class="form-control" id="payment_day"

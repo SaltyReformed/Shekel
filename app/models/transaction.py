@@ -310,6 +310,16 @@ class Transaction(
     # which are themselves the records, so storing it would be a second copy
     # beside a reconciler.  Otherwise it states what left the account.
     #
+    # **WRITTEN BY THE SEAM AND READ BY NO MONEY READER since plan step
+    # ``balance:X-bi-4b-1``** (ruling **R-BAL80**): the record's home is the
+    # row's covering movement, and ``row_valuation.settled_figure`` sums the
+    # row's ENTRIES; this column and the basis below it are that movement's
+    # stale cache through the interval, still written from the same value
+    # (``status_seam.apply_status_change``) so ``integrity_check`` DC-11 can
+    # grade the two homes against each other until ``X-bi-4b-2`` deletes them
+    # by migration.  Everything below this line describes the column as it
+    # was read through ``X-bi-4a``.
+    #
     # **It SURVIVES a revert**, which is why this is not "NULL when the row has
     # not settled": withdrawing the assertion does not un-know what the bank
     # took, and the popover instructs the user to revert in order to edit, so

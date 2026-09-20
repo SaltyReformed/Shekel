@@ -1,6 +1,6 @@
-"""The credit card's terms form (plan step credit_card:CC-2).
+"""The credit card's forms: its terms (plan step credit_card:CC-2) and its APR (CC-3).
 
-ONE schema for ONE door: the "Card terms" form on the cash detail page
+**The terms.**  ONE schema for ONE door: the "Card terms" form on the cash detail page
 renders every control every time, so a submit IS the whole row, and the door
 creates the row when the card has none and rewrites it when it has one
 (developer ruling **R-CC24**, 2026-09-18: one door, one schema).  There is no
@@ -19,6 +19,9 @@ E-28 / HIGH-06 / PA-02: both rates are validated as decimal fractions pinned
 to ``[0, 1]``, matching the model's CHECKs, and the ``@pre_load`` converts the
 form percent (``"2.5"``) to its fraction (``"0.025"``) so the schema's
 ``Range`` and the DB CHECK accept exactly the same set of values.
+
+**The APR.**  :class:`CardAprSchema` is the second form, two controls, for the
+set-by-date door (developer ruling **R-CC27**).
 """
 
 from decimal import Decimal
@@ -27,6 +30,7 @@ from marshmallow import fields, pre_load, validate
 
 from app.schemas.validation._helpers import (
     _DAY_OF_MONTH_RANGE,
+    _EFFECTIVE_DATE_RANGE,
     _NON_NEGATIVE_MONETARY,
     _RATE_FRACTION_RANGE,
     BaseSchema,
@@ -96,4 +100,38 @@ class CreditCardTermsSchema(BaseSchema):
     credit_limit = fields.Decimal(
         allow_none=True, load_default=None, places=2, as_string=True,
         validate=_POSITIVE_MONETARY,
+    )
+
+
+class CardAprSchema(BaseSchema):
+    """Validates the card's APR form: one ``budget.rate_history`` row, by date.
+
+    Two controls and nothing else (plan step credit_card:CC-3, developer
+    ruling **R-CC27**): the door sets the row for ``effective_date``,
+    creating it or rewriting its rate, so a submit IS the row and a same-date
+    resubmit is the correction.  The loan's :class:`RateChangeSchema` is not
+    reused because it carries ``monthly_pi``, a recast P&I a card never has
+    -- a payload naming one would store a figure on a card's row that nothing
+    reads.
+
+    E-28 / HIGH-06 / PA-02: ``interest_rate`` is validated as a decimal
+    fraction pinned to ``[0, 1]``, matching ``ck_rate_history_valid_interest_rate``,
+    and the ``@pre_load`` converts the form percent (``"24.99"``) to its
+    fraction (``"0.2499"``); ``places`` mirrors the column's ``Numeric(7, 5)``.
+    The effective date is bounded to the calendar window every effective-dated
+    field holds, so a four-digit-year typo cannot become the series' earliest
+    row.
+    """
+
+    _PERCENT_FIELDS = ("interest_rate",)
+
+    @pre_load
+    def normalize_inputs(self, data, **kwargs):
+        """Normalize empty inputs, then convert the percent field to a fraction."""
+        data = _normalize_empty_inputs(self, data)
+        return _normalize_percent_fields(data, self._PERCENT_FIELDS)
+
+    effective_date = fields.Date(required=True, validate=_EFFECTIVE_DATE_RANGE)
+    interest_rate = fields.Decimal(
+        required=True, places=5, as_string=True, validate=_RATE_FRACTION_RANGE,
     )

@@ -150,7 +150,7 @@ from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
+from app.services import balance_at, loan_anchor_service, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
 from app.services import amortization_engine
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
@@ -1110,7 +1110,7 @@ class TestSupersedesCashInvariantForLoans:
             cash_effect = posting_service.settled_transfer_effect(
                 loan.id, scenario_id,
             )
-            txn_effect = posting_service.settled_transaction_effect(
+            txn_effect = posting_service.posted_purchase_effect(
                 loan.id, scenario_id,
             )
             non_principal = _per_loan_correction_net(loan.id, scenario_id)
@@ -2201,7 +2201,7 @@ class TestResolverIsLedgerFree:
             for target in (
                 "app.services.posting_service.account_posting_total",
                 "app.services.posting_service.settled_transfer_effect",
-                "app.services.posting_service.settled_transaction_effect",
+                "app.services.posting_service.posted_purchase_effect",
             ):
                 monkeypatch.setattr(target, _forbid_ledger_read)
 
@@ -2549,7 +2549,7 @@ class TestReaderParallelRunAgainstResolver:
         After a $1,000 payment the reader owes 99,500.00.  The user reconciles the
         statement and asserts the real balance is $95,000 on 2026-03-01 -- an
         append-only true-up correction posted through the real chokepoint
-        (``anchor_service.apply_loan_anchor_true_up``), not an edit.  The reader
+        (``loan_anchor_service.apply_loan_anchor_true_up``), not an edit.  The reader
         jumps to 95,000.00 (the true-up's ``owed_before`` absorbs the earlier
         payment) and the resolver, reseeded from the new latest anchor, agrees --
         95,000 is distinct from both the pre-true-up 99,500 and the 100,000 anchor,
@@ -2565,7 +2565,7 @@ class TestReaderParallelRunAgainstResolver:
             # (100000 - (1000 cash - 500 interest)).
             assert _posted_balance(loan.id, scenario_id) == Decimal("99500.00")
 
-            outcome = anchor_service.apply_loan_anchor_true_up(
+            outcome = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("95000.00"),
                 anchor_date=date(2026, 3, 1),
             )
@@ -3232,7 +3232,7 @@ class TestTrueUpAfterLastPaymentIsRead:
 
             # A true-up asserted AFTER that payment's due date: the ledger books
             # it; the schedule has no row for it.
-            outcome = anchor_service.apply_loan_anchor_true_up(
+            outcome = loan_anchor_service.apply_loan_anchor_true_up(
                 account=loan,
                 anchor_balance=Decimal("96000.00"),
                 anchor_date=date(2026, 2, 20),

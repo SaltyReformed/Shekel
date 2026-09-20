@@ -811,7 +811,7 @@ class TestTheTwoTiersAgree:
         :class:`~app.models.mixins.CreatedAtMixin` defaults it to
         ``db.func.now()``, and PostgreSQL's ``now()`` is
         ``transaction_timestamp()`` -- the instant the transaction BEGAN.
-        ``anchor_service._governing_loan_anchor`` already said so about the
+        ``loan_anchor_service._governing_loan_anchor`` already said so about the
         loan twin; this table never carried it across.
 
         Two tabs produce it: B's transaction opens, A's opens later, A takes

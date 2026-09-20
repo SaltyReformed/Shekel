@@ -18,8 +18,8 @@ work by grep alone.
 every leaf from scratch (**R-CC16**..**R-CC22**); no leaf waits on `balance:X-f4`, and the waits
 that are real are `steps.md`'s cells. **When each leaf may start is `steps.md`'s answer**, never
 restated here. Every card test builds rows through the suite's builders (`one_off_row_of`,
-`generate_row_of`, `payback_row_of`), never `Transaction(`: `X-bi-7c`'s census marker counts the
-latter.
+`generate_row_of`, `payback_row_of`), never `Transaction(`: `tests/manual/census_hand_built_rows.py`
+(`X-bi-7c`'s instrument) counts the latter.
 
 **This arc's findings live in `ledger.md`, its steps are indexed in `steps.md`, its rules are
 `conventions.md` and what "done" means is `verification.md`** -- the shared registries for every
@@ -84,29 +84,35 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       derivation) under C13-c's ownership key, migration `97f92340fffc` (the table empty); ONE door
       and ONE schema, the five NOT NULL columns required (`R-CC24`); the "Card terms" card on cash
       detail gated by `is_revolving` (`R-CC25`). Moved no money; suite 14652/0 on its tree.
-- [ ] **CC-3** `feat(cards): the statement cycle, pure, and the card's APR` -- design 3.4:
-      `card_statement.py` (cycle window, statement sequence, due date, minimum payment, grace kept)
-      with no Flask and no session, and the APR on `rate_history` behind a card-gated loader and
-      write route the loan loaders never see.
+- [x] **CC-3** `e4c0b5ec` -- `card_statement.py` pure (leaf `8cec3531`: the closed-open window, the
+      due date the first due day strictly after the close `R-CC26`, owed = minus the fold `R-CC29`);
+      `card_apr.py` + the set-by-date and remove doors (`R-CC27`) inside the Card terms card
+      (`R-CC28`); ONE effective-dated walk `utils/effective_dated.in_effect_on` (escrow re-pointed;
+      `BAL-524` folds the six left). A card BORN a card is what the loan loaders never see (the
+      re-typed loan is the held candidate).
 - [ ] **CC-3i** `feat(cards): the finance charge under the one interest producer` -- design 3.6:
       `recurrence:R16-d`'s `accrued_interest` under the `DAILY_ACTUAL_365` member that step gains,
       summed per constant-balance segment of the closed-open cycle, purchases joining the path on
       grace loss (`R-CC19`: after `R16-d`; the card ships no convention table of its own).
-- [ ] **CC-4** `feat(grid): the paycheck's plan items across checking and its cards` -- design 3.3
-      (`R-CC16`): the DECOMPOSED parent, split 2026-09-18 (developer) into three leaves; ticks with
-      4-3.
+- [x] **CC-4** `66409bc4` -- the paycheck's plan items across checking and its cards (design 3.3,
+      `R-CC16`): the DECOMPOSED parent, split 2026-09-18 (developer) into 4-1 (the money), 4-2 (the
+      affordances) and 4-3 (the other three readers); ticked with 4-3.
   - [x] **CC-4-1** `b4e35783` -- the money: `cash_flow_set.CashFlowSet` (ONE row clause with
         R-CC23's far leg), `resolve_cash_flow_set`, `active_accounts_query(revolving=)`,
         `GridColumn.elsewhere` and the seam taking the SET, "On other accounts" on three templates;
         no migration; byte-identical on production's shape (no card exists); suite 14603/0.
-  - [ ] **CC-4-2** the affordances: an account chip on a cell or mobile card whose row is on another
-        account than the balance line's; the account picker over the set's members on the
-        full-create popover and the Add Transaction modal (default the balance line's; the hidden
-        input for a set of one). Method: `HANDOFF-credit-card-CC-4.md` s.7.
-  - [ ] **CC-4-3** the other three readers: the dashboard's upcoming bills
-        (`_query_unpaid_expense_rows`), the spending report (`query_settled_expenses`, `_in_span`)
-        and the calendar (`_query_transactions_for_range`) through the one predicate and clause, the
-        report's and the calendar's default adopting the set's primary. Method: s.8.
+  - [x] **CC-4-2** `07063a13` -- the account chip on a cell or mobile card whose row is on another
+        account than the balance line's (a transfer between members never chips); a fragment's
+        balance line resolved ONCE by the page's call, the override off `HX-Current-URL` (`R-CC30`);
+        the pickers over the set's members on the full-create popover and the Add Transaction modal,
+        a write carrying its account as a set of one (`R-CC31`); 22 of 23 surfaces byte-identical on
+        production's shape (the 23rd a loan-side shadow's cell, chipped as ruled).
+  - [x] **CC-4-3** `66409bc4` -- the dashboard's upcoming bills (`_query_unpaid_expense_rows`), the
+        spending report (`query_settled_expenses`, `_in_span`) and the calendar
+        (`_query_transactions_for_range`) read the set through the one clause behind ONE member's
+        balance line; both defaults are the set's primary (`resolve_analytics_account` deleted; the
+        calendar's twin is `resolve_analytics_cash_flow_set`); no migration; 21 surfaces
+        byte-identical on production's shape; suite 14680/0.
 - [ ] **CC-5** `feat(cards): a purchase is a movement on the card` -- design 3.2 (`R-CC15`): the
       settle-with-tender door (the movement's day, default the act's, basis `entered`, refused on or
       before the card's opening) and the card purchase entry; the parent-account key re-cut to a
@@ -148,9 +154,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
 - [ ] **CC-9** `feat(cards): rewards` -- design 3.7: accrual as a derived figure over settled
       purchases minus redemptions; manual redemptions and the auto-redeem threshold as rows; no
       `system_origin_id`. Ruled the tail of the path by the 2026-09-15 order.
-- [ ] **CC-10** `feat(cards): the refusals` -- design 3.8: a transfer OUT of a card refused at both
-      transfer doors (the sibling of the loan guard); `active_accounts_query`'s `revolving` filter
-      shipped with CC-4-1.
+- [x] **CC-10** `32528a7c` -- a transfer OUT of a card refused at both transfer doors through ONE
+      composed loan-or-card set (`_validation._reject_unmodeled_source`, leaf `c5fffc55`; the
+      investment contribution door translates the refusal instead of a 500); a card kept out of a
+      paycheck's deposit picker (`active_accounts_query(revolving=False)`, design 3.8); no
+      migration; data unchanged on production (0 revolving accounts, read-only 21:4x 2026-09-18); a
+      LOAN source at the investment door now flashes where it was a 500.
 - [ ] **CC-11** `feat(cards): the cockpit and the grid affordances` -- design 3.9, through the
       design loop: each screen held to `docs/design/fable5-design-language.md` and verified on the
       dev clone.

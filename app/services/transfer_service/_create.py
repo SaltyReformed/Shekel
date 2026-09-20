@@ -41,7 +41,6 @@ from app.services.settle_day import SettleDay
 from app.services.status_seam import reject_settle_day_without_settled_status
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
-    _reject_transfer_out_of_loan,
     _sync_loan_postings_if_loan,
 )
 from app.services.transfer_service._ownership import (
@@ -52,7 +51,10 @@ from app.services.transfer_service._ownership import (
     _get_owned_transfer_template,
 )
 from app.services.transfer_service._status import apply_settle_day_to_pair
-from app.services.transfer_service._validation import _validate_positive_amount
+from app.services.transfer_service._validation import (
+    _reject_unmodeled_source,
+    _validate_positive_amount,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
@@ -329,7 +331,11 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     to_account = _get_owned_account(
         spec.to_account_id, spec.user_id, label="Destination account"
     )
-    _reject_transfer_out_of_loan(from_account)
+    # The ONE set of source refusals -- a loan (a disbursement) and, since
+    # plan step credit_card:CC-10, a card (a cash advance or balance transfer)
+    # -- composed in ``_validation`` so this door and the endpoint move read
+    # one home rather than each spelling the set.
+    _reject_unmodeled_source(from_account)
     # R-C: a loan cannot receive a payment before it originates -- the fold
     # would erase it while the cash side still debits the funding account.
     #

@@ -5,7 +5,14 @@
    Expected context:
      category            -- Category object
      period_id           -- int; budget.pay_periods.id of this column's paycheck
-     account_id          -- Account ID for the viewed account
+     account_id          -- Account ID for the viewed account (the balance
+                            line's), the picker's default
+     accounts            -- the owner's cash-flow set headed by that account
+                            (plan step credit_card:CC-4-2, ruling R-CC16):
+                            checking and its cards, in picker order.  More
+                            than one renders the account picker after the
+                            amount; exactly one renders the hidden input
+                            this form always carried, byte for byte.
      scenario_id         -- baseline scenario ID
      transaction_type_id -- income or expense type ID
 
@@ -26,7 +33,12 @@
         hx-target="closest td"
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
+    {#- The hidden account when there is no choice to make; the picker below
+        the amount otherwise (plan step credit_card:CC-4-2).  Whitespace-
+        controlled so the one-member form is byte-identical to before. -#}
+    {%- if accounts|length <= 1 %}
     <input type="hidden" name="account_id" value="{{ account_id }}">
+    {%- endif %}
     <input type="hidden" name="category_id" value="{{ category.id }}">
     <input type="hidden" name="pay_period_id" value="{{ period_id }}">
     <input type="hidden" name="scenario_id" value="{{ scenario_id }}">
@@ -39,6 +51,20 @@
              class="form-control form-control-sm"
              placeholder="Estimated amount">
     </div>
+    {#- The account the new row lives on -- the one its money is expected to
+        move through (ruling R-CC16) -- over the set's members, the balance
+        line's selected.  The create door refuses a foreign or loan account as
+        it always has; no refusal is added here. -#}
+    {%- if accounts|length > 1 %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small" for="create_account_id">Account</label>
+      <select id="create_account_id" name="account_id" class="form-select form-select-sm" required>
+        {% for acct in accounts %}
+        <option value="{{ acct.id }}" {{ 'selected' if acct.id == account_id else '' }}>{{ acct.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {%- endif %}
 
     {# No Actual box: a new transaction is born Projected, and a row records
        what moved only once it HAS moved (plan step X-au-c3).  The box could

@@ -26,9 +26,12 @@ from app.services import account_service, status_seam
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
+    cover_bare_settled_row,
+    create_account_of_type,
     one_off_row_of,
     record_paydays_across_a_hole,
     rhythm_of,
+    set_default_grid_account,
     settle_day_columns,
     settlement_columns,
 )
@@ -113,6 +116,9 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         setattr(txn, _column, _value)
     for _column, _value in settlement_columns(seed_periods[0].start_date, amount).items():
         setattr(txn, _column, _value)
+    db.session.flush()
+    # The record's home is the covering movement (X-bi-4b-1).
+    cover_bare_settled_row(db.session, txn, amount)
     db.session.commit()
 
 
@@ -315,8 +321,8 @@ class TestCalendarTab:
         """
         from app.services import calendar_service as cs
         monkeypatch.setattr(
-            cs, "resolve_analytics_account",
-            lambda _user_id, _account_id: None,
+            cs, "resolve_analytics_cash_flow_set",
+            lambda _user_id, _user_settings, _account_id: None,
         )
         with app.app_context():
             resp = auth_client.get(
@@ -414,8 +420,8 @@ class TestCalendarTab:
         """C11-1 (route, year view): year-view path also 404s."""
         from app.services import calendar_service as cs
         monkeypatch.setattr(
-            cs, "resolve_analytics_account",
-            lambda _user_id, _account_id: None,
+            cs, "resolve_analytics_cash_flow_set",
+            lambda _user_id, _user_settings, _account_id: None,
         )
         with app.app_context():
             resp = auth_client.get(
@@ -459,6 +465,63 @@ class TestCalendarTab:
             assert "analytics-basis-chip" in html
             assert ">mixed<" in html
             assert "Checking account:" in html
+
+    def test_calendar_default_is_the_saved_default_grid_account(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The route passes the settings row it holds to the service (CC-4-3).
+
+        The calendar's default is the set's PRIMARY -- the owner's saved
+        default grid account first -- which the service can only read off
+        the ``UserSettings`` row the route already loaded for its thresholds.
+        An HYSA saved as the default names itself on the scope line; a route
+        that dropped ``user_settings=`` would render Checking here and pass
+        every other test in this class.
+        """
+        with app.app_context():
+            hysa = create_account_of_type(
+                seed_user, db.session, "HYSA", "Rainy Day",
+                anchor_balance=Decimal("1000.00"),
+            )
+            set_default_grid_account(db.session, seed_user["user"].id, hysa.id)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/calendar?view=month&year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            # The scope line names the balance account.  Its "Checking
+            # account:" prefix is the template's own wording and is not
+            # pinned here: it predates the set and is wrong for any
+            # non-checking line (a candidate row for the design loop).
+            assert "account: Rainy Day." in resp.data.decode()
+
+    def test_calendar_account_id_naming_a_card_puts_it_on_the_line(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """``?account_id=<card>`` renders the card's calendar, not a 404.
+
+        The grid's meaning of the parameter since plan step CC-4-3: a member
+        of the set on the balance line.  The ownership guard admits it (the
+        owner's) and the set twin admits it (a member), so the scope line
+        names the card; the loan and cross-user refusals beside this test
+        are unchanged.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get(
+                f"/analytics/calendar?view=month&year=2026&month=1"
+                f"&account_id={card.id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "account: Rewards Card." in resp.data.decode()
 
 
 # ── Income Statement Tab Tests ────────────────────────────────────
@@ -2055,6 +2118,11 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         ).items():
         setattr(txn, _column, _value)
     db.session.flush()
+    # The record's home is the covering movement (X-bi-4b-1).
+    cover_bare_settled_row(
+        db.session, txn, Decimal(estimated),
+        Decimal(actual) if actual is not None else None,
+    )
     return txn
 
 
@@ -2239,7 +2307,7 @@ class TestSpendingTab:
         from unittest.mock import patch
         with app.app_context():
             with patch(
-                "app.services.spending_report_service.resolve_analytics_account",
+                "app.services.spending_report_service.resolve_cash_flow_set",
                 return_value=None,
             ):
                 resp = auth_client.get(
@@ -2250,6 +2318,33 @@ class TestSpendingTab:
             html = resp.data.decode()
             assert "No active checking account" in html
             assert "Set up an account" in html
+
+    def test_spending_tab_scope_is_the_saved_default_grid_account(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The route passes ``current_user.settings`` to the service (CC-4-3).
+
+        The report's scope is the set's PRIMARY -- the owner's saved default
+        grid account first.  An HYSA saved as the default names itself on the
+        scope line; a route that dropped ``user_settings=`` would render
+        Checking here and pass every other test in this class.
+        """
+        with app.app_context():
+            hysa = create_account_of_type(
+                seed_user, db.session, "HYSA", "Rainy Day",
+                anchor_balance=Decimal("1000.00"),
+            )
+            set_default_grid_account(db.session, seed_user["user"].id, hysa.id)
+            db.session.commit()
+
+            resp = auth_client.get(
+                "/analytics/spending?year=2026&month=1",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            assert "Settled spending from your Rainy Day account." in (
+                resp.data.decode()
+            )
 
     def test_spending_tab_default_is_prior_month(self, app, auth_client,
                                                  seed_user, seed_periods):

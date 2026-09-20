@@ -1026,7 +1026,7 @@ class TestRevertAndResidueDropped:
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            posting_service.sync_transaction_postings(txn)
             db.session.commit()
 
             after = ledger_report_service.compute_income_statement(
@@ -1131,7 +1131,7 @@ class TestRevertAndResidueDropped:
         status_seam.apply_status_change(
             txn, ref_cache.status_id(StatusEnum.PROJECTED),
         )
-        posting_service.sync_transaction_postings(txn, settled=False)
+        posting_service.sync_transaction_postings(txn)
         db.session.flush()
         assert ledger_id is not None
         return ledger_id

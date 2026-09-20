@@ -437,16 +437,22 @@ class TestPaycheckRowsClause:
 
         The transfer doors refuse a transfer OUT of a card (plan step CC-10),
         so this is the representable-but-refused shape; stated so the rule is
-        total rather than defined by what the doors happen to admit.
+        total rather than defined by what the doors happen to admit.  The
+        state is therefore PLANTED, the way the loan-source legacy tests plant
+        theirs: the transfer is created INTO the second card (allowed) and its
+        source re-pointed onto the first card by assignment, past the door.
         """
         with app.app_context():
             checking = seed_user["account"]
             first = _card(seed_user, "First Card")
             second = _card(seed_user, "Second Card")
             between = create_transfer(
-                seed_user, db.session, first, second, seed_periods_today[3],
+                seed_user, db.session, checking, second, seed_periods_today[3],
                 amount=Decimal("50.00"),
             )
+            db.session.flush()
+            between.from_account = first
+            _shadow_on(between, checking).account = first
             db.session.commit()
             cash_flow = resolve_cash_flow_set(seed_user["user"].id)
             assert cash_flow.balance.id == checking.id

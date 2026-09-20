@@ -56,11 +56,20 @@ def settles_from_entries(txn: Transaction) -> bool:
     that offers a box the verb ignores takes a user's typed figure and drops
     it, silently, on the screen whose whole job is entering the true one.
 
-    **Both halves are load-bearing.**  ``tracks_purchases`` alone would claim
-    production's ``Kayla's Spending Money`` -- envelope-tracked, `$100.00`
-    budgeted, ZERO entries -- derives its amount from entries that do not
-    exist, settling it at `$0.00` and refusing the user the box that would have
-    corrected it.
+    **A row holding purchases derives its figure from them, whatever its
+    definition's flag says** (plan step ``balance:X-bi-4a``, ruling
+    **R-BAL78**: the purchases ARE the figure, and a figure stated over them
+    is refused at the seam).  Through ``X-bi-3e`` this read
+    ``tracks_purchases AND purchases``, and the first half admitted the state
+    the ruling makes unrepresentable: *Track individual purchases* unticked
+    on a row that already held purchases sent it down the MANUAL branch, a
+    stated figure beside real purchases, which a fold reading movements
+    alone would count twice.  The flag's remaining job here -- production's
+    ``Kayla's Spending Money``, envelope-tracked, `$100.00` budgeted, ZERO
+    entries, must not derive its amount from entries that do not exist --
+    is what the ``purchases`` half already answers, so the flag's half is
+    gone from this predicate ahead of ``balance:X-bi-5``, which deletes the
+    flag itself.
 
     **The row's own payment record is not a purchase** (plan step **X-bi-3a**,
     ruling **R-BAL39**).  ``Kayla's Spending Money`` closed EMPTY at the door
@@ -76,18 +85,15 @@ def settles_from_entries(txn: Transaction) -> bool:
     of (:attr:`~app.models.transaction.Transaction.purchases`, ruling
     **R-BAL68**: the one reading, shared with every other purchase-meaning
     reader rather than hand-rolled here).  ``balance:X-bi-5`` deletes
-    ``tracks_purchases``, and this predicate with it.
+    ``tracks_purchases`` and the branch sites this predicate serves.
 
     Args:
-        txn: The row.  Reads ``tracks_purchases`` (a template lookup for a
-            template-linked row) and the ``entries`` relationship through
+        txn: The row.  Reads the ``entries`` relationship through
             ``purchases``.
 
     Returns:
         True when a settle takes the ``sum(purchases)`` branch.
     """
-    if not txn.tracks_purchases:
-        return False
     return bool(txn.purchases)
 
 

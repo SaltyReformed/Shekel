@@ -118,10 +118,10 @@ def _window_transactions(
     """
     if resolved.first_day is None:
         return spending_analysis.query_settled_expenses(
-            ids.scenario_id, resolved.period_ids, ids.account_id,
+            ids.scenario_id, resolved.period_ids, ids.cash_flow,
         )
     return spending_analysis.query_settled_expenses_in_span(
-        ids.scenario_id, ids.account_id, ids.user_id,
+        ids.scenario_id, ids.cash_flow, ids.user_id,
         resolved.first_day, resolved.last_day,
     )
 

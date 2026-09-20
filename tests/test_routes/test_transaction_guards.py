@@ -17,6 +17,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.services import transfer_service
 from app.services import account_service
 from tests._test_helpers import (
+    create_account_of_type,
     create_loan_account,
     one_off_row_of,
     open_books_before_the_first_assertion,
@@ -697,3 +698,43 @@ class TestLoanAccountTransactionGuard:
                 .filter_by(account_id=plain.id).count()
             )
             assert after == before + 1
+
+    def test_direct_income_on_a_credit_card_is_accepted_at_both_doors(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Second negative control: direct income on a CARD passes this guard.
+
+        Plan step credit_card:CC-10 refuses a transfer OUT of a card at the
+        transfer doors and leaves direct income on the card -- a refund, a
+        redemption -- allowed (design 3.8).  A card classifies PLAIN, not
+        AMORTIZING, and the guard never reads the transaction TYPE, so an
+        income POST onto a card lands with 201 at BOTH create doors, one new
+        transaction each, where the loan cases above get a 422.  Pinned so a
+        widening of this guard to "any liability" cannot pass unnoticed.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            income = db.session.query(TransactionType).filter_by(
+                name="Income",
+            ).one()
+            form = self._expense_form(seed_user, seed_periods_today, card.id)
+            form["name"] = "Refund On Card"
+            form["transaction_type_id"] = income.id
+            resp = auth_client.post("/transactions", data=form)
+            assert resp.status_code == 201
+
+            del form["name"]  # the inline form's name field is optional
+            resp = auth_client.post("/transactions/inline", data=form)
+            assert resp.status_code == 201
+
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(account_id=card.id)
+                .order_by(Transaction.id).all()
+            )
+            assert [r.transaction_type_id for r in rows] == [income.id] * 2
+            assert rows[0].name == "Refund On Card"

@@ -454,15 +454,15 @@ def mark_as_credit(transaction_id, user_id):
         txn, next_period, category, payback_amount,
     )
 
-    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row to
-    # its new status's settled sense as the final step (the transfer pattern:
-    # reconcile on every status change).  Credit is non-settled and is reachable
-    # only from Projected, so this is an idempotent no-op today -- a Projected
-    # source has no postings to reverse -- but it keeps the "every status
-    # handler reconciles last" invariant complete and self-heals if the state
-    # machine ever lets a settled row be marked Credit.  The payback itself is
+    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row's
+    # family as the final step (the transfer pattern: reconcile on every status
+    # change).  Credit is non-contributing, so every dated purchase the row
+    # holds reverses to zero here (``purchase_posts`` reads the contributing
+    # gate); it is reachable only from Projected, so a source with no dated
+    # purchase is an idempotent no-op -- and the call keeps the "every status
+    # handler reconciles last" invariant complete.  The payback itself is
     # born Projected and posts nothing until it settles through the seam.
-    posting_service.sync_transaction_postings(txn, settled=txn.status.is_settled)
+    posting_service.sync_transaction_postings(txn)
 
     log_event(
         logger, logging.INFO, EVT_CREDIT_MARKED, BUSINESS,
@@ -553,14 +553,14 @@ def unmark_credit(transaction_id, user_id):
     # cleanup helper so the two endpoints cannot disagree.
     delete_payback_on_credit_revert(txn, user_id)
 
-    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row to
-    # its new status as the final step (the transfer pattern: reconcile on every
-    # status change).  Projected is non-settled, so this reverses any posted
-    # source effect to zero -- an idempotent no-op today, since a Credit source
-    # never settled and so never posted -- keeping the "every status handler
-    # reconciles last" invariant complete.  The payback's own postings were
-    # already reversed inside delete_payback_on_credit_revert.
-    posting_service.sync_transaction_postings(txn, settled=txn.status.is_settled)
+    # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row's
+    # family as the final step (the transfer pattern: reconcile on every status
+    # change).  Projected contributes again, so a dated purchase the Credit
+    # status had reversed posts again here; a row with none is an idempotent
+    # no-op -- keeping the "every status handler reconciles last" invariant
+    # complete.  The payback's own postings were already reversed inside
+    # delete_payback_on_credit_revert.
+    posting_service.sync_transaction_postings(txn)
 
 
 def get_or_create_cc_category(user_id: int) -> Category:

@@ -47,6 +47,7 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_a_record,
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
+    reject_stated_figure_over_purchases,
 )
 from app.utils.balance_predicates import (
     enters_settled_band,
@@ -250,7 +251,7 @@ def figure_for_status(
             source rides through untouched, because an echo is decided by
             the number and a refusal by the status.
         recorded: What the row RECORDS as having moved
-            (:func:`app.services.row_valuation.recorded_figure`), which is what
+            (:func:`app.services.row_valuation.settled_figure`), which is what
             the box was prefilled from -- so equality here is exactly "the user
             did not touch the box".  For a transfer it is read off the leg,
             because the parent carries no record.
@@ -469,6 +470,13 @@ def apply_status_change(
     # as "invalid reference"; see :func:`reject_settle_day_without_a_record`.
     if isinstance(row, Transaction):
         reject_settle_day_without_a_record(row, settle_day, settlement)
+        # The purchases ARE the figure (ruling **R-BAL78**, plan step
+        # ``balance:X-bi-4a``): a stated figure beside real purchases would be
+        # mirrored as a second movement over the same money.  Refused here,
+        # ahead of any mutation like the five above it, so every door that
+        # hands over a record inherits it; only a ``Transaction`` can hold
+        # purchases (``entry_service.create_entry`` refuses a shadow).
+        reject_stated_figure_over_purchases(row, settlement)
 
     # Read BEFORE the assignment below, because it is a question about the
     # status the row is LEAVING.  A row entering the settled band owes a record
@@ -480,10 +488,10 @@ def apply_status_change(
             f"Transaction {row.id} is entering the settled band with no "
             "settlement record. A settle states what moved as well as when: "
             "pass settlement=Settlement(...). Writing the status alone would "
-            "leave the row settled with no figure, which "
-            "row_valuation.settled_figure refuses to value -- and before this "
-            "step it was worse than a refusal, because the reader fell back to "
-            "the row's PLAN and published a forecast as a fact."
+            "leave the row settled with no covering movement, which every "
+            "reader values as a close of nothing (ruling R-BAL82) -- and "
+            "before plan step X-au-c3 it was worse, because the reader fell "
+            "back to the row's PLAN and published a forecast as a fact."
         )
 
     verify_transition(row, new_status_id)
@@ -584,6 +592,16 @@ def apply_status_change(
         # What keeps a retained figure out of every balance is not its absence
         # but the STATUS -- ``row_valuation.settled_figure`` answers ``None`` for
         # a row that is not settled, whatever it still carries.
+        #
+        # **These two columns are WRITTEN here and READ by nothing that counts
+        # or shows money** since plan step ``balance:X-bi-4b-1`` (ruling
+        # **R-BAL80**): the record's home is the covering movement written
+        # below, and every reader -- ``settled_figure``, ``recorded_settlement``,
+        # ``honoured_correction``, the entry doors' "fixed figure" predicates,
+        # the SQL twin -- asks it.  The write stands through the interval so
+        # ``integrity_check`` DC-11 can grade the cache against the movement
+        # and the three CHECKs over the columns keep a subject; ``X-bi-4b-2``
+        # deletes the columns, this write and ``Settlement.basis`` together.
         if settlement is not None:
             row.settled_amount = settlement.amount
             row.settled_basis_id = ref_cache.settlement_basis_id(

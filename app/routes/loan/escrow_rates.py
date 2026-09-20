@@ -16,10 +16,12 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
-from app.models.loan_features import RateHistory
+from app.models.loan_features import (
+    RATE_HISTORY_UNIQUE_CONSTRAINT,
+    RateHistory,
+)
 from app.routes.loan._bp import loan_bp
 from app.routes.loan._helpers import (
-    _RATE_HISTORY_UNIQUE_CONSTRAINT,
     _compute_total_payment,
     _escrow_merge_schema,
     _escrow_rename_schema,
@@ -144,7 +146,7 @@ def add_rate_change(account_id):
     # the idempotent re-render below; a non-rate IntegrityError propagates from
     # the helper (the correct 500 disposition).
     if not loan_posting_service.sync_all_scenarios_or_duplicate(
-        account.id, _RATE_HISTORY_UNIQUE_CONSTRAINT,
+        account.id, RATE_HISTORY_UNIQUE_CONSTRAINT,
     ):
         # Same-effective-date double-submit (F-104 / C-22): the composite
         # unique ``uq_rate_history_account_effective_date`` rejected the second

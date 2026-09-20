@@ -14,8 +14,8 @@ resolver's loan-level extra rather than summing, and the loan page reads the sea
 **A tie-break is a sign the SEARCH is the wrong question** (R-R35): only ONE tier of three asks
 "which transfer into a loan is its payment", and **R16** deletes the rest -- DECOMPOSED into four
 leaves 2026-08-26 (**R-R36**); its summing leaf `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), so the
-ESTIMATED tier is the outlier no longer, and `R20` (the setup door records the stated balance as the
-assertion it is, **R-R72**) is ranked next.
+ESTIMATED tier is the outlier no longer, and `R20` SHIPPED 2026-09-19 (`b4da8068`, **R-R72** part 3:
+the stated balance is an assertion; `current_principal` gone). `R16-c` is next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
 section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
@@ -636,43 +636,14 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       (baseline byte-identical over both loans; a planted `$500` sweep into the Mortgage `None` ->
       `2034-10-01`; the reset hole `2029-03-22` -> `2029-02-22`; August charged once, 91 -> 90).
       Closed **D46**, **D47**, **D48**, **D53**, **D54**; opened **REC-517** (R16-f), **REC-518**
-      (R5), **REC-519** (R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
+      (R5), **REC-519** (closed at R20), **balance:BAL-483** (closed at R7d-f-2, **R-R75**).
 
-- [ ] **R20** -- The setup door records the stated balance as the assertion it is.
-
-**Root cause (REC-519):** the setup form requires "Current Principal", `create_params` stores it in
-`LoanParams.current_principal`, and nothing reads it; a loan configured mid-life has only its
-synthesized origination assertion, and under R-R71 its unrecorded months read as unpaid.
-**Design (R-R72 part 3):** the field becomes "Balance today" with an "as of" date defaulting to the
-setup date and bounded `[origination_date, today]`; `create_params` appends a `tracking_start`
-`LoanAnchorEvent` (`anchor_service.record_loan_tracking_start`) in the same transaction as the
-params whenever `origination_date < as_of` -- a loan originating today or later asserts nothing, its
-origination IS the assertion; a migration drops `current_principal` and
-`ck_loan_params_curr_principal` after appending a `tracking_start` at `loan_params.created_at`
-carrying `current_principal` for every loan with `origination_date < created_at` and NO stored
-assertion of any source (measure the count on the clone first; both live loans carry one, so
-production backfills nothing, and the downgrade restores the column NULL); the tracking-start
-route's "STRICTLY BEFORE the earliest recorded payment" refusal is deleted -- an assertion after
-payments is what a true-up already is, and the two sources differ in label alone
-(`anchor_service._append_loan_anchor_and_sync`); `tests/_test_helpers.create_loan_account` writes
-what the door writes, and the fixtures R16-b-2 corrected to assert their balance at the read date
-(`test_loan._TRACKED_FROM`, the `liability_owed_at_dates` and dashboard mortgages, the matured
-balloon) take that shape. **What R-R72's row no longer carries (rule 4, moved here 2026-09-12 when
-the row was trimmed under the 2,000-character cap):** the seventeen fixtures that failed under R-R71
-were every one a loan whose only assertion was years old; the worked example over the app's own
-producers (`worked_door.py` in the handoff directory): `$250,000` at 6.5% over 360 months from
-2023-06-01 -- a paying borrower owes `$240,215.10`; under R-R71 with today's door it reads
-`$302,586.63` after its first plan payment (40 months standing, `$54,166.80`) and never clears; with
-the tracking-start it accrues `$1,301.17` and pays off 2053-07-01. REFUSED together at R-R72, as
-dancing around the root cause: bounding the calendar at the later of the assertion and the
-schedule's opening (a pay calendar is evidence of nothing about a loan); the assertion bound with
-the door left as it is; and a door that REQUIRES a second balance entry. Clone evidence (REC-519):
-the Van Loan was set up 2026-03-27 with `current_principal` `$17,020.47`, carries no
-`tracking_start`, and its first assertion after the 2023 origination is a `user_trueup` of
-2026-05-22 for exactly `$17,020.47` -- the owner typed the fact twice. **Verification:** the setup
-route's tests (a past origination writes ONE `tracking_start` at the stated date; a future one
-writes none; the stray-field case), the migration up and down on a clone, and
-`tests/manual/verify_loan_plan_sum.py`'s baseline byte-identical.
+- [x] **R20 -- the setup door records the stated balance as the assertion it is.** `b4da8068` -- as
+      built, on `b141e779` (the loan anchor doors moved to `loan_anchor_service.py`): a
+      `tracking_start` at the owner's "as of" day whenever the loan originated before it; migration
+      `22b23085394d` dropped `LoanParams.current_principal` and its CHECK (0 of 2 on the 09-19
+      clone; production prints its count); the earliest-payment refusal deleted (**R-R72** part 3).
+      Closed **REC-519**. Spec and notes: `historical/recurrence_r20_as_built_2026-09-19.md`.
 
 - [ ] **R21 -- the walk's placement runs backward for a stated owner** (**R-R87**; finding
       **REC-527**, born at `salary:R15-b`'s review): `paychecks_from` and `_first_occurrence` read

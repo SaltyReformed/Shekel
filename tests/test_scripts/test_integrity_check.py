@@ -18,6 +18,7 @@ from tests._test_helpers import (
     account_never_asserted,
     add_txn,
     bare_expense_template,
+    cover_bare_settled_row,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_expense_template,
@@ -569,13 +570,15 @@ class TestDataConsistency:
     def test_clean_database_passes(self, app, db, seed_user, seed_periods):
         """All consistency checks pass on a properly seeded database.
 
-        DC-02 through DC-10: DC-01 was removed 2026-06-11 (settling
+        DC-02 through DC-11: DC-01 was removed 2026-06-11 (settling
         without a manual actual is a designed legal state -- see the
         ``check_data_consistency`` docstring); the remaining IDs keep
-        their historical numbers.
+        their historical numbers.  DC-11 arrived at plan step
+        ``balance:X-bi-4a`` with the alarm the cash walk's row read used to
+        raise (a settled row the fold cannot see).
         """
         results = check_data_consistency(db.session)
-        assert len(results) == 9
+        assert len(results) == 10
         # Critical checks must pass on clean data.
         critical_results = [r for r in results if r.severity == "critical"]
         assert all(r.passed for r in critical_results), (
@@ -617,6 +620,9 @@ class TestDataConsistency:
         for _column, _value in settlement_columns(settled_on, Decimal("50.00")).items():
             setattr(txn, _column, _value)
         db.session.flush()
+        # The seam's mirror, as every settled row carries it since X-bi-3d:
+        # without it DC-11 names the row, and rightly.
+        cover_bare_settled_row(db.session, txn, Decimal("50.00"))
 
         results = check_data_consistency(db.session)
         assert all(r.passed for r in results), (
@@ -1090,13 +1096,120 @@ class TestDataConsistency:
         }
         assert all(row["covers_settlement"] is True for row in dc10.details)
 
-        posting_service.sync_transaction_postings(txn, settled=False)
+        posting_service.sync_transaction_postings(txn)
         db.session.flush()
         dc10 = next(
             r for r in check_data_consistency(db.session) if r.check_id == "DC-10"
         )
         assert dc10.passed
         assert movement.settled_on is None, "the movement is still un-dated and kept"
+
+    def test_dc11_detects_a_settled_row_the_fold_cannot_see(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """DC-11 grades all three arms of the alarm the cash walk lost at X-bi-4a.
+
+        Ruling **R-BAL80**: the fold reads movements alone, by the MOVEMENT's
+        day, so a settled row with no settle day, a stored non-zero figure
+        with no covering movement, or a covering movement with no day, is
+        money the balance silently omits -- the first the state
+        ``balance_predicates.settled_day`` raised on when the fold still read
+        the row.  Planted around the doors, as the hazard is: a bill settled
+        through the verb passes; its mirror deleted by SQL fires the
+        missing-movement arm; restored, the row's day cleared by SQL fires the
+        row-day arm; restored, the MOVEMENT's day pair cleared by SQL fires
+        the movement-day arm -- each arm shown firing and clearing on the one
+        row.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        import sqlalchemy
+        from app.services import transaction_service
+
+        def dc11():
+            return next(
+                r for r in check_data_consistency(db.session)
+                if r.check_id == "DC-11"
+            )
+
+        txn = generate_row_of(
+            make_expense_template(
+                db.session, seed_user, amount="148.32",
+                name="Electric", category_key="Rent",
+            ),
+            seed_periods[0],
+        )
+        transaction_service.settle_transaction(txn)
+        db.session.flush()
+        (movement,) = txn.covering_movements
+        assert dc11().passed
+
+        # The MOVEMENT arm: a stored figure with no mirror.
+        db.session.execute(sqlalchemy.text(
+            "DELETE FROM budget.transaction_entries WHERE id = :id"
+        ), {"id": movement.id})
+        fired = dc11()
+        assert not fired.passed
+        assert fired.severity == "critical"
+        assert [row["transaction_id"] for row in fired.details] == [txn.id]
+        assert fired.details[0]["covering_movements"] == 0
+        assert fired.details[0]["settled_on"] is not None
+
+        # Restore the mirror through the seam's own writer; the arm clears.
+        # The record is STATED here rather than read back off the row: since
+        # plan step balance:X-bi-4b-1 ``recorded_settlement`` reads the
+        # covering movement -- the very row this arm deleted -- and a settled
+        # row holding none reads as a close of nothing (ruling R-BAL82),
+        # which would withdraw rather than re-cover.  The columns this arm
+        # still grades against are the seam's stale cache through the
+        # interval, deleted at X-bi-4b-2 with the arm.
+        db.session.expire(txn)
+        from app.enums import MovementFigureSourceEnum
+        from app.services.status_seam import Settlement
+        from app.services.status_seam._covering import (  # noqa: E402
+            sync_covering_movement,
+        )
+        sync_covering_movement(
+            txn, was_settled=True, now_settled=True,
+            settlement=Settlement(
+                amount=Decimal("148.32"),
+                source=MovementFigureSourceEnum.RESOLVED,
+            ),
+        )
+        db.session.flush()
+        assert dc11().passed
+
+        # The ROW-DAY arm: a settled status with no settle day (the pairing
+        # CHECK takes the basis with it; the record may stand without a day).
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transactions "
+            "SET settled_on = NULL, settled_day_basis_id = NULL WHERE id = :id"
+        ), {"id": txn.id})
+        fired = dc11()
+        assert not fired.passed
+        assert [row["transaction_id"] for row in fired.details] == [txn.id]
+        assert fired.details[0]["settled_on"] is None
+        assert fired.details[0]["undated_covering_movements"] == 0
+
+        # Restored; then the MOVEMENT-DAY arm: the row keeps its day while the
+        # mirror -- the fold's real input -- loses its pair.
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transactions t SET settled_on = e.settled_on, "
+            "settled_day_basis_id = e.settled_day_basis_id "
+            "FROM budget.transaction_entries e "
+            "WHERE e.transaction_id = t.id AND e.covers_settlement AND t.id = :id"
+        ), {"id": txn.id})
+        assert dc11().passed
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transaction_entries "
+            "SET settled_on = NULL, settled_day_basis_id = NULL, "
+            "reconciled_by_id = NULL "
+            "WHERE transaction_id = :id AND covers_settlement"
+        ), {"id": txn.id})
+        fired = dc11()
+        assert not fired.passed
+        assert [row["transaction_id"] for row in fired.details] == [txn.id]
+        assert fired.details[0]["settled_on"] is not None
+        assert fired.details[0]["undated_covering_movements"] == 1
 
 
 # ── run_all_checks ───────────────────────────────────────────────
@@ -1173,5 +1286,6 @@ class TestRunAllChecks:
         # fell to 28 at plan step pay_calendar:C4-c, which dropped
         # ``end_date`` and ``period_index`` and took BA-03, BA-04 and BA-07
         # with them -- an ordinal gap, a span overlap and an uncovered day are
-        # all unexpressible once a period is one payday.
-        assert len(results) == 29
+        # all unexpressible once a period is one payday.  It rose to 29 at
+        # balance:X-bi-3e-2 (DC-10) and to 30 at balance:X-bi-4a (DC-11).
+        assert len(results) == 30

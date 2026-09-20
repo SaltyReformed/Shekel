@@ -14,8 +14,8 @@ The pure data-loading functions every loan consumer shares, in two leaves:
   have HAPPENED: the shadow-income predicate and the single settled/projected
   partition every settled-payment consumer reads.
 
-The graph is a line -- ``_terms`` imports ``_shadows`` for the settled set its
-anchor-ordering guards bound on, and nothing there reads back.
+The graph is a line -- ``_terms`` imports ``_shadows`` for the settled set the
+escrow forward-only guard bounds on, and nothing there reads back.
 
 **It was one module until plan step balance:X-bl-2a**, which gave the shadow
 half a partition producer and moved the amount model's eager-load set out of the
@@ -57,7 +57,6 @@ from ._shadows import (
 from ._terms import (
     LoanAnchorFact,
     _rate_change_records_from,
-    earliest_settled_payment_due_date,
     installment_for,
     precedes_origination,
     latest_settled_payment_due_date,
@@ -75,7 +74,6 @@ from ._terms import (
 __all__ = [
     "LoanAnchorFact",
     "ShadowSets",
-    "earliest_settled_payment_due_date",
     "income_shadows",
     "installment_for",
     "precedes_origination",

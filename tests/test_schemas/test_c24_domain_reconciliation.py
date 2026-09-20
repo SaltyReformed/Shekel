@@ -92,7 +92,8 @@ class TestC24_2RateFieldDomainMatchesCheck:
                 "interest_rate",
                 {
                     "original_principal": "250000.00",
-                    "current_principal": "200000.00",
+                    "anchor_balance": "200000.00",
+                    "anchor_date": "2020-01-01",
                     "term_months": "360",
                     "origination_date": "2020-01-01",
                     "payment_day": "1",
@@ -171,7 +172,8 @@ class TestC24_2RateFieldDomainMatchesCheck:
         with pytest.raises(ValidationError) as exc:
             LoanParamsCreateSchema().load({
                 "original_principal": "250000.00",
-                "current_principal": "200000.00",
+                "anchor_balance": "200000.00",
+                "anchor_date": "2020-01-01",
                 "interest_rate": "-0.01",
                 "term_months": "360",
                 "origination_date": "2020-01-01",

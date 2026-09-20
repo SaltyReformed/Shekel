@@ -17,10 +17,10 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-bv-2 -- the CHECK `template_id IS NULL OR due_date IS NOT NULL` binds on BOTH row tables** (`6fa17bac`, migration `4d7123cd9803`), closing **BAL-463**, after `X-cf` (`ccf88c01`) and `X-ch` (`28a6317e`) moved the suite's hand-built rows of a definition onto the engine's (**R-BAL17**, both tables) so it could bind on rows a producer wrote. Production read 0 of 636 and 0 of 177 undated on 2026-09-12. `_stated_amount`'s no-due-date refusal is deleted with it: a linked row's `due_date` is a `date` by construction now, so the refusal fenced a state the schema cannot hold | Section 5, X-bv-2 / X-cf / X-ch |
+| **just landed** | **X-bi-4b-1 -- every READER of the settlement record reads the COVERING MOVEMENT** (`21709195`, no migration; **R-BAL82** / **R-BAL83**, over **R-BAL80**): `settled_figure` is the sum of the row's entries and a settled row with no entry IS the `$0.00` record, so a `$0.00` typed figure is retained by nothing across a revert and a `$0.00` close admits a later purchase (R-BAL82's two consequences; the one other change is a door-unreachable drift, both shadows Projected after a `$0.00` settle, now refused at `restore_transfer`; 0 such rows on production at 07:21 2026-09-19); the correction, the fixed-figure predicates and the SQL twin read the movement; the seam still WRITES the two columns, read by nothing that counts or shows money, until `X-bi-4b-2` drops them. On the 2026-09-19 07:21 restore the balance baseline (9 accounts, 448 cells, 6,272 points), the statement baseline (143 statements) and all 229 settled rows are byte-identical on every reader; `$0.00` written. Before it, `X-bi-4a` (`babae2e3`) read movements only and closed **BAL-523** (`+$137.93` on Checking's actual line, R-BAL77). `X-bi-4b-2` (the migration and the sweep) is next | Section 5, X-bi-4 / X-bi-4b; ../../plans/rulings.md R-BAL75..R-BAL83 |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` deletes the DEFINITION's `is_envelope` rather than the row's. Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
-| **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
+| **blocked on you** | **The first SECU import LANDED 2026-09-16** (on the 2026-09-19 07:21 restore: 1 statement import, 306 bank lines, 163 matches; the observation records are the coordinator's `N-368-observation-2026-09-15.md` / `-18.md`, their rows BAL-497 / BAL-498 / BI-499 / BI-500); the second import waits on `bank_import:X-f6b-2`. What gates this arc now is the developer's file-or-not BATCH the coordinator holds and rule 5's archive: this document is measured by `wc -l` against the gate's cap and its 20-line headroom, and the next balance tick archives a completed span before it writes. Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md BAL-497, BAL-498; ../../plans/steps.md |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
 | **the live lesson** | **A test that passes for the wrong reason is indistinguishable from one that works, and only a mutation separates them.** X-f3c-3's `unchecked` control asserted the right verdict for the wrong term -- its one compared day had no row against its bank line, so `disagreeing` was 1 and the mutation deleting `unchecked` SURVIVED. The same pass caught a page assertion that measured nothing (every money string it looked for was published independently by the balance-history card on that same page, so it passed with the new card's whole figure block deleted) and a query that manufactured its own confirmation (summing BOTH legs of the posted ledger and printing `$0.00`, because both ledger accounts carry the same `account_id`). Three instruments, three green answers, none of them measuring its subject | Section 5, X-f3c-3 |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and and never rebuild the test template by hand -- since `X-br-4` the wrapper bakes it into an image and re-verifies that image on every invocation. **Nothing has to be passed when another checkout is running the suite**: each run gets its own throwaway cluster, so two suites cannot meet (the `TEST_DB_PREFIX` this row used to require is deleted). Put the venv on `PATH` (`scripts/test.sh` runs `pytest` as a backgrounded CHILD, so it needs one) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
@@ -375,21 +375,10 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-bi-7b** `321bf2e4` -- ONE producer for a one-off and every link-less writer on it, the
       DECOMPOSED parent of three leaves (**R-BAL31**), `bank_import:X-f6c` one step with it
       (**R-BAL24**); ticked with 7b-3.
-    * [x] **X-bi-7c** `4f15f222` -- the suite's one-off builder on 7b's producer, the DECOMPOSED parent
-      split 2026-09-16 into the builder and four leaves by file group (the AST census in
-      `tests/manual/census_hand_built_rows.py`: 228 link-less, 51 splat, 10 linked at the split; 30 at
-      the close: 4 named stays, 16 bare CHECK builders, 10 linked); ticked with 7c-5. The five leaves'
-      records: `archive/shipped_steps_archived_2026-09-18.md`.
-    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM, split 2026-09-18 into the
-      suite's bare CHECK builders and the migration; ticked with 7d-2.
-      * [x] **X-bi-7d-1** `08230752` -- six bare CHECK builders and seven Core / raw-SQL writers
-        (outside 7c's constructor census) take a rule-less definition each, dated on the paycheck's
-        start; tests only; the two link-less controls in `test_template_row_needs_due_date.py` stay
-        bare for 7d-2.
-      * [x] **X-bi-7d-2** `829c2c26` (fix `9cf27a3a`) -- the migration: 34 definitions, 26 rows dated (**R-BAL25**),
-        both cells dropped, the CHECK `= 1`, both keys RESTRICT (**R-BAL67**, **R-BAL73**); dump, grid and
-        companion pages byte-identical; 7 Paid rows read 6-11 days late (**R-BAL22**); grid statements
-        23 before and after. **MOVED MONEY**; disclosed **CC-352**. Closed **BAL-484**, **BAL-511**.
+    * [x] **X-bi-7d** `829c2c26` -- the cutover to ONE DEFINITION PER PLAN ITEM: 7d-1 `08230752` (the
+      suite's bare CHECK builders) and 7d-2 `829c2c26` (the migration, **MOVED MONEY**: 34 definitions,
+      26 rows dated, **R-BAL25**; 7 Paid rows 6-11 days late, **R-BAL22**); ticked with 7d-2. Records,
+      7c's too: `archive/shipped_steps_archived_2026-09-18b.md`.
   * **X-bi-2 is DISSOLVED** (**R-BAL35**, 2026-09-15): a movement's category, type and scenario are
     its plan row's, read through `transaction_id` and never copied; its fourth column already existed.
   * [x] **X-bi-3** `d1e3f7a6` -- the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**), ticked
@@ -398,20 +387,20 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-bi-4** the DECOMPOSED parent of the fold's re-point onto movements, its design loop closed
     2026-09-18 (**R-BAL75**..**R-BAL80**, seven forks with worked dollars, `HANDOFF-X-bi-4.md`);
     ticks with its last leaf.
-    * [ ] **X-bi-4a** the balance and the posted ledger read MOVEMENTS ONLY, in one commit for every
-      kind: a movement folds on its own account (R-BAL75); an un-dated one is IN FLIGHT, held in the
-      projection at `as_of + 1` and out of the actual, the reservation restated once as `undated +
-      max(estimated - SUM(entries), 0)` (R-BAL77; production's actual reads `$137.93` higher, stated
-      in the release); a typed figure over purchases refused at the seam (R-BAL78); a plan leg only
-      where no dated movement exists (R-BAL79, closes **BAL-500**); the settled loader re-keyed onto
-      movements joined to their parents (**BAL-501**); `sync_purchase_postings` deleted (**BAL-507**).
-      Graded by three equalities on the restore: settled stream after = before + the un-dated
-      non-card purchases under settled envelopes; projected end balances byte-identical; posted-ledger
-      nets per (account, day) likewise. No migration.
-    * [ ] **X-bi-4b** the row's figure columns `settled_amount` / `settled_basis_id` go by a migration
-      (R-BAL80): `settled_figure` = the sum of entries, the SQL twin re-keyed, the basis enum and ref
-      table retired, the popovers' Actual prefill and the retained correction read off the record's
-      home; the settle DAY pair and the clearing link are NOT X-bi-4's.
+    * [x] **X-bi-4a** `babae2e3` -- the fold and the ledger read movements only (R-BAL75, R-BAL77,
+      R-BAL78, R-BAL79, R-BAL80); the in-flight tier; DC-11; the matcher priced at the covering
+      movement (R-BAL81); `bank_import:R-FX` / `R-GG` amended. On the restore Checking's actual
+      line reads `+$137.93` and the 09-16 ledger nets move by the same (R-BAL80's third equality
+      deviates; R-BAL77 explains it); the grid, every other account and the statements are
+      byte-identical; `$0.00` written. Closed BAL-500, BAL-501, BAL-507, BAL-523 (born here).
+    * [ ] **X-bi-4b** the DECOMPOSED parent of the figure columns' deletion, split 2026-09-19
+      (R-BAL83): the readers onto the covering movement (4b-1) and the migration with the sweep
+      (4b-2); the settle DAY pair and the clearing link are NOT X-bi-4's; ticks with 4b-2.
+      * [x] **X-bi-4b-1** `21709195` -- every reader of the record onto the covering movement
+        (R-BAL80, R-BAL82, R-BAL83); baselines byte-identical on the 2026-09-19 07:21 restore.
+      * [ ] **X-bi-4b-2** the migration, fail-closed on a non-zero figure (a stored `$0.00` is
+        exempt from both refusals, R-BAL82): the two columns, the three CHECKs, the FK, the basis
+        enum and ref table, the seam's write, the retention arms, DC-11 arm 2, the column lays go.
     The parent-account key's end shape is two plain FKs plus a co-located OWNER key, dropped at the
     first cross-account writer, `credit_card:CC-5` (R-BAL76). The fold re-points to movements in ONE
     commit for every account kind at once.
@@ -1038,6 +1027,18 @@ section 4, under their unchanged ids.*
   context per request, as production does; the outer context stays for `db.session`. A test-only hook
   clearing the login cache was rejected (developer 2026-09-18): it leaves every other `g`-cached value
   shared. First upkeep row below the horizon by the developer's word.
+* [ ] **X-cs** `refactor(schemas): the two shared bounds have one spelling` -- closes **BAL-522**: CC-2
+  declared `_RATE_FRACTION_RANGE` and `_DAY_OF_MONTH_RANGE` in `schemas/validation/_helpers.py` and
+  re-pointed only its own fields; 19 inline `[0, 1]` and 3 inline `1..31` spellings remain across seven
+  modules, and `_pay_rhythm.py:96` already held a `_DAY_OF_MONTH_RANGE` reading the model's constants,
+  so the day bound has two same-named constants until this folds `_helpers.py`'s onto it. A schema-only sweep,
+  its census re-run first; `$0.00`.
+* [ ] **X-ct** `refactor(services): one effective-dated walk` -- closes **BAL-524**: CC-3 extracted
+  `app/utils/effective_dated.in_effect_on` for the escrow versions and the card's APR; six more
+  spellings stand (`rate_period_engine` x3, `amortization_engine/_projection` x1,
+  `template_amount_service` x2; four with a fallback of their own, listed in the row) and fold onto it,
+  each fallback stated at its call; three walk `start_date` or dict keys, so the leaf gains a `key=` or
+  the caller adapts, not a drop-in; `$0.00`.
 * [ ] **X-cj** `fix(audit): a system-authored audit row names its origin` -- closes **BAL-497**.
   A migration's writes and the login door's own write carry no user; the row names its origin
   instead of a NULL author, so an empty `user_id` never reads as unknown. Ruled 2026-09-15.
@@ -1235,12 +1236,12 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 48 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 47 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
   **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
-  **N-212** cites (census 111 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
+  **N-212** cites (census 112 code lines `fields\.Decimal` in `app/schemas/**/*.py`), every one of which carries
   `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
   disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
   `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its

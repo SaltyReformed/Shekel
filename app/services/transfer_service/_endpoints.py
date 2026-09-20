@@ -39,11 +39,11 @@ from typing import NamedTuple
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.services.transfer_service._create import shadow_names
-from app.services.transfer_service._loan_posting import (
-    _reject_transfer_out_of_loan,
-)
 from app.services.transfer_service._ownership import _get_owned_account
-from app.services.transfer_service._validation import TransferRows
+from app.services.transfer_service._validation import (
+    TransferRows,
+    _reject_unmodeled_source,
+)
 
 
 class _Endpoints(NamedTuple):
@@ -151,11 +151,14 @@ def _resolve_endpoints(
         NotFoundError: If a submitted account is not *user_id*'s.  The security
             response rule collapses "not found" and "not yours" to one answer.
         ValidationError: If the move would leave the two endpoints equal, or
-            if it MOVES the source onto an amortizing loan -- a disbursement,
-            which the loan engine does not model
-            (:func:`_reject_transfer_out_of_loan`).  A move that leaves the
-            source where it is does not re-ask, for the reason the comment at
-            that call states.
+            if it MOVES the source onto an account no engine models a transfer
+            OUT of (:func:`._validation._reject_unmodeled_source`, the ONE set
+            both doors call): an amortizing loan -- a disbursement
+            (:func:`._loan_posting._reject_transfer_out_of_loan`) -- or, since
+            plan step ``credit_card:CC-10``, a credit card -- a cash advance or
+            balance transfer (:func:`._validation._reject_transfer_out_of_revolving`).
+            A move that leaves the source where it is does not re-ask, for the
+            reason the comment at that call states.
     """
     xfer = rows.transfer
     from_id = updates.get("from_account_id", xfer.from_account_id)
@@ -176,18 +179,19 @@ def _resolve_endpoints(
     to_account = _get_owned_account(
         to_id, user_id, label="Destination account",
     )
-    # **Asked only when the SOURCE moves**, which an adversarial review of this
-    # step corrected.  Asked on any endpoint move, it re-graded an arrangement
-    # the edit does not touch: a legacy transfer whose source is an amortizing
-    # loan -- written before ``create_transfer`` guarded it -- could not move
-    # its DESTINATION either, which is the freezing
+    # **Asked only when the SOURCE moves**, which an adversarial review of
+    # plan step R10-b corrected (the loan refusal stood here alone then; the
+    # composed set inherits its placement).  Asked on any endpoint move, it
+    # re-graded an arrangement the edit does not touch: a legacy transfer
+    # whose source is an amortizing loan -- written before ``create_transfer``
+    # guarded it -- could not move its DESTINATION either, which is the freezing
     # :func:`._loan_posting._reject_installment_move_before_loan` states the
     # discipline against three paragraphs down its own docstring.  It also made
     # the vacated-source arm of :func:`._loan_posting._resync_vacated_loan`
     # unreachable, so that function's stated reason for taking both endpoints
     # was false.  Narrowing it restores both.
     if vacated_source is not None:
-        _reject_transfer_out_of_loan(from_account)
+        _reject_unmodeled_source(from_account)
     return _Endpoints(
         from_account, to_account, vacated_source, vacated_destination,
     )
