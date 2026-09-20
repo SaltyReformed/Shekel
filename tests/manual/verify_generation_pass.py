@@ -83,6 +83,7 @@ from app.services import (
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.row_valuation import settled_figure
 
 USER_ID = 1
 
@@ -144,7 +145,7 @@ def dump_rows(label, txn_ids, xfer_ids, payday_of):
             f"{label}\tTXN"
             f"\ttemplate={r.template_id}\tpayday={payday_of(r.pay_period_id)}"
             f"\tscenario={r.scenario_id}\tacct={r.account_id}"
-            f"\test={r.estimated_amount}\tsettled={r.settled_amount}"
+            f"\test={r.estimated_amount}\tsettled={settled_figure(r)}"
             f"\tsrc={r.amount_source_id}\tdue={r.due_date}"
             f"\tstatus={r.status_id}\tcat={r.category_id}"
             f"\ttype={r.transaction_type_id}\tname={r.name}"

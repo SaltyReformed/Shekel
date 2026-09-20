@@ -19,7 +19,7 @@ from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
@@ -32,7 +32,6 @@ from tests._test_helpers import (
     make_expense_template,
     one_off_row_of,
     purchases_of,
-    settlement_basis_id,
 )
 
 
@@ -47,7 +46,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     disturbing those calendar values.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
-from app.services import entry_service
+from app.services import entry_service, status_seam
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -195,7 +194,7 @@ class TestMarkPaidRecordsThePurchases:
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.settled_amount == Decimal("350.00")
+            assert settled_figure(txn) == Decimal("350.00")
 
     def test_mark_done_no_entries_records_the_derived_figure(
         self, app, auth_client, seed_user, seed_periods,
@@ -221,7 +220,9 @@ class TestMarkPaidRecordsThePurchases:
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             # The definition's stated $500.00, which is what the DERIVED row
             # planned; its own column is None, so the plan is named here.
             assert settled_figure(txn) == Decimal("500.00")
@@ -272,7 +273,7 @@ class TestMarkPaidRecordsThePurchases:
             assert resp.status_code == 200
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.settled_amount == Decimal("175.00")
+            assert settled_figure(txn) == Decimal("175.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
 
@@ -422,7 +423,7 @@ class TestPostPaidEntryMutation:
             db.session.flush()
 
             txn = db.session.get(Transaction, txn_id)
-            assert txn.settled_amount is None
+            assert txn.covering_movements == []
             assert settled_figure(txn) == Decimal("350.00")
             assert db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn_id,
@@ -529,7 +530,7 @@ class TestPostPaidEntryMutation:
 
             # Transaction is in PROJECTED status.
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.settled_amount is None
+            assert status_seam.recorded_settlement(txn) is None
 
             entry_service.create_entry(
                 transaction_id=txn_id,
@@ -543,5 +544,5 @@ class TestPostPaidEntryMutation:
             db.session.commit()
 
             txn = db.session.get(Transaction, txn_id)
-            # actual_amount must remain None for projected transactions.
-            assert txn.settled_amount is None
+            # A projected transaction records nothing.
+            assert status_seam.recorded_settlement(txn) is None

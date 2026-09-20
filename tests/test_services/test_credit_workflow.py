@@ -19,6 +19,7 @@ from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
+    cover_bare_settled_row,
     create_transfer,
     figure_source_columns,
     generate_row_of,
@@ -26,7 +27,6 @@ from tests._test_helpers import (
     one_off_row_of,
     rhythm_of,
     settle_day_columns,
-    settlement_columns,
 )
 
 
@@ -113,9 +113,11 @@ class TestCreditWorkflow:
 
     # ``test_payback_uses_actual_amount_when_set`` lived here until plan step
     # X-au-c3.  It put ``actual_amount = 75.00`` on a PROJECTED ``$100.00``
-    # expense and asserted the payback took the 75 -- a state
-    # ``ck_transactions_settled_amount_needs_basis`` makes unconstructible,
-    # because a figure now RECORDS a settle and this row's money has not moved.
+    # expense and asserted the payback took the 75 -- a state the seam makes
+    # unconstructible (``reject_settlement_without_settled_status``; the CHECK
+    # ``ck_transactions_settled_amount_needs_basis`` said the same at the
+    # storage tier through plan step X-bi-4b-1), because a figure now RECORDS
+    # a settle and this row's money has not moved.
     # ``mark_as_credit`` refuses any status but Projected, so the column arm it
     # graded was unreachable the moment that CHECK landed and was deleted with
     # it; the payback is the row's RESOLVED amount, which
@@ -442,14 +444,13 @@ class TestCarryForward:
                 category_id=seed_user["categories"]["Rent"].id,
             )
             t2.status_id = done.id
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
-                setattr(t2, _column, _value)
-            for _column, _value in settlement_columns(seed_periods[0].start_date, Decimal("500.00")).items():
                 setattr(t2, _column, _value)
             db.session.add_all([t1, t2])
             db.session.flush()
+            cover_bare_settled_row(db.session, t2, Decimal("500.00"))
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
@@ -570,14 +571,13 @@ class TestCarryForward:
                 category_id=seed_user["categories"]["Salary"].id,
             )
             t2.status_id = received.id
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
-                setattr(t2, _column, _value)
-            for _column, _value in settlement_columns(seed_periods[0].start_date, Decimal("2000.00")).items():
                 setattr(t2, _column, _value)
             db.session.add_all([t1, t2])
             db.session.flush()
+            cover_bare_settled_row(db.session, t2, Decimal("2000.00"))
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,

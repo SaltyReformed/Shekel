@@ -163,11 +163,13 @@ def loan_event_stream(
             :func:`~app.services.row_valuation.settled_contribution` -- the accessor
             whose NAME asserts the row has SETTLED -- rather than a resolver,
             because every row here has, so it answers from the settlement it
-            RECORDED (plan step X-au-c3) and there is no plan to reach; a row
-            that recorded nothing REFUSES rather than falling back to a
-            forecast, and since plan step X-bx so does a row that has not
-            settled at all, which is what makes the loader's status filter a
-            precondition this replay states rather than merely relies on.
+            RECORDED -- its covering movement (plan step ``balance:X-bi-4b-1``)
+            -- and there is no plan to reach; a row holding none is the
+            ``$0.00`` record (ruling **R-BAL82**), a payment of nothing, never
+            a fallback to a forecast, and since plan step X-bx a row that has
+            not settled at all REFUSES, which is what makes the loader's status
+            filter a precondition this replay states rather than merely relies
+            on.
         payment_day: The loan's contractual due day (the fallback coordinate for a
             shadow carrying no stored ``due_date``).
         periods: The loan's rate periods

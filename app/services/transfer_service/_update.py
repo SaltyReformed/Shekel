@@ -475,6 +475,19 @@ def _bump_parent_version_if_a_leg_moved(
     reads both.  Eager-loading ``entries`` on the shadows would have made the
     tests pass and left the predicate one query from wrong again.
 
+    **A leg whose FIGURE moved is dirty by the seam's own hand** (plan step
+    ``balance:X-bi-4b-2``).  Through ``X-bi-4b-1`` the seam wrote the figure
+    onto the shadow's own ``settled_amount`` / ``settled_basis_id`` beside
+    the covering movement, so a figure correction dirtied the shadow and
+    this predicate saw the leg move.  Those columns are gone -- the figure
+    lives on the movement alone, a row of another table -- and the two-tab
+    lost update above came back the moment they went, its own test catching
+    it.  The root cause is the seam's: the record is part of the row's
+    aggregate, so ``status_seam._covering._record_moved`` marks the ROW
+    modified whenever its record nets a change, for a plain transaction's
+    counter and a shadow's alike; this predicate reads that mark as it
+    reads any other write to the leg.
+
     ``flag_modified`` is what forces the parent into the flush: the row has no
     field of its own to change, and an assignment of an unchanged value is
     dropped from the UPDATE (SQLAlchemy's ``_collect_update_commands`` skips a

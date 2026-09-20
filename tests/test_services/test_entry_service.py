@@ -22,7 +22,7 @@ from app.services.auth_service import hash_password
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
-from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
+from app.enums import RoleEnum, StatusEnum
 from app.services import (
     cash_ledger,
     status_seam,
@@ -2308,9 +2308,7 @@ class TestASettledRowMayStillGAINAPurchase:
             )
             _make_entry(txn, seed_user["user"], amount="50.00")
             self._close(txn)
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
-            )
+            assert txn.covering_movements == []
             recorded_before = settled_figure(txn)
 
             entry_service.create_entry(
@@ -2404,9 +2402,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 Transaction, seed_entry_template["transaction"].id,
             )
             self._close(txn)
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
-            )
+            assert len(txn.covering_movements) == 1
 
             with pytest.raises(ValidationError, match="records a fixed figure"):
                 entry_service.create_entry(

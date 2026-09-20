@@ -4284,41 +4284,13 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     return Settlement.from_settle(booked, correction, recorded_settlement(txn))
 
 
-def settlement_basis_id(basis):
-    """Return one ``ref.settlement_bases`` id, for a fixture that states it.
-
-    The narrow companion of :func:`settlement_columns`, for a fixture building a
-    row whose settle day it is already setting itself and which only needs to
-    name the basis.  Resolved through ``ref_cache`` like every other ref value,
-    so a fixture names the BASIS and never an id.
-
-    **It took ``corrected: bool`` until plan step X-au-c3's second pass**, which
-    was a two-valued parameter for a three-valued fact: ``purchases`` is a basis
-    a fixture must be able to name, because a settled ENVELOPE records it and
-    stores no figure at all, and no boolean can say so.  A fixture that could
-    not express it built a row the app cannot write.
-
-    Args:
-        basis: The :class:`app.enums.SettlementBasisEnum` member to resolve.
-
-    Returns:
-        The ``ref.settlement_bases.id``.
-    """
-    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
-    # convention every helper in this module follows.
-    from app import ref_cache
-
-    return ref_cache.settlement_basis_id(basis)
-
-
 def settled_day_basis_id(basis):
     """Return one ``ref.settled_day_bases`` id, for a fixture that states it.
 
-    :func:`settlement_basis_id`'s twin one column over, and it exists for the
-    same reason (plan step **X-az**): the narrow companion of
-    :func:`settle_day_columns`, for a fixture writing the pair through raw SQL
-    -- a simulated concurrent ``UPDATE`` -- where there is no model instance for
-    the pair writer to take.
+    The narrow companion of :func:`settle_day_columns` (plan step **X-az**),
+    for a fixture writing the pair through raw SQL -- a simulated concurrent
+    ``UPDATE`` -- where there is no model instance for the pair writer to
+    take.
 
     Resolved through ``ref_cache`` like every other ref value, so a fixture
     names the BASIS and never an id.
@@ -4334,64 +4306,6 @@ def settled_day_basis_id(basis):
     from app import ref_cache
 
     return ref_cache.settled_day_basis_id(basis)
-
-
-def settlement_columns(settled_on, amount, submitted=None):
-    """Return the settlement-record kwargs for a DIRECTLY-constructed row.
-
-    **The one door a bare-built fixture row goes through** (plan step X-au-c3).
-    A row that asserts a settle DAY always records WHAT moved and how the
-    figure is known -- ``ck_transactions_settle_day_needs_a_record`` and
-    ``ck_transactions_settled_amount_needs_basis`` are the two implications that
-    make that true of the bare constructor as well as of the seam.  (The reverse
-    does NOT hold and must not: a row may carry the record with no day, which is
-    what a revert leaves behind.)
-    A fixture that filled one column and not the others is not a fixture with a
-    small omission -- it is a row the database refuses -- so the three are
-    resolved together here rather than spelled out per factory.
-
-    ``settled_on`` is the discriminator because a factory has already resolved
-    it from the status (:func:`default_settle_day`), and the two are one fact: a
-    row carries the day its money moved if and only if it has settled.
-
-    **It cannot express the ``purchases`` basis, and that is correct for its ONE
-    caller rather than a gap.**  :func:`add_txn` builds a BARE row -- it creates
-    no ``TransactionEntry`` and sets no ``is_envelope`` -- so
-    ``settles_from_entries`` is False for everything it makes and the app would
-    record ``derived`` or ``corrected`` for exactly these rows too.  A caller
-    that wants a settled ENVELOPE must settle it through the seam with
-    :func:`settlement_if_settling`, which has the third arm; building one here
-    and adding entries afterwards would produce a row no door in the app can
-    write.
-
-    Args:
-        settled_on: The row's resolved settle day, ``None`` when it has not
-            settled.
-        amount: The row's own plan figure, which is what a settle records when
-            nobody typed anything.
-        submitted: A figure the fixture wants recorded as a human's CORRECTION,
-            or ``None``.
-
-    Returns:
-        ``{"settled_amount": ..., "settled_basis_id": ...}`` -- both ``None``
-        for an unsettled row.
-    """
-    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
-    # convention every helper in this module follows.
-    from app import ref_cache
-    from app.enums import SettlementBasisEnum
-
-    if settled_on is None:
-        return {"settled_amount": None, "settled_basis_id": None}
-    figure = amount if submitted is None else submitted
-    basis = (
-        SettlementBasisEnum.DERIVED if submitted is None
-        else SettlementBasisEnum.CORRECTED
-    )
-    return {
-        "settled_amount": Decimal(str(figure)),
-        "settled_basis_id": ref_cache.settlement_basis_id(basis),
-    }
 
 
 def an_entered_day(day):
@@ -4468,12 +4382,15 @@ def an_observed_day(day):
 def settle_day_columns(settled_on, basis=None):
     """Return the settle-day COLUMN PAIR a bare-built fixture row owes.
 
-    The DAY's twin of :func:`settlement_columns`, and it exists for the same
-    reason (plan step **X-az**): ``settled_on`` and ``settled_day_basis_id`` are
-    one fact in two columns, welded by each table's
+    Plan step **X-az**: ``settled_on`` and ``settled_day_basis_id`` are one
+    fact in two columns, welded by each table's
     ``ck_*_settle_day_basis_pairing`` BICONDITIONAL, so a bare
     ``Transaction(settled_on=...)`` that names only the day is an
-    ``IntegrityError`` at flush rather than a row.
+    ``IntegrityError`` at flush rather than a row.  (Its twin for the RECORD,
+    ``settlement_columns``, laid the row's own ``settled_amount`` /
+    ``settled_basis_id`` until plan step ``balance:X-bi-4b-2`` deleted those
+    columns; the record is the covering movement
+    :func:`cover_bare_settled_row` writes.)
 
     Every bare builder goes through this rather than spelling the pair, for the
     reason the app has ONE writer for it
@@ -4740,44 +4657,77 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         # (plan step **X-az**).  ``entered`` is what a bare-built settled row
         # means: no statement was imported and no balance reconciled to make it.
         **settle_day_columns(settled_on),
-        # The settlement RECORD, complete or absent (plan step X-au-c3).  A
-        # settled row states what moved -- the typed figure when the caller gave
-        # one, else the row's own -- and a row built WITHOUT a settle day states
-        # nothing here, which keeps every bare-built row on the same side of
-        # ``ck_transactions_settle_day_needs_a_record`` as the seam's own writes.
-        # (A row that carries the record with no day is legal -- it is the
-        # RETAINED state -- but no factory MEANS that; a fixture wanting it
-        # settles a row and then reverts it, as the app does.)
-        **settlement_columns(settled_on, amount, settled_amount),
     )
     for column, value in bare_state.items():
         setattr(txn, column, value)
     db_session.flush()
+    # The settlement RECORD (plan step X-au-c3; its one home the covering
+    # movement since ``balance:X-bi-4b-2``).  A settled row states what moved
+    # -- the typed figure when the caller gave one, else the row's own -- and
+    # a row built WITHOUT a settle day records nothing, as the seam writes
+    # nothing for a row outside the band.  (A row that carries the record
+    # with no day is legal -- it is the RETAINED state -- but no factory
+    # MEANS that; a fixture wanting it settles a row and then reverts it, as
+    # the app does.)
     if settled_on is not None:
         cover_bare_settled_row(db_session, txn, amount, settled_amount)
     return txn
 
 
+def independent_settled_figure():
+    """Return a SQL expression for a row's settled figure, spelled independently.
+
+    **An oracle's spelling of the record, for the integration suites that
+    reconcile the posted ledger against the transaction source of truth**
+    (``test_posting_ledger_*_reconciliation``).  The record is the row's
+    entries since plan step ``balance:X-bi-4b-2`` deleted the row's own
+    ``settled_amount`` (ruling **R-BAL80**), which those oracles read through
+    ``COALESCE(settled_amount, estimated_amount)`` before; the app's own SQL
+    twin is ``posting_reads.settled_figure_clause``, and an oracle that
+    called it would grade one producer against itself, so this is a second
+    spelling ON PURPOSE -- a correlated sum over ``budget.transaction_entries``
+    written here, in the suite, and nowhere in ``app/``.  ``COALESCE`` to
+    zero: a settled row with no entry is the ``$0.00`` record (R-BAL82).
+
+    Returns:
+        A correlated scalar subquery over :class:`TransactionEntry`, to be
+        used inside a query whose FROM clause holds ``Transaction``.
+    """
+    # pylint: disable=import-outside-toplevel  -- the module convention.
+    from sqlalchemy import func, select
+
+    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
+
+    total = (
+        select(func.sum(TransactionEntry.amount))
+        .where(TransactionEntry.transaction_id == Transaction.id)
+        .correlate(Transaction)
+        .scalar_subquery()
+    )
+    return func.coalesce(total, Decimal("0"))
+
+
 def cover_bare_settled_row(db_session, txn, amount, submitted=None):
     """Write the covering movement a bare-built settled row owes (R-BAL80).
 
-    **The second half of the one door a bare-built settled row goes
-    through** (plan step ``balance:X-bi-4a``): :func:`settlement_columns`
-    lays the record's columns before the row exists, and this writes the
-    seam's mirror once it does -- the seam's own writer, over that record,
-    the plan's figure ``resolved`` when nobody typed one, else the typed
-    figure ``typed`` (the same two arms ``Settlement.from_settle`` takes for
-    a live settle).  A ``$0.00`` figure writes none, as the seam writes none.
-    :func:`add_txn` calls it; a suite that lays a settled row bare itself
-    calls it after its flush, or the fold and the ledger read the row as
-    money no reader can see.
+    **The one door a bare-built settled row's RECORD goes through** (plan
+    step ``balance:X-bi-4a``; the record's only home since ``X-bi-4b-2``
+    deleted the row's own figure columns): the seam's own writer, over the
+    record a settle would make, the plan's figure ``resolved`` when nobody
+    typed one, else the typed figure ``typed`` (the same two arms
+    ``Settlement.from_settle`` takes for a live settle).  A ``$0.00`` figure
+    writes none, as the seam writes none -- the row's entries are its record
+    (ruling **R-BAL82**).  :func:`add_txn` calls it; a suite that lays a
+    settled row bare itself calls it after its flush, or every reader values
+    the row as a close of nothing.
 
     Args:
         db_session: The test session; flushed after the write.
-        txn: The settled row, flushed, its record columns laid.
+        txn: The settled row, flushed, its settle day laid.
         amount: The row's plan figure.
         submitted: The figure a fixture recorded as a human's correction, or
-            ``None`` -- the same argument :func:`settlement_columns` took.
+            ``None``.
     """
     # pylint: disable=import-outside-toplevel  -- the module convention.
     from app.enums import MovementFigureSourceEnum

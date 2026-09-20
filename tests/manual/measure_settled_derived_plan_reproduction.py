@@ -71,7 +71,8 @@ def main() -> int:
             "  JOIN budget.transactions t ON t.id = a.row_id "
             " WHERE a.table_name = 'transactions' "
             "   AND a.changed_fields::text = :declared "
-            "   AND t.settled_basis_id IS NOT NULL "
+            "   AND EXISTS (SELECT 1 FROM budget.transaction_entries e "
+            "               WHERE e.transaction_id = t.id AND e.covers_settlement) "
             " ORDER BY a.row_id"
         ), {"declared": _DECLARED}).mappings().all()
 

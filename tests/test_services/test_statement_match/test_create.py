@@ -31,7 +31,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import MovementFigureSourceEnum, SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
@@ -42,6 +42,7 @@ from app.services import (
     balance_at,
     pay_calendar,
     statement_match,
+    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -269,8 +270,8 @@ class TestRecordingALineAddsTheMovement:
             db.session.flush()
             db.session.expire(envelope)
 
-            assert envelope.settled_amount is None, (
-                "a purchases settlement stores no figure"
+            assert envelope.covering_movements == [], (
+                "a purchases settlement records no figure of its own"
             )
             assert sum(
                 (entry.amount for entry in envelope.entries), Decimal("0"),
@@ -462,10 +463,9 @@ class TestTheNewEnvelopeArm:
             envelope = db.session.get(Transaction, recorded.transaction_id)
             assert envelope.status.is_settled
             assert envelope.settled_on == day
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
+            assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+                None, None,
             )
-            assert envelope.settled_amount is None
 
     def test_it_lands_in_the_period_of_the_day_it_was_MADE(
         self, app, db, seed_user,
@@ -1389,8 +1389,8 @@ class TestWhatTheScreenMayOFFER:
                 is_envelope=True, status=StatusEnum.DONE,
                 settled_on=seed_user["bootstrap_period"].start_date,
             )
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
+            assert status_seam.recorded_settlement(envelope).source is (
+                MovementFigureSourceEnum.RESOLVED
             )
             assert envelope.id not in self._offered(seed_user)
 

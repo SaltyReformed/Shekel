@@ -42,7 +42,7 @@ from tests._test_helpers import (
     state_template_price,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import settled_contribution, settled_figure
 from app.models.amount_ownership import AmountOwnership
 
 
@@ -1007,7 +1007,7 @@ class TestFullBudgetWorkflow:
             by_name_p0 = {t.name: t for t in period0_txns}
             assert by_name_p0["Rent"].status.name == "Paid"
             assert resolved_amount(by_name_p0["Rent"]) == Decimal("1200.00")
-            assert by_name_p0["Rent"].settled_amount == Decimal("1195.00")
+            assert settled_figure(by_name_p0["Rent"]) == Decimal("1195.00")
             assert by_name_p0["Dining Out"].status.name == "Credit"
             assert resolved_amount(by_name_p0["Dining Out"]) == Decimal("75.00")
             assert settled_contribution(by_name_p0["Dining Out"]) == Decimal("0")

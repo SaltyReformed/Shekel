@@ -101,8 +101,9 @@ or removed in the SAME transaction, which is exactly what the account-10 repair
 (**N-379**) does.  An immediate trigger would refuse that by statement order.
 
 **The service layer states the same rule in WORDS, and that pairing is the
-established shape here** -- ``ck_transactions_settle_day_needs_a_record`` beside
-:func:`app.services.status_seam.reject_settle_day_without_a_record`.
+established shape here** -- ``ck_transaction_entries_positive_amount`` beside
+``entry_service``'s refusal of a purchase worth nothing (ruling
+``bank_import:R-II``).
 :func:`app.services.cash_ledger.reject_movement_before_books_open` is the
 sentence a date box gets; this is why a bulk ``UPDATE``, a raw statement, a
 psql session or a writer nobody enumerated cannot produce the state anyway.

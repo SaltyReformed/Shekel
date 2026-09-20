@@ -48,7 +48,6 @@ from tests._test_helpers import (
     loan_params_for,
     make_transfer_template,
     settle_day_columns,
-    settlement_columns,
 )
 from app.models.amount_ownership import AmountOwnership
 
@@ -385,21 +384,19 @@ class TestPaymentInstallments:
             )
             db.session.commit()
             shadow = _income_shadow(transfer, loan)
-            # The WHOLE settlement record, not just the day.  Three CHECKs weld
-            # it -- the day needs its basis, and it needs a settlement record
-            # (what moved, and how that figure is known) -- so a fixture that
-            # wrote only ``settled_on`` would build a row the database refuses
-            # and this case would grade a state nothing can reach.  What no
-            # CHECK can say is the STATUS, because the settled predicate lives
-            # in ``ref.statuses`` and a constraint cannot join: that is exactly
-            # the gap this row sits in.
-            bypass = {
-                **settle_day_columns(seed_periods[1].start_date),
-                **settlement_columns(
-                    seed_periods[1].start_date, Decimal("1500.00"),
-                ),
-            }
-            for column, value in bypass.items():
+            # The settle DAY pair, welded by its CHECK (the day needs its
+            # basis), so a fixture that wrote only ``settled_on`` would build
+            # a row the database refuses.  What no CHECK can say is the
+            # STATUS, because the settled predicate lives in ``ref.statuses``
+            # and a constraint cannot join: that is exactly the gap this row
+            # sits in.  No covering movement is laid: the bypass is the DAY
+            # on a Projected row, and a dated movement would be a settled
+            # fact of its own (ruling R-BAL79), which is not this case.
+            # (Through plan step balance:X-bi-4b-1 the row's own figure
+            # columns were laid beside the day because a CHECK paired them.)
+            for column, value in settle_day_columns(
+                seed_periods[1].start_date,
+            ).items():
                 setattr(shadow, column, value)
             db.session.commit()
 

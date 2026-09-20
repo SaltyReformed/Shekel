@@ -36,7 +36,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import MovementFigureSourceEnum, SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
@@ -54,7 +54,6 @@ from tests._test_helpers import (
     create_envelope_txn,
     generate_row_of,
     net_posted_by_day,
-    settlement_basis_id,
 )
 from app.services import entry_service, status_seam, transaction_service
 from app.services.cash_ledger import contribution_of, resolve_transaction_amount
@@ -263,7 +262,7 @@ class TestTheDropdownBooksWhatTheRowCost:
             dropdown_row = db.session.get(Transaction, dropdown_id)
             button_row = db.session.get(Transaction, button_id)
             assert settled_contribution(dropdown_row) == settled_contribution(button_row)
-            assert dropdown_row.settled_amount == button_row.settled_amount
+            assert settled_figure(dropdown_row) == settled_figure(button_row)
             assert dropdown_row.status_id == button_row.status_id
             assert _cash_leg(
                 dropdown_id, seed_user["account"].id,
@@ -505,7 +504,7 @@ class TestARevertTakesBackWhatTheSettleDerived:
             assert resp.status_code == 200
             db.session.expire_all()
             reverted = db.session.get(Transaction, txn_id)
-            assert reverted.settled_amount is None
+            assert status_seam.recorded_settlement(reverted) is None
             assert reverted.settled_on is None
             assert _plan_worth(reverted) == Decimal("80.00")
             # The settle's postings reverse with it: nothing is left booked.
@@ -566,12 +565,11 @@ class TestARevertTakesBackWhatTheSettleDerived:
             assert reverted.settled_on is None
             assert reverted.reconciled_by_id is None
             # ... WHAT MOVED is kept, still flagged as the human's figure ...
-            assert reverted.settled_amount == Decimal("245.32")
-            assert reverted.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(reverted) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
             )
             # ... and the row is nonetheless worth its PLAN again, because the
-            # STATUS decides which figure governs, not the columns.
+            # STATUS decides which figure governs, not the record.
             assert settled_figure(reverted) is None
             assert _plan_worth(reverted) == Decimal("500.00")
 
@@ -583,9 +581,8 @@ class TestARevertTakesBackWhatTheSettleDerived:
             ).status_code == 200
             db.session.expire_all()
             resettled = db.session.get(Transaction, txn_id)
-            assert settled_figure(resettled) == Decimal("245.32")
-            assert resettled.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(resettled) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
             )
 
 
@@ -619,7 +616,7 @@ class TestASettledStatusMustMatchTheRowsType:
             assert reloaded.status_id == ref_cache.status_id(
                 StatusEnum.PROJECTED,
             )
-            assert reloaded.settled_amount is None
+            assert status_seam.recorded_settlement(reloaded) is None
 
     def test_the_narrowing_removes_EXACTLY_the_type_mismatch(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -861,9 +858,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert settled_figure(reloaded) == Decimal("245.32")
-            assert reloaded.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
-            )
+            assert status_seam.recorded_settlement(reloaded).stated
             # Still Paid: correcting an observation is not a status change.
             assert reloaded.status_id == paid_status
             assert reloaded.settled_on is not None
@@ -906,7 +901,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
             assert reloaded.status_id == ref_cache.status_id(
                 StatusEnum.PROJECTED,
             )
-            assert reloaded.settled_amount is None
+            assert status_seam.recorded_settlement(reloaded) is None
 
     def test_an_empty_actual_box_is_not_a_figure(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -1016,9 +1011,8 @@ class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
             db.session.commit()
 
             reloaded = db.session.get(Transaction, txn_id)
-            assert settled_figure(reloaded) == Decimal("500.00")
-            assert reloaded.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(reloaded) == status_seam.Settlement(
+                Decimal("500.00"), MovementFigureSourceEnum.TYPED,
             )
 
 
@@ -1080,8 +1074,8 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
                 "a figure submitted alone was discarded and the save still "
                 "answered 200"
             )
-            assert reloaded.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(reloaded).source is (
+                MovementFigureSourceEnum.TYPED
             )
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert reloaded.settled_on == day, (
@@ -1130,9 +1124,8 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
 
             db.session.expire_all()
             second = db.session.get(Transaction, txn_id)
-            assert settled_figure(second) == Decimal("251.08")
-            assert second.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(second) == status_seam.Settlement(
+                Decimal("251.08"), MovementFigureSourceEnum.TYPED,
             )
             assert net_posted_by_day(
                 family_journal_filter(txn_id),
@@ -1146,8 +1139,11 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
         The firing control for the test above: the box is prefilled with what
         the row records, so re-saving must be a no-op even when what it records
         is itself a human's figure.  Graded on the version counter, because the
-        columns look identical either way -- a write that changed nothing is
-        still a write, and it is what a lost-update race is made of.
+        record looks identical either way -- a write that changed nothing is
+        still a write, and it is what a lost-update race is made of.  It is
+        also the firing control for the test BELOW: the counter moves for a
+        correction and not for an echo, and a mark that moved it for both
+        would turn every second tab into a spurious 409.
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -1180,6 +1176,60 @@ class TestAFigureArrivingALONEAtTheTransactionPATCH:
             assert after.version_id == version_before, (
                 "an echoed prefill wrote the row anyway"
             )
+
+    def test_a_stale_tab_cannot_overwrite_a_figure_correction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Two tabs, one pin: a figure correction moves the row's counter.
+
+        **The plain row's half of the transfer's two-tab lost update**
+        (``transfer_service._update._bump_parent_version_if_a_leg_moved``),
+        armed by plan step ``balance:X-bi-4b-2``.  A figure correction writes
+        the covering movement and nothing of the row: through ``X-bi-4b-1``
+        the seam wrote the figure onto the row's own ``settled_amount`` too,
+        so the row was dirty and its counter moved for free; with those
+        columns gone the row stayed clean, tab B's stale pin still matched,
+        and B's prefilled ``$200.00`` overwrote A's ``$214.37`` as a 200.
+        ``status_seam._covering._record_moved`` marks the row whenever its
+        record nets a change, so the pin the popover holds is stale the
+        moment another tab corrects the figure.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods_today[3],
+                "Electricity", Decimal("200.00"),
+            )
+            txn.template.is_envelope = False
+            db.session.commit()
+            txn_id = txn.id
+            assert auth_client.post(
+                f"/transactions/{txn_id}/mark-done",
+            ).status_code == 200
+            db.session.expire_all()
+            shared_pin = db.session.get(Transaction, txn_id).version_id
+
+            first = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"settled_amount": "214.37", "version_id": str(shared_pin)},
+            )
+            assert first.status_code == 200, first.get_data(as_text=True)
+            db.session.expire_all()
+            assert db.session.get(Transaction, txn_id).version_id > shared_pin, (
+                "a figure correction left the row's counter behind"
+            )
+
+            second = auth_client.patch(
+                f"/transactions/{txn_id}",
+                data={"settled_amount": "200.00", "version_id": str(shared_pin)},
+            )
+
+            assert second.status_code == 409, (
+                "a stale tab overwrote a figure correction and reported success"
+            )
+            db.session.expire_all()
+            assert settled_figure(db.session.get(Transaction, txn_id)) == (
+                Decimal("214.37")
+            ), "the stale save landed anyway"
 
 
 class TestAChangedFigureBesideARevert:
@@ -1253,7 +1303,7 @@ class TestAChangedFigureBesideARevert:
             assert after.status_id == ref_cache.status_id(StatusEnum.DONE), (
                 "a refused request reverted the row anyway"
             )
-            assert after.settled_amount == Decimal("245.32")
+            assert settled_figure(after) == Decimal("245.32")
 
     def test_an_UNTOUCHED_box_beside_a_revert_still_unlocks(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1290,7 +1340,7 @@ class TestAChangedFigureBesideARevert:
             # The ASSERTION is withdrawn and WHAT MOVED is kept, so the
             # revert / edit / re-settle round trip stays lossless.
             assert after.settled_on is None
-            assert after.settled_amount == Decimal("245.32")
+            assert status_seam.recorded_settlement(after).amount == Decimal("245.32")
 
 
 class TestAReSubmittedDayDoesNotRestateItsBASIS:

@@ -68,8 +68,9 @@
 
     {# No Actual box: a new transaction is born Projected, and a row records
        what moved only once it HAS moved (plan step X-au-c3).  The box could
-       only ever produce a state ck_transactions_settled_amount_needs_basis
-       refuses, so it is gone rather than validated against. #}
+       only ever produce a state the status seam refuses
+       (reject_settlement_without_settled_status), so it is gone rather than
+       validated against. #}
 
     {# No status selector: a new transaction is born Projected (the create
        route assigns it).  Status changes happen later via mark-done / cancel /

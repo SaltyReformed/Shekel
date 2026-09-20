@@ -2,14 +2,17 @@
 Shekel Budget App -- Status seam: the COVERING MOVEMENT a settle writes.
 
 Plan step **balance:X-bi-3a**, rulings **R-BAL39** and **R-BAL41**.  A bill
-ticked Paid used to record what moved on the bill row alone -- ``settled_amount``
-beside how the figure is known -- while an envelope's purchases were each a row
-of money that moved.  Every settle now records its money the envelope's way: the
-MANUAL branch's settlement is mirrored as ONE covering movement, a
-``budget.transaction_entries`` row carrying the figure the settle booked, who
-wrote it, the day the money moved and how that day is known, and the statement
-that showed it.  ``X-bi-3d`` cut every already-settled row over to this shape
-and ``X-bi-4a`` re-pointed the fold and the posting writer onto movements
+ticked Paid used to record what moved on the bill row alone -- its own
+``settled_amount`` beside how the figure was known -- while an envelope's
+purchases were each a row of money that moved.  Every settle now records its
+money the envelope's way: the MANUAL branch's settlement is recorded as ONE
+covering movement, a ``budget.transaction_entries`` row carrying the figure
+the settle booked, who wrote it, the day the money moved and how that day is
+known, and the statement that showed it.  ``X-bi-3d`` cut every
+already-settled row over to this shape, ``X-bi-4a`` re-pointed the fold and
+the posting writer onto movements, ``X-bi-4b-1`` every other reader, and
+``X-bi-4b-2`` deleted the row's own columns (migration ``45f10b870c8b``), so
+the movement is the record's ONE home
 (ruling **R-BAL80**), ``X-bi-4b-1`` every remaining reader of the record
 (``row_valuation.settled_figure`` sums the row's entries; ``_record``'s
 retained reads take the movement's figure and source); the bill row still
@@ -47,13 +50,14 @@ is ruling **R-BAL45**'s interval rather than a reader deciding for itself
 
 **A revert UN-DATES the covering movement and KEEPS it** (ruling
 **R-BAL61**, plan step ``X-bi-3e-2``).  Leaving the settled band releases
-the row's assertion and keeps what moved (plan step X-au-c3:
-``settled_amount`` and ``settled_basis_id`` outlive a revert), and the next
-settle honours a retained ``corrected`` record or re-prices a ``derived``
-one (``Settlement.from_settle``).  The movement is that record's mirror and,
-since plan step ``X-bi-3e-1``, the record's only home for WHO WROTE the
-figure, which the row's columns never held -- so the mirror follows the
-record: its day pair and clearing link are released with the row's
+the row's assertion and keeps what moved (plan step X-au-c3's rule, held by
+the row's own ``settled_amount`` / ``settled_basis_id`` until ``X-bi-4b-2``
+and by this movement since), and the next settle honours a retained STATED
+record or re-prices a ``resolved`` one (``Settlement.from_settle``).  The
+movement is the record and, since plan step ``X-bi-3e-1``, the only home
+for WHO WROTE the figure, which the row's columns never held -- so the
+movement follows the row's assertion: its day pair and clearing link are
+released with the row's
 (``_follow_assertion``), its figure, source and row survive, and the re-settle
 re-dates the SAME row (``_cover`` through ``_mirror_assertion``; the id
 survives).  A revert deleted it through ``X-bi-3e-1``, and the retained read
@@ -147,6 +151,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Optional
+
+from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum
@@ -286,9 +292,40 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
         movement.reconciled_by_id = row.reconciled_by_id
 
 
+def _record_moved(row: Transaction) -> None:
+    """Move *row*'s optimistic-lock counter: its RECORD changed and it did not.
+
+    **The record is part of the row's aggregate, and the row's counter is
+    what a stale form is caught by** (developer ruling 2026-08-18 for the
+    transfer; the same rule for a plain row).  Both full-edit popovers pin
+    the row's ``version_id`` -- the transfer's through its parent, which
+    ``transfer_service._update`` moves whenever a leg moved -- and since plan
+    step ``balance:X-bi-4b-2`` the settled FIGURE lives on the covering
+    movement alone: a figure correction writes this table and nothing of the
+    row, so the row stays clean, its counter never moves, and a second tab
+    holding the same pin overwrites the correction and reports success --
+    the two-tab lost update ``_update._bump_parent_version_if_a_leg_moved``
+    measured on the live route, back by another door the moment the row's
+    own figure columns went (a ``$214.37`` correction, then a prefilled
+    ``$200.00`` saved over it against the same pin, both 200).  Through
+    ``X-bi-4b-1`` the seam's write of those columns dirtied the row for
+    free.  So the writer that moves the record moves the row's counter,
+    exactly when the record NETS a change (:func:`_cover`, :func:`_withdraw`):
+    an identity re-submit that records the same figure again writes nothing
+    and bumps nothing, or every second tab would meet a spurious 409.
+
+    ``flag_modified`` on ``status_id`` for the reason ``_update`` gives: the
+    row has no field of its own to change here, an assignment of an
+    unchanged value is dropped from the UPDATE, and ``status_id`` is the one
+    column every path through the seam has just written, so it is present
+    in the object state (``flag_modified`` refuses an absent one).
+    """
+    flag_modified(row, "status_id")
+
+
 def _record_onto(
     row: Transaction, movement: TransactionEntry, settlement: Settlement,
-) -> None:
+) -> bool:
     """Write what a settle RECORDS onto *movement*: figure, source, name, day.
 
     The source is the record's own -- WHO WROTE the figure, stated by the
@@ -297,7 +334,13 @@ def _record_onto(
     plan step X-bi-3e-1).  It was inferred here from the day's basis beside
     the figure until that step, and the premise was measured false: a figure
     a person typed over a standing bank-observed day was labelled the bank's.
+
+    Returns:
+        Whether the RECORD -- the figure, its source or the name -- netted a
+        change against what *movement* carried, for :func:`_record_moved`.
+        The day pair is the row's own assertion and moves the row itself.
     """
+    before = (movement.amount, movement.figure_source_id, movement.description)
     movement.amount = settlement.amount
     movement.figure_source_id = ref_cache.movement_figure_source_id(
         settlement.source,
@@ -308,6 +351,9 @@ def _record_onto(
     # rewrites its purchases.  Its day, likewise its own, is the mirror's.
     movement.description = row.name
     _mirror_assertion(row, movement)
+    return before != (
+        movement.amount, movement.figure_source_id, movement.description,
+    )
 
 
 def _cover(row: Transaction, settlement: Settlement) -> None:
@@ -339,7 +385,8 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
                 "a settle writes exactly one, so a second can only have reached "
                 "the table around the status seam."
             )
-        _record_onto(row, movement, settlement)
+        if _record_onto(row, movement, settlement):
+            _record_moved(row)
         return
     movement = TransactionEntry(
         transaction_id=row.id,
@@ -359,6 +406,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     # returns -- posts it in the same pass as the parent's now-zero leg.
     row.entries.append(movement)
     db.session.add(movement)
+    _record_moved(row)
 
 
 def _withdraw(row: Transaction) -> None:
@@ -380,6 +428,7 @@ def _withdraw(row: Transaction) -> None:
         # ledger reconcile walks ``txn.entries`` after the seam returns, and
         # ``delete-orphan`` on the relationship is what issues the DELETE.
         row.entries.remove(movement)
+        _record_moved(row)
 
 
 def _follow_assertion(row: Transaction) -> None:
@@ -396,8 +445,9 @@ def _follow_assertion(row: Transaction) -> None:
       biconditional) and the link goes with it
       (``ck_transaction_entries_cleared_needs_settle_day``).  The figure,
       its source and the row itself STAY: what moved is retained across a
-      revert exactly as the row's own ``settled_amount`` is (plan step
-      X-au-c3), and the next settle re-dates the same row (``_cover``);
+      revert (plan step X-au-c3's rule, this movement its one home since
+      ``X-bi-4b-2``), and the next settle re-dates the same row
+      (``_cover``);
     * **a settle-day correction**: the movement takes the row's new pair;
     * **an identity re-submit**, or a non-settled row that still carries a
       kept movement (re-submitted, cancelled, reactivated): nothing moves.

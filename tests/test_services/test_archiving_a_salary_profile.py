@@ -31,8 +31,8 @@ import pytest
 from app import ref_cache
 from app.enums import (
     AmountSourceEnum,
+    MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -41,12 +41,13 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import (
+    cover_bare_settled_row,
     repriced_by_the_owner,
     capture_sql_statements,
     generate_row_of,
     make_every_period_rule,
 )
-from app.services import salary_profile_service, template_amount_service
+from app.services import salary_profile_service, status_seam, template_amount_service
 from app.services.cash_ledger import (
     derived_amount_basis,
     amounts_by_id,
@@ -271,7 +272,7 @@ class TestArchivingFreezesWhatItWasPricing:
 
         **The RECORD is asserted, not just the plan**, which an adversarial
         review of this step required: without it a freeze that also wrote
-        ``settled_amount`` would pass in full while restating what a received
+        the record would pass in full while restating what a received
         paycheck really paid, which is the one thing this act must never do.
         """
         with app.app_context():
@@ -280,14 +281,11 @@ class TestArchivingFreezesWhatItWasPricing:
                 template, seed_periods[0], status=StatusEnum.RECEIVED,
             )
             settled.settled_on = date(2026, 1, 5)
-            settled.settled_amount = Decimal("4000.00")
-            settled.settled_basis_id = ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
-            )
             settled.settled_day_basis_id = ref_cache.settled_day_basis_id(
                 SettledDayBasisEnum.ENTERED,
             )
             db.session.flush()
+            cover_bare_settled_row(db.session, settled, Decimal("4000.00"))
             db.session.commit()
             basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
             planned = amounts_by_id([settled], basis)[settled.id]
@@ -298,11 +296,10 @@ class TestArchivingFreezesWhatItWasPricing:
 
             assert settled.estimated_amount == planned
             assert planned > _VESTIGIAL
-            # The RECORD, three ways: the stored figure, the basis that says
-            # how it is known, and what a balance actually folds for the row.
-            assert settled.settled_amount == Decimal("4000.00")
-            assert settled.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
+            # The RECORD, two ways: the covering movement's figure and who
+            # wrote it, and what a balance actually folds for the row.
+            assert status_seam.recorded_settlement(settled) == status_seam.Settlement(
+                Decimal("4000.00"), MovementFigureSourceEnum.RESOLVED,
             )
             assert sum(
                 contributions_by_id(

@@ -20,8 +20,8 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import (
+    MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -62,7 +62,6 @@ from tests._test_helpers import (
     resolved_amount,
     rhythm_of,
     settle_day_columns,
-    settlement_basis_id,
     settlement_if_settling,
     state_template_price,
 )
@@ -1396,7 +1395,7 @@ class TestTheTransactionArm:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn.id)
             assert reloaded.settled_on is None
-            assert reloaded.settled_amount is None
+            assert status_seam.recorded_settlement(reloaded) is None
 
     def test_an_envelope_spent_only_BEFORE_the_statement_is_still_offered(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1940,7 +1939,7 @@ class TestTheTransferArm:
 
             db.session.expire_all()
             assert {
-                leg.settled_amount
+                settled_figure(leg)
                 for leg in db.session.query(Transaction)
                 .filter_by(transfer_id=transfer.id).all()
             } == {Decimal("74.11")}
@@ -1972,16 +1971,17 @@ class TestTheTransferArm:
             db.session.commit()
 
             db.session.expire_all()
-            # Both legs RECORD what the settle booked, on the ``derived`` basis
-            # -- an echoed prefill is not a correction, and since plan step
-            # X-au-c3 "not a correction" is a BASIS rather than a NULL figure.
+            # Both legs RECORD what the settle booked, on the ``resolved``
+            # source -- an echoed prefill is not a correction, and since plan
+            # step X-au-c3 "not a correction" is the record's SOURCE rather
+            # than a NULL figure.
             legs = (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=transfer.id).all()
             )
-            assert {leg.settled_basis_id for leg in legs} == {
-                settlement_basis_id(SettlementBasisEnum.DERIVED),
-            }
+            assert {
+                status_seam.recorded_settlement(leg).source for leg in legs
+            } == {MovementFigureSourceEnum.RESOLVED}
             assert {settled_figure(leg) for leg in legs} == {Decimal("75.00")}
 
             events = [
@@ -2068,12 +2068,13 @@ class TestWhatATickBooks:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
-            # The tick RECORDS what it booked and says the basis is ``derived``
-            # -- nobody typed a different figure (plan step X-au-c3).  It
-            # asserted ``actual_amount is None`` until that step, because a NULL
-            # there was the only signal that no human had corrected the row.
-            assert reloaded.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
+            # The tick RECORDS what it booked and says the source is
+            # ``resolved`` -- nobody typed a different figure (plan step
+            # X-au-c3).  It asserted ``actual_amount is None`` until that
+            # step, because a NULL there was the only signal that no human
+            # had corrected the row.
+            assert status_seam.recorded_settlement(reloaded).source is (
+                MovementFigureSourceEnum.RESOLVED
             )
             assert settled_figure(reloaded) == Decimal("180.00")
             assert settled_contribution(reloaded) == Decimal("180.00")
@@ -2099,7 +2100,7 @@ class TestWhatATickBooks:
 
             db.session.expire_all()
             reloaded = db.session.get(Transaction, bill.id)
-            assert reloaded.settled_amount == Decimal("245.32")
+            assert settled_figure(reloaded) == Decimal("245.32")
             # The correction is recorded BESIDE the plan, never into it: the
             # bill is the engine's derived row, so its plan is what the amount
             # model answers, and that is still the definition's $300.00.

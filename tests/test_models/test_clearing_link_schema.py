@@ -61,7 +61,6 @@ from tests._test_helpers import (
     bare_expense_template,
     figure_source_columns,
     settle_day_columns,
-    settlement_columns,
     settlement_if_settling,
 )
 from tests._test_helpers import load_migration_module
@@ -169,16 +168,11 @@ def _make_transaction(data, **overrides) -> Transaction:
     # break it says ``settled_day_basis_id`` outright.
     if "settled_day_basis_id" not in overrides:
         fields.update(settle_day_columns(fields.get("settled_on")))
-    # A row carrying a settle DAY carries the whole settlement RECORD, because
-    # ``ck_transactions_settle_day_needs_a_record`` requires it (plan step
-    # X-au-c3).  The implication runs one way only: the record may outlive the
-    # day, which is what a revert leaves behind.  Resolved here rather than in :func:`_cleared_by`
-    # because that helper also feeds :func:`_make_entry`, and an ENTRY has no
-    # settlement record -- its ``settled_on`` is the day its own purchase
-    # posted.
-    fields.update(
-        settlement_columns(fields.get("settled_on"), fields["estimated_amount"])
-    )
+    # The row's settlement RECORD is its covering movement, a row of the
+    # entries table (plan step ``balance:X-bi-4b-2``); nothing of this table
+    # carries it, so a bare row built here records nothing -- the ``$0.00``
+    # record for a settled one (ruling R-BAL82) -- which is fine on this
+    # axis: every case here grades the CLEARING LINK, never money.
     # **The amount-ownership pair is ONE attribute** (plan step X-au-k), so the
     # figure this builder splats becomes the row's OWNERSHIP at the last
     # moment -- after every line above that reads it as a column.

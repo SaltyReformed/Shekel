@@ -22,9 +22,10 @@ from app.models.transfer_template import TransferTemplate
 from app.models.account import Account, AccountAnchorHistory
 from app.models.ref import TransactionType
 from app import ref_cache
-from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum
+from app.enums import AmountSourceEnum, StatusEnum
 from app.services import (
     pay_period_write, transfer_recurrence, transfer_service,
+    status_seam,
 )
 from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import (
@@ -47,7 +48,6 @@ from tests._test_helpers import (
     create_account_of_type,
     last_covered_day,
     make_cadence_rule,
-    settlement_basis_id,
     shadow_amount,
 )
 from tests.oracles.recurrence_baseline import (
@@ -1845,8 +1845,8 @@ class TestTransferMaintain:
 
         The state ruling X-au-c3 creates deliberately: ``status_seam`` releases
         the ASSERTION on the way out of the settled band (``settled_on``,
-        ``reconciled_by_id``) and KEEPS what moved (``settled_amount``,
-        ``settled_basis_id``), because the full-edit popover instructs the owner
+        ``reconciled_by_id``) and KEEPS what moved (each leg's covering
+        movement, un-dated), because the full-edit popover instructs the owner
         to revert in order to edit.  So the row is the rule's own again -- and
         it carries a figure read off a bank statement.
 
@@ -1867,7 +1867,9 @@ class TestTransferMaintain:
         legs = db.session.query(Transaction).filter_by(
             transfer_id=xfer.id, is_deleted=False,
         ).all()
-        assert [leg.settled_amount for leg in legs] == [figure, figure], (
+        assert [
+            status_seam.recorded_settlement(leg).amount for leg in legs
+        ] == [figure, figure], (
             "setup: both legs must retain the figure through the revert"
         )
         assert all(leg.settled_on is None for leg in legs), (
@@ -2100,7 +2102,9 @@ class TestTransferMaintain:
             legs = db.session.query(Transaction).filter_by(
                 transfer_id=recorded.id, is_deleted=False,
             ).all()
-            assert [leg.settled_amount for leg in legs] == [
+            assert [
+                status_seam.recorded_settlement(leg).amount for leg in legs
+            ] == [
                 Decimal("321.45"), Decimal("321.45"),
             ]
 
@@ -2117,21 +2121,27 @@ class TestTransferMaintain:
         neither retired nor re-pointed at another account without destroying or
         re-filing an observation the owner made.
 
-        **The retention predicate names no such condition, and it does not have
-        to** -- but the PROOF of that is the CHECK-constraint implication, which
-        is its own case below
-        (``test_a_statement_link_cannot_exist_without_a_settlement_record``), not
-        this one.  An adversarial review of R10-b measured that deleting the
-        link from this plant leaves the case green, because the settlement
-        record the same plant carries is what retains the row: the two facts
-        cannot be separated, which is exactly what the implication says.
+        **The retention predicate names the link as its own arm since plan
+        step ``balance:X-bi-4b-2``, and this is that arm's firing control.**
+        Through ``X-bi-4b-1`` it did not have to: two CHECKs chained a link
+        to a settle day to a ``settled_basis_id``, so the record arm caught
+        every linked leg (asked of PostgreSQL by a case that stood beside
+        this one, ``test_a_statement_link_cannot_exist_without_a_settlement_
+        record``, whose docstring named a dropped CHECK as the signal to put
+        the arm back).  X-bi-4b-2 dropped that CHECK with the column: a leg's
+        record is its covering movement, and a ``$0.00`` close holds none
+        (ruling **R-BAL82**) while a statement may still have shown it.  So
+        the plant here is exactly that leg -- drifted out of its parent's
+        status, carrying a settled day and a statement link and NO movement
+        -- and only the link arm retains it; an adversarial review of R10-b
+        measured the old plant green with the link deleted, because its
+        record retained the row, which is why this one carries none.
 
-        What this case pins is that the fullest state a MAINTAINABLE transfer
-        can reach -- a leg drifted out of its parent's status, carrying a
-        settled day, a figure and a statement link, while the parent is still
-        the rule's own row -- is retained rather than retired.  Shadow status
-        drift is a state ruling **R-DO** treats as real; the plant writes the
-        leg directly because no door produces it.
+        What the case pins is that the fullest state a MAINTAINABLE transfer
+        can reach -- a leg drifted out of its parent's status, while the
+        parent is still the rule's own row -- is retained rather than
+        retired.  Shadow status drift is a state ruling **R-DO** treats as
+        real; the plant writes the leg directly because no door produces it.
         """
         with app.app_context():
             template, savings, rows = self._template_with_rows(
@@ -2153,12 +2163,12 @@ class TestTransferMaintain:
             ).one()
             income.status_id = ref_cache.status_id(StatusEnum.DONE)
             record_settle_day(income, an_entered_day(display_today()))
-            income.settled_amount = linked.amount
-            income.settled_basis_id = settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
-            )
             income.reconciled_by_id = statement.id
             db.session.flush()
+            assert income.covering_movements == [], (
+                "setup: the leg must hold no movement, so the link alone "
+                "retains it"
+            )
             assert linked.status.is_immutable is False, (
                 "setup: the PARENT is still the rule's own row"
             )
@@ -2174,50 +2184,6 @@ class TestTransferMaintain:
             assert conflict.retained == [linked.id]
             assert db.session.get(Transfer, linked.id) is not None
             assert db.session.get(Transaction, income.id) is not None
-
-    def test_a_statement_link_cannot_exist_without_a_settlement_record(
-        self, app, db, seed_user, seed_periods
-    ):
-        """The implication the retention predicate rests on, asked of the DB.
-
-        ``_rows_holding_owner_records`` tests a settlement record and NOT a
-        statement link, on the ground that two CHECK constraints chain:
-        ``ck_transactions_cleared_needs_settle_day`` says a link needs a settle
-        day, and ``ck_transactions_settle_day_needs_a_record`` says a settle day
-        needs a basis.  So ``reconciled_by_id IS NOT NULL`` implies
-        ``settled_basis_id IS NOT NULL`` and the record arm already catches every
-        linked row.
-
-        **That argument is what deleted an arm from BOTH engines' predicates at
-        plan step R10-b, so it is asked of PostgreSQL rather than reasoned.**  If
-        either constraint is ever dropped this case fails, which is the signal to
-        put the arm back.
-        """
-        with app.app_context():
-            _, savings, rows = self._template_with_rows(
-                seed_user, seed_periods,
-            )
-            statement = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=savings.id)
-                .order_by(AccountAnchorHistory.id)
-                .first()
-            )
-            income = db.session.query(Transaction).filter_by(
-                transfer_id=rows[0].id, account_id=savings.id,
-            ).one()
-            income.status_id = ref_cache.status_id(StatusEnum.DONE)
-            record_settle_day(income, an_entered_day(display_today()))
-            income.reconciled_by_id = statement.id
-            # A link, a day, and NO record: the state the deleted arm would
-            # have been the only thing to catch.
-            income.settled_amount = None
-            income.settled_basis_id = None
-
-            with pytest.raises(IntegrityError) as caught:
-                db.session.flush()
-            assert "ck_transactions_settle_day_needs_a_record" in str(caught.value)
-            db.session.rollback()
 
     def test_an_endpoint_move_applies_to_a_row_holding_nothing(
         self, app, db, seed_user, seed_periods
@@ -2441,7 +2407,9 @@ class TestTransferMaintain:
             legs = db.session.query(Transaction).filter_by(
                 transfer_id=recorded.id, is_deleted=False,
             ).all()
-            assert [leg.settled_amount for leg in legs] == [
+            assert [
+                status_seam.recorded_settlement(leg).amount for leg in legs
+            ] == [
                 Decimal("58.00"), Decimal("58.00"),
             ]
             assert all(

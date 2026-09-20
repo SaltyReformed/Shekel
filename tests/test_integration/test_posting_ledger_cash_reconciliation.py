@@ -139,6 +139,7 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
+    independent_settled_figure,
     family_journal_filter,
     figure_source_columns,
     add_txn,
@@ -265,13 +266,14 @@ def _independent_transfer_shadow_effect(
     (``status.is_settled``), non-deleted transfer shadows
     (``transfer_id IS NOT NULL``) in *scenario_id*, add ``+effective`` for an
     income shadow (money in) and ``-effective`` for an expense shadow (money
-    out), where ``effective = COALESCE(actual, estimated)``.  The same shape as
-    the Step-2 oracle's transfer reconciliation, read from ``transactions``.
+    out), where ``effective`` is the shadow's settled figure spelled
+    independently (:func:`~tests._test_helpers.independent_settled_figure`;
+    ``COALESCE(actual, estimated)`` through plan step ``balance:X-bi-4b-1``).
+    The same shape as the Step-2 oracle's transfer reconciliation, read from
+    the row tables.
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = _db.func.coalesce(
-        Transaction.settled_amount, Transaction.estimated_amount
-    )
+    effective = independent_settled_figure()
     signed = case(
         (Transaction.transaction_type_id == income_type_id, effective),
         else_=-effective,

@@ -1109,7 +1109,6 @@ class TestTransactionAllCreditNoop:
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
-            txn.settled_amount = Decimal("40.00")
             _db.session.commit()
 
             result = posting_service.sync_transaction_postings(txn)
@@ -1201,13 +1200,16 @@ class TestEnvelopeRefundDominatesBooksAnInflow:
     envelope can genuinely net receive money -- and the ledger must say so.
 
     **It also pins WHY the figure can be negative at all**, which is the part a
-    reader would otherwise have to rediscover: ``ck_transactions_settled_amount``
-    is ``settled_amount IS NULL OR settled_amount >= 0``, so the column could
-    not hold ``-49.00``.  An envelope settling from its purchases stores NO
-    figure (``SettlementBasisEnum.PURCHASES``, ``amount=None``) and derives it
+    reader would otherwise have to rediscover: a settle's record
+    (``status_seam.Settlement``) refuses a negative figure, and the row's own
+    ``settled_amount`` carried ``ck_transactions_settled_amount`` (``>= 0``)
+    through plan step ``balance:X-bi-4b-1``, so no record could hold
+    ``-49.00``.  An envelope settling from its purchases records NO figure of
+    its own (``Settlement(None, None)``, no covering movement) and derives it
     from the entries at read time, which is exactly what lets a refund-dominated
-    row be priced at all.  A future change that made such a row store its figure
-    would fail here rather than at a constraint with no test behind it.
+    row be priced at all.  A future change that made such a row record a
+    figure of its own would fail here rather than at a constructor with no
+    test behind it.
     """
 
     def test_refund_dominated_envelope_books_a_positive_cash_leg(
@@ -1241,8 +1243,8 @@ class TestEnvelopeRefundDominatesBooksAnInflow:
             )
             _db.session.commit()
 
-            # The figure is DERIVED, never stored -- see the class docstring.
-            assert txn.settled_amount is None
+            # The figure is DERIVED, never recorded -- see the class docstring.
+            assert txn.covering_movements == []
 
             cash_ledger = _ledger_id(seed_user["account"])
             groceries_ledger = _resolve_category_ledger(

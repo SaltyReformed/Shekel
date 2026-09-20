@@ -10,10 +10,12 @@ answers WHICH statement was seen to show the money.  The two agreed by
 coincidence of the writers that existed, and the inference was BLIND to the
 third case, so a day the owner typed read as a day the bank had shown.
 
-``settled_day_basis_id`` is the answer, and it is ``settled_basis_id``'s shape
-one column over: finding **N-241** established for the FIGURE that *"which one a
-figure is stands in ``settled_basis_id`` rather than being inferred from a column
-being populated"*, and this is the same sentence about the DAY.
+``settled_day_basis_id`` is the answer, and it is the shape finding **N-241**
+established for the FIGURE -- *"which one a figure is stands in
+``settled_basis_id`` rather than being inferred from a column being
+populated"*, the row's own column then, the covering movement's
+``figure_source_id`` since plan step ``balance:X-bi-4b-2`` -- and this is the
+same sentence about the DAY.
 
 **Every test here is a FIRING CONTROL** (``docs/plans/verification.md`` standard
 4).  A test that asserted the constraint EXISTS would pass against a constraint
@@ -25,11 +27,12 @@ type and the write door for the rules a CHECK cannot state.
 The shapes under test, and the real writer each stands for:
 
 * **the pairing, in BOTH directions and on BOTH tables.**  It is a BICONDITIONAL
-  where the FIGURE's pairing is a bare implication, and the asymmetry is the
-  design: ``settled_amount`` OUTLIVES the assertion that recorded it (a revert
-  releases the day and keeps what moved), so a figure with no day is the legal
-  RETAINED state -- while the basis DESCRIBES the day, so the two are born and
-  released together and a basis left behind is residue nothing means;
+  where the FIGURE's pairing was a bare implication, and the asymmetry is the
+  design: what moved OUTLIVES the assertion that recorded it (a revert releases
+  the day and keeps the covering movement, un-dated), so a figure with no day
+  is the legal RETAINED state -- while the basis DESCRIBES the day, so the two
+  are born and released together and a basis left behind is residue nothing
+  means;
 * **the value type's two refusals** -- an instant, and a ``None`` day.  Both are
   its own documented invariant, and a value type that states a rule it does not
   enforce is the shape this project deletes;
@@ -56,7 +59,6 @@ from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
 )
 from app.extensions import db
@@ -83,7 +85,6 @@ from tests._test_helpers import (
     settle_day_columns,
     settle_instant_on,
     settled_day_basis_id,
-    settlement_columns,
 )
 
 _MIGRATION = load_migration_module(
@@ -188,14 +189,17 @@ def _make_envelope_with_purchase(seed_user, seed_periods, **entry_overrides):
 class TestTheDayAndItsBasisArePairedBothWays:
     """The BICONDITIONAL, on both tables, in both directions.
 
-    **This is the one place the pairing differs from the FIGURE's**, and the
+    **This is the one place the pairing differed from the FIGURE's**, and the
     difference is a design decision rather than an oversight (developer,
-    2026-08-22).  ``ck_transactions_settled_amount_needs_basis`` is a bare
-    implication because a revert RELEASES the day and KEEPS what moved -- so a
-    figure with no day is the legal RETAINED state, and a draft that forbade it
-    destroyed a figure the user had read off a bank statement.  The day's basis
-    has no such split lifetime: it describes the day, so the two are written and
-    cleared in one statement and a basis with no day is residue nothing means.
+    2026-08-22).  The figure's pairing was a bare implication
+    (``ck_transactions_settled_amount_needs_basis``, deleted with the row's
+    figure columns at plan step ``balance:X-bi-4b-2``) because a revert
+    RELEASES the day and KEEPS what moved -- so a figure with no day is the
+    legal RETAINED state (the covering movement, un-dated, since X-bi-3e-2),
+    and a draft that forbade it destroyed a figure the user had read off a
+    bank statement.  The day's basis has no such split lifetime: it describes
+    the day, so the two are written and cleared in one statement and a basis
+    with no day is residue nothing means.
     """
 
     def test_a_transaction_day_with_no_basis_is_refused(
@@ -208,9 +212,6 @@ class TestTheDayAndItsBasisArePairedBothWays:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=seed_periods[0].start_date,
                 settled_day_basis_id=None,
-                **settlement_columns(
-                    seed_periods[0].start_date, Decimal("300.00"),
-                ),
             ))
             with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
                 db.session.flush()
@@ -299,7 +300,6 @@ class TestTheDayAndItsBasisArePairedBothWays:
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 **settle_day_columns(day, SettledDayBasisEnum.ASSERTED),
-                **settlement_columns(day, Decimal("300.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -576,7 +576,6 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
             seed_user, seed_periods,
             status_id=ref_cache.status_id(StatusEnum.DONE),
             settled_on=day, settled_day_basis_id=None,
-            **settlement_columns(day, Decimal("300.00")),
             **overrides,
         )
         db.session.add(txn)
@@ -713,7 +712,6 @@ class TestTheDayBasisMovesNoMoney:
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 **settle_day_columns(day),
-                **settlement_columns(day, Decimal("300.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -746,7 +744,6 @@ class TestTheDayBasisMovesNoMoney:
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 **settle_day_columns(day, SettledDayBasisEnum.ASSERTED),
-                **settlement_columns(day, Decimal("300.00")),
             )
             db.session.add(txn)
             db.session.flush()
@@ -779,7 +776,9 @@ class TestTheFigureBasisAndTheDayBasisAreDifferentColumns:
         the data loss **N-241**'s fix exists to prevent.
         """
         # pylint: disable-next=import-outside-toplevel
-        from app.services.status_seam import Settlement, apply_status_change
+        from app.services.status_seam import (
+            Settlement, apply_status_change, recorded_settlement,
+        )
 
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
@@ -807,8 +806,7 @@ class TestTheFigureBasisAndTheDayBasisAreDifferentColumns:
             assert txn.settled_day_basis_id is None
             assert txn.reconciled_by_id is None
             # WHAT MOVED is kept, which is the whole point of the split.
-            assert txn.settled_amount == Decimal("287.31")
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert recorded_settlement(txn) == Settlement(
+                Decimal("287.31"), MovementFigureSourceEnum.TYPED,
             )
             db.session.rollback()

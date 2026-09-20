@@ -15,7 +15,6 @@ import sqlalchemy.exc
 from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -32,6 +31,7 @@ from app.services import (
     loan_posting_service,
     pay_period_write,
     transfer_service,
+    status_seam,
 )
 from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
@@ -45,8 +45,7 @@ from tests._test_helpers import (
     an_entered_day,
     create_loan_account,
     generate_transfer_of,
-    settlement_basis_id,
-    settlement_columns,
+    cover_bare_settled_row,
     shadow_amount,
 )
 from app.services.settle_day import record_settle_day
@@ -172,7 +171,7 @@ class TestCreateTransfer:
                 assert s.template_id is None
                 assert s.is_override is False
                 assert s.is_deleted is False
-                assert s.settled_amount is None
+                assert status_seam.recorded_settlement(s) is None
 
             expense = [s for s in shadows if s.transaction_type_id == expense_type.id][0]
             income = [s for s in shadows if s.transaction_type_id == income_type.id][0]
@@ -575,9 +574,9 @@ class TestUpdateTransfer:
         **This asserted the opposite until plan step X-au-c3** -- an
         ``actual_amount`` handed to ``update_transfer`` was written onto both
         shadows whatever their status.  A figure now RECORDS what moved, and
-        ``ck_transactions_settled_amount_needs_basis`` keeps one off a row whose
-        money has not; the service refuses the request with a designed 400
-        before any column is reached, rather than letting it reach the database.
+        the seam keeps one off a row whose money has not
+        (``reject_settlement_without_settled_status``); the service refuses
+        the request with a designed 400 before any write.
 
         No form can produce it: the correction box renders only on a settled
         row.  To record a figure, settle the transfer -- the same act that
@@ -596,8 +595,7 @@ class TestUpdateTransfer:
             shadows = db.session.query(Transaction).filter_by(transfer_id=xfer.id).all()
             assert len(shadows) == 2
             for shadow in shadows:
-                assert shadow.settled_amount is None
-                assert shadow.settled_basis_id is None
+                assert status_seam.recorded_settlement(shadow) is None
 
     def test_is_override_syncs_shadows(self, app, db, transfer_data):
         """is_override update propagates to transfer and both shadows."""
@@ -722,7 +720,7 @@ class TestUpdateTransfer:
                 transfer_id=xfer.id,
             ).all()
             for shadow in shadows:
-                assert shadow.settled_amount == Decimal("100")
+                assert settled_figure(shadow) == Decimal("100")
 
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=projected_id,
@@ -737,8 +735,9 @@ class TestUpdateTransfer:
                 assert shadow.settled_on is None
                 assert shadow.reconciled_by_id is None
                 # ... and WHAT MOVED is kept, on BOTH legs (Invariant 3).
-                assert shadow.settled_amount == Decimal("100")
-                assert shadow.settled_basis_id is not None
+                assert status_seam.recorded_settlement(shadow) == status_seam.Settlement(
+                    Decimal("100"), MovementFigureSourceEnum.TYPED,
+                )
                 # Kept, but not counted: the status is what decides.
                 assert settled_figure(shadow) is None
 
@@ -1304,13 +1303,12 @@ class TestRestoreTransfer:
             drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
             # The whole record is stripped with the day, which is the LEGACY
             # drift this test is about: a row that pre-dates the settlement
-            # record entirely.  ``ck_transactions_settle_day_needs_a_record`` only
-            # forbids the reverse (a day naming no figure), so the RETAINED
-            # shape -- record kept, day released -- is legal and is covered by
-            # ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
+            # record entirely -- so its covering movement goes too.  The
+            # RETAINED shape -- movement kept, day released -- is legal and is
+            # covered by ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
             record_settle_day(drifted, None)
-            drifted.settled_amount = None
-            drifted.settled_basis_id = None
+            for movement in drifted.covering_movements:
+                drifted.entries.remove(movement)
             db.session.flush()
             assert sibling.settled_on == real_settle
 
@@ -1442,11 +1440,8 @@ class TestRestoreTransfer:
             # A dated row carries the whole record (plan step X-au-c3); the
             # drift under test is the STATUS, so the record is coherent.
             record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
-            for column, value in settlement_columns(
-                date(2026, 3, 20), shadow_amount(drifted),
-            ).items():
-                setattr(drifted, column, value)
             db.session.flush()
+            cover_bare_settled_row(db.session, drifted, shadow_amount(drifted))
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
             db.session.flush()
@@ -1505,13 +1500,12 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).first()
             )
             # The drift: a shadow that walked to Cancelled on its own.  The
-            # settle record goes with the status, because a Cancelled row
-            # records nothing -- so the fixture expresses exactly one defect
-            # rather than three (plan step X-au-c3).
+            # settle day goes with the status (a Cancelled row asserts no
+            # day), so the fixture expresses exactly one defect rather than
+            # two; the covering movement stays, as it does when the seam
+            # cancels a settled row (X-bi-3e-2).
             drifted.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
             record_settle_day(drifted, None)
-            for column, value in settlement_columns(None, None).items():
-                setattr(drifted, column, value)
             db.session.flush()
 
             assert ref_cache.status_id(StatusEnum.DONE) not in (
@@ -2245,11 +2239,10 @@ class TestTheStatusMirrorIsAtomic:
             # As above: the drift under test is the STATUS alone, so the day
             # and the RECORD come with it (plan step X-au-c3).
             record_settle_day(income_shadow, an_entered_day(display_today()))
-            for column, value in settlement_columns(
-                display_today(), shadow_amount(income_shadow),
-            ).items():
-                setattr(income_shadow, column, value)
             db.session.flush()
+            cover_bare_settled_row(
+                db.session, income_shadow, shadow_amount(income_shadow),
+            )
 
             with pytest.raises(ValidationError):
                 transfer_service.update_transfer(
@@ -2332,9 +2325,8 @@ class TestTheFigureCorrectionDoorOnAPair:
             db.session.flush()
 
             for leg in self._legs(xfer.id):
-                assert settled_figure(leg) == Decimal("263.11")
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.CORRECTED,
+                assert status_seam.recorded_settlement(leg) == status_seam.Settlement(
+                    Decimal("263.11"), MovementFigureSourceEnum.TYPED,
                 )
                 assert leg.settled_on == day, (
                     "a figure correction moved the pair's day"
@@ -2403,23 +2395,24 @@ class TestTheFigureCorrectionDoorOnAPair:
                 "the refusal ran AFTER the amount write"
             )
             for leg in self._legs(xfer.id):
-                assert leg.settled_amount is None
-                assert leg.settled_basis_id is None
+                assert status_seam.recorded_settlement(leg) is None
 
-    def test_an_echo_leaves_the_derived_basis_standing(
+    def test_an_echo_leaves_the_resolved_source_standing(
         self, app, db, transfer_data,
     ):
         """Re-posting the prefilled figure must not manufacture a correction.
 
-        The basis is the only stored signal that a human read a number off a
-        statement, and this form submits every input it renders on every save.
+        The movement's source is the only stored signal that a human read a
+        number off a statement, and this form submits every input it renders
+        on every save.
         """
         with app.app_context():
             td = transfer_data
             xfer = self._settled_transfer(td)
-            derived = settlement_basis_id(SettlementBasisEnum.DERIVED)
+            resolved = MovementFigureSourceEnum.RESOLVED
             assert all(
-                leg.settled_basis_id == derived for leg in self._legs(xfer.id)
+                status_seam.recorded_settlement(leg).source is resolved
+                for leg in self._legs(xfer.id)
             )
 
             transfer_service.update_transfer(
@@ -2428,7 +2421,7 @@ class TestTheFigureCorrectionDoorOnAPair:
             db.session.flush()
 
             for leg in self._legs(xfer.id):
-                assert leg.settled_basis_id == derived
+                assert status_seam.recorded_settlement(leg).source is resolved
 
     def test_a_settle_still_owns_a_figure_arriving_with_it(
         self, app, db, transfer_data,
@@ -2477,9 +2470,8 @@ class TestTheFigureCorrectionDoorOnAPair:
                 "it, so the freeze was resolved after the status flip"
             )
             for leg in self._legs(xfer.id):
-                assert settled_figure(leg) == Decimal("241.00")
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.CORRECTED,
+                assert status_seam.recorded_settlement(leg) == status_seam.Settlement(
+                    Decimal("241.00"), MovementFigureSourceEnum.TYPED,
                 ), "a figure that differs from the plan IS a correction"
                 assert leg.settled_on is not None
 

@@ -30,7 +30,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.statement_line_skip import StatementLineSkip
@@ -43,6 +43,7 @@ from app.services import (
     transaction_service,
 )
 from app.services.posting_reads import PostingError
+from app.services.row_valuation import settled_figure
 from app.services.statement_match import (
     IncomeCreation,
     MatchSubmission,
@@ -909,7 +910,7 @@ class TestTheReceiptSaysWhatHappened:
                 outcome.applied[0].summary
             )
             db.session.expire_all()
-            assert row.settled_amount == Decimal("180.04")
+            assert settled_figure(row) == Decimal("180.04")
 
     def test_an_EMPTY_pass_is_not_an_error(self, app, db, seed_user):
         """Ticking nothing and pressing Apply is an ordinary thing to do."""
@@ -1169,8 +1170,7 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
         # differ on ``id`` and on nothing else that matters.  An id is not
         # money; what the two runs must agree on is what each row RECORDS.
         rows = app_db.session.execute(_db.text(
-            "SELECT name, settled_on, settled_amount, settled_basis_id,"
-            "       status_id, estimated_amount"
+            "SELECT name, settled_on, status_id, estimated_amount"
             "  FROM budget.transactions ORDER BY name, id"
         )).all()
         entries = app_db.session.execute(_db.text(
@@ -1691,8 +1691,8 @@ class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
             envelope, settle_day=an_entered_day(closed_on),
         )
         db.session.flush()
-        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.PURCHASES,
+        assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+            None, None,
         )
         assert envelope.covering_movements == []
         statement = an_import(seed_user)
