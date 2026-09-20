@@ -16,7 +16,7 @@
 #}
 {% macro period_picker(prev_url, next_url, label, unit="month", can_next=true) %}
 <div class="d-flex align-items-center gap-2">
-  <button class="btn btn-sm btn-outline-secondary"
+  <button type="button" class="btn btn-sm btn-outline-secondary"
           hx-get="{{ prev_url }}"
           hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
           aria-label="Previous {{ unit }}">
@@ -24,14 +24,14 @@
   </button>
   <span class="fw-semibold analytics-picker-label">{{ label }}</span>
   {% if can_next %}
-  <button class="btn btn-sm btn-outline-secondary"
+  <button type="button" class="btn btn-sm btn-outline-secondary"
           hx-get="{{ next_url }}"
           hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner"
           aria-label="Next {{ unit }}">
     <i class="bi bi-chevron-right"></i>
   </button>
   {% else %}
-  <button class="btn btn-sm btn-outline-secondary" disabled
+  <button type="button" class="btn btn-sm btn-outline-secondary" disabled
           aria-label="Next {{ unit }} (none)">
     <i class="bi bi-chevron-right"></i>
   </button>

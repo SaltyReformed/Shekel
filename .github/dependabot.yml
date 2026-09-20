@@ -35,15 +35,10 @@ updates:
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
-      # rumdl is pinned deliberately at 0.2.58 (its canonical Markdown forms
-      # changed; a bump reflows every planning document) and stays until
-      # that reflow is its own decision.
-      - dependency-name: rumdl
-      # djlint 1.46 adds 29 template findings (buttons without a type
-      # attribute, blank lines, one parser complaint) that are the UI leaf's
-      # to read one by one; until that leaf ships, a djlint bump turns CI's
-      # polyglot-lint red and would block the grouped PR with it.
-      - dependency-name: djlint
+      # (rumdl and djlint were held here until the 2026-09-20 UI leaf read
+      # their findings and moved both pins; a lint-tool release that flags
+      # unchanged files now arrives as a red grouped PR, which is the
+      # signal to read its findings the same way.)
       # redis-py 8.x is out of reach while limits (Flask-Limiter's storage
       # layer) declares redis<8.0.0 in its redis extra -- an extra nothing
       # pinned requests, so pip alone would not refuse it.

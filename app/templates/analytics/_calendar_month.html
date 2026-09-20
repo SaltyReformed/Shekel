@@ -39,7 +39,7 @@
          url_for('analytics.calendar_tab', view='month', year=next_year, month=next_month),
          month_name ~ " " ~ year,
        ) }}
-    <button class="btn btn-sm btn-outline-secondary"
+    <button type="button" class="btn btn-sm btn-outline-secondary"
             hx-get="{{ url_for('analytics.calendar_tab', view='year', year=year) }}"
             hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner">
       <i class="bi bi-grid-3x3-gap"></i> Year

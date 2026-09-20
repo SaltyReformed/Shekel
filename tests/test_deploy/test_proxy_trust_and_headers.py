@@ -48,6 +48,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.test_deploy._compose import BASE_COMPOSE, NGINX_TEST_IMAGE
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_DIR = REPO_ROOT / "deploy"
@@ -57,7 +59,6 @@ BUNDLED_NGINX_CONF = DEPLOY_DIR / "nginx-bundled" / "nginx.conf"
 SHARED_NGINX_CONF = DEPLOY_DIR / "nginx-shared" / "nginx.conf"
 SHARED_VHOST_CONF = DEPLOY_DIR / "nginx-shared" / "conf.d" / "shekel.conf"
 PROD_COMPOSE_OVERRIDE = DEPLOY_DIR / "docker-compose.prod.yml"
-BASE_COMPOSE = REPO_ROOT / "docker-compose.yml"
 CLOUDFLARED_TEMPLATE = REPO_ROOT / "cloudflared" / "config.yml"
 
 # Pinned subnets used by Commit C-33.  Each test that asserts a CIDR
@@ -80,7 +81,6 @@ SECURITY_HEADERS = (
     ),
 )
 
-NGINX_TEST_IMAGE = "nginx:1.27-alpine"
 DOCKER_SUBPROCESS_TIMEOUT_S = 60
 
 
@@ -428,7 +428,9 @@ class TestSharedVhostSecurityHeaders:
 @pytest.mark.docker
 class TestSharedVhostNginxParse:
     """Validate ``deploy/nginx-shared/`` parses cleanly via
-    ``nginx -t`` inside an ephemeral nginx:1.27-alpine container.
+    ``nginx -t`` inside an ephemeral container of the compose's bundled
+    nginx image (``NGINX_TEST_IMAGE``; production's shared proxy runs a
+    later line, see ``_compose``).
 
     The shared-mode config references TLS certificate paths
     (``/etc/nginx/certs/fullchain.pem``) that exist only on the

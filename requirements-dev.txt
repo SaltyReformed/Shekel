@@ -38,10 +38,13 @@ pylint-flask-sqlalchemy==0.2.0
 # Polyglot-cleanup Phase 5 linters (pip-installable). The binary tools
 # (shellcheck, shfmt, biome, actionlint, typos, gitleaks, hadolint) are
 # installed on the host and pinned by download in CI; these four ship
-# via pip, so they live here and CI installs them with this file.
-# Versions match the host toolchain; pinning guards against rule/dictionary
-# drift newly flagging unchanged files between releases. rumdl is the
-# Markdown lint + format gate (living docs only; see .rumdl.toml excludes).
+# via pip, so they live here and CI installs them with this file, and the
+# pre-commit hooks invoke them as `.venv/bin/<tool>` (since 2026-09-20), so
+# this file is the ONE home of each version and the host's own package, if
+# any, is never what a commit is graded by. Pinning guards against
+# rule/dictionary drift newly flagging unchanged files between releases.
+# rumdl is the Markdown lint + format gate (living docs only; see
+# .rumdl.toml excludes).
 #
 # rumdl 0.2.14 -> 0.2.58 on 2026-08-25, to CLOSE a mismatch rather than to take
 # a feature.  The `rumdl` pre-commit hook is `language: system` and unpinned, so
@@ -63,10 +66,25 @@ pylint-flask-sqlalchemy==0.2.0
 # mirror image of the bug this closes.  It is also what makes CI's version
 # OBSERVABLE rather than assumed: `polyglot-lint` passing on this tree could
 # only happen at 0.2.58.
+#
+# rumdl 0.2.58 -> 0.2.74 on 2026-09-20 (the UI leaf), measured first on a copy:
+# 0.2.74's `check` flags exactly two MD013 paragraph-normalisation findings in
+# two design docs and its `fmt` reflows only those (word content identical,
+# heading counts unchanged, docs/plans untouched) -- so the "a bump reflows
+# every planning document" reason the Dependabot config gave for holding it is
+# false at this version and the hold is gone.  The two versions again reject
+# each other's form of those two paragraphs, so the reflow rides in the same
+# commit as the pin and the pull-then-reinstall note above still applies.
+# The host-parity rule the 2026-08-25 paragraph relied on is RETIRED with this
+# bump: the host's Arch package was 0.2.73 that day (0.2.74 unpackaged) and
+# would have failed every Markdown commit made without the venv on PATH, so
+# the hooks now run `.venv/bin/rumdl` (and the other three pip tools the
+# same way) rather than PATH's binary.  The version the host happens to ship
+# no longer matters to any gate.
 yamllint==1.38.0
 zizmor==1.30.1
-djlint==1.39.2
-rumdl==0.2.58
+djlint==1.46.2
+rumdl==0.2.74
 
 # Pre-commit framework: runs the local hooks in .pre-commit-config.yaml
 # (pylint app/ + the custom checkers) before each commit, mirroring the CI

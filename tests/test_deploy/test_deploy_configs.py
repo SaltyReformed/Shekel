@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.test_deploy._compose import BASE_COMPOSE, NGINX_TEST_IMAGE
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_DIR = REPO_ROOT / "deploy"
 
@@ -29,13 +31,7 @@ BUNDLED_NGINX_CONF = DEPLOY_DIR / "nginx-bundled" / "nginx.conf"
 SHARED_NGINX_CONF = DEPLOY_DIR / "nginx-shared" / "nginx.conf"
 SHARED_VHOST_CONF = DEPLOY_DIR / "nginx-shared" / "conf.d" / "shekel.conf"
 PROD_COMPOSE_OVERRIDE = DEPLOY_DIR / "docker-compose.prod.yml"
-BASE_COMPOSE = REPO_ROOT / "docker-compose.yml"
 DEPLOY_README = DEPLOY_DIR / "README.md"
-
-# Image used for ``nginx -t`` validation.  Pinned to the same minor
-# version as the bundled service in docker-compose.yml so the parser
-# behavior under test matches the parser that runs in production.
-NGINX_TEST_IMAGE = "nginx:1.27-alpine"
 
 # Subprocess timeout for docker invocations.  Generous because the
 # initial image pull on a fresh CI host can take 10-20 seconds, but
@@ -176,7 +172,8 @@ class TestDeployNginxConfigParses:
 
     def test_deploy_nginx_config_parses(self) -> None:
         """``nginx -t`` against deploy/nginx-bundled/nginx.conf must
-        exit 0 inside an ephemeral nginx:1.27-alpine container.
+        exit 0 inside an ephemeral container of the compose's bundled
+        nginx image (``NGINX_TEST_IMAGE``).
         """
         if not _docker_available():
             pytest.skip("docker not available; cannot run nginx -t in container")

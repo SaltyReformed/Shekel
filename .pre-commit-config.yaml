@@ -191,10 +191,19 @@ repos:
       # .yamllint, .djlintrc, .gitleaks.toml, _typos.toml, .hadolint.yaml),
       # plus .djlint_rules.yaml, which carries this project's own djlint
       # rule SHK01 (inline styles; bank_import:N-405).
-      # All run language:system, so they use the host binaries (shellcheck,
-      # shfmt, biome, actionlint, typos, gitleaks, hadolint) and the venv
-      # pip tools (yamllint, zizmor, djlint, rumdl). These mirror the ci.yml
-      # polyglot-lint job; CI remains the enforced gate.
+      # All run language:system. The host binaries (shellcheck, shfmt,
+      # biome, actionlint, typos, gitleaks, hadolint) come off PATH; the
+      # four pip tools (yamllint, zizmor, djlint, rumdl) are invoked as
+      # `.venv/bin/<tool>` -- the repo's pinned copy from requirements-dev.txt
+      # -- and NOT off PATH, because a shell without the venv first on PATH
+      # would otherwise run the host's package at whatever version Arch
+      # ships (measured 2026-09-20: rumdl 0.2.73 on the host against 0.2.74
+      # pinned, and the two reject each other's line wrapping), failing a
+      # commit for a reason belonging to neither the author nor CI. Every
+      # checkout carries `.venv` (CLAUDE.md: a worktree symlinks the main
+      # one), so the path is the one home of each pin and the host package
+      # is irrelevant. These mirror the ci.yml polyglot-lint job, which
+      # installs the same pins; CI remains the enforced gate.
       - id: shellcheck
         name: shellcheck (shell; masked-errexit groups via .shellcheckrc)
         entry: shellcheck
@@ -207,7 +216,7 @@ repos:
         types: [shell]
       - id: yamllint
         name: yamllint
-        entry: yamllint
+        entry: .venv/bin/yamllint
         language: system
         types: [yaml]
       - id: actionlint
@@ -221,7 +230,7 @@ repos:
         # The whole .github/ tree, not workflows/ alone: zizmor audits
         # dependabot.yml too (its dependabot-cooldown rule), and a path
         # scoped to workflows/ left that file ungated (deps refresh 2026-09-20).
-        entry: zizmor --offline .github/
+        entry: .venv/bin/zizmor --offline .github/
         language: system
         files: ^\.github/.*\.ya?ml$
         pass_filenames: false
@@ -253,7 +262,7 @@ repos:
         pass_filenames: false
       - id: djlint
         name: djlint (Jinja templates, lint-only)
-        entry: djlint --lint
+        entry: .venv/bin/djlint --lint
         language: system
         files: ^app/templates/.*\.html$
       - id: jinja-syntax
@@ -267,7 +276,7 @@ repos:
         # rumdl scans the whole tree honoring .rumdl.toml excludes, so it runs
         # unfiltered (pass_filenames: false); the files key just gates WHEN the
         # hook fires (any staged Markdown change).
-        entry: rumdl check
+        entry: .venv/bin/rumdl check
         language: system
         files: \.md$
         pass_filenames: false

@@ -13,7 +13,7 @@
          year,
          unit="year",
        ) }}
-    <button class="btn btn-sm btn-outline-secondary"
+    <button type="button" class="btn btn-sm btn-outline-secondary"
             hx-get="{{ url_for('analytics.calendar_tab', view='month', year=year) }}"
             hx-target="#tab-content" hx-swap="innerHTML" hx-indicator="#tab-spinner">
       <i class="bi bi-calendar"></i> Month
