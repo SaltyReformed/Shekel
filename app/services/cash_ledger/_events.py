@@ -673,10 +673,11 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
     * ``TransactionEntry.account_id == account_id`` -- **the MOVEMENT's own
       account, never its parent's** (ruling **R-BAL75**): a movement is
       counted where its money moved, and its plan row's ``account_id`` is
-      where the row was EXPECTED to be paid from.  The two are held equal
-      today by ``fk_transaction_entries_parent_account``, which the card arc
-      drops at its first cross-account writer (ruling **R-BAL76**); the
-      posted ledger already attributes by the movement
+      where the row was EXPECTED to be paid from.  The two were held equal
+      by ``fk_transaction_entries_parent_account`` until plan step
+      ``credit_card:CC-5-1`` dropped it (ruling **R-BAL76**) ahead of the
+      card's doors, which write the first movements whose account is not
+      their parent's; the posted ledger already attributes by the movement
       (``_posting_purchases._purchase_target``), so the fold, the ledger and
       the anchor self-heal read one predicate rather than agreeing by a key.
     * the parent's ``scenario_id`` -- a movement's scenario is its plan row's,

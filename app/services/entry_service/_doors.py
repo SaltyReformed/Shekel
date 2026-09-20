@@ -365,11 +365,19 @@ def create_entry(
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
-        # The parent's account, written explicitly rather than derived at flush
-        # time.  ``fk_transaction_entries_parent_account`` refuses any other
-        # value, so this line cannot be silently wrong -- it can only be absent,
-        # and absent is a NOT NULL violation.
+        # The parent's account: where the row is EXPECTED to be paid from,
+        # which is the purchase's default until the door takes an account of
+        # its own (plan step ``credit_card:CC-5-2``; a card swipe in a
+        # checking envelope is a movement ON the card, ruling **R-CC15**).
+        # Written explicitly rather than derived at flush time, so this line
+        # cannot be silently wrong -- only absent, which is a NOT NULL
+        # violation.
         account_id=txn.account_id,
+        # The ROW's owner, never the caller (``user_id`` below is the AUTHOR,
+        # a companion's own id when a companion records the purchase).
+        # ``fk_transaction_entries_owner_transaction`` refuses any other value
+        # (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
+        owner_id=txn.user_id,
         user_id=user_id,
         amount=details.figure.amount,
         description=details.description,

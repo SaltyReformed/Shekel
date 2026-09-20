@@ -159,13 +159,18 @@ def _make_envelope_template_and_txn(seed_user, period):
 
 def _make_entry(txn_id, user_id):
     """Insert a TransactionEntry on the given transaction."""
+    # The parent, resolved here rather than taken as an argument: this
+    # helper's whole point is that a caller passes IDS.  The entry takes its
+    # account (the parent's, because no door here says otherwise -- it is the
+    # movement's OWN since plan step credit_card:CC-5-1) and its owner (the
+    # parent's, which ``fk_transaction_entries_owner_transaction`` refuses to
+    # see any other way).
+    parent = db.session.get(Transaction, txn_id)
     entry = TransactionEntry(
         **figure_source_columns(),
         transaction_id=txn_id,
-        # The parent's account, resolved from the id this helper takes: an
-        # entry's account IS its parent's, and the schema refuses any other
-        # value (``fk_transaction_entries_parent_account``).
-        account_id=db.session.get(Transaction, txn_id).account_id,
+        account_id=parent.account_id,
+        owner_id=parent.user_id,
         user_id=user_id,
         amount=Decimal("25.00"),
         description="Kroger",

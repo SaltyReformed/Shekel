@@ -125,10 +125,13 @@ two of the owner's accounts is neither income nor expense.
 
 **A movement moves with its parent** (ruling **R-BAL46**).  The one parent
 whose account can change is a shadow re-pointed by
-``transfer_service._endpoints._apply_endpoint_move``; the co-located key
-``fk_transaction_entries_parent_account`` cascades the move (migration
-``c4e8a2d7f1b3``) and the applier assigns the movements' account as well, so
-the session agrees with the database.  Nothing here reads the account.
+``transfer_service._endpoints._apply_endpoint_move``, and that applier is the
+ONE writer of the move since plan step ``credit_card:CC-5-1``: the co-located
+key that cascaded it, ``fk_transaction_entries_parent_account``, is dropped
+(ruling **R-BAL76**), because a movement's account is its own -- where its
+money moved, which for a card purchase in a checking envelope is the card.
+The movement this module writes takes its parent's account until the settle
+door takes a TENDER of its own (``CC-5-3``); nothing here reads the account.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 mutates in place and never commits; the withdraw arm's posting reversal
@@ -390,9 +393,15 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
         return
     movement = TransactionEntry(
         transaction_id=row.id,
-        # The parent's account, as ``entry_service.create_entry`` writes it:
-        # ``fk_transaction_entries_parent_account`` refuses any other value.
+        # The parent's account -- where the row was EXPECTED to be paid from
+        # (ruling **R-CC16**) -- as ``entry_service.create_entry`` writes it,
+        # until the settle door takes the TENDER account of its own (plan step
+        # ``credit_card:CC-5-3``: a bill charged to the card is settled with
+        # its covering movement on the card, ruling **R-CC15**).
         account_id=row.account_id,
+        # The row's OWNER, which ``fk_transaction_entries_owner_transaction``
+        # holds it to (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
+        owner_id=row.user_id,
         # The AUTHOR column names who recorded the movement; the seam records
         # it on the owner's behalf, and the owner is the row's.
         user_id=row.user_id,

@@ -702,6 +702,7 @@ class TestTheTwoTiersAgree:
                 **figure_source_columns(),
                 transaction_id=parent.id,
                 account_id=account.id,
+                owner_id=parent.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("10.00"),
                 description="A posted purchase",

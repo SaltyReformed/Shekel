@@ -2417,10 +2417,15 @@ class TestRegenerateForTemplate:
     ):
         """Repointing a template's account must not drag purchases silently.
 
-        The developer's ruling on the third shape: a purchase's account IS its
-        parent's (``fk_transaction_entries_parent_account``) and its statement
-        link is scoped BY account (``fk_transaction_entries_reconciled_by``), so
-        moving the row moves the purchases and invalidates what cleared them.
+        The developer's ruling on the third shape, as it stood: a purchase's
+        account WAS its parent's (``fk_transaction_entries_parent_account``,
+        dropped at plan step ``credit_card:CC-5-1``, ruling **R-BAL76**) and
+        its statement link is scoped BY account
+        (``fk_transaction_entries_reconciled_by``), so moving the row moved
+        the purchases and invalidated what cleared them.  Since CC-5-1 a
+        moved row would LEAVE its purchases where their money moved; the arm
+        is kept until the readers still keyed by the parent's account are
+        re-pointed at ``CC-5-2``, which retires it and re-expresses this case.
         The pass leaves such a row exactly as it found it and reports it.
         """
         with app.app_context():

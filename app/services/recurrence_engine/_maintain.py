@@ -226,11 +226,18 @@ def _rows_the_definition_reattributes(existing, template) -> "set[int]":
     about the model rather than about maintenance (plan step R10-b).
 
     Applying such a move is what the retention rule refuses on a row holding
-    records: ``fk_transaction_entries_parent_account`` binds a purchase's
-    account to its parent's, so moving the row drags every purchase onto the new
-    account, and ``fk_transaction_entries_reconciled_by`` scopes a clearing link
-    BY ACCOUNT, so the statement link the purchases carry is invalidated by the
-    same edit.  A row carrying NOTHING follows its template's account freely,
+    records.  Through plan step ``credit_card:CC-5-1`` the reason was the
+    schema's: ``fk_transaction_entries_parent_account`` bound a purchase's
+    account to its parent's, so moving the row dragged every purchase onto the
+    new account, and ``fk_transaction_entries_reconciled_by`` scopes a clearing
+    link BY ACCOUNT, so the statement link the purchases carried was
+    invalidated by the same edit.  Since that step a movement's account is its
+    own (ruling **R-BAL76**; the key is dropped) and a moved row would leave
+    its purchases where their money moved -- which is the design's reading --
+    but the readers that scope a purchase by its PARENT's account (the
+    reconcile panel's offer, ``reconcile_service._purchases``) are re-pointed
+    at ``CC-5-2``, and this arm is retired there with them rather than one
+    leaf early.  A row carrying NOTHING follows its template's account freely,
     which is the ordinary case and the behaviour every earlier version had.
 
     **It takes the TEMPLATE rather than its account id** (plan step

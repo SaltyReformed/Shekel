@@ -1363,14 +1363,17 @@ class TestATransfersMovementsFollowItsLifecycle:
     def test_an_endpoint_move_carries_the_movements_to_the_new_account(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-BAL46: the movement's account IS its parent's, on a move too.
+        """Ruling R-BAL46: a leg's movement moves with its leg, by the applier.
 
-        Without migration ``c4e8a2d7f1b3``'s ``ON UPDATE CASCADE`` the move is
-        refused by ``fk_transaction_entries_parent_account`` (measured: five
-        endpoint-move cases); without the applier's own assignment the
-        session's movement still says the old account after the flush.
-        Both are read here: the in-session object before any expire, and the
-        walks of the vacated and the new account after.
+        Since plan step ``credit_card:CC-5-1`` the applier's own assignment is
+        the ONE writer of the move (``_endpoints._apply_endpoint_move``): the
+        composite key whose ``ON UPDATE CASCADE`` used to move the row beneath
+        it, ``fk_transaction_entries_parent_account``, is dropped (ruling
+        R-BAL76), so a movement's account is its own and only the applier
+        re-points a leg's.  Both the session and the database are read here:
+        the in-session object before any expire, the row after, and the walks
+        of the vacated and the new account.  Delete the assignment and the
+        movement stays on the vacated account in all three.
         """
         with app.app_context():
             savings = create_savings_account(
@@ -1909,7 +1912,7 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             movement = _only_movement(txn)
             assert movement.covers_settlement is True
             db.session.add(TransactionEntry(
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id, amount=Decimal("1.00"),
                 description="second record", purchased_on=txn.settled_on,
                 covers_settlement=True,
@@ -2031,7 +2034,7 @@ class TestTheCatalogueIsSeededAndResolvable:
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             db.session.add(TransactionEntry(
-                transaction_id=envelope.id, account_id=envelope.account_id,
+                transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
                 user_id=seed_user["user"].id, amount=Decimal("5.00"),
                 description="bare", purchased_on=date(2026, 1, 5),
             ))

@@ -212,10 +212,12 @@ def record_settle_day(
 
     Args:
         row: The transaction or purchase to write.  Its ``account_id`` is what
-            the boundary above is asked about -- present on both tables
-            (``transaction_entries.account_id`` is written from the parent at
-            construction and pinned by
-            ``fk_transaction_entries_parent_account``).
+            the boundary above is asked about -- present on both tables, and
+            on a MOVEMENT it is the account the money moved through (plan
+            step ``credit_card:CC-5-1``, ruling **R-BAL75**), so once the
+            card's doors write a movement on the card (``CC-5-2``,
+            ``CC-5-3``) it is graded against the CARD's opening whatever
+            account its parent row names.
         settle_day: What it now records, or ``None`` to clear both columns --
             which is what a revert, a cancel and an emptied date box each mean.
 

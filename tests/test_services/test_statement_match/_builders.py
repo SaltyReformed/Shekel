@@ -241,6 +241,7 @@ def a_purchase(
         ),
         transaction_id=parent.id,
         account_id=parent.account_id,
+        owner_id=parent.user_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description=description,

@@ -295,13 +295,24 @@ transaction_table_args = (
         "version_id > 0",
         name="ck_transactions_version_id_positive",
     ),
-    # The SUPERKEY ``transaction_entries`` names to prove its own
-    # ``account_id`` is its parent's (plan step X-f3a-1).  It constrains
+    # The SUPERKEY the statement matcher's two member tables name to prove a
+    # matched row's ``account_id`` is the statement's
+    # (``fk_statement_match_members_transaction_account``,
+    # ``fk_statement_match_creations_transaction_account``).  It constrains
     # nothing -- ``id`` is already the primary key, so this key can reject no
     # row -- and exists only because PostgreSQL requires a UNIQUE over
     # exactly the referenced columns before a composite foreign key may
-    # target them.
+    # target them.  Added at plan step X-f3a-1 for
+    # ``fk_transaction_entries_parent_account``, which held a movement's
+    # account equal to its parent's until plan step ``credit_card:CC-5-1``
+    # dropped that key (ruling **R-BAL76**); the matcher's keys keep it.
     db.UniqueConstraint("id", "account_id", name="uq_transactions_id_account"),
+    # The SUPERKEY ``transaction_entries`` names to prove a movement's OWNER
+    # is its parent row's (``fk_transaction_entries_owner_transaction``, plan
+    # step ``credit_card:CC-5-1``, ruling **R-BAL76**) -- the same
+    # construction, for the same reason, as ``uq_accounts_id_user`` and
+    # ``uq_pay_periods_id_user``, which this table's own owner keys target.
+    db.UniqueConstraint("id", "user_id", name="uq_transactions_id_user"),
     # WHICH STATEMENT showed this line, as a COMPOSITE key over the account
     # (ruling **R-FL**, plan step X-f3a-1).  A single-column
     # ``REFERENCES account_anchor_history (id)`` could not say "an assertion

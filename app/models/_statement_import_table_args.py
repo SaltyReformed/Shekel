@@ -70,7 +70,7 @@ account_external_identity_table_args = (
         name="uq_account_external_identities_account_source",
     ),
     # This row's owner IS its account's, guaranteed rather than maintained
-    # -- the construction ``fk_transaction_entries_parent_account`` uses,
+    # -- the construction ``fk_transactions_owner_account`` uses,
     # keyed onto ``uq_accounts_id_user``.  Without it ``user_id`` would be
     # a copy some writer has to keep in step, and the uniqueness above
     # would be scoped by a column that could be set wrong.

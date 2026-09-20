@@ -2378,7 +2378,7 @@ def seed_cross_page_account(app, db, seed_user):
         for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=amount,
                 description="PT-01 entry",

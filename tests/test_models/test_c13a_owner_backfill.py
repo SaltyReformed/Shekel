@@ -43,6 +43,29 @@ from tests._test_helpers import (
 #: migration that could drift from it without failing anything.
 _M_C13A = load_migration_module("d4a92f6b13c8_a_transaction_has_an_owner.py")
 
+#: The NEWER revision whose keys depend on the column this one drops.
+#: ``credit_card:CC-5-1`` (``9900b309f0b0``) holds a movement's ``owner_id``
+#: to its row's ``user_id`` through ``uq_transactions_id_user`` and
+#: ``fk_transaction_entries_owner_transaction``, so on the head schema
+#: ``DROP COLUMN user_id`` is refused until they are gone.  Alembic runs
+#: downgrades newest-first and the chain resolves it; these cases do the
+#: same by hand, exactly as ``test_c4b2_pay_period_schedule_key`` rewinds the
+#: revisions newer than its own before driving it.  Every assertion below is
+#: as it was; only the bootstrap gained the rewind and its replay.
+_M_CC5_1 = load_migration_module("9900b309f0b0_a_movements_account_is_its_own.py")
+
+
+def _downgrade_c13a(session):
+    """Run this revision's ``downgrade`` after its newer dependent's."""
+    _run(_M_CC5_1.downgrade, session)
+    _run(_M_C13A.downgrade, session)
+
+
+def _upgrade_c13a(session):
+    """Run this revision's ``upgrade``, then replay its newer dependent's."""
+    _run(_M_C13A.upgrade, session)
+    _run(_M_CC5_1.upgrade, session)
+
 _KEYS = (
     "fk_transactions_user_id",
     "fk_transactions_owner_account",
@@ -113,7 +136,7 @@ class TestTheRevisionRoundTrips:
         assert _installed(db.session) == {
             "column": 1, "keys": 3, "superkey": 1,
         }
-        _run(_M_C13A.downgrade, db.session)
+        _downgrade_c13a(db.session)
         assert _installed(db.session) == {
             "column": 0, "keys": 0, "superkey": 0,
         }
@@ -139,10 +162,10 @@ class TestTheRevisionRoundTrips:
         ids = (mine_first.id, mine_second.id)
         owner_id = seed_user["user"].id
 
-        _run(_M_C13A.downgrade, db.session)
+        _downgrade_c13a(db.session)
         assert _installed(db.session)["column"] == 0
 
-        _run(_M_C13A.upgrade, db.session)
+        _upgrade_c13a(db.session)
         owners = dict(db.session.execute(text(
             "SELECT id, user_id FROM budget.transactions "
             " WHERE id = ANY(:ids)"
@@ -170,8 +193,8 @@ class TestTheRevisionRoundTrips:
         db.session.commit()
         mine_id, theirs_id = mine.id, theirs.id
 
-        _run(_M_C13A.downgrade, db.session)
-        _run(_M_C13A.upgrade, db.session)
+        _downgrade_c13a(db.session)
+        _upgrade_c13a(db.session)
 
         owners = dict(db.session.execute(text(
             "SELECT id, user_id FROM budget.transactions "
@@ -214,7 +237,7 @@ class TestTheUpgradeABORTSOnADisagreement:
         _a_row(seed_user, seed_periods[0])
         definition = bare_expense_template(db.session, seed_user)
         db.session.commit()
-        _run(_M_C13A.downgrade, db.session)
+        _downgrade_c13a(db.session)
 
         # Now storable, because the keys are gone.  This owner's account,
         # the OTHER owner's paycheck.
@@ -257,7 +280,7 @@ class TestTheUpgradeABORTSOnADisagreement:
         _a_row(seed_user, seed_periods[0])
         definition = bare_expense_template(db.session, seed_second_user)
         db.session.commit()
-        _run(_M_C13A.downgrade, db.session)
+        _downgrade_c13a(db.session)
 
         db.session.execute(text("""
             INSERT INTO budget.transactions
@@ -279,7 +302,7 @@ class TestTheUpgradeABORTSOnADisagreement:
         })
         db.session.commit()
 
-        _run(_M_C13A.upgrade, db.session)
+        _upgrade_c13a(db.session)
         assert _installed(db.session) == {
             "column": 1, "keys": 3, "superkey": 1,
         }

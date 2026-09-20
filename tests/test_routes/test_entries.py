@@ -81,7 +81,7 @@ def _add_entry(txn, user, amount, description,
     uid = user["user"].id if isinstance(user, dict) else user.id
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=uid,
         amount=Decimal(str(amount)),
         description=description,
@@ -1516,6 +1516,7 @@ class TestTheSettledOnEditPath:
                 **figure_source_columns(),
                 transaction_id=other["transaction"].id,
                 account_id=other["transaction"].account_id,
+                owner_id=other["transaction"].user_id,
                 user_id=other["user"].id,
                 amount=Decimal("50.00"),
                 description="Other",

@@ -82,7 +82,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     """
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=transaction.id, account_id=transaction.account_id,
+        transaction_id=transaction.id, account_id=transaction.account_id, owner_id=transaction.user_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,

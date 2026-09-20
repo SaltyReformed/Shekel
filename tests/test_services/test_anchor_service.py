@@ -136,7 +136,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
 
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Past-dated debit",

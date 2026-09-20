@@ -1094,6 +1094,7 @@ class TestTransactionCRUD:
                 **figure_source_columns(),
                 transaction_id=txn.id,
                 account_id=txn.account_id,
+                owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 # A refund larger than the envelope holds, which is the shape
                 # a cross-period merchant credit files (ruling R-II).
@@ -5123,7 +5124,7 @@ class TestGridPeriodSubtotalCanonical:
             ):
                 entry = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -5263,7 +5264,7 @@ class TestGridPeriodSubtotalCanonical:
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",

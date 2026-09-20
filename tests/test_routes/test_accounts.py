@@ -2047,7 +2047,7 @@ class TestTheReconcileRoute:
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
                 description="Test purchase",
@@ -5826,7 +5826,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
 
     db_session.add(TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",

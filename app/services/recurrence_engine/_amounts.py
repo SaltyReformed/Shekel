@@ -99,10 +99,15 @@ class DerivedRowFields(NamedTuple):
     Attributes:
         account_id: The account the row's money moves through, from the
             template.  **The one derived field whose change is not always
-            applicable**: ``fk_transaction_entries_parent_account`` binds a
-            purchase's account to its parent's, so moving a row that holds
-            purchases moves them too and invalidates any statement link they
-            carry.  ``_recurrence_common.classify_maintain_work`` routes that case to
+            applicable**: a row that holds purchases is not moved to another
+            account -- through plan step ``credit_card:CC-5-1`` because
+            ``fk_transaction_entries_parent_account`` dragged them with it and
+            invalidated any statement link they carried, and since that step
+            (the key dropped, ruling **R-BAL76**) because the purchases would
+            STAY where their money moved while the readers that scope a
+            purchase by its parent's account (the reconcile panel's offer)
+            are re-pointed at ``CC-5-2``, which retires this arm with them.
+            ``_recurrence_common.classify_maintain_work`` routes that case to
             the owner, as a RETAINED conflict, instead of applying it.
         name: The template's name.  Also propagated to rows OUTSIDE this pass's
             reach by ``definition_edit.apply_fields``,
