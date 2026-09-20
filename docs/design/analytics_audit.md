@@ -59,14 +59,17 @@ accident).
 
 - **Cash-flow-set scope** (since `credit_card:CC-4-3`, 2026-09-18; this bullet read "Checking-only
   scope" over `resolve_analytics_account` until then). Calendar and Spending both read the
-  paycheck's rows across the owner's cash-flow SET -- checking and its cards,
-  `cash_flow_set.paycheck_rows_clause` -- behind ONE member's balance line. The CALENDAR resolves
-  that line through `account_resolver.resolve_analytics_cash_flow_set`: `?account_id=` names the
-  balance member, an owned cash-flow account outside the set gets its own single-account calendar, a
-  refused id is a 404, and the default is the set's primary. SPENDING takes no `?account_id=`: its
-  scope is the grid's `resolve_cash_flow_set` with no override, so money on an account outside the
-  set is invisible there and no pill says so on screen. Variance and Trends are retired URLs (folded
-  into Spending at Slice 3, their URLs retired at Slice 4: `routes/analytics.retired_tab`).
+  paycheck's items across the owner's cash-flow SET -- checking and its cards: the set's own rows
+  through `cash_flow_set.own_rows_clause` and, since `balance:X-bi-6-1b`, one LEG per transfer the
+  set touches through `cash_flow_set.set_transfer_legs_in_periods` (it was `paycheck_rows_clause`,
+  which carried a transfer's near shadow row and was deleted with its last reader) -- behind ONE
+  member's balance line. The CALENDAR resolves that line through
+  `account_resolver.resolve_analytics_cash_flow_set`: `?account_id=` names the balance member, an
+  owned cash-flow account outside the set gets its own single-account calendar, a refused id is a
+  404, and the default is the set's primary. SPENDING takes no `?account_id=`: its scope is the
+  grid's `resolve_cash_flow_set` with no override, so money on an account outside the set is
+  invisible there and no pill says so on screen. Variance and Trends are retired URLs (folded into
+  Spending at Slice 3, their URLs retired at Slice 4: `routes/analytics.retired_tab`).
 - **Baseline scenario only** (all six tabs).
 - **Status predicates** (`app/utils/balance_predicates.py`): calendar uses
   `balance_contributing_clause()` = Projected + Settled minus Credit/Cancelled (`:374-399`);
