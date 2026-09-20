@@ -39,7 +39,6 @@ from app.enums import (
     AmountSourceEnum,
     LedgerAccountClassEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -50,7 +49,8 @@ from app.models.ledger_account import LedgerAccount
 from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import statement_match
+from app.services import statement_match, status_seam
+from app.services.row_valuation import settled_figure
 from app.services.statement_match import RowKind
 from app.services.pay_calendar import calendar_for
 from app.services.statement_match._candidates import purchase_candidate
@@ -385,7 +385,7 @@ class TestTheDifferenceBecomesARowTheOwnerAccepts:
         assert row.settled_day_basis_id == ref_cache.settled_day_basis_id(
             SettledDayBasisEnum.OBSERVED,
         )
-        assert row.settled_amount == Decimal("0.05")
+        assert settled_figure(row) == Decimal("0.05")
         assert row.tracks_purchases is False
         # It is a ONE-OFF since plan step balance:X-bi-7b (R-BAL20 / R-BAL24):
         # a rule-less DEFINITION carrying the name, type and figure plus this
@@ -972,7 +972,7 @@ class TestTheFigureTheOwnerAcceptedIsReconciled:
 
         assert accepted.repriced_count == 1
         assert accepted.residual is None
-        assert txn.settled_amount == Decimal("178.29")
+        assert settled_figure(txn) == Decimal("178.29")
         assert not _minted(seed_user)
 
     def test_the_SAME_group_without_a_residual_still_refuses(
@@ -1023,7 +1023,7 @@ class TestUntickingAProposedRowCannotRepriceTheSurvivor:
 
         # The gap the survivor would have absorbed: 2573.43 - 2473.38.
         assert "+100.05" in str(caught.value)
-        assert salary.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
         assert salary.settled_on is None
         assert allowance.settled_on is None
         assert not _minted(seed_user)
@@ -1044,7 +1044,7 @@ class TestUntickingAProposedRowCannotRepriceTheSurvivor:
         )
 
         assert accepted.repriced_count == 1
-        assert salary.settled_amount == Decimal("2573.43")
+        assert settled_figure(salary) == Decimal("2573.43")
         assert allowance.settled_on is None
 
 
@@ -1079,7 +1079,7 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
 
         assert accepted.repriced_count == 1
         assert accepted.residual is None
-        assert txn.settled_amount == Decimal("180.06")
+        assert settled_figure(txn) == Decimal("180.06")
         assert not _minted(seed_user)
 
     def test_two_lines_with_NO_accepted_figure_are_refused(
@@ -1106,7 +1106,7 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
             _submit(seed_user, lines=[line_a, line_b], transactions=[txn])
 
         assert "-0.06" in str(caught.value)
-        assert txn.settled_amount is None
+        assert status_seam.recorded_settlement(txn) is None
 
     def test_ONE_line_against_ONE_row_needs_THE_FIGURE_TOO(
         self, app, db, seed_user,
@@ -1133,7 +1133,7 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
             _submit(seed_user, lines=[line], transactions=[txn])
 
         assert "+0.03" in str(caught.value)
-        assert txn.settled_amount is None
+        assert status_seam.recorded_settlement(txn) is None
 
     def test_ONE_line_against_ONE_row_records_when_it_STATES_the_figure(
         self, app, db, seed_user,
@@ -1155,7 +1155,7 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
         )
 
         assert accepted.repriced_count == 1
-        assert txn.settled_amount == Decimal("178.29")
+        assert settled_figure(txn) == Decimal("178.29")
 
     def test_a_TRANSFER_SHADOW_in_a_group_refuses_the_difference(
         self, app, db, seed_user,
@@ -1342,8 +1342,11 @@ class TestAFigureThisAppCannotStoreIsRefused:
 
         Staged as OUTFLOWS against an expense row, so the sign check passes
         and this arm is what fires.  Without the bound the sum reaches
-        ``settled_amount`` as ``-29,999,999,999.97`` and dies at the database
+        the record's figure as ``-29,999,999,999.97`` and dies at the database
         -- an unhandled 500 that takes every other item in the pass with it.
+        (The column was the row's own ``settled_amount`` through plan step
+        ``balance:X-bi-4b-1``; the covering movement's ``amount`` is
+        ``Numeric(12, 2)`` too.)
         """
         lines = self._at_the_ceiling(seed_user, 3)
         txn = a_transaction(seed_user, amount="1.00")
@@ -1355,7 +1358,7 @@ class TestAFigureThisAppCannotStoreIsRefused:
             )
 
         assert "larger than this app can record" in str(caught.value)
-        assert txn.settled_amount is None
+        assert status_seam.recorded_settlement(txn) is None
 
     def test_a_DIFFERENCE_past_the_column_is_refused_too(
         self, app, db, seed_user,
@@ -2087,14 +2090,14 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             attributed=(RowKind.TRANSACTION, salary),
         )
 
-        assert salary.settled_amount == Decimal("2473.43")
+        assert settled_figure(salary) == Decimal("2473.43")
         assert accepted.repriced_count == 1
         assert accepted.residual is None
         assert not _minted(seed_user)
         # ...and the member nobody named is untouched, which is what
         # ``figure_for`` answering ``None`` for it buys.  A version that
         # handed every member the same figure would put `$2,473.43` here too.
-        assert allowance.settled_amount == Decimal("100.00")
+        assert settled_figure(allowance) == Decimal("100.00")
 
     def test_the_OTHER_member_can_be_the_named_one(
         self, app, db, seed_user,
@@ -2114,8 +2117,8 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             attributed=(RowKind.TRANSACTION, allowance),
         )
 
-        assert allowance.settled_amount == Decimal("100.05")
-        assert salary.settled_amount == Decimal("2473.38")
+        assert settled_figure(allowance) == Decimal("100.05")
+        assert settled_figure(salary) == Decimal("2473.38")
         assert not _minted(seed_user)
 
     def test_naming_NO_member_still_mints_the_ordinary_row(
@@ -2137,8 +2140,8 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
 
         assert accepted.residual == Decimal("0.05")
         assert accepted.repriced_count == 0
-        assert salary.settled_amount == Decimal("2473.38")
-        assert allowance.settled_amount == Decimal("100.00")
+        assert settled_figure(salary) == Decimal("2473.38")
+        assert settled_figure(allowance) == Decimal("100.00")
         minted = _minted(seed_user)
         assert len(minted) == 1
         assert resolved_amount(minted[0]) == Decimal("0.05")
@@ -2162,8 +2165,8 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         )
 
         after = (
-            salary.settled_amount
-            + allowance.settled_amount
+            settled_figure(salary)
+            + settled_figure(allowance)
             + sum(
                 (resolved_amount(row) for row in _minted(seed_user)),
                 Decimal("0.00"),
@@ -2200,8 +2203,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         )
         total = sum(
             (
-                db.session.get(Transaction, member.transaction_id)
-                .settled_amount
+                settled_figure(db.session.get(Transaction, member.transaction_id))
                 for member in members
             ),
             Decimal("0.00"),
@@ -2231,8 +2233,8 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             )
 
         assert "does not include" in str(caught.value)
-        assert salary.settled_amount is None
-        assert allowance.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
+        assert status_seam.recorded_settlement(allowance) is None
         assert not _minted(seed_user)
 
     def test_an_attribution_disagreeing_with_ITS_OWN_ROW_is_refused(
@@ -2267,7 +2269,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             statement_match.accept_match(crafted, scope)
 
         assert "does not include" in str(caught.value)
-        assert salary.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
         assert not _minted(seed_user)
 
     def test_the_consent_gate_still_applies_to_an_attributed_group(
@@ -2298,7 +2300,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
 
         assert "reviewed against a difference of +0.04" in str(caught.value)
         assert "now comes to +0.05" in str(caught.value)
-        assert salary.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
         assert not _minted(seed_user)
 
     def test_an_UNNAMED_member_with_no_figure_of_its_own_still_refuses(
@@ -2339,7 +2341,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             )
 
         assert "no figure of its own" in str(caught.value)
-        assert priced.settled_amount is None
+        assert status_seam.recorded_settlement(priced) is None
         assert not _minted(seed_user)
 
     def test_the_UNDO_of_an_attributed_group_removes_NOTHING(
@@ -2367,7 +2369,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             residual="0.05",
             attributed=(RowKind.TRANSACTION, salary),
         )
-        assert salary.settled_amount == Decimal("2473.43")
+        assert settled_figure(salary) == Decimal("2473.43")
 
         released = statement_match.release_match(
             accepted.match_id, seed_user["user"].id, seed_user["account"].id,
@@ -2375,7 +2377,7 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         db.session.flush()
 
         assert released.removed_rows == 0
-        assert salary.settled_amount == Decimal("2473.43"), (
+        assert settled_figure(salary) == Decimal("2473.43"), (
             "the bank's figure is evidence, and unlinking the record is not a "
             "reason to throw it away"
         )
@@ -2441,8 +2443,8 @@ class TestAMemberCannotBeGivenAFigureItsOwnRowCannotHold:
 
         assert "the other way" in str(caught.value)
         assert "+10.00" in str(caught.value)
-        assert salary.settled_amount is None
-        assert deduction.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
+        assert status_seam.recorded_settlement(deduction) is None
         assert not _minted(seed_user)
 
     def test_a_member_the_bank_leaves_at_NOTHING_is_refused(
@@ -2476,7 +2478,7 @@ class TestAMemberCannotBeGivenAFigureItsOwnRowCannotHold:
             )
 
         assert "worth nothing" in str(caught.value)
-        assert salary.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
         assert not _minted(seed_user)
 
     def test_the_SAME_group_lands_on_the_member_that_CAN_hold_it(
@@ -2496,8 +2498,8 @@ class TestAMemberCannotBeGivenAFigureItsOwnRowCannotHold:
             attributed=(RowKind.TRANSACTION, salary),
         )
 
-        assert salary.settled_amount == Decimal("2110.00")
-        assert deduction.settled_amount == Decimal("50.00")
+        assert settled_figure(salary) == Decimal("2110.00")
+        assert settled_figure(deduction) == Decimal("50.00")
         assert accepted.repriced_count == 1
         assert not _minted(seed_user)
 

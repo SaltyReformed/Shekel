@@ -107,27 +107,32 @@ class Transaction(
     Storing the day directly leaves one clock, converted once at the write door.
 
     **A row carries THREE facts about money, and they have three different
-    lifetimes** (plan step **X-au-c3**).  No column belongs to two of them:
+    lifetimes** (plan step **X-au-c3**).  No column belongs to two of them, and
+    one of the three is not a column of this table at all:
 
-    ====================  ====================  =========================
-    the PLAN              WHAT MOVED            the ASSERTION
-    ====================  ====================  =========================
-    ``estimated_amount``  ``settled_amount``    ``settled_on``
-    ``amount_source_id``  ``settled_basis_id``  ``settled_day_basis_id``
-                                                ``reconciled_by_id``
-    ====================  ====================  =========================
+    ====================  ========================  =========================
+    the PLAN              WHAT MOVED                the ASSERTION
+    ====================  ========================  =========================
+    ``estimated_amount``  ``transaction_entries``   ``settled_on``
+    ``amount_source_id``  (the row's ENTRIES)       ``settled_day_basis_id``
+                                                    ``reconciled_by_id``
+    ====================  ========================  =========================
 
     * the **PLAN** is what the row is forecast to cost.  It exists from creation
       and no settle path writes it;
-    * **WHAT MOVED** is what the bank actually took, and how that figure is
-      known.  It comes into existence at a settle and is a fact about the ROW
-      from then on.  **Since plan step X-bi-3a it has a second home** (ruling
-      **R-BAL39**): the settle mirrors it as a COVERING MOVEMENT on
-      ``budget.transaction_entries``, the payment row that records a bill's
-      (since X-bi-3b a paycheck's) money the way a purchase records an
-      envelope's; the columns here are
-      the stale cache ``balance:X-bi-4`` deletes, and the status seam keeps
-      the two in step until then;
+    * **WHAT MOVED** is what the bank actually took, and who said so.  It is
+      the row's family of movements on ``budget.transaction_entries`` and
+      nothing of this table (plan step ``balance:X-bi-4b-2``, rulings
+      **R-BAL80**, **R-BAL82**): a person's purchases, and since plan step
+      X-bi-3a the settle's own COVERING MOVEMENT (ruling **R-BAL39**) -- the
+      payment row that records a bill's, a paycheck's or a transfer leg's
+      money the way a purchase records an envelope's, carrying the figure
+      and ``figure_source_id``, who wrote it.  A settled row is worth the
+      sum of its entries (``row_valuation.settled_figure``); a settled row
+      with none is the ``$0.00`` record.  This table carried a second copy,
+      ``settled_amount`` / ``settled_basis_id``, from X-au-c3 until
+      migration ``45f10b870c8b`` deleted it: the same fact in two homes is
+      two sources (rule 14);
     * the **ASSERTION** is "this money moved, on this day, that is what kind of
       day it is, and that statement showed it".  A revert withdraws all of it.
       ``settled_day_basis_id`` joined it at plan step **X-az**: the day and the
@@ -303,60 +308,6 @@ class Transaction(
     # the seam is then a no-op the next read exposes, instead of the
     # half-written pair this step exists to make unrepresentable.
     __estimated_amount = db.Column("estimated_amount", db.Numeric(12, 2))
-    # WHAT MOVED -- a fact about the ROW, not a second opinion about the plan
-    # above and not part of the assertion beside it (plan step **X-au-c3**).
-    # NULL until the row first settles, and NULL whenever the basis is
-    # ``purchases`` -- there the figure is the sum of the row's own entries,
-    # which are themselves the records, so storing it would be a second copy
-    # beside a reconciler.  Otherwise it states what left the account.
-    #
-    # **WRITTEN BY THE SEAM AND READ BY NO MONEY READER since plan step
-    # ``balance:X-bi-4b-1``** (ruling **R-BAL80**): the record's home is the
-    # row's covering movement, and ``row_valuation.settled_figure`` sums the
-    # row's ENTRIES; this column and the basis below it are that movement's
-    # stale cache through the interval, still written from the same value
-    # (``status_seam.apply_status_change``) so ``integrity_check`` DC-11 can
-    # grade the two homes against each other until ``X-bi-4b-2`` deletes them
-    # by migration.  Everything below this line describes the column as it
-    # was read through ``X-bi-4a``.
-    #
-    # **It SURVIVES a revert**, which is why this is not "NULL when the row has
-    # not settled": withdrawing the assertion does not un-know what the bank
-    # took, and the popover instructs the user to revert in order to edit, so
-    # destroying it there destroyed their own statement reading.  A row out of
-    # the settled band therefore may carry a figure, and no balance reads it --
-    # ``row_valuation.settled_figure`` asks the STATUS first and answers ``None``
-    # for such a row.  A re-settle HONOURS a retained ``corrected`` figure
-    # (``status_seam.Settlement.from_settle``), so the round trip is lossless.
-    #
-    # **It was ``actual_amount``, and the rename is the fix rather than tidying**
-    # (finding **N-241**).  That column answered two questions at once: its VALUE
-    # was the settled figure and its NULL-ness was read by three subsystems as
-    # *a human entered this* (ruling **R-FH**) -- so a machine-derived figure
-    # written there manufactured a correction nobody made, and a settle that had
-    # no correction to record recorded nothing at all.  WHO said it is
-    # ``settled_basis_id`` now, and the two facts can no longer collide.
-    settled_amount = db.Column(db.Numeric(12, 2))
-    # HOW the figure beside it is known -- ``derived``, ``corrected`` or
-    # ``purchases`` -- and NULL only when this row has never settled (plan step
-    # **X-au-c3**).  It travels WITH ``settled_amount``, not with ``settled_on``:
-    # provenance is a property of a figure, so the two share a lifetime and
-    # ``ck_transactions_settled_amount_needs_basis`` is the pairing.
-    #
-    # **It is NOT the answer to "has this row settled"** -- the STATUS is, and
-    # reading this column for that question is exactly what forced a first
-    # version of this step to destroy a user's figure on every revert.  RESTRICT
-    # rather than SET NULL: a vanishing ref row would leave a stored figure with
-    # no provenance, which is the state that pairing exists to forbid.  Resolved
-    # through ``ref_cache.settlement_basis_id``.
-    settled_basis_id = db.Column(
-        db.Integer,
-        db.ForeignKey(
-            "ref.settlement_bases.id",
-            name="fk_transactions_settled_basis_id",
-            ondelete="RESTRICT",
-        ),
-    )
     # WHICH RELATION prices this row, or NULL when the row owns its own figure
     # (ruling **R-FI**, plan step X-au-c1).  RESTRICT rather than SET NULL: a
     # ``ref.amount_sources`` row disappearing under a derived transaction would

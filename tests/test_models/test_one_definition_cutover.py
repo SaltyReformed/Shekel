@@ -29,8 +29,8 @@ import sqlalchemy as sa
 from app import ref_cache
 from app.enums import (
     AmountSourceEnum,
+    MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -39,6 +39,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services.amount_ownership import state_own_amount
 from app.services.one_off import place_row_of
+from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     constraint_name_from,
     derived_span,
@@ -115,7 +116,11 @@ def _plant_bare(  # pylint: disable=too-many-arguments
     *declared*, declaring the TEMPLATE relation with no link and no figure --
     the shape the refusal probe names), its flags in the row's own cells,
     undated unless *due_date* says otherwise.  *settled* is
-    ``(settled_amount, settled_on, SettlementBasisEnum)`` for a settled row.
+    ``(figure, settled_on, MovementFigureSourceEnum)`` for a settled row: the
+    day pair lands on the row and the figure with its source on the row's
+    COVERING MOVEMENT, the record's one home since plan step
+    ``balance:X-bi-4b-2`` (through ``X-bi-4b-1`` the row's own
+    ``settled_amount`` / ``settled_basis_id`` were planted beside the day).
 
     Returns:
         The new row's id.
@@ -137,28 +142,43 @@ def _plant_bare(  # pylint: disable=too-many-arguments
         "due": due_date,
         "env": is_envelope,
         "comp": companion_visible,
-        "samt": None, "son": None, "sbasis": None, "sday": None,
+        "son": None, "sday": None,
     }
     if settled is not None:
-        settled_amount, settled_on, basis = settled
+        _figure, settled_on, _source = settled
         params.update({
-            "samt": settled_amount, "son": settled_on,
-            "sbasis": ref_cache.settlement_basis_id(basis),
+            "son": settled_on,
             "sday": ref_cache.settled_day_basis_id(SettledDayBasisEnum.ENTERED),
         })
-    return db.session.execute(sa.text("""
+    row_id = db.session.execute(sa.text("""
         INSERT INTO budget.transactions
             (user_id, account_id, pay_period_id, scenario_id, status_id, name,
              category_id, transaction_type_id, estimated_amount,
              amount_source_id, due_date, is_envelope, companion_visible,
-             settled_amount, settled_on, settled_basis_id,
-             settled_day_basis_id, is_override, is_deleted, version_id,
-             created_at, updated_at)
+             settled_on, settled_day_basis_id, is_override, is_deleted,
+             version_id, created_at, updated_at)
         VALUES (:uid, :aid, :pid, :sid, :stid, :name, :cat, :ttid, :est, :src,
-                :due, :env, :comp, :samt, :son, :sbasis, :sday, FALSE, FALSE,
+                :due, :env, :comp, :son, :sday, FALSE, FALSE,
                 1, now(), now())
         RETURNING id
     """), params).scalar_one()
+    if settled is not None:
+        figure, settled_on, source = settled
+        db.session.execute(sa.text("""
+            INSERT INTO budget.transaction_entries
+                (transaction_id, account_id, user_id, amount, description,
+                 purchased_on, settled_on, settled_day_basis_id, is_credit,
+                 covers_settlement, figure_source_id, version_id,
+                 created_at, updated_at)
+            VALUES (:tid, :aid, :uid, :amt, :name, :son, :son, :sday, FALSE,
+                    TRUE, :fsrc, 1, now(), now())
+        """), {
+            "tid": row_id, "aid": params["aid"], "uid": params["uid"],
+            "amt": figure, "name": name, "son": settled_on,
+            "sday": params["sday"],
+            "fsrc": ref_cache.movement_figure_source_id(source),
+        })
+    return row_id
 
 
 def _one_off(seed_user, period, *, name="Kayla's Kindle", amount="162.25",
@@ -212,18 +232,18 @@ class TestTheCutoverMintsADefinitionPerBareRow:
                 "derived": _plant_bare(
                     seed_user, period, name="Claude Max", amount="100.00",
                     status=StatusEnum.DONE, due_date=stated_day,
-                    settled=(Decimal("100.00"), start, SettlementBasisEnum.DERIVED),
+                    settled=(Decimal("100.00"), start, MovementFigureSourceEnum.RESOLVED),
                 ),
                 "corrected": _plant_bare(
                     seed_user, period, name="DBCode Lifetime License",
                     amount="36.00", status=StatusEnum.DONE,
-                    settled=(Decimal("18.00"), start, SettlementBasisEnum.CORRECTED),
+                    settled=(Decimal("18.00"), start, MovementFigureSourceEnum.TYPED),
                 ),
                 "income": _plant_bare(
                     seed_user, period, name="Dental Reimbursement",
                     amount="166.40", kind=TxnTypeEnum.INCOME,
                     status=StatusEnum.RECEIVED,
-                    settled=(Decimal("166.40"), start, SettlementBasisEnum.DERIVED),
+                    settled=(Decimal("166.40"), start, MovementFigureSourceEnum.RESOLVED),
                 ),
                 "cancelled": _plant_bare(
                     seed_user, period, name="Clothes", amount="80.00",
@@ -277,12 +297,12 @@ class TestTheCutoverMintsADefinitionPerBareRow:
                 assert row.estimated_amount is None and row.is_override is False
                 assert resolved_amount(row) == Decimal(plan), key
             # What the settle RECORDED stands: the corrected figure and the
-            # derived ones.
+            # derived ones, on the rows' covering movements.
             corrected = db.session.get(Transaction, planted["corrected"])
-            assert corrected.settled_amount == Decimal("18.00")
-            assert db.session.get(
-                Transaction, planted["derived"],
-            ).settled_amount == Decimal("100.00")
+            assert settled_figure(corrected) == Decimal("18.00")
+            assert settled_figure(
+                db.session.get(Transaction, planted["derived"]),
+            ) == Decimal("100.00")
             # The definitions are minted under the OWNER's names, so two
             # one-offs sharing a name are two definitions (paired by row id).
             assert len({

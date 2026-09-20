@@ -281,8 +281,9 @@ class TransferUpdateSchema(BaseSchema):
     # the empty ones, and an empty box means nobody typed a figure.
     #
     # **``_NON_NEGATIVE_MONETARY`` rather than a bare lower bound**, and the
-    # ceiling is the load-bearing half: ``settled_amount`` is ``Numeric(12, 2)``,
-    # so a figure at or above `10 ** 10` validates, reaches the seam, and dies at
+    # ceiling is the load-bearing half: the record's figure (the covering
+    # movement's ``amount``) is ``Numeric(12, 2)``, so a figure at or above
+    # `10 ** 10` validates, reaches the seam, and dies at
     # the DATABASE with a ``DataError`` -- which is NOT a subclass of the
     # ``IntegrityError`` this route catches, so it surfaces as a 500 and the
     # user's Save appears to do nothing.  Plan step X-f2-c3 measured exactly

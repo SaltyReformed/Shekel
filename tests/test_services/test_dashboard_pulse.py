@@ -63,7 +63,7 @@ from tests._test_helpers import (
     set_default_grid_account,
     settle_instant_on,
     settle_day_columns,
-    settlement_columns,
+    cover_bare_settled_row,
 )
 from app.models.amount_ownership import AmountOwnership
 from app.services.pay_rhythm import FixedDays
@@ -101,15 +101,14 @@ def _add_expense(
     )
     txn.status_id = status_id
     txn.is_deleted = is_deleted
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
-    for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(
-            default_settle_day(period, status_id), Decimal(str(amount)),
-        ).items():
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
+    settled_on = default_settle_day(period, status_id)
+    for _column, _value in settle_day_columns(settled_on).items():
         setattr(txn, _column, _value)
     db_session.flush()
+    if settled_on is not None:
+        cover_bare_settled_row(db_session, txn, Decimal(str(amount)))
     return txn
 
 

@@ -46,7 +46,6 @@ from tests._test_helpers import (
     set_default_grid_account,
     settle_day_columns,
     cover_bare_settled_row,
-    settlement_columns,
     state_template_price,
 )
 from tests._test_helpers import default_settle_day, make_cadence_rule
@@ -162,13 +161,9 @@ def _add_transaction(
     )
     txn.status_id = status_id
     txn.is_deleted = is_deleted
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(
-            default_settle_day(period, status_id), amount, settled_amount,
-        ).items():
         setattr(txn, _column, _value)
     db_session.flush()
     if default_settle_day(period, status_id) is not None:

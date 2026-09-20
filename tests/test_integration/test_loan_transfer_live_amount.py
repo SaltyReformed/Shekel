@@ -51,6 +51,7 @@ from tests._test_helpers import (
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import settled_contribution
 from app.services import template_amount_service
+from app.services.row_valuation import settled_figure
 
 
 def _derived_cash(seed_user, rows):
@@ -541,7 +542,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         settled = db.session.get(Transaction, income_shadow_id)
         assert settled.status.is_settled is True
         # Capture-on-settle froze the LIVE PITI, not the $1.00 estimate.
-        assert settled.settled_amount == Decimal("1499.10")
+        assert settled_figure(settled) == Decimal("1499.10")
         assert settled_contribution(settled) == Decimal("1499.10")
         # The PLAN column stays empty: a settle RECORDS what moved beside the
         # plan (plan step X-au-c3) and never writes into it.
@@ -555,7 +556,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
             )
             .one()
         )
-        assert expense.settled_amount == Decimal("1499.10")
+        assert settled_figure(expense) == Decimal("1499.10")
 
         # cash == split: the genesis split reads the frozen cash and subtracts
         # the same escrow, leaving principal = P&I.
@@ -620,7 +621,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
         assert settled.status.is_settled is True
-        assert settled.settled_amount == Decimal("1499.10")
+        assert settled_figure(settled) == Decimal("1499.10")
 
         # The freeze is one-shot: a settled row answers from its own RECORD,
         # so even asking the model directly cannot produce a fresher figure to
@@ -637,7 +638,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
         replayed = db.session.get(Transaction, income_shadow_id)
-        assert replayed.settled_amount == Decimal("1499.10")
+        assert settled_figure(replayed) == Decimal("1499.10")
         assert settled_contribution(replayed) == Decimal("1499.10")
 
 
@@ -761,8 +762,8 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
 # gave different answers -- and proved ``_manual_shadow_amount`` keys the
 # standing extra to the recurring base rather than to the per-instance figure.
 #
-# A figure RECORDS a settle now, so ``ck_transactions_settled_amount_needs_basis``
-# makes that row unconstructible, and ``LoanPricing.live_cash`` gates on
+# A figure RECORDS a settle now, so the seam makes that row unconstructible
+# (``reject_settlement_without_settled_status``), and ``LoanPricing.live_cash`` gates on
 # ``is_projected`` -- so no row this producer can see carries a settled figure at
 # all.  The two expressions therefore answer the same number for every
 # constructible input, and a test written against the difference cannot fail,
@@ -940,7 +941,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
         # Frozen cash carries P&I + escrow + extra.
-        assert settled.settled_amount == Decimal("1599.10")
+        assert settled_figure(settled) == Decimal("1599.10")
 
         # The genesis split routes the extra into principal (cash == split).
         splits = loan_ledger.compute_loan_payment_splits(
@@ -1002,7 +1003,7 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
 
         db.session.expire_all()
         settled = db.session.get(Transaction, income_shadow_id)
-        assert settled.settled_amount == Decimal("1599.10")
+        assert settled_figure(settled) == Decimal("1599.10")
         # The manual BASE is untouched, so a second settle would freeze the
         # same 1,599.10 rather than 1,699.10: the derivation must never read
         # its own output.  **That base is on the DEFINITION since plan step

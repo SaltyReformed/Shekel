@@ -63,6 +63,7 @@ from app.services.recurring_definition import (
     resolved_definition,
 )
 from app.utils.dates import display_today
+from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     typed,
     all_periods,
@@ -2569,7 +2570,7 @@ class TestTemplateHardDelete:
             assert refreshed.is_deleted is False
             # Hand-verified: original actual_amount of $2000.00 is intact
             # (Decimal from string per coding standards).
-            assert refreshed.settled_amount == Decimal("2000.00")
+            assert settled_figure(refreshed) == Decimal("2000.00")
 
     def test_hard_delete_template_bulk_delete_cannot_take_a_settled_row(
         self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
@@ -2640,7 +2641,7 @@ class TestTemplateHardDelete:
             assert surviving.template_id == template_id
             assert surviving.status_id == received_status.id
             assert surviving.is_deleted is False
-            assert surviving.settled_amount == Decimal("1500.00")
+            assert settled_figure(surviving) == Decimal("1500.00")
 
             # The act rolled back WHOLE: the Projected row and the
             # definition stand too.

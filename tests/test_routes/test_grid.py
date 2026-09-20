@@ -28,7 +28,7 @@ from app.services.cash_flow_set import CashFlowSet
 from app import ref_cache
 from app.services import template_amount_service
 from app.enums import (
-    SettlementBasisEnum,
+    MovementFigureSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -79,8 +79,6 @@ from tests._test_helpers import (
     rhythm_of,
     settle_day_columns,
     settle_instant_on,
-    settlement_basis_id,
-    settlement_columns,
     settlement_if_settling,
 )
 from app.services.row_valuation import settled_contribution, settled_figure
@@ -938,7 +936,7 @@ class TestTransactionCRUD:
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert txn.settled_amount == Decimal("120.00")
+            assert settled_figure(txn) == Decimal("120.00")
 
     def test_mark_income_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets status to received for income."""
@@ -1284,7 +1282,9 @@ class TestTransactionCRUD:
 
             db.session.refresh(txn)
             assert txn.status.name == "Paid"
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == planned
 
     def test_cancel_transaction(self, app, auth_client, seed_user, seed_periods_today):
@@ -2184,7 +2184,7 @@ class TestTransactionNegativePaths:
             db.session.expire_all()
             txn_after = db.session.get(Transaction, txn_id)
             assert txn_after.status.name == "Projected"
-            assert txn_after.settled_amount is None
+            assert status_seam.recorded_settlement(txn_after) is None
 
     def test_mark_done_with_negative_actual_amount(
         self, app, auth_client, seed_user, seed_periods_today
@@ -4536,11 +4536,9 @@ class TestTooltipContent:
                 transaction_type_id=expense_type.id,
                 category_id=seed_user["categories"]["Rent"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = paid.id
-            txn.settled_amount = Decimal("487.32")
-            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
             db.session.flush()
@@ -4576,11 +4574,9 @@ class TestTooltipContent:
                 transaction_type_id=expense_type.id,
                 category_id=seed_user["categories"]["Rent"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = paid.id
-            txn.settled_amount = Decimal("500.00")
-            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
             db.session.flush()
@@ -4617,11 +4613,9 @@ class TestTooltipContent:
                 transaction_type_id=expense_type.id,
                 category_id=seed_user["categories"]["Rent"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = paid.id
-            txn.settled_amount = Decimal("100.00")
-            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             for _column, _value in settle_day_columns(current.start_date).items():
                 setattr(txn, _column, _value)
             db.session.flush()
@@ -5018,15 +5012,10 @@ class TestGridSubtotalsRegressionBaseline:
                 transaction_type_id=income_type.id,
                 category_id=seed_user["categories"]["Salary"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = received.id
             for _column, _value in settle_day_columns(current.start_date).items():
-                setattr(txn, _column, _value)
-            for _column, _value in settlement_columns(
-                    current.start_date, Decimal("500.00"),
-                    submitted=Decimal("400.00"),
-                ).items():
                 setattr(txn, _column, _value)
             db.session.flush()
             # The record's home is the covering movement (X-bi-4b-1).
@@ -7277,14 +7266,10 @@ class TestMobileCardActionBar:
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 category_id=seed_user["categories"]["Groceries"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = ref_cache.status_id(StatusEnum.DONE)
             for _column, _value in settle_day_columns(current.start_date).items():
-                setattr(txn, _column, _value)
-            for _column, _value in settlement_columns(
-                    current.start_date, Decimal("42.00"),
-                ).items():
                 setattr(txn, _column, _value)
             db.session.commit()
 
@@ -7320,14 +7305,10 @@ class TestMobileCardActionBar:
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 category_id=seed_user["categories"]["Groceries"].id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = ref_cache.status_id(StatusEnum.DONE)
             for _column, _value in settle_day_columns(current.start_date).items():
-                setattr(txn, _column, _value)
-            for _column, _value in settlement_columns(
-                    current.start_date, Decimal("42.00"),
-                ).items():
                 setattr(txn, _column, _value)
             db.session.commit()
 
@@ -7374,14 +7355,10 @@ class TestMobileCardActionBar:
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
                 category_id=salary_cat.id,
             )
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             txn.status_id = ref_cache.status_id(StatusEnum.RECEIVED)
             for _column, _value in settle_day_columns(current.start_date).items():
-                setattr(txn, _column, _value)
-            for _column, _value in settlement_columns(
-                    current.start_date, Decimal("2500.00"),
-                ).items():
                 setattr(txn, _column, _value)
             db.session.commit()
 

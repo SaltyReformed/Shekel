@@ -78,12 +78,13 @@ def _resync_after_entry_change(txn: Transaction) -> None:
 
     **It writes no figure, and losing that half is plan step X-au-c3's doing.**
     It re-derived ``actual_amount = sum(entries)`` for a settled envelope, and a
-    settled envelope now records the ``purchases`` basis and stores no figure at
-    all -- its amount IS the sum of its entries, answered on read by
-    ``row_valuation.settled_figure``.  A stored copy is what needed a reconciler;
-    with the copy gone the reconciler has nothing left to reconcile, and the
-    entries and the figure they add up to cannot drift because there is only one
-    of them.
+    settled row stores no figure at all -- its amount IS the sum of its
+    entries, answered on read by ``row_valuation.settled_figure`` (the
+    envelope's since X-au-c3, every settled row's since ``balance:X-bi-4b-1``,
+    and the row's own figure columns gone at ``X-bi-4b-2``).  A stored copy is
+    what needed a reconciler; with the copy gone the reconciler has nothing
+    left to reconcile, and the entries and the figure they add up to cannot
+    drift because there is only one of them.
 
     **Its whole gate was ``if settled and txn.entries``, and BOTH halves of that
     gate are gone.**  The figure it would have written no longer exists to
@@ -100,15 +101,16 @@ def _resync_after_entry_change(txn: Transaction) -> None:
         refused*, and plan step ``bank_import:X-f6f`` admits one where removing
         the purchase cannot change what the row's own close booked.  What makes
         the stale figure impossible is that there is no stored figure left to go
-        stale -- a ``purchases`` row answers ``Sigma(entries)``, so one closed
+        stale -- a settled row answers ``Sigma(entries)``, so one closed
         empty answers ``$0.00`` because that is what its records say;
       * adding a purchase to a settled row whose figure was a HUMAN's correction
         overwrote that correction with the entry sum.  That cannot happen now
         for two independent reasons: the hook is gone, and
-        :func:`_reject_settled_addition` admits an add only on a ``purchases``
-        settlement, which stores no figure for a human to have corrected.
-        Ruling **R-FB**'s rule -- a figure somebody read off a statement is a
-        fact -- finally holds on this path too.
+        :func:`_reject_settled_addition` admits an add only on a settled row
+        holding no covering movement -- one whose entries ARE its record, so
+        there is no stated figure for a human to have corrected.  Ruling
+        **R-FB**'s rule -- a figure somebody read off a statement is a fact --
+        finally holds on this path too.
 
     What remains is the ledger reconcile (Build-Order Step 3).  An entry mutation
     changes what the row's family has posted: recording a posting day makes

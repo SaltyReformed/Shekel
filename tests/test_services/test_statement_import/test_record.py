@@ -48,6 +48,7 @@ from app.models.statement_import import BankStatementLine
 from app.services.statement_import import record_statement
 from app.services.statement_import._balance import bank_levels
 from app.models.ref import AccountType
+from app.services.row_valuation import settled_figure
 
 from tests._test_helpers import create_settled_cash_transaction
 
@@ -523,14 +524,14 @@ class TestItMovesNoMoney:
         """Return every field an import could plausibly disturb.
 
         The settlement record replaced ``actual_amount`` at plan step
-        ``balance:X-au-c3``, so the snapshot follows it: a row's figure is now
-        ``settled_amount`` beside the ``settled_basis_id`` that says how it is
-        known, and both belong in a comparison whose whole job is to prove that
-        recording a statement moves nothing.
+        ``balance:X-au-c3`` and moved onto the covering movement at
+        ``balance:X-bi-4b-2``, so the snapshot follows it: a row's figure is
+        the sum of its entries (``settled_figure``), and it belongs in a
+        comparison whose whole job is to prove that recording a statement
+        moves nothing.
         """
         return [
-            (t.id, t.status_id, t.settled_on, t.settled_amount,
-             t.settled_basis_id,
+            (t.id, t.status_id, t.settled_on, settled_figure(t),
              t.estimated_amount, t.pay_period_id, t.reconciled_by_id)
             for t in db.session.query(Transaction)
             .order_by(Transaction.id).all()

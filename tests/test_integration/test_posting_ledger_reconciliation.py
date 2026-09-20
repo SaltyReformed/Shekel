@@ -92,6 +92,7 @@ from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
+    independent_settled_figure,
     create_account_of_type,
     create_settled_transfer,
     linked_ledger_account,
@@ -168,15 +169,17 @@ def _independent_txn_effect(account_id: int, scenario_id: int) -> Decimal:
     The balance-side truth the ledger must equal: over the account's settled
     (``status.is_settled``), non-deleted transfer shadows in *scenario_id*, add
     ``+effective`` for an income shadow (money in) and ``-effective`` for an
-    expense shadow (money out), where ``effective = COALESCE(actual,
-    estimated)``.  Reads the ``transactions`` table -- a different table than
-    :func:`_independent_ledger_sum` -- so asserting the two equal reconciles
-    what the producers wrote against the transaction source of truth.
+    expense shadow (money out), where ``effective`` is the shadow's settled
+    figure spelled independently
+    (:func:`~tests._test_helpers.independent_settled_figure`: the sum of its
+    entries, its covering movement; ``COALESCE(settled_amount,
+    estimated_amount)`` through plan step ``balance:X-bi-4b-1``).  Reads the
+    row tables -- different tables than :func:`_independent_ledger_sum` --
+    so asserting the two equal reconciles what the producers wrote against
+    the transaction source of truth.
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = _db.func.coalesce(
-        Transaction.settled_amount, Transaction.estimated_amount
-    )
+    effective = independent_settled_figure()
     signed = case(
         (Transaction.transaction_type_id == income_type_id, effective),
         else_=-effective,
@@ -824,11 +827,11 @@ class TestOracleIsNotVacuous:
 
         A reconciled $100 Checking -> Savings settle has ledger +100 and
         settled-shadow effect +100 on Savings.  Forcing the income shadow's
-        estimated amount to 999 (raw SQL, no actual override, so its effective
-        becomes 999) leaves the ledger at +100 but pushes the settled-shadow
-        effect to +999 -- so the per-account reconciliation, which the oracle
-        relies on, now FAILS.  This proves the check is a real comparison, not
-        one that passes unconditionally.
+        RECORD -- its covering movement's figure -- to 999 by raw SQL leaves
+        the ledger at +100 but pushes the settled-shadow effect to +999 -- so
+        the per-account reconciliation, which the oracle relies on, now
+        FAILS.  This proves the check is a real comparison, not one that
+        passes unconditionally.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -850,12 +853,15 @@ class TestOracleIsNotVacuous:
 
             # Tamper the income shadow's RECORDED figure, not its estimate
             # (plan step X-au-c3): a settled row's effect is what it recorded as
-            # having moved, so moving the plan on one is now inert.
-            # Transactions carry no balance trigger, so the tamper commits.
+            # having moved, so moving the plan on one is now inert.  The record
+            # is the shadow's covering movement (plan step balance:X-bi-4b-2).
+            # Entries carry no balance trigger, so the tamper commits.
             _db.session.execute(_db.text(
-                "UPDATE budget.transactions SET settled_amount = 999 "
-                "WHERE account_id = :a AND transfer_id IS NOT NULL "
-                "  AND transaction_type_id = :t"
+                "UPDATE budget.transaction_entries e SET amount = 999 "
+                "FROM budget.transactions t "
+                "WHERE e.transaction_id = t.id AND e.covers_settlement "
+                "  AND t.account_id = :a AND t.transfer_id IS NOT NULL "
+                "  AND t.transaction_type_id = :t"
             ), {
                 "a": savings.id,
                 "t": ref_cache.txn_type_id(TxnTypeEnum.INCOME),

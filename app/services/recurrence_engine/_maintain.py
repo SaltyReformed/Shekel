@@ -151,11 +151,27 @@ def _rows_holding_owner_records(existing) -> set[int]:
     delete-and-recreate sweep destroyed them, measured at 3 records worth
     ``$499.82`` on one live row.
 
-    **The purchases are asked in ONE query, not one per row.**  A regeneration
+    **The ENTRIES are asked in ONE query, not one per row.**  A regeneration
     considers every future row of a template -- 505 of them across the live
     templates on a production clone -- so reading ``row.entries`` in the
     classifier would issue a query per row on the hot path of every template
     edit.
+
+    **The entries are the whole answer for money, and that is structural
+    rather than upheld** (plan step ``balance:X-bi-4b-2``, rulings
+    **R-BAL80**, **R-BAL82**).  A row's family of movements is every record
+    of what its money did: a person's purchases, and the settle's own
+    covering movement, which a revert un-dates and KEEPS (plan step
+    X-bi-3e-2) -- so a row the owner settled at a figure and then set back
+    to Projected, mutable to this sweep, still holds that movement, and the
+    retained figure (a number read off a bank statement) is held back as a
+    CONFLICT for the owner to resolve.  A ``$0.00`` close keeps no movement
+    and is retained by nothing across a revert (R-BAL82), so a reverted
+    close of nothing follows its template freely, as a row that never
+    settled does.  The arm read the row's own ``settled_basis_id`` from
+    plan step X-au-c3 until X-bi-4b-2 deleted that column: the same fact in
+    two homes, and this predicate was one of the two readers keeping them
+    in step.
 
     **A STATEMENT LINK counts too, and it needs no condition of its own** --
     which plan step R10-b measured, correcting what R10-a's own adversarial
@@ -163,44 +179,24 @@ def _rows_holding_owner_records(existing) -> set[int]:
     justified by two composite keys that scope a clearing link BY ACCOUNT
     (``fk_transaction_entries_reconciled_by`` on the purchase and
     ``fk_transactions_reconciled_by`` on the row itself), so a linked row must
-    be retained -- and it already is.  Two CHECK constraints chain into an
-    implication: ``ck_transactions_cleared_needs_settle_day`` says a link needs
-    a settle day, ``ck_transactions_settle_day_needs_a_record`` says a settle
-    day needs a RECORD OF WHAT MOVED, so ``reconciled_by_id IS NOT NULL`` implies
-    ``settled_basis_id IS NOT NULL``.  **That constraint is about the FIGURE's
-    basis and not the DAY's** -- plan step X-az added the day's own as
-    ``ck_transactions_settle_day_basis_pairing`` and renamed this one, because
-    beside it the old name said the opposite of what its predicate says.  The
-    ``elif`` that used to follow the settlement arm was therefore reached by no
-    row that exists, which is why
-    deleting it moved nothing: verified against PostgreSQL, which refuses to
-    clear the basis on a linked row.  If either CHECK is ever dropped, this
-    paragraph is what says the arm has to come back.
-
-    **The SETTLEMENT arm reads the record rather than a column that used to
-    proxy for it** (plan step X-au-c3).  It was ``actual_amount is not None``,
-    which meant "a human typed a figure here" only because that column carried
-    both the settled figure and the fact that a human had supplied it.  A row
-    that has settled records what moved, whoever said so, and that is the fact
-    worth holding a row for -- so the predicate reads ``settled_basis_id``.
-
-    **Unlike the statement-link arm above it this one is REACHABLE, and the same
-    step is what made it so.**  A revert releases the ASSERTION and keeps WHAT
-    MOVED (``status_seam.apply_status_change``), so a row the owner settled and
-    then set back to Projected is mutable to this sweep AND still carries a
-    ``settled_basis_id``.  That state is the arm's real subject rather than a
-    theoretical one, and holding it is the point: the retained figure is a
-    number the owner read off a bank statement, and letting a template edit
-    retire the row out from under it would destroy exactly what retention exists
-    to keep.  The row is held back as a CONFLICT for the owner to resolve.
+    be retained -- and it already is.  ``ck_transactions_cleared_needs_settle_day``
+    says a link needs a settle day, and no row this pass can see carries one:
+    ``Projected`` is the only status the pass reaches (the module docstring),
+    and the seam releases the day and the link together on the way out of the
+    settled band (``status_seam.apply_status_change``).  A row that carries a
+    link is settled, and a settled row's money is its entries, held by the
+    query above.  Were a linked row ever handed here, the composite key
+    itself refuses the account move rather than applying it.  (Until plan
+    step ``balance:X-bi-4b-2`` the chain ran one link further --
+    ``ck_transactions_settle_day_needs_a_record`` made a settle day imply a
+    ``settled_basis_id`` -- and rested on that column's arm.)
 
     Args:
         existing: The rows this pass is considering.
 
     Returns:
-        The subset of their ids that hold purchases, a note, or a settlement
-        record of their own -- which, by the implication above, is also every
-        row that names a statement.
+        The subset of their ids that hold an entry -- a purchase or a retained
+        covering movement -- or a note of their own.
     """
     ids = [row.id for row in existing]
     if not ids:
@@ -215,8 +211,6 @@ def _rows_holding_owner_records(existing) -> set[int]:
         # ``notes`` is free text the owner typed and no writer derives; a
         # whitespace-only note is not a record worth blocking an edit over.
         if row.notes is not None and row.notes.strip():
-            holding.add(row.id)
-        elif row.settled_basis_id is not None:
             holding.add(row.id)
     return holding
 

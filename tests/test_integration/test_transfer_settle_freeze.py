@@ -52,13 +52,14 @@ from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     account_service,
     posting_service,
+    status_seam,
     transfer_service,
     transfer_recurrence,
 )
@@ -72,7 +73,6 @@ from tests._test_helpers import (
     an_entered_day,
     create_transfer,
     open_books_before_the_first_assertion,
-    settlement_basis_id,
 )
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
@@ -192,9 +192,8 @@ class TestTheSettleFreezeIsTheSERVICEs:
             for shadow in _shadows(xfer.id):
                 # What it BOOKS -- the ledger figure, and the whole point.
                 assert settled_contribution(shadow) == _LIVE_PITI
-                # Where the freeze lands today (N-241 is the open question
-                # about which column that should be; X-au-c owns it).
-                assert shadow.settled_amount == _LIVE_PITI
+                # What it RECORDS -- the covering movement's figure.
+                assert settled_figure(shadow) == _LIVE_PITI
                 # The shadow's PLAN column is empty, and that is what keeps
                 # the freeze idempotent (plan step X-au-g-2c-2).  It held the
                 # stale ``$1.00`` and had to be left untouched, because the
@@ -230,7 +229,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.settled_amount == Decimal("1512.44")
+                assert settled_figure(shadow) == Decimal("1512.44")
                 assert settled_contribution(shadow) == Decimal("1512.44")
 
     def test_an_ECHOED_prefill_is_not_written(
@@ -261,12 +260,13 @@ class TestTheSettleFreezeIsTheSERVICEs:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 # An uncorrected settle RECORDS what it booked on the
-                # ``derived`` basis (plan step X-au-c3).  This asserted a NULL
-                # figure until that step, because a NULL was the only signal
-                # that no human had typed one; the basis carries that now, so
-                # the record can state the figure AND stay distinguishable.
-                assert shadow.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.DERIVED,
+                # ``resolved`` source (plan step X-au-c3; the covering
+                # movement since X-bi-4b-2).  This asserted a NULL figure
+                # until that step, because a NULL was the only signal that no
+                # human had typed one; the source carries that now, so the
+                # record can state the figure AND stay distinguishable.
+                assert status_seam.recorded_settlement(shadow).source is (
+                    MovementFigureSourceEnum.RESOLVED
                 )
                 assert settled_figure(shadow) == Decimal("250.00")
                 assert settled_contribution(shadow) == Decimal("250.00")
@@ -349,7 +349,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
             )
             db.session.commit()
             db.session.expire_all()
-            assert _shadows(xfer.id)[0].settled_amount == _LIVE_PITI
+            assert settled_figure(_shadows(xfer.id)[0]) == _LIVE_PITI
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, status_id=done_id,
@@ -358,7 +358,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
-                assert shadow.settled_amount == _LIVE_PITI
+                assert settled_figure(shadow) == _LIVE_PITI
                 assert settled_contribution(shadow) == _LIVE_PITI
 
     def test_settle_amount_publishes_what_a_tick_WILL_book(
@@ -385,7 +385,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
 
             db.session.expire_all()
             assert settled_contribution(_shadows(xfer.id)[0]) == offered
-            assert _shadows(xfer.id)[0].settled_amount == offered
+            assert settled_figure(_shadows(xfer.id)[0]) == offered
 
 
 class TestEveryDoorReachesTheSameFigure:
@@ -410,7 +410,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for shadow in _shadows(xfer_id):
                 assert settled_contribution(shadow) == _LIVE_PITI
-                assert shadow.settled_amount == _LIVE_PITI
+                assert settled_figure(shadow) == _LIVE_PITI
 
     def test_the_grid_shadow_mark_done_still_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -430,7 +430,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert settled_contribution(row) == _LIVE_PITI
-                assert row.settled_amount == _LIVE_PITI
+                assert settled_figure(row) == _LIVE_PITI
 
     def test_the_transfer_full_edit_status_dropdown_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -499,7 +499,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert settled_contribution(row) == _LIVE_PITI
-                assert row.settled_amount == _LIVE_PITI
+                assert settled_figure(row) == _LIVE_PITI
 
     def test_a_transaction_PATCH_landing_on_a_shadow_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -538,7 +538,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert settled_contribution(row) == _LIVE_PITI
-                assert row.settled_amount == _LIVE_PITI
+                assert settled_figure(row) == _LIVE_PITI
 
     def test_the_reconcile_panels_tick_freezes_and_dates_by_the_STATEMENT(
         self, app, db, auth_client, seed_user, seed_periods,
@@ -581,7 +581,7 @@ class TestEveryDoorReachesTheSameFigure:
         with app.app_context():
             for row in _shadows(xfer_id):
                 assert settled_contribution(row) == _LIVE_PITI
-                assert row.settled_amount == _LIVE_PITI
+                assert settled_figure(row) == _LIVE_PITI
                 assert row.settled_on == observed
 
 
@@ -632,16 +632,17 @@ class TestTheNamedVerbItself:
             db.session.commit()
             db.session.expire_all()
             # And the RECORD follows the same three-way decision: the two
-            # uncorrected settles book what they resolved on the ``derived``
-            # basis, the corrected one books the human's figure and says so.
-            derived_id = settlement_basis_id(SettlementBasisEnum.DERIVED)
-            assert _shadows(nothing_typed.id)[0].settled_basis_id == derived_id
-            assert _shadows(echoed.id)[0].settled_basis_id == derived_id
-            assert _shadows(echoed.id)[0].settled_amount == Decimal("120.00")
-            assert _shadows(corrected.id)[0].settled_basis_id == (
-                settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            # uncorrected settles book what they resolved on the ``resolved``
+            # source, the corrected one books the human's figure and says so.
+            def _record(transfer):
+                return status_seam.recorded_settlement(_shadows(transfer.id)[0])
+            assert _record(nothing_typed).source is MovementFigureSourceEnum.RESOLVED
+            assert _record(echoed) == status_seam.Settlement(
+                Decimal("120.00"), MovementFigureSourceEnum.RESOLVED,
             )
-            assert _shadows(corrected.id)[0].settled_amount == Decimal("95.50")
+            assert _record(corrected) == status_seam.Settlement(
+                Decimal("95.50"), MovementFigureSourceEnum.TYPED,
+            )
 
     def test_settling_an_ALREADY_settled_transfer_writes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -684,10 +685,10 @@ class TestTheNamedVerbItself:
             db.session.expire_all()
             for shadow in _shadows(xfer.id):
                 # The echoed-past-the-rule write did not happen: the record
-                # still says ``derived`` at what the FIRST settle booked, not
-                # ``corrected`` at the replayed $999.99.
-                assert shadow.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.DERIVED,
+                # still says ``resolved`` at what the FIRST settle booked, not
+                # ``typed`` at the replayed $999.99.
+                assert status_seam.recorded_settlement(shadow).source is (
+                    MovementFigureSourceEnum.RESOLVED
                 )
                 assert settled_figure(shadow) == Decimal("250.00")
                 assert settled_contribution(shadow) == Decimal("250.00")
@@ -704,10 +705,10 @@ class TestTheNamedVerbItself:
     # the comparison is an identity.  An event that cannot fire is a fence the
     # design made unnecessary, so it went with its predicate, its ``log_events``
     # registration and this case rather than being kept as a green check that
-    # measures nothing.  What it recorded is on the row instead:
-    # ``settled_basis_id`` says whether a booked figure was the app's own
-    # resolution or a human's correction, for EVERY settle rather than for the
-    # subset a predicate happened to select.
+    # measures nothing.  What it recorded is on the record instead: the
+    # covering movement's ``figure_source_id`` says whether a booked figure
+    # was the app's own resolution or a human's correction, for EVERY settle
+    # rather than for the subset a predicate happened to select.
 
     def test_a_manual_payment_with_NO_extra_books_its_series_price(
         self, app, db, seed_user, seed_periods, caplog,
@@ -751,7 +752,7 @@ class TestTheNamedVerbItself:
             # case is kept for it -- a manual payment with no extra must book
             # its series price and not the loan's contract.
             for shadow in _shadows(xfer.id):
-                assert shadow.settled_amount == _STALE
+                assert settled_figure(shadow) == _STALE
 
     def test_a_re_settle_HONOURS_a_retained_correction(
         self, app, db, seed_user, seed_periods, caplog,
@@ -867,7 +868,9 @@ class TestATransfersOfferIsWhatItsReSettleBOOKS:
 
             expense = _shadows(xfer_id)[0]
             # The record SURVIVES the revert and the assertion does not.
-            assert expense.settled_amount == Decimal("95.50")
+            assert status_seam.recorded_settlement(expense) == status_seam.Settlement(
+                Decimal("95.50"), MovementFigureSourceEnum.TYPED,
+            )
             assert expense.settled_on is None
 
             # THE CLAIM: what the panel would offer is what a tick will book.
@@ -880,7 +883,7 @@ class TestATransfersOfferIsWhatItsReSettleBOOKS:
             transfer_service.settle_transfer(xfer_id, owner)
             db.session.commit()
             db.session.expire_all()
-            assert _shadows(xfer_id)[0].settled_amount == offered
+            assert settled_figure(_shadows(xfer_id)[0]) == offered
 
 
 class TestOneBrokenPairCannotStopTheDeployResync:

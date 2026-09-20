@@ -22,7 +22,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from app import ref_cache
-from app.enums import AmountSourceEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import AmountUnresolvable, UndatedSettleError
 from app.extensions import db
 from app.models.loan_params import LoanParams
@@ -35,7 +35,6 @@ from tests._test_helpers import (
     an_entered_day,
     one_off_row_of,
     open_books_before_the_first_assertion,
-    settlement_basis_id,
     typed,
 )
 from app.services.cash_ledger import _resolve_loan_basis
@@ -324,8 +323,8 @@ class TestGetPaymentHistory:
         ``balance:X-bi-4b-1``, ruling **R-BAL80**), so the correction is
         stated through the transfer's own door -- a person typing ``$1,450.00``
         over the ``$1,500.00`` plan -- which re-records both legs' movements.
-        This wrote ``shadow.settled_amount`` straight at the column through
-        ``X-bi-4a``, the seam's cache no reader asks now.
+        This wrote ``shadow.settled_amount`` straight at the row's own column
+        through ``X-bi-4a``, deleted at ``X-bi-4b-2``.
         """
         with app.app_context():
             loan = _create_loan_account(seed_user)
@@ -514,11 +513,7 @@ class TestGetPaymentHistory:
                 Transaction.account_id == loan.id,
                 Transaction.transaction_type_id == income_type_id,
             ).update(
-                {
-                    "status_id": ref_cache.status_id(StatusEnum.DONE),
-                    "settled_amount": Decimal("1500.00"),
-                    "settled_basis_id": settlement_basis_id(SettlementBasisEnum.DERIVED),
-                },
+                {"status_id": ref_cache.status_id(StatusEnum.DONE)},
                 synchronize_session=False,
             )
             db.session.commit()

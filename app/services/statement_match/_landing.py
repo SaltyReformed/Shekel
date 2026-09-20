@@ -377,8 +377,9 @@ def corrected_figure(
         entry = db.session.get(TransactionEntry, row.row_id)
         return round_money(movement_figure_for(entry.transaction, bank_cash))
     # **The TRANSACTION arm keeps ``abs()`` and that is not an oversight.**  A
-    # transaction stores a GROSS, non-negative figure (``estimated_amount >= 0``,
-    # ``settled_amount IS NULL OR >= 0``) whose direction comes from the
-    # transaction TYPE rather than from the figure, so the magnitude really is
-    # what it should book.  Only a PURCHASE stores a signed amount.
+    # transaction states a GROSS, non-negative figure (``estimated_amount >=
+    # 0``; ``status_seam.Settlement`` refuses a negative record) whose
+    # direction comes from the transaction TYPE rather than from the figure,
+    # so the magnitude really is what it should book.  Only a PURCHASE stores
+    # a signed amount.
     return round_money(abs(bank_cash))

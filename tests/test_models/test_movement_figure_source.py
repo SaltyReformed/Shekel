@@ -24,8 +24,7 @@ from decimal import Decimal
 
 import sqlalchemy
 
-from app import ref_cache
-from app.enums import SettledDayBasisEnum, SettlementBasisEnum
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction_entry import TransactionEntry
 from tests._test_helpers import (
@@ -149,12 +148,10 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
                 envelope, seed_user, envelope.pay_period.start_date,
                 SettledDayBasisEnum.OBSERVED,
             )
-            # The parent records a purchases-basis close, as a real envelope
-            # with posted purchases does.
-            envelope.settled_basis_id = ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
-            )
+            # The parent records its purchases and nothing of its own, as a
+            # real envelope with posted purchases does: no covering movement.
             db.session.flush()
+            assert envelope.covering_movements == []
             _MIGRATION.classify_figure_sources(db.session.connection())
             assert self._source_names(db)[entry.id] == "observed"
             db.session.rollback()

@@ -21,13 +21,13 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum
 from app.exceptions import BaselineMissingError
 from app.models.account import Account
 from app.models.scenario import Scenario
-from app.services import balance_at, cash_ledger, dashboard_service
+from app.services import balance_at, cash_ledger, dashboard_service, status_seam
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    cover_bare_settled_row,
     figure_source_columns,
     add_txn as _add_txn,
     dashboard_section,
@@ -66,16 +66,16 @@ class TestBillRowSingleBase:
         explicit control over the figure.
 
         *retained_actual* lays the RETAINED settlement record on the row: a
-        figure a human typed at a settle (``corrected``) that a revert kept
-        while releasing the settle day.  That is the one way a Projected row
-        carries an actual since plan step X-au-c3, and
-        ``ck_transactions_settle_day_needs_a_record`` admits it in exactly
-        that direction (a day needs a record; a record needs no day).  It
-        was a bare ``actual`` until X-cf-3, resolved through
-        ``settlement_columns`` -- which answers ``None`` for a row with no
-        settle day, so the figure two callers passed had written nothing
-        (measured); the two cases that name it grade the record now.
-        ``status_enum`` went with it: no caller moved the status.
+        figure a human typed at a settle (``typed``) that a revert kept, as
+        an un-dated covering movement, while releasing the settle day (plan
+        step X-bi-3e-2; the record's one home since ``balance:X-bi-4b-2``).
+        That is the one way a Projected row carries an actual since plan
+        step X-au-c3.  It was a bare ``actual`` until X-cf-3, resolved
+        through the row's own figure columns -- which a helper answered
+        ``None`` for a row with no settle day, so the figure two callers
+        passed had written nothing (measured); the two cases that name it
+        grade the record now.  ``status_enum`` went with it: no caller moved
+        the status.
         """
         template = make_expense_template(
             db.session, seed_user, amount=str(estimated),
@@ -83,11 +83,10 @@ class TestBillRowSingleBase:
         )
         txn = generate_row_of(template, period)
         if retained_actual is not None:
-            txn.settled_amount = Decimal(str(retained_actual))
-            txn.settled_basis_id = ref_cache.settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
-            )
             db.session.flush()
+            cover_bare_settled_row(
+                db.session, txn, estimated, submitted=retained_actual,
+            )
         return txn
 
     @staticmethod
@@ -272,7 +271,9 @@ class TestBillRowSingleBase:
                 db, seed_user, seed_periods[0],
                 estimated="120.00", retained_actual="77.00",
             )
-            assert txn.settled_amount == Decimal("77.00"), "fixture: recorded"
+            assert status_seam.recorded_settlement(txn).amount == Decimal("77.00"), (
+                "fixture: recorded"
+            )
             db.session.commit()
 
             bill = self._bill(seed_user, txn, date(2026, 1, 1))

@@ -32,7 +32,7 @@ import pytest
 from sqlalchemy import event
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import MovementFigureSourceEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant_rule import MerchantRule
@@ -683,8 +683,8 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
                 envelope, envelope.status_id, submitted=typed(Decimal("999.99")),
             )
         db.session.flush()
-        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.PURCHASES,
+        assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+            None, None,
         ), "the container stays on its purchases -- the door held"
 
         # The undo still names both rows the act created -- the purchase and
@@ -1005,8 +1005,8 @@ class TestTheSettledParentRuleIsTheArithmetic:
             purchased_on=start, settled_on=start + timedelta(days=1),
         )
         db.session.flush()
-        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.DERIVED,
+        assert status_seam.recorded_settlement(envelope).source is (
+            MovementFigureSourceEnum.RESOLVED
         )
 
         with pytest.raises(ValidationError, match="records a fixed figure"):

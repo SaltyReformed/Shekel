@@ -794,46 +794,6 @@ class StatementSource(db.Model):
 
     def __repr__(self):
         return f"<StatementSource {self.name}>"
-class SettlementBasis(db.Model):
-    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
-
-    The catalogue behind ``budget.transactions.settled_basis_id``.  A row that
-    has not settled carries NULL here, no settle day and no settled figure; a
-    row that HAS settled carries all three, and this column says which of the
-    three ways its figure was arrived at -- ``derived`` (the app resolved it at
-    the settle), ``corrected`` (a human read it off a statement) or
-    ``purchases`` (the row's own entries state it, and it is the one basis that
-    stores no figure).
-
-    Its whole reason for existing is that ``actual_amount`` used to answer two
-    questions at once -- WHAT moved, in its value, and WHO said so, in its
-    NULL-ness (ruling **R-FH**).  :class:`app.enums.SettlementBasisEnum` carries
-    the two defects that overload produced and why splitting them is what
-    removes the need to freeze a row's plan at settle.
-
-    Application code resolves these via ``ref_cache.settlement_basis_id`` and
-    compares against the integer ID -- never the string ``name`` -- matching the
-    project-wide ``ref-table: IDs for logic, strings for display only``
-    invariant.
-
-    ``budget.transfers`` carries no such column and needs none: a transfer's
-    money moves on its two shadow ``Transaction`` rows, which each record their
-    own leg, and the transfer itself stays a plan for its whole life.
-
-    **RETIRING with the column** (plan step ``balance:X-bi-4b``, ruling
-    **R-BAL80**): since ``X-bi-4b-1`` the record is read off the covering
-    movement and this table is reached only by the seam's write of the
-    column; ``X-bi-4b-2`` drops both by migration.
-    """
-
-    __tablename__ = "settlement_bases"
-    __table_args__ = {"schema": "ref"}
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(20), unique=True, nullable=False)
-
-    def __repr__(self):
-        return f"<SettlementBasis {self.name}>"
 
 
 class SettledDayBasis(db.Model):
@@ -842,9 +802,12 @@ class SettledDayBasis(db.Model):
     The catalogue behind ``budget.transactions.settled_day_basis_id`` and
     ``budget.transaction_entries.settled_day_basis_id`` -- BOTH tables, because
     both carry ``settled_on`` and all three kinds of day are written to each.
-    That is the difference from :class:`SettlementBasis` beside it, which needs
-    only the one table: a purchase carries no figure of its own to have a
-    provenance for, but it carries a day.
+    That is the difference from :class:`MovementFigureSource` below it, which
+    needs only the entries table: a figure and who wrote it live on the
+    movement, a day on the row it dates as well.  (``SettlementBasis``, the
+    row's own figure catalogue behind ``transactions.settled_basis_id``, was
+    deleted with that column at plan step ``balance:X-bi-4b-2``, migration
+    ``45f10b870c8b``.)
 
     A row that has not settled carries NULL here and no settle day; a row that
     HAS one carries both, and this column says which of three ways the day was
@@ -862,9 +825,9 @@ class SettledDayBasis(db.Model):
     project-wide ``ref-table: IDs for logic, strings for display only``
     invariant.
 
-    ``budget.transfers`` carries no such column and needs none, for the reason
-    it carries no :class:`SettlementBasis`: a transfer's money moves on its two
-    shadow ``Transaction`` rows, which each record their own day.
+    ``budget.transfers`` carries no such column and needs none: a transfer's
+    money moves on its two shadow ``Transaction`` rows, which each record
+    their own day.
     """
 
     __tablename__ = "settled_day_bases"
@@ -887,8 +850,10 @@ class MovementFigureSource(db.Model):
     the one table that holds movements: a purchase against an envelope has
     always been one, and since X-bi-3a a settle writes one for a bill too
     (since X-bi-3b for a paycheck) -- the covering movement that records the
-    parent's money the way a purchase records an envelope's.  A transaction's own figure keeps
-    :class:`SettlementBasis` until ``balance:X-bi-4`` makes it derivable.
+    parent's money the way a purchase records an envelope's.  It is the ONE
+    home of a settled row's figure and its writer since plan step
+    ``balance:X-bi-4b-2`` deleted the row's own ``settled_amount`` /
+    ``settled_basis_id`` (migration ``45f10b870c8b``).
 
     :class:`app.enums.MovementFigureSourceEnum` carries the argument: why the
     partition is over the SOURCE, why a reader needs it, and why it is not a

@@ -25,7 +25,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from app import ref_cache
 from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -44,7 +43,6 @@ from app.services.status_seam._refusals import (
     StatusBearingRow,
     reject_figure_without_settled_status,
     reject_future_settle_day,
-    reject_settle_day_without_a_record,
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
     reject_stated_figure_over_purchases,
@@ -298,9 +296,9 @@ def apply_status_change(
          surfaces as a 400.
       2. assign ``status_id``.
       3. maintain the SETTLEMENT RECORD -- ``settled_on``,
-         ``settled_day_basis_id``, ``settled_amount``, ``settled_basis_id`` and
-         the clearing link -- as ONE act (see the *settle_day* and *settlement*
-         args).  **Transactions only**, because
+         ``settled_day_basis_id``, the clearing link and the COVERING MOVEMENT
+         that carries what moved -- as ONE act (see the *settle_day* and
+         *settlement* args).  **Transactions only**, because
          ``Transfer`` carries none of those columns: a transfer's money moves on
          its two shadow rows, and the transfer service applies this seam to those
          shadows, so a transfer settle still records what moved and when.
@@ -389,12 +387,14 @@ def apply_status_change(
             untouched Save a no-op instead of a re-dating.
 
         settlement: WHAT moved, when this change RECORDS a settle
-            (:class:`Settlement`).  Written to ``settled_amount`` and
-            ``settled_basis_id`` in the same act as the day above, so one call
-            states everything a settle knows.  The figure and its basis are
-            paired by ``ck_transactions_settled_amount_needs_basis``; the settle
-            DAY is deliberately not paired with either, because a revert
-            withdraws the day and keeps what moved.
+            (:class:`Settlement`).  Written as the row's COVERING MOVEMENT
+            (``status_seam._covering.sync_covering_movement``) in the same act
+            as the day above, so one call states everything a settle knows;
+            the movement carries the figure and who wrote it, and it is the
+            record's ONE home since plan step ``balance:X-bi-4b-2`` deleted
+            the row's own ``settled_amount`` / ``settled_basis_id`` (ruling
+            **R-BAL80**).  The settle DAY is deliberately not paired with it,
+            because a revert withdraws the day and keeps what moved.
 
             **A row ENTERING the settled band must supply one**, and that
             refusal is what makes "a settled row states what moved" a property of
@@ -464,16 +464,16 @@ def apply_status_change(
     # the refusals above, and for the identical reason.
     reject_settlement_without_settled_status(new_status_id, settlement)
 
-    # ``ck_transactions_settle_day_needs_a_record`` said in WORDS, and only a
-    # ``Transaction`` carries either column.  Without it the legacy row the
-    # correction box exists to repair failed as a raw CHECK violation rendered
-    # as "invalid reference"; see :func:`reject_settle_day_without_a_record`.
+    # (``reject_settle_day_without_a_record`` stood here through plan step
+    # ``balance:X-bi-4b-1`` -- ``ck_transactions_settle_day_needs_a_record``
+    # said in words, for the legacy row that recorded nothing; a settled row
+    # IS its record since ``X-bi-4b-2``, so the state it refused has no
+    # spelling, and both went with the row's figure columns.)
     if isinstance(row, Transaction):
-        reject_settle_day_without_a_record(row, settle_day, settlement)
         # The purchases ARE the figure (ruling **R-BAL78**, plan step
         # ``balance:X-bi-4a``): a stated figure beside real purchases would be
         # mirrored as a second movement over the same money.  Refused here,
-        # ahead of any mutation like the five above it, so every door that
+        # ahead of any mutation like the four above it, so every door that
         # hands over a record inherits it; only a ``Transaction`` can hold
         # purchases (``entry_service.create_entry`` refuses a shadow).
         reject_stated_figure_over_purchases(row, settlement)
@@ -571,20 +571,22 @@ def apply_status_change(
         # X-au-c3).  ``settled_on``, ``settled_day_basis_id`` and
         # ``reconciled_by_id`` are the ASSERTION -- "this money moved, on this
         # day, that is what kind of day it is, and that statement showed it" --
-        # so a revert withdraws all three.  ``settled_amount`` and
-        # ``settled_basis_id`` are WHAT MOVED, which is a fact about the row and
-        # not about the assertion, so nothing here destroys them.
+        # so a revert withdraws all three.  What moved is a fact about the row
+        # and not about the assertion, and its home is the COVERING MOVEMENT
+        # written below: a revert un-dates that movement and keeps it (plan
+        # step X-bi-3e-2, ruling **R-BAL61**), so nothing here destroys it.
         #
-        # A first version of this step released all four together, under a CHECK
-        # that paired the day with the basis.  That pairing was the same defect
-        # the step exists to remove (finding **N-241**: one column answering two
-        # questions) rebuilt as two facts forced to share one lifetime -- and it
-        # cost the user real data, because the full-edit popover TELLS them to
-        # revert in order to edit, so following the app's own instruction
-        # silently deleted a figure they had read off a statement.  Every
-        # reconciliation system this was checked against separates the two: an
-        # amount belongs to the transaction and cleared-ness is metadata over
-        # it, so un-clearing never touches the amount (developer, 2026-08-17).
+        # A first version of this step released everything together, under a
+        # CHECK that paired the day with the record.  That pairing was the same
+        # defect the step exists to remove (finding **N-241**: one column
+        # answering two questions) rebuilt as two facts forced to share one
+        # lifetime -- and it cost the user real data, because the full-edit
+        # popover TELLS them to revert in order to edit, so following the app's
+        # own instruction silently deleted a figure they had read off a
+        # statement.  Every reconciliation system this was checked against
+        # separates the two: an amount belongs to the transaction and
+        # cleared-ness is metadata over it, so un-clearing never touches the
+        # amount (developer, 2026-08-17).
         #
         # Nothing is lost by retaining it and one thing is gained: a re-settle
         # HONOURS a retained correction (:meth:`Settlement.from_settle`), so the
@@ -593,29 +595,20 @@ def apply_status_change(
         # but the STATUS -- ``row_valuation.settled_figure`` answers ``None`` for
         # a row that is not settled, whatever it still carries.
         #
-        # **These two columns are WRITTEN here and READ by nothing that counts
-        # or shows money** since plan step ``balance:X-bi-4b-1`` (ruling
-        # **R-BAL80**): the record's home is the covering movement written
-        # below, and every reader -- ``settled_figure``, ``recorded_settlement``,
-        # ``honoured_correction``, the entry doors' "fixed figure" predicates,
-        # the SQL twin -- asks it.  The write stands through the interval so
-        # ``integrity_check`` DC-11 can grade the cache against the movement
-        # and the three CHECKs over the columns keep a subject; ``X-bi-4b-2``
-        # deletes the columns, this write and ``Settlement.basis`` together.
-        if settlement is not None:
-            row.settled_amount = settlement.amount
-            row.settled_basis_id = ref_cache.settlement_basis_id(
-                settlement.basis,
-            )
-        # **The record's other home** (plan step **X-bi-3a**, ruling
-        # **R-BAL39**): a settle on the manual branch is mirrored as ONE
-        # covering movement, the payment row that records a bill's money the
-        # way a purchase records an envelope's, and leaving the band un-dates
-        # it and keeps it (plan step X-bi-3e-2, ruling R-BAL61: the mirror
-        # follows the row's released assertion exactly as ``settled_amount``
-        # is retained above).  Written LAST so every value it mirrors -- the
-        # day pair, the link, the figure and its basis -- is the row's final
-        # one for this act.  The rule and the lifecycle are
+        # The row's own ``settled_amount`` / ``settled_basis_id`` were written
+        # here beside the movement from X-au-c3 until plan step
+        # ``balance:X-bi-4b-2`` deleted them (ruling **R-BAL80**, migration
+        # ``45f10b870c8b``): the same fact in two homes is two sources.
+        #
+        # **The record's home** (plan step **X-bi-3a**, ruling **R-BAL39**):
+        # a settle on the manual branch is recorded as ONE covering movement,
+        # the payment row that records a bill's money the way a purchase
+        # records an envelope's, and leaving the band un-dates it and keeps
+        # it (plan step X-bi-3e-2, ruling R-BAL61: the movement follows the
+        # row's released assertion and outlives it).  Written LAST so every
+        # value it carries -- the day pair, the link, the figure and its
+        # source -- is the row's final one for this act.  The rule and the
+        # lifecycle are
         # :mod:`app.services.status_seam._covering`'s; it covers every kind
         # of row, a transfer shadow included since plan step X-bi-3c (the
         # kind gate went in three leaves: expense at 3a, income at 3b,

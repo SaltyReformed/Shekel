@@ -62,7 +62,6 @@ from tests._test_helpers import (
     cover_bare_settled_row,
     make_line_cadence_rule,
     pricing_over,
-    settlement_columns,
     shadow_amount,
 )
 from app.services.settle_day import record_settle_day
@@ -1161,30 +1160,20 @@ class TestShadowContributionBoundary:
             if other.id != shadow.id
         ]
         if settled:
-            # The whole settlement record in one act, on both legs: the day,
-            # the figure and how the figure is known (plan step X-au-c3).
-            # *actual* is a figure a HUMAN typed, which makes the record
-            # ``corrected``; with none the record is ``derived`` at the row's
-            # own plan.  Written together because
-            # ``ck_transactions_settle_day_needs_a_record`` refuses a settle day
-            # that names no figure.
+            # The settle DAY on both legs; the record -- the figure and who
+            # wrote it -- is each leg's covering movement, written after the
+            # flush below.  *actual* is a figure a HUMAN typed (``typed``);
+            # with none the record is the row's own plan (``resolved``).
             settled_id = ref_cache.status_id(StatusEnum.RECEIVED)
             for row in rows:
                 row.status_id = settled_id
                 record_settle_day(row, an_entered_day(period.start_date))
-                for column, value in settlement_columns(
-                    period.start_date, shadow_amount(row),
-                    submitted=(
-                        Decimal(str(actual)) if actual is not None else None
-                    ),
-                ).items():
-                    setattr(row, column, value)
             transfer.status_id = settled_id
         elif actual is not None:
             raise AssertionError(
                 "A figure RECORDS a settle (plan step X-au-c3), so an "
-                "unsettled row cannot carry one -- "
-                "ck_transactions_settled_amount_needs_basis refuses it. Pass "
+                "unsettled row cannot carry one -- the seam refuses it "
+                "(reject_settlement_without_settled_status). Pass "
                 "settled=True beside actual, or drop actual."
             )
         if cancelled:
@@ -1195,7 +1184,7 @@ class TestShadowContributionBoundary:
         db_session.flush()
         if settled:
             # The record's home is each leg's COVERING MOVEMENT (plan step
-            # balance:X-bi-4b-1); the columns above are the seam's cache.
+            # balance:X-bi-4b-1; the one home since X-bi-4b-2).
             for row in rows:
                 cover_bare_settled_row(
                     db_session, row, shadow_amount(row),

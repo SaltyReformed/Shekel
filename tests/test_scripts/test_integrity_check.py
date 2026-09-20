@@ -28,7 +28,6 @@ from tests._test_helpers import (
     open_owner_calendar,
     populate_in_a_fresh_pass,
     settle_day_columns,
-    settlement_columns,
 )
 from scripts.integrity_check import (
     CheckResult,
@@ -617,8 +616,6 @@ class TestDataConsistency:
         txn.status_id = status_done.id
         for _column, _value in settle_day_columns(settled_on).items():
             setattr(txn, _column, _value)
-        for _column, _value in settlement_columns(settled_on, Decimal("50.00")).items():
-            setattr(txn, _column, _value)
         db.session.flush()
         # The seam's mirror, as every settled row carries it since X-bi-3d:
         # without it DC-11 names the row, and rightly.
@@ -1107,19 +1104,22 @@ class TestDataConsistency:
     def test_dc11_detects_a_settled_row_the_fold_cannot_see(
         self, app, db, seed_user, seed_periods,
     ):
-        """DC-11 grades all three arms of the alarm the cash walk lost at X-bi-4a.
+        """DC-11 grades both arms of the alarm the cash walk lost at X-bi-4a.
 
         Ruling **R-BAL80**: the fold reads movements alone, by the MOVEMENT's
-        day, so a settled row with no settle day, a stored non-zero figure
-        with no covering movement, or a covering movement with no day, is
-        money the balance silently omits -- the first the state
+        day, so a settled row with no settle day, or a covering movement with
+        no day, is money the balance silently omits -- the first the state
         ``balance_predicates.settled_day`` raised on when the fold still read
         the row.  Planted around the doors, as the hazard is: a bill settled
-        through the verb passes; its mirror deleted by SQL fires the
-        missing-movement arm; restored, the row's day cleared by SQL fires the
+        through the verb passes; the row's day cleared by SQL fires the
         row-day arm; restored, the MOVEMENT's day pair cleared by SQL fires
         the movement-day arm -- each arm shown firing and clearing on the one
-        row.
+        row.  A THIRD arm -- a stored non-zero figure with no covering
+        movement -- graded the row's own ``settled_amount`` against the
+        movement through plan step ``balance:X-bi-4b-1``; that column went at
+        ``X-bi-4b-2``, and a settled row holding no movement IS the ``$0.00``
+        record (ruling **R-BAL82**), so the same plant now PASSES, which is
+        asserted here as the retired arm's negative control.
         """
         # pylint: disable=import-outside-toplevel  -- the module convention.
         import sqlalchemy
@@ -1143,25 +1143,18 @@ class TestDataConsistency:
         (movement,) = txn.covering_movements
         assert dc11().passed
 
-        # The MOVEMENT arm: a stored figure with no mirror.
+        # The retired arm's plant: a settled row whose movement is gone is a
+        # close of nothing (ruling R-BAL82), not an alarm.
         db.session.execute(sqlalchemy.text(
             "DELETE FROM budget.transaction_entries WHERE id = :id"
         ), {"id": movement.id})
-        fired = dc11()
-        assert not fired.passed
-        assert fired.severity == "critical"
-        assert [row["transaction_id"] for row in fired.details] == [txn.id]
-        assert fired.details[0]["covering_movements"] == 0
-        assert fired.details[0]["settled_on"] is not None
+        assert dc11().passed
 
-        # Restore the mirror through the seam's own writer; the arm clears.
-        # The record is STATED here rather than read back off the row: since
-        # plan step balance:X-bi-4b-1 ``recorded_settlement`` reads the
-        # covering movement -- the very row this arm deleted -- and a settled
-        # row holding none reads as a close of nothing (ruling R-BAL82),
-        # which would withdraw rather than re-cover.  The columns this arm
-        # still grades against are the seam's stale cache through the
-        # interval, deleted at X-bi-4b-2 with the arm.
+        # Restore the movement through the seam's own writer.  The record is
+        # STATED here rather than read back off the row: ``recorded_settlement``
+        # reads the covering movement -- the very row deleted above -- and a
+        # settled row holding none reads as a close of nothing, which would
+        # withdraw rather than re-cover.
         db.session.expire(txn)
         from app.enums import MovementFigureSourceEnum
         from app.services.status_seam import Settlement

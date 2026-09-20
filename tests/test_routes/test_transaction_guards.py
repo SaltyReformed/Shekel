@@ -25,6 +25,7 @@ from tests._test_helpers import (
     shadow_amount,
 )
 from app.models.amount_ownership import AmountOwnership
+from app.services import status_seam
 
 
 def _create_savings(seed_user):
@@ -127,10 +128,9 @@ class TestUpdateShadowGuard:
 
         **This asserted the opposite until plan step X-au-c3** -- the PATCH
         wrote ``actual_amount`` onto a PROJECTED shadow and mirrored it to its
-        sibling.  A figure now RECORDS what moved, and
-        ``ck_transactions_settled_amount_needs_basis`` keeps one off a row whose
-        money has not; the seam refuses the offer before the column is reached,
-        so the request is a designed 400 rather than an ``IntegrityError``.  No
+        sibling.  A figure now RECORDS what moved, and the seam keeps one off
+        a row whose money has not (``reject_settlement_without_settled_status``),
+        so the request is a designed 400 rather than a write.  No
         form can reach it: the correction box renders only on a settled row.
 
         To correct a transfer's figure, settle it -- the same act that records
@@ -148,8 +148,8 @@ class TestUpdateShadowGuard:
             db.session.expire_all()
             expense = db.session.get(Transaction, expense.id)
             income = db.session.get(Transaction, income.id)
-            assert expense.settled_amount is None
-            assert income.settled_amount is None
+            assert status_seam.recorded_settlement(expense) is None
+            assert status_seam.recorded_settlement(income) is None
 
     def test_update_shadow_status(
         self, app, db, auth_client, seed_user, seed_periods_today
