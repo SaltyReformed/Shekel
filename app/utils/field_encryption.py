@@ -1,22 +1,28 @@
 """Shekel Budget App -- the field-encryption key, as the environment states it.
 
 The ONE home of what ``FIELD_ENCRYPTION_KEY`` and its rotation twin
-``FIELD_ENCRYPTION_KEY_OLD`` mean: the names, the parse of their values
-into the ordered Fernet list a ``MultiFernet`` is built from, and the
-refusal an environment still spelling the key's OLD names meets.  No
-Flask, no models -- ``app.config`` reads this module at import time to
-validate a production configuration, and ``app.services.mfa_service``
-reads it at call time to build the cipher.
+``FIELD_ENCRYPTION_KEY_OLD`` mean, and of the cipher built from them: the
+names, the parse of their values into the ordered Fernet list a
+``MultiFernet`` is built from, the refusal an environment still spelling
+the key's OLD names meets, and the ``encrypt_secret`` / ``decrypt_secret``
+pair every ciphertext column is written and read through.  No Flask, no
+models -- ``app.config`` reads this module at import time to validate a
+production configuration; the MFA service, the MFA routes and the
+rotation script read it at call time.
 
 The key was ``TOTP_ENCRYPTION_KEY`` until plan step ``bank_import:X-f6b-2``
 renamed it (ledger row BI-503): it encrypts every ciphertext column the
 app stores (``auth.mfa_configs``' TOTP secret), and ``TOTP`` named one of
-them.
+them.  The cipher pair lived in ``app.services.mfa_service`` until the same
+step ruled the key a second column to protect (``budget.bank_feeds``, ruling
+**R-BI12**, the commit after this move); a cipher for every encrypted
+column has no business under an MFA-named module, so the pair moved here
+to the key it is built from, and every caller reaches it at this one home.
 """
 
 import os
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 #: The environment variable holding the primary Fernet key.
 PRIMARY_KEY_ENV = "FIELD_ENCRYPTION_KEY"
@@ -127,3 +133,77 @@ def build_fernet_list() -> list[Fernet]:
     return fernet_list_from(
         os.getenv(PRIMARY_KEY_ENV), os.getenv(RETIRED_KEYS_ENV, ""),
     )
+
+
+def get_encryption_key() -> MultiFernet:
+    """Load the MultiFernet cipher from the environment.
+
+    The returned cipher encrypts with the primary key
+    (``FIELD_ENCRYPTION_KEY``) and decrypts with any primary-or-retired
+    key listed in ``FIELD_ENCRYPTION_KEY_OLD``.  This makes
+    ``FIELD_ENCRYPTION_KEY`` rotation a non-destructive operation:
+
+      1. Move the existing primary value into ``FIELD_ENCRYPTION_KEY_OLD``.
+      2. Set the new key as ``FIELD_ENCRYPTION_KEY``.  The application
+         can immediately decrypt legacy ciphertexts via the retired key
+         and writes new ciphertexts under the new primary.
+      3. Run ``scripts/rotate_field_key.py --confirm`` to re-wrap every
+         existing ciphertext under the new primary.
+      4. Remove the retired value from ``FIELD_ENCRYPTION_KEY_OLD`` at
+         the next deploy.
+
+    See ``docs/runbook_secrets.md`` for the full procedure.
+
+    The public API exposed by ``MultiFernet`` is identical to
+    ``Fernet`` -- ``encrypt``, ``decrypt``, and ``rotate`` -- so all
+    callers of this function continue to work unchanged.  The key list
+    itself is :func:`build_fernet_list`, the one parse of the
+    environment that ``ProdConfig`` also validates against at start-up.
+
+    Returns:
+        MultiFernet: A cipher initialized with the primary key first
+            and any retired keys appended in declaration order.
+
+    Raises:
+        RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
+        ValueError: If any configured key cannot be parsed as a Fernet
+            key (wrong length or non-base64 input).
+    """
+    return MultiFernet(build_fernet_list())
+
+
+def encrypt_secret(plaintext_secret: str) -> bytes:
+    """Encrypt a secret for storage in a ciphertext column.
+
+    Args:
+        plaintext_secret: The secret as text (a base32 TOTP secret).
+
+    Returns:
+        bytes: The Fernet-encrypted ciphertext, written under the
+        primary key.
+
+    Raises:
+        RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
+        ValueError: If any configured key cannot be parsed as a Fernet
+            key.
+    """
+    return get_encryption_key().encrypt(plaintext_secret.encode("utf-8"))
+
+
+def decrypt_secret(encrypted_secret: bytes) -> str:
+    """Decrypt a secret read from a ciphertext column.
+
+    Args:
+        encrypted_secret: The Fernet-encrypted ciphertext bytes.
+
+    Returns:
+        str: The original plaintext secret.
+
+    Raises:
+        RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
+        ValueError: If any configured key cannot be parsed as a Fernet
+            key.
+        cryptography.fernet.InvalidToken: If no configured key can
+            decrypt the ciphertext.
+    """
+    return get_encryption_key().decrypt(encrypted_secret).decode("utf-8")

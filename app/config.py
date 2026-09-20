@@ -143,7 +143,7 @@ class BaseConfig:
     # The Fernet key under which the app stores its ciphertext columns
     # at rest (``auth.mfa_configs``' TOTP secret).  The cipher is built
     # at call time by ``app.utils.field_encryption.build_fernet_list``
-    # (through ``mfa_service.get_encryption_key``); this attribute is
+    # (through that module's ``get_encryption_key``); this attribute is
     # the same variable captured at import, which ``ProdConfig``
     # validates and ``create_app``'s warning reads.  REQUIRED in
     # production (ruling ``bank_import:R-BI23``); optional in dev and
@@ -152,7 +152,7 @@ class BaseConfig:
     FIELD_ENCRYPTION_KEY = os.getenv("FIELD_ENCRYPTION_KEY")
 
     # Optional comma-separated list of retired Fernet keys.  Used by
-    # ``mfa_service.get_encryption_key`` to build a MultiFernet that
+    # ``field_encryption.get_encryption_key`` to build a MultiFernet that
     # decrypts ciphertexts written under a previous primary key.  Set
     # this transiently during a FIELD_ENCRYPTION_KEY rotation; the
     # operator removes it again after running scripts/rotate_field_key.py.

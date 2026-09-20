@@ -34,6 +34,7 @@ from flask import g
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
+from app.utils.field_encryption import encrypt_secret
 
 
 def _reset_login_cache():
@@ -80,7 +81,7 @@ def _enable_mfa_with_known_secret(user_id, last_step=None):
     config = MfaConfig(
         user_id=user_id,
         is_enabled=True,
-        totp_secret_encrypted=mfa_service.encrypt_secret(secret),
+        totp_secret_encrypted=encrypt_secret(secret),
         last_totp_timestep=last_step,
         confirmed_at=datetime.now(timezone.utc),
     )

@@ -22,6 +22,7 @@ from cryptography.fernet import Fernet, MultiFernet
 from app.extensions import db
 from app.models.user import MfaConfig
 from app.services import mfa_service
+from app.utils.field_encryption import decrypt_secret, encrypt_secret, get_encryption_key
 
 
 def _decode_session_cookie(app, cookie_value: str) -> dict:
@@ -93,7 +94,7 @@ class TestMfaSetupSecretIsServerSide:
             )
             assert config is not None
             assert config.pending_secret_encrypted is not None
-            plaintext_secret = mfa_service.decrypt_secret(
+            plaintext_secret = decrypt_secret(
                 config.pending_secret_encrypted
             )
 
@@ -139,12 +140,12 @@ class TestMfaSetupSecretIsServerSide:
                 .first()
             )
             first_ciphertext = config.pending_secret_encrypted
-            first_secret = mfa_service.decrypt_secret(first_ciphertext)
+            first_secret = decrypt_secret(first_ciphertext)
 
             auth_client.get("/mfa/setup")
             db.session.refresh(config)
             second_ciphertext = config.pending_secret_encrypted
-            second_secret = mfa_service.decrypt_secret(second_ciphertext)
+            second_secret = decrypt_secret(second_ciphertext)
 
             # Exactly one pending row exists post-overwrite.
             row_count = (
@@ -226,7 +227,7 @@ class TestMfaSetupSecretIsServerSide:
         /mfa/confirm: the pending ciphertext was written under the
         original primary, the operator promoted a new primary and
         moved the original to ``FIELD_ENCRYPTION_KEY_OLD``.
-        ``mfa_service.get_encryption_key`` returns a ``MultiFernet``
+        ``get_encryption_key`` returns a ``MultiFernet``
         that decrypts under either key, so the user can still finish
         their setup, and the route re-encrypts the secret under the
         new primary so the active credential never depends on the
@@ -243,7 +244,7 @@ class TestMfaSetupSecretIsServerSide:
             # Capture the original primary that auth_client's setup
             # call will use.  conftest sets a fresh key per test via
             # the ``set_field_encryption_key`` autouse fixture.
-            old_primary = mfa_service.get_encryption_key()
+            old_primary = get_encryption_key()
             # Perform setup under the original primary.
             auth_client.get("/mfa/setup")
             config = (
@@ -329,7 +330,7 @@ class TestMfaSetupExpiryEnforcement:
 
             mfa_config = MfaConfig(
                 user_id=seed_user["user"].id,
-                pending_secret_encrypted=mfa_service.encrypt_secret(
+                pending_secret_encrypted=encrypt_secret(
                     "JBSWY3DPEHPK3PXP"
                 ),
                 pending_secret_expires_at=(

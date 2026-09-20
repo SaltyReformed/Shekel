@@ -40,6 +40,7 @@ from app.schemas.validation import (
     MfaVerifySchema,
 )
 from app.services import auth_service, mfa_service
+from app.utils.field_encryption import decrypt_secret, encrypt_secret
 from app.routes.auth._bp import auth_bp
 from app.routes.auth._helpers import (
     MFA_SETUP_PENDING_TTL,
@@ -180,7 +181,7 @@ def mfa_verify():  # pylint: disable=too-many-return-statements
     # collapses into the same operator-side error message and
     # redirect.
     try:
-        mfa_service.decrypt_secret(mfa_config.totp_secret_encrypted)
+        decrypt_secret(mfa_config.totp_secret_encrypted)
         valid, used_backup_code = _check_mfa_code(
             mfa_config, user.id, totp_code, backup_code,
         )
@@ -287,9 +288,9 @@ def mfa_setup():
     # Encrypt before any DB mutation so a missing FIELD_ENCRYPTION_KEY
     # leaves the database state untouched -- no orphan pending row, no
     # half-initialized MfaConfig.  encrypt_secret() raises RuntimeError
-    # when the key is unset (see app/services/mfa_service.py:_build_fernet_list).
+    # when the key is unset (app/utils/field_encryption.py:fernet_list_from).
     try:
-        encrypted_pending = mfa_service.encrypt_secret(secret)
+        encrypted_pending = encrypt_secret(secret)
     except RuntimeError:
         flash(
             "MFA is not available. The server administrator must set "
@@ -374,7 +375,7 @@ def mfa_confirm():
         return redirect(url_for("auth.mfa_setup"))
 
     try:
-        secret = mfa_service.decrypt_secret(mfa_config.pending_secret_encrypted)
+        secret = decrypt_secret(mfa_config.pending_secret_encrypted)
     except RuntimeError:
         # FIELD_ENCRYPTION_KEY is unset.  Sending the user back to
         # /mfa/setup would only loop them through the same failure
@@ -436,7 +437,7 @@ def mfa_confirm():
     # is about to remove from FIELD_ENCRYPTION_KEY_OLD.  Re-encrypt
     # binds the active record to the current primary every time.
     try:
-        mfa_config.totp_secret_encrypted = mfa_service.encrypt_secret(secret)
+        mfa_config.totp_secret_encrypted = encrypt_secret(secret)
     except RuntimeError:
         # decrypt_secret() succeeded above so MultiFernet was usable a
         # moment ago.  This branch is only hit if FIELD_ENCRYPTION_KEY

@@ -14,7 +14,7 @@ operator has:
        effect at the runtime layer.
 
 The application is fully usable between steps 4 and 5 because
-``mfa_service.get_encryption_key()`` returns a ``MultiFernet`` that
+``field_encryption.get_encryption_key()`` returns a ``MultiFernet`` that
 decrypts under either the new primary or the retired key.  This
 script's role is to migrate the at-rest ciphertexts forward so the
 operator can safely remove the retired key from
@@ -173,7 +173,7 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
             fail fast rather than silently leaving the table in its
             previous state.
         ValueError: If any configured key cannot be parsed as a Fernet
-            key -- the same refusal ``mfa_service.get_encryption_key``
+            key -- the same refusal ``field_encryption.get_encryption_key``
             raises, since both build the list the same way.
 
     Side effects:
@@ -199,7 +199,7 @@ def execute_rotation(db_session) -> tuple[int, int, int]:
     logger = logging.getLogger(__name__)
 
     # ONE parse of the environment (``build_fernet_list``, the list
-    # ``mfa_service.get_encryption_key`` wraps): its index 0 is the
+    # ``field_encryption.get_encryption_key`` wraps): its index 0 is the
     # primary alone, which is the idempotency probe, and the whole
     # list is the rotating cipher.  A first version re-read the env
     # var here, a second spelling of the primary that could disagree

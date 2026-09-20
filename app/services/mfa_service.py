@@ -1,7 +1,11 @@
 """Shekel Budget App -- MFA Service.
 
-Handles TOTP secret generation, verification, backup code management,
-and secret encryption/decryption. No Flask imports -- pure service module.
+Handles TOTP secret generation, verification and backup code management.
+No Flask imports -- pure service module.  The cipher the TOTP secret is
+stored under is :mod:`app.utils.field_encryption`'s (``encrypt_secret`` /
+``decrypt_secret``), the one home of every ciphertext column's key; it
+lived here until plan step ``bank_import:X-f6b-2`` ruled that key a second
+column to protect (**R-BI12**).
 """
 
 import hmac
@@ -14,11 +18,10 @@ from io import BytesIO
 import bcrypt
 import pyotp
 import qrcode
-from cryptography.fernet import MultiFernet
 
 from app.models.user import MfaConfig
 from app.utils.digit_strings import is_ascii_digits
-from app.utils.field_encryption import build_fernet_list
+from app.utils.field_encryption import decrypt_secret
 
 
 # Width in seconds of one TOTP time-step.  RFC 6238 leaves this
@@ -84,44 +87,6 @@ class TotpVerificationResult(Enum):
     INVALID = "invalid"
 
 
-def get_encryption_key():
-    """Load the MultiFernet cipher from the environment.
-
-    The returned cipher encrypts with the primary key
-    (``FIELD_ENCRYPTION_KEY``) and decrypts with any primary-or-retired
-    key listed in ``FIELD_ENCRYPTION_KEY_OLD``.  This makes
-    ``FIELD_ENCRYPTION_KEY`` rotation a non-destructive operation:
-
-      1. Move the existing primary value into ``FIELD_ENCRYPTION_KEY_OLD``.
-      2. Set the new key as ``FIELD_ENCRYPTION_KEY``.  The application
-         can immediately decrypt legacy ciphertexts via the retired key
-         and writes new ciphertexts under the new primary.
-      3. Run ``scripts/rotate_field_key.py --confirm`` to re-wrap every
-         existing ciphertext under the new primary.
-      4. Remove the retired value from ``FIELD_ENCRYPTION_KEY_OLD`` at
-         the next deploy.
-
-    See ``docs/runbook_secrets.md`` for the full procedure.
-
-    The public API exposed by ``MultiFernet`` is identical to
-    ``Fernet`` -- ``encrypt``, ``decrypt``, and ``rotate`` -- so all
-    callers of this function continue to work unchanged.  The key list
-    itself is :func:`app.utils.field_encryption.build_fernet_list`, the
-    one parse of the environment that ``ProdConfig`` also validates
-    against at start-up.
-
-    Returns:
-        MultiFernet: A cipher initialized with the primary key first
-            and any retired keys appended in declaration order.
-
-    Raises:
-        RuntimeError: If ``FIELD_ENCRYPTION_KEY`` is unset or empty.
-        ValueError: If any configured key cannot be parsed as a Fernet
-            key (wrong length or non-base64 input).
-    """
-    return MultiFernet(build_fernet_list())
-
-
 def generate_totp_secret():
     """Generate a random base32-encoded TOTP secret.
 
@@ -129,30 +94,6 @@ def generate_totp_secret():
         str: A random base32 string suitable for TOTP provisioning.
     """
     return pyotp.random_base32()
-
-
-def encrypt_secret(plaintext_secret: str) -> bytes:
-    """Encrypt a TOTP secret for database storage.
-
-    Args:
-        plaintext_secret: The base32-encoded secret string to encrypt.
-
-    Returns:
-        bytes: The Fernet-encrypted ciphertext.
-    """
-    return get_encryption_key().encrypt(plaintext_secret.encode("utf-8"))
-
-
-def decrypt_secret(encrypted_secret: bytes) -> str:
-    """Decrypt a TOTP secret retrieved from the database.
-
-    Args:
-        encrypted_secret: The Fernet-encrypted ciphertext bytes.
-
-    Returns:
-        str: The original base32-encoded plaintext secret.
-    """
-    return get_encryption_key().decrypt(encrypted_secret).decode("utf-8")
 
 
 def get_totp_uri(secret: str, email: str, issuer: str = "Shekel") -> str:
