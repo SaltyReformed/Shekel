@@ -26,10 +26,12 @@ consumer that legitimately holds a :class:`~app.services.loan_ledger.LoanLedgerW
 (the writer, the read pass) cannot reach a balance from a public leaf name -- the
 only code that turns a walk into money is seam-private.  That is what lets the walk
 shed its fence entry (a walk one call from a balance had to be fenced; a walk that is
-not, does not).  This is the balance-side twin of the forward fold
-(:func:`app.services.balance_at._plan_fold.fold_forward`), which has lived seam-private
-since step C6a; the two share the one date-sampling core :func:`sample_cumulative`,
-so the past and the future cannot drift on how a running balance is read at a date.
+not, does not).  It WAS the balance-side twin of a forward fold
+(``_plan_fold.fold_forward``, seam-private since step C6a) that started from a
+seed this fold had sampled; since plan step recurrence:R16-c-1 there is no
+second fold -- the loan's timeline carries its projections behind its facts
+(:mod:`._loan_stream`) and :func:`fold_from_walk` samples the whole of it, so
+the past and the future are one prefix-sum and cannot drift.
 
 **TOTAL and clock-free.**  :func:`fold_loan_balances` refuses no date and no
 account: a date before any event, or an account with no
@@ -107,11 +109,11 @@ def sample_cumulative(
     latest step on or before it -- one bisect per date, not a re-sum.  A date
     before every step reads *start* (the empty prefix).
 
-    Both the ACTUAL past fold (:func:`fold_from_walk`, seeded at ``0.00`` over the
-    walk's dated principal deltas) and the forward projection fold
-    (:func:`app.services.balance_at._plan_fold.fold_forward`, seeded at the confirmed
-    present over the plan's paydowns) sample through here, so the past and the
-    future cannot drift on how a running balance is read at a date.
+    The loan fold (:func:`fold_from_walk`, seeded at ``0.00`` over a walk's dated
+    principal deltas -- the recorded facts alone, or the pass's whole timeline
+    with its projections behind them since plan step recurrence:R16-c-1) and
+    the cash fold (:mod:`._cash_fold`) sample through here, so no two running
+    balances can drift on how they are read at a date.
 
     Args:
         start: The balance before any step -- ``0.00`` for the from-zero event
@@ -173,9 +175,10 @@ def last_closed_on(walk: LoanLedgerWalk, as_of: date) -> date | None:
     """Return the date *walk*'s loan LAST became closed at or before *as_of*.
 
     The BACKWARD zero-crossing, and the half
-    :func:`~app.services.balance_at._plan_fold.plan_payoff_date` structurally
-    cannot answer: that one folds FORWARD from the confirmed present seed, so a
-    loan already at zero has no crossing left ahead of it and returns ``None`` --
+    :func:`~app.services.balance_at._plan_fold.timeline_payoff_date` structurally
+    cannot answer: that one reads the PROJECTED outcomes forward of the read,
+    so a loan already at zero has no crossing left ahead of it and returns
+    ``None`` --
     which does not mean *never*, it means *not my half* (plan step
     ``recurrence:R7d-h``).  This reads the same rule the other way, over the
     RECORDED events rather than the forward plan, so the two together answer a
@@ -281,10 +284,10 @@ def fold_loan_balances(
 
     **ACTUAL events only.**  It folds what is RECORDED -- the loan's anchors and
     its settled payments -- so it answers the past.  PLANNED payments (the future)
-    are the seam's forward fold (:func:`app.services.balance_at._plan_fold.fold_forward`
-    over the loan's plan); asked about a future date this holds the last recorded
-    balance flat, which is honest for what it knows but is NOT the projection the
-    seam shows.  Grade it on the past.
+    are the seam's timeline (:func:`~._loan_stream.loan_timeline`, the same
+    walk with the plan's projections behind the facts); asked about a future
+    date this holds the last recorded balance flat, which is honest for what it
+    knows but is NOT the projection the seam shows.  Grade it on the past.
 
     **N-11 (a raw transaction typed onto a loan) is closed by construction (BG,
     ruling R-E), not a live gap.**  A raw settled transaction typed directly onto a

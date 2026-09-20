@@ -63,8 +63,9 @@ from pylint.checkers import BaseChecker
 # it moved to ``tests/_test_helpers.py`` and the production functions were
 # deleted: no producer, no re-export, nothing to allowlist.  The loan FOLD had
 # already left for the same structural reason at plan step D-fold
-# (``fold_loan_balances`` / ``fold_from_walk`` into ``balance_at._fold``, the
-# past-side twin of ``balance_at._plan_fold.fold_forward``), and ``walk_loan_ledger``
+# (``fold_loan_balances`` / ``fold_from_walk`` into ``balance_at._fold``; the
+# forward twin it had there, ``_plan_fold.fold_forward``, merged into the one
+# timeline at recurrence:R16-c-1), and ``walk_loan_ledger``
 # came off to the leaf's NON-producer ruling because the walk yields only FACTS
 # once the fold is elsewhere (see the ``loan_ledger`` ruling below).
 

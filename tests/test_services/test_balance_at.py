@@ -231,6 +231,18 @@ def _make_hysa(db, seed_user, anchor_period, balance):
     return create_hysa_account(seed_user, db.session, anchor_period, balance)
 
 
+def _owed_today(account, ctx) -> Decimal:
+    """The seam's balance for *account* on the pass's read day.
+
+    What ``DebtSchedule.projection_seed`` WAS -- the settled fold's balance at
+    ``ctx.as_of``, from which the forward fold started -- until plan step
+    recurrence:R16-c-1 replayed a loan's whole timeline from its origination and
+    deleted the field with the second fold it seeded.  The assertions below that
+    graded the seed grade the same figure through the public scalar.
+    """
+    return balance_at.balance_at(account, ctx, ctx.as_of)
+
+
 def _make_mortgage(
     db, seed_user, anchor_period, balance, origination_date, name="Mortgage",
     *, tracked_from=None,
@@ -606,10 +618,11 @@ class TestBalanceMapLoan:
         them from source events and no forward projection is consulted at all.  That
         fence is STRUCTURAL -- C2b deleted the schedule-only map, C3b3 retired the
         per-period forward map, and C6b deleted the schedule-forward primitives
-        entirely; the forward seed is now single-sourced from the opening anchor
-        (never ``original_principal``) in ``net_worth_kernel._projection_seed``, so
-        there is no seed-argument call site left to police (the W9905 checker that
-        once did retired with those primitives at C6b).
+        entirely; and since plan step recurrence:R16-c-1 there is no forward seed
+        at all -- the loan's timeline replays from its opening ASSERTION (never
+        ``original_principal``) -- so there is no seed-argument call site left to
+        police (the W9905 checker that once did retired with those primitives at
+        C6b).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -649,11 +662,11 @@ class TestBalanceMapLoan:
                 if anchor_date <= last_covered_day(p) < first_payment
             ]
             assert post_anchor, "expected a post-anchor pre-first-payment period"
-            assert seam[post_anchor[0].id] == schedule.projection_seed
+            assert seam[post_anchor[0].id] == _owed_today(mortgage, bctx)
             # ...which is the trued-up current balance, never the original
             # principal (the PR #44 / aba0242 boundary bug).
-            assert schedule.projection_seed == Decimal("200000.00")
-            assert schedule.projection_seed != Decimal("240000.00")
+            assert _owed_today(mortgage, bctx) == Decimal("200000.00")
+            assert _owed_today(mortgage, bctx) != Decimal("240000.00")
 
             # A period that ENDED before the true-up: the ledger's answer.  The
             # loan opened at $240,000 and no payment was ever recorded, so that is
@@ -703,7 +716,7 @@ class TestBalanceMapLoan:
             assert seam is not None
             # Paid off -> empty schedule -> $0 current balance everywhere.
             assert schedule.schedule == []
-            assert schedule.projection_seed == Decimal("0.00")
+            assert _owed_today(loan, bctx) == Decimal("0.00")
             assert seam[periods[0].id] == Decimal("0.00")
             assert seam[periods[-1].id] == Decimal("0.00")
 
@@ -765,8 +778,8 @@ class TestBalanceMapLoan:
             ).remaining_balance
             assert seam[fp.id] == expected
             # A real reduction: strictly below the $200,000 seed, still owing.
-            assert Decimal("0.00") < expected < schedule.projection_seed
-            assert schedule.projection_seed == Decimal("200000.00")
+            assert Decimal("0.00") < expected < _owed_today(loan, bctx)
+            assert _owed_today(loan, bctx) == Decimal("200000.00")
 
 
 class TestTheLoanGateIsOneQuestion:
@@ -1645,7 +1658,7 @@ class TestBalanceAt:
             due_by = [r for r in forward_rows if r.payment_date <= as_of]
             contractual_walk = (
                 due_by[-1].remaining_balance if due_by
-                else schedule.projection_seed
+                else _owed_today(mortgage, bctx)
             )
             overdue = [r for r in forward_rows if r.payment_date <= bctx.as_of]
             assert overdue, "fixture must carry overdue unconfirmed installments"
@@ -1654,7 +1667,7 @@ class TestBalanceAt:
             # than the contractual walk -- and, charging every one of the skipped
             # months (R-R71), more than its seed.
             assert seam > contractual_walk
-            assert seam > schedule.projection_seed
+            assert seam > _owed_today(mortgage, bctx)
 
     def test_investment_is_date_precise_and_meets_the_map_at_period_ends(
         self, app, db, seed_user, seed_periods_today,
@@ -4737,7 +4750,7 @@ class TestLiabilityOwedAtDates:
             due_by = [r for r in forward_rows if r.payment_date <= far_out]
             contractual_walk = (
                 due_by[-1].remaining_balance if due_by
-                else debt.projection_seed
+                else _owed_today(acct, bctx)
             )
 
             # The band credits NONE of the overdue installments, so its forward

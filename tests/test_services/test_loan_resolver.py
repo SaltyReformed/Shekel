@@ -1824,9 +1824,10 @@ class TestConfirmedLedgerView:
     # ``TestConfirmedLedgerView``).  What it pinned -- that the confirmed-present
     # seed, not the anchor replay, drives the target-date answer -- is now
     # structural rather than testable here: the seam's ``loan_required_extra``
-    # folds ``DebtSchedule.projection_seed``, the SAME seed ``positions()`` and
-    # ``loan_payoff_date`` fold, so there is no second seeding path left to
-    # diverge.  ``TestLoanRequiredExtraSeam`` grades the producer.
+    # reads the SAME memoized timeline ``positions()`` and ``loan_payoff_date``
+    # read (one replay from the origination since recurrence:R16-c-1), so there
+    # is no second seeding path left to diverge.  ``TestLoanRequiredExtraSeam``
+    # grades the producer.
 
 
 

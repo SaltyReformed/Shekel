@@ -30,7 +30,6 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.services import balance_at
-from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._plan import loan_plan
 from app.services.balance_at import BalanceContext
 from tests.oracles.loan_monthly_composition import charge_then_allocate
@@ -66,7 +65,7 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     """Independently fold the loan's PLAN records to its projected interest in *year*.
 
     A test-side parallel of the producer's projected half (step C6c): it seeds from
-    the SAME ``projection_seed`` the balance folds, walks the loan's
+    the SAME balance at the read day the timeline carries there, walks the loan's
     :func:`~app.services.balance_at._plan.loan_plan` records in due order, and sums
     each payment's interest (the RETIRED one-payment-a-month composition) by its EFFECTIVE
     year, dropping any due-month slot in *exclude_slots* (the settled-slot merge) --
@@ -75,9 +74,10 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     checked here, while the arithmetic VALUE is pinned by hand in
     ``test_loan_plan_forward_oracle`` (never the producer as its own oracle, N-7).
     """
-    seed = net_worth_kernel.generate_debt_schedules(
-        [loan], ctx,
-    )[loan.id].projection_seed
+    # The balance the projection starts from: the seam's own figure at the read
+    # day (what ``DebtSchedule.projection_seed`` was until plan step
+    # recurrence:R16-c-1 replayed the whole timeline from the origination).
+    seed = balance_at.balance_at(loan, ctx, ctx.as_of)
     plan = loan_plan(loan, ctx)
     # The CHARGE standing against each accrual period, keyed by the period it
     # opens.  Since plan step R16-a a month's interest and escrow are charged
@@ -301,10 +301,12 @@ class TestLoanInterestInYearMerge:
         settled half at 500.00) AND visible 2026-01-31 <= as_of, so ``loan_plan``
         does not synthesize a March ESTIMATED record at all.
 
-        **The walk-merge is NOT deleted and this test still grades it.**  What
-        changed is that it is no longer the ONLY thing standing between this
-        shape and a doubled deduction -- it is now the second of two independent
-        mechanisms, which is defence in depth rather than a workaround.  The
+        **The walk-merge IS deleted at plan step recurrence:R16-c-1**, when the
+        settled and projected halves became ONE list of outcomes (a payment is
+        either recorded or projected, never both), so this shape can no longer
+        double-count by construction.  The oracle below still folds the plan
+        with and without the March slot excluded, which now grades the
+        upstream mechanism alone: the plan does not synthesize March.  The
         final assertion is unchanged: the producer counts this payment once.
         """
         with app.app_context():

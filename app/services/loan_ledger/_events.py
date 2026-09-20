@@ -35,7 +35,8 @@ rows are facts, which date governs each, and what figure each carries.
 
 The one exception is :func:`confirmed_shadows_through`, which IS a reader's
 bound and lives here only because it is the same settled-payment set narrowed:
-see its docstring.
+see its docstring.  Since plan step recurrence:R16-c-1 it is also the payment
+half of the pass's visibility bound (:func:`.._walk.load_loan_stream`).
 """
 
 from datetime import date
@@ -63,9 +64,12 @@ def confirmed_shadows_through(
     balance readers count as confirmed history at ``as_of`` (their shared
     visible-on bound).  The posted ledger's payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`)
-    consumes this so its rows match the balance readers' cut; the fold's own walk
-    deliberately does NOT (it splits every settled payment -- see
-    :func:`~app.services.loan_loaders.settled_income_shadows` for why).
+    consumes this so its rows match the balance readers' cut, and since plan
+    step recurrence:R16-c-1 it is the payment half of a read pass's visibility
+    bound (:func:`.._walk.load_loan_stream`'s ``visible_by``, ruling R-R91);
+    the LEDGER's walk deliberately does NOT take it (it splits every settled
+    payment -- see :func:`~app.services.loan_loaders.settled_income_shadows`
+    for why).
 
     A payment's visible-on date is its SETTLED date (step C2, ruling R-A), read
     through the SAME :func:`._visible.payment_visible_on` the fold uses, so the
@@ -180,13 +184,22 @@ def loan_event_stream(
             carries the escrow in force on its own date.
 
     Returns:
-        The loan's :class:`~._replay.LoanEventStream`.
+        The loan's :class:`~._replay.LoanEventStream` -- its RECORDED facts.
+        It carries no projection: the seam appends the forward plan's to a
+        copy of this stream (``balance_at._loan_stream``) for a read, and the
+        posted ledger replays it as it is.
     """
     payments = [
         LoanCashEvent(
             on_date=loan_loaders.loan_payment_due_date(shadow, payment_day),
             cash=settled_contribution(shadow),
             source=shadow,
+            # The ONE clock, read once here: the settled day the posting
+            # writer stamps the entry with, and the day the fold counts the
+            # principal from (plan step recurrence:R16-c-1 moved the read
+            # from ``dated_deltas`` onto the event, so the projections the
+            # seam appends carry their own day under the same name).
+            visible_on=payment_visible_on(shadow),
         )
         for shadow in shadows
     ]
@@ -200,7 +213,9 @@ def loan_event_stream(
                 on_date=anchor.anchor_date,
                 balance=anchor.anchor_balance,
                 source=anchor,
+                is_opening=anchor.is_opening,
             )
             for anchor in anchor_facts
         ],
+        periods=periods,
     )

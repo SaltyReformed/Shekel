@@ -42,9 +42,10 @@ def installment_slot(due: date) -> tuple[int, int]:
     (``balance_at._plan``; that module's ``_month_slot`` alias was deleted at
     plan step R16-b-2, so it now calls this directly).
 
-    **TWO further sites spell the same key inline rather than calling this, and
+    **Further sites spell the same key inline rather than calling this, and
     naming them as sharers here was false until plan step X-au-g-2c-3b-2**: the
-    tax reader's settled-slot merge (``balance_at._loan_interest._due_slot``) and
+    tax reader's settled-slot merge (``balance_at._loan_interest._due_slot``,
+    DELETED at plan step recurrence:R16-c-1 with the two halves it merged) and
     the payment feed's collision key
     (``amortization_engine.schedule_dates``, which was
     ``loan_payment_service._engine_prep._redistribute_to_distinct_months`` until

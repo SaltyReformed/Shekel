@@ -710,13 +710,13 @@ def _compute_schedule_totals(schedule, row_escrow):
 def _period_slot(installment) -> tuple[int, int]:
     """Return the ``(year, month)`` of the accrual period *installment* pays into.
 
-    The standing charge's month (:attr:`~app.services.balance_at.PlannedInstallment.charge_date`,
+    The standing charge's month (:attr:`~app.services.loan_ledger.PaymentOutcome.charge_date`,
     the contract's installment date of that period), or for a payment no
     charge stands over -- one before the plan's first charge, paying what
     stands -- the month it is paid in.
     """
     return installment_slot(
-        installment.charge_date or installment.effective_date,
+        installment.charge_date or installment.visible_on,
     )
 
 
@@ -751,7 +751,7 @@ def planned_periods(installments) -> list[list]:
             periods[-1].append(installment)
         else:
             periods.append([installment])
-        if installment.split.balance_after <= Decimal("0.00"):
+        if installment.balance_after <= Decimal("0.00"):
             break
     return periods
 
@@ -790,25 +790,25 @@ def planned_schedule_rows(installments, params) -> tuple[list, list[Decimal]]:
     row_escrow = []
     for period in planned_periods(installments):
         first, last = period[0], period[-1]
-        principal = sum((i.split.principal for i in period), Decimal("0.00"))
-        interest = sum((i.split.interest for i in period), Decimal("0.00"))
+        principal = sum((i.principal for i in period), Decimal("0.00"))
+        interest = sum((i.interest for i in period), Decimal("0.00"))
         extra = max(principal + interest - first.period.period_pi, Decimal("0.00"))
         rows.append(AmortizationRow(
             month=payment_number(
                 params.origination_date,
-                first.charge_date or first.effective_date,
+                first.charge_date or first.visible_on,
             ),
-            payment_date=first.effective_date,
+            payment_date=first.visible_on,
             payment=round_money(principal + interest - extra),
             principal=principal,
             interest=interest,
             extra_payment=round_money(extra),
-            remaining_balance=last.split.balance_after,
+            remaining_balance=last.balance_after,
             is_confirmed=False,
             interest_rate=first.period.annual_rate,
         ))
         row_escrow.append(
-            sum((i.split.escrow for i in period), Decimal("0.00")),
+            sum((i.escrow for i in period), Decimal("0.00")),
         )
     return rows, row_escrow
 
@@ -841,7 +841,7 @@ def build_schedule_context(history_rows, installments, escrow_lines, params):
     **The ARM rate column reads the row's own rate and has no fallback**: a
     confirmed row carries its rate period's ``annual_rate``
     (``rate_period_engine.confirmed_amortization_row``), a planned row its
-    governing period's (:attr:`~app.services.balance_at.PlannedInstallment.period`
+    governing period's (:attr:`~app.services.loan_ledger.PaymentOutcome.period`
     -- the standing charge's, or the calendar's for a payment no charge
     stands over), which the plan cannot leave empty.  A control asserts it:
     ``test_loan.TestScheduleRowsResolveTheirOwnTerms``'s
