@@ -490,8 +490,8 @@ services:
       # Commit C-38.
       #
       # ``uid: "1000"`` is the ``shekel`` user the Dockerfile creates
-      # via ``useradd --create-home shekel`` (default uid 1000) and
-      # the runtime user the Dockerfile's trailing ``USER shekel``
+      # via ``useradd --create-home --uid 1000 --gid 1000 shekel`` and
+      # the runtime user the Dockerfile's trailing ``USER 1000:1000``
       # directive switches to.  Without it, the secret file is owned
       # root:root mode 0400 inside the container and the entrypoint
       # cannot read it.  Mirror the postgres uid override above; both

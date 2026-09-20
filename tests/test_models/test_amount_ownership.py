@@ -60,7 +60,6 @@ from sqlalchemy import insert
 from app import ref_cache
 from app.enums import (
     AmountSourceEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -82,7 +81,6 @@ from tests._test_helpers import (
     make_every_period_rule,
     repriced_by_the_owner,
     settle_day_columns,
-    settlement_columns,
 )
 from app.services.cash_ledger import (
     derived_amount_basis,
@@ -95,9 +93,6 @@ from app.models.transfer_template import TransferTemplate
 _MIGRATION = load_migration_module("b3f7c2a9d514_amount_ownership.py")
 _SHADOW_CUTOVER = load_migration_module(
     "c9a4e7b21d58_a_transfer_shadow_is_derived.py",
-)
-_SALARY_CUTOVER = load_migration_module(
-    "d7b2e6c1a483_a_projected_paycheck_is_not_stored.py",
 )
 _TEMPLATE_CUTOVER = load_migration_module(
     "c8f3a5d2e714_a_template_row_reads_its_templates_series.py",
@@ -970,14 +965,12 @@ class TestTheCheapAccessorRefusesAnUnsettledRow:
                     ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
                 ),
                 settled_on=settled_on,
-                **settlement_columns(
-                    settled_on, None, submitted=Decimal("412.55"),
-                ),
             )
             db.session.add(txn)
             db.session.flush()
-            # The record's home is the covering movement (X-bi-4b-1): the
-            # stated $412.55, under a plan the row cannot price itself.
+            # The record is the covering movement (X-bi-4b-1; the one home
+            # since X-bi-4b-2): the stated $412.55, under a plan the row
+            # cannot price itself.
             cover_bare_settled_row(db.session, txn, "0", submitted="412.55")
 
             assert settled_contribution(txn) == Decimal("412.55")
@@ -1201,199 +1194,6 @@ class TestTheShadowCutoverDowngradeRefusesToInventAFigure:
             ) is None
 
 
-class TestTheSalaryCutoverKnowsWhatItCannotRestore:
-    """Migration ``d7b2e6c1a483``'s only non-DDL logic, driven directly.
-
-    Plan step **X-au-d** declares every non-override SALARY row derived; its
-    downgrade restores a settled row from ``settled_amount`` and every other row
-    from its template's ``default_amount``.  The first arm is EXACT only where
-    the settlement basis is ``derived`` -- that basis MEANS the settle recorded
-    the app's own resolution, which is the plan the upgrade emptied.  On any
-    other basis the plan at settle is stored nowhere,
-    :func:`settled_rows_whose_plan_is_not_recoverable` says so, and the row
-    falls to the placeholder arm.
-
-    It is module-level for the reason ``b3f7c2a9d514``'s and ``c9a4e7b21d58``'s
-    guards are: a guard nothing exercises is a guard nobody has seen work.  An
-    adversarial review of this step found the sentence saying so with no case
-    behind it, which is exactly the shape it warns about.
-
-    **The DDL-free halves were driven against a copy of PRODUCTION before this
-    step shipped** (2026-09-02, stamp ``a4c6f1d92b73`` restored into a throwaway
-    database and migrated to ``dev``'s head ``b7a41e2c9d63``): the upgrade
-    declared 59 rows and touched no other, the downgrade restored 8 exactly from
-    their settlement record and 51 from the template's scalar, and the probe
-    returned empty because all four ``corrected`` salary settlements carry
-    ``is_override`` and are therefore never declared.
-    """
-
-    @staticmethod
-    def _declared_salary_row(seed_user, seed_periods, template, **overrides):
-        """Return a flushed INCOME row of *template*, DECLARED derived.
-
-        The engine's row of a salary definition is exactly that -- income by
-        its template, derived by construction -- so nothing here restates
-        either; *overrides* are the settlement the case lays on.
-        """
-        txn = _make_transaction(
-            seed_user, seed_periods, template_id=template.id, **overrides,
-        )
-        db.session.flush()
-        return txn
-
-    def test_a_derived_basis_settlement_is_recoverable(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The ordinary shape: the record IS the plan, so nothing is named.
-
-        Returns an empty list rather than raising, so the two negative controls
-        below are what give this meaning.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            self._declared_salary_row(
-                seed_user, seed_periods, salary_template,
-                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(date(2026, 1, 5), Decimal("2473.38")),
-            )
-
-            assert _SALARY_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == []
-
-    def test_a_CORRECTED_settlement_is_named(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A human's figure is not the plan, so the plan is unrecoverable.
-
-        The id is what the operator needs: the downgrade restores such a row
-        from the template's scalar, and a report that did not say which rows
-        took the placeholder could not be checked against anything.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            txn = self._declared_salary_row(
-                seed_user, seed_periods, salary_template,
-                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(
-                    date(2026, 1, 5), Decimal("2473.38"),
-                    submitted=Decimal("2400.00"),
-                ),
-            )
-
-            assert _SALARY_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == [txn.id]
-
-    def test_a_CORRECTED_row_that_is_NOT_declared_is_not_named(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The probe is scoped to DECLARED rows, not to corrected ones.
-
-        The mutation this rules out is a probe written as "any corrected
-        settlement", which would report every hand-corrected row in the
-        database on a downgrade that has nothing to do with them -- and on
-        production that is exactly the four rows the upgrade deliberately left
-        alone.  This row OWNS its figure, so the downgrade restores nothing to
-        it and there is nothing to warn about.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            _make_transaction(
-                seed_user, seed_periods,
-                template_id=salary_template.id,
-                is_override=True,
-                amount_ownership=AmountOwnership.own(Decimal("2562.67")),
-                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(
-                    date(2026, 1, 5), Decimal("2562.67"),
-                    submitted=Decimal("2524.62"),
-                ),
-            )
-            db.session.flush()
-
-            assert _SALARY_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == []
-
-
-class TestTheSalaryCutoverRestoresEachRowFromTheRightPlace:
-    """The downgrade's two arms, driven over one connection.
-
-    **The ORDER of the two statements is load-bearing and nothing else asserts
-    it**: the exact restore runs first, so a row it covers is no longer declared
-    when the placeholder restore's predicate is evaluated.  Reversed, every
-    ``derived``-basis settled row silently comes back at the template's
-    ``default_amount`` instead of the figure it recorded -- which on production
-    is eight paychecks restored ``$99.40`` too high each.  Found by an
-    adversarial review of this step, which noted the ordering was stated in a
-    comment and graded nowhere.
-    """
-
-    def test_a_settled_row_comes_back_from_its_RECORD_and_not_the_scalar(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Both arms in one run, so the ordering is what is under test.
-
-        Two rows of one template: a settled one whose record says
-        ``$2,473.38`` and a projected one with no record at all.  The template's
-        scalar is ``$11.11``, far from either, so a reversed order gives the
-        settled row ``$11.11`` and this fails on the figure rather than on a
-        count.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            settled = TestTheSalaryCutoverKnowsWhatItCannotRestore.\
-                _declared_salary_row(
-                    seed_user, seed_periods, salary_template,
-                    status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                    settled_on=date(2026, 1, 5),
-                    **settlement_columns(date(2026, 1, 5), Decimal("2473.38")),
-                )
-            projected = TestTheSalaryCutoverKnowsWhatItCannotRestore.\
-                _declared_salary_row(
-                    seed_user, seed_periods, salary_template,
-                    pay_period_id=seed_periods[1].id,
-                )
-            db.session.commit()
-
-            _SALARY_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.expire_all()
-
-            assert settled.estimated_amount == Decimal("2473.38")
-            assert settled.amount_source_id is None
-            assert projected.estimated_amount == Decimal("11.11")
-            assert projected.amount_source_id is None
-
-    def test_a_row_that_OWNS_its_figure_is_not_touched(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The scoping control: the downgrade restores only what it declared.
-
-        The mutation this rules out is a predicate written as "every row of a
-        salary template", which would overwrite the figure a human typed on an
-        overridden row with the template's scalar -- the one class the upgrade
-        deliberately never declared.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            owned = _make_transaction(
-                seed_user, seed_periods,
-                template_id=salary_template.id,
-                is_override=True,
-                amount_ownership=AmountOwnership.own(Decimal("1234.56")),
-            )
-            db.session.commit()
-
-            _SALARY_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.expire_all()
-
-            assert owned.estimated_amount == Decimal("1234.56")
-
-
 def _plain_template(seed_user):
     """An ordinary expense definition NO salary profile names.
 
@@ -1426,115 +1226,6 @@ def _plain_template(seed_user):
     db.session.flush()
     make_every_period_rule(db.session, template)
     return template
-
-
-class TestTheTemplateCutoverKnowsWhatItCannotRestore:
-    """Migration ``c8f3a5d2e714``'s probe, driven directly.
-
-    Plan step **X-au-e** declares every non-override TEMPLATE row derived; its
-    downgrade restores a settled row from ``settled_amount`` and every other row
-    from its template's ``default_amount``.  The first arm is EXACT only where
-    the settlement basis is ``derived``.
-
-    **Where this differs from the salary cutover above, and it is the reason
-    the probe matters more here**: ``d7b2e6c1a483`` had ZERO unrecoverable rows
-    on production, so its report was a guard against a state that did not
-    exist.  This step has **20**, all on the ``purchases`` basis (measured on a
-    clone of production restored 2026-09-03 from stamp ``a4c6f1d92b73`` and
-    migrated to ``d4a92f6b13c8``), so the placeholder arm is exercised in
-    practice rather than theoretically.
-    """
-
-    @staticmethod
-    def _declared_row(seed_user, seed_periods, template, **overrides):
-        """Return a flushed EXPENSE row of *template*, DECLARED derived.
-
-        The engine's row, which is derived by construction; *overrides* are
-        the settlement the case lays on.
-        """
-        txn = _make_transaction(
-            seed_user, seed_periods, template_id=template.id, **overrides,
-        )
-        db.session.flush()
-        return txn
-
-    def test_a_derived_basis_settlement_is_recoverable(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The ordinary shape: the record IS the plan, so nothing is named."""
-        with app.app_context():
-            template = _plain_template(seed_user)
-            self._declared_row(
-                seed_user, seed_periods, template,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(date(2026, 1, 5), Decimal("450.00")),
-            )
-
-            assert _TEMPLATE_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == []
-
-    def test_a_settlement_on_ANY_OTHER_BASIS_is_named(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A figure that is not the app's own resolution is not the plan.
-
-        The probe's predicate is ``settled_basis_id <> derived``, so
-        ``corrected`` and ``purchases`` take the SAME arm; this drives
-        ``corrected`` because it is the one of the two a door can write onto a
-        bare-built row (``settlement_columns`` says why: a settled ENVELOPE has
-        to be settled through the seam, and one assembled column by column here
-        would be a row no door in the app produces).  **Production's 20 are all
-        ``purchases``** -- measured on the 2026-09-03 clone -- and they reach
-        this branch by the same predicate.
-
-        The id is what the operator needs: such a row restores from the
-        template's scalar, and a report that did not say which rows took the
-        placeholder could not be checked against anything.
-        """
-        with app.app_context():
-            template = _plain_template(seed_user)
-            txn = self._declared_row(
-                seed_user, seed_periods, template,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(
-                    date(2026, 1, 5), Decimal("450.00"),
-                    submitted=Decimal("399.00"),
-                ),
-            )
-
-            assert _TEMPLATE_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == [txn.id]
-
-    def test_a_row_on_a_SALARY_template_is_not_named(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The scoping control: those rows belong to ``d7b2e6c1a483``.
-
-        The mutation this rules out is a probe written without the
-        ever-salary exclusion, which would report -- and then RESTORE -- rows
-        the salary cutover's own downgrade is responsible for, running after
-        this one.  A row restored twice takes the second answer, and the
-        second is the template's scalar rather than its settlement record.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            TestTheSalaryCutoverKnowsWhatItCannotRestore._declared_salary_row(
-                seed_user, seed_periods, salary_template,
-                status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                settled_on=date(2026, 1, 5),
-                **settlement_columns(
-                    date(2026, 1, 5), Decimal("2473.38"),
-                    submitted=Decimal("2400.00"),
-                ),
-            )
-
-            assert _TEMPLATE_CUTOVER.settled_rows_whose_plan_is_not_recoverable(
-                db.session.connection(),
-            ) == []
 
 
 class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
@@ -1608,110 +1299,6 @@ class TestTheTemplateCutoverRefusesRatherThanStrandingARow:
             )
             assert [row[0] for row in stranded] == [txn.id]
             assert "disagrees" in stranded[0][3]
-
-
-class TestTheTemplateCutoverRestoresEachRowFromTheRightPlace:
-    """The downgrade's two arms, driven over one connection.
-
-    **The ORDER of the two statements is load-bearing and this is what grades
-    it**: the exact restore runs first, so a row it covers is no longer
-    declared when the placeholder restore's predicate is evaluated.  Reversed,
-    every ``derived``-basis settled row comes back at the template's
-    ``default_amount`` instead of the figure it recorded.  Measured on the
-    2026-09-03 production clone: reversing the two statements moves 7 rows
-    (three Geico, four Apple Music) and the placeholder arm reports
-    ``UPDATE 525`` where the exact arm should have taken 46 of them first.
-    """
-
-    def test_a_settled_row_comes_back_from_its_RECORD_and_not_the_scalar(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Both arms in one run, so the ordering is what is under test.
-
-        Two rows of one template: a settled one whose record says ``$450.00``
-        and a projected one with no record at all.  The template's scalar is
-        ``$7.77``, far from either, so a reversed order gives the settled row
-        ``$7.77`` and this fails on the figure rather than on a count.
-        """
-        with app.app_context():
-            template = _plain_template(seed_user)
-            settled = TestTheTemplateCutoverKnowsWhatItCannotRestore.\
-                _declared_row(
-                    seed_user, seed_periods, template,
-                    status_id=ref_cache.status_id(StatusEnum.DONE),
-                    settled_on=date(2026, 1, 5),
-                    **settlement_columns(date(2026, 1, 5), Decimal("450.00")),
-                )
-            projected = TestTheTemplateCutoverKnowsWhatItCannotRestore.\
-                _declared_row(
-                    seed_user, seed_periods, template,
-                    pay_period_id=seed_periods[1].id,
-                )
-            db.session.commit()
-
-            _TEMPLATE_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.expire_all()
-
-            assert settled.estimated_amount == Decimal("450.00")
-            assert settled.amount_source_id is None
-            assert projected.estimated_amount == Decimal("7.77")
-            assert projected.amount_source_id is None
-
-    def test_a_row_that_OWNS_its_figure_is_not_touched(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The scoping control: the downgrade restores only what it declared.
-
-        The mutation this rules out is a predicate written as "every row of a
-        template", which would overwrite the figure a human typed on an
-        overridden row with the template's scalar -- the one class the upgrade
-        deliberately never declared.
-        """
-        with app.app_context():
-            template = _plain_template(seed_user)
-            owned = _make_transaction(
-                seed_user, seed_periods,
-                template_id=template.id,
-                is_override=True,
-                amount_ownership=AmountOwnership.own(Decimal("321.00")),
-            )
-            db.session.commit()
-
-            _TEMPLATE_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.expire_all()
-
-            assert owned.estimated_amount == Decimal("321.00")
-            assert owned.amount_source_id is None
-
-    def test_a_declared_row_on_a_SALARY_template_is_LEFT_declared(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``d7b2e6c1a483``'s downgrade runs after this one and owns them.
-
-        Both restore statements carry the ever-salary exclusion, and this is
-        what says so.  Without it a salary row would be restored here from the
-        template's ``default_amount`` -- and the salary cutover's own exact
-        arm, which would have restored it from its settlement record, then
-        finds nothing left declared to restore.
-        """
-        with app.app_context():
-            salary_template = _salary_template(seed_user)
-            row = TestTheSalaryCutoverKnowsWhatItCannotRestore.\
-                _declared_salary_row(
-                    seed_user, seed_periods, salary_template,
-                    status_id=ref_cache.status_id(StatusEnum.RECEIVED),
-                    settled_on=date(2026, 1, 5),
-                    **settlement_columns(date(2026, 1, 5), Decimal("2473.38")),
-                )
-            db.session.commit()
-
-            _TEMPLATE_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.expire_all()
-
-            assert row.amount_source_id == ref_cache.amount_source_id(
-                AmountSourceEnum.TEMPLATE,
-            )
-            assert row.estimated_amount is None
 
 
 def _state_series(data, amount, effective_on=date(2026, 1, 1)):
@@ -1908,86 +1495,23 @@ class TestTheTransferCutoverRefusesRatherThanStrandingARow:
             ) == []
 
 
-class TestTheTransferCutoverRestoresEachRowFromTheRightPlace:
-    """Migration ``b7e4c1f38a20``'s DOWNGRADE, and the ORDER of its two arms.
-
-    The transfer twin of
-    :class:`TestTheTemplateCutoverRestoresEachRowFromTheRightPlace`, with one
-    difference that is the whole reason it needs its own case: a transfer
-    carries no settlement column, so the exact restore reads its EXPENSE LEG's
-    record.  A restore that read the parent would find nothing and every settled
-    transfer would come back at its template's scalar.
-    """
-
-    def test_a_SETTLED_transfer_restores_EXACTLY_from_its_legs_record(
-        self, app, db, seed_full_user_data,
-    ):
-        """The exact arm, which is the one a transfer needs its own case for.
-
-        A transfer carries no settlement column: its money moves on its two
-        LEGS and each records what it did.  So the exact restore reads the
-        EXPENSE leg's ``settled_amount`` on the ``derived`` basis -- the figure
-        the app itself resolved at the moment of the settle, which IS the plan
-        this migration emptied.  A restore that looked for the record on the
-        PARENT would find nothing and every settled transfer would come back at
-        its template's scalar instead.
-
-        The definition states ``$100.00`` and the leg recorded ``$137.42``, so
-        the two arms cannot answer the same number by accident -- which is what
-        lets a reversed statement order, or a restore reading the wrong row,
-        fail on the FIGURE rather than on a count.
-        """
-        with app.app_context():
-            data = seed_full_user_data
-            _state_series(data, Decimal("100.00"))
-            # The engine's transfer, derived, with the settled shape laid on
-            # bare: Paid on the parent and on its EXPENSE leg, which carries
-            # the record the exact arm reads.  Its income leg stays Projected
-            # with no record, so a restore that read the PARENT (nothing
-            # there) or the INCOME leg (no record) comes back at the
-            # definition's $100.00 and fails on the figure.  The expense leg
-            # is also the lower id, so this cannot tell "by type" from
-            # "lowest id"; the migration selects by type.
-            xfer = _make_transfer(
-                data,
-                due_date=date(2026, 3, 1),
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-            )
-            expense, _income = _legs_of(xfer)
-            expense.status_id = ref_cache.status_id(StatusEnum.DONE)
-            expense.due_date = date(2026, 3, 1)
-            expense.settled_amount = Decimal("137.42")
-            expense.settled_basis_id = ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
-            )
-            db.session.commit()
-
-            _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.commit()
-            db.session.expire_all()
-
-            restored = db.session.get(Transfer, xfer.id)
-            assert restored.amount == Decimal("137.42")
-            assert restored.amount_source_id is None
-
-    def test_an_unsettled_transfer_restores_from_its_definitions_scalar(
-        self, app, db, seed_full_user_data,
-    ):
-        """Nothing recorded a plan for it, so the definition's own scalar answers."""
-        with app.app_context():
-            data = seed_full_user_data
-            xfer = _make_transfer(
-                data, due_date=date(2026, 3, 1),
-                amount_ownership=AmountOwnership.derived(
-                    ref_cache.amount_source_id(AmountSourceEnum.TEMPLATE),
-                ),
-            )
-            db.session.commit()
-
-            _TRANSFER_CUTOVER.downgrade_rows(db.session.connection())
-            db.session.commit()
-            db.session.expire_all()
-
-            restored = db.session.get(Transfer, xfer.id)
-            assert restored.amount == data["transfer_template"].default_amount
-            assert restored.amount_source_id is None
+# ``TestTheSalaryCutoverKnowsWhatItCannotRestore``,
+# ``TestTheSalaryCutoverRestoresEachRowFromTheRightPlace``,
+# ``TestTheTemplateCutoverKnowsWhatItCannotRestore``,
+# ``TestTheTemplateCutoverRestoresEachRowFromTheRightPlace`` and
+# ``TestTheTransferCutoverRestoresEachRowFromTheRightPlace`` -- thirteen cases
+# driving ``settled_rows_whose_plan_is_not_recoverable`` and ``downgrade_rows``
+# of the salary, template and transfer cutovers (``d7b2e6c1a483``,
+# ``c8f3a5d2e714``, ``b7e4c1f38a20``), which read the row's own
+# ``settled_amount`` / ``settled_basis_id`` -- were DELETED at plan step
+# ``balance:X-bi-4b-2`` (developer ruling R-BAL84, 2026-09-20): their staged
+# input, a settled row carrying those columns, cannot be built at head once
+# migration ``45f10b870c8b`` deletes them.  **Those two arms of the three
+# migrations are UNGRADED at head**: they run only on an old-dump restore (the
+# test template replays the chain from base over an EMPTY database, which
+# exercises no refusal or restore arm), and no test at head drives them.  What
+# head grades instead is (a) the fact the probes stood for -- a stated figure
+# is not the plan -- as ``Settlement.stated``
+# (``test_settlement_record.py::TestPurchasesIffNoStoredFigure``), and (b) that
+# ``45f10b870c8b``'s downgrade rebuilds the input those arms read, the columns,
+# from the movements exactly (``test_the_record_is_its_movements``).

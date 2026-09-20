@@ -25,7 +25,6 @@ from app import ref_cache
 from app.enums import (
     AmountSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -48,7 +47,7 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from app.services import balance_at
+from app.services import balance_at, status_seam
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.cash_ledger import (
@@ -74,12 +73,9 @@ from tests._test_helpers import (
     one_off_row_of,
     populate_in_a_fresh_pass,
     repriced_by_the_owner,
-    resolved_amount,
     settle_day_columns,
     settled_day_basis_id,
-    settlement_basis_id,
     cover_bare_settled_row,
-    settlement_columns,
 )
 from tests._test_helpers import make_every_period_rule
 from tests.oracles.recurrence_baseline import ANNUAL, MONTHLY
@@ -128,11 +124,9 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
     )
     txn.status_id = status.id
     txn.is_deleted = is_deleted
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(_settle_day).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(_settle_day, amount, settled_amount).items():
         setattr(txn, _column, _value)
     db.session.flush()
     if _settle_day is not None:
@@ -516,11 +510,6 @@ class TestCarryForwardStatusRecheck:
             db.session.commit()
             loser_id = txn_loser.id
             winner_id = txn_winner.id
-            # What the loser is WORTH, resolved before the race: a one-off
-            # is priced by its definition (plan step balance:X-bi-7c), so the
-            # raw UPDATE below cannot read the figure off the row's own
-            # column as it did while the row owned one.
-            loser_figure = resolved_amount(txn_loser)
 
             paid_status_id = ref_cache.status_id(StatusEnum.DONE)
 
@@ -538,24 +527,22 @@ class TestCarryForwardStatusRecheck:
                 # version_id mirrors the optimistic-lock contract a
                 # real concurrent commit would honor.
                 #
-                # It writes the WHOLE settlement record in the SAME statement
-                # as ``status_id`` because that is what the seam does: the day
-                # the money moved, the figure that moved, and how that figure
-                # is known (plan steps X-f1 / X-au-c3).  A day without the
-                # record is a state ``ck_transactions_settle_day_needs_a_record``
-                # refuses, so a race simulated with a partial record would fail
-                # on the database rather than on the contract under test.
-                # ``CURRENT_DATE`` rather than an instant: the column is a
-                # civil DAY.  The basis is ``derived`` -- a concurrent
-                # mark-done with nothing typed books what the row was worth.
+                # It writes the status and the settle DAY pair in the SAME
+                # statement because that is what the seam does (plan steps
+                # X-f1 / X-az); the record the seam would also write -- the
+                # covering movement -- is not laid, so the loser is a
+                # ``$0.00`` close (ruling R-BAL82): this case grades the
+                # STATUS precondition, and a figure would change nothing it
+                # asserts.  (The row's own figure columns rode in this
+                # statement through plan step balance:X-bi-4b-1, because a
+                # CHECK paired the day with them.)  ``CURRENT_DATE`` rather
+                # than an instant: the column is a civil DAY.
                 db.session.execute(
                     text(
                         "UPDATE budget.transactions "
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
                         "    settled_day_basis_id = :day_basis, "
-                        "    settled_amount = :figure, "
-                        "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
                         "WHERE id = :tid"
                     ),
@@ -571,8 +558,6 @@ class TestCarryForwardStatusRecheck:
                         "day_basis": settled_day_basis_id(
                             SettledDayBasisEnum.ENTERED,
                         ),
-                        "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
-                        "figure": loser_figure,
                         "tid": loser_id,
                     },
                 )
@@ -2562,7 +2547,7 @@ class TestCarryForwardEnvelopeMixedBatch:
             )
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
             assert envelope_after.status_id == projected_id
-            assert envelope_after.settled_amount is None
+            assert status_seam.recorded_settlement(envelope_after) is None
 
 
 class TestCarryForwardEnvelopeBalanceInvariant:
@@ -2714,7 +2699,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
             )
             # actual_amount must NOT have been set: discrete branch
             # never calls settle_from_entries.
-            assert source.settled_amount is None
+            assert status_seam.recorded_settlement(source) is None
             assert source.settled_on is None
 
             # No new rows generated in target -- the source itself is

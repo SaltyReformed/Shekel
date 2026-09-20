@@ -202,8 +202,9 @@ is on that step's own entry.
       that would move them, its status or its existence REFUSES while the act stands ("undo the
       match first"); the members' row-side keys become NO ACTION like the line-side key;
       `_still_holds`, the fold and R-GX(c)'s whatever-its-age clause delete (R-GX(c) AMENDED when
-      this ships); its first act is the census of the doors it refuses at. After `balance:X-bi-4b`
-      (the figure's home moves there), beside `X-gl-2`. Closes **N-372**.
+      this ships); its first act is the census of the doors it refuses at. After `balance:X-bi-4`
+      (shipped `32c65cf1`; the figure's home is the covering movement), beside `X-gl-2`. Closes
+      **N-372**.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are

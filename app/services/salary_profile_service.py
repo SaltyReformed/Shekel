@@ -22,8 +22,9 @@ the projected balance by **-$9,677.24**, because those rows range from
 
 **The remedy is the act a SETTLE already performs, one tier up.**  A settle
 records what a row was worth at the moment its money moved, because the
-resolution is a point in time (plan step X-au-c3, ``settled_amount`` on the
-``derived`` basis).  This records what a row was worth at the moment its
+resolution is a point in time (plan step X-au-c3; the covering movement on
+the ``resolved`` source since ``balance:X-bi-4b-2``).  This records what a
+row was worth at the moment its
 PRODUCER went away, for the same reason: after the archive the figure is not
 re-derivable, so it is a record rather than a derivation (``CLAUDE.md`` rule 14
 and ruling **R-JA** -- a value that is stored is stored in ONE place, and this

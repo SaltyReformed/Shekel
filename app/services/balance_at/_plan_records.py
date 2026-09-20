@@ -32,7 +32,9 @@ class PlannedPayment:
     The CASH half of :func:`loan_plan`.  It carries the cash a payment will move
     and the two dates the projection keys on -- but no rate, no escrow and no
     balance.  What a period CHARGES is :class:`AccrualCharge`; the balance is the
-    FOLD of the two, computed by :func:`._plan_fold.fold_forward`, never stored on a record.
+    FOLD of the two -- the loan's timeline replayed
+    (:mod:`._loan_stream`, plan step recurrence:R16-c-1) -- never stored on a
+    record.
 
     **It stopped carrying its own rate and escrow at plan step R16-a**, and the
     reason is the defect that step exists to close.  While a payment carried the
@@ -81,8 +83,9 @@ class LoanForwardPlan:
     :func:`loan_plan`'s whole answer, and the shape plan step **R16-a** gave it.
     The two lists are independent by construction -- charges come from the loan's
     own note and the passage of time, payments from whatever the owner's
-    recurring definitions say -- and :func:`._plan_fold._split_plan` walks them merged in
-    contract order.  That independence is what makes a payment cadence a
+    recurring definitions say -- and the loan's timeline walks them merged in
+    contract order behind its recorded facts (:mod:`._loan_stream`, since plan
+    step recurrence:R16-c-1).  That independence is what makes a payment cadence a
     non-question: a definition emits payments on its own dates and the charges do
     not move.
 

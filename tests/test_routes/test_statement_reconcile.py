@@ -37,8 +37,10 @@ from app.services import (
     auth_service,
     entry_service,
     pay_calendar,
+    status_seam,
     transaction_service,
 )
+from app.services.row_valuation import settled_figure
 from app.services.settle_day import SettleDay
 from app.models.statement_line_skip import StatementLineSkip
 from app.services.statement_match import (
@@ -1552,7 +1554,7 @@ class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
         assert response.status_code == 200
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 1
-        assert txn.settled_amount == Decimal("178.29"), (
+        assert settled_figure(txn) == Decimal("178.29"), (
             "the row must book what the BANK took"
         )
 
@@ -3152,10 +3154,10 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert response.status_code == 200
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 1
-        assert salary.settled_amount == Decimal("2473.43"), (
+        assert settled_figure(salary) == Decimal("2473.43"), (
             "the member the owner named must carry the difference"
         )
-        assert allowance.settled_amount == Decimal("100.00"), (
+        assert settled_figure(allowance) == Decimal("100.00"), (
             "the member they did not name must not move"
         )
         assert not _uncategorized_rows(db, seed_user), (
@@ -3192,12 +3194,12 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert response.status_code == 200
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 1
-        assert salary.settled_amount == Decimal("2473.38"), (
+        assert settled_figure(salary) == Decimal("2473.38"), (
             "a member moved under the ordinary-row option"
         )
-        assert allowance.settled_amount == Decimal("100.00")
+        assert settled_figure(allowance) == Decimal("100.00")
         minted = _uncategorized_rows(db, seed_user)
-        assert [row.settled_amount for row in minted] == [Decimal("0.05")], (
+        assert [settled_figure(row) for row in minted] == [Decimal("0.05")], (
             f"R-FN's ordinary row was not minted at the difference: {minted}"
         )
 
@@ -3357,9 +3359,9 @@ class TestThePaneOffersWHEREADifferenceGoes:
         assert response.status_code == 200
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 0
-        assert salary.settled_amount is None
-        assert allowance.settled_amount is None
-        assert foreign.settled_amount is None
+        assert status_seam.recorded_settlement(salary) is None
+        assert status_seam.recorded_settlement(allowance) is None
+        assert status_seam.recorded_settlement(foreign) is None
         # **The OWNERSHIP refusal and not the no-consent one**, or a renamed
         # field would leave this arm green while guarding nothing: a body
         # whose consent is not read at all is also refused, with "These do not
@@ -4423,7 +4425,7 @@ class TestARefusedApplyKeepsTheOwnersTicks:
         )
         row_id = int(token_93.split(":")[1])
         db.session.expire_all()
-        assert db.session.get(Transaction, row_id).settled_amount == Decimal(
+        assert settled_figure(db.session.get(Transaction, row_id)) == Decimal(
             "793.23"
         ), "the lone-row act did not write the bank's figure to the row"
 

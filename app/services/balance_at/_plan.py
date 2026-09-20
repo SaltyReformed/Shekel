@@ -198,7 +198,6 @@ from app.services.cash_ledger import (
     planned_leg_contribution,
     transfer_pricing_load_options,
 )
-from app.services.loan_ledger import anchor_visible_on, confirmed_shadows_through
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import due_after_anchor, period_for_date
 from app.services.transfer_legs import PlannedTransferLeg
@@ -225,8 +224,9 @@ _ZERO_MONEY = Decimal("0.00")
 # ``None`` the fold reports for genuine non-amortization -- the drift that far past
 # contract is what C7's payment-drift warning exists to surface.  It costs nothing
 # for a healthy loan: the fold reaches zero AT the contractual date, so
-# :func:`._plan_fold.plan_payoff_date` returns that FIRST crossing and these later installments
-# fold to no-ops (the allocator's closed-loan arm on a zero balance).
+# :func:`._plan_fold.timeline_payoff_date` returns that FIRST crossing and these
+# later installments fold to no-ops (the allocator's closed-loan arm on a zero
+# balance).
 _PAYOFF_EXTENSION_MONTHS = 60
 
 
@@ -444,7 +444,7 @@ def _estimated_from_contract(
       payment settled by ``as_of`` (so counted in the confirmed present) whose
       contractual installment is due AT OR AFTER ``as_of`` (an early- or
       on-day-settled payment).  Without this the ESTIMATED tier would re-synthesize
-      an installment the seed already paid, and :func:`._plan_fold.fold_forward` would subtract
+      an installment the seed already paid, and the timeline's fold would subtract
       its principal a SECOND time (understating the debt by one installment).
 
     **The escrow PRICES the installment here and is CHARGED by the period**, and
@@ -460,8 +460,8 @@ def _estimated_from_contract(
     reached zero at the contractual date, and these installments let it clear a few
     months later -- a real payoff rather than the ``None`` a truncated plan would
     report.  A HEALTHY or overpaying loan has already folded to zero by the
-    contractual date, so :func:`._plan_fold.plan_payoff_date` returns THAT crossing and these
-    fold to no-ops (the balance cap) -- it cannot move.
+    contractual date, so :func:`._plan_fold.timeline_payoff_date` returns THAT
+    crossing and these fold to no-ops (the balance cap) -- it cannot move.
 
     Args:
         contractual: The pure contractual schedule from origination to payoff.
@@ -658,51 +658,49 @@ def _charges_for(
 
 
 def _seed_boundaries(
-    account: Account, resolved, ctx: BalanceContext,
+    account: Account, ctx: BalanceContext,
 ) -> tuple[set[tuple[int, int]], date]:
-    """Return what the seed already accounts for: its charged months and its last anchor.
+    """Return what the pass's recorded stream accounts for: its charged months, its last anchor.
 
-    Two facts about the confirmed present the forward plan folds from, read
-    once and handed to both tiers and the charge calendar:
+    Two facts about the confirmed present the forward plan is appended to,
+    read once and handed to both tiers and the charge calendar:
 
-    * the ``(year, month)`` of every payment SETTLED by ``as_of`` (visible by
-      ``as_of``) -- what the settled walk already charged and paid.  The
-      charge calendar excludes them (a forward charge there is finding
-      **D54**'s double charge) and the contract-only estimate excludes them
-      too, with the PLANNED records' months, so a month is folded exactly
-      once;
-    * the date of the latest balance ASSERTION the seed applied -- the
+    * the ``(year, month)`` of every month the recorded stream CHARGED -- one
+      per accrual period a payment visible by ``as_of`` occupies
+      (:func:`~app.services.loan_ledger.charges_for_due_dates`, dated at the
+      earliest such payment's installment, so the slot set is the visible
+      payments' due months).  The plan's charge calendar excludes them (a
+      forward charge there is finding **D54**'s double charge) and the
+      contract-only estimate excludes them too, with the PLANNED records'
+      months, so a month is folded exactly once;
+    * the date of the latest balance ASSERTION in that stream -- the
       origination anchor or the last true-up visible by ``as_of`` -- which is
-      the boundary the charge calendar starts after (ruling **R-R71**).  For
-      a loan not yet originated no anchor is visible, and the boundary is its
-      origination date: the origination anchor IS that date, so the two
-      spellings are one predicate.
+      the boundary the charge calendar starts after (ruling **R-R71**).  The
+      opening is always in the stream (ruling **R-R91**), so a loan not yet
+      originated answers its origination date with no default spelled here.
+
+    **Both are read off the pass's own walk** (:meth:`~app.services.balance_at
+    .BalanceContext.loan_walk`), the stream this plan will be appended to
+    (:func:`~._loan_stream.merged_stream`), and not derived again from the
+    rows: the visibility bound is stated once, at that walk's load, and this
+    reads its result.  Until plan step recurrence:R16-c-1 this ran
+    ``confirmed_shadows_through`` and the anchor visibility test itself -- the
+    same two producers with the same arguments, a second query per loan per
+    pass, and two spellings of one bound that agreed by construction only
+    while nobody changed one of them.
 
     Args:
         account: The loan account.
-        resolved: The pass's :class:`~._resolution.ResolvedLoan`.
         ctx: The read pass.
 
     Returns:
         ``(seed_slots, last_anchor)``.
     """
-    seed_slots = {
-        installment_slot(
-            loan_payment_due_date(shadow, resolved.params.payment_day),
-        )
-        for shadow in confirmed_shadows_through(
-            account.id, ctx.scenario_id, ctx.as_of,
-        )
-    }
-    last_anchor = max(
-        (
-            fact.anchor_date
-            for fact in resolved.anchor_facts
-            if anchor_visible_on(fact.anchor_date) <= ctx.as_of
-        ),
-        default=resolved.params.origination_date,
+    stream = ctx.loan_walk(account).stream
+    return (
+        {installment_slot(charge.on_date) for charge in stream.charges},
+        max(reset.on_date for reset in stream.resets),
     )
-    return seed_slots, last_anchor
 
 
 def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
@@ -716,8 +714,9 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
     every payment due at or before the loan's latest balance assertion (the
     assertion subsumes it, ruling R-R72); and, beside them, one
     :class:`AccrualCharge` per contractual installment the plan owes.  The
-    value carries NO balance; a caller folds it with
-    :func:`._plan_fold.fold_forward` seeded from the loan's confirmed present.
+    value carries NO balance; the seam appends it to the loan's recorded
+    stream as the projection and replays the whole timeline once
+    (:func:`._loan_stream.loan_timeline`, plan step recurrence:R16-c-1).
 
     Args:
         account: The amortizing loan account (the caller owns the ownership
@@ -767,7 +766,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> LoanForwardPlan:
         fwd,
     )
 
-    seed_slots, last_anchor = _seed_boundaries(account, resolved, ctx)
+    seed_slots, last_anchor = _seed_boundaries(account, ctx)
     contractual = contractual_schedule_from_origination(params, rate_changes)
     if resolved.definitions and contractual:
         # The walk's window: the extension past the contract, or the same

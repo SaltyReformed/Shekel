@@ -68,7 +68,7 @@ refused the way ``af07125d00f1``'s is: that downgrade would have destroyed a
 placed level, which moves money; this one destroys a permission.
 
 Revision ID: b447279d7a2e
-Revises: 22b23085394d
+Revises: 45f10b870c8b
 Create Date: 2026-09-19 21:50
 """
 from alembic import op
@@ -77,17 +77,17 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = 'b447279d7a2e'
-# ``22b23085394d`` (``recurrence:R20``) is the single head of ``dev`` at
-# ``44b6f388``, measured on the merged tree this revision was written on
-# (``alembic.script.ScriptDirectory.get_heads()`` -> one entry).  A migration
-# authored against the lane branch's own head would have forked the chain:
-# the branch was three revisions behind ``dev`` until the merge that
-# preceded this file.  A sibling revision on the same parent is in flight
-# (``balance:X-bi-4b-2``); whichever merges second re-parents onto the
-# other's id, and the parent is spelled on THREE lines of this file (the
-# docstring's ``Revises:``, this comment, the assignment below) and nowhere
-# else in the tree.
-down_revision = '22b23085394d'
+# ``45f10b870c8b`` (``balance:X-bi-4b-2``) is the single head of ``dev`` at
+# ``8e3ad968``: the only revision there that names ``22b23085394d`` as its
+# parent, and none names it.  This file was authored against
+# ``22b23085394d`` (``recurrence:R20``), then the head of ``dev``; that
+# sibling revised the same parent and merged first, so this revision
+# re-parented onto it at the lane's second dev merge rather than leave the
+# chain with two heads (``alembic.script.ScriptDirectory.get_heads()`` on
+# the merged tree -> one entry, this revision).  The parent is spelled on
+# THREE lines of this file (the docstring's ``Revises:``, this comment,
+# the assignment below) and nowhere else in the tree.
+down_revision = '45f10b870c8b'
 branch_labels = None
 depends_on = None
 

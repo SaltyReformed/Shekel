@@ -191,7 +191,8 @@ class TestEnvExampleSanitized:
     """``.env.example`` ships an empty ``POSTGRES_PASSWORD`` placeholder."""
 
     @pytest.fixture(scope="class")
-    def env_example_text(self) -> str:
+    @classmethod
+    def env_example_text(cls) -> str:
         """Return the full .env.example source as a string."""
         return ENV_EXAMPLE.read_text(encoding="utf-8")
 
@@ -316,7 +317,8 @@ class TestEnvExampleUriTemplatesSanitized:
     """
 
     @pytest.fixture(scope="class")
-    def env_example_text(self) -> str:
+    @classmethod
+    def env_example_text(cls) -> str:
         """Return the full .env.example source as a string."""
         return ENV_EXAMPLE.read_text(encoding="utf-8")
 
@@ -483,7 +485,8 @@ class TestVerifyBackupScriptCredentialHygiene:
     """
 
     @pytest.fixture(scope="class")
-    def script_text(self) -> str:
+    @classmethod
+    def script_text(cls) -> str:
         """Return the full verify_backup.sh source as a string."""
         return VERIFY_BACKUP_SCRIPT.read_text(encoding="utf-8")
 
@@ -927,7 +930,8 @@ class TestDevConfigPragma:
     """
 
     @pytest.fixture(scope="class")
-    def config_text(self) -> str:
+    @classmethod
+    def config_text(cls) -> str:
         """Return the full app/config.py source as a string."""
         return APP_CONFIG.read_text(encoding="utf-8")
 
@@ -984,7 +988,8 @@ class TestEntrypointLoaderSourceShape:
     """
 
     @pytest.fixture(scope="class")
-    def entrypoint_text(self) -> str:
+    @classmethod
+    def entrypoint_text(cls) -> str:
         """Return the full entrypoint.sh source as a string."""
         return ENTRYPOINT_SCRIPT.read_text(encoding="utf-8")
 
@@ -1457,12 +1462,14 @@ class TestProdComposeSecretsBlock:
     """
 
     @pytest.fixture(scope="class")
-    def compose_text(self) -> str:
+    @classmethod
+    def compose_text(cls) -> str:
         """Return the full deploy/docker-compose.prod.yml source as a string."""
         return DOCKER_COMPOSE_PROD.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def prod_compose(self) -> dict[str, object]:
+    @classmethod
+    def prod_compose(cls) -> dict[str, object]:
         """Return deploy/docker-compose.prod.yml parsed into a dict.
 
         The access-grant assertions parse the document rather than
@@ -1719,7 +1726,8 @@ class TestRunbookDocumentsDockerSecretsPosture:
     """
 
     @pytest.fixture(scope="class")
-    def runbook_text(self) -> str:
+    @classmethod
+    def runbook_text(cls) -> str:
         """Return the full docs/runbook_secrets.md source as a string."""
         return RUNBOOK_SECRETS.read_text(encoding="utf-8")
 

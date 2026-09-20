@@ -17,10 +17,10 @@ from sqlalchemy.orm.exc import StaleDataError
 from app import ref_cache
 from app.services.cash_flow_set import CashFlowSet
 from app.enums import (
+    MovementFigureSourceEnum,
     AcctCategoryEnum,
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
-    SettlementBasisEnum,
     StatusEnum,
 )
 from app.exceptions import RequiredRecordMissing
@@ -48,7 +48,6 @@ from tests._test_helpers import (
     rhythm_of,
     settle_day_columns,
     settle_instant_on,
-    settlement_basis_id,
     settlement_if_settling,
     strip_owner_schedule,
 )
@@ -2634,10 +2633,9 @@ class TestTheReconcileRoute:
 
         The parent is settled through ``status_seam.apply_status_change``
         rather than by assigning ``status_id``.  A raw assignment builds a
-        settled row carrying no settle day and no record -- one no door in the
-        app can create, and one ``ck_transactions_settle_day_needs_a_record`` and
-        ``row_valuation.settled_figure`` between them exist to keep out of the
-        database and out of a balance.
+        settled row carrying no settle day and no covering movement -- one no
+        door in the app can create, which ``integrity_check`` DC-11 names and
+        ``balance_predicates.settled_day`` refuses to fold.
         """
         with app.app_context():
             past = display_today() - timedelta(days=1)
@@ -3206,7 +3204,7 @@ class TestTheReconcileRoute:
             assert response.status_code == 200
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
-            assert settled.settled_amount == Decimal("412.09")
+            assert settled_figure(settled) == Decimal("412.09")
             # The correction is the RECORD's; the plan the row derives from
             # its definition is untouched by it.
             assert resolved_amount(settled) == Decimal("500.00")
@@ -3560,8 +3558,8 @@ class TestTheReconcileRoutesUngradedBranches:
             db.session.expire_all()
             settled = db.session.get(Transaction, ticked_id)
             left_alone = db.session.get(Transaction, unticked_id)
-            assert settled.settled_amount == Decimal("175.42")
-            assert left_alone.settled_amount is None
+            assert settled_figure(settled) == Decimal("175.42")
+            assert status_seam.recorded_settlement(left_alone) is None
             assert left_alone.settled_on is None
             assert left_alone.status.name == "Projected"
 
@@ -3604,7 +3602,7 @@ class TestTheReconcileRoutesUngradedBranches:
 
             db.session.expire_all()
             untouched = db.session.get(Transaction, elsewhere_id)
-            assert untouched.settled_amount is None
+            assert status_seam.recorded_settlement(untouched) is None
             assert untouched.settled_on is None
 
     def test_a_row_the_verb_would_not_read_a_box_for_renders_NONE(
@@ -3640,8 +3638,10 @@ class TestTheReconcileRoutesUngradedBranches:
     ):
         """A figure the column cannot hold is a 400, never a 500 mid-statement.
 
-        ``budget.transactions.settled_amount`` is ``numeric(12, 2)``, so a
-        figure at or above ``10 ** 10`` cannot be stored.  The schema bounded
+        The record's figure (``budget.transaction_entries.amount``, the
+        covering movement's; the row's own ``settled_amount`` through plan
+        step ``balance:X-bi-4b-1``) is ``numeric(12, 2)``, so a figure at or
+        above ``10 ** 10`` cannot be stored.  The schema bounded
         the field below (``>= 0``) and not above, so such a value passed
         validation, reached the settle verb and died at the DATABASE as a
         ``DataError`` -- an unhandled 500 on a door an ordinary crafted POST
@@ -3680,7 +3680,7 @@ class TestTheReconcileRoutesUngradedBranches:
                 row = db.session.get(Transaction, row_id)
                 assert row.status_id == projected_id
                 assert row.settled_on is None
-                assert row.settled_amount is None
+                assert status_seam.recorded_settlement(row) is None
 
 
 class TestTheTransferArmThroughItsROUTE:
@@ -3809,11 +3809,12 @@ class TestTheTransferArmThroughItsROUTE:
             for leg in legs:
                 assert leg.status_id == done_id
                 assert leg.settled_on == display_today()
-                # Nobody typed a figure, so the record's basis is ``derived``
-                # -- which is where "did a human correct this" lives since plan
-                # step X-au-c3, rather than in the figure's NULL-ness.
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.DERIVED,
+                # Nobody typed a figure, so the record's source is
+                # ``resolved`` -- which is where "did a human correct this"
+                # lives since plan step X-au-c3 (on the covering movement since
+                # X-bi-4b-2), rather than in the figure's NULL-ness.
+                assert status_seam.recorded_settlement(leg).source is (
+                    MovementFigureSourceEnum.RESOLVED
                 )
 
     def test_a_correction_typed_on_a_transfer_lands_on_BOTH_legs(
@@ -3848,7 +3849,7 @@ class TestTheTransferArmThroughItsROUTE:
                 .all()
             )
             for leg in legs:
-                assert leg.settled_amount == Decimal("80.25")
+                assert settled_figure(leg) == Decimal("80.25")
                 assert settled_contribution(leg) == Decimal("80.25")
 
     def test_an_ECHOED_prefill_on_a_transfer_records_no_correction(
@@ -3886,9 +3887,9 @@ class TestTheTransferArmThroughItsROUTE:
             )
             for leg in legs:
                 # An ECHOED prefill is not a correction: the record says
-                # ``derived`` and states the figure the settle booked.
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.DERIVED,
+                # ``resolved`` and states the figure the settle booked.
+                assert status_seam.recorded_settlement(leg).source is (
+                    MovementFigureSourceEnum.RESOLVED
                 )
                 assert settled_figure(leg) == Decimal("75.00")
                 assert settled_contribution(leg) == Decimal("75.00")

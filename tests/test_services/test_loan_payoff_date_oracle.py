@@ -7,9 +7,12 @@ DERIVED payoff the arc substitutes for the blind-schedule copies
 (``LoanState.payoff_date``, ``RecurrenceRule.end_date``).  This proves it two
 ways:
 
-* :class:`TestPlanPayoffDate` -- the pure fold (``_plan_fold.plan_payoff_date``) on
-  hand-built plans, so the reaches-zero / retired-seed / negative-amortization /
-  due-order rules are pinned to arithmetic anyone can check.
+* :class:`TestPlanPayoffDate` -- the pure fold-to-zero on hand-built plans
+  (``plan_payoff_date`` from ``tests/oracles/loan_forward_fold``: the retired
+  ``(seed, plan)`` contract over the ONE timeline since plan step
+  recurrence:R16-c-1, running the production replay), so the reaches-zero /
+  retired-seed / negative-amortization / due-order rules are pinned to
+  arithmetic anyone can check.
 * :class:`TestLoanPayoffDateSeam` -- the seam entry against the engine's OWN
   contractual projection (``compute_payoff_scenarios``' contractual slice and
   ``project_forward`` with the extra, an independent producer) on real loans,
@@ -46,7 +49,7 @@ from app.services.balance_at._plan import (
     LoanForwardPlan,
     PlannedPayment,
 )
-from app.services.balance_at._plan_fold import (
+from tests.oracles.loan_forward_fold import (
     fold_forward,
     plan_interest_in_year,
     plan_payoff_date,
@@ -370,9 +373,9 @@ class TestLoanPayoffDateSeam:
     ):
         """A loan trued up to $0 has no forward payoff -- ``None`` (badge via is_retired).
 
-        The seed (``projection_seed`` = the ledger-confirmed $0.00) is not
-        positive, so there is no crossing to date; ``loan_payoff_date`` returns
-        ``None`` rather than inventing a future date from the contractual tail.
+        The loan owes $0.00 at the read (retired), so there is no forward
+        crossing to date; ``loan_payoff_date`` returns ``None`` rather than
+        inventing a future date from the contractual tail.
         """
         with app.app_context():
             today = date.today()

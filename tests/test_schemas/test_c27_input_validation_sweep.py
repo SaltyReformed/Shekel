@@ -90,22 +90,24 @@ class TestMarkDoneSchema:
     def test_negative_actual_amount_rejected(self):
         """Negative ``actual_amount`` is rejected by ``Range(min=0)``.
 
-        Backstops the DB CHECK ``actual_amount IS NULL OR
-        actual_amount >= 0`` on ``budget.transactions.settled_amount``;
-        without the schema-tier check, a negative value would surface
-        as a 500 IntegrityError on commit instead of a clean 400.
+        Backstops the record's own refusal (``status_seam.Settlement``
+        refuses a negative figure at construction; the DB CHECK
+        ``ck_transactions_settled_amount`` on the row's own column said the
+        same through plan step ``balance:X-bi-4b-1``); without the
+        schema-tier check, a negative value would surface as a 500 on commit
+        instead of a clean 400.
         """
         with pytest.raises(ValidationError) as exc:
             MarkDoneSchema().load({"settled_amount": "-10.00"})
         assert "settled_amount" in exc.value.messages
 
     def test_zero_actual_amount_accepted(self):
-        """Zero ``actual_amount`` is accepted (DB CHECK is ``>= 0``).
+        """Zero ``actual_amount`` is accepted (the record's rule is ``>= 0``).
 
-        A zero actual amount is legitimate -- a $0 entry on a
-        cancelled bill, an income source that produced no payout
-        this period, etc.  The schema's ``min=Decimal("0")`` is
-        inclusive (matches the DB CHECK semantics).
+        A zero actual amount is legitimate -- a close of nothing (ruling
+        R-BAL82), an income source that produced no payout this period,
+        etc.  The schema's ``min=Decimal("0")`` is inclusive (matches the
+        constructor's semantics).
         """
         result = MarkDoneSchema().load({"settled_amount": "0.00"})
         assert result["settled_amount"] == Decimal("0.00")
@@ -113,7 +115,8 @@ class TestMarkDoneSchema:
     def test_an_actual_amount_the_column_cannot_hold_is_rejected(self):
         """A figure at or above ``10 ** 10`` is refused at the SCHEMA tier.
 
-        ``budget.transactions.settled_amount`` is ``numeric(12, 2)``, so
+        The record's figure (``budget.transaction_entries.amount``, the
+        covering movement's) is ``numeric(12, 2)``, so
         anything from ``10_000_000_000.00`` up raises
         ``psycopg2.errors.NumericValueOutOfRange`` at flush.  Nothing
         catches that, so before plan step X-f2-c3 it was a 500 on both

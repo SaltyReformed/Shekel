@@ -87,7 +87,6 @@ from tests._test_helpers import (
     rhythm_of,
     set_default_grid_account,
     settle_day_columns,
-    settlement_columns,
     settlement_if_settling,
     state_template_price,
 )
@@ -106,16 +105,15 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     *account* places the row on another of the owner's accounts (a card, a
     savings account); the seed's checking account by default.
 
-    A row in a SETTLED status carries the whole record -- the day, the figure
-    and how that figure is known -- resolved through the one door a bare-built
-    fixture uses (``_test_helpers.settlement_columns`` for the row's columns,
-    plan step X-au-c3, and ``cover_bare_settled_row`` for the COVERING
-    MOVEMENT the readers ask since plan step ``balance:X-bi-4b-1``).
-    *actual* is a figure a HUMAN typed, which makes the record ``corrected``;
-    with none the record is ``derived`` at the row's own plan, which is what a
-    settle with nothing to correct books.  The settle DAY defaults to the
-    period's start where the caller names none, because a settled row carries
-    one and the pairing CHECK refuses a record without it.
+    A row in a SETTLED status carries the whole record -- the day, and the
+    figure with who wrote it -- resolved through the one door a bare-built
+    fixture uses (``settle_day_columns`` for the row's day pair, plan step
+    X-az, and ``cover_bare_settled_row`` for the COVERING MOVEMENT that IS
+    the record since plan step ``balance:X-bi-4b-2``).  *actual* is a
+    figure a HUMAN typed (``typed``); with none the record is the row's own
+    plan (``resolved``), which is what a settle with nothing to correct
+    books.  The settle DAY defaults to the period's start where the caller
+    names none, because a settled row carries one.
     """
     cat_id = (
         seed_user["categories"][category_key].id if category_key else None
@@ -138,14 +136,9 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     )
     txn.status_id = ref_cache.status_id(status_enum)
     txn.is_deleted = is_deleted
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(settled_day).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(
-            settled_day, planned,
-            submitted=Decimal(str(actual)) if actual is not None else None,
-        ).items():
         setattr(txn, _column, _value)
     db.session.flush()
     if settled_day is not None:
@@ -1985,7 +1978,7 @@ class TestTheActualHalfAsksTheAmountModel:
                 "the precondition: a projected shadow stores no plan of its "
                 "own, so the column read this arm used to make cannot answer it"
             )
-            assert expense_leg.settled_basis_id is None, (
+            assert status_seam.recorded_settlement(expense_leg) is None, (
                 "and it has recorded nothing, so this row reaches the "
                 "fall-through rather than the settlement arm"
             )
@@ -2218,10 +2211,7 @@ class TestASettledRowWhosePlanIsDerivedIsPriced:
             due = txn.due_date
             assert due == period.start_date
             txn.status_id = ref_cache.status_id(StatusEnum.DONE)
-            for column, value in {
-                **settle_day_columns(due),
-                **settlement_columns(due, Decimal("125.00")),
-            }.items():
+            for column, value in settle_day_columns(due).items():
                 setattr(txn, column, value)
             db.session.flush()
             cover_bare_settled_row(db.session, txn, "125.00")

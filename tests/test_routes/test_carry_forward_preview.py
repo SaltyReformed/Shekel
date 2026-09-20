@@ -543,7 +543,7 @@ class TestCarryForwardPreviewReadOnly:
                 src = db.session.get(Transaction, source.id)
                 tgt = db.session.get(Transaction, target.id)
                 return (
-                    src.status_id, src.settled_amount, src.settled_on,
+                    src.status_id, settled_figure(src), src.settled_on,
                     src.estimated_amount, src.is_override,
                     tgt.estimated_amount, tgt.is_override,
                     tgt.status_id,

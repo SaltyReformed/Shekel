@@ -1178,11 +1178,13 @@ class TestLoanCrossPageEquality:
     preceding the first scheduled payment, so the seed is invisible to all three
     assertions above.  Confirmed by reintroducing the defect: seeding the forward
     projection with ``original_principal`` changes no value this test sees.  The
-    fence on that argument is now STRUCTURAL, not this test: the forward seed is
-    single-sourced from the opening anchor (never ``original_principal``) in
-    ``net_worth_kernel._projection_seed``, so no call site passes the seed at all
-    (C6b deleted the schedule-forward primitives that once took it, and the W9905
-    checker that policed them retired with them).
+    fence on that argument is now STRUCTURAL, not this test: there is no forward
+    seed at all since plan step recurrence:R16-c-1 -- the loan's timeline replays
+    from its opening ASSERTION (never ``original_principal``; it was the one
+    source of ``net_worth_kernel._projection_seed`` until that step deleted the
+    seed with the second fold) -- so no call site passes a seed (C6b deleted the
+    schedule-forward primitives that once took it, and the W9905 checker that
+    policed them retired with them).
     """
 
     def test_all_surfaces_equal(self, app, cross_page_loan_ctx, auth_client):
@@ -1245,13 +1247,14 @@ class TestLoanCrossPageEquality:
             #
             # It does NOT catch a wrong forward SEED in isolation, and no assertion
             # on this fixture can: since step C6b the forward branch folds the
-            # loan's PLAN from its ledger-confirmed seed (positions() -> loan_plan
-            # -> fold_forward), every period here has BEGUN (so it reads the fold of
-            # the past) except the future ones, and the true-up dated today puts the
-            # first installment inside the very next period -- so there is no future
-            # period before the first paydown to expose the seed on its own.  The
-            # seed is single-sourced from the opening anchor (never
-            # original_principal) in net_worth_kernel's _projection_seed.
+            # loan's PLAN behind its recorded facts in ONE timeline (positions()
+            # -> loan_timeline, since recurrence:R16-c-1), every period here has
+            # BEGUN (so it reads the recorded facts) except the future ones, and
+            # the true-up dated today puts the first installment inside the very
+            # next period -- so there is no future period before the first
+            # paydown to expose the projection's starting balance on its own.
+            # That balance is the replay's own, from the opening ASSERTION (never
+            # original_principal).
             future = [
                 p for p in ctx["all_periods"] if p.start_date > date.today()
             ]

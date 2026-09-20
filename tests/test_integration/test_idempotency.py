@@ -34,6 +34,7 @@ from tests._test_helpers import (
     rhythm_of,
 )
 from app.services.balance_at import BalanceContext
+from app.services.row_valuation import settled_figure
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -567,7 +568,7 @@ class TestMarkDoneDoubleSubmit:
             db.session.expire_all()
             txn = db.session.get(Transaction, txn_id)
             assert txn.status.name == "Paid"
-            assert txn.settled_amount == Decimal("115.50")
+            assert settled_figure(txn) == Decimal("115.50")
             assert resolved_amount(txn) == Decimal("120.00")
 
 

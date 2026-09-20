@@ -218,9 +218,12 @@ repos:
         pass_filenames: false
       - id: zizmor
         name: zizmor (workflow security)
-        entry: zizmor --offline .github/workflows/
+        # The whole .github/ tree, not workflows/ alone: zizmor audits
+        # dependabot.yml too (its dependabot-cooldown rule), and a path
+        # scoped to workflows/ left that file ungated (deps refresh 2026-09-20).
+        entry: zizmor --offline .github/
         language: system
-        files: ^\.github/workflows/.*\.ya?ml$
+        files: ^\.github/.*\.ya?ml$
         pass_filenames: false
       - id: biome
         name: biome lint (JS + CSS)

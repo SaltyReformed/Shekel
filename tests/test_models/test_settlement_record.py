@@ -2,83 +2,68 @@
 
 Plan step **X-au-c3**: *a row is a PLAN -- ``estimated_amount`` priced by
 ``amount_source_id`` -- until its money moves, and a RECORD of what moved once it
-has.*  Three columns carry it -- ``settled_on``, ``settled_amount``,
-``settled_basis_id`` -- but they are NOT one fact with one lifetime, and
-believing they were is the error this module now grades the correction of.
-``settled_amount`` and ``settled_basis_id`` are WHAT MOVED; ``settled_on`` (with
-``reconciled_by_id``) is the ASSERTION that it moved on a named day, and a
-revert withdraws the assertion while KEEPING what moved.
+has.*  The two are NOT one fact with one lifetime, and believing they were is
+the error this module grades the correction of.  WHAT MOVED is the row's
+COVERING MOVEMENT -- a row of ``budget.transaction_entries`` carrying the
+figure and who wrote it (``status_seam._covering``), the record's ONE home
+since plan step ``balance:X-bi-4b-2`` (ruling **R-BAL80**; through
+``X-bi-4b-1`` the row's own ``settled_amount`` / ``settled_basis_id`` carried a
+second copy, written by the seam and, from 4b-1, read by nothing); ``settled_on``
+(with ``reconciled_by_id``) is the ASSERTION that it moved on a named day, and a
+revert withdraws the assertion while KEEPING what moved (the movement, un-dated,
+since ``X-bi-3e-2``).
 
-**Since plan step ``balance:X-bi-4b-1`` (ruling R-BAL80) WHAT MOVED is read
-off the row's ENTRIES** -- its one covering movement (``status_seam._covering``)
-or its purchases -- by both tiers, ``row_valuation.settled_figure`` and
-``posting_reads.settled_figure_clause``; the two columns are the covering
-movement's stale cache, still WRITTEN by the seam through this interval (so
-the CHECKs below still have a subject) and deleted at ``X-bi-4b-2``.  The
-cases here that read a figure therefore lay the movement beside the columns
-(:func:`~tests._test_helpers.cover_bare_settled_row`), and the case that
+**Both tiers read the row's ENTRIES** -- ``row_valuation.settled_figure`` and
+``posting_reads.settled_figure_clause`` -- and a settled row holding none is the
+``$0.00`` record (ruling **R-BAL82**): a movement of nothing is not one, so a
+close of nothing has no entry.  The cases that read a figure lay the movement
+(:func:`~tests._test_helpers.cover_bare_settled_row`), and the case that once
 graded the reader's REFUSAL of a settled row recording nothing grades its
-answer now: a settled row holding no entry is the ``$0.00`` record (ruling
-R-BAL82), on both tiers.
+answer.
 
-Two CHECKs state the half of that which is expressible:
-``ck_transactions_settled_amount_needs_basis`` (a stored figure names its
-provenance) and ``ck_transactions_settle_day_needs_a_record`` (a row asserting a
-settle DAY records what moved).  Both are IMPLICATIONS.  A draft of this step
-made the second a BICONDITIONAL, ``ck_transactions_settlement_recorded``, so
-that releasing the assertion had to destroy the figure -- and the full-edit
-popover TELLS the user to revert in order to edit, so following the app's own
-instruction deleted a number they had read off a bank statement.
+**The record's invariants are the CONSTRUCTOR's**
+(:class:`app.services.status_seam.Settlement`), and this module is where that
+is graded: a settle door BUILDS a ``Settlement`` to hand the seam, so a
+malformed record cannot be constructed and therefore cannot be written.  Two
+CHECKs stated the storable half of the pairing while the row carried the
+columns -- ``ck_transactions_settled_amount_needs_basis`` (a stored figure
+names its provenance) and ``ck_transactions_settle_day_needs_a_record`` (a row
+asserting a settle DAY records what moved), both IMPLICATIONS after a draft's
+BICONDITIONAL (``ck_transactions_settlement_recorded``) made every revert
+destroy the user's figure -- and went with the columns; the states they
+refused are now either unconstructible (a figure with no writer) or legal (a
+dated close of nothing).
 
 **Every test here is a FIRING CONTROL** (``docs/plans/verification.md`` standard
-4).  A test that merely asserted the constraints EXIST would pass against
-constraints admitting everything, so each one below writes the state the rule is
-supposed to refuse and asserts the refusal -- by CONSTRAINT NAME at the database
-tier, which is the only tier that sees a writer bypassing the ORM, and by
-exception at the write door for the one rule a CHECK cannot state.
-
-**That one rule is why this module exists at all.**  ``purchases`` is the single
-basis that stores NO figure: an envelope's amount is the sum of its own entries,
-and a stored copy would need a reconciler to keep it in step with its children --
-the shape ruling **R-FI** deletes.  Saying *"``purchases`` if and only if
-``settled_amount IS NULL``"* in SQL requires the constraint to name a
-``ref.settlement_bases`` id, which is the one thing this project's ref convention
-keeps out of a schema.  So it is a CONSTRUCTOR invariant on
-:class:`app.services.status_seam.Settlement` instead -- a settle door cannot
-BUILD a malformed record to hand over, so no door can write one -- and a rule
-enforced in one constructor with no test is a rule that will stop holding without
-anyone noticing.
+4).  A test that merely asserted a rule EXISTS would pass against a rule
+admitting everything, so each one below writes the state the rule is supposed
+to refuse and asserts the refusal, or writes the legitimate state and asserts
+what both tiers read.
 
 The shapes under test, and the real writer each stands for:
 
-* **a record's figure with no basis** -- a door that writes what moved and
-  forgets how it is known, which is the state every reader would then have to
-  guess about;
-* **a DAY with no basis** -- a settle written in two statements, whose
-  intermediate state an autoflush would try to persist.  Its mirror, a BASIS
-  with no day, is deliberately ACCEPTED and has its own case: that is the
-  RETAINED state a revert leaves, and refusing it is what destroyed the user's
-  figure;
-* **the whole record together** -- the legitimate act, which must be ACCEPTED,
-  because a constraint that refuses the correct write is worse than none;
-* **a ``purchases`` record carrying a figure, and a storing basis carrying
-  none** -- the constructor invariant, from both sides;
-* **entering the settled band with no record at all** -- the seam's own refusal,
-  which is what makes "a settled row states what moved" a property of the seam
-  rather than a convention its callers keep.
+* **a figure stating no writer, and a writer stating no figure** -- the
+  constructor invariant, from both sides; a door that writes what moved and
+  forgets who said so is the overload ``actual_amount`` carried;
+* **a settled row asserting a DAY and holding no entry** -- the ``$0.00``
+  record, dated: legal, and read as ``0`` by both tiers;
+* **a Projected row still holding its un-dated movement** -- the RETAINED
+  state a revert leaves, which a draft refused and which is worth nothing to a
+  balance because the STATUS decides;
+* **the whole record together** -- the legitimate act, read off the movement
+  by both tiers even where the row's plan says otherwise;
+* **entering the settled band with no record at all** -- the seam's own
+  refusal, which is what makes "a settled row states what moved" a property of
+  the seam rather than a convention its callers keep.
 """
 
 from decimal import Decimal
 
 import pytest
-import sqlalchemy
-import sqlalchemy.exc
 
 from app import ref_cache
 from app.enums import (
-    AmountSourceEnum,
     MovementFigureSourceEnum,
-    SettlementBasisEnum,
     StatusEnum,
 )
 from app.extensions import db
@@ -87,36 +72,30 @@ from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
 from app.services.posting_reads import settled_figure_clause
 from app.services.row_valuation import settled_figure
-from app.services.status_seam import Settlement, apply_status_change
+from app.services.status_seam import (
+    Settlement,
+    apply_status_change,
+    recorded_settlement,
+)
 from tests._test_helpers import (
     bare_expense_template,
     cover_bare_settled_row,
-    load_migration_module,
     settle_day_columns,
 )
-from app.services.amount_ownership import declare_derived
-
-_MIGRATION = load_migration_module("e4b8a71c0f36_settlement_record.py")
-
-
-def _basis_id(basis):
-    """Return one ``ref.settlement_bases`` id, named by its enum member."""
-    return ref_cache.settlement_basis_id(basis)
-
 
 def _make_transaction(seed_user, seed_periods, **overrides):
     """Return an UNFLUSHED Projected expense row, with *overrides* applied.
 
-    Deliberately bare: these tests write the record's columns directly, because
-    the door helpers exist precisely to make the refused states unreachable and a
-    control that went through them would grade the helper instead of the
-    constraint.
+    Deliberately bare: these tests write the row's status and day pair
+    directly, because the door helpers exist precisely to make the graded
+    states unreachable and a control that went through them would grade the
+    helper instead of the rule.
 
     Args:
         seed_user: The ``seed_user`` fixture payload.
         seed_periods: The ``seed_periods`` fixture list.
-        **overrides: Column values to set or replace -- the three record columns
-            and the status, which are what every test here varies.
+        **overrides: Column values to set or replace -- the settle day and the
+            status, which are what every test here varies.
 
     Returns:
         The unflushed :class:`~app.models.transaction.Transaction`.
@@ -170,114 +149,85 @@ def _make_transaction(seed_user, seed_periods, **overrides):
     return Transaction(**fields)
 
 
-class TestTheRecordIsOneFactInThreeColumns:
-    """The two settlement CHECKs, and the state they deliberately let through.
+class TestTheRecordIsTheCoveringMovement:
+    """What moved lives on the movement; the assertion lives on the row.
 
     **A figure and its provenance share a lifetime; the settle DAY does not --
-    in ONE direction.**  ``settled_amount`` and ``settled_basis_id`` say what
-    the bank took and how that is known: a fact about the ROW.  ``settled_on``
-    and ``reconciled_by_id`` assert that it moved on a named day and a named
-    statement showed it, and a revert withdraws exactly that.  A draft of plan
-    step X-au-c3 paired the day with the basis as a BICONDITIONAL
-    (``ck_transactions_settlement_recorded``), which welded the two lifetimes
-    together and made every revert destroy the user's figure.
-
-    What replaced it is the surviving IMPLICATION,
-    ``ck_transactions_settle_day_needs_a_record`` -- a row asserting a settle DAY
-    must record what moved, while a row recording what moved need not assert a
-    day.  That admits the retained state below and refuses the row on which this
-    app's two tiers disagree (developer, 2026-08-17).
+    in ONE direction.**  The covering movement says what the bank took and
+    who said so: a fact about the ROW.  ``settled_on`` and ``reconciled_by_id``
+    assert that it moved on a named day and a named statement showed it, and
+    a revert withdraws exactly that.  A draft of plan step X-au-c3 paired the
+    day with the record as a BICONDITIONAL (``ck_transactions_settlement_
+    recorded``), which welded the two lifetimes together and made every revert
+    destroy the user's figure; the surviving implication
+    (``ck_transactions_settle_day_needs_a_record``) went with the row's figure
+    columns at ``X-bi-4b-2``, because a dated settled row holding no movement
+    is the ``$0.00`` record (ruling **R-BAL82**) and not a row recording
+    nothing.
     """
 
-    def test_a_figure_with_no_basis_is_refused(
+    def test_a_dated_settled_row_holding_no_entry_is_the_zero_record(
         self, app, db, seed_user, seed_periods,
     ):
-        """A recorded figure whose basis nobody stated is refused.
+        """The state ``ck_transactions_settle_day_needs_a_record`` refused: legal now.
 
-        The writer this stands for is a door that says WHAT moved and not how
-        the figure is known -- which is the overload ``actual_amount`` carried,
-        where a reader had to infer "a human typed this" from the column being
-        populated at all.
-
-        The row carries NO settle day, which is what isolates the constraint
-        under test: with one, it would break
-        ``ck_transactions_settle_day_needs_a_record`` as well and PostgreSQL would
-        name whichever it evaluated first, so the assertion below would be
-        grading the evaluation order rather than the rule.
+        A settled row asserting the day its money moved and holding no entry
+        is a close of nothing on that day.  Stored, read as ``0`` by both
+        tiers, and recorded as ``Settlement(None, None)`` -- its entries are
+        its record, and there are none.
         """
         with app.app_context():
-            db.session.add(_make_transaction(
-                seed_user, seed_periods,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_amount=Decimal("300.00"),
-                settled_basis_id=None,
-            ))
-            with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
-                db.session.flush()
-            assert "ck_transactions_settled_amount_needs_basis" in str(exc.value)
-            db.session.rollback()
-
-    def test_a_settle_day_with_no_record_is_refused(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An assertion that names no figure is refused (the surviving half).
-
-        The row this stands for is the one on which this app's two tiers
-        DISAGREE: :func:`app.services.row_valuation.settled_figure` raises for a
-        settled row recording nothing, while
-        ``posting_reads.settled_figure_clause`` used to answer ``0`` for the
-        same row through its entry sum's ``COALESCE`` -- and the SQL side is
-        what writes the ledger.  A refusal on one tier and a zero on the other
-        is money leaving a balance in silence, so the state is made unstorable
-        rather than handled twice.
-
-        Its mirror is
-        :meth:`test_a_figure_with_no_settle_day_is_the_REVERTED_state` below:
-        this constraint is an implication, not a pairing, and the reverse
-        direction is exactly what retention needs.
-        """
-        with app.app_context():
-            db.session.add(_make_transaction(
+            txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=seed_periods[0].start_date,
-                settled_amount=None,
-                settled_basis_id=None,
-            ))
-            with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
-                db.session.flush()
-            assert "ck_transactions_settle_day_needs_a_record" in str(exc.value)
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            assert txn.id is not None
+            assert txn.entries == []
+            assert settled_figure(txn) == Decimal("0")
+            assert recorded_settlement(txn) == Settlement(None, None)
             db.session.rollback()
 
-    def test_a_figure_with_no_settle_day_is_the_REVERTED_state(
+    def test_an_undated_movement_on_a_projected_row_is_the_REVERTED_state(
         self, app, db, seed_user, seed_periods,
     ):
         """What the row keeps after a revert -- legal, and worth nothing.
 
         **A draft of this step REFUSED this state and that was the defect.**
-        ``ck_transactions_settlement_recorded`` paired the day with the basis, so
-        withdrawing the assertion had to destroy the figure -- and the full-edit
-        popover instructs the user to revert in order to edit, so following the
-        app's own advice deleted a number they had read off a statement.
+        ``ck_transactions_settlement_recorded`` paired the day with the record,
+        so withdrawing the assertion had to destroy the figure -- and the
+        full-edit popover instructs the user to revert in order to edit, so
+        following the app's own advice deleted a number they had read off a
+        statement.
 
-        The row is Projected here, carrying what it recorded when it last
-        settled.  Two assertions, and the second is the one that makes the first
-        safe: the database accepts it, and no valuation counts it, because
-        ``settled_figure`` asks the STATUS rather than the columns.
+        The row is Projected here, carrying the movement it recorded when it
+        last settled, un-dated (plan step X-bi-3e-2).  Two assertions, and the
+        second is the one that makes the first safe: the record reads the
+        movement, and no valuation counts it, because ``settled_figure`` asks
+        the STATUS rather than the record.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 settled_on=None,
-                settled_amount=Decimal("300.00"),
-                settled_basis_id=_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             db.session.flush()
+            cover_bare_settled_row(
+                db.session, txn, "300.00", submitted="300.00",
+            )
 
-            assert txn.settled_amount == Decimal("300.00")
+            (movement,) = txn.covering_movements
+            assert movement.settled_on is None
+            assert recorded_settlement(txn) == Settlement(
+                Decimal("300.00"), MovementFigureSourceEnum.TYPED,
+            )
             assert settled_figure(txn) is None
+            db.session.rollback()
 
     def test_a_SETTLED_row_holding_no_entry_records_ZERO_and_never_its_plan(
         self, app, db, seed_user, seed_periods,
@@ -293,128 +243,75 @@ class TestTheRecordIsOneFactInThreeColumns:
         ``$0.00`` record (ruling **R-BAL82**: a movement of nothing is not
         one, so a close of nothing has no entry), which is what both tiers
         answer.  What this case still grades is the substitution: the answer is
-        ``0``, not the ``$300.00`` plan, whatever the columns say.
+        ``0``, not the ``$300.00`` plan.
 
-        **The row carries no settle DAY**, which is what leaves it storable
-        under ``ck_transactions_settle_day_needs_a_record``; a settled row with
-        no day is ``integrity_check`` DC-11's first arm, not this reader's.
+        **The row carries no settle DAY**: a settled row with no day is
+        ``integrity_check`` DC-11's first arm, not this reader's.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=None,
-                settled_amount=None,
-                settled_basis_id=None,
             )
             db.session.add(txn)
             db.session.flush()
 
             assert settled_figure(txn) == Decimal("0")
 
-    def test_the_whole_record_together_is_accepted(
+    def test_the_whole_record_together_is_read_off_the_movement(
         self, app, db, seed_user, seed_periods,
     ):
         """The legitimate write, without which the controls above prove nothing.
 
-        A constraint that refused the correct act would fail every settle in the
-        app, and the three refusals above would still pass -- so the accepting
-        case is what tells a working pairing from one that admits nothing.
+        Settled, dated, and carrying the movement the seam lays: the figure a
+        person typed, read off the movement and not the ``$300.00`` plan.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=seed_periods[0].start_date,
-                settled_amount=Decimal("287.31"),
-                settled_basis_id=_basis_id(SettlementBasisEnum.CORRECTED),
             )
             db.session.add(txn)
             db.session.flush()
-
-            assert txn.id is not None
-            # The figure is read off the covering movement the seam mirrors
-            # beside these columns (plan step balance:X-bi-4b-1), so the
-            # movement is laid as the seam lays it; the columns alone read 0.
             cover_bare_settled_row(
                 db.session, txn, "300.00", submitted="287.31",
             )
-            assert settled_figure(txn) == Decimal("287.31")
-            db.session.rollback()
-
-    def test_a_purchases_record_stores_no_figure_and_is_accepted(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The NULL branch belongs to the one basis whose entries state the figure.
-
-        ``ck_transactions_settled_amount_needs_basis`` is satisfied by a NULL
-        figure, so the database admits this row -- and it must, because it is
-        every envelope close in the app.
-        """
-        with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=seed_periods[0].start_date,
-                settled_amount=None,
-                settled_basis_id=_basis_id(SettlementBasisEnum.PURCHASES),
-            )
-            db.session.add(txn)
-            db.session.flush()
 
             assert txn.id is not None
-            # No entries recorded, so its purchases sum to nothing -- which is
-            # what its records SAY, rather than a missing answer (ruling R-FJ).
-            assert settled_figure(txn) == Decimal("0")
+            assert settled_figure(txn) == Decimal("287.31")
+            assert recorded_settlement(txn) == Settlement(
+                Decimal("287.31"), MovementFigureSourceEnum.TYPED,
+            )
             db.session.rollback()
 
-    def test_an_unsettled_row_carrying_a_figure_is_refused(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A figure records a settle, so a row whose money has not moved has none.
-
-        This is the state migration ``e4b8a71c0f36`` PROMOTED five production
-        rows out of, and the one the deleted "Actual" box on the create and
-        full-edit forms could reach.
-
-        **What is refused here is the BARE FIGURE, not the state**, and the
-        distinction is exact: ``ck_transactions_settled_amount_needs_basis``
-        refuses a stored figure whose provenance nobody stated, whatever the
-        row's status.  A row carrying a figure AND a basis while unsettled is
-        legal -- it is the RETAINED state, and
-        :meth:`test_a_figure_with_no_settle_day_is_the_REVERTED_state` above
-        writes exactly that and asserts the database accepts it.  What keeps a
-        retained figure out of every balance is the STATUS
-        (``row_valuation.settled_figure``), not the schema.  (An earlier draft
-        of this docstring said "a basis needs a day", which is the implication
-        backwards and is the very pairing this step repealed.)
-        """
-        with app.app_context():
-            db.session.add(_make_transaction(
-                seed_user, seed_periods,
-                settled_amount=Decimal("120.00"),
-            ))
-            with pytest.raises(sqlalchemy.exc.IntegrityError) as exc:
-                db.session.flush()
-            assert "ck_transactions_settled_amount_needs_basis" in str(exc.value)
-            db.session.rollback()
+    # ``test_a_figure_with_no_basis_is_refused``, ``test_a_settle_day_with_no_
+    # record_is_refused``, ``test_a_purchases_record_stores_no_figure_and_is_
+    # accepted`` and ``test_an_unsettled_row_carrying_a_figure_is_refused``
+    # graded the two CHECKs over the row's own figure columns and went with
+    # them at plan step ``balance:X-bi-4b-2``: a figure with no writer is
+    # unconstructible (``TestPurchasesIffNoStoredFigure``), a record beside an
+    # unsettled status is the seam's refusal
+    # (``TestTheSeamRefusesAnUnrecordedSettle``), and the ``purchases`` record
+    # is ``Settlement(None, None)`` with no movement (``test_covering_movement``).
 
 
 class TestPurchasesIffNoStoredFigure:
-    """The one rule a CHECK cannot state, enforced in ``Settlement``'s constructor.
+    """The record's pairing, enforced in ``Settlement``'s constructor.
 
-    Saying it in SQL requires naming a ``ref.settlement_bases`` id, which the
-    project's ref convention keeps out of a schema -- so it is a write-door
-    invariant, and these are its negative controls.  A settle door builds a
-    ``Settlement`` to hand the seam, so a malformed record cannot be constructed
-    and therefore cannot be written.
+    A settle door builds a ``Settlement`` to hand the seam, so a malformed
+    record cannot be constructed and therefore cannot be written; these are
+    the negative controls.  (While the row carried its own figure columns a
+    CHECK backstopped the storable half; the constructor is the one home since
+    plan step ``balance:X-bi-4b-2``, and its third rule -- no negative figure
+    -- is graded in ``test_transaction_constraints`` beside the plan's CHECK.)
 
     **The record's stated field is the figure's SOURCE since plan step
-    X-bi-3e-1** (ruling **R-BAL69**), and the basis is derived from it; so the
-    rule reads *a figure names its writer, and a record with no figure names
-    none*.  The two refusals below are the two halves of that biconditional,
-    and the mapping test is what makes ``basis`` a stored answer's projection
-    rather than a second stated fact.
+    X-bi-3e-1** (ruling **R-BAL69**), so the rule reads *a figure names its
+    writer, and a record with no figure names none*.  The two refusals below
+    are the two halves of that biconditional, and ``stated`` is the one
+    reading derived from the source.
     """
 
     def test_a_figure_stating_no_writer_is_refused(self, app):
@@ -455,31 +352,6 @@ class TestPurchasesIffNoStoredFigure:
             assert from_entries.amount is None
 
     @pytest.mark.parametrize(
-        ("source", "basis"),
-        [
-            (None, SettlementBasisEnum.PURCHASES),
-            (MovementFigureSourceEnum.RESOLVED, SettlementBasisEnum.DERIVED),
-            (MovementFigureSourceEnum.TYPED, SettlementBasisEnum.CORRECTED),
-            (MovementFigureSourceEnum.OBSERVED, SettlementBasisEnum.CORRECTED),
-        ],
-    )
-    def test_the_basis_is_derived_from_the_source(self, app, source, basis):
-        """``basis`` is a function of ``source``, stated once (ruling R-BAL69).
-
-        The settle's own pricing is ``derived``; a figure a person or the
-        bank stated is ``corrected``; no figure is ``purchases``.  The row's
-        ``settled_basis_id`` is this answer's projection through the interval
-        ``X-bi-4`` closes, and it cannot disagree with the movement's
-        ``figure_source_id`` because one value carries both.
-        """
-        with app.app_context():
-            record = Settlement(
-                amount=None if source is None else Decimal("48.98"),
-                source=source,
-            )
-            assert record.basis is basis
-
-    @pytest.mark.parametrize(
         ("source", "stated"),
         [
             (None, False),
@@ -498,7 +370,9 @@ class TestPurchasesIffNoStoredFigure:
         stated the figure -- a person (``typed``) or the bank's line
         (``observed``); the settle's own ``resolved`` pricing is re-derived,
         and a ``purchases`` record states nothing.  It read ``basis is
-        CORRECTED`` off the row's column through ``X-bi-4a``.
+        CORRECTED`` off the row's own basis column through ``X-bi-4a``, and
+        a ``basis`` property derived from the source answered the seam's
+        column write through ``X-bi-4b-1``; both went at ``X-bi-4b-2``.
         """
         with app.app_context():
             record = Settlement(
@@ -527,9 +401,9 @@ class TestTheSeamRefusesAnUnrecordedSettle:
         A ``ValueError`` rather than a ``ValidationError``: no form can express
         it, so it is a mistake at the call site and not a user's.  Without this
         the door would write the status alone and the row would land dated with
-        no figure -- which the pairing refuses at flush, and which before this
-        step was worse than a refusal, because the reader fell back to the plan
-        and published a forecast as a fact.
+        no movement -- a close of nothing published as the row's money, and
+        before this step worse than that, because the reader fell back to the
+        plan and published a forecast as a fact.
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
@@ -563,11 +437,10 @@ class TestTheSeamRefusesAnUnrecordedSettle:
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=seed_periods[0].start_date,
-                settled_amount=Decimal("300.00"),
-                settled_basis_id=_basis_id(SettlementBasisEnum.DERIVED),
             )
             db.session.add(txn)
             db.session.flush()
+            cover_bare_settled_row(db.session, txn, "300.00")
 
             with pytest.raises(ValidationError, match="not a settled status"):
                 apply_status_change(
@@ -580,122 +453,20 @@ class TestTheSeamRefusesAnUnrecordedSettle:
             db.session.rollback()
 
 
-def _as_pre_upgrade_schema():
-    """Rename ``settled_amount`` back, so the guard sees the shape it runs on.
-
-    :func:`refuse_settled_rows_without_a_plan` is a PRE-flight: :func:`upgrade`
-    calls it before any DDL, so its SQL names ``actual_amount`` -- a column that
-    does not exist once the revision has run, which is the state every test
-    database is in.  Driving the real guard therefore means restoring the real
-    column name first.
-
-    ``ALTER TABLE ... RENAME COLUMN`` is transactional in PostgreSQL and
-    PostgreSQL rewrites the dependent CHECK expressions with it, so the test's
-    own rollback undoes this completely.  Called LAST in each test, after every
-    ORM flush, because the mapper still expects the post-upgrade name.
-
-    Naming the alternative rather than leaving it implicit: a copy of the
-    guard's SQL rewritten against ``settled_amount`` would test the copy, and a
-    guard nobody has seen work is exactly what the migration's docstring says
-    this class exists to prevent.
-    """
-    db.session.execute(sqlalchemy.text(
-        "ALTER TABLE budget.transactions "
-        "RENAME COLUMN settled_amount TO actual_amount"
-    ))
-
-
-class TestTheUpgradeRefusesASettledRowWithNoFigure:
-    """Migration ``e4b8a71c0f36``'s only non-DDL logic, driven directly.
-
-    ``refuse_settled_rows_without_a_plan`` is module-level for exactly this
-    reason, and the migration's own docstring says so -- naming the two previous
-    amount-model revisions as the precedent (``a9d3c15e7f42``, ``b3f7c2a9d514``)
-    and the rule as *"a guard nothing exercises is a guard nobody has seen
-    work"*.  Nothing exercised it until this class, which is the citation shape
-    finding **N-30** is about: a justification that names a control nobody
-    wrote.
-
-    Definition of Done item 7 asks for both directions.  The DDL halves are
-    exercised on every test-template rebuild -- ``scripts/build_test_template.py``
-    replays the whole Alembic chain rather than calling ``create_all`` -- and the
-    upgrade / downgrade round trip was run against a clone of production
-    (1,012 transactions, 166 settled) before this leaf shipped: every settled row
-    landed in exactly one backfill arm, and every row's effective figure was
-    unchanged in both directions.  What no rebuild can reach is the refusal,
-    because the chain never leaves a settled row with no figure at all -- that
-    state only arrives once a per-kind cutover (plan steps X-au-d..X-au-i) has
-    emptied ``estimated_amount``.
-    """
-
-    def test_it_passes_when_every_settled_row_has_a_figure(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The state the chain leaves, so a real upgrade is not refused.
-
-        Returns ``None`` rather than raising: the assertion is the ABSENCE of a
-        refusal, which is why the negative control below is what gives it
-        meaning.  A guard that refused everything would pass a test that only
-        checked the raising case.
-        """
-        with app.app_context():
-            db.session.add(_make_transaction(
-                seed_user, seed_periods,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=seed_periods[0].start_date,
-                settled_amount=Decimal("120.00"),
-                settled_basis_id=_basis_id(SettlementBasisEnum.DERIVED),
-            ))
-            db.session.flush()
-            _as_pre_upgrade_schema()
-
-            assert _MIGRATION.refuse_settled_rows_without_a_plan(
-                db.session.connection(),
-            ) is None
-
-    def test_it_refuses_a_settled_row_carrying_neither_figure(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The arm that keeps "zero such rows exist" true rather than assumed.
-
-        A settled row whose ``estimated_amount`` is already NULL has a DERIVED
-        plan, which means a per-kind cutover ran before this revision.  There is
-        then no figure here to record, and the producer that would compute one
-        lives in ``app/`` -- which a migration must not import.  Refusing names
-        the rows; inventing a number nobody computed is the defect the whole
-        step removes.
-
-        The message must NAME the offending row, because an operator hitting
-        this mid-deploy has only the message to work from.
-
-        **The row carries no settle DAY, and that is a property of the harness
-        rather than of the state being tested.**  The guard's SELECT reads three
-        columns -- ``status_id``, ``actual_amount``, ``estimated_amount`` -- and
-        never the day, so a day would add nothing it grades.  What it WOULD do
-        is break ``ck_transactions_settle_day_needs_a_record``, a constraint this
-        very revision creates and whose absence is the pre-upgrade shape this
-        test is standing in for: the ORM flush below runs against the migrated
-        test database, where it already exists, so the fixture would be refused
-        before the guard ever saw it.
-        """
-        with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods,
-                status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=None,
-                settled_amount=None,
-                settled_basis_id=None,
-            )
-            declare_derived(txn, AmountSourceEnum.TEMPLATE)
-            db.session.add(txn)
-            db.session.flush()
-            txn_id = txn.id
-            _as_pre_upgrade_schema()
-
-            with pytest.raises(RuntimeError, match=str(txn_id)):
-                _MIGRATION.refuse_settled_rows_without_a_plan(
-                    db.session.connection(),
-                )
+# ``TestTheUpgradeRefusesASettledRowWithNoFigure`` -- two cases that renamed
+# ``settled_amount`` back to ``actual_amount`` to drive migration
+# ``e4b8a71c0f36``'s pre-flight ``refuse_settled_rows_without_a_plan`` -- was
+# DELETED at plan step ``balance:X-bi-4b-2`` (developer ruling R-BAL84,
+# 2026-09-20): its staged input, the row's own figure column, cannot be built
+# at head once migration ``45f10b870c8b`` deletes it.  **That pre-flight is
+# UNGRADED at head**: it runs only on an old-dump restore (the test template
+# replays the chain from base over an empty database, where it refuses
+# nothing), and no test at head drives it.  What head grades instead is the
+# state it refused, a settled row storing no figure, which is the ``$0.00``
+# record now (``TestTheRecordIsTheCoveringMovement::
+# test_a_SETTLED_row_holding_no_entry_records_ZERO_and_never_its_plan``), and
+# that ``45f10b870c8b``'s downgrade rebuilds the column the pre-flight read
+# from the movements exactly (``test_the_record_is_its_movements``).
 
 
 class TestTheSQLTierReadsTheSameHomeAsPython:
@@ -716,8 +487,8 @@ class TestTheSQLTierReadsTheSameHomeAsPython:
     (ruling **R-BAL80**), and a settled row holding none is the ``$0.00``
     record on both (ruling **R-BAL82**); the row the two disagreed about has
     one answer.  The cases grade that agreement from both sides: the empty
-    row, and a row whose covering movement carries its figure while its
-    columns say something the readers must NOT be reading.
+    row, and a row whose covering movement carries its figure while its plan
+    says something the readers must NOT be reading.
     """
 
     def test_a_settled_row_holding_no_entry_answers_ZERO_on_both_tiers(
@@ -725,17 +496,13 @@ class TestTheSQLTierReadsTheSameHomeAsPython:
     ):
         """The one row the two expressions used to disagree about.
 
-        It carries no settle DAY, which is what makes it storable at all:
-        ``ck_transactions_settle_day_needs_a_record`` refuses the dated half of
-        this state.  Both tiers answer the ``$0.00`` record.
+        Both tiers answer the ``$0.00`` record.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=None,
-                settled_amount=None,
-                settled_basis_id=None,
             )
             db.session.add(txn)
             db.session.flush()
@@ -748,26 +515,23 @@ class TestTheSQLTierReadsTheSameHomeAsPython:
             assert answered == Decimal("0")
             assert settled_figure(txn) == Decimal("0")
 
-    def test_both_tiers_read_the_movement_and_neither_reads_the_columns(
+    def test_both_tiers_read_the_movement_and_neither_reads_the_plan(
         self, app, db, seed_user, seed_periods,
     ):
-        """A row whose columns and movement DISAGREE is read off the movement.
+        """A row whose plan and movement DISAGREE is read off the movement.
 
-        The seam writes both from one value, so the state below is written
-        around it -- and that is the point: a reader still dispatching on
-        ``settled_basis_id`` or reading ``settled_amount`` would answer
-        ``$300.00`` here, where the covering movement (the record's one home
-        after ``X-bi-4b-2``) carries ``$287.31``.  Both tiers must answer the
-        movement.  An expression that answered ``0`` for everything would pass
-        the case above and fail this one.
+        A reader still pricing the row -- the ``$300.00`` plan -- would answer
+        it here, where the covering movement (the record's one home since
+        ``X-bi-4b-2``; through ``X-bi-4b-1`` the row's own columns carried the
+        same trap one column over) carries ``$287.31``.  Both tiers must
+        answer the movement.  An expression that answered ``0`` for everything
+        would pass the case above and fail this one.
         """
         with app.app_context():
             txn = _make_transaction(
                 seed_user, seed_periods,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settled_on=seed_periods[0].start_date,
-                settled_amount=Decimal("300.00"),
-                settled_basis_id=_basis_id(SettlementBasisEnum.DERIVED),
             )
             db.session.add(txn)
             db.session.flush()

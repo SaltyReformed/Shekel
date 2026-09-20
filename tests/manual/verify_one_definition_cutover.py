@@ -84,6 +84,7 @@ from app.routes.grid.page import _load_grid_transactions
 from app.services import balance_at, companion_service, grid_view_service
 from app.services.cash_ledger import amounts_by_id, resolve_transaction_amount
 from app.services.spending_analysis import payment_timeliness_from_txns
+from app.services.row_valuation import settled_figure
 
 
 def _plain(value):
@@ -132,8 +133,7 @@ def _bare_rows(ctx):
             "due_date": _plain(row.due_date),
             "occurs_on": _plain(row.occurs_on),
             "figure": _plain(resolve_transaction_amount(row, ctx.amounts())),
-            "settled_amount": _plain(row.settled_amount),
-            "settled_basis_id": row.settled_basis_id,
+            "settled_figure": _plain(settled_figure(row)),
             "settled_on": _plain(row.settled_on),
             "tracks_purchases": row.tracks_purchases,
             "visible_to_companion": row.visible_to_companion,
@@ -341,7 +341,7 @@ def compare(before_path, after_path):
         moved = Counter()
         for row_id, b_row in b_user["bare"].items():
             a_row = a_user["bare"][row_id]
-            for key in ("figure", "settled_amount", "settled_basis_id",
+            for key in ("figure", "settled_figure",
                         "settled_on", "tracks_purchases", "visible_to_companion",
                         "is_deleted", "entries", "name", "status", "pay_period_id"):
                 if b_row[key] != a_row[key]:

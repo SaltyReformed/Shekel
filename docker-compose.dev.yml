@@ -51,7 +51,7 @@ services:
     # and prod drift to different PG patch levels on pull timing; bump
     # this digest and the one in docker-compose.yml's db service in the
     # same commit.
-    image: postgres:18-alpine@sha256:96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88
+    image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
     container_name: shekel-dev-db
     restart: unless-stopped
     environment:

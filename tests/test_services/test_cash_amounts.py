@@ -841,12 +841,12 @@ class _FakeRow:  # pylint: disable=too-few-public-methods
         # definition from an ordinary one
         # (``template_amount_service.is_salary_linked_template``).
         self.template = _FakeSalaryTemplate() if salary_shaped else None
-        # The settlement RECORD (plan step X-au-c3).  ``settled_figure`` asks
-        # the STATUS first -- a retained record on a reverted row is not what
-        # that row is worth -- and the basis only for a row the status says has
-        # settled, so a stand-in a valuation may see carries all three.
-        self.settled_basis_id = None
-        self.settled_amount = None
+        # The settlement RECORD (plan step X-au-c3) is the row's ENTRIES
+        # since ``balance:X-bi-4b-1``: ``settled_figure`` asks the STATUS
+        # first -- a retained record on a reverted row is not what that row
+        # is worth -- and the entries only for a row the status says has
+        # settled, so a stand-in a valuation may see carries both.
+        self.entries = []
         self.is_deleted = False
         self.status = None
         # What the live-override seam reads before it answers "nothing

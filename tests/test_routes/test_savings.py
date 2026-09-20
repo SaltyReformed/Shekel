@@ -44,7 +44,6 @@ from tests._test_helpers import (
     record_paydays_across_a_hole,
     rhythm_of,
     settle_day_columns,
-    settlement_columns,
     transient_cadence_rule,
 )
 from tests.oracles.recurrence_baseline import (
@@ -1338,13 +1337,9 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                 )
                 txn.status_id = settled_id
-                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+                # record is the covering movement written after the flush (X-bi-4b-2).
                 for _column, _value in settle_day_columns(period.start_date).items():
-                    setattr(txn, _column, _value)
-                for _column, _value in settlement_columns(
-                        period.start_date, Decimal("10.00"),
-                    ).items():
                     setattr(txn, _column, _value)
                 db.session.flush()
                 # The record's home is the covering movement (X-bi-4b-1).
@@ -1416,13 +1411,9 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                 )
                 row.status_id = settled_id
-                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+                # record is the covering movement written after the flush (X-bi-4b-2).
                 for _column, _value in settle_day_columns(period.start_date).items():
-                    setattr(row, _column, _value)
-                for _column, _value in settlement_columns(
-                        period.start_date, Decimal("120.00"),
-                    ).items():
                     setattr(row, _column, _value)
                 db.session.flush()
                 # The record's home is the covering movement (X-bi-4b-1).
@@ -1438,13 +1429,9 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                 )
                 row.status_id = settled_id
-                # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-                # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+                # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+                # record is the covering movement written after the flush (X-bi-4b-2).
                 for _column, _value in settle_day_columns(period.start_date).items():
-                    setattr(row, _column, _value)
-                for _column, _value in settlement_columns(
-                        period.start_date, Decimal("300.00"),
-                    ).items():
                     setattr(row, _column, _value)
                 db.session.flush()
                 cover_bare_settled_row(db.session, row, "300.00")

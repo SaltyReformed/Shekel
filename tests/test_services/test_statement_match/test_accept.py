@@ -27,7 +27,6 @@ from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -45,6 +44,7 @@ from app.services import (
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
+from app.services.row_valuation import settled_figure
 from app.services.statement_match import MatchSubmission, ReviewedLine
 
 from tests._test_helpers import (
@@ -385,7 +385,8 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         what a settled row is worth to this door (ruling **R-BAL81**,
         ``covered_cash_leg``), and the movement's row carries no version of
         the parent's: the FIGURE coordinate alone moves.  Through plan step
-        ``balance:X-bi-4a``'s first cut this moved ``settled_amount`` and
+        ``balance:X-bi-4a``'s first cut this moved the row's own
+        ``settled_amount`` (deleted at ``X-bi-4b-2``) and
         the ownership, which the price no longer reads and which bump the
         row's ``version_id`` -- so the case passed on the REVISION arm and
         the figure coordinate of a settled row was unpinned (adversarial
@@ -536,7 +537,7 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         )
 
         assert accepted.repriced_count == 1
-        assert txn.settled_amount == Decimal("178.29")
+        assert settled_figure(txn) == Decimal("178.29")
 
 
 class TestALineWhoseDayTheBankRESTATEDSinceTheReviewIsRefused:
@@ -2035,9 +2036,10 @@ class TestARowCarryingTheBanksDayIsStillWrittenIfItsPurchaseDayMoves:
 class TestARedatedSettleLeavesNoPostingBehind:
     """Finding **N-324**: every day assertion here had no posting to MOVE.
 
-    ``_builders.a_transaction`` writes ``status_id``, ``settled_on``,
-    ``settled_amount`` and ``settled_basis_id`` straight through the ORM, and
-    that route is DELIBERATE -- a broken settle verb must not also break the
+    ``_builders.a_transaction`` writes ``status_id`` and ``settled_on``
+    straight through the ORM and the covering movement through the seam's
+    own writer, and that route is DELIBERATE -- a broken settle verb must not
+    also break the
     fixture that would have caught it (the builders' own module docstring).
     **What nobody stated was the consequence.**  Those rows carry no ledger
     postings, so ``_apply_day`` reaches ``apply_requested_status``, which
@@ -2326,17 +2328,17 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         )
 
         assert accepted.match_id is not None, "the match must be RECORDED"
-        assert txn.settled_amount == Decimal("178.29"), (
+        assert settled_figure(txn) == Decimal("178.29"), (
             "the row must book what the BANK took, not what the app guessed"
         )
         assert txn.settled_on == bank_day
 
     def test_the_correction_says_it_is_one(self, app, db, seed_user):
-        """A corrected figure is stored as CORRECTED, not as derived.
+        """A corrected figure is stored as STATED, not as resolved.
 
-        The basis is what makes *did the bank disagree with this row* a stored
-        answer instead of one re-derived by comparing against a recomputation
-        that may since have moved.
+        The movement's source is what makes *did the bank disagree with this
+        row* a stored answer instead of one re-derived by comparing against a
+        recomputation that may since have moved.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -2352,14 +2354,12 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             seed_user, lines=[line], transactions=[txn], residual="0.03",
         )
 
-        assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.CORRECTED,
-        )
+        assert status_seam.recorded_settlement(txn).stated
         # And WHO wrote it: the matcher's transaction arm is the one door
         # that states a figure as the BANK's (plan step X-bi-3e-1, ruling
         # R-BAL61), graded end to end on the row's covering movement --
-        # ``typed`` would also read CORRECTED on the row, so the row's basis
-        # alone cannot tell the two writers apart.
+        # ``typed`` would also read as stated, so the reading alone cannot
+        # tell the two writers apart.
         (movement,) = txn.covering_movements
         assert movement.amount == Decimal("178.29")
         assert movement.figure_source_id == ref_cache.movement_figure_source_id(
@@ -2402,9 +2402,8 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         )
 
         assert accepted.match_id is not None
-        assert paycheck.settled_amount == Decimal("2473.43")
-        assert paycheck.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.CORRECTED,
+        assert status_seam.recorded_settlement(paycheck) == status_seam.Settlement(
+            Decimal("2473.43"), MovementFigureSourceEnum.OBSERVED,
         )
         assert [m.amount for m in paycheck.covering_movements] == [
             Decimal("2473.43"),
@@ -2430,9 +2429,8 @@ class TestAOneToOneMatchTakesTheBanksFigure:
 
         _submit(seed_user, lines=[line], transactions=[txn])
 
-        assert txn.settled_amount == Decimal("178.32")
-        assert txn.settled_basis_id != ref_cache.settlement_basis_id(
-            SettlementBasisEnum.CORRECTED,
+        assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+            Decimal("178.32"), MovementFigureSourceEnum.RESOLVED,
         )
 
     def test_the_ACCOUNT_reads_the_banks_figure_and_not_both(
@@ -2562,7 +2560,7 @@ class TestWhatAOneToOneMatchSTILLRefuses:
             _submit(seed_user, lines=[line], transactions=[payback])
 
         assert payback.settled_on is None
-        assert payback.settled_amount is None
+        assert status_seam.recorded_settlement(payback) is None
 
 
 class TestASettledPurchaseTakesTheBanksFigure:

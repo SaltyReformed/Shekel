@@ -40,7 +40,6 @@ from tests._test_helpers import (
     one_off_row_of,
     settle_day_columns,
     cover_bare_settled_row,
-    settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
 from tests.test_services.test_statement_import.test_anchor import _seed_import
@@ -147,10 +146,8 @@ def _settled(db, seed_user, period, name, amount, day):
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
     txn.status_id = status_id
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
-    for _column, _value in settlement_columns(day, amount, amount).items():
-        setattr(txn, _column, _value)
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(day).items():
         setattr(txn, _column, _value)
     db.session.flush()

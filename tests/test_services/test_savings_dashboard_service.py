@@ -6399,7 +6399,7 @@ class TestTheDebtFreeDateIsOneDerivation:
     ):
         """The developer's ruling on a payoff date that is already behind us.
 
-        ``plan_payoff_date`` returns the DUE date the balance first folds to
+        The derived payoff is the DUE date the balance first folds to
         zero, and an overdue-but-still-projected installment that clears the
         loan folds at a date behind today.  The ruling (plan step X-q): the
         outlook REPORTS that date -- it is a fact about the loan's plan -- and

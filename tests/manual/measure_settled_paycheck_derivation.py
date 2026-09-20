@@ -76,6 +76,7 @@ from app.services.tax_config_service import (
     configs_by_year as _configs_by_year,
     profile_tax_series,
 )
+from app.services.row_valuation import settled_figure
 from app import ref_cache
 
 # The statuses that make a row's amount a RECORD rather than a plan.  A
@@ -275,7 +276,7 @@ def _paycheck_records(rows, states, saved_by_id):
             "payday": saved_by_id[row.pay_period_id].start_date.isoformat(),
             "plan": None if row.estimated_amount is None
                     else str(row.estimated_amount),
-            "record": str(row.settled_amount),
+            "record": str(settled_figure(row)),
             "target": str(target),
             "target_kind": target_kind,
             "derived": {
@@ -338,7 +339,7 @@ def _generated_figure(row):
     """
     if row.estimated_amount is not None:
         return row.estimated_amount, "plan"
-    return row.settled_amount, "record"
+    return settled_figure(row), "record"
 
 
 def _report(records):

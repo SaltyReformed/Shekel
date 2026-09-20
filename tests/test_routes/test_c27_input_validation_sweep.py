@@ -49,6 +49,7 @@ from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.models.amount_ownership import AmountOwnership
+from app.services.row_valuation import settled_figure
 from tests._test_helpers import one_off_row_of, rhythm_of
 
 
@@ -301,7 +302,7 @@ class TestTransactionsMarkDoneActualAmount:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.settled_amount == Decimal("85.50")
+            assert settled_figure(txn) == Decimal("85.50")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
     def test_missing_actual_amount_leaves_the_record_untouched(
@@ -332,7 +333,7 @@ class TestTransactionsMarkDoneActualAmount:
                 data={"settled_amount": "90.00"},
             ).status_code == 200
             db.session.refresh(txn)
-            assert txn.settled_amount == Decimal("90.00")
+            assert settled_figure(txn) == Decimal("90.00")
 
             resp = auth_client.post(
                 f"/transactions/{txn.id}/mark-done",
@@ -341,7 +342,7 @@ class TestTransactionsMarkDoneActualAmount:
             assert resp.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.settled_amount == Decimal("90.00"), (
+            assert settled_figure(txn) == Decimal("90.00"), (
                 "mark-done with no body must not clear what the row recorded"
             )
 

@@ -49,7 +49,6 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     settle_day_columns,
     cover_bare_settled_row,
-    settlement_columns,
 )
 from tests.test_services.test_cash_fold import _instant
 
@@ -78,10 +77,8 @@ def _settled(
         ),
     )
     txn.status_id = status_id
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
-    for _column, _value in settlement_columns(day, amount, amount).items():
-        setattr(txn, _column, _value)
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(day).items():
         setattr(txn, _column, _value)
     db.session.flush()
@@ -103,12 +100,8 @@ def _projected(db, seed_user, period, name, amount, due_date):
         due_date=due_date,
     )
     txn.status_id = status_id
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
-    for _column, _value in settlement_columns(
-            default_settle_day(period, status_id), amount, None,
-        ).items():
-        setattr(txn, _column, _value)
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(default_settle_day(period, status_id)).items():
         setattr(txn, _column, _value)
     db.session.flush()

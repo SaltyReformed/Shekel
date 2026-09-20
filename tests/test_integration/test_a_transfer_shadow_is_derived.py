@@ -63,6 +63,7 @@ from app.services.amount_ownership import derived_ownership
 from tests._test_helpers import rendered_transfer_amount
 from datetime import date
 from app.services import template_amount_service
+from app.services.row_valuation import settled_figure
 
 #: P&I 1,199.10 + escrow 300.00 on the seeded $200k / 6% / 360mo mortgage.
 _CONTRACT = Decimal("1499.10")
@@ -823,7 +824,7 @@ class TestALoanPaymentsLegsReadTheLoan:
 
             db.session.expire_all()
             for leg in _shadows(xfer.id):
-                assert leg.settled_amount == _TYPED
+                assert settled_figure(leg) == _TYPED
 
             splits = loan_ledger.compute_loan_payment_splits(
                 loan_id, scenario_id,

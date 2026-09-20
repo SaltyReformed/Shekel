@@ -33,7 +33,6 @@ from tests._test_helpers import (
     rhythm_of,
     set_default_grid_account,
     settle_day_columns,
-    settlement_columns,
 )
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 from tests._test_helpers import (
@@ -110,11 +109,9 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         category_id=cat.id if cat else None,
     )
     txn.status_id = paid_status_id
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(seed_periods[0].start_date, amount).items():
         setattr(txn, _column, _value)
     db.session.flush()
     # The record's home is the covering movement (X-bi-4b-1).
@@ -2108,14 +2105,9 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         due_date=due_date,
     )
     txn.status_id = ref_cache.status_id(StatusEnum.DONE)
-    # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-    # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+    # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+    # record is the covering movement written after the flush (X-bi-4b-2).
     for _column, _value in settle_day_columns(due_date or period.start_date).items():
-        setattr(txn, _column, _value)
-    for _column, _value in settlement_columns(
-            due_date or period.start_date, Decimal(estimated),
-            submitted=Decimal(actual) if actual is not None else None,
-        ).items():
         setattr(txn, _column, _value)
     db.session.flush()
     # The record's home is the covering movement (X-bi-4b-1).

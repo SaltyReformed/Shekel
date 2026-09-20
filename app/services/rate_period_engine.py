@@ -768,8 +768,9 @@ def _replay_payment_row(
 
     **It RESTATED that allocation inline until plan step X-au-g-2c-3a**, and
     the restatement was forced rather than chosen: the rule lived in
-    ``loan_ledger._split``, which imports this module, so reaching it from here
-    was a cycle.  Moving the rule to :mod:`app.utils.money` -- beside the
+    ``loan_ledger._split`` (since folded into ``loan_ledger._replay``, which
+    imports this module still), so reaching it from here was a cycle.  Moving
+    the rule to :mod:`app.utils.money` -- beside the
     accrual it is always paired with, and below every walk -- is what let this
     call it.  Byte-identical, measured over 200,000 randomised trials before
     the swap.

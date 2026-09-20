@@ -9,7 +9,7 @@
 # package versions would defeat that currency mechanism.
 #
 # The other two audit-class findings are FIXED in the Dockerfile, not
-# ignored: DL3013 (unpinned pip) by `gunicorn==26.0.0` (CI/DF-01), and
+# ignored: DL3013 (unpinned pip) by the pinned `gunicorn==` line (CI/DF-01), and
 # DL3045 (COPY to a relative path with no WORKDIR) by `WORKDIR /build`
 # in the builder stage (CI/DF-04).
 ignored:

@@ -52,11 +52,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.loan_ledger import (
-    LoanLedgerWalk,
-    anchor_visible_on,
-    payment_visible_on,
-)
+from app.services.loan_ledger import LoanLedgerWalk
 from app.services.loan_resolver import ConfirmedLedgerView
 from app.services.amortization_engine import AmortizationRow
 from app.services.rate_period_engine import (
@@ -109,19 +105,22 @@ def _origination_date(walk: LoanLedgerWalk) -> date | None:
 
 
 def _history_rows_from_walk(
-    walk: LoanLedgerWalk, origination_date: date, as_of: date,
+    walk: LoanLedgerWalk, origination_date: date,
 ) -> list[AmortizationRow]:
-    """Return a loan's CONFIRMED schedule rows, folded from the walk through *as_of*.
+    """Return a loan's CONFIRMED schedule rows, folded from the pass's walk.
 
     One :class:`~app.services.amortization_engine.AmortizationRow` per settled
-    payment VISIBLE by *as_of*, chronological, each carrying that payment's
-    ACTUAL economics off the walk's split:
+    payment the pass has seen (the walk is bounded to the facts visible by its
+    ``as_of`` at :meth:`~app.services.balance_at.BalanceContext.loan_walk`),
+    chronological, each carrying that payment's ACTUAL economics off the
+    walk's split:
 
     * ``principal`` / ``interest`` -- the split's real principal and accrued
       interest, which the posting writer books verbatim onto the ledger, so they
       equal the posted nets (plan step E1a's checked-projection invariant).
     * ``remaining_balance`` -- the genesis running balance owed AFTER this payment,
-      accumulated in CONTRACT order over ONLY the events visible by *as_of*: an
+      accumulated in CONTRACT order over the walk's events, every one of which
+      is visible by the pass's as-of: an
       anchor moves the balance by ``owed_before - anchor_balance`` (the exact linked
       net its posted correction carries), a payment by ``+principal``, and the row
       reads ``-(cumulative)``.  It is NOT the walk's full-timeline balance-after and
@@ -146,25 +145,23 @@ def _history_rows_from_walk(
             pass's memoized walk, :meth:`~app.services.balance_at.BalanceContext.loan_walk`).
         origination_date: The loan's origination (:func:`_origination_date`), which
             numbers the rows.
-        as_of: The display boundary; a payment whose SETTLED date has not arrived by
-            it, and an anchor dated after it, are excluded (they belong to the
-            projection, not the confirmed history).
 
     Returns:
         The chronological confirmed :class:`~app.services.amortization_engine.AmortizationRow`
         list (possibly empty for a configured loan with no confirmed payment yet).
     """
-    # Every event VISIBLE by as_of, tagged for the contract-order sort.  A payment
-    # is visible from its settled date, an anchor from its own date (the ONE clock,
-    # :mod:`app.services.loan_ledger._visible`).
+    # Every recorded event, tagged for the contract-order sort.  The pass's
+    # walk holds only the facts VISIBLE by its as_of since plan step
+    # recurrence:R16-c-1 (a payment from its settled date, an anchor from its
+    # own date -- the ONE clock, bounded once at
+    # ``BalanceContext.loan_walk``), so the per-event ``<= as_of`` tests this
+    # comprehension carried are stated there and not again here.
     events: list[tuple[date, int, object]] = [
-        (split.due_date, _TAG_PAYMENT, split)
-        for split in walk.payment_splits
-        if payment_visible_on(split.income_shadow) <= as_of
+        (outcome.due_date, _TAG_PAYMENT, outcome)
+        for outcome in walk.settled_splits
     ] + [
         (correction.anchor.anchor_date, _TAG_ANCHOR, correction)
         for correction in walk.anchor_corrections
-        if anchor_visible_on(correction.anchor.anchor_date) <= as_of
     ]
     events.sort(key=lambda event: (event[0], event[1]))
 
@@ -263,7 +260,5 @@ def confirmed_view(
         return None
     return ConfirmedLedgerView(
         balance=fold_from_walk(walk, [ctx.as_of])[ctx.as_of],
-        history_rows=_history_rows_from_walk(
-            walk, origination_date, ctx.as_of,
-        ),
+        history_rows=_history_rows_from_walk(walk, origination_date),
     )

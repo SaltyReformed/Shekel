@@ -3,8 +3,9 @@ Shekel Budget App -- Cash ledger: what ONE row is WORTH to checking.
 
 The per-transaction valuation rules, and nothing that sums or folds them.  Given
 a single row, these answer "how much of this hits the checking balance right
-now?" -- the cash analog of :mod:`app.services.loan_ledger._split`, which
-answers the same question for one loan payment (principal / interest / escrow).
+now?" -- the cash analog of the loan replay's
+:class:`~app.services.loan_ledger.PaymentOutcome`, which answers the same
+question for one loan payment (principal / interest / escrow).
 
 **The VALUATION is here and the AMOUNT is next door.**  :mod:`._amount_source`
 answers *what is this row's amount* -- the quantity the amount column holds or

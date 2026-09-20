@@ -21,7 +21,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
-    SettlementBasisEnum,
+    MovementFigureSourceEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -55,7 +55,6 @@ from tests._test_helpers import (
     make_income_template,
     net_posted_by_day,
     repriced_by_the_owner,
-    settlement_basis_id,
     settlement_if_settling,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -377,7 +376,7 @@ class TestSettleFromEntriesPreconditions:
             db.session.rollback()
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
-            assert reloaded.settled_amount is None
+            assert status_seam.recorded_settlement(reloaded) is None
             assert reloaded.status_id == (
                 ref_cache.status_id(StatusEnum.PROJECTED)
             )
@@ -516,7 +515,7 @@ class TestSettleFromEntriesSessionContract:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded is not None
-            assert reloaded.settled_amount is None
+            assert status_seam.recorded_settlement(reloaded) is None
             assert reloaded.status_id == (
                 ref_cache.status_id(StatusEnum.PROJECTED)
             )
@@ -564,10 +563,15 @@ class TestSettleTransactionTheVerb:
 
             assert "transfer shadow" in str(exc.value)
             assert "transfer_service.update_transfer" in str(exc.value)
-            # A refused call leaves the row untouched.
+            # A refused call leaves the row untouched.  The record read loads
+            # the row's entries, and the flush that load would trigger lands
+            # the cheap ``transfer_id`` beside the row's ``template_id`` --
+            # a pairing ``ck_transactions_one_pricing_link`` refuses, and not
+            # what this case is about.
             assert txn.status_id == status_before
             assert txn.settled_on is None
-            assert txn.settled_amount is None
+            with db.session.no_autoflush:
+                assert status_seam.recorded_settlement(txn) is None
 
     def test_a_soft_deleted_row_is_refused(
         self, app, seed_user, seed_periods,
@@ -669,7 +673,7 @@ class TestSettleTransactionTheVerb:
                 txn, submitted=typed(Decimal("250.00")),
             )
 
-            assert txn.settled_amount == Decimal("250.00")
+            assert settled_figure(txn) == Decimal("250.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
 
     def test_a_plain_row_with_no_correction_records_what_it_booked(
@@ -698,10 +702,13 @@ class TestSettleTransactionTheVerb:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("500.00")
             assert txn.estimated_amount is None
             assert _plan_of(txn) == Decimal("500.00")
@@ -775,8 +782,8 @@ class TestASettleBooksTheFreshestFigure:
     these cases are what that looks like from here.  A salary row DECLARES the
     definition that prices it and stores no figure, so there is no cache to
     book instead of and none to reconcile: what the settle books is what the
-    amount model answers, and its RECORD (``settled_amount`` on the ``derived``
-    basis) is the only figure the row ends up holding.  A test that passed by
+    amount model answers, and its RECORD (the covering movement, on the
+    ``resolved`` source) is the only figure the row ends up holding.  A test that passed by
     reading the plan column would now have to report ``None``.
 
     The setup is the sibling suite's, so the expected net is not invented here:
@@ -855,8 +862,8 @@ class TestASettleBooksTheFreshestFigure:
         **The settle writes NO plan column**, which is what the deleted
         reconciler used to do here.  A derived row has no cache to reconcile,
         so the only figure this act writes is the RECORD -- and the record says
-        HOW it is known (``settled_basis_id``), which is what keeps a machine's
-        resolution distinguishable from a human's correction.
+        WHO wrote it (the movement's ``figure_source_id``), which is what keeps
+        a machine's resolution distinguishable from a human's correction.
         """
         with app.app_context():
             txn = self._salary_row(seed_user, seed_periods[0])
@@ -874,10 +881,13 @@ class TestASettleBooksTheFreshestFigure:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("4000.00")
             assert settled_contribution(txn) == Decimal("4000.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
@@ -907,7 +917,7 @@ class TestASettleBooksTheFreshestFigure:
                 txn, submitted=typed(Decimal("3912.44")),
             )
 
-            assert txn.settled_amount == Decimal("3912.44")
+            assert settled_figure(txn) == Decimal("3912.44")
             assert txn.estimated_amount is None
             assert settled_contribution(txn) == Decimal("3912.44")
             # The PLAN, asserted rather than described: it still resolves from
@@ -945,10 +955,13 @@ class TestASettleBooksTheFreshestFigure:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("1234.56")
             assert settled_contribution(txn) == Decimal("1234.56")
 
@@ -960,8 +973,9 @@ class TestASettleBooksTheFreshestFigure:
     # typed this".  There is no reconciler and no cache: a derived row's plan
     # column is empty before and after every settle, which
     # ``test_a_declared_paycheck_settles_at_what_its_PROFILE_pays`` asserts
-    # directly.  The signal that survived is ``settled_basis_id``, and the
-    # ``derived``-versus-``corrected`` pair above is its control.
+    # directly.  The signal that survived is the movement's
+    # ``figure_source_id``, and the ``resolved``-versus-``typed`` pair above
+    # is its control.
 
     def test_a_row_with_no_live_seam_is_untouched(
         self, app, db, seed_user, seed_periods,
@@ -985,10 +999,13 @@ class TestASettleBooksTheFreshestFigure:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("500.00")
             assert settled_contribution(txn) == Decimal("500.00")
 
@@ -1019,8 +1036,9 @@ class TestASettleBooksTheFreshestFigure:
     # untested.  It built a PROJECTED salary row carrying
     # ``actual_amount = 3880.15`` and proved a fourth guard on the settle's
     # cache refresh kept it from booking ``$4,000.00`` over it.  A figure
-    # RECORDS a settle now, so ``ck_transactions_settled_amount_needs_basis``
-    # refuses one on a row whose money has not moved -- and the door that
+    # RECORDS a settle now (the covering movement the seam writes, which
+    # ``reject_settlement_without_settled_status`` keeps off a row whose money
+    # has not moved) -- and the door that
     # produced the state is gone with it: the full-edit form's Actual box was
     # deleted, so the only way a human's pre-settle figure reaches a row is
     # ``estimated_amount``, and stating one there is what TAKES OWNERSHIP of
@@ -1058,10 +1076,13 @@ class TestASettleBooksTheFreshestFigure:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("500.00")
             assert settled_contribution(txn) == Decimal("500.00")
 
@@ -1155,10 +1176,13 @@ class TestASettleBooksTheFreshestFigure:
             # None`` until that step, because a NULL there was the only signal
             # that no human had typed a figure -- so a settle with nothing to
             # correct recorded nothing at all, and every reader fell back to
-            # the row's PLAN.  The signal is a column of its own now, so the
+            # the row's PLAN.  The signal is the movement's ``figure_source_id``
+            # now (a column of the row's own from X-au-c3 to X-bi-4b-2), so the
             # record can state the figure AND stay distinguishable from a
             # correction.
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
+            )
             assert settled_figure(txn) == Decimal("4000.00")
 
 
@@ -1317,8 +1341,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             self._settle(txn, submitted=typed(Decimal("245.32")))
             db.session.flush()
             assert txn.settled_on is not None
-            assert txn.settled_amount == Decimal("245.32")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
+            )
             # A statement is recorded as having SHOWN this money, so the
             # release below has something to release.  Asserting
             # ``reconciled_by_id is None`` after a revert without this is
@@ -1342,10 +1367,11 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             # The ASSERTION is withdrawn -- BOTH of its columns ...
             assert txn.settled_on is None
             assert txn.reconciled_by_id is None
-            # ... and WHAT MOVED survives it.
-            assert txn.settled_amount == Decimal("245.32")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.CORRECTED)
-            # But nothing counts it: the STATUS decides, not the columns.
+            # ... and WHAT MOVED survives it, on the kept movement.
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
+            )
+            # But nothing counts it: the STATUS decides, not the record.
             assert settled_figure(txn) is None
 
     def test_revert_edit_the_plan_re_settle_books_the_HUMANS_figure(
@@ -1372,8 +1398,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             booked_a_human_figure = self._settle(txn)
             db.session.flush()
 
-            assert txn.settled_amount == Decimal("245.32")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
+            )
             assert settled_figure(txn) == Decimal("245.32")
             # The plan edit stands, and is a different fact from what moved.
             assert txn.estimated_amount == Decimal("610.00")
@@ -1412,20 +1439,21 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
     ):
         """Only a HUMAN's figure is honoured; the app's own inference is redone.
 
-        A ``derived`` record is what the app resolved at a moment that has
+        A ``resolved`` record is what the app resolved at a moment that has
         passed, and re-resolving is strictly better -- the plan may legitimately
         have been re-priced meanwhile.  **This is the case a mutant dropping
-        ``retained.basis is CORRECTED`` from ``Settlement.from_settle``
-        survives**: with a corrected record the two arms agree, so only a
-        retained DERIVED record whose plan has since MOVED can tell them apart.
+        ``retained.stated`` from ``Settlement.from_settle`` survives**: with a
+        stated record the two arms agree, so only a retained RESOLVED record
+        whose plan has since MOVED can tell them apart.
         """
         with app.app_context():
             template = _make_template(seed_user)
             txn = generate_row_of(template, seed_periods[0])
             self._settle(txn)
             db.session.flush()
-            assert txn.settled_amount == Decimal("500.00")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("500.00"), MovementFigureSourceEnum.RESOLVED,
+            )
 
             self._revert(txn)
             state_own_amount(txn, Decimal("610.00"))
@@ -1439,8 +1467,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             self._settle(txn)
             db.session.flush()
 
-            assert settled_figure(txn) == Decimal("610.00")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("610.00"), MovementFigureSourceEnum.RESOLVED,
+            )
 
     def test_a_reverted_PURCHASES_row_re_sums_its_entries(
         self, app, db, seed_user, seed_periods,
@@ -1461,17 +1490,18 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
 
             self._settle(txn)
             db.session.flush()
-            assert txn.settled_amount is None
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.PURCHASES)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                None, None,
+            )
+            assert txn.covering_movements == []
             assert settled_figure(txn) == Decimal("40.00")
 
             self._revert(txn)
             db.session.flush()
-            # The record survives and stores nothing, which is legal:
-            # ``ck_transactions_settled_amount_needs_basis`` binds a FIGURE to a
-            # basis, never a basis to a figure.
-            assert txn.settled_amount is None
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.PURCHASES)
+            # The row records nothing of its own to survive the revert: its
+            # entries are the record, and they stand (ruling **R-BAL82**).
+            assert status_seam.recorded_settlement(txn) is None
+            assert txn.covering_movements == []
             assert settled_figure(txn) is None
 
             _make_entry(txn.id, seed_user["user"].id, "12.50", "Store B")
@@ -1485,7 +1515,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             db.session.flush()
 
             assert settled_figure(txn) == Decimal("52.50")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.PURCHASES)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                None, None,
+            )
 
     def test_a_reverted_row_that_is_then_CANCELLED_counts_nothing(
         self, app, db, seed_user, seed_periods,
@@ -1508,7 +1540,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             )
             db.session.flush()
 
-            assert txn.settled_amount == Decimal("245.32")
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("245.32"), MovementFigureSourceEnum.TYPED,
+            )
             assert settled_figure(txn) is None
             assert settled_contribution(txn) == Decimal("0")
 
@@ -1725,8 +1759,8 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
 
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
             assert settled_figure(txn) == Decimal("87.10")
-            assert txn.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.TYPED
             )
             assert txn.settled_on == day, (
                 "a figure correction moved the settle day"
@@ -1787,20 +1821,20 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
     ):
         """Re-posting the prefilled figure must not manufacture a correction.
 
-        The echo rule's firing control at this tier: the basis is the only
-        stored signal that a human read a number off a statement, and an
-        untouched Save posts the box's contents back on every edit.
+        The echo rule's firing control at this tier: the movement's source is
+        the only stored signal that a human read a number off a statement,
+        and an untouched Save posts the box's contents back on every edit.
         """
         with app.app_context():
             txn = self._settled_row(seed_user, seed_periods[0])
-            derived = settlement_basis_id(SettlementBasisEnum.DERIVED)
-            assert txn.settled_basis_id == derived
+            resolved = MovementFigureSourceEnum.RESOLVED
+            assert status_seam.recorded_settlement(txn).source is resolved
 
             transaction_service.apply_requested_status(
                 txn, txn.status_id, submitted=typed(Decimal("100.00")),
             )
 
-            assert txn.settled_basis_id == derived
+            assert status_seam.recorded_settlement(txn).source is resolved
 
 
 class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
@@ -1830,7 +1864,7 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
             _make_entry(txn.id, seed_user["user"].id, "25.00", "Milk")
             db.session.flush()
 
-            assert txn.settled_basis_id is None, "fixture: nothing recorded"
+            assert status_seam.recorded_settlement(txn) is None, "fixture: nothing recorded"
             assert transaction_service.retained_settle_amounts_by_id(
                 [txn],
             ) == {txn.id: None}
@@ -1881,8 +1915,8 @@ class TestTheRetainedMapAnswersOnlyARetainedCORRECTION:
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
             )
 
-            assert txn.settled_basis_id == settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
+            assert status_seam.recorded_settlement(txn).source is (
+                MovementFigureSourceEnum.RESOLVED
             )
             assert transaction_service.retained_settle_amounts_by_id(
                 [txn],

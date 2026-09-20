@@ -13,7 +13,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.enums import SettlementBasisEnum
+from app.enums import MovementFigureSourceEnum
 from tests._test_helpers import (
     constraint_name_from,
     cover_bare_settled_row,
@@ -26,8 +26,6 @@ from tests._test_helpers import (
     resolved_amount,
     rhythm_of,
     settle_day_columns,
-    settlement_basis_id,
-    settlement_columns,
     settlement_if_settling,
 )
 
@@ -90,7 +88,8 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
 
     A row built in a SETTLED status carries the whole record -- the day, the
     figure and how the figure is known -- through the one door a bare-built
-    fixture uses (``_test_helpers.settlement_columns``, plan step X-au-c3).
+    fixture uses (``_test_helpers.cover_bare_settled_row``, which writes the
+    covering movement; plan steps X-au-c3 and balance:X-bi-4b-2).
     *settled_amount* is a figure a HUMAN typed, which makes the record
     ``corrected``; with none the record is ``derived`` at the row's own plan.
     """
@@ -113,14 +112,12 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
     # the row is the producer's (plan step balance:X-bi-7c), the state on top
     # is this builder's purpose.
     txn.status_id = status.id
-    for _column, _value in {
-        **settle_day_columns(settled_on),
-        **settlement_columns(settled_on, planned, submitted=settled_amount),
-    }.items():
+    for _column, _value in settle_day_columns(settled_on).items():
         setattr(txn, _column, _value)
     db.session.flush()
     if settled_on is not None:
-        # The record's home is the covering movement (X-bi-4b-1).
+        # The record is the covering movement (X-bi-4b-1; the row's one home
+        # for it since X-bi-4b-2).
         cover_bare_settled_row(db.session, txn, planned, settled_amount)
     return txn
 
@@ -188,10 +185,12 @@ class TestStateMachineViolations:
             assert txn.status.name == "Projected"
 
     def test_mark_done_negative_actual_amount(self, app, auth_client, seed_user, seed_periods):
-        """POST mark_done with settled_amount=-500 is rejected by DB CHECK constraint.
+        """POST mark_done with settled_amount=-500 is rejected at the schema.
 
-        The CHECK constraint on budget.transactions.settled_amount
-        prevents negative values at the database level (L-01).
+        The form field validates non-negative (``_NON_NEGATIVE_MONETARY``), and
+        ``status_seam.Settlement`` refuses a negative figure at construction
+        (the storage-tier CHECK on the row's own column said the same through
+        plan step X-bi-4b-1; L-01).
         """
         with app.app_context():
             txn = _make_transaction(seed_user, seed_periods)
@@ -223,7 +222,7 @@ class TestStateMachineViolations:
             db.session.refresh(txn)
             # Current behavior: status is re-set, actual_amount preserved
             # because the form didn't send one.
-            assert txn.settled_amount == Decimal("75.00")
+            assert settled_figure(txn) == Decimal("75.00")
 
     def test_projected_to_cancelled_to_projected_double_reversal(
         self, app, auth_client, seed_user, seed_periods,
@@ -297,7 +296,7 @@ class TestStateMachineViolations:
             db.session.refresh(txn)
             # Row stays Paid; actual_amount preserved.
             assert txn.status.name == "Paid"
-            assert txn.settled_amount == Decimal("85.00")
+            assert settled_figure(txn) == Decimal("85.00")
             assert settled_contribution(txn) == Decimal("85.00")
 
     def test_received_to_projected_reversion(
@@ -310,9 +309,8 @@ class TestStateMachineViolations:
         **The revert releases the ASSERTION and KEEPS what moved** (plan step
         X-au-c3, developer 2026-08-17).  ``settled_on`` and the clearing link
         say "this money moved on this day and that statement showed it", and a
-        revert withdraws exactly that; ``settled_amount`` and
-        ``settled_basis_id`` say what the bank took, which the revert does not
-        un-know.  The row is worth its PLAN again because the STATUS decides
+        revert withdraws exactly that; the covering movement says what the
+        bank took and who said so, which the revert does not un-know.  The row is worth its PLAN again because the STATUS decides
         which figure governs (``row_valuation.settled_figure``), not because the
         record was destroyed.
 
@@ -356,8 +354,9 @@ class TestStateMachineViolations:
             assert txn.settled_on is None
             assert txn.reconciled_by_id is None
             # WHAT MOVED stayed, and it is still flagged as the human's figure.
-            assert txn.settled_amount == Decimal("2800.00")
-            assert txn.settled_basis_id == settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("2800.00"), MovementFigureSourceEnum.TYPED,
+            )
             # The row is nonetheless worth its PLAN again -- $200.00 above what
             # was really received, which is the danger this case names. The
             # STATUS is what decides that, not the absence of the record.
@@ -539,7 +538,7 @@ class TestStateMachineViolations:
             assert txn.status.name == "Cancelled"
             # No actual_amount recorded -- the rejected request did
             # not commit any partial state.
-            assert txn.settled_amount is None
+            assert status_seam.recorded_settlement(txn) is None
             assert settled_contribution(txn) == Decimal("0")
 
     def test_mark_credit_on_done_transaction(

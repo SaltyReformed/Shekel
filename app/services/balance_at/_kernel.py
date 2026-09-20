@@ -58,41 +58,39 @@ from app.models.account import Account
 
 from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext
-from ._fold import fold_from_walk
-from ._resolution import ResolvedLoan, resolved_loan
+from ._resolution import resolved_loan
 from . import _asset_fold
 
 
 @dataclass(frozen=True)
 class DebtSchedule:
-    """Everything the FORWARD projection needs to value one loan at any date.
+    """A loan's resolved schedule rows and its origination, from ONE resolution.
 
     The outputs of ONE resolution
     (:func:`~app.services.balance_at._resolution.resolved_loan`), bundled so
-    the schedule, its seed, and the loan's origination cannot come from
-    different places and drift.
+    the schedule and the loan's origination cannot come from different places
+    and drift.
+
+    **It carried the forward projection's SEED until plan step
+    recurrence:R16-c-1** -- the settled fold's balance at the read day, which
+    the forward fold started from.  The seam replays a loan's whole timeline
+    from its origination now (:mod:`._loan_stream`), so there is no second
+    fold to seed and no balance on this bundle: the field went with the fold,
+    and the attribute fence ``debt_schedule_rows`` exists for has one fewer
+    thing to protect.
 
     Attributes:
         schedule: The loan's :class:`AmortizationRow` list (the
             confirmed-history rows plus the CONTRACT's forward rows; its
             readers take a date off it, never a balance).  May be empty for a
             fully-resolved / paid-off loan.
-        projection_seed: The balance the forward projection STARTS from -- the
-            balance in effect before the first unconfirmed row.  See
-            :func:`_projection_seed`.  It is NOT "what is owed now": for an
-            upcoming mortgage the loan owes ``0.00`` today and the projection
-            must still start from its opening balance once it closes.  The two
-            coincide for every live loan, which is why one field served both jobs
-            and why the old name was a lie.  Read a balance-at-T from the
-            ``balance_at`` seam.
         owed_from: The loan's ``origination_date``.  A loan owes nothing before
-            it exists, and the forward plan fold enforces that
-            (:func:`app.services.balance_at._plan_fold.fold_forward` returns ``0.00``
-            for a date before ``owed_from``).
+            it exists, and the timeline's fold enforces that structurally: its
+            first event is the origination assertion, so a date before it
+            reads the empty prefix, ``0.00``.
     """
 
     schedule: list
-    projection_seed: Decimal
     owed_from: date
 
 
@@ -104,8 +102,7 @@ def generate_debt_schedules(
 
     Projects the read pass's memoized loan resolutions
     (:func:`~app.services.balance_at._resolution.resolved_loan`) into the narrow
-    ``(schedule, projection_seed, owed_from)`` bundle the balance dispatcher
-    needs.
+    ``(schedule, owed_from)`` bundle its readers need.
     Same resolver output the loan dashboard and the /savings debt card consume,
     so mortgage interest, debt progress, and net-worth liability all derive from
     ONE resolution per loan (E-18 / Commit 15).
@@ -134,68 +131,11 @@ def generate_debt_schedules(
         resolved = resolved_loan(account, ctx)
         if resolved is None:
             continue
-        origination = resolved.params.origination_date
         schedules[account.id] = DebtSchedule(
             schedule=resolved.state.schedule,
-            projection_seed=_projection_seed(resolved, account, ctx),
-            owed_from=origination,
+            owed_from=resolved.params.origination_date,
         )
     return schedules
-
-
-def _projection_seed(
-    resolved: ResolvedLoan, account: Account, ctx: "BalanceContext",
-) -> Decimal:
-    """Return the balance the loan's forward projection starts from.
-
-    See :attr:`DebtSchedule.projection_seed` for the contract.  The fork is the
-    loan's own existence:
-
-    * **Originated by the pass's ``as_of``** -- the FOLD of the loan's recorded
-      events at ``as_of`` (:func:`~app.services.balance_at._fold.fold_from_walk`
-      over the read pass's memoized walk): the confirmed present, which is what
-      the projection amortizes down.  This is the SAME derivation
-      :func:`app.services.balance_at.positions` reads the past through, so the
-      balance a page shows at ``as_of`` and the seed its forward figures start
-      from cannot fork -- including for a loan whose posting ledger cannot
-      answer, which the pre-D2a seed (``LoanState.current_balance``) answered
-      from the money-blind anchor replay while every displayed balance folded.
-    * **NOT originated yet** -- the fold correctly reports ``0.00`` owed (the
-      loan does not exist), but the projection still has to know what it will owe
-      the day it closes.  That is the loan's OPENING ANCHOR balance -- the same
-      fact the genesis walk posts as the ``loan_opening``
-      (:func:`app.services.loan_loaders.synthesize_origination_anchor`, the
-      loan's ONE ``is_opening`` fact; the citation named
-      ``_opening_anchor_fact`` until plan step X-an-b, a function step C1
-      deleted).  ONE fact, two
-      readers, split on the boundary the architecture turns on: the ledger owns the
-      origination once it has HAPPENED, the projection until it does.
-
-    Sourced from the opening anchor and NEVER from the raw
-    ``params.original_principal`` column, deliberately.  The two are equal for a
-    loan that has not originated (nothing can supersede an origination that has
-    not happened), but keeping ONE definition of "the balance this loan opens at"
-    keeps a not-yet-originated loan's OPENING from being confused with an EXISTING
-    loan's balance: reporting an existing loan's balance AS its origination amount
-    is a different, wrong statement (the F-21 / PR #44 defect), and this is the one
-    controlled path the seed reaches the forward fold through, so that confusion
-    has no call site to recur at.
-
-    Args:
-        resolved: The pass's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
-        account: The loan account, for the pass's memoized walk.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its ``as_of`` is the resolver's NOW; its walk memo serves the fold).
-
-    Returns:
-        The projection's seed as a ``Decimal``.
-    """
-    if resolved.params.origination_date <= ctx.as_of:
-        return fold_from_walk(ctx.loan_walk(account), [ctx.as_of])[ctx.as_of]
-    opening = next(
-        fact for fact in resolved.anchor_facts if fact.is_opening
-    )
-    return opening.anchor_balance
 
 
 def debt_schedule_rows(
@@ -215,14 +155,14 @@ def debt_schedule_rows(
     a balance out of an out-of-cluster consumer's hands.  The name-keyed fence of
     the day bound on function NAMES: it flagged a consumer that CALLED a balance
     producer.  It could not see an ATTRIBUTE read, and
-    ``DebtSchedule.projection_seed`` is a loan balance.  So
+    ``DebtSchedule.projection_seed`` WAS a loan balance (until plan step
+    recurrence:R16-c-1 deleted the field with the second fold it seeded).  So
     while any consumer could call :func:`generate_debt_schedules`, one line --
-    ``schedules[account.id].projection_seed`` in a template context -- would put a
-    balance on a screen without passing the seam, with every gate silent
+    ``schedules[account.id].projection_seed`` in a template context -- would have
+    put a balance on a screen without passing the seam, with every gate silent
     (``docs/audits/balance_architecture/followup_debt_schedule_attribute_fence.md``).
-    The bundle exists precisely so the forward projection CAN seed from a balance;
-    that made it a loaded gun whose safety was a docstring.  The rows carry no
-    seed, so a consumer that wants a balance has no choice but
+    The bundle carries no balance now and this accessor stays the out-of-cluster
+    entry, so a consumer that wants a balance has no choice but
     ``balance_at.balance_at`` -- which is the point.
     :func:`generate_debt_schedules` lives in this PRIVATE seam module (W9910
     structurally stops any outside import since plan step D3 retired its name

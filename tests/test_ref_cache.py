@@ -40,7 +40,6 @@ from app.enums import (
     PostingSourceEnum,
     RaiseTypeEnum,
     RecurrenceUnitEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -66,7 +65,6 @@ from tests._test_helpers import (
     cover_bare_settled_row,
     one_off_row_of,
     settle_day_columns,
-    settlement_basis_id,
 )
 
 
@@ -308,10 +306,8 @@ class TestEffectiveAmount:
                 category_id=seed_user["categories"]["Rent"].id,
             )
             txn.status_id = done_id
-            txn.settled_amount = Decimal("487.00")
-            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
-            # The settle day and record laid on BARE, as ``add_txn`` lays them: one
-            # fact resolved by the shared helper, not restated (X-f1 / X-au-c3).
+            # The settle day laid on BARE, as ``add_txn`` lays it (X-f1); the
+            # record is the covering movement written after the flush (X-bi-4b-2).
             for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
                 setattr(txn, _column, _value)
             db.session.flush()

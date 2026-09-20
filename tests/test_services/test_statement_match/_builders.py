@@ -22,7 +22,6 @@ from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatementSourceEnum,
     StatusEnum,
     TxnTypeEnum,
@@ -96,18 +95,15 @@ def a_transaction(
         amount: Its estimated amount, as a string.
         income: Whether it is an income row (positive into the account).
         settled_on: Its recorded settle day, or ``None``.  A row carrying one
-            also gets the SETTLEMENT RECORD the schema now requires beside it
-            (plan step ``balance:X-au-c3``): ``ck_transactions_settle_day_needs
-            _basis`` refuses a settle day with no basis, so a fixture writing
-            the day alone is a row production cannot produce.  ``derived`` is
-            the basis a settle through the ordinary door writes, and the figure
-            is the row's own estimate -- which is what
+            also gets the SETTLEMENT RECORD a settle writes beside it: **the
+            COVERING MOVEMENT** (plan step ``balance:X-bi-3a``; the record's
+            one home since ``X-bi-4b-2`` deleted the row's own figure
+            columns), written here through
+            :func:`tests._test_helpers.cover_bare_settled_row`, the seam's own
+            writer, as :func:`tests._test_helpers.add_txn` does, at the row's
+            own estimate on the ``resolved`` source -- which is what
             ``transaction_service.settle_transaction`` resolves for a row that
-            owns its amount.  **And it gets the COVERING MOVEMENT the seam
-            mirrors that record as** (plan step ``balance:X-bi-3a``; written
-            here through :func:`tests._test_helpers.cover_bare_settled_row`,
-            the seam's own writer, as :func:`tests._test_helpers.add_txn`
-            does): since ruling **R-BAL81** a settled row is worth what that
+            owns its amount.  Since ruling **R-BAL81** a settled row is worth what that
             movement moves, so a record laid bare WITHOUT it is a row the
             matcher prices at ``0`` and never offers -- a state no door
             writes, and one this package graded 27 cases against through
@@ -154,16 +150,12 @@ def a_transaction(
     )
     account_id = (account or seed_user["account"]).id
     category_id = (category or seed_user["categories"]["Groceries"]).id
-    # The settlement, as three facts laid on bare (see the module docstring):
-    # the day and its kind, what moved, and which statement showed it.
+    # The settlement's ROW facts laid on bare (see the module docstring): the
+    # day and its kind, and which statement showed it.  What moved is the
+    # covering movement written after the flush below.
     settlement = dict(
         status_id=ref_cache.status_id(status),
         **settle_day_columns(settled_on, settle_day_basis),
-        settled_amount=Decimal(amount) if settled_on else None,
-        settled_basis_id=(
-            ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
-            if settled_on else None
-        ),
         reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )
     if template:

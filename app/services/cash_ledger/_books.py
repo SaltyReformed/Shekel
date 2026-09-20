@@ -55,8 +55,9 @@ event stream.
 transaction from any client -- a bulk ``UPDATE``, a raw statement, a psql
 session, a writer nobody enumerated.  These functions exist so an ordinary
 date box gets a sentence instead of a ``psycopg2`` exception at COMMIT: the
-same pairing ``ck_transactions_settle_day_needs_a_record`` has with
-:func:`app.services.status_seam.reject_settle_day_without_a_record`.
+same pairing ``ck_transaction_entries_positive_amount`` has with
+``entry_service``'s refusal of a purchase worth nothing (ruling
+``bank_import:R-II``).
 
 **Which is why the two ROW SETS below are imported rather than re-spelled.**
 Each opening-side predicate has to refuse exactly what its trigger refuses, or a
@@ -198,10 +199,13 @@ def reject_movement_before_books_open(account_id: int, day: date) -> None:
     # writing -- ``apply_status_change`` sets ``status_id`` before it reaches
     # :func:`app.services.settle_day.record_settle_day` -- so the flush lands a
     # half-written row against constraints that describe the finished one.
-    # Measured: a row already carrying a settle day and no settlement record,
-    # which is the LEGACY shape ``ck_transactions_settle_day_needs_a_record``
-    # exists to let an owner repair, failed with a raw ``CheckViolation``
-    # raised "as a result of Query-invoked autoflush".  Suppressing the flush
+    # Measured (while the row still carried its figure columns, through plan
+    # step ``balance:X-bi-4b-1``): a row already carrying a settle day and no
+    # settlement record -- the legacy shape the since-deleted
+    # ``ck_transactions_settle_day_needs_a_record`` existed to let an owner
+    # repair -- failed with a raw ``CheckViolation`` raised "as a result of
+    # Query-invoked autoflush".  The half-written row is the point, whatever
+    # constraint it meets.  Suppressing the flush
     # cannot hide a pending opening from this read, and the reason is stated
     # precisely because the whole paragraph is about autoflush: the ONE writer
     # (``opening_service.stage_account_opening``) only ever stages, and BOTH

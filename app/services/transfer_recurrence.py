@@ -23,9 +23,11 @@ rebuild could not rebuild was the owner's:
   - a transfer's ``notes``, which ``create_transfer`` never receives;
   - a settlement RECORD retained through a revert.  ``status_seam`` releases the
     assertion (``settled_on``, ``reconciled_by_id``) and deliberately KEEPS what
-    moved (``settled_amount``, ``settled_basis_id``), because the full-edit
-    popover tells the owner to revert in order to edit -- so a reverted transfer
-    is Projected, not overridden, and the sweep deleted it.  Reproduced through
+    moved (each leg's covering movement, un-dated; the legs' own
+    ``settled_amount`` / ``settled_basis_id`` until plan step
+    ``balance:X-bi-4b-2`` deleted them), because the full-edit popover tells
+    the owner to revert in order to edit -- so a reverted transfer is
+    Projected, not overridden, and the sweep deleted it.  Reproduced through
     this code path: a `$321.45` figure read off a bank statement, gone with no
     prompt.
 
@@ -49,10 +51,13 @@ import logging
 from datetime import date
 from typing import NamedTuple
 
+from sqlalchemy import or_
+
 from app.enums import AmountSourceEnum
 from app.extensions import db
 from app.models.amount_ownership import AmountOwnership
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services.amount_ownership import derived_ownership
 from app.services._recurrence_common import (
@@ -69,7 +74,7 @@ from app.services.recurrence_engine import (
     regenerate_definition,
     resolve_generation_plan,
 )
-from app.services import transfer_service
+from app.services import status_seam, transfer_service
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RECURRENCE_CONFLICTS_RESOLVED,
@@ -450,7 +455,7 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     which is why this leaf came after the transaction one, but two owner-held
     facts still went with each deletion: the transfer's ``notes``, which
     ``create_transfer`` never receives, and a settlement RECORD retained through
-    a revert (``settled_amount`` + ``settled_basis_id``, kept by the status seam
+    a revert (each leg's covering movement, kept un-dated by the status seam
     while the assertion is released, because the full-edit popover tells the
     owner to revert in order to edit).  Both were reproduced through this code
     path on a production clone, destroyed by a rename with no prompt and a
@@ -513,61 +518,81 @@ def _rows_holding_owner_records(existing) -> "set[int]":
         delete-and-recreate dropped it silently;
       - a SETTLEMENT RECORD on either leg.  ``status_seam.apply_status_change``
         releases the ASSERTION on the way out of the settled band
-        (``settled_on``, ``reconciled_by_id``) and deliberately KEEPS what moved
-        (``settled_amount``, ``settled_basis_id``), because the two are
-        different facts with different lifetimes (plan step X-au-c3).  So a
-        transfer the owner settled and then reverted in order to edit -- which
-        is what the full-edit popover instructs -- is Projected, not overridden,
-        and mutable to this sweep while still recording a figure read off a bank
-        statement.  Reproduced on a production clone: `$321.45` on both legs,
-        destroyed by a rename.
-    **A STATEMENT LINK needs no condition of its own, and that is MEASURED
-    rather than reasoned.**  ``reconciled_by_id`` records which statement was
+        (``settled_on``, ``reconciled_by_id``) and deliberately KEEPS what
+        moved -- the leg's COVERING MOVEMENT, un-dated (plan step X-bi-3e-2)
+        -- because the two are different facts with different lifetimes (plan
+        step X-au-c3).  So a transfer the owner settled and then reverted in
+        order to edit -- which is what the full-edit popover instructs -- is
+        Projected, not overridden, and mutable to this sweep while still
+        recording a figure read off a bank statement.  Reproduced on a
+        production clone: `$321.45` on both legs, destroyed by a rename.  A
+        transfer settled at ``$0.00`` keeps no movement and is retained by
+        nothing across a revert (ruling **R-BAL82**).  The predicate read the
+        legs' own ``settled_basis_id`` from plan step X-au-c3 until
+        ``balance:X-bi-4b-2`` deleted that column (ruling **R-BAL80**): the
+        same fact in two homes, and this was one of the readers keeping them
+        in step.
+    **A STATEMENT LINK is its own arm again** (plan step
+    ``balance:X-bi-4b-2``).  ``reconciled_by_id`` records which statement was
     seen to show a leg's money, and it is what makes an ACCOUNT move unsafe
     (``fk_transactions_reconciled_by`` scopes the link BY ACCOUNT) -- so it
-    belongs in this answer.  It is already in it: two CHECK constraints chain
-    into an implication.  ``ck_transactions_cleared_needs_settle_day`` says a
-    link needs a settle day and ``ck_transactions_settle_day_needs_a_record``
-    says a settle day needs a RECORD OF WHAT MOVED, so ``reconciled_by_id IS
-    NOT NULL`` implies ``settled_basis_id IS NOT NULL`` and the settlement arm
-    above already catches every linked row.  Verified against PostgreSQL rather
-    than argued: clearing the FIGURE's basis on a linked row is refused with
-    *"violates check constraint ck_transactions_settle_day_needs_a_record"*.
-    **That constraint is about the figure and NOT about the day's own basis**,
-    which plan step X-az added one column over as
-    ``ck_transactions_settle_day_basis_pairing``; the constraint's previous
-    name did not say so, which is why X-az renamed it.  The DAY's basis needs no
-    arm of its own here either, and for a stronger reason: its pairing is a
-    BICONDITIONAL over ``settled_on``, so any row this predicate can see
-    carries it.  A third condition
-    would be one no row can satisfy alone -- untestable by construction, and
-    the kind of guard this project has repeatedly found sitting green over
-    nothing.  If either CHECK is ever dropped, this paragraph is what says the
-    arm has to come back.
+    belongs in this answer.  Plan step R10-b MEASURED that it needed no
+    condition of its own: ``ck_transactions_cleared_needs_settle_day`` said a
+    link needs a settle day, ``ck_transactions_settle_day_needs_a_record``
+    said a settle day needs a ``settled_basis_id``, so the record arm caught
+    every linked leg, verified against PostgreSQL, and its docstring said a
+    dropped CHECK was the signal to put the arm back.  X-bi-4b-2 dropped the
+    second CHECK with the column: a leg's record is its covering movement,
+    and a ``$0.00`` close holds none (ruling **R-BAL82**) while a statement
+    may still have shown it -- a linked leg the movement arm cannot see.  The
+    pass reaches such a leg only through DRIFT (a leg settled under a
+    Projected parent, which no door writes).  On the endpoint-move branch the
+    composite key would refuse the account move rather than apply it, and
+    the arm makes that a reported CONFLICT instead of an ``IntegrityError``;
+    on the RETIRE branch nothing else stands between the leg and a DELETE --
+    no key references the observing side -- so the arm is what keeps a
+    drifted linked leg, and the statement observation it carries, from being
+    destroyed in silence.  Testable now exactly because the state is storable.  The DAY's basis
+    needs no arm of its own: its pairing is a BICONDITIONAL over
+    ``settled_on`` (``ck_transactions_settle_day_basis_pairing``), so any row
+    this predicate can see carries it, and a condition no row can satisfy
+    alone is untestable by construction -- the kind of guard this project
+    has repeatedly found sitting green over nothing.
 
     **Both legs are asked in ONE query, not one per row.**  A regeneration
     considers every future transfer of a template -- 62 of them on one live
     template on a production clone -- so reading each transfer's shadows in the
     classifier would issue a query per row on the hot path of every template
-    edit.
+    edit.  The legs are joined to their covering movements
+    (``status_seam.covering_clause``, the query-side spelling of
+    ``Transaction.covering_movements``); a leg holds no purchase
+    (``entry_service`` refuses a shadow), so that is every entry a leg can
+    hold, and the mark is what the seam's own record is called.
 
     Args:
         existing: The transfers this pass is considering.
 
     Returns:
-        The subset of their ids that hold a note, or a settlement record on
-        either leg -- which, by the implication above, is also every row whose
-        leg names a statement.
+        The subset of their ids that hold a note, or on either leg a covering
+        movement or a statement link.
     """
     ids = [xfer.id for xfer in existing]
     if not ids:
         return set()
+    covered = (
+        db.session.query(TransactionEntry.id)
+        .filter(
+            TransactionEntry.transaction_id == Transaction.id,
+            status_seam.covering_clause(),
+        )
+        .exists()
+    )
     holding = {
         transfer_id
         for (transfer_id,) in db.session.query(Transaction.transfer_id)
         .filter(
             Transaction.transfer_id.in_(ids),
-            Transaction.settled_basis_id.isnot(None),
+            or_(covered, Transaction.reconciled_by_id.isnot(None)),
         )
         .distinct()
     }
