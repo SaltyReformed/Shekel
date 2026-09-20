@@ -321,12 +321,23 @@ class TransferLeg:
 
         Read off the leg's RECORD -- its covering movement's ``settled_on``
         (ruling **R-BAL80**: a settled leg's money is its dated movement) --
-        and never off the parent or a shadow row: a settled leg carries a
-        dated movement (ruling **R-BAL79**), a reverted one a movement kept
-        un-dated, a planned one none, so this reads ``None`` exactly when the
-        money has not moved.  What ``Transaction.settled_on`` states as a
-        column for a row, for the readers that ask both shapes when a bill
-        was paid (``spending_analysis.payment_timeliness_from_txns``).
+        and never off the parent or a shadow row: a leg whose money moved
+        carries a dated movement (ruling **R-BAL79**), a reverted one a
+        movement kept un-dated, a planned one none.  What
+        ``Transaction.settled_on`` states as a column for a row, for the
+        readers that ask both shapes when a bill was paid
+        (``spending_analysis.payment_timeliness_from_txns``).
+
+        **One settled state has NO day here and a day on a row: the $0.00
+        close** (ruling **R-BAL82**, a close with no movement), which a
+        transfer reaches through its popover's ``settled_amount`` of ``0.00``.
+        Its shadow rows carry the assertion's day in their column and a
+        $0.00-closed ROW keeps its own, so the timeliness metric counts the
+        row and not the leg.  A transfer has no day of its own until plan step
+        ``X-bi-6-4``'s Fork B decides where one lives (the interval's answer
+        is pinned in ``test_spending_report_service.py``, the review of leaf
+        ``X-bi-6-1b``); reading the shadow's here would be the read this leaf
+        exists to delete.
         """
         if self.record is None:
             return None
@@ -395,6 +406,24 @@ def key_order(key) -> tuple[int, int, int]:
     if isinstance(key, tuple):
         return (1, key[0], key[1])
     return (0, key, 0)
+
+
+def expense_legs(legs: Iterable[TransferLeg]) -> list[TransferLeg]:
+    """Return the legs on which money LEAVES: the from-side of each transfer.
+
+    The ONE spelling of "a transfer's spending half" (leaf ``X-bi-6-1b``):
+    the dashboard's bills and the Spending report each draw a transfer only
+    from the side its money leaves -- an obligation the paycheck owes, money
+    that went -- as the transfer-out shadow row's expense TYPE selected it
+    before them; the income leg on the other endpoint is neither.
+
+    Args:
+        legs: The legs a set drew, either side.
+
+    Returns:
+        Those with :attr:`TransferLeg.is_expense`, in the order given.
+    """
+    return [leg for leg in legs if leg.is_expense]
 
 
 def leg_of(

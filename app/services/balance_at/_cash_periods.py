@@ -305,11 +305,12 @@ def paycheck_legs(
     **It takes the far legs and drops them** (ruling ``credit_card:R-CC23``):
     a transfer between two members shows on the paycheck grid ONCE, from the
     balance line's side, so a card's leg of a checking -> card payment is
-    neither a row the grid draws nor a figure this sums.  The exclusion is
-    the same ONE clause the row loads apply
-    (:func:`app.services.cash_flow_set.far_leg_clause`), answered once by
+    neither a leg the grid draws nor a figure this sums.  The exclusion is
+    the same ONE rule the readers' legs apply
+    (:func:`app.services.cash_flow_set.leg_accounts_shown`; its row spelling
+    ``far_leg_clause`` went at leaf ``balance:X-bi-6-1b``), answered once by
     :func:`app.services.cash_flow_set.far_legs_of` and threaded here, so the
-    cells and the subtotal cannot disagree about which rows are the
+    cells and the subtotal cannot disagree about which items are the
     paycheck's.
 
     Args:

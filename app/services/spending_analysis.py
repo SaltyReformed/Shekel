@@ -32,8 +32,9 @@ defined once rather than re-implemented per surface (coding-standards rule
   funding period does not overlap M.
 * :func:`recorded_spend`, :func:`planned_spend` and
   :func:`resolved_actual_amount` -- the per-item kernels, and since leaf
-  ``balance:X-bi-6-1b`` **the ONE place this package tells a row and a leg
-  apart for a FIGURE**: each routes to the producer of its shape
+  ``balance:X-bi-6-1b`` **the one MODULE in which this package tells a row
+  and a leg apart for a FIGURE** (three routers, one per question, each to a
+  different pair of producers): each routes to the producer of its shape
   (``row_valuation`` / ``cash_ledger`` for a row, their leg twins for a leg)
   and derives nothing itself, so the consumers that reduce a window's
   items ask one question each.  ``resolved_actual_amount`` is the
@@ -85,7 +86,7 @@ from app.services.row_valuation import (
     leg_settled_figure,
     settled_figure,
 )
-from app.services.transfer_legs import PlanItem, TransferLeg
+from app.services.transfer_legs import PlanItem, TransferLeg, expense_legs
 from app.utils.amount_relationships import transfer_pricing_load_options
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import pay_period_range_label
@@ -252,16 +253,11 @@ def query_settled_expenses(
         .all()
     )
     # pylint: enable=duplicate-code
-    legs = _expense_legs(set_transfer_legs_in_periods(
+    legs = expense_legs(set_transfer_legs_in_periods(
         cash_flow, scenario_id, period_ids,
         Transfer.status_id.in_(settled_status_ids()),
     ))
     return PlanItems.of(rows, legs)
-
-
-def _expense_legs(legs: list[TransferLeg]) -> list[TransferLeg]:
-    """Return the legs on which money LEFT: the spending half of a transfer."""
-    return [leg for leg in legs if leg.is_expense]
 
 
 def query_settled_expenses_in_span(
@@ -355,7 +351,7 @@ def query_settled_expenses_in_span(
         .order_by(Transfer.id)
         .all()
     )
-    return PlanItems.of(rows, _expense_legs(set_transfer_legs(cash_flow, transfers)))
+    return PlanItems.of(rows, expense_legs(set_transfer_legs(cash_flow, transfers)))
 
 
 def recorded_spend(item: PlanItem) -> Decimal:
