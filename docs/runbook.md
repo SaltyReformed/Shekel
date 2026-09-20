@@ -77,7 +77,7 @@ Measured against the running maintainer host 2026-08-08. The nginx row differs b
 | `shekel-prod-db` | `postgres:18-alpine` (digest-pinned; server 18.4) | backend | `pg_isready` every 10s |
 | `shekel-prod-redis` | `redis:7.4-alpine` | backend | `redis-cli ping` every 10s |
 | `shekel-prod-app` | `ghcr.io/saltyreformed/shekel@sha256:...`, the digest `shekel-deploy` pins in `.env` | backend, monitoring | `GET /health` every 30s |
-| `shekel-prod-nginx` | `nginx:1.27-alpine` -- **bundled mode only**. In shared mode (this host) there is no such container; the shared `nginx` reverse proxy fronts it | frontend, backend | `wget /health` every 30s |
+| `shekel-prod-nginx` | the `nginx:<minor>-alpine` tag `docker-compose.yml` pins (`1.29-alpine` since #434) -- **bundled mode only**. In shared mode (this host) there is no such container; the shared `nginx` reverse proxy fronts it | frontend, backend | `wget /health` every 30s |
 
 ### Script Inventory
 

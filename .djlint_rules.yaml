@@ -14,7 +14,11 @@
 # `style="max-width: 22rem;"` through pre-commit AND CI's own
 # `djlint app/templates/ --lint`, green over all 159 files, so the box never
 # had that width in a browser (finding bank_import:N-405, fixed at
-# bank_import:X-gi).
+# bank_import:X-gi). Re-measured 2026-09-20 on djlint 1.46.2 (the pin since
+# that day): H021 now refuses the `value="{{ x }}"` form as well, so the
+# blind spot is closed upstream; this rule stays for the two reasons below
+# that do not depend on it (the project's own gate, and the arch test that
+# proves a gate still fires after an upgrade).
 #
 # THE BLIND SPOT IS A MINORITY CASE, and saying otherwise is how this comment
 # was first written. Reconstruct the inline form of `.reconcile-amount`,

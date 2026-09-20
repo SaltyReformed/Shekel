@@ -10,14 +10,18 @@
   <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
     <h4 class="mb-0"><i class="bi bi-arrow-repeat"></i> Recurring</h4>
     <div class="d-flex align-items-center gap-2">
-      {# Monthly / Per-paycheck toggle. hx-post lives on each button (so the
-         button is the request trigger and its unit is sent explicitly via
-         hx-vals -- htmx 2.0.4 does not forward a form submitter's value);
-         htmx swaps #recurring-body live and recurring.js flips the active
-         button instantly. The enclosing form is the no-JS baseline: a native
-         submit sends name=unit and the route redirects back. Both units are
-         produced server-side, so the toggle only re-picks which one renders
-         -- money is never formatted in JS. #}
+      {# Monthly / Per-paycheck toggle. hx-post lives on each button, so the
+         button is the request trigger and htmx sends that button's own
+         name=unit (its getInputValues appends the issuing BUTTON's name and
+         value; read in the 2.0.10 source at the 2026-09-20 refresh -- the
+         earlier note here that htmx "does not forward a submitter's value"
+         was wrong at 2.0.4 too, and the hx-vals that restated the unit is
+         gone with it: ONE spelling of the value, the name/value pair both
+         paths read); htmx swaps #recurring-body live and recurring.js flips
+         the active button instantly. The enclosing form is the no-JS
+         baseline: a native submit sends the same name=unit and the route
+         redirects back. Both units are produced server-side, so the toggle
+         only re-picks which one renders -- money is never formatted in JS. #}
       {# The hidden CSRF input must NOT be the first child of the .btn-group:
          Bootstrap's `:not(.btn-check) + .btn` sibling rule would then strip
          the first button's left radius, squaring the toggle's outer corner
@@ -29,14 +33,12 @@
         <div class="btn-group btn-group-sm" role="group" aria-label="Amount unit">
           <button type="submit" name="unit" value="monthly" data-unit-value="monthly"
                   hx-post="{{ url_for('templates.set_unit_preference') }}"
-                  hx-vals='{"unit": "monthly"}'
                   hx-target="#recurring-body" hx-swap="innerHTML"
                   class="btn {{ 'btn-primary' if not show_per_paycheck else 'btn-outline-primary' }}">
             Monthly
           </button>
           <button type="submit" name="unit" value="per_paycheck" data-unit-value="per_paycheck"
                   hx-post="{{ url_for('templates.set_unit_preference') }}"
-                  hx-vals='{"unit": "per_paycheck"}'
                   hx-target="#recurring-body" hx-swap="innerHTML"
                   class="btn {{ 'btn-primary' if show_per_paycheck else 'btn-outline-primary' }}">
             Per paycheck

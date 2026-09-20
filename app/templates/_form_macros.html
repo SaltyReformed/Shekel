@@ -28,7 +28,6 @@
    parsed and safe.
 #}
 
-
 {# --- Extra attributes, from a mapping ---
    ``attrs`` is ``{attribute name: value}`` (``none`` for nothing).  Names are
    template literals; values are escaped inside their quotes, so a caller may
@@ -38,7 +37,6 @@
 {% macro extra_attrs(attrs) -%}
 {%- for attr, value in (attrs or {}).items() %} {{ attr }}="{{ value }}"{% endfor -%}
 {%- endmacro %}
-
 
 {# --- Text / Number / Date Input --- #}
 {% macro render_field(name, label, type="text", value="", required=false, placeholder="",
@@ -67,7 +65,6 @@
   {% endif %}
 </div>
 {% endmacro %}
-
 
 {# --- Select Dropdown --- #}
 {% macro render_select(name, label, options, selected_value="", required=false,
@@ -100,7 +97,6 @@
   {% endif %}
 </div>
 {% endmacro %}
-
 
 {# --- Input Group (with prefix/suffix like $ or %) --- #}
 {% macro render_input_group(name, label, type="number", value="", prefix="", suffix="",
@@ -140,7 +136,6 @@
 </div>
 {% endmacro %}
 
-
 {# --- Form card shell (all-forms consistency pass, 2026-07-05) ---
 
    The shared Steel Ink card every standalone create / edit / setup form is
@@ -169,7 +164,6 @@
   </div>
 </div>
 {% endmacro %}
-
 
 {# --- Inline Error Summary (for forms that don't use per-field macros) --- #}
 {% macro render_errors(errors) %}

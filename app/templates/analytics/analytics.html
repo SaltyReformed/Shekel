@@ -23,7 +23,7 @@
 <ul class="nav nav-pills shekel-scroll-pills mb-3" role="tablist">
   {% for tab in tabs %}
   <li class="nav-item" role="presentation">
-    <button class="nav-link{{ ' active' if tab.key == active_tab }}" data-bs-toggle="pill"
+    <button type="button" class="nav-link{{ ' active' if tab.key == active_tab }}" data-bs-toggle="pill"
             hx-get="{{ tab.url }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-push-url="true"
