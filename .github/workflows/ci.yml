@@ -590,7 +590,8 @@ jobs:
       - name: zizmor (workflow security)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: zizmor .github/workflows/
+        # The whole .github/ tree: dependabot.yml is audited too.
+        run: zizmor .github/
 
       - name: biome (JS + CSS)
         run: biome lint app/static/js app/static/css

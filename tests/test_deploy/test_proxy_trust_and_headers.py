@@ -979,8 +979,9 @@ class TestSharedNginxRuntimeHeaders:
             _docker("rm", "-f", stub_name)
             _docker("network", "rm", net_name)
 
+    @staticmethod
     def _curl_headers(
-        self, host_port: str
+        host_port: str,
     ) -> tuple[str, dict[str, str]]:
         """Issue a HEAD request and parse the response status +
         headers.  Returns ``(status_line, headers_lower_keyed)``.

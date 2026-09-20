@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------
 # Both stages pin the base image by sha256 digest, not by floating tag.
 # The digest references the multi-arch image index for ``python:3.14-slim``
-# rebuilt 2026-09-16 (digest refreshed 2026-09-19), which carries:
+# rebuilt 2026-09-19 (digest refreshed 2026-09-20), which carries:
 #   * Python 3.14.7 (latest 3.14.x)
 #   * Debian 13.7 (trixie) with libssl3t64 / openssl / openssl-provider-legacy
 #     at 3.5.7-1~deb13u2 -- past the CVE-2026-28390 (HIGH) fix that the

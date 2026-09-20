@@ -9,16 +9,17 @@
 # like any feature -> dev PR (CLAUDE.md, Multi-session operation); a major
 # version arrives as its own PR so its changelog is read on its own.
 #
-# The first run after this file lands should find nothing: the routine
-# bump that carried it brought every pin current.
+# Every ``ignore`` below is a developer ruling written as configuration
+# rather than prose, so the first run after this file lands proposes
+# nothing the rulings exclude.  Each entry also states an explicit
+# ``cooldown`` (zizmor's dependabot-cooldown rule): a release is proposed
+# only once it has been public for a week, which is the window in which a
+# hijacked or broken release is usually pulled upstream.
 version: 2
 updates:
   # Python: requirements.txt (runtime) and requirements-dev.txt (tools),
   # both at the repo root.  Minor and patch moves are grouped into one
-  # weekly PR per file class; a major is left out of the group and opens
-  # alone.  rumdl is pinned deliberately at 0.2.58 (its canonical Markdown
-  # forms changed; a bump reflows every planning document) and stays
-  # ignored until that reflow is its own decision.
+  # weekly PR; a major is left out of the group and opens alone.
   - package-ecosystem: pip
     directory: /
     schedule:
@@ -27,19 +28,34 @@ updates:
       time: "06:00"
       timezone: America/New_York
     target-branch: dev
-    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     groups:
       python-minor-and-patch:
-        applies-to: version-updates
         patterns: ["*"]
         update-types: [minor, patch]
     ignore:
+      # rumdl is pinned deliberately at 0.2.58 (its canonical Markdown forms
+      # changed; a bump reflows every planning document) and stays until
+      # that reflow is its own decision.
       - dependency-name: rumdl
+      # djlint 1.46 adds 29 template findings (buttons without a type
+      # attribute, blank lines, one parser complaint) that are the UI leaf's
+      # to read one by one; until that leaf ships, a djlint bump turns CI's
+      # polyglot-lint red and would block the grouped PR with it.
+      - dependency-name: djlint
+      # redis-py 8.x is out of reach while limits (Flask-Limiter's storage
+      # layer) declares redis<8.0.0 in its redis extra -- an extra nothing
+      # pinned requests, so pip alone would not refuse it.
+      - dependency-name: redis
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 
-  # The application image's base (Dockerfile FROM ... @sha256).  Compose
-  # files are the docker-compose ecosystem below.
+  # The application image's base (Dockerfile FROM ... @sha256).  A digest
+  # PR rewrites the two FROM lines only: the hand-maintained version block
+  # above them (Python, Debian, OpenSSL, pip) is re-measured by whoever
+  # merges it, from the image, before the merge.
   - package-ecosystem: docker
     directory: /
     schedule:
@@ -48,6 +64,8 @@ updates:
       time: "06:00"
       timezone: America/New_York
     target-branch: dev
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore(deps)"
 
@@ -63,6 +81,14 @@ updates:
       time: "06:00"
       timezone: America/New_York
     target-branch: dev
+    cooldown:
+      default-days: 7
+    ignore:
+      # Redis stays on the 7.x-alpine line: docker-compose.yml's redis
+      # service documents the ACL/CONFIG re-validation an 8.x move needs,
+      # and its WUD label fences the same range.
+      - dependency-name: redis
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 
@@ -76,6 +102,8 @@ updates:
       time: "06:00"
       timezone: America/New_York
     target-branch: dev
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]

@@ -26,7 +26,7 @@ name: shekel-prod
 services:
   # ── PostgreSQL Database ──────────────────────────────────────────
   db:
-    # Pinned to postgres:18-alpine 18.4 (digest sha256:96d56f...).  The
+    # Pinned to postgres:18-alpine 18.6 (digest sha256:6c538e...).  The
     # tag-plus-digest form documents the human-readable version and
     # guarantees the immutable bytes.  Update both halves together when
     # bumping minor versions; see deploy/README.md "Image digest pinning"
