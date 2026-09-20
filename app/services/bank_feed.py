@@ -16,12 +16,27 @@ one bodiless ``POST`` to that URL -- consumes the token at Bridge and answers
 with the ACCESS URL, ``https://<user>:<password>@bridge.../simplefin``, which
 is the credential every later request carries.  A token can be claimed once,
 so :func:`claim_feed` refuses everything it can BEFORE the request (an
-unreadable token, a feed already standing) and stages the ciphertext the
+unreadable token, a token naming a host other than Bridge's, a feed already
+standing) and stages the ciphertext the
 instant Bridge answers; the route commits before anything else is asked of
 Bridge.  A second claim racing the first past the pre-check is refused by
 ``uq_bank_feeds_user`` at the commit and that token is lost -- Bridge issues
 another on request, and the docstring says so rather than adding a lock for
 a race one owner cannot run against themselves except by double-submitting.
+
+**Every URL this module is handed is Bridge's host, or refused** (ruling
+**R-BI28**, the host pin).  The pasted token and Bridge's answered access
+URL are both URLs this module would otherwise send requests to unread, so
+each is refused unless the host ``requests`` would reach is
+:data:`BRIDGE_HOST` or a subdomain of it -- read by ``requests``' own
+preparation of the URL, because ``urlsplit`` and ``requests`` disagree on a
+crafted authority and a check over the wrong parser is no check
+(:func:`_refuse_unless_bridge`).  The listing and, later, the sync read the
+stored URL and need no check of their own: the claim refused a foreign one
+before storing it, and the claim is the only writer.  What the pin bounds
+is the URL each request STARTS at: ``requests`` follows a redirect on its
+own (dropping the credential when the host changes), so where a request
+ends up is Bridge's host's word, not this module's.
 
 **The credential never reaches a sentence, by construction rather than by
 the scrubber** (the 3b review's M1: the log scrubber cannot see a
@@ -59,6 +74,8 @@ from cryptography.fernet import InvalidToken
 from app import ref_cache
 from app.enums import StatementSourceEnum
 from app.exceptions import (
+    BankFeedError,
+    BridgeHostRefused,
     BridgeRefused,
     FeedAlreadyConnected,
     FeedUnreadable,
@@ -86,6 +103,16 @@ BRIDGE_TIMEOUT_SECONDS = (5, 30)
 #: without their transactions (``balances-only``), in Bridge's v2 shape
 #: (``version=2``; measured 2026-09-18 on the developer's own connection).
 _LISTING_PARAMS = {"version": "2", "balances-only": "1"}
+
+#: The host every URL this module sends a request to must be, or be a
+#: subdomain of: ruling **R-BI28** (the host pin, strict and fail-closed).
+#: A setup token is base64 of a URL the app POSTs to, and the claim's
+#: answer is a URL the app then GETs from for as long as the feed stands,
+#: so without the pin a crafted paste could point the container at any
+#: ``https`` host it can reach.  Bridge claims at ``bridge.simplefin.org``
+#: and ``beta-bridge.simplefin.org``; a non-Bridge SimpleFIN server is
+#: unusable until this constant is widened, the ruling's stated cost.
+BRIDGE_HOST = "simplefin.org"
 
 #: The longest Bridge account id the mapping column holds, READ off the
 #: column rather than spelled: ``account_external_identities
@@ -267,6 +294,77 @@ def mappable_accounts(user_id: int) -> list[Account]:
     ]
 
 
+def _refuse_unless_bridge(
+    url: str, *, unreadable: BankFeedError, foreign: BankFeedError,
+) -> None:
+    """Refuse *url* unless it is an ``https`` URL on Bridge's host.
+
+    **The ONE walk that decides whether this module may send a request to a
+    URL**, for the pasted claim URL and for the access URL Bridge answers
+    with alike (ruling **R-BI28**); the callers differ only in which refusal
+    each state is.
+
+    **The host is read the way ``requests`` will connect to it, not the way
+    ``urlsplit`` reads the raw string**, because the two disagree and the
+    disagreement is the bypass.  Measured 2026-09-20 (requests 2.34.2,
+    urllib3 2.6.3): ``https://evil.invalid\\@bridge.simplefin.org/x`` is host
+    ``bridge.simplefin.org`` to ``urlsplit`` -- the userinfo ends at the last
+    ``@`` -- while ``requests`` stops the authority at the backslash and
+    connects to ``evil.invalid`` with ``/%5C@bridge.simplefin.org/x`` as the
+    path.  A pin over ``urlsplit`` would have passed that token.  So this
+    prepares the URL exactly as ``requests.post``/``get`` do
+    (``PreparedRequest.prepare_url``: strip leading whitespace, parse with
+    urllib3, IDNA-encode a non-ASCII host, requote) and reads the hostname
+    off the PREPARED url, which is the two calls the adapter itself makes to
+    pick the connection host (``requests/adapters.py``,
+    ``_urllib3_request_context``: ``urlparse(request.url).hostname``).  What
+    is checked is what is reached, by construction rather than by a table of
+    characters this module would have to keep in step with two parsers.
+
+    The suffix test is exact: the host is :data:`BRIDGE_HOST` itself or ends
+    in ``"." + BRIDGE_HOST``, so ``simplefin.org.evil.invalid`` and
+    ``evilsimplefin.org`` are foreign.  ``requests`` lowercases the host, so
+    the comparison needs no case fold of its own.
+
+    Args:
+        url: The URL as this module would hand it to ``requests``.
+        unreadable: Raised when ``requests`` would send nothing to *url* at
+            all (no scheme or host, a scheme other than ``https``, a host
+            urllib3 refuses to parse, an IDNA label it cannot encode).
+        foreign: Raised when the request would reach a host that is neither
+            :data:`BRIDGE_HOST` nor a subdomain of it.
+
+    Raises:
+        BankFeedError: One of the two the caller supplied.
+    """
+    prepared = requests.PreparedRequest()
+    try:
+        prepared.prepare_url(url, None)
+        # ``prepare_url`` leaves a non-http scheme's URL untouched, and
+        # ``urlsplit`` raises ``ValueError`` on a bracket-malformed host in
+        # one (``ftp://[x``); an ``https`` URL that prepared is a URL urllib3
+        # built, which ``urlsplit`` reads.
+        parts = urlsplit(prepared.url)
+    except (requests.RequestException, ValueError):
+        # ``from None``: ``InvalidURL``'s own message quotes the URL it could
+        # not parse -- the access URL's credential, or the claim URL's token
+        # -- and a chained cause is a traceback the scrubber cannot see
+        # (module docstring; the ``from None`` at every ``_refused`` site).
+        raise unreadable from None
+    # The SCHEME is read the way ``requests`` picks the adapter
+    # (``Session.get_adapter``: the prepared url, lower-cased, starts with
+    # ``https://``), as the host is read the way it picks the connection:
+    # ``urlsplit`` strips a leading control character and reads ``https``
+    # off ``\\x00https://...``, which ``prepare_url`` left untouched and
+    # ``requests`` would refuse as ``InvalidSchema`` -- unreadable, not
+    # unreachable.
+    if not prepared.url.lower().startswith("https://") or not parts.hostname:
+        raise unreadable
+    host = parts.hostname
+    if host != BRIDGE_HOST and not host.endswith("." + BRIDGE_HOST):
+        raise foreign
+
+
 def _claim_url_from(setup_token: str) -> str:
     """Decode the pasted setup token into the claim URL, or refuse.
 
@@ -274,52 +372,67 @@ def _claim_url_from(setup_token: str) -> str:
         setup_token: What the owner pasted, whitespace tolerated.
 
     Returns:
-        The ``https`` claim URL.
+        The ``https`` claim URL, on Bridge's host.
 
     Raises:
         SetupTokenUnreadable: When the paste is not base64, does not decode
             to text, or decodes to something other than an ``https`` URL.
+        BridgeHostRefused: When it decodes to an ``https`` URL on a host
+            other than Bridge's (ruling **R-BI28**).
     """
     try:
         decoded = base64.b64decode(
             "".join(setup_token.split()), validate=True,
         ).decode("utf-8")
-        # ``urlsplit`` raises ``ValueError`` on a bracket-malformed host
-        # (``https://[x``), which is a paste like any other unreadable one.
-        parts = urlsplit(decoded)
-    except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
+    except (binascii.Error, UnicodeDecodeError) as exc:
         raise SetupTokenUnreadable() from exc
-    if parts.scheme != "https" or not parts.netloc:
-        raise SetupTokenUnreadable()
+    _refuse_unless_bridge(
+        decoded,
+        unreadable=SetupTokenUnreadable(),
+        foreign=BridgeHostRefused(BRIDGE_HOST),
+    )
     return decoded
 
 
-def _access_url_from(body: str) -> str:
+def _access_url_from(body: str, status: int) -> str:
     """Return Bridge's claim answer as the access URL, or refuse.
 
     Args:
         body: The claim response's text.
+        status: The status it came with -- past ``raise_for_status``, so
+            not an error, but not necessarily 200 -- carried on the refusal
+            as what Bridge answered rather than assumed.
 
     Returns:
-        The ``https`` access URL, whitespace stripped.
+        The ``https`` access URL on Bridge's host, whitespace stripped.
 
     Raises:
-        BridgeRefused: When the body is not an ``https`` URL -- Bridge
-            answered 200 with something that is not a credential, which
-            nothing here should store as one.
+        BridgeRefused: When the body is not one ``https`` URL -- Bridge
+            answered with something that is not a credential, which nothing
+            here should store as one (``UnexpectedBody``); or when it is one
+            on a host other than Bridge's, which nothing here should ever
+            send the feed's requests to (``ForeignHost``, ruling
+            **R-BI28**).
     """
     url = body.strip()
-    refusal = BridgeRefused(
+    unreadable = BridgeRefused(
         "Bridge answered the claim with something other than an access "
         "URL, so nothing was stored.",
-        status=200, error_class="UnexpectedBody",
+        status=status, error_class="UnexpectedBody",
     )
-    try:
-        parts = urlsplit(url)
-    except ValueError as exc:
-        raise refusal from exc
-    if parts.scheme != "https" or not parts.netloc or "\n" in url:
-        raise refusal
+    # An access URL is ONE token; a body with whitespace inside it is prose,
+    # whatever ``requests`` would percent-encode the whitespace into.
+    if len(url.split()) != 1:
+        raise unreadable
+    _refuse_unless_bridge(
+        url,
+        unreadable=unreadable,
+        foreign=BridgeRefused(
+            f"Bridge answered the claim with an access URL on a server other "
+            f"than {BRIDGE_HOST}, so nothing was stored.",
+            status=status, error_class="ForeignHost",
+        ),
+    )
     return url
 
 
@@ -371,10 +484,12 @@ def claim_feed(user_id: int, setup_token: str) -> BankFeed:
 
     Raises:
         SetupTokenUnreadable: The paste does not decode to an ``https`` URL.
+        BridgeHostRefused: It decodes to one on a host other than Bridge's
+            (ruling **R-BI28**); refused before the request like the rest.
         FeedAlreadyConnected: A feed stands; disconnect first.  Checked
             before the request so a standing feed never burns a token.
         BridgeRefused: Bridge could not be reached, answered an error, or
-            answered something other than an access URL.
+            answered something other than an access URL on its own host.
     """
     claim_url = _claim_url_from(setup_token)
     if _feed_of(user_id) is not None:
@@ -384,7 +499,7 @@ def claim_feed(user_id: int, setup_token: str) -> BankFeed:
         response.raise_for_status()
     except requests.RequestException as exc:
         raise _refused(exc, "the claim") from None
-    access_url = _access_url_from(response.text)
+    access_url = _access_url_from(response.text, response.status_code)
     feed = BankFeed(
         user_id=user_id, access_url_encrypted=encrypt_secret(access_url),
     )
@@ -440,6 +555,14 @@ def list_bridge_accounts(user_id: int) -> BridgeListing:
 
     Ruling **R-BI27**: fetched on each press and never stored.  The access
     URL is decrypted for this request and held no longer.
+
+    **No host check of its own** (ruling **R-BI28**): the stored URL passed
+    :func:`_refuse_unless_bridge` at the claim, and the claim is the only
+    door that stores one -- :func:`claim_feed` is the one construction site
+    of :class:`~app.models.bank_feed.BankFeed` under ``app/`` and
+    ``scripts/`` (grep, 2026-09-20), and ``rotate_field_key.py`` re-wraps
+    the plaintext it decrypts -- so a foreign access URL is a state no door
+    writes rather than one this read has to catch.
 
     Args:
         user_id: The owner.

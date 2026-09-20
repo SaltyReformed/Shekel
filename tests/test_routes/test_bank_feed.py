@@ -1,10 +1,13 @@
 """The bank feed panel's four doors, driven the way a browser drives them.
 
 Plan step ``bank_import:X-f6b-2``, leaf (3c); rulings **R-BI12**, **R-BI26**,
-**R-BI27**; ledger row **BI-499**.  Bridge is a fake at ``requests.post`` /
-``requests.get`` (the service tests' spy, shared), and every form is POSTED
-AS THE PANEL RENDERS IT: the controls are scraped off the rendered panel
-with :func:`tests.test_routes._statement_forms.form_fields`, because a
+**R-BI27**, **R-BI28**; ledger row **BI-499**.  Bridge is a fake at
+``requests.post`` / ``requests.get`` (the service tests' spy, shared, behind
+the same net: every fake URL names Bridge's real host because the pin admits
+no other, so an unstubbed request fails at ``Session.send`` rather than
+leaving), and every form is POSTED AS THE PANEL RENDERS IT: the controls are
+scraped off the rendered panel with
+:func:`tests.test_routes._statement_forms.form_fields`, because a
 hand-written payload agrees with a template about a mistake as readily as
 about the truth.
 
@@ -41,20 +44,29 @@ from app.utils.log_events import (
 )
 from tests.test_routes._statement_forms import form_fields
 from tests.test_services.test_bank_feed import (
+    _ACCESS_URL,
     _CHECKING,
+    _CLAIM_URL,
     _MORTGAGE,
     _SECRET,
     _SETUP_TOKEN,
     _SHARE,
-    _ACCESS_URL,
     _FakeResponse,
     _listing_body,
+    block_real_requests,
 )
 
 _CLAIM = "/accounts/feed/claim"
 _LIST = "/accounts/feed/accounts"
 _MAP = "/accounts/feed/map"
 _DISCONNECT = "/accounts/feed/disconnect"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_bridge(monkeypatch):
+    """Every test in this module runs behind the service tests' net."""
+    block_real_requests(monkeypatch)
+
 
 @pytest.fixture
 def bridge(monkeypatch):
@@ -217,17 +229,14 @@ class TestTheClaimDoor:
         """Bridge answers 403 (a token already claimed): the sentence names
         the status, the log names the class, and the claim URL is in
         neither."""
-        bridge.post_answer = _FakeResponse(
-            "https://bridge.invalid/simplefin/claim/DEMO-TOKEN-1234",
-            status_code=403,
-        )
+        bridge.post_answer = _FakeResponse(_CLAIM_URL, status_code=403)
         with caplog.at_level(logging.WARNING):
             response = _connect(auth_client, seed_user)
         body = response.get_data(as_text=True)
 
         assert response.status_code == 400
         assert "HTTP 403" in body
-        assert "bridge.invalid" not in body
+        assert "DEMO-TOKEN-1234" not in body
         assert db.session.query(BankFeed).count() == 0
         refused = _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
         assert [record.refusal_class for record in refused] == ["BridgeRefused"]
@@ -317,6 +326,58 @@ class TestTheClaimDoor:
             record.refusal_class
             for record in _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
         ] == ["SetupTokenUnreadable"]
+
+    def test_a_token_naming_a_foreign_host_is_refused_and_logged(
+        self, auth_client, db, seed_user, bridge, caplog,
+    ):
+        """Ruling R-BI28 at the door: a designed 400 carrying the paste form
+        and a sentence naming simplefin.org and not the pasted host; no
+        request, nothing stored; and BI-499's record names the pin's own
+        class."""
+        with caplog.at_level(logging.WARNING):
+            response = _connect(
+                auth_client, seed_user,
+                token=_setup_token_for("https://evil.invalid/simplefin/claim/X"),
+            )
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 400
+        assert "somewhere other than simplefin.org" in body
+        assert "evil.invalid" not in body
+        assert 'name="setup_token"' in body
+        assert db.session.query(BankFeed).count() == 0
+        assert bridge.posts == []
+        refused = _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
+        assert [record.refusal_class for record in refused] == [
+            "BridgeHostRefused",
+        ]
+        assert refused[0].levelno == logging.WARNING
+
+    def test_a_claim_answered_with_a_foreign_access_url_stores_nothing(
+        self, auth_client, db, seed_user, bridge, caplog,
+    ):
+        """Ruling R-BI28's other door: the claim answered 200 with a
+        credential on another server.  Refused as ``BridgeRefused`` with
+        ``ForeignHost`` in the record, nothing stored, no listing asked of
+        that server, the paste form offered again, and neither the host nor
+        the password anywhere."""
+        bridge.post_answer = _FakeResponse(
+            _CLAIM_URL, text=f"https://alice:{_SECRET}@evil.invalid/simplefin",
+        )
+        with caplog.at_level(logging.WARNING):
+            response = _connect(auth_client, seed_user)
+        body = response.get_data(as_text=True)
+
+        assert response.status_code == 400
+        assert "a server other than simplefin.org" in body
+        assert "evil.invalid" not in body
+        assert 'name="setup_token"' in body
+        assert db.session.query(BankFeed).count() == 0
+        assert bridge.gets == []
+        refused = _records(caplog, EVT_STATEMENT_DOOR_REFUSED)
+        assert [record.refusal_class for record in refused] == ["BridgeRefused"]
+        assert (refused[0].status, refused[0].error_class) == (200, "ForeignHost")
+        _no_secret_anywhere(caplog, body)
 
     def test_another_owners_page_is_a_404(
         self, auth_client, second_user, bridge,
@@ -763,7 +824,7 @@ class TestTheScrubberIsNotWhatKeepsTheSecretOut:
             claim = _connect(
                 auth_client, seed_user,
                 token=_setup_token_for(
-                    "https://bridge.invalid/simplefin/claim/T-2",
+                    "https://bridge.simplefin.org/simplefin/claim/T-2",
                 ),
             ).get_data(as_text=True)
             press = _hx_post(auth_client, _LIST, [

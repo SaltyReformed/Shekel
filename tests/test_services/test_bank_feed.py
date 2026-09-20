@@ -1,25 +1,34 @@
 """The bank feed's doors: claim, list, map, disconnect (plan step X-f6b-2, leaf 3c).
 
-Rulings **R-BI12**, **R-BI26**, **R-BI27**.  Bridge is a fake at
+Rulings **R-BI12**, **R-BI26**, **R-BI27**, **R-BI28**.  Bridge is a fake at
 ``requests.post`` / ``requests.get``, the shape ``test_auth_service``'s HIBP
-tests stub; every fake token decodes to a URL under the reserved
-``.invalid`` domain (RFC 2606), so a forgotten stub fails at DNS rather than
-reaching a real host.
+tests stub.  Every fake URL names Bridge's REAL host, because the host pin
+(R-BI28) refuses any other; so a forgotten stub would reach the real Bridge,
+and :func:`block_real_requests` -- autouse here and in the route module --
+turns that into a failure at ``requests.Session.send``, the one call every
+``requests.post``/``get`` goes through and the spy sits above.  (Until the
+pin, the fakes lived under RFC 2606's ``.invalid`` and a forgotten stub
+failed at DNS instead.)
 
-**The two claims these tests exist to grade, because the code's own words
+**The three claims these tests exist to grade, because the code's own words
 cannot**:
 
 * **a setup token is never burned for nothing** -- the claim refuses an
-  unreadable paste and a standing feed BEFORE the request, and the spy
-  counts zero calls on both;
+  unreadable paste, a foreign host and a standing feed BEFORE the request,
+  and the spy counts zero calls on each;
 * **the credential never reaches a sentence or a record** -- the fake
   raises the ``HTTPError`` ``requests`` really raises, its text carrying
   the URL's userinfo, and every refusal sentence and every captured log
-  record is asserted free of it.
+  record is asserted free of it;
+* **the host that is checked is the host that is reached** -- the pin is
+  fed the URL whose host ``urlsplit`` and ``requests`` read differently, and
+  refuses it.
 """
 
 import base64
+import traceback
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 import pytest
 import requests
@@ -27,6 +36,7 @@ import requests
 from app import ref_cache
 from app.enums import StatementSourceEnum
 from app.exceptions import (
+    BridgeHostRefused,
     BridgeRefused,
     FeedAlreadyConnected,
     FeedUnreadable,
@@ -45,12 +55,13 @@ from tests.test_services.test_statement_import.test_record import (
     _second_account,
 )
 
-# The claim URL a setup token decodes to, under a domain that never resolves.
-_CLAIM_URL = "https://bridge.invalid/simplefin/claim/DEMO-TOKEN-1234"
+# The claim URL a setup token decodes to, on Bridge's real host (the pin
+# admits no other); the token part is what a sentence must never carry.
+_CLAIM_URL = "https://bridge.simplefin.org/simplefin/claim/DEMO-TOKEN-1234"
 _SETUP_TOKEN = base64.b64encode(_CLAIM_URL.encode()).decode()
 # The access URL Bridge answers with: the userinfo IS the secret.
 _SECRET = "s3cr3t-passw0rd"
-_ACCESS_URL = f"https://alice:{_SECRET}@bridge.invalid/simplefin"
+_ACCESS_URL = f"https://alice:{_SECRET}@bridge.simplefin.org/simplefin"
 
 # Bridge's ids as measured 2026-09-18: ``ACT-`` + a uuid.
 _CHECKING = "ACT-125e0df6-8f88-4a46-888a-37e0342ed307"
@@ -144,6 +155,34 @@ class _Bridge:
         return self.get_answer
 
 
+def block_real_requests(monkeypatch) -> None:
+    """Make any real ``requests`` call in this test fail loudly.
+
+    The ONE spelling of the net both feed test modules hang on their autouse
+    fixture (module docstring).  ``requests.post`` and ``requests.get`` both
+    end in ``requests.Session.send``; the :class:`_Bridge` spy replaces the
+    two above it, so a stubbed call never reaches this and an unstubbed one
+    always does.  The message names the method and the host only: the
+    prepared URL of a listing carries the credential.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+    """
+    def _refuse(self, request, **kwargs):
+        raise AssertionError(
+            f"a test let a real request out: {request.method} to "
+            f"{urlsplit(request.url).hostname}; stub Bridge with the "
+            f"`bridge` fixture"
+        )
+    monkeypatch.setattr(requests.Session, "send", _refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_bridge(monkeypatch):
+    """Every test in this module runs behind :func:`block_real_requests`."""
+    block_real_requests(monkeypatch)
+
+
 @pytest.fixture
 def bridge(monkeypatch):
     """Bridge, faked and spied."""
@@ -158,6 +197,21 @@ def _connect(seed_user, bridge):
 def _no_secret_in(text: str) -> None:
     """Assert the credential's password is nowhere in *text*."""
     assert _SECRET not in text, text
+
+
+class TestTheNet:
+    """A request no fixture stubbed fails here, not at Bridge."""
+
+    def test_an_unstubbed_request_fails_before_leaving(self):
+        """No ``bridge`` fixture, so ``requests.get`` reaches the net: the
+        failure names the method and the host and not the credential the
+        URL carries.  The one case that runs the net's own message."""
+        with pytest.raises(AssertionError) as excinfo:
+            requests.get(f"{_ACCESS_URL}/accounts", timeout=1)
+
+        message = str(excinfo.value)
+        assert "GET to bridge.simplefin.org" in message
+        _no_secret_in(message)
 
 
 class TestTheClaimNeverBurnsATokenForNothing:
@@ -177,8 +231,9 @@ class TestTheClaimNeverBurnsATokenForNothing:
         self, app, db, seed_user, bridge,
     ):
         """Bridge issues https claim URLs; anything else is not a token,
-        and claiming it would send the request in the clear."""
-        token = base64.b64encode(b"http://bridge.invalid/claim/x").decode()
+        and claiming it would send the request in the clear.  On Bridge's
+        own host, so it is the SCHEME this case refuses on."""
+        token = base64.b64encode(b"http://bridge.simplefin.org/claim/x").decode()
 
         with pytest.raises(SetupTokenUnreadable):
             bank_feed.claim_feed(seed_user["user"].id, token)
@@ -222,6 +277,148 @@ class TestTheClaimNeverBurnsATokenForNothing:
         bank_feed.claim_feed(seed_user["user"].id, wrapped)
 
         assert bridge.posts[0][0] == _CLAIM_URL
+
+
+class TestTheHostPin:
+    """Ruling R-BI28: a request goes to simplefin.org or a subdomain, or nowhere.
+
+    Two doors take a URL from outside -- the pasted token and Bridge's claim
+    answer -- and each refuses a foreign host before storing or sending
+    anything; the sentence names the expected host and never the pasted one.
+    """
+
+    @pytest.mark.parametrize("url", [
+        "https://evil.invalid/simplefin/claim/DEMO",
+        "https://simplefin.org.evil.invalid/simplefin/claim/DEMO",
+        "https://evilsimplefin.org/simplefin/claim/DEMO",
+        "https://bridge.simplefin.org@evil.invalid/simplefin/claim/DEMO",
+        "https://1.2.3.4/simplefin/claim/DEMO",
+    ], ids=[
+        "foreign", "suffix-lookalike", "substring-lookalike",
+        "userinfo-lookalike", "ip-literal",
+    ])
+    def test_a_token_naming_a_foreign_host_is_refused_before_any_request(
+        self, app, db, seed_user, bridge, url,
+    ):
+        """Its own class, zero calls, nothing stored; the sentence names
+        simplefin.org and not the host that was pasted.  The lookalikes
+        pin the test to a suffix: ``simplefin.org`` as a prefix, a
+        substring, or a userinfo is not the host."""
+        token = base64.b64encode(url.encode()).decode()
+
+        with pytest.raises(BridgeHostRefused) as excinfo:
+            bank_feed.claim_feed(seed_user["user"].id, token)
+
+        assert bridge.posts == []
+        assert db.session.query(BankFeed).count() == 0
+        sentence = str(excinfo.value)
+        assert "simplefin.org" in sentence
+        assert urlsplit(url).hostname not in sentence
+        assert excinfo.value.log_details == {}
+
+    @pytest.mark.parametrize("url", [
+        "https://bridge.simplefin.org/simplefin/claim/DEMO",
+        "https://beta-bridge.simplefin.org/simplefin/claim/DEMO",
+        "https://simplefin.org/simplefin/claim/DEMO",
+        "HTTPS://BRIDGE.SIMPLEFIN.ORG/simplefin/claim/DEMO",
+    ], ids=["bridge", "beta-bridge", "apex", "upper-case"])
+    def test_bridges_own_hosts_are_accepted(
+        self, app, db, seed_user, bridge, url,
+    ):
+        """The two hosts Bridge claims at, the apex, and the case fold
+        ``requests`` applies: each is posted to as pasted."""
+        token = base64.b64encode(url.encode()).decode()
+
+        bank_feed.claim_feed(seed_user["user"].id, token)
+
+        assert [posted for posted, _ in bridge.posts] == [url]
+
+    def test_the_host_checked_is_the_host_requests_would_reach(
+        self, app, db, seed_user, bridge,
+    ):
+        """FIRING CONTROL for the parser the pin reads through.
+
+        ``https://evil.invalid\\@bridge.simplefin.org/...`` is host
+        ``bridge.simplefin.org`` to ``urlsplit`` (the userinfo runs to the
+        last ``@``) and ``evil.invalid`` to ``requests`` (urllib3 stops the
+        authority at the backslash), measured 2026-09-20 on requests 2.34.2.
+        A pin over the raw string's ``urlsplit`` passes this token; the pin
+        refuses it with no request.  The two premises are asserted first, so
+        a ``requests`` that closes the gap fails this case rather than
+        letting it pass for a reason it no longer tests.
+        """
+        url = "https://evil.invalid\\@bridge.simplefin.org/simplefin/claim/DEMO"
+        assert urlsplit(url).hostname == "bridge.simplefin.org"
+        prepared = requests.PreparedRequest()
+        prepared.prepare_url(url, None)
+        assert urlsplit(prepared.url).hostname == "evil.invalid"
+        token = base64.b64encode(url.encode()).decode()
+
+        with pytest.raises(BridgeHostRefused):
+            bank_feed.claim_feed(seed_user["user"].id, token)
+
+        assert bridge.posts == []
+
+    def test_a_claim_answered_with_a_foreign_access_url_stores_nothing(
+        self, app, db, seed_user, bridge,
+    ):
+        """Bridge (or whatever answered) names a credential on another
+        server: refused as ``ForeignHost`` carrying the status it answered,
+        nothing stored, and neither its host nor the password in the
+        sentence.  This is why the listing and the sync need no host check
+        of their own: a foreign URL is never stored."""
+        bridge.post_answer = _FakeResponse(
+            _CLAIM_URL, status_code=201,
+            text=f"https://alice:{_SECRET}@evil.invalid/simplefin",
+        )
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            _connect(seed_user, bridge)
+
+        assert excinfo.value.error_class == "ForeignHost"
+        # The status Bridge answered, not an assumed 200.
+        assert excinfo.value.status == 201
+        assert db.session.query(BankFeed).count() == 0
+        sentence = str(excinfo.value)
+        assert "simplefin.org" in sentence
+        assert "evil.invalid" not in sentence
+        _no_secret_in(sentence)
+
+    @pytest.mark.parametrize("separator", ["\n", " "], ids=["newline", "space"])
+    def test_an_answer_with_words_after_the_url_stores_nothing(
+        self, app, db, seed_user, bridge, separator,
+    ):
+        """A body that starts with a Bridge URL and goes on in prose is not
+        an access URL: refused as ``UnexpectedBody`` before the host is even
+        read, so the whitespace check is graded apart from the pin.  The
+        space case is the one a newline-only check stored."""
+        bridge.post_answer = _FakeResponse(
+            _CLAIM_URL, text=f"{_ACCESS_URL}{separator}Thanks for connecting!",
+        )
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            _connect(seed_user, bridge)
+
+        assert excinfo.value.error_class == "UnexpectedBody"
+        assert db.session.query(BankFeed).count() == 0
+
+    def test_a_scheme_hidden_behind_a_control_character_is_unreadable(
+        self, app, db, seed_user, bridge,
+    ):
+        """``\\x00https://bridge.simplefin.org/...``: ``urlsplit`` strips the
+        control character and reads ``https`` and Bridge's host, while
+        ``requests`` leaves the string untouched and would refuse it as
+        ``InvalidSchema`` before any socket.  The pin reads the scheme the
+        way ``requests`` picks the adapter, so this is an UNREADABLE paste
+        (its own class, no request), not "Bridge could not be reached"."""
+        token = base64.b64encode(
+            b"\x00https://bridge.simplefin.org/simplefin/claim/DEMO",
+        ).decode()
+
+        with pytest.raises(SetupTokenUnreadable):
+            bank_feed.claim_feed(seed_user["user"].id, token)
+
+        assert bridge.posts == []
 
 
 class TestTheClaimStoresWhatBridgeAnswers:
@@ -301,7 +498,7 @@ class TestABridgeFailureIsSaidWithoutTheCredential:
         assert excinfo.value.status == 403
         assert excinfo.value.error_class == "HTTPError"
         assert "403" in str(excinfo.value)
-        assert "bridge.invalid" not in str(excinfo.value)
+        assert "DEMO-TOKEN-1234" not in str(excinfo.value)
         assert db.session.query(BankFeed).count() == 0
 
     def test_a_transport_failure_names_its_class(
@@ -318,7 +515,31 @@ class TestABridgeFailureIsSaidWithoutTheCredential:
         assert excinfo.value.status is None
         assert excinfo.value.error_class == "ConnectionError"
         assert "ConnectionError" in str(excinfo.value)
-        assert "bridge.invalid" not in str(excinfo.value)
+        assert "DEMO-TOKEN-1234" not in str(excinfo.value)
+
+    def test_an_unparseable_answer_chains_no_cause_carrying_the_url(
+        self, app, db, seed_user, bridge,
+    ):
+        """FIRING CONTROL for the ``from None`` in the pin's walk.  Bridge
+        answers a credential with no host; ``requests.InvalidURL``'s own
+        message quotes the whole URL, password included, and a chained
+        ``__cause__`` is a traceback the scrubber cannot see.  The refusal
+        carries no cause at all."""
+        bridge.post_answer = _FakeResponse(
+            _CLAIM_URL, text=f"https://alice:{_SECRET}@",
+        )
+
+        with pytest.raises(BridgeRefused) as excinfo:
+            _connect(seed_user, bridge)
+
+        assert excinfo.value.error_class == "UnexpectedBody"
+        assert excinfo.value.__cause__ is None
+        # ``from None`` suppresses the context rather than clearing it; what
+        # a log line would render is the formatted traceback, so that is
+        # what is graded.
+        assert excinfo.value.__suppress_context__
+        _no_secret_in("".join(traceback.format_exception(excinfo.value)))
+        assert db.session.query(BankFeed).count() == 0
 
     def test_a_listing_failure_never_repeats_the_access_url(
         self, app, db, seed_user, bridge,

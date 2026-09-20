@@ -674,6 +674,23 @@ class SetupTokenUnreadable(BankFeedError):
         )
 
 
+class BridgeHostRefused(BankFeedError):
+    """The pasted setup token names a server other than Bridge's.
+
+    Ruling **R-BI28** (the host pin): a setup token is base64 of a URL the
+    app POSTs to, so a crafted paste could point the container at any
+    ``https`` host it can reach.  Refused BEFORE any request, its own class
+    so the log says why, and the sentence names the EXPECTED host and never
+    the pasted one.
+    """
+
+    def __init__(self, expected_host: str):
+        super().__init__(
+            f"That setup token points somewhere other than {expected_host}, "
+            f"so it was not claimed.  Nothing was changed."
+        )
+
+
 class FeedAlreadyConnected(BankFeedError):
     """A feed already stands for this owner; a claim would burn the token.
 
@@ -732,8 +749,11 @@ class BridgeRefused(BankFeedError):
     Attributes:
         status: The HTTP status Bridge answered with, or ``None`` when no
             answer arrived.
-        error_class: The ``requests`` exception class name, or this
-            module's own name for an answer of the wrong shape.
+        error_class: The ``requests`` exception class name, or the feed
+            service's own name for an answer of the wrong shape
+            (``UnexpectedBody``, ``UnexpectedShape``) or, under ruling
+            **R-BI28**, for a claim answered with an access URL on a server
+            other than Bridge's (``ForeignHost``).
     """
 
     def __init__(self, sentence: str, *, status: "int | None", error_class: str):
