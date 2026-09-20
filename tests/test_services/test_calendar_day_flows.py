@@ -30,7 +30,7 @@ from app.services.calendar_day_flows import (
 def _entry(amount, *, is_income=False, name="A row"):
     """One day entry worth *amount*, with every display field held constant."""
     return DayEntry(
-        transaction_id=abs(hash(name)) % 100000,
+        item_key=abs(hash(name)) % 100000,
         name=name,
         amount=Decimal(amount),
         is_income=is_income,

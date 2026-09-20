@@ -15,7 +15,6 @@ from app import ref_cache
 from app.services.cash_flow_set import CashFlowSet
 from app.exceptions import BaselineMissingError
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.pay_period import PayPeriod
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -27,14 +26,14 @@ from app.services import (
     balance_at,
     calendar_infrequency,
     calendar_service,
-    pay_period_write,
-    pay_schedule_service,
     paycheck_calculator,
     status_seam,
+    transfer_service,
 )
 from tests._test_helpers import (
     create_account_of_type,
     create_savings_account,
+    create_settled_transfer,
     create_transfer,
     eras_of,
     generate_row_of,
@@ -71,6 +70,7 @@ from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
     DailyView,
+    _query_transactions_for_range,
 )
 from app.services.pay_calendar import (
     PayCadence,
@@ -450,7 +450,7 @@ class TestNoDuplicates:
             all_entries = [
                 e for entries in result.day_entries.values() for e in entries
             ]
-            ids = [e.transaction_id for e in all_entries]
+            ids = [e.item_key for e in all_entries]
             assert len(ids) == len(set(ids)), "Duplicate transaction IDs found"
 
 
@@ -1770,6 +1770,163 @@ class TestEdgeCases:
             assert result.day_entries[5][0].name == "Transfer Out"
 
 
+class TestATransferIsALegOfItsParent:
+    """The calendar draws a transfer as a LEG read off its parent (leaf X-bi-6-1b).
+
+    ``_query_transactions_for_range`` answers the set's OWN rows -- no
+    shadow -- beside one leg per transfer the set touches, on the side the
+    set shows, and the day fold prices a leg through ``leg_contributions_by_key``
+    keyed by ``cell_key``.  The money cases above (R-CC23, the far leg)
+    already grade what a transfer is WORTH here; these grade what it IS, and
+    the two states a display leg adds to the fold's: settled with a record,
+    and excluded.
+    """
+
+    def test_the_loader_answers_own_rows_and_both_sides_legs_and_no_shadow(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            _add_transaction(
+                db.session, seed_user, seed_periods[0], "Rent", "300.00",
+                due_date=date(2026, 1, 5),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+            periods = ctx.calendar().overlapping(date(2026, 1, 1), date(2026, 1, 31))
+
+            on_checking = _query_transactions_for_range(
+                CashFlowSet.single(checking), ctx.scenario_id, periods,
+            )
+            assert [row.name for row in on_checking.rows] == ["Rent"]
+            assert all(row.transfer_id is None for row in on_checking.rows)
+            assert [
+                (leg.transfer.id, leg.account_id, leg.is_income)
+                for leg in on_checking.legs
+            ] == [(transfer.id, checking.id, False)]
+
+            on_savings = _query_transactions_for_range(
+                CashFlowSet.single(savings), ctx.scenario_id, periods,
+            )
+            assert on_savings.rows == []
+            assert [
+                (leg.transfer.id, leg.account_id, leg.is_income)
+                for leg in on_savings.legs
+            ] == [(transfer.id, savings.id, True)]
+
+    def test_a_settled_leg_is_a_paid_cell_worth_its_record(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """$250.00 planned, $240.00 moved: the cell reads $240.00, paid, keyed by the pair."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 1, 6), due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+
+            checking_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
+            )
+            [entry] = checking_view.day_entries[6]
+            assert entry.item_key == (settled.id, checking.id)
+            assert entry.name == "Transfer to Savings"
+            assert entry.amount == Decimal("240.00")
+            assert entry.is_income is False
+            assert entry.is_paid is True
+            assert entry.is_infrequent is False
+            assert checking_view.total_expenses == Decimal("240.00")
+
+            savings_view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                account_id=savings.id, user_settings=None,
+            )
+            [entry] = savings_view.day_entries[6]
+            assert entry.item_key == (settled.id, savings.id)
+            assert entry.name == "Transfer from Checking"
+            assert entry.amount == Decimal("240.00")
+            assert entry.is_income is True
+            assert savings_view.total_income == Decimal("240.00")
+
+    def test_a_cancelled_transfers_leg_is_not_a_cell(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                transfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+            db.session.commit()
+
+            view = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
+            )
+            assert 6 not in view.day_entries
+            assert view.total_expenses == Decimal("0")
+
+    def test_the_predicate_guards_a_leg_on_both_surfaces(
+        self, app, seed_user, seed_periods, db, monkeypatch,
+    ):
+        """C10-4's lock over a LEG: drop the predicate from the SQL filter and
+        the Python re-check together and the cancelled transfer's leg leaks
+        into the day cell; either alone keeps it out (the belt-and-suspenders
+        design), so this is the one mutation that can grade the SQL arm over
+        ``Transfer``."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), due_date=date(2026, 1, 6),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                transfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
+            )
+            db.session.commit()
+
+            from app.services import calendar_service as cs
+            monkeypatch.setattr(
+                cs, "balance_contributing_clause",
+                lambda model_class=Transaction: model_class.is_deleted.is_(False),
+            )
+            monkeypatch.setattr(cs, "is_balance_contributing", lambda _txn: True)
+
+            leaked = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2026, month=1,
+                user_settings=None,
+            )
+            assert [e.item_key for e in leaked.day_entries[6]] == [
+                (transfer.id, checking.id),
+            ]
+
+
 # ── F-3 / W-065 balance-contributing predicate ─────────────────────
 
 
@@ -2021,9 +2178,11 @@ class TestBalanceContributingPredicate:
             # the Python re-check is short-circuited to always
             # contribute.
             from app.services import calendar_service as cs
+            # The stub takes the model class the real clause takes since leaf
+            # balance:X-bi-6-1b (the calendar asks it over ``Transfer`` too).
             monkeypatch.setattr(
                 cs, "balance_contributing_clause",
-                lambda: Transaction.is_deleted.is_(False),
+                lambda model_class=Transaction: model_class.is_deleted.is_(False),
             )
             monkeypatch.setattr(
                 cs, "is_balance_contributing", lambda _txn: True,
