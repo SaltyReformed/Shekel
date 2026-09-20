@@ -20,6 +20,7 @@ B2's job and a different question (is the posted cache faithful?); this is the
 reference's own.
 """
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -637,31 +638,34 @@ class TestFoldNegativeControls:
         """Forcing the split's principal moves the fold by exactly that much.
 
         The teeth check.  ``test_one_payment_folds_off_its_REAL_principal``
-        asserts $99,500.00; if the fold ignored the split's ``principal`` that
-        assertion could pass for the wrong reason.  Here the split is replaced by
-        one returning a chosen principal, and the fold tracks it: principal 0.00
-        leaves the anchor untouched, principal 500.00 reproduces the real answer.
-        So the fold provably reads the split, and the value tests are not passing
-        unconditionally.
+        asserts $99,500.00; if the fold ignored the outcome's ``principal`` that
+        assertion could pass for the wrong reason.  Here the replay's outcome is
+        replaced by one carrying a chosen principal, and the fold tracks it:
+        principal 0.00 leaves the anchor untouched, principal 500.00 reproduces
+        the real answer.  So the fold provably reads the outcome, and the value
+        tests are not passing unconditionally.  (The injection point was
+        ``split_one_payment`` until plan step recurrence:R16-c-1 deleted that
+        copy; the replay itself is the one producer now.)
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
             _settle(seed_user, db, loan, seed_periods[1], Decimal("1000.00"))
             db.session.commit()
 
-            real_split = loan_ledger._walk.split_one_payment
+            real_replay = loan_ledger._walk.replay_loan_events
 
-            def fake(outcome):
-                split = real_split(outcome)
-                return type(split)(
-                    income_shadow=split.income_shadow,
-                    interest=split.interest, escrow=split.escrow,
-                    principal=bad_principal, excess=split.excess,
-                    due_date=split.due_date, period=split.period,
-                )
+            def fake(seed, stream, extra_per_period=Decimal("0.00")):
+                replay = real_replay(seed, stream, extra_per_period)
+                return replace(replay, payments=[
+                    replace(
+                        outcome,
+                        split=replace(outcome.split, principal=bad_principal),
+                    )
+                    for outcome in replay.payments
+                ])
 
             monkeypatch.setattr(
-                "app.services.loan_ledger._walk.split_one_payment", fake,
+                "app.services.loan_ledger._walk.replay_loan_events", fake,
             )
             on = last_covered_day(seed_periods[1])
             assert _fold(loan, seed_user, [on])[on] == expected

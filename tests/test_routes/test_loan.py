@@ -8014,7 +8014,7 @@ class TestOneWalkEdges:
         after the frozen 2026-03-20 today -- before Apr 1's charge, so the
         fold hands it no standing charge (ruling R-C's early extra).  Its
         row's rate is the origination period's 5%
-        (``PlannedInstallment.period``, resolved from the plan's own
+        (``PaymentOutcome.period``, resolved from the stream's own
         calendar), so the ARM rate column renders every row and the page
         returns 200 rather than multiplying ``None``.
         """
@@ -8054,8 +8054,8 @@ class TestOneWalkEdges:
         """A loan trued up to zero has no planned row, no grid past its history, no lever.
 
         The seam's plan for a retired loan is EMPTY (``loan_installments``
-        answers nothing for a seed at or below zero, the guard
-        ``plan_payoff_date`` already answers ``None`` under): the schedule
+        answers nothing for a retired loan, the guard the payoff already
+        answers ``None`` under): the schedule
         page lists no Projected row, the band's grid ends with the history
         (no five-year flat zero past the contract), and the pay-off-sooner
         lever says the loan is paid off rather than "Never, at this extra".

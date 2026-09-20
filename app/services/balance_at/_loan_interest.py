@@ -18,13 +18,13 @@ the balance it describes come from the ONE total producer and cannot disagree:
   ``None`` and hid the chip.
 * :func:`loan_interest_in_year` (steps **C3c** / **C6c**) -- the tax year's WHOLE
   mortgage-interest figure (Schedule A): the SETTLED interest above PLUS the
-  interest still PROJECTED to be paid in the year, folded from the loan's forward
-  payment PLAN (:func:`app.services.balance_at._plan_fold.plan_interest_in_year`, step
-  **C6c**) -- the SAME plan the loan's projected balance folds, so the deduction and
-  the balance agree on the FUTURE as C3c made them agree on the PAST.  It replaced
-  the ledger-reader-plus-schedule HYBRID that lived in ``tax_report_service``,
-  closing B-6 (the Taxes tab no longer prints interest for a loan the seam values a
-  different way).
+  interest still PROJECTED to be paid in the year, both read off the loan's ONE
+  timeline (:func:`~._loan_stream.loan_timeline`, plan step
+  **recurrence:R16-c-1**) -- the SAME walk the loan's balance folds, so the
+  deduction and the balance agree on the FUTURE as C3c made them agree on the
+  PAST.  It replaced the ledger-reader-plus-schedule HYBRID that lived in
+  ``tax_report_service``, closing B-6 (the Taxes tab no longer prints interest
+  for a loan the seam values a different way).
 
 **Two clocks, deliberately.**  The interest figure is a TAX figure, so it counts a
 payment in the year the user PAID it on their WALL CLOCK
@@ -35,40 +35,22 @@ interest-in-year is NOT ``positions().cum_interest`` keyed on the fold's UTC
 visible date, and why it lives in its own function rather than on the balance
 producer: the balance is a storage-clock quantity, the deduction a wall-clock one.
 
-**One record per installment (the settled-slot merge).**  The settled half (fold)
-and the projected half (plan) must not both count the same installment.  Step
-**C6c** moved the projected half from the resolver's schedule rows onto the forward
-PLAN (:func:`app.services.balance_at._plan.loan_plan`), but the merge STAYS -- and
-it must de-duplicate against the SAME set the settled half sums.  The settled half
-counts every payment in the fold's WALK (``walk.payment_splits`` -- clock-blind, it
-splits every settled payment) attributed by its DISPLAY paid year (the L9 wall
-clock).  So :func:`loan_interest_in_year` excludes from the projected sum every
-installment slot a WALK payment occupies (:func:`_due_slot`), and hands that set to
-:func:`~app.services.balance_at._plan_fold.plan_interest_in_year`.
-
-**Why the WALK, not the plan's own de-dup.**  ``loan_plan``'s ESTIMATED tier
-already skips a slot covered by ``confirmed_shadows_through(as_of)``, and
-de-duplicating against the WALK instead -- every settled payment, the settled
-half's OWN set -- is what makes the two halves partition by construction rather
-than by two bounds that happen to agree.
-
-**The zone argument this paragraph used to make is FALSIFIED, and is recorded
-here rather than deleted** (finding **N-180**).  It read: ``confirmed_shadows_through``
-is a UTC-visibility subset while the tax ``as_of`` is a DISPLAY date, so an
-evening settle whose instant rolled into the next UTC day is counted by the
-settled half yet not excluded from the plan, and the installment is synthesized
-twice.  That stopped being true at ruling **R-DH (b)**, which moved
-:func:`app.services.loan_ledger.payment_visible_on` to the display timezone, and
-it is doubly untrue since plan step X-f1 (ruling R-EC): the day is a STORED civil
-day in the user's zone, converted by nothing.  A draft of this paragraph was
-edited during that conversion to cite ``to_utc_civil_date(settled_on)`` -- a
-function that has never existed in ``app/`` -- which is the invented-citation
-class this arc keeps paying for, caught by a neutral review.  **Whether the two
-sets can still differ for any other reason is UNVERIFIED**, so the de-dup stays
-and N-180 owns the question.  The code was never wrong; only the reason written
-beside it was.  De-duplicating against the WALK closes that
-one-evening double-count; the plan's ``confirmed_shadows_through`` de-dup stays for
-the BALANCE, whose seed excludes the same payments the plan re-adds so it nets.
+**One record per installment, by construction.**  The settled half and the
+projected half are ONE list since plan step **recurrence:R16-c-1**: the
+timeline's outcomes, each either a recorded payment or a projection
+(:attr:`~app.services.loan_ledger.PaymentOutcome.is_projected`), so no
+installment can be counted twice and no merge key is needed.  Until that step
+the two halves came from two replays -- the walk and the plan -- and this
+module excluded from the plan's sum every ``(year, month)`` slot a walk payment
+occupied (``_due_slot``, ``plan_interest_in_year``'s ``exclude_slots``), a
+de-duplication whose rationale had been falsified once (ruling **R-DH (b)**
+moved the visibility clock; finding **N-180** recorded the surviving question,
+"whether the two sets can still differ for any other reason").  There are no
+two sets to differ now.  What the merge key also did, wrongly, was drop a
+projected payment's interest whenever an ad-hoc projected extra fell in a
+settled installment's month -- a real payment's interest, discarded by a
+de-dup built for a synthesis the plan no longer performs (its ESTIMATED tier
+answers by occurrence identity since R16-b-2, never by month).
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -78,15 +60,12 @@ from collections.abc import Callable
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.loan_ledger import LoanLedgerWalk, LoanPaymentSplit
-from app.services.loan_loaders import loan_payment_due_date
+from app.services.loan_ledger import LoanLedgerWalk, PaymentOutcome
 from app.utils.balance_predicates import settled_day
 
 from ._context import BalanceContext
-from . import _kernel
 from ._inputs import _require_scenario
-from ._plan import memoized_plan
-from ._plan_fold import plan_interest_in_year
+from ._loan_stream import loan_timeline
 from ._resolution import resolved_loan
 
 _ZERO_MONEY = Decimal("0.00")
@@ -136,7 +115,7 @@ def loan_interest_paid_in_year(
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
-        ctx.loan_walk(account), year, lambda split: split.interest,
+        ctx.loan_walk(account), year, lambda outcome: outcome.interest,
     )
 
 
@@ -175,14 +154,14 @@ def loan_principal_paid_in_year(
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
-        ctx.loan_walk(account), year, lambda split: split.principal,
+        ctx.loan_walk(account), year, lambda outcome: outcome.principal,
     )
 
 
 def _settled_sum_in_year(
     walk: LoanLedgerWalk,
     year: int,
-    part: Callable[[LoanPaymentSplit], Decimal],
+    part: Callable[[PaymentOutcome], Decimal],
 ) -> Decimal:
     """Sum a settled-payment split PART attributed to the display-tz paid *year*.
 
@@ -197,8 +176,8 @@ def _settled_sum_in_year(
     Args:
         walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`.
         year: The DISPLAY-tz civil year to sum within.
-        part: The split field to sum -- ``lambda split: split.interest`` or
-            ``lambda split: split.principal``.
+        part: The split field to sum -- ``lambda outcome: outcome.interest``
+            or ``lambda outcome: outcome.principal``.
 
     Returns:
         The cent-quantized sum of *part* over the payments paid in *year*
@@ -206,9 +185,9 @@ def _settled_sum_in_year(
     """
     return sum(
         (
-            part(split)
-            for split in walk.payment_splits
-            if _paid_year(split.income_shadow) == year
+            part(outcome)
+            for outcome in walk.settled_splits
+            if _paid_year(outcome.source) == year
         ),
         _ZERO_MONEY,
     )
@@ -220,32 +199,32 @@ def loan_interest_in_year(
     """Return *account*'s mortgage interest PAID during *year* -- fold + plan.
 
     The Schedule A / debt-interest figure for one loan and one tax year, from the
-    same total producer the balance derives from (see the module docstring):
+    same total producer the balance derives from (see the module docstring), read
+    off the read pass's ONE timeline (:func:`~._loan_stream.loan_timeline`):
 
-    * **SETTLED (past) interest -- the FOLD.**  Each settled payment's ACTUAL
-      accrued interest (:attr:`~app.services.loan_ledger.LoanPaymentSplit.interest`,
-      the interest the payment's real cash paid on the reset-aware running balance --
-      correct even for an off-schedule extra / short payment, where the schedule's
-      replayed figure is not), attributed to the DISPLAY-timezone civil YEAR of its
-      paid date (:func:`app.utils.balance_predicates.settled_day`, the L9 tax basis).
-      This reads the loan's SOURCE events, not the posting cache, so a loan the
-      posting reader cannot value (no genesis opening posting) is still valued from
-      its facts -- closing B-6 -- rather than falling back to the schedule.
-    * **PROJECTED (future) interest -- the PLAN.**  Each of the loan's forward
-      payment records (:func:`app.services.balance_at._plan_fold.plan_interest_in_year`
-      over :meth:`~app.services.balance_at.BalanceContext.loan_plan`), folded
-      from the SAME ``projection_seed`` the loan's projected BALANCE folds and
-      attributed to the year the payment is projected to be PAID (its EFFECTIVE
-      date).  An overdue installment with NO record is absent from the plan (finding
-      B-9), so a delinquent loan's unpaid past no longer inflates the deduction, and
-      a projected payment folds its LIVE cash -- so the interest the tax figure
-      projects and the balance the loan projects come from ONE forward model (step
-      **C6c**).  It EXCLUDES every installment slot a settled payment already
-      satisfies (``exclude_slots`` = the WALK's due slots), so no installment is
-      counted in both halves (see the module docstring's two-clock note).
+    * **SETTLED (past) interest.**  Each settled payment's ACTUAL accrued
+      interest (its outcome's ``interest`` -- the interest the payment's real
+      cash paid on the reset-aware running balance, correct even for an
+      off-schedule extra / short payment, where the schedule's replayed figure is
+      not), attributed to the DISPLAY-timezone civil YEAR of its paid date
+      (:func:`app.utils.balance_predicates.settled_day`, the L9 tax basis).  This
+      reads the loan's SOURCE events, not the posting cache, so a loan the
+      posting reader cannot value (no genesis opening posting) is still valued
+      from its facts -- closing B-6 -- rather than falling back to the schedule.
+    * **PROJECTED (future) interest.**  Each projected outcome's interest,
+      attributed to the year the payment is projected to be PAID: its visible
+      date (``max(due, as_of + 1d)``, ruling D1), so an overdue-but-still-
+      projected payment's interest deducts in the year it is expected to clear
+      rather than the closed year it was contractually due.  An overdue
+      installment with NO record contributes nothing: it is absent from the plan
+      entirely (finding B-9), so a delinquent loan's unpaid past does not inflate
+      its deduction.  The projection folds its LIVE cash from the same running
+      balance the loan's projected BALANCE reads (step **C6c**), and since plan
+      step recurrence:R16-c-1 from the same REPLAY: no installment can be in
+      both halves, because they are one list.
 
     **Loan-only, and total.**  A non-configured account (no
-    :class:`~app.models.loan_params.LoanParams`) has no fold and no plan, so it
+    :class:`~app.models.loan_params.LoanParams`) has no facts and no plan, so it
     contributes ``0.00`` -- matching the pre-C3c hybrid, where such an account was
     simply absent from the debt-schedule dict.  (The caller
     :func:`app.services.tax_report_service._build_schedule_a` selects only MORTGAGE
@@ -255,8 +234,8 @@ def loan_interest_in_year(
         account: The loan account whose paid interest to sum (the caller owns the
             ownership check and the mortgage-kind selection).
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            -- its scenario scopes the fold and the plan, and its memoized resolution
-            supplies the ``projection_seed`` (the same seed :func:`positions` folds).
+            -- its scenario scopes the timeline; its ``as_of`` is the plan's
+            clamp floor.
         year: The calendar / tax year to sum interest paid within.
 
     Returns:
@@ -270,31 +249,22 @@ def loan_interest_in_year(
             X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
-    debt_schedule = _kernel.generate_debt_schedules(
-        [account], ctx,
-    ).get(account.id)
-    if debt_schedule is None:
-        # Not a configured loan (no LoanParams): it has neither a fold nor a plan,
-        # so it contributes 0.00 -- matching the pre-C3c hybrid, where such an
-        # account was simply absent from the debt-schedule dict.
+    if resolved_loan(account, ctx) is None:
+        # Not a configured loan (no LoanParams): it has neither facts nor a
+        # plan, so it contributes 0.00 -- matching the pre-C3c hybrid, where
+        # such an account was simply absent from the debt-schedule dict.
         return _ZERO_MONEY
-
-    walk = ctx.loan_walk(account)
-    payment_day = resolved_loan(account, ctx).params.payment_day
+    walk = loan_timeline(account, ctx)
     settled_interest = _settled_sum_in_year(
-        walk, year, lambda split: split.interest,
+        walk, year, lambda outcome: outcome.interest,
     )
-    # The installments a settled payment already satisfies -- excluded from the
-    # projected half so no installment counts in both.  The set is the WALK's own
-    # (every settled payment, the settled half's set), NOT the plan's
-    # ``confirmed_shadows_through`` cut: see the module docstring's two-clock note.
-    settled_slots = frozenset(
-        _due_slot(split.income_shadow, payment_day)
-        for split in walk.payment_splits
-    )
-    projected_interest = plan_interest_in_year(
-        debt_schedule.projection_seed, memoized_plan(account, ctx), year,
-        exclude_slots=settled_slots,
+    projected_interest = sum(
+        (
+            outcome.interest
+            for outcome in walk.projected_splits
+            if outcome.visible_on.year == year
+        ),
+        _ZERO_MONEY,
     )
     return settled_interest + projected_interest
 
@@ -323,26 +293,3 @@ def _paid_year(shadow) -> int:
         The calendar year the payment was paid in, on the display-tz clock.
     """
     return settled_day(shadow.id, shadow.settled_on).year
-
-
-def _due_slot(shadow, payment_day: int) -> tuple[int, int]:
-    """Return the ``(year, month)`` installment slot a settled payment satisfies.
-
-    The merge key that keeps a settled payment (in the fold's walk) and the plan's
-    ESTIMATED synthesis of the same installment from both counting: the payment's
-    contractual due (year, month), via the project's single due-date derivation
-    (:func:`app.services.loan_loaders.loan_payment_due_date`).  Keyed by month rather
-    than exact date so the exclusion still matches a plan record whose due date the
-    resolver's biweekly-collision redistribution nudged within the month (the settled
-    payment's OWN due month never shifts, only display rows do).
-
-    Args:
-        shadow: The settled loan-side income shadow.
-        payment_day: The loan's contractual day-of-month due day (used only by the
-            due-date fallback for a shadow with no stored ``due_date``).
-
-    Returns:
-        The ``(year, month)`` of the installment this payment satisfies.
-    """
-    due = loan_payment_due_date(shadow, payment_day)
-    return (due.year, due.month)

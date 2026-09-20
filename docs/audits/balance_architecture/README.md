@@ -931,12 +931,10 @@ section 4, under their unchanged ids.*
   today because the replay's rows are DISCARDED whenever a `confirmed_view` is supplied -- and
   containment is not a fix.
 * [ ] **X-e** `refactor(accounts): current_anchor_balance is a reconciled cache or it is nothing` --
-  carries **N-96**, **N-85**, **N-180** and **X5**. **WIDENED 2026-07-27 (R-AO): the one-liner is
+  carries **N-96**, **N-85** and **X5**. **WIDENED 2026-07-27 (R-AO): the one-liner is
   not the step the code describes.** Most of the census is being taken by X-f1c3a..c, which delete
   the columns outright; what remains here is what those leaves do not reach -- the two callerless
-  public seam entries N-96 / N-85 name, the falsified de-duplication rationale in
-  `balance_at/_loan_interest.py` whose surviving question is UNVERIFIED (**N-180**), and X5's
-  backdated-assertion option, now largely answered by `observed_on`. **Its census is HISTORICAL and must be re-taken before this step is scoped**: it was
+  public seam entries N-96 / N-85 name (the de-duplication rationale in `balance_at/_loan_interest.py`, N-180, dissolved at `recurrence:R16-c-1` `c88ed6ba`: there are no two sets to differ), and X5's backdated-assertion option, now largely answered by `observed_on`. **Its census is HISTORICAL and must be re-taken before this step is scoped**: it was
   measured when the columns still existed, and `balance_at/_investment.py` was deleted outright at
   `17c57cde` (its modelled-asset work went to `_asset_fold.py`).
 * [ ] **X-p** `fix(analytics): the calendar's chips and its balance line are on one clock` -- closes

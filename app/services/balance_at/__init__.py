@@ -178,11 +178,14 @@ FROM here, not the other way round.  Inside the package the direction is
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
 _inputs}``,
 ``_liability -> {_kind_correct, _inputs}``, ``_secured_debt -> {_loan_figures, _positions,
-_inputs}``, ``_loan_figures -> _positions -> {_plan, _plan_fold}`` (the figures'
-payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} ->
-_plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
-at plan step R16-a when ``_plan`` passed the line ceiling, with the arrow one-way
-because ``_plan`` imports neither -- and ``_plan -> {_plan_definitions,
+_inputs}``, ``_loan_figures -> _positions -> {_loan_stream, _plan_fold}`` (the
+figures' payoff is the fold to zero, plan step C8d), ``{_positions,
+_loan_interest} -> _loan_stream -> _plan`` -- the ONE timeline, the recorded
+walk with the forward model's payments replayed behind it (plan step
+recurrence:R16-c-1) -- and ``_plan_fold -> _fold`` (the two forward readings
+that are not a balance at a date; it held the forward FOLD from plan step
+R16-a, when ``_plan`` passed the line ceiling, until R16-c-1 merged that fold
+into the timeline) -- and ``_plan -> {_plan_definitions,
 _plan_records}``, ``_plan_definitions -> {_plan_records, _resolution,
 _context}``, the second split of ``_plan`` at plan step R16-b-2 (the definition WALK that sums
 every recurring transfer into a loan, and the two RECORD types both halves
@@ -283,7 +286,7 @@ from ._outstanding import (
     CashOutstandingDifference,
     cash_outstanding_difference,
 )
-from ._plan_fold import PlannedInstallment, installments_payoff
+from ._plan_fold import installments_payoff
 from ._positions import (
     loan_installments,
     loan_payoff_date,
@@ -346,7 +349,6 @@ __all__ = [
     "GridRowFlags",
     "LoanFigures",
     "LoanTerms",
-    "PlannedInstallment",
     "installments_payoff",
     "SecuredLoanSeries",
     "TIER_CONFIRMED",
