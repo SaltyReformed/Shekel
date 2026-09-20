@@ -82,7 +82,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # one PostgreSQL build and cloned on another is not a supported combination.
 _BASE_IMAGE = (
     "postgres:18-alpine@sha256:"
-    "96d56f7f57c6aacd1fcb908bc83b345ec5f83231ee486dd66a1baadce274db88"
+    "6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd"
 )
 
 # PGDATA for both the build and every run.  Outside the image's declared

@@ -58,7 +58,8 @@ class TestSeedCredentialEntrypointScrub:
     """
 
     @pytest.fixture(scope="class")
-    def entrypoint_text(self) -> str:
+    @classmethod
+    def entrypoint_text(cls) -> str:
         """Return the full entrypoint.sh source as a string."""
         return ENTRYPOINT_SCRIPT.read_text(encoding="utf-8")
 
@@ -175,7 +176,8 @@ class TestSeedUserScriptScrubsEnv:
     """
 
     @pytest.fixture(scope="class")
-    def script_text(self) -> str:
+    @classmethod
+    def script_text(cls) -> str:
         """Return the full scripts/seed_user.py source as a string."""
         return SEED_USER_SCRIPT.read_text(encoding="utf-8")
 
@@ -255,7 +257,8 @@ class TestComposeAppStateVolume:
     """
 
     @pytest.fixture(scope="class")
-    def compose_text(self) -> str:
+    @classmethod
+    def compose_text(cls) -> str:
         """Return the full docker-compose.yml source as a string."""
         return DOCKER_COMPOSE.read_text(encoding="utf-8")
 
@@ -407,12 +410,14 @@ class TestDockerignoreCoverage:
     """
 
     @pytest.fixture(scope="class")
-    def dockerignore_text(self) -> str:
+    @classmethod
+    def dockerignore_text(cls) -> str:
         """Return the full .dockerignore source as a string."""
         return DOCKERIGNORE.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def dockerignore_lines(self, dockerignore_text: str) -> list[str]:
+    @classmethod
+    def dockerignore_lines(cls, dockerignore_text: str) -> list[str]:
         """Return the non-comment, non-blank lines of .dockerignore."""
         return [
             line.strip()
