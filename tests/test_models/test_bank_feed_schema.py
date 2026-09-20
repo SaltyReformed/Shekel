@@ -30,8 +30,6 @@ because the disconnect sentence ("revoke at Bridge") rests on it.
 
 import pytest
 import sqlalchemy.exc
-from alembic.autogenerate import compare_metadata
-from alembic.migration import MigrationContext
 
 from app.audit_infrastructure import AUDITED_TABLES
 from app.extensions import db
@@ -39,7 +37,7 @@ from app.models.bank_feed import BankFeed
 from app.models.user import User
 from app.services.auth_service import hash_password
 from app.utils.field_encryption import encrypt_secret
-from tests._test_helpers import load_migration_module
+from tests._test_helpers import assert_no_schema_drift, load_migration_module
 
 _MIGRATION = load_migration_module(
     "b447279d7a2e_a_bank_feed_is_the_owners_claimed_access_url.py",
@@ -273,24 +271,7 @@ class TestTheColumnsAreWhatTheRulingSaid:
         migration was driven on carries older tables' drifts, so this is
         the check that the CHAIN produces the model.
         """
-        with app.app_context():
-            connection = db.session.connection()
-            ctx = MigrationContext.configure(
-                connection=connection,
-                opts={
-                    "compare_type": True,
-                    "compare_server_default": True,
-                    "include_schemas": True,
-                    # Filters BOTH sides (the model's tables and the
-                    # database's), so an older table's drift stays out of
-                    # this test's verdict.
-                    "include_object": lambda obj, name, type_, *_: (
-                        type_ != "table"
-                        or (obj.schema, name) == ("budget", "bank_feeds")
-                    ),
-                },
-            )
-            assert compare_metadata(ctx, db.metadata) == []
+        assert_no_schema_drift(app, [("budget", "bank_feeds")])
 
     def test_the_repr_carries_no_ciphertext(self, app, db, seed_user):
         """A repr reaches log lines and tracebacks."""

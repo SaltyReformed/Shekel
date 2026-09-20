@@ -2723,6 +2723,49 @@ def load_migration_module(filename):
     return module
 
 
+def assert_no_schema_drift(app, tables):
+    """Assert the migration chain produces the models, for *tables* alone.
+
+    Alembic's own comparison over the test database -- migrated from scratch
+    through the chain, never ``create_all``'d -- scoped to the tables a
+    migration touched, with types and server defaults compared.  Scoped
+    because a rehearsal clone carries older tables' drifts and a test's
+    verdict must be about the chain the commit under test wrote.  Written
+    once here (the third copy would have been the sync leaf's) after
+    ``test_bank_feed_schema.py`` and ``test_declared_mapping_schema.py``
+    each carried it.
+
+    Args:
+        app: The Flask app (its context is entered here).
+        tables: The ``(schema, name)`` pairs whose drift is graded; every
+            other table is filtered out on BOTH sides of the comparison.
+
+    Raises:
+        AssertionError: Naming every difference Alembic found.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from app.extensions import db
+
+    touched = set(tables)
+    with app.app_context():
+        ctx = MigrationContext.configure(
+            connection=db.session.connection(),
+            opts={
+                "compare_type": True,
+                "compare_server_default": True,
+                "include_schemas": True,
+                "include_object": lambda obj, name, type_, *_: (
+                    type_ != "table" or (obj.schema, name) in touched
+                ),
+            },
+        )
+        assert compare_metadata(ctx, db.metadata) == []
+
+
 def load_init_database_module():
     """Load ``scripts/init_database.py`` by path (it is not a package member).
 

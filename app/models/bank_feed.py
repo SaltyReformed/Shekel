@@ -29,18 +29,25 @@ accident.  A door calls :func:`~app.utils.field_encryption.decrypt_secret` on
 the bytes, in the transaction that needs them, and holds the result no longer
 than the request.
 
-**Disconnect DELETES the row** (ruling **R-BI12**: "Disconnect deletes the row;
-revoke at Bridge is yours").  Nothing derived from a feed survives it: the
-imports it recorded stand on their own (each is a :class:`~app.models
-.statement_import.StatementImport` with its declared window), and the account
-mapping stays in ``budget.account_external_identities`` under the ``simplefin``
-source (a ref row the claim leaf seeds), so a re-connect finds its accounts
-already mapped.  The table joins :data:`app.audit_infrastructure
-.AUDITED_TABLES` like every ``budget`` table, so ``system.audit_log`` keeps
-every row written here -- the INSERT, a rotation's UPDATE, the DELETE --
-ciphertext included, as it keeps ``mfa_configs``', for ``AUDIT_RETENTION_DAYS``;
-revoking the token at Bridge is what makes those copies worthless, and the
-disconnect sentence says so.
+**Disconnect DELETES the row, and the mappings declared under it go with
+it** (ruling **R-BI12**: "Disconnect deletes the row; revoke at Bridge is
+yours"; ruling **R-BI26**: a mapping declared on the feed panel dies with the
+feed).  The imports it recorded stand on their own (each is a :class:`~app
+.models.statement_import.StatementImport` with its declared window); the
+account mapping -- ``budget.account_external_identities`` under the
+``simplefin`` source, ``feed_id`` naming this row -- is the owner's
+declaration made under this permission, so the CASCADE on
+``fk_account_external_identities_feed_owner`` removes it with the permission,
+and a re-connect declares its accounts again (the mapping form, the next
+commit of leaf 3c).  *Until R-BI26 this
+paragraph said the mapping stayed so a re-connect would find it; the
+developer ruled the other way on 2026-09-20, because a mapping with no feed
+behind it is a state nothing could act on.*  The table joins
+:data:`app.audit_infrastructure.AUDITED_TABLES` like every ``budget`` table,
+so ``system.audit_log`` keeps every row written here -- the INSERT, a
+rotation's UPDATE, the DELETE -- ciphertext included, as it keeps
+``mfa_configs``', for ``AUDIT_RETENTION_DAYS``; revoking the token at Bridge
+is what makes those copies worthless, and the disconnect sentence says so.
 
 **It moves no money.**  A feed is a standing permission; what it fetches is
 recorded by the sync door through the same recording path a CSV upload takes,
@@ -83,6 +90,12 @@ class BankFeed(db.Model):
         # checking first: a double-submitted claim cannot store two access
         # URLs for one owner, and "the owner's feed" has at most one answer.
         db.UniqueConstraint("user_id", name="uq_bank_feeds_user"),
+        # The superkey ``fk_account_external_identities_feed_owner`` targets
+        # (ruling **R-BI26**), so a declared mapping's owner IS its feed's
+        # owner by key.  It constrains nothing on its own (``id`` is the
+        # primary key); PostgreSQL requires a UNIQUE over exactly the
+        # referenced columns -- ``uq_accounts_id_user``'s construction.
+        db.UniqueConstraint("id", "user_id", name="uq_bank_feeds_id_user"),
         {"schema": "budget"},
     )
 
