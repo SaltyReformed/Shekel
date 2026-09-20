@@ -4,7 +4,7 @@ Plan step **balance:X-bi-6a**, ruling **R-BAL13** (developer ruling
 **R-BAL38**).  Until this step every balance reader loaded a still-projected
 transfer's two SHADOW rows and priced each through amount rule 5 (*a shadow is
 worth its parent*).  Now the readers derive one
-:class:`~app.services.transfer_legs.PlannedTransferLeg` per side from the parent
+:class:`~app.services.transfer_legs.TransferLeg` per side from the parent
 row in ``budget.transfers`` and no reader folding a projection reads a
 projected shadow at all.
 
@@ -28,6 +28,7 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
@@ -44,8 +45,20 @@ from app.services.cash_ledger import (
 from app.services.recorded_contributions import (
     load_shadow_income_contributions_for_account,
 )
+from app.services.cash_flow_set import (
+    CashFlowSet,
+    leg_accounts_shown,
+    own_rows_clause,
+    paycheck_rows_clause,
+)
+from app.services.cash_ledger import leg_amounts_by_key, leg_settled_amounts_by_key
+from app.services.transaction_service import leg_retained_amounts_by_key
 from app.services.transfer_legs import (
-    PlannedTransferLeg,
+    TransferLeg,
+    covering_movements_by_leg,
+    grid_transfer_leg,
+    grid_transfer_legs,
+    leg_label,
     leg_of,
     planned_transfer_legs,
 )
@@ -53,6 +66,7 @@ from app.services.transfer_service import (
     TransferSpec,
     create_transfer as create_transfer_from_spec,
     delete_transfer,
+    update_transfer,
 )
 from tests._test_helpers import (
     cover_bare_settled_row,
@@ -124,11 +138,11 @@ class TestLegOf:
         income = leg_of(transfer, 2)
         expense = leg_of(transfer, 1)
 
-        assert income == PlannedTransferLeg(
+        assert income == TransferLeg(
             transfer=transfer, account_id=2, is_income=True,
         )
         assert income.is_expense is False
-        assert expense == PlannedTransferLeg(
+        assert expense == TransferLeg(
             transfer=transfer, account_id=1, is_income=False,
         )
         assert expense.is_expense is True
@@ -152,7 +166,7 @@ class TestLegOf:
         assert leg.due_date == date(2026, 3, 4)
 
 
-class TestPlannedTransferLegs:
+class TestTransferLegs:
     """The loader: which parents, on which side, and none that has settled."""
 
     def test_each_account_gets_its_own_side(
@@ -244,7 +258,7 @@ class TestTheCashFoldReadsTheParent:
 
             plan = planned_cash_rows(checking.id, seed_user["scenario"].id)
 
-            legs = [item for item in plan if isinstance(item, PlannedTransferLeg)]
+            legs = [item for item in plan if isinstance(item, TransferLeg)]
             rows = [item for item in plan if isinstance(item, Transaction)]
             assert [(leg.transfer.id, leg.is_income) for leg in legs] == [
                 (transfer.id, False),
@@ -382,7 +396,7 @@ class TestTheCashFoldReadsTheParent:
 
             assert len([
                 item for item in folded.plan.rows
-                if isinstance(item, PlannedTransferLeg)
+                if isinstance(item, TransferLeg)
             ]) == 3, "the plan came back short -- a count over nothing"
             reads = [
                 statement for statement, _ in statements
@@ -704,6 +718,325 @@ class TestAStatusDriftIsCountedOnce:
             )
 
             assert [
-                (isinstance(i.source, PlannedTransferLeg), i.dates.settled_on)
+                (isinstance(i.source, TransferLeg), i.dates.settled_on)
                 for i in installments
             ] == [(False, period.start_date), (True, None)]
+
+
+# ── The grid's legs (plan step balance:X-bi-6-1, ruling R-BAL87) ────────
+#
+# The leaf that widened this module's value from the fold's plan half to the
+# grid's whole view of a transfer: a leg carries its RECORD (the covering
+# movement, reached through the one join), the grid loader draws one leg per
+# side the cash-flow set shows, and three producers price a leg beside the
+# rows' maps.  Each case below is the state the byte-identity harness could
+# not distinguish on the production restore.
+
+
+class TestALegsRecordIsItsCoveringMovement:
+    """``covering_movements_by_leg`` and the leg it hangs off."""
+
+    def test_a_settled_transfers_legs_carry_their_movements(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Each side's record is the covering movement on ITS account, dated."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 2, 3),
+            )
+            projected = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+
+            records = covering_movements_by_leg([settled.id, projected.id])
+
+            assert set(records) == {
+                (settled.id, checking.id), (settled.id, savings.id),
+            }
+            for account in (checking, savings):
+                movement = records[(settled.id, account.id)]
+                assert movement.account_id == account.id
+                assert movement.covers_settlement is True
+                assert movement.amount == Decimal("240.00")
+                assert movement.settled_on == date(2026, 2, 3)
+            assert covering_movements_by_leg([]) == {}
+
+    def test_a_deleted_shadows_movement_is_not_a_legs_record(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The join reads the LIVE pair: a soft-deleted shadow's movement is no record."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            assert len(covering_movements_by_leg([settled.id])) == 2
+
+            delete_transfer(settled.id, seed_user["user"].id, soft=True)
+            db.session.commit()
+
+            assert covering_movements_by_leg([settled.id]) == {}
+
+    def test_grid_transfer_leg_loads_one_leg_with_its_record(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+
+            leg = grid_transfer_leg(settled, savings.id)
+
+            assert leg == TransferLeg(
+                transfer=settled, account_id=savings.id, is_income=True,
+                record=leg.record,
+            )
+            assert leg.record is not None and leg.record.account_id == savings.id
+            assert leg.settled_on == date(2026, 2, 3)
+            assert leg.cell_key == (settled.id, savings.id)
+
+
+class TestTheGridLoaderDrawsTheSetsSide:
+    """``grid_transfer_legs`` under ``leg_accounts_shown`` (ruling R-CC23)."""
+
+    def test_a_transfer_with_one_endpoint_in_the_set_shows_from_that_side(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            checking_set = CashFlowSet.single(checking)
+            savings_set = CashFlowSet.single(savings)
+
+            assert leg_accounts_shown(checking_set, transfer) == (checking.id,)
+            assert leg_accounts_shown(savings_set, transfer) == (savings.id,)
+            on_checking = grid_transfer_legs(
+                [transfer], lambda t: leg_accounts_shown(checking_set, t),
+            )
+            assert [(leg.account_id, leg.is_income) for leg in on_checking] == [
+                (checking.id, False),
+            ]
+
+    def test_a_transfer_between_two_members_shows_once_from_the_balance_line(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Both endpoints in the set: the balance line's leg alone (the far leg is not drawn)."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            elsewhere = _savings(seed_user, name="Elsewhere")
+            db.session.commit()
+            both = CashFlowSet(balance=savings, members=(checking, savings))
+
+            assert leg_accounts_shown(both, transfer) == (savings.id,)
+            legs = grid_transfer_legs(
+                [transfer], lambda t: leg_accounts_shown(both, t),
+            )
+            assert [(leg.account_id, leg.is_income) for leg in legs] == [
+                (savings.id, True),
+            ]
+            # A transfer touching no member draws nowhere.
+            assert leg_accounts_shown(CashFlowSet.single(elsewhere), transfer) == ()
+            assert grid_transfer_legs(
+                [transfer], lambda t: leg_accounts_shown(CashFlowSet.single(elsewhere), t),
+            ) == []
+
+    def test_the_own_rows_clause_keeps_no_shadow(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """``own_rows_clause``: every member row, no shadow -- where the paycheck clause kept the near leg."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            checking_set = CashFlowSet.single(checking)
+
+            own = (
+                db.session.query(Transaction.id)
+                .filter(
+                    Transaction.pay_period_id == seed_periods[2].id,
+                    own_rows_clause(checking_set),
+                )
+                .all()
+            )
+            paycheck = (
+                db.session.query(Transaction.id)
+                .filter(
+                    Transaction.pay_period_id == seed_periods[2].id,
+                    paycheck_rows_clause(checking_set),
+                )
+                .all()
+            )
+            shadow_id = _shadow_on(transfer, checking).id
+
+            assert (shadow_id,) in paycheck
+            assert (shadow_id,) not in own
+            assert not any(
+                db.session.get(Transaction, row_id).transfer_id is not None
+                for (row_id,) in own
+            )
+
+
+class TestTheLegMapProducers:
+    """The three leg-keyed maps beside their row twins, over the three states a leg can be in."""
+
+    def test_a_projected_leg_is_priced_and_records_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            leg = grid_transfer_leg(transfer, checking.id)
+            key = leg.cell_key
+
+            assert leg_amounts_by_key([leg], basis_for(checking, seed_user["scenario"])) == {key: _AMOUNT}
+            assert leg_settled_amounts_by_key([leg]) == {key: None}
+            assert leg_retained_amounts_by_key([leg]) == {key: None}
+
+    def test_a_settled_leg_records_its_movements_figure(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The recorded figure is the movement's, not the plan's, on both sides."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            legs = [
+                grid_transfer_leg(settled, checking.id),
+                grid_transfer_leg(settled, savings.id),
+            ]
+
+            assert leg_settled_amounts_by_key(legs) == {
+                (settled.id, checking.id): Decimal("240.00"),
+                (settled.id, savings.id): Decimal("240.00"),
+            }
+            # What the amount IS is the PLAN, unconditionally -- the budget
+            # map's rule (``amounts_by_id``, ruling E-21) -- so the cell can
+            # strike the estimate through beside the record.
+            assert leg_amounts_by_key(legs, basis_for(checking, seed_user["scenario"])) == {
+                (settled.id, checking.id): _AMOUNT,
+                (settled.id, savings.id): _AMOUNT,
+            }
+            assert leg_retained_amounts_by_key(legs) == {
+                (settled.id, checking.id): None, (settled.id, savings.id): None,
+            }
+
+    def test_a_settled_leg_with_no_movement_is_the_zero_record(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Ruling R-BAL82's state on a leg: settled, no covering movement, ``$0``."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            leg = TransferLeg(
+                transfer=settled, account_id=checking.id, is_income=False,
+                record=None,
+            )
+            assert leg_settled_amounts_by_key([leg]) == {leg.cell_key: Decimal("0")}
+
+    def test_a_reverted_leg_retains_a_stated_figure_and_not_a_resolved_one(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A typed correction outlives the revert; the plan's own price does not.
+
+        ``honoured_figure`` over ``movement_settlement``: only a STATED record
+        is honoured (ruling R-BAL61), which is the rule the row twin applies
+        through ``honoured_correction``.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            owner_id = seed_user["user"].id
+            typed = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 2, 3),
+            )
+            resolved = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT, settled_on=date(2026, 2, 17),
+            )
+            db.session.commit()
+            for transfer in (typed, resolved):
+                update_transfer(
+                    transfer.id, owner_id,
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                )
+            db.session.commit()
+
+            typed_leg = grid_transfer_leg(typed, checking.id)
+            resolved_leg = grid_transfer_leg(resolved, checking.id)
+
+            assert typed_leg.record is not None and typed_leg.record.settled_on is None
+            assert leg_retained_amounts_by_key([typed_leg, resolved_leg]) == {
+                typed_leg.cell_key: Decimal("240.00"),
+                resolved_leg.cell_key: None,
+            }
+            assert leg_settled_amounts_by_key([typed_leg, resolved_leg]) == {
+                typed_leg.cell_key: None, resolved_leg.cell_key: None,
+            }
+
+
+class TestALegsDisplayProjections:
+    """The parent's columns read through the leg, and the label composition."""
+
+    def test_the_label_is_composed_from_the_endpoints_current_names(self):
+        savings = Account(name="Savings")
+        checking = Account(name="Checking")
+        transfer = Transfer(from_account=checking, to_account=savings)
+        transfer.from_account_id, transfer.to_account_id = 1, 2
+        expense = TransferLeg(transfer=transfer, account_id=1, is_income=False)
+        income = TransferLeg(transfer=transfer, account_id=2, is_income=True)
+
+        assert expense.name == "Transfer to Savings"
+        assert income.name == "Transfer from Checking"
+        assert leg_label(checking, savings) == (
+            "Transfer to Savings", "Transfer from Checking",
+        )
+        assert expense.account is checking and income.account is savings
+
+        savings.name = "Emergency Fund"
+        assert expense.name == "Transfer to Emergency Fund"
+        assert expense.template_id is None and expense.recurs is False
+        assert expense.settled_on is None

@@ -40,7 +40,7 @@ from app.services.cash_ledger import (
     CashLedgerWalk,
     sum_projected,
 )
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
@@ -405,7 +405,7 @@ def _budget_legs(
     of a cash-flow set, which the paycheck grid shows from the balance line's
     side and not from here.  A settled one is a fact keyed by its shadow's
     ``transaction_id``; a still-projected one is a
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` keyed by its
+    :class:`~app.services.transfer_legs.TransferLeg` keyed by its
     transfer's id.  The balance account itself passes
     :meth:`~app.services.cash_flow_set.FarLegs.none` -- every leg it holds is
     the near side by definition -- so :func:`period_view_of`'s columns are
@@ -463,16 +463,16 @@ def _budget_legs(
             # is the classification this function pins by TYPE.
             expense[fact.pay_period_id] -= fact.delta
     # A transfer LEG files under its PARENT's period (plan step X-bi-6a):
-    # ``PlannedTransferLeg.pay_period_id`` reads the parent's column, so the
+    # ``TransferLeg.pay_period_id`` reads the parent's column, so the
     # one attribute this grouping asks is answered by rows and legs alike.
-    by_period: "dict[int, list[Transaction | PlannedTransferLeg]]" = (
+    by_period: "dict[int, list[Transaction | TransferLeg]]" = (
         defaultdict(list)
     )
     for txn in plan.rows:
         if txn.pay_period_id not in income:
             continue
         if (
-            isinstance(txn, PlannedTransferLeg)
+            isinstance(txn, TransferLeg)
             and txn.transfer.id in far.transfer_ids
         ):
             continue

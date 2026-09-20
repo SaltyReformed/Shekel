@@ -1190,30 +1190,35 @@ class TestGridCells:
             assert "finalised" not in html.lower()
             assert not field_is_disabled(html, "amount")
 
-    def test_full_edit_renders_due_date_input_for_transfer_shadow(
+    def test_full_edit_from_a_grid_leg_renders_due_date_input_and_targets_the_leg(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """GET /transactions/<shadow>/full-edit renders an editable due_date field.
+        """GET /transfers/<id>/full-edit?leg_account_id= renders the editable due date.
 
-        The transfer here has no due date, yet the input renders (empty) so the
-        user can add one; get_full_edit detects the shadow and returns the
-        transfer edit form, which posts to the transfer update route and
-        mirrors the value to both shadows.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87).**  It
+        asked ``GET /transactions/<shadow>/full-edit``, the transaction door
+        that detected a SHADOW row and answered the transfer form; the grid
+        draws a transfer's LEG off its parent now and the leg's cell asks the
+        TRANSFER's own door, naming the account the leg is on.  The claim is
+        the same -- a transfer with no due date renders the input (empty) so
+        the user can add one -- plus what the leg needs: the form targets the
+        leg's cell and posts the leg back so the route re-renders that cell.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
-            shadow = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=xfer.id)
-                .first()
+            checking_id = seed_user["account"].id
+
+            response = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={checking_id}",
             )
 
-            response = auth_client.get(f"/transactions/{shadow.id}/full-edit")
-
             assert response.status_code == 200
-            assert b'name="due_date"' in response.data
-            assert b'type="date"' in response.data
+            html = response.data.decode()
+            assert 'name="due_date"' in html
+            assert 'type="date"' in html
+            assert f'name="leg_account_id" value="{checking_id}"' in html
+            assert f'hx-target="#xfer-leg-{xfer.id}-{checking_id}"' in html
 
     def test_get_cell_other_users_transfer(self, app, auth_client, seed_user):
         """GET /transfers/cell/<id> for another user's transfer returns 404.
@@ -1609,15 +1614,19 @@ class TestTransferInstance:
             assert xfer.status_id == projected_id
             assert transfer_amount(xfer) == Decimal("250.00")
 
-    def test_a_SHADOW_patch_retyping_the_amount_reprices_the_whole_pair(
+    def test_a_LEG_patch_retyping_the_amount_reprices_the_whole_pair(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """The THIRD door onto a transfer's amount, and the one with no test.
+        """The grid door onto a transfer's amount re-prices the whole pair.
 
-        A PATCH addressed to a transfer SHADOW is answered by updating its
-        PARENT, so a figure submitted here is a figure submitted for the
-        transfer -- and both legs must take it too (ruling **R-IO**: the figure
-        a human types always wins).
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87).**  It
+        was ``PATCH /transactions/<shadow>``, the transaction door that
+        re-expressed a request on a SHADOW row as a transfer update; the grid
+        draws a transfer's LEG off its parent now and the leg's popover posts
+        to the TRANSFER's PATCH with ``leg_account_id``.  The claim stands: a
+        figure submitted from the grid is a figure submitted for the transfer,
+        both legs take it (ruling **R-IO**: the figure a human types always
+        wins), and the response is the LEG's cell, not the transfers page's.
 
         **This case exists because the door BROKE and nothing noticed.**  Plan
         step X-au-f replaced ``update_transfer``'s ``amount`` +
@@ -1645,15 +1654,20 @@ class TestTransferInstance:
             )
 
             response = auth_client.patch(
-                f"/transactions/{shadow.id}",
+                f"/transfers/instance/{xfer_id}",
                 data={
-                    "estimated_amount": "377.00",
+                    "amount": "377.00",
                     # What the box was RENDERED with, which is what makes this a
                     # RETYPE rather than an echo (ruling R-JR).
-                    "estimated_amount_as_rendered": "200.00",
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
+                    "leg_account_id": str(shadow.account_id),
                 },
             )
             assert response.status_code == 200, response.data
+            html = response.data.decode()
+            assert f'data-xfer-id="{xfer_id}"' in html
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert "377" in html
 
             db.session.expire_all()
             reloaded = db.session.get(Transfer, xfer_id)
@@ -1664,12 +1678,17 @@ class TestTransferInstance:
             assert len(legs) == 2
             assert {shadow_amount(leg) for leg in legs} == {Decimal("377.00")}
 
-    def test_finalised_transfer_shadow_amount_edit_rejected(
+    def test_finalised_transfer_leg_amount_edit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """Editing a finalised transfer's amount via its SHADOW transaction
-        PATCH is also refused -- the lock covers the transaction-shadow
-        entry point, and the parent amount is unchanged (#26)."""
+        """Editing a finalised transfer's amount from its grid LEG is refused.
+
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: the
+        SHADOW PATCH this graded is gone, and the grid's door is the transfer
+        PATCH carrying ``leg_account_id``.  The lock covers that entry point,
+        the refusal renders INTO the leg's cell (so the person who clicked
+        sees it), and the parent amount is unchanged (#26).
+        """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
@@ -1681,16 +1700,19 @@ class TestTransferInstance:
             )
 
             response = auth_client.patch(
-                f"/transactions/{shadow.id}",
+                f"/transfers/instance/{xfer.id}",
                 # Well-formed, so the refusal under test is the FINALISED lock
                 # and not the schema declining an unaccompanied figure.
                 data={
-                    "estimated_amount": "999.99",
-                    "estimated_amount_as_rendered": "200.00",
+                    "amount": "999.99",
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
+                    "leg_account_id": str(shadow.account_id),
                 },
             )
             assert response.status_code == 400
-            assert "finalised" in response.data.decode()
+            html = response.data.decode()
+            assert "finalised" in html
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
 
             db.session.refresh(xfer)
             assert transfer_amount(xfer) == Decimal("200.00")
@@ -1765,17 +1787,19 @@ class TestTransferInstance:
             db.session.refresh(xfer)
             assert xfer.status.name == "Projected"
 
-    def test_shadow_patch_to_credit_rejected(
+    def test_leg_patch_to_credit_rejected(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCHing a transfer SHADOW to Credit is refused with 400.
+        """PATCHing a transfer to Credit from its grid LEG is refused with 400.
 
-        The shadow PATCH path forwards any submitted ``status_id`` to
-        ``transfer_service.update_transfer``; before the transfer map
-        split this set the parent and BOTH shadows to Credit, silently
-        removing the whole transfer from both accounts' projections
-        with no payback compensation (the mark-credit routes block
-        shadows, but this generic path did not).
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        was the SHADOW PATCH, which forwarded any submitted ``status_id`` to
+        ``transfer_service.update_transfer`` (before the transfer map split
+        this set the parent and BOTH shadows to Credit, silently removing the
+        whole transfer from both projections with no payback compensation).
+        The grid's door is the transfer PATCH with ``leg_account_id`` now; the
+        transfer-specific transition map refuses it there too, and the
+        refusal renders into the leg's cell.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1790,12 +1814,17 @@ class TestTransferInstance:
             )
 
             response = auth_client.patch(
-                f"/transactions/{shadow.id}",
-                data={"status_id": str(credit_id)},
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(credit_id),
+                    "leg_account_id": str(shadow.account_id),
+                },
             )
 
             assert response.status_code == 400
-            assert "Invalid transfer status transition" in response.data.decode()
+            html = response.data.decode()
+            assert "Invalid transfer status transition" in html
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
 
             # Parent and both shadows untouched -- still Projected.
             db.session.refresh(xfer)
@@ -2400,19 +2429,20 @@ class TestTransferSettleDayEditDoor:
             }
             assert bases == {an_entered_day(corrected)}
 
-    def test_the_SHADOW_branch_of_the_transaction_PATCH_echoes_too(
+    def test_the_LEG_door_of_the_transfer_PATCH_echoes_too(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Plan step **X-az**: the ECHO rule at the THIRD status door.
+        """Plan step **X-az**: the ECHO rule at the grid's status door.
 
-        A transfer shadow PATCHed through ``/transactions/<id>`` branches into
-        ``routes/transactions/_shadow_mutations``, which carries its own call of
-        the shared reading -- and a third spelling of one rule is three chances
-        for one of them to launder.  It reads the SHADOW's own recorded pair,
-        which is the pair for both legs (Transfer Invariant 3).
-
-        Drop the ``recorded`` argument there and this fails while the two doors
-        above stay green, which is the point of grading all three.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: the
+        SHADOW door this graded (``PATCH /transactions/<shadow>``, re-expressed
+        by ``_shadow_mutations`` as a transfer update) is deleted; the grid's
+        door is the transfer PATCH carrying ``leg_account_id``, and the claim
+        is graded there, with the response the LEG's cell.
+        The transfer PATCH grades a leg's request by the same reading the
+        transfers page's takes, so this and the two doors above share one
+        spelling of the rule; what a leg's request adds is the response
+        surface, and a laundered basis would still be visible here.
         """
         with app.app_context():
             day = display_today() - timedelta(days=6)
@@ -2428,8 +2458,11 @@ class TestTransferSettleDayEditDoor:
             shadow_id = shadows[0].id
 
             response = auth_client.patch(
-                f"/transactions/{shadow_id}",
-                data={"settled_on": day.isoformat()},
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on": day.isoformat(),
+                    "leg_account_id": str(shadows[0].account_id),
+                },
             )
             assert response.status_code == 200, response.get_data(
                 as_text=True,
@@ -2439,7 +2472,7 @@ class TestTransferSettleDayEditDoor:
             assert recorded_settle_day(
                 db.session.get(Transaction, shadow_id),
             ) == an_observed_day(day), (
-                "the shadow branch laundered a bank OBSERVATION into the "
+                "the leg door laundered a bank OBSERVATION into the "
                 "owner's own day"
             )
 
@@ -2608,7 +2641,7 @@ class TestTransferSettleDayEditDoor:
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transactions/{shadow.id}/full-edit",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, (
@@ -2632,7 +2665,7 @@ class TestTransferSettleDayEditDoor:
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transactions/{shadow.id}/full-edit",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, f"{url} did not render"
@@ -2704,7 +2737,7 @@ class TestTransferSettleDayEditDoor:
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transactions/{shadow.id}/full-edit",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
             ):
                 response = auth_client.get(url)
                 assert response.status_code == 200, (
@@ -2720,24 +2753,19 @@ class TestTransferSettleDayEditDoor:
                     f"{url} pre-filled a day onto a row that carries none"
                 )
 
-    def test_the_shadow_PATCH_door_corrects_the_pair_too(
+    def test_the_LEG_door_corrects_the_pair_too(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """PATCHing a SHADOW's own route corrects both shadows and the ledger.
+        """PATCHing a settle day from a grid LEG corrects both shadows and the ledger.
 
-        There are TWO routes onto a transfer's settle day, and this is the one
-        no test reached: ``PATCH /transactions/<shadow_id>`` lands in
-        ``_shadow_mutations._apply_shadow_update``, which re-expresses the
-        submitted fields as ``transfer_service.update_transfer`` kwargs.  A
-        neutral review DELETED that mapping block outright and the whole 7,803-
-        test suite stayed green -- new, deliberate, defensive code with nothing
-        grading either claim its own comment makes.
-
-        No UI submits a day here (a shadow's popover is the TRANSFER form), so
-        the reachable callers are a crafted request, a replayed POST or a future
-        surface.  That is precisely why it is worth a test: the block exists so
-        such a request cannot LOOK like it took while doing nothing, and so the
-        two doors onto one rule answer identically.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: the
+        SHADOW door this graded (``PATCH /transactions/<shadow>``, re-expressed
+        by ``_shadow_mutations`` as a transfer update) is deleted; the grid's
+        door is the transfer PATCH carrying ``leg_account_id``, and the claim
+        is graded there, with the response the LEG's cell.
+        The leg's popover is the transfer form, so this is the request that
+        form makes: the day, and the leg it was opened from.  The pair and
+        the ledger follow, as the transfers page's request makes them.
         """
         with app.app_context():
             original = display_today() - timedelta(days=8)
@@ -2752,38 +2780,38 @@ class TestTransferSettleDayEditDoor:
             )
 
             response = auth_client.patch(
-                f"/transactions/{shadow.id}",
-                data={"settled_on": corrected.isoformat()},
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on": corrected.isoformat(),
+                    "leg_account_id": str(shadow.account_id),
+                },
             )
             assert response.status_code == 200, response.get_data(as_text=True)[:300]
 
             db.session.expire_all()
             assert self._shadow_days(xfer.id) == {corrected}, (
-                "the shadow PATCH door dropped the settle day: the request "
+                "the leg door dropped the settle day: the request "
                 "answered 200 and changed nothing"
             )
             assert self._net_by_day(xfer.id) == {corrected: Decimal("200.00")}, (
-                "the shadow PATCH door moved the day without the ledger: "
+                "the leg door moved the day without the ledger: "
                 f"{self._net_by_day(xfer.id)}"
             )
 
-    def test_the_shadow_PATCH_door_drops_a_day_beside_a_revert(
+    def test_the_LEG_door_drops_a_day_beside_a_revert(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A revert through the SHADOW route drops the day rather than 400ing.
+        """A revert from a grid LEG drops the day rather than 400ing.
 
-        Ruling **R-EG** through the second door.  Without the drop this request
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: the
+        SHADOW door this graded (``PATCH /transactions/<shadow>``, re-expressed
+        by ``_shadow_mutations`` as a transfer update) is deleted; the grid's
+        door is the transfer PATCH carrying ``leg_account_id``, and the claim
+        is graded there, with the response the LEG's cell.
+        Ruling **R-EG** through the grid's door.  Without the drop this request
         reaches ``apply_settle_day_correction`` with a day for a Projected
-        transfer and raises.
-
-        ``_apply_shadow_update`` grades the submitted day against the PARENT
-        transfer's status rather than the shadow's -- ``transfer_service`` hands
-        it to a function that grades against the parent, so reading the shadow's
-        would be a second spelling of one question.  **This test does not prove
-        that half and cannot**: Transfer Invariant 3 keeps the two statuses
-        equal, so swapping one read for the other is undetectable from outside.
-        A neutral review found the claim being made where nothing graded it; what
-        is graded here is the drop.
+        transfer and raises.  What is graded here is the drop, and that the
+        refusal-free response is the leg's cell.
         """
         with app.app_context():
             settled_day = display_today() - timedelta(days=6)
@@ -2797,14 +2825,15 @@ class TestTransferSettleDayEditDoor:
             )
 
             response = auth_client.patch(
-                f"/transactions/{shadow.id}",
+                f"/transfers/instance/{xfer.id}",
                 data={
+                    "leg_account_id": str(shadow.account_id),
                     "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
                     "settled_on": settled_day.isoformat(),
                 },
             )
             assert response.status_code == 200, (
-                "the shadow route refused a revert because the payload carried "
+                "the leg door refused a revert because the payload carried "
                 f"the row's own settle day: {response.get_data(as_text=True)[:300]}"
             )
 
@@ -2813,7 +2842,7 @@ class TestTransferSettleDayEditDoor:
             assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
             assert self._shadow_days(xfer.id) == {None}
             assert self._net_by_day(xfer.id) == {}, (
-                "the revert through the shadow door left the effect posted"
+                "the revert through the leg door left the effect posted"
             )
 
 
@@ -3091,23 +3120,31 @@ def _get_expense_shadow(xfer):
     )
 
 
-class TestShadowContextResponse:
-    """Verify that transfer route handlers render _transaction_cell.html
-    (not _transfer_cell.html) when the request includes source_txn_id,
-    indicating the form was opened from a shadow transaction cell in the grid.
+class TestLegContextResponse:
+    """Verify that transfer route handlers render the LEG's grid cell
+    (not _transfer_cell.html) when the request includes ``leg_account_id``,
+    indicating the form was opened from a transfer leg's cell in the grid.
+
+    **Was ``TestShadowContextResponse`` until plan step balance:X-bi-6-1
+    (ruling R-BAL87)**: the marker was ``source_txn_id``, the SHADOW row's id,
+    and the response was that row's transaction cell.  The grid draws a
+    transfer's leg off its parent now, so the marker is the leg's account and
+    the response is the leg's cell -- the same partial, drawing a
+    ``TransferLeg``, whose opener carries ``data-xfer-id`` and
+    ``data-leg-account-id`` and whose wrapper is ``xfer-leg-<id>-<account>``.
 
     Fixes H1, L2, L3 from transfer_rework_verification.md.
     """
 
-    def test_update_from_shadow_renders_transaction_cell(
+    def test_update_from_leg_renders_the_leg_cell(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH with source_txn_id renders _transaction_cell.html content.
+        """PATCH with leg_account_id renders the leg's grid cell.
 
-        When the transfer full edit popover is opened from a shadow
-        transaction cell in the grid, the response must contain the
-        transaction cell template (with ``txn-cell-`` IDs and transaction
-        HTMX routes) so the cell remains interactive after the update.
+        When the transfer full edit popover is opened from a leg's cell in
+        the grid, the response must be that leg's cell (the grid's partial,
+        keyed by the leg's account) so the cell remains interactive after
+        the update -- and NOT the transfers page's cell.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3116,14 +3153,23 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "300.00", "amount_as_rendered": rendered_transfer_amount(xfer), "source_txn_id": str(shadow.id)},
+                data={
+                    "amount": "300.00",
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
+                    "leg_account_id": str(shadow.account_id),
+                },
             )
 
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Must render _transaction_cell.html (has transaction routes).
-            assert "transactions.get_quick_edit" in html or f"txn_id={shadow.id}" in html or "txn-cell" in html
+            # Must render the LEG's cell: the grid partial's opener names the
+            # transfer and the leg's account, and its Mark Paid is the
+            # transfer's door.
+            assert f'data-xfer-id="{xfer.id}"' in html
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
+            assert f'data-cell="xfer-leg-{xfer.id}-{shadow.account_id}"' in html
+            assert "/transactions/" not in html
             # Must NOT render _transfer_cell.html (has transfer routes).
             assert "xfer-cell-" not in html
             assert "transfers/quick-edit" not in html.replace("transfers/instance", "")
@@ -3139,15 +3185,17 @@ class TestShadowContextResponse:
             db.session.refresh(shadow)
             assert shadow_amount(shadow) == Decimal("300.00")
 
-    def test_mark_done_from_shadow_renders_transaction_cell_with_grid_refresh(
+    def test_mark_done_from_leg_renders_the_leg_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST mark-done with source_txn_id renders _transaction_cell.html
+        """POST mark-done with leg_account_id renders the leg's cell
         and triggers gridRefresh (not balanceChanged).
 
         Status changes affect subtotal rows and cell visibility, so the
-        transfer route must match the transaction route guard pattern of
-        triggering gridRefresh when called from a shadow cell context.
+        transfer route must match the transaction route pattern of
+        triggering gridRefresh when called from a grid cell context.  The
+        cell it returns is SETTLED: its opener's label says Paid and the
+        Mark Paid button is gone.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3156,14 +3204,17 @@ class TestShadowContextResponse:
 
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/mark-done",
-                data={"source_txn_id": str(shadow.id)},
+                data={"leg_account_id": str(shadow.account_id)},
             )
 
             assert resp.status_code == 200
             html = resp.data.decode()
 
-            # Transaction cell, not transfer cell.
+            # The leg's cell, not the transfers page's cell.
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
             assert "xfer-cell-" not in html
+            assert "-- Paid" in html
+            assert 'class="paybtn"' not in html
 
             # Must trigger gridRefresh for status changes.
             assert resp.headers.get("HX-Trigger") == "gridRefresh"
@@ -3178,10 +3229,10 @@ class TestShadowContextResponse:
             )
             assert all(s.status.name == "Paid" for s in shadows)
 
-    def test_cancel_from_shadow_renders_transaction_cell_with_grid_refresh(
+    def test_cancel_from_leg_renders_the_leg_cell_with_grid_refresh(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST cancel with source_txn_id renders _transaction_cell.html
+        """POST cancel with leg_account_id renders the leg's cell
         and triggers gridRefresh.
         """
         with app.app_context():
@@ -3191,25 +3242,26 @@ class TestShadowContextResponse:
 
             resp = auth_client.post(
                 f"/transfers/instance/{xfer.id}/cancel",
-                data={"source_txn_id": str(shadow.id)},
+                data={"leg_account_id": str(shadow.account_id)},
             )
 
             assert resp.status_code == 200
             html = resp.data.decode()
 
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
             assert "xfer-cell-" not in html
             assert resp.headers.get("HX-Trigger") == "gridRefresh"
 
             db.session.refresh(xfer)
             assert xfer.status.name == "Cancelled"
 
-    def test_update_without_source_txn_id_renders_transfer_cell(
+    def test_update_without_leg_account_id_renders_transfer_cell(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH without source_txn_id renders _transfer_cell.html (regression).
+        """PATCH without leg_account_id renders _transfer_cell.html (regression).
 
         When the transfer management page (not the grid) submits an
-        update, there is no source_txn_id.  The response must render
+        update, there is no leg_account_id.  The response must render
         the transfer cell template with ``xfer-cell-`` IDs as before.
         """
         with app.app_context():
@@ -3232,12 +3284,12 @@ class TestShadowContextResponse:
             db.session.refresh(xfer)
             assert transfer_amount(xfer) == Decimal("350.00")
 
-    def test_invalid_source_txn_id_falls_back_gracefully(
+    def test_invalid_leg_account_id_falls_back_gracefully(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH with nonexistent source_txn_id falls back to transfer cell.
+        """PATCH with a nonexistent leg_account_id falls back to the transfer cell.
 
-        If source_txn_id is invalid (e.g., tampered or stale), the
+        If leg_account_id names no account (tampered or stale), the
         handler must not crash.  It falls back to the transfer cell
         template as a safe default.
         """
@@ -3247,7 +3299,11 @@ class TestShadowContextResponse:
 
             resp = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
-                data={"amount": "400.00", "amount_as_rendered": rendered_transfer_amount(xfer), "source_txn_id": "999999"},
+                data={
+                    "amount": "400.00",
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
+                    "leg_account_id": "999999",
+                },
             )
 
             assert resp.status_code == 200
@@ -3260,40 +3316,43 @@ class TestShadowContextResponse:
             db.session.refresh(xfer)
             assert transfer_amount(xfer) == Decimal("400.00")
 
-    def test_mismatched_source_txn_id_falls_back_gracefully(
+    def test_mismatched_leg_account_id_falls_back_gracefully(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH with source_txn_id from a different transfer falls back.
+        """PATCH with a leg_account_id on NEITHER endpoint falls back.
 
-        If source_txn_id points to a shadow of a DIFFERENT transfer,
-        the handler must not render the wrong transaction cell.  It
-        falls back to the transfer cell template.
+        If leg_account_id names a real account of the owner's that this
+        transfer does not touch -- a stale page whose transfer was
+        re-pointed meanwhile -- the handler must not render a leg the
+        transfer has no side on.  It falls back to the transfer cell
+        template.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            # Distinct amounts/names so the F-050 partial unique
-            # index ``uq_transfers_adhoc_dedupe`` does not collapse
-            # the two ad-hoc transfers into one (they share user,
-            # accounts, period, and scenario).
-            xfer_a = _create_transfer(
+            xfer = _create_transfer(
                 seed_user, seed_periods_today, savings,
                 amount=Decimal("200.00"), name="Transfer A",
             )
-            xfer_b = _create_transfer(
-                seed_user, seed_periods_today, savings,
-                amount=Decimal("250.00"), name="Transfer B",
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
             )
+            elsewhere = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Elsewhere",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.add(elsewhere)
+            db.session.commit()
 
-            # Get a shadow from transfer B.
-            shadow_b = _get_expense_shadow(xfer_b)
-
-            # Send it with transfer A's update.
             resp = auth_client.patch(
-                f"/transfers/instance/{xfer_a.id}",
+                f"/transfers/instance/{xfer.id}",
                 data={
                     "amount": "450.00",
-                    "amount_as_rendered": rendered_transfer_amount(xfer_a),
-                    "source_txn_id": str(shadow_b.id),
+                    "amount_as_rendered": rendered_transfer_amount(xfer),
+                    "leg_account_id": str(elsewhere.id),
                 },
             )
 
@@ -3303,9 +3362,9 @@ class TestShadowContextResponse:
             # Falls back to transfer cell (mismatch detected).
             assert "xfer-cell-" in html
 
-            # Transfer A still updated correctly.
-            db.session.refresh(xfer_a)
-            assert transfer_amount(xfer_a) == Decimal("450.00")
+            # The transfer still updated correctly.
+            db.session.refresh(xfer)
+            assert transfer_amount(xfer) == Decimal("450.00")
 
 
 # ── Unarchive Service Integration Tests (M1) ─────────────────────
@@ -4875,7 +4934,7 @@ class TestTransferActualBox:
 
             for url in (
                 f"/transfers/{xfer.id}/full-edit",
-                f"/transactions/{expense.id}/full-edit",
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={expense.account_id}",
             ):
                 body = auth_client.get(url).get_data(as_text=True)
                 assert 'name="settled_amount"' in body, (

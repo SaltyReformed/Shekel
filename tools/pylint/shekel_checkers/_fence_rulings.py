@@ -290,6 +290,12 @@ _FENCED_MODULE_RULINGS = {
         # record is the sum of its entries and a row with none is the $0.00
         # record (rulings R-BAL80, R-BAL82); the edit doors read the counting
         # pair now.  Dropped here for the reason the paragraph above gives.
+        # ``leg_settled_amounts_by_key`` (leaf X-bi-6-1, ruling R-BAL87) is
+        # the same loop over the grid's transfer LEGS: each answers from the
+        # leg's own covering movement and the parent's status, keyed by the
+        # leg's ``(transfer id, account id)``; it dates nothing and sums
+        # nothing.
+        "leg_settled_amounts_by_key",
         "purchases_total",
         "settled_amounts_by_id",
         "settled_figure",

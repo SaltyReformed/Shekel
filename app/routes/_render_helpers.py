@@ -20,20 +20,30 @@ from flask import render_template, request
 from flask_login import current_user
 from werkzeug.datastructures import MultiDict
 
+from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     derived_amount_basis,
     amounts_by_id,
+    leg_amounts_by_key,
+    leg_settled_amounts_by_key,
     resolve_transfer_amount,
     settled_amounts_by_id,
 )
 from app.services.account_resolver import resolve_cash_flow_set
 from app.services.entry_service import build_entry_sums_dict
-from app.services.grid_view_service import due_captions_by_id
-from app.services.transaction_service import retained_settle_amounts_by_id
+from app.services import grid_view_service
+from app.services.grid_view_service import due_captions_by_key
+from app.services.transaction_service import (
+    leg_retained_amounts_by_key,
+    retained_settle_amounts_by_id,
+)
+from app.services.transfer_legs import TransferLeg, grid_transfer_leg
 from app.services.transfer_service import load_transfer_rows
+from app.utils.dates import display_today
 
 
 @dataclass(frozen=True)
@@ -196,10 +206,12 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
     an N+1 would look like.  A transfer that owns its figure or reads its
     definition's series still costs no query -- the basis resolves nothing
     until a rule asks it -- and only a DERIVE-mode loan payment reaches the
-    loan.  No batch surface exists to be wrong about: the grid renders a
-    transfer's two SHADOWS as ordinary rows off its own ``budgets`` map
-    (Transfer Invariant 5), and all nine parent-transfer render sites are
-    one-row HTMX swaps.
+    loan.  The one batch surface -- the grid, which since leaf ``X-bi-6-1``
+    draws a transfer's LEGS off the parent -- prices them through
+    :func:`~app.services.cash_ledger.leg_amounts_by_key` with the page's
+    own basis (``routes/grid/_items.build_amount_maps``), the same resolver
+    this calls; every parent-transfer render site here is a one-row HTMX
+    swap.
 
     **The basis is BUILT here rather than threaded, exactly as the transaction
     twin builds one** (:func:`fragment_amounts`, whose comment carries the
@@ -496,7 +508,7 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     issued from inside the render, once per distinct paycheck on a page
     drawing N cells, and a template cannot be given a query budget.  Both
     surfaces that draw this cell now call the same producer
-    (:func:`~app.services.grid_view_service.due_captions_by_id`), so a row
+    (:func:`~app.services.grid_view_service.due_captions_by_key`), so a row
     cannot caption one way on the grid and another in the fragment the same
     click swaps in -- the rule :class:`RenderAmounts` above states for the
     three amount maps, applied to the fourth thing a cell draws.
@@ -560,8 +572,169 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
         settled=amounts.settled,
         retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], amounts.budgets),
-        due_captions=due_captions_by_id(
+        due_captions=due_captions_by_key(
             [txn], {txn.pay_period_id: txn.pay_period.start_date},
         ),
         **extra,
+    )
+
+
+@dataclass(frozen=True)
+class LegRenderAmounts:
+    """The three per-cell maps a transfer LEG's fragment must publish.
+
+    :class:`RenderAmounts`' twin for a leg (leaf ``X-bi-6-1``, ruling
+    **R-BAL87**), keyed by the leg's ``cell_key`` exactly as the grid page
+    keys its own maps (``routes/grid/_items.build_amount_maps``), so the
+    fragment an HTMX swap returns reads the same three keys the page did.
+
+    Attributes:
+        budgets: ``{cell_key: what the leg's amount IS}``.
+        settled: ``{cell_key: what its money DID}``, ``None`` until it has.
+        retained: ``{cell_key: what a tick WOULD book}``, ``None`` otherwise.
+    """
+
+    budgets: dict
+    settled: dict
+    retained: dict
+
+
+def leg_fragment_amounts(leg: TransferLeg) -> LegRenderAmounts:
+    """Return the three maps for ONE transfer leg's fragment.
+
+    The leg twin of :func:`fragment_amounts`: the same three producers the
+    grid page asks for its legs, over one leg, with a basis built off the
+    parent's own columns for the reason :func:`transfer_budgets` gives (a
+    fragment has no read pass to take one from).
+
+    Args:
+        leg: The leg being rendered, its record loaded.
+
+    Returns:
+        The :class:`LegRenderAmounts`.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a transfer whose rule
+            cannot answer.
+    """
+    xfer = leg.transfer
+    return LegRenderAmounts(
+        budgets=leg_amounts_by_key(
+            [leg], derived_amount_basis(xfer.user_id, xfer.scenario_id),
+        ),
+        settled=leg_settled_amounts_by_key([leg]),
+        retained=leg_retained_amounts_by_key([leg]),
+    )
+
+
+def render_transfer_leg_cell(xfer: Transfer, account_id: int, **extra: Any) -> str:
+    """Render a transfer LEG's grid cell with the context it must carry.
+
+    The leg twin of :func:`render_transaction_cell` (leaf ``X-bi-6-1``,
+    ruling **R-BAL87**): what every transfer door returns when the request
+    came from a leg's grid cell (``leg_account_id`` on the form), drawn by
+    the SAME partial the page draws it with, ``grid/_transaction_cell.html``,
+    which tells a leg from a row by the ``transfer_leg`` test.  The leg is
+    re-read here -- :func:`~app.services.transfer_legs.grid_transfer_leg`,
+    record included -- rather than handed in, because every caller has a
+    transfer and an account id and the leg's record may have just changed
+    (a settle wrote it).  ``entry_sums`` is empty by construction: a leg
+    holds no purchases.
+
+    Args:
+        xfer: The parent transfer, owner-established by the caller.
+        account_id: The account the leg is on -- one of the parent's two
+            endpoints (:func:`~app.services.transfer_legs.leg_of` refuses
+            any other).
+        **extra: Forwarded to ``render_template`` -- ``wrap_div=True``,
+            ``conflict=True``, ``error=<message>``.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: When *account_id* is neither endpoint (from ``leg_of``).
+        AmountUnresolvable: From the resolver.
+    """
+    leg = grid_transfer_leg(xfer, account_id)
+    amounts = leg_fragment_amounts(leg)
+    return render_template(
+        "grid/_transaction_cell.html",
+        txn=leg,
+        account=fragment_balance_line(xfer.user_id),
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
+        entry_sums={},
+        due_captions=due_captions_by_key(
+            [leg], {leg.pay_period_id: leg.pay_period.start_date},
+        ),
+        **extra,
+    )
+
+
+def render_transfer_leg_card(
+    xfer: Transfer, account_id: int, *, card_prefix: str, error: str | None = None,
+) -> str:
+    """Render a transfer LEG's mobile card for an HTMX outerHTML swap.
+
+    The leg twin of ``routes/transactions/_helpers._render_mobile_card``,
+    for the mobile action bar's Mark Paid on a leg (``render=mobile_card``
+    on the transfer door's form).  One card through the shared
+    ``render_one_card`` macro (``grid/_mobile_card_single.html``), so the
+    route and the page share one card producer.  ``can_edit`` is always
+    ``True``: a leg renders on the OWNER's grid alone -- a transfer names
+    no definition, so no companion sees one
+    (:attr:`~app.models.transaction.Transaction.visible_to_companion`'s
+    rule, ruling **R-BAL73**).
+
+    A leg whose parent is Cancelled yields no row key (the card lists filter
+    cancelled items out), so a rejected action on a stale card of one swaps
+    in the banner-only wrapper that keeps the card's id and says why, the
+    shape the transaction twin takes; a SUCCESS never lands there, because
+    a just-settled transfer is neither cancelled nor deleted.
+
+    Args:
+        xfer: The parent transfer, owner-established by the caller.
+        account_id: The account the leg is on.
+        card_prefix: The per-tab namespace the card was rendered under.
+        error: A rejection message for the danger banner, or ``None``.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: When *account_id* is neither endpoint (from ``leg_of``).
+        AmountUnresolvable: From the resolver.
+    """
+    leg = grid_transfer_leg(xfer, account_id)
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=xfer.user_id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
+    row_keys = grid_view_service.build_row_keys(
+        [leg], categories, is_income_section=leg.is_income,
+    )
+    if not row_keys:
+        return render_template(
+            "grid/_mobile_card_error.html",
+            txn=leg, id_prefix=card_prefix, error=error,
+        )
+    amounts = leg_fragment_amounts(leg)
+    return render_template(
+        "grid/_mobile_card_single.html",
+        rk=row_keys[0],
+        txn=leg,
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
+        entry_sums={},
+        entry_lists={},
+        can_edit=True,
+        id_prefix=card_prefix,
+        account=fragment_balance_line(xfer.user_id),
+        today=display_today(),
+        error=error,
     )

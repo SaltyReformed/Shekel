@@ -40,11 +40,17 @@ Total Expenses ``$710``, Net Cash Flow ``-$710``, "On other accounts" ``+$45``,
 checking's balance moves ``-$665``.
 
 The rule has ONE spelling of its subject -- :func:`_intra_set_transfers`, the
-transfers with both endpoints in the set -- and two readers of it: the row
-loads (:func:`paycheck_rows_clause`, through :func:`far_leg_clause`) and the
-balance seam's composed subtotal (:func:`far_legs_of`), so the cells a reader
-draws and the subtotal the seam sums cannot disagree about which rows are the
-paycheck's.
+transfers with both endpoints in the set -- and three readers of it: the row
+loads (:func:`paycheck_rows_clause`, through :func:`far_leg_clause`), the
+balance seam's composed subtotal (:func:`far_legs_of`), and since leaf
+``X-bi-6-1`` the grid's LEGS (:func:`leg_accounts_shown`: the grid draws a
+transfer's legs from the parent rather than loading its shadow rows, and asks
+this module which of its two sides the set shows), so the cells a reader draws
+and the subtotal the seam sums cannot disagree about which rows are the
+paycheck's.  The grid's rows themselves are the set's OWN
+(:func:`own_rows_clause`) -- every member's plan rows less every shadow -- and
+:func:`paycheck_rows_clause` serves the readers that still draw a transfer
+from its shadow rows until ``X-bi-6``'s next display leaf moves them.
 
 Services boundary (``CLAUDE.md``): no Flask symbol.  The clauses are built,
 never executed, here; :func:`far_legs_of` holds the seam's two queries.
@@ -206,6 +212,64 @@ def paycheck_rows_clause(cash_flow: CashFlowSet):
     )
 
 
+def own_rows_clause(cash_flow: CashFlowSet):
+    """Return the clause selecting the set's OWN plan rows: no transfer shadow.
+
+    ``Transaction.account_id IN members AND transfer_id IS NULL``: every
+    member's rows, less every shadow, for a reader that draws a transfer's
+    legs from the parent (leaf ``X-bi-6-1``, ruling **R-BAL87**) and so must
+    not load the shadow rows beside them -- the grid.  Where
+    :func:`paycheck_rows_clause` drops only the FAR leg and keeps the near
+    one as a row, this drops both, because the near leg is drawn as a
+    :class:`~app.services.transfer_legs.TransferLeg` by
+    :func:`leg_accounts_shown`'s rule.  The ``IS NULL`` term is the interval's:
+    ``X-bi-6``'s last leaf deletes the shadow rows, after which every member
+    row is an own row and the term has no object.
+
+    Args:
+        cash_flow: The set.
+
+    Returns:
+        A SQLAlchemy boolean clause over :class:`Transaction`.
+    """
+    return and_(
+        Transaction.account_id.in_(cash_flow.member_ids),
+        Transaction.transfer_id.is_(None),
+    )
+
+
+def leg_accounts_shown(cash_flow: CashFlowSet, transfer: Transfer) -> tuple[int, ...]:
+    """Return the accounts whose leg of *transfer* the set draws (ruling **R-CC23**).
+
+    The LEG reader of the rule :func:`far_leg_clause` states for rows: a
+    transfer with BOTH endpoints in the set shows once, from the balance
+    line's side; one with a single endpoint in the set shows from that
+    endpoint; one touching no member shows nowhere.  Stated over the two
+    endpoint columns rather than by executing :func:`_intra_set_transfers`,
+    because a caller holds the transfer already and the membership test is
+    the same predicate that query filters on.
+
+    Args:
+        cash_flow: The set.
+        transfer: A transfer the caller loaded.
+
+    Returns:
+        The account ids to draw a leg for: one (the usual case), or none.
+        Never two -- both sides in the set is the far-leg case, and a set
+        cannot hold an endpoint twice (``ck_transfers_different_accounts``).
+    """
+    members = set(cash_flow.member_ids)
+    on_from = transfer.from_account_id in members
+    on_to = transfer.to_account_id in members
+    if on_from and on_to:
+        return (cash_flow.balance.id,)
+    if on_from:
+        return (transfer.from_account_id,)
+    if on_to:
+        return (transfer.to_account_id,)
+    return ()
+
+
 @dataclass(frozen=True)
 class FarLegs:
     """The far legs of the set's intra-set transfers, by both identities.
@@ -216,7 +280,7 @@ class FarLegs:
     transfer two ways, and each is excluded by its own key:
 
     * a STILL-PROJECTED transfer is a
-      :class:`~app.services.transfer_legs.PlannedTransferLeg` derived from
+      :class:`~app.services.transfer_legs.TransferLeg` derived from
       ``budget.transfers`` (plan step X-bi-6a), keyed here by its TRANSFER's
       id -- and for a leg on a NON-balance member, "far" is exactly "its
       transfer has both endpoints in the set", so :attr:`transfer_ids` is

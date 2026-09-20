@@ -244,6 +244,38 @@ def settled_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     return {row.id: settled_figure(row) for row in rows}
 
 
+def leg_settled_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]":
+    """Return ``{leg.cell_key: what the leg's money DID}`` for transfer legs.
+
+    :func:`settled_amounts_by_id`'s twin for the grid's transfer legs (leaf
+    ``X-bi-6-1``, ruling **R-BAL87**), keyed by
+    :attr:`~app.services.transfer_legs.TransferLeg.cell_key` so the one
+    ``settled`` map a page publishes holds rows and legs side by side.  The
+    same rule as :func:`settled_figure` over the leg's shape: ``None`` while
+    the parent has not settled, whatever the leg still remembers; once it has,
+    the figure its covering movement states -- the record of what left or
+    entered the account -- and ``Decimal("0")`` for a settled leg holding no
+    movement, which is the ``$0.00`` record (ruling **R-BAL82**) exactly as a
+    settled row with no entries is.
+
+    Args:
+        legs: The :class:`~app.services.transfer_legs.TransferLeg` values a
+            surface is about to render, records loaded.
+
+    Returns:
+        ``{(transfer_id, account_id): Decimal | None}`` covering every leg.
+    """
+    settled = settled_status_ids()
+    return {
+        leg.cell_key: (
+            None if leg.status_id not in settled
+            else Decimal("0") if leg.record is None
+            else leg.record.amount
+        )
+        for leg in legs
+    }
+
+
 def fixed_contribution(txn) -> "Decimal | None":
     """Return what *txn* is worth WITHOUT resolving its amount, or ``None``.
 

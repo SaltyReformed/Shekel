@@ -3,14 +3,15 @@ Shekel Budget App -- Transaction route package: mutation handlers.
 
 Every state-changing transaction route on a single row: the PATCH inline
 edit save, the DELETE soft/hard delete, and the status workflow
-(mark-done, mark/unmark credit, cancel).  Shadow transactions
-(``transfer_id IS NOT NULL``) route through the transfer service so both
-shadows and the parent transfer stay in sync (design doc invariants 3-5);
-those three branches live in :mod:`._shadow_mutations`, which carries why
-they were split out and why they moved TOGETHER.
+(mark-done, mark/unmark credit, cancel).  A transfer's LEG is not a row
+these doors admit (leaf ``balance:X-bi-6-1``, ruling **R-BAL87**): the grid
+draws it off the parent and its cell calls the transfer's own routes, so the
+three shadow branches this package carried (``_shadow_mutations``, which
+re-expressed a request on a shadow row as a transfer update) are gone, and a
+request naming a shadow row is a 404 at the ownership helper.
 
 The edit and status concerns share this one module deliberately: their
-REGULAR (non-shadow) paths are near-identical parallel code (the apply +
+paths are near-identical parallel code (the apply +
 posting reconcile + commit body, the ``StaleDataError`` / ``IntegrityError``
 tails, the ``_RenderTarget`` response handling).  Splitting those across
 modules would re-surface the intra-file duplication the monolith hid (R0801
@@ -68,11 +69,6 @@ from app.routes.transactions._helpers import (
     _stale_transaction_response,
     _update_schema_for,
     _verify_owned_fks_in_update,
-)
-from app.routes.transactions._shadow_mutations import (
-    _apply_shadow_update,
-    _cancel_shadow,
-    _mark_done_shadow,
 )
 from app.utils.error_fragments import flatten_schema_errors
 
@@ -134,7 +130,7 @@ _POSTING_RELEVANT_FIELDS = frozenset({
 })
 
 def _apply_regular_update(txn, txn_id, data, *, target_period):
-    """Apply a PATCH update to a regular (non-shadow) transaction.
+    """Apply a PATCH update to a transaction (the inline edit save).
 
     Runs the three pre-mutation gates, writes the submitted fields
     (:func:`_apply_field_updates`) and applies the requested status through
@@ -529,10 +525,6 @@ def _stale_form_conflict(txn, data):
 def update_transaction(txn_id):
     """Update a transaction's fields (inline edit save).
 
-    Shadow transactions (transfer_id IS NOT NULL) are routed through
-    the transfer service so both shadows and the parent transfer stay
-    in sync (design doc invariants 3-5).
-
     Returns the updated cell fragment.  Sends an HX-Trigger header
     to refresh the balance row.
 
@@ -565,11 +557,11 @@ def update_transaction(txn_id):
     passes, and PostgreSQL never raises ``IntegrityError``).
     ``status_id`` is a reference table FK (not user-scoped) and so
     does not need an ownership check.  The probe runs before the
-    transfer-shadow branch so a malicious request that targets a
-    transfer shadow with a cross-user FK is rejected even though
-    the transfer-shadow path drops ``pay_period_id`` silently --
-    matching the layered defense ``transfers.update_transfer``
-    received in commit C-27.
+    stale-form check so the security response wins where one request
+    triggers both -- matching the layered defense
+    ``transfers.update_transfer`` received in commit C-27.  (It ran
+    before the transfer-shadow branch as well, until leaf
+    ``balance:X-bi-6-1`` deleted that branch.)
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
@@ -594,7 +586,7 @@ def update_transaction(txn_id):
 
     # Route-boundary FK ownership (commit C-29 / F-029).  Reject
     # cross-user ``pay_period_id`` / ``category_id`` before the
-    # stale-form check or the transfer-shadow branch so the
+    # stale-form check so the
     # security response (404) takes precedence over the UX
     # response (409 conflict cell) when the same request triggers
     # both.  See :func:`_verify_owned_fks_in_update` for the
@@ -613,11 +605,6 @@ def update_transaction(txn_id):
     conflict = _stale_form_conflict(txn, data)
     if conflict is not None:
         return conflict
-
-    # --- Transfer detection guard ---
-    if txn.transfer_id is not None:
-        return _apply_shadow_update(txn, txn_id, data)
-    # --- End guard ---
 
     return _apply_regular_update(txn, txn_id, data, target_period=target_period)
 
@@ -678,7 +665,7 @@ def delete_transaction(txn_id):
 
 
 def _mark_done_regular(txn, txn_id, submitted, target):
-    """Settle a regular (non-shadow) transaction.
+    """Settle a transaction.
 
     **The rule this used to hold is now a SERVICE verb** --
     :func:`transaction_service.settle_transaction`, ruling **R-FA** -- because
@@ -770,9 +757,6 @@ def _mark_done_regular(txn, txn_id, submitted, target):
 def mark_done(txn_id):
     """Set a transaction's status to 'done' (expenses) or 'received' (income).
 
-    Shadow transactions route through the transfer service so both
-    shadows and the parent transfer are updated atomically.
-
     Automatically picks the correct status based on transaction type.
     For entry-capable transactions with entries, the settle records the
     ``purchases`` basis and the entries state the figure.  For all others, it
@@ -810,9 +794,8 @@ def mark_done(txn_id):
     card_can_edit = request.form.get("can_edit") == "1"
     target = _RenderTarget(render_mode, card_prefix, card_can_edit)
 
-    # Validate the optional ``settled_amount`` form field once,
-    # before branching on transfer detection, so both code paths
-    # apply identical validation.  ``MarkDoneSchema`` strips empty
+    # Validate the optional ``settled_amount`` form field once.
+    # ``MarkDoneSchema`` strips empty
     # strings via its pre_load hook so the missing-field UX (a
     # button click with no body) yields it absent from the loaded
     # dict -- which means "nobody typed a figure", and the settle
@@ -835,15 +818,7 @@ def mark_done(txn_id):
     # ``transaction_service.settle_from_entries`` re-derived the same id from
     # the same predicate with a comment saying it "mirrors" this line -- two
     # spellings of one rule that agreed by reading.  It is now
-    # ``transaction_service.settled_status_id``, inside the verb, and the
-    # shadow branch below never wanted it: ``transfer_service`` sets Paid on
-    # both legs, because the split is meaningless for a pair whose whole point
-    # is that one leg is each.
-
-    # --- Transfer detection guard ---
-    if txn.transfer_id is not None:
-        return _mark_done_shadow(txn, txn_id, submitted, target)
-    # --- End guard ---
+    # ``transaction_service.settled_status_id``, inside the verb.
 
     return _mark_done_regular(txn, txn_id, submitted, target)
 
@@ -867,10 +842,6 @@ def mark_credit(txn_id):
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-
-    # --- Transfer detection guard: credit is not applicable to transfers ---
-    if txn.transfer_id is not None:
-        return "Cannot mark a transfer shadow as credit.", 400
 
     try:
         credit_workflow.mark_as_credit(txn_id, current_user.id)
@@ -901,10 +872,6 @@ def unmark_credit(txn_id):
     if txn is None:
         return "Not found", 404
 
-    # --- Transfer detection guard: credit is not applicable to transfers ---
-    if txn.transfer_id is not None:
-        return "Cannot unmark credit on a transfer shadow.", 400
-
     try:
         credit_workflow.unmark_credit(txn_id, current_user.id)
         db.session.commit()
@@ -931,9 +898,6 @@ def unmark_credit(txn_id):
 def cancel_transaction(txn_id):
     """Set a transaction's status to 'cancelled'.
 
-    Shadow transactions route through the transfer service to cancel
-    the parent transfer and both shadows atomically.
-
     Optimistic locking: see :func:`mark_credit`.
     """
     txn = _get_owned_transaction(txn_id)
@@ -941,11 +905,6 @@ def cancel_transaction(txn_id):
         return "Not found", 404
 
     cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
-
-    # --- Transfer detection guard ---
-    if txn.transfer_id is not None:
-        return _cancel_shadow(txn, txn_id, cancelled_id)
-    # --- End guard ---
 
     # Route the cancel through the ONE status verb (state-machine check +
     # status_id + settled_on + the ledger reconcile).  Cancelled is reachable

@@ -70,7 +70,7 @@ from datetime import date
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentDates
 from app.services.loan_loaders import income_shadows, loan_payment_due_date
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 
 from ._visible import payment_visible_on
 
@@ -106,7 +106,7 @@ class PaymentInstallment:
     Attributes:
         source: What this installment was read off: the loan-side income
             SHADOW row for a payment that has settled, or the
-            :class:`~app.services.transfer_legs.PlannedTransferLeg` of its
+            :class:`~app.services.transfer_legs.TransferLeg` of its
             parent transfer for one still projected (plan step
             **balance:X-bi-6a**, ruling **R-BAL13** -- a projected payment is
             not a row of its own).  Carried so a caller that ALSO needs the
@@ -124,7 +124,7 @@ class PaymentInstallment:
             the query rather than of a second reading of the status column.
     """
 
-    source: Transaction | PlannedTransferLeg
+    source: Transaction | TransferLeg
     dates: PaymentDates
 
 
@@ -221,7 +221,7 @@ def payment_installments(
     )
     # The merge key is the PARENT's id, which both halves carry (see the
     # docstring); each half arrives in its own order and is re-keyed here.
-    dated: list[tuple[Transaction | PlannedTransferLeg, date | None, int]] = [
+    dated: list[tuple[Transaction | TransferLeg, date | None, int]] = [
         (shadow, payment_visible_on(shadow), shadow.transfer_id)
         for shadow in shadows.settled
     ]

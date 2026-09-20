@@ -10,10 +10,11 @@
    the action was refused.  A page refresh (or the next tab switch)
    drops the wrapper along with the rest of the stale list.
 
-   Expected context: txn, id_prefix, error.
+   Expected context: txn (a row, or a transfer leg since plan step
+   balance:X-bi-6-1 -- `card_dom_id` composes either's id), id_prefix,
+   error.
 #}
-{% set _cardns = (id_prefix ~ "-" if id_prefix else "") %}
-<div class="mobile-card-wrapper" id="card-{{ _cardns }}{{ txn.id }}">
+<div class="mobile-card-wrapper" id="{{ card_dom_id(txn, id_prefix or "") }}">
   <div class="alert alert-danger py-1 px-2 mb-0 small d-flex align-items-center gap-1"
        role="alert">
     <i class="bi bi-exclamation-octagon" aria-hidden="true"></i>

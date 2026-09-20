@@ -921,7 +921,7 @@ document.addEventListener('keydown', function(e) {
         const cell = getFocusedCell();
         if (cell) {
           const clickable = cell.querySelector(
-            '.txn-open[data-txn-id], .txn-empty-cell');
+            '.txn-open[data-cell], .txn-empty-cell');
           if (clickable) clickable.click();
         }
         break;

@@ -157,6 +157,11 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # amount IS (ruling E-21's budget base) rather than what it is worth --
     # so a reader that needs a budget stops reaching for a contribution.
     "amounts_by_id",
+    # The same batch over the grid's TRANSFER LEGS (leaf X-bi-6-1, ruling
+    # R-BAL87): a dict keyed by the leg's ``(transfer id, account id)``, one
+    # entry per leg the caller loaded, each ``resolve_transfer_amount`` over
+    # the parent -- a loop over a non-producer, nothing per account.
+    "leg_amounts_by_key",
     # The ONE statement of "is this movement already inside the balance the
     # user declared" (ruling R-DH (a)), and since the one-partition step it
     # is a METHOD on ``ReconciledThrough`` rather than a free function, so

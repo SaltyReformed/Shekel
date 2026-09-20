@@ -134,7 +134,7 @@ from app.services.row_valuation import (  # pylint: disable=unused-import
 )
 from app.utils.balance_predicates import is_projected
 
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 
 from ._amount_source import (
     AmountBasis,
@@ -374,7 +374,7 @@ def contribution_of(txn, basis: AmountBasis) -> Decimal:
 
 
 def planned_leg_contribution(
-    leg: PlannedTransferLeg, basis: AmountBasis,
+    leg: TransferLeg, basis: AmountBasis,
 ) -> Decimal:
     """Return what one leg of a still-projected transfer is worth to its account.
 
@@ -398,7 +398,7 @@ def planned_leg_contribution(
     :func:`~app.services.row_valuation.settled_contribution`, never here.
 
     Args:
-        leg: The :class:`~app.services.transfer_legs.PlannedTransferLeg`.
+        leg: The :class:`~app.services.transfer_legs.TransferLeg`.
         basis: The read pass's :class:`~._amount_source.AmountBasis`; only a
             derive-mode loan payment's parent reads it.
 

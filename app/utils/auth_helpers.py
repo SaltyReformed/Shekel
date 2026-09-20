@@ -374,6 +374,38 @@ def get_owned_via_parent(model, pk, parent_attr,
     return record
 
 
+def is_transfer_shadow(txn) -> bool:
+    """Return whether *txn* is a transfer shadow row, logging the refusal.
+
+    The ONE predicate behind the interval fence :func:`get_accessible_transaction`
+    and ``routes/transactions/_helpers._get_owned_transaction`` share (leaf
+    ``balance:X-bi-6-1``): a shadow names its transfer, and a transaction
+    door refuses it as "not found".  Logged at INFO under the not-found
+    event -- the request named a row this door does not serve, which is
+    what a missing primary key is to the caller.
+
+    Args:
+        txn: A loaded :class:`Transaction`.
+
+    Returns:
+        ``True`` for a shadow (``transfer_id`` set).
+    """
+    if txn.transfer_id is None:
+        return False
+    log_event(
+        logger, logging.INFO,
+        EVT_RESOURCE_NOT_FOUND, ACCESS,
+        "Transaction door asked about a transfer shadow row; a transfer's "
+        "legs are served by the transfer routes",
+        user_id=_safe_user_id(),
+        model=Transaction.__name__,
+        pk=txn.id,
+        transfer_id=txn.transfer_id,
+        path=request.path,
+    )
+    return True
+
+
 def get_accessible_transaction(txn_id):
     """Load a transaction the current user may access (owner or companion).
 
@@ -398,6 +430,15 @@ def get_accessible_transaction(txn_id):
     Follows the project security response rule: returns ``None`` for both
     "not found" and "not accessible" so the caller returns 404 in either
     case.
+
+    **A transfer SHADOW row is "not found" here** (leaf ``balance:X-bi-6-1``,
+    ruling **R-BAL87**): the grid draws a transfer as a LEG read off its
+    parent and the leg's doors are the transfer's own, so no surface asks a
+    transaction door about a shadow any more, and a request that names one
+    -- a stale page, a bookmark, a probe -- is refused rather than admitted
+    to a door that would write past the transfer's invariants.  This is the
+    interval's fence: ``X-bi-6``'s last leaf deletes the shadow rows, after
+    which the predicate has nothing to match and goes with them.
 
     Mirrors :func:`get_or_404`'s F-144 logging contract (deep-hunt #85):
     a missing PK emits ``resource_not_found`` at INFO; an ownership or
@@ -425,6 +466,8 @@ def get_accessible_transaction(txn_id):
             pk=txn_id,
             path=request.path,
         )
+        return None
+    if is_transfer_shadow(txn):
         return None
     requester_id = _safe_user_id()
     owner_id = txn.user_id

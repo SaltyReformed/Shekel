@@ -27,6 +27,12 @@ from decimal import Decimal
 
 from flask import Flask
 
+from app.services.grid_view_service import (
+    card_dom_id,
+    cell_dom_id,
+    cell_key,
+    leg_dom_id,
+)
 from app.services.salary_cockpit_service import clean_raise_label
 from app.services.statement_match import (
     CandidateRow,
@@ -34,6 +40,7 @@ from app.services.statement_match import (
     ReviewedDifference,
     as_reviewed,
 )
+from app.services.transfer_legs import TransferLeg
 from app.utils.dates import month_name, to_display_tz
 
 # Months in a year -- named so the year conversion is not a bare literal.
@@ -237,8 +244,28 @@ def stated_difference(proposal: MatchProposal) -> str:
     return ReviewedDifference(figure=proposal.difference).token
 
 
+def is_transfer_leg(item) -> bool:
+    """Jinja test ``transfer_leg``: is this grid item one side of a transfer?
+
+    The grid's row macros and cell partial draw a plan row and a
+    :class:`~app.services.transfer_legs.TransferLeg` through one template
+    (leaf ``X-bi-6-1``, ruling **R-BAL87**) and differ only where the item's
+    IDENTITY is spelled -- the cell's DOM id, the doors its buttons call, the
+    row-only affordances (purchases, credit).  This test is the one predicate
+    those sites branch on, so a template never infers the shape from an
+    attribute that happens to be absent.
+
+    Args:
+        item: What a cell is drawing.
+
+    Returns:
+        ``True`` for a leg, ``False`` for a row.
+    """
+    return isinstance(item, TransferLeg)
+
+
 def register_template_filters(app: Flask) -> None:
-    """Register every presentation filter on the given Flask app.
+    """Register every presentation filter, test and global on the given app.
 
     Called once from :func:`app.create_app`.  Idempotent: re-registering
     the same name overwrites it with the same callable, so a repeat call
@@ -247,6 +274,13 @@ def register_template_filters(app: Flask) -> None:
     Args:
         app: The Flask application whose ``jinja_env`` gains the filters.
     """
+    # The grid's two item shapes (leaf X-bi-6-1): the test that tells them
+    # apart and the key a page's per-cell maps hold each under.
+    app.add_template_test(is_transfer_leg, "transfer_leg")
+    app.add_template_global(cell_key, "cell_key")
+    app.add_template_global(cell_dom_id, "cell_dom_id")
+    app.add_template_global(card_dom_id, "card_dom_id")
+    app.add_template_global(leg_dom_id, "leg_dom_id")
     app.add_template_filter(to_percent, "to_percent")
     app.add_template_filter(local_datetime, "local_datetime")
     app.add_template_filter(ordinal, "ordinal")

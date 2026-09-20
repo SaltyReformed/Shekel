@@ -19,8 +19,11 @@
    patterns / mobile-first v3 plan Section 1 rule 7 / WCAG 2.5.5):
 
      - **Mark Paid** -- a ``<form hx-post>`` that posts to
-       ``transactions.mark_done``.  Suppressed when the transaction is
-       already settled, Credit or Cancelled -- the guard below is
+       ``transactions.mark_done`` -- or, for a transfer LEG (plan step
+       balance:X-bi-6-1, ruling R-BAL87), to ``transfers.mark_done``
+       with the leg's ``leg_account_id``, so the transfer's own door
+       settles the pair and renders this card back.  Suppressed when
+       the item is already settled, Credit or Cancelled -- the guard below is
        `status_id == STATUS_PROJECTED` (no point offering an action that the
        state machine rejects).  CSRF travels through the
        ``htmx:configRequest`` handler in ``app/static/js/app.js`` which
@@ -28,7 +31,9 @@
        existing button pattern in ``_transaction_full_edit.html:91``.
      - **Open Full** -- triggers the existing bottom-sheet popover via
        the ``txn-expand-btn`` + ``data-txn-id`` delegated handler in
-       ``grid_edit.js``.  Suppressed when ``can_edit=False``.  Since
+       ``grid_edit.js`` (a leg carries ``data-xfer-id`` +
+       ``data-leg-account-id`` instead, and the same handler opens the
+       TRANSFER's popover).  Suppressed when ``can_edit=False``.  Since
        the C3 rebuild (decision 2, docs/design/grid_audit.md) the
        sheet IS the anchored action card with the Estimated / Actual
        inputs at the top, so it covers amount editing directly.
@@ -41,7 +46,7 @@
    action card's amount fields one tap away behind Open Full.
 
    Context (* required):
-     txn *               -- a Transaction object.
+     txn *               -- a Transaction, or a TransferLeg.
      can_edit *          -- bool; companion render passes False to
                             drop the owner-only buttons.
 #}
@@ -70,14 +75,16 @@
        `id_prefix` may be undefined when this partial is included
        outside the macro (legacy test scaffolding); the guards default
        to the bare `card-<id>` form. #}
-    {% set _card_ns = (id_prefix ~ "-" if id_prefix is defined and id_prefix else "") %}
-    <form hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
-          hx-target="#card-{{ _card_ns }}{{ txn.id }}"
+    {% set _card_prefix = id_prefix if id_prefix is defined and id_prefix else "" %}
+    <form {% if txn is transfer_leg %}hx-post="{{ url_for('transfers.mark_done', xfer_id=txn.transfer.id) }}"{% else %}hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"{% endif %}
+          hx-target="#{{ card_dom_id(txn, _card_prefix) }}"
           hx-swap="outerHTML"
           class="d-inline flex-fill">
+      {% if txn is transfer_leg %}
+      <input type="hidden" name="leg_account_id" value="{{ txn.account_id }}">
+      {% endif %}
       <input type="hidden" name="render" value="mobile_card">
-      <input type="hidden" name="card_prefix"
-             value="{{ id_prefix if id_prefix is defined and id_prefix else '' }}">
+      <input type="hidden" name="card_prefix" value="{{ _card_prefix }}">
       <input type="hidden" name="can_edit" value="{{ '1' if can_edit else '0' }}">
       <button type="submit" class="btn btn-success btn-sm w-100 btn-touch-44"
               aria-label="Mark {{ txn.name }} as paid">
@@ -89,7 +96,7 @@
   {% if can_edit %}
     <button type="button"
             class="btn btn-outline-secondary btn-sm flex-fill txn-expand-btn btn-touch-44"
-            data-txn-id="{{ txn.id }}"
+            {% if txn is transfer_leg %}data-xfer-id="{{ txn.transfer.id }}" data-leg-account-id="{{ txn.account_id }}"{% else %}data-txn-id="{{ txn.id }}"{% endif %}
             aria-label="Open full edit for {{ txn.name }}">
       <i class="bi bi-arrows-fullscreen"></i> Open Full
     </button>

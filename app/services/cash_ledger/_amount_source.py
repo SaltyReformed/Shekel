@@ -75,7 +75,7 @@ flag (``routes/transactions/mutations.py:251``), carry-forward sets it in a bulk
 ``query.update`` no ORM validator sees (``carry_forward_service/_execute.py:157``),
 and Credit and Cancelled leave Projected WITHOUT entering the settled band, so no
 freeze ever fires.  Production carries 7 Cancelled and 2 Credit template-linked
-rows and ``routes/grid/page.py``'s ``_load_grid_transactions`` loads every one
+rows and ``routes/grid/page.py``'s ``_load_grid_items`` loads every one
 of them with no status predicate,
 so the first bucket to derive would have taken out the whole screen.  Asking the
 column instead makes the two agree by construction: the state the CHECK pairs a
@@ -303,6 +303,40 @@ def amounts_by_id(rows, basis: AmountBasis) -> dict[int, Decimal]:
             answer.  A refusal is never a fallback (see the module docstring).
     """
     return {row.id: resolve_transaction_amount(row, basis) for row in rows}
+
+
+def leg_amounts_by_key(legs, basis: AmountBasis) -> dict[tuple[int, int], Decimal]:
+    """Return ``{leg.cell_key: what the leg's amount IS}`` for transfer legs.
+
+    :func:`amounts_by_id`'s twin for the grid's transfer legs (leaf
+    ``X-bi-6-1``, ruling **R-BAL87**): a leg's budget is its parent's, priced
+    by :func:`resolve_transfer_amount` -- the ONE producer ruling **R-BAL10**
+    put a transfer's amount on, and what ``routes._render_helpers
+    .transfer_budgets`` asks for one transfer -- so a leg's cell and the
+    transfer popover the same click opens cannot show two figures.  Keyed by
+    :attr:`~app.services.transfer_legs.TransferLeg.cell_key`, a tuple, so the
+    page's one ``budgets`` map holds rows (by ``id``) and legs together.
+    Both legs of one transfer resolve to one figure; the resolver is asked
+    once per leg rather than once per parent because the cost is a lookup on
+    every arm but a derive-mode loan payment's, and a cache here would be a
+    second home for the answer.
+
+    Args:
+        legs: The :class:`~app.services.transfer_legs.TransferLeg` values a
+            surface is about to render, their parents loaded with
+            :func:`~app.utils.amount_relationships.transfer_pricing_load_options`.
+        basis: The read pass's :class:`AmountBasis`.
+
+    Returns:
+        ``{(transfer_id, account_id): Decimal}`` covering every leg.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a transfer whose rule cannot
+            answer.  A refusal is never a fallback (see the module docstring).
+    """
+    return {
+        leg.cell_key: resolve_transfer_amount(leg.transfer, basis) for leg in legs
+    }
 
 
 def resolve_transfer_amount(xfer, basis: AmountBasis) -> Decimal:

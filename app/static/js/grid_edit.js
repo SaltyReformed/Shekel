@@ -371,15 +371,21 @@ function openFullEdit(txnId, triggerEl) {
 /**
  * Open the full edit popover for a transfer.
  * Same flow as openFullEdit but fetches the transfer full-edit endpoint.
+ *
+ * legAccountId (optional): the account of the transfer LEG whose grid cell
+ * asked (balance:X-bi-6-1).  Sent as ?leg_account_id= so the popover's form
+ * and quick buttons target that cell and post the id back for its re-render;
+ * the transfers page passes none and the popover targets #xfer-cell-<id>.
  */
-function openTransferFullEdit(xferId, triggerEl) {
+function openTransferFullEdit(xferId, triggerEl, legAccountId) {
     const cell = triggerEl.closest('td');
     const popover = positionPopover(cell);
     if (!popover) return;
     activePopoverQuickForm = triggerEl.closest('.txn-quick-edit');
 
     activePopoverFetchController = new AbortController();
-    fetch('/transfers/' + xferId + '/full-edit', {
+    const legQuery = legAccountId ? '?leg_account_id=' + legAccountId : '';
+    fetch('/transfers/' + xferId + '/full-edit' + legQuery, {
         headers: { 'HX-Request': 'true' },
         signal: activePopoverFetchController.signal
     })
@@ -596,9 +602,9 @@ document.addEventListener('keydown', function(e) {
     // defaultPrevented guard skips this when app.js's cell cursor has
     // already opened the same cell, so the card is not opened twice.
     if (e.key === 'Enter' && !e.defaultPrevented
-        && e.target.matches && e.target.matches('.txn-open[data-txn-id]')) {
+        && e.target.matches && e.target.matches('.txn-open[data-cell]')) {
         e.preventDefault();
-        openFullEdit(parseInt(e.target.dataset.txnId, 10), e.target);
+        openCellFullEdit(e.target);
         return;
     }
 
@@ -658,21 +664,41 @@ document.addEventListener('keydown', function(e) {
 
 });
 
+/**
+ * Open the action card for whatever a grid cell holds: a transaction (the
+ * opener carries data-txn-id) or a transfer LEG (data-xfer-id plus
+ * data-leg-account-id, balance:X-bi-6-1).  The one dispatch every opener --
+ * the cell's amount, the mobile card's Open Full button, the Enter key and
+ * the command palette -- goes through, so a leg cannot reach the
+ * transaction popover by any of them.
+ */
+function openCellFullEdit(opener) {
+    if (opener.dataset.xferId) {
+        openTransferFullEdit(
+            parseInt(opener.dataset.xferId, 10), opener,
+            opener.dataset.legAccountId);
+        return;
+    }
+    openFullEdit(parseInt(opener.dataset.txnId, 10), opener);
+}
+
 // --- Delegated click handlers (CSP-compliant, replaces inline onclick) ---
 document.addEventListener('click', function(e) {
-    // Open the anchored action card from a transaction cell's amount.
-    // The .paybtn sibling never matches this selector, so the one-click
-    // mark-paid and the card open cannot collide.
-    var openTarget = e.target.closest('.txn-open[data-txn-id]');
+    // Open the anchored action card from a cell's amount -- a transaction's
+    // or a transfer leg's.  The .paybtn sibling never matches this selector,
+    // so the one-click mark-paid and the card open cannot collide.
+    var openTarget = e.target.closest('.txn-open[data-cell]');
     if (openTarget) {
-        openFullEdit(parseInt(openTarget.dataset.txnId, 10), openTarget);
+        openCellFullEdit(openTarget);
         return;
     }
 
-    // Open full edit popover (expand button in quick-edit mode)
-    var editBtn = e.target.closest('.txn-expand-btn[data-txn-id]');
+    // Open full edit popover (expand button in quick-edit mode, and the
+    // mobile card's Open Full button -- for a transaction or a leg)
+    var editBtn = e.target.closest(
+        '.txn-expand-btn[data-txn-id], .txn-expand-btn[data-xfer-id]');
     if (editBtn) {
-        openFullEdit(parseInt(editBtn.dataset.txnId, 10), editBtn);
+        openCellFullEdit(editBtn);
         return;
     }
 

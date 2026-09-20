@@ -50,6 +50,8 @@ from app.services.status_seam import (
     Settlement,
     apply_status_change,
     honoured_correction,
+    honoured_figure,
+    movement_settlement,
     recorded_settlement,
 )
 from app.services.transaction_service._status_rules import settled_status_id
@@ -159,6 +161,37 @@ def retained_settle_amounts_by_id(rows) -> "dict[int, Decimal | None]":
             None if row.status_id in settled else honoured_correction(row)
         )
         for row in rows
+    }
+
+
+def leg_retained_amounts_by_key(legs) -> "dict[tuple[int, int], Decimal | None]":
+    """Return ``{leg.cell_key: the figure a re-settle would RE-BOOK}`` for legs.
+
+    :func:`retained_settle_amounts_by_id`'s twin for the grid's transfer legs
+    (leaf ``X-bi-6-1``, ruling **R-BAL87**), keyed by
+    :attr:`~app.services.transfer_legs.TransferLeg.cell_key`.  The same rule
+    through the same seam: ``None`` for a leg whose parent is settled (its
+    recorded figure is on screen already) and for one holding no stated
+    record; else what its retained covering movement still states
+    (:func:`~app.services.status_seam.honoured_figure` over
+    :func:`~app.services.status_seam.movement_settlement`) -- the figure a
+    person read off a statement before the transfer was reverted, which the
+    transfer's re-settle honours (``transfer_service._settle``).
+
+    Args:
+        legs: The :class:`~app.services.transfer_legs.TransferLeg` values a
+            surface is about to render, records loaded.
+
+    Returns:
+        ``{(transfer_id, account_id): Decimal | None}`` covering every leg.
+    """
+    settled = settled_status_ids()
+    return {
+        leg.cell_key: (
+            None if leg.status_id in settled or leg.record is None
+            else honoured_figure(movement_settlement(leg.record))
+        )
+        for leg in legs
     }
 
 
