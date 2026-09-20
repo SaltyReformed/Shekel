@@ -425,6 +425,12 @@ _FENCED_MODULE_RULINGS = {
             #     exposure rather than resisting one.
             "loan_event_stream",
             "replay_loan_events",
+            #   * ``load_loan_stream`` (plan step recurrence:R16-c-1) is
+            #     ``walk_loan_ledger``'s LOAD half: the same rows mapped onto
+            #     the same stream, before any replay -- ``loan_event_stream``'s
+            #     ruling with the loads attached; its ``visible_by`` bound is
+            #     ``confirmed_shadows_through``'s, below, applied at the load.
+            "load_loan_stream",
             #   * ``replay_loan_stream`` (plan step recurrence:R16-c-1) is that
             #     same replay handed a stream and returning the walk --
             #     ``walk_loan_ledger`` without the loads -- so it carries BOTH

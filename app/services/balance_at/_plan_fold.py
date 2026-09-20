@@ -1,48 +1,46 @@
-"""Balance-at-T seam -- FOLDING a loan's forward plan into money.
+"""Balance-at-T seam -- the FORWARD readers over a loan's one timeline.
 
-Plan step **R16-a**, which split this half out of :mod:`._plan` when that module
-went past pylint's 1000-line ceiling.  The line count going over is a statement
-that a module holds more than one subject, and the two here are the seam's own
-distinction one level up: :mod:`._plan` BUILDS the forward model -- what a loan
-will be charged and what it will pay -- and this folds that model into the three
-figures the seam publishes.
+Plan step **R16-a** split this module out of :mod:`._plan` when that module went
+past pylint's 1000-line ceiling; plan step **recurrence:R16-c-1** emptied it of
+its fold.  It held ``_split_plan``, a second replay of the loan's plan from a
+SEED the settled fold had resolved, and four readers over that replay; the
+seam's ONE timeline (:mod:`._loan_stream`) now carries the plan's outcomes
+behind the recorded facts, so the balance is :func:`._fold.fold_from_walk` over
+the timeline exactly as the past always was, and what survives here is the two
+readings of the future that are not a balance at a date:
 
-* :func:`fold_forward` -- the balance owed on each requested date.
-* :func:`plan_payoff_date` -- the date the balance first reaches zero.
-* :func:`plan_required_extra` -- what must be added per month to clear it by a
+* :func:`timeline_payoff_date` -- the date the balance first reaches zero.
+* :func:`required_extra` -- what must be added per month to clear it by a
   target date.
-* :func:`plan_interest_in_year` -- the interest the plan pays in a tax year.
+* :func:`is_retired` -- the predicate both guard on: borrowed, and now owing
+  nothing.  THE one definition, shared with :mod:`._loan_figures` (it lived
+  there until this step, and the two forward readers restated its arithmetic
+  as ``seed <= 0``).
 
-**All four run ONE walk** (:func:`_split_plan`), so a loan's projected balance,
-its derived payoff, its required extra and its projected interest cannot come to
-disagree about what a future payment pays.  That walk merges the plan's CHARGES
-with its PAYMENTS in contract order rather than charging a month inside each
-payment, which is the whole of R16-a: fused, the payment COUNT was the clock, and
-30 payments fourteen days apart charged the same interest as 30 a month apart.
+Both read the SAME timeline :func:`~app.services.balance_at.positions` folds,
+so a loan's projected balance, its derived payoff, its required extra, its
+projected interest (:mod:`._loan_interest`) and its rendered schedule cannot
+disagree about what a future payment pays.  ``fold_forward``, ``_split_plan``,
+``plan_interest_in_year`` and the ``PlannedInstallment`` record are DELETED:
+the timeline's :class:`~app.services.loan_ledger.PaymentOutcome` is the record
+for a projected payment as it is for a settled one.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.  Seam-PRIVATE -- W9910 refuses an import of it from
 outside :mod:`app.services.balance_at`.
 """
 
-from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import date
 from decimal import ROUND_CEILING, Decimal
 
-from app.services.rate_period_engine import RatePeriod, period_for_date
-from app.utils.money import PaymentCashSplit
-from app.services.loan_ledger import (
-    LoanCashEvent,
-    LoanEventStream,
-    replay_loan_events,
-)
+from app.services.loan_ledger import LoanLedgerWalk, PaymentOutcome
 
-from ._fold import sample_cumulative
-from ._plan import LoanForwardPlan
+from ._fold import fold_from_walk
 
 _ZERO_MONEY = Decimal("0.00")
 
-# :func:`plan_required_extra`'s bisection stops once the bracket is this narrow,
+# :func:`required_extra`'s bisection stops once the bracket is this narrow,
 # and the answer is the upper end rounded UP to the cent -- so the reported extra
 # is at most a cent above the true threshold and never below it.
 _EXTRA_SEARCH_TOLERANCE = Decimal("0.001")
@@ -53,190 +51,111 @@ _CENTS = Decimal("0.01")
 # not a rounding matter but a date no payment schedule can reach.
 _EXTRA_SEARCH_DOUBLINGS = 20
 
-@dataclass(frozen=True)
-class PlannedInstallment:
-    """One planned payment's fold result: its dates, its cash and the split parts.
 
-    The per-payment output of :func:`_split_plan`, carrying what the forward
-    readers need -- the ``principal`` paydown for :func:`fold_forward` (the balance),
-    the ``interest`` for :func:`plan_interest_in_year` (the tax figure), and since
-    plan step R7d-g-3 the whole row a schedule surface renders -- keyed by the
-    EFFECTIVE date the payment becomes visible on, plus the ``due_date`` that
-    identifies its installment (so the tax reader can drop a slot a settled payment
-    already covers).  Sharing ONE split is what keeps a loan's projected balance,
-    its projected interest and its rendered schedule from disagreeing about what
-    a future payment pays.
+def installments_payoff(installments: list[PaymentOutcome]) -> date | None:
+    """Return the DUE date of the first installment whose balance reaches zero.
 
-    **Public since plan step R7d-g-3** (it was the private ``_PlanSplit``):
-    the loan page's band chart, pay-off-sooner lever, allocation bar and
-    amortization table read the loan's forward trajectory off this record
-    through :func:`~app.services.balance_at.loan_installments`, where until
-    then they read ``loan_resolver.compute_payoff_scenarios``' committed
-    slice -- a second forward walk that priced the months no generated row
-    covered from the contract plus ONE picked definition's extra (ruling
-    **R-R88**; plan ledger row **D49**).  One fold, every surface.
-
-    Attributes:
-        due_date: The contractual installment this payment satisfies -- its
-            ``(year, month)`` slot identity, so :func:`plan_interest_in_year` can
-            exclude an installment a settled payment already occupies.
-        effective_date: When this payment's paydown becomes VISIBLE to a read
-            (``max(due, as_of + 1d)``, ruling D1); both readers key their year /
-            prefix-sum on it.
-        cash: What the payment moves, escrow-inclusive as the owner pays it
-            (:attr:`~app.services.balance_at._plan_records.PlannedPayment.cash`).
-        split: What that cash did, as the ONE allocation produced it
-            (:class:`~app.utils.money.PaymentCashSplit`): the ``interest`` it
-            paid (accrued on the running balance before it, ``>= 0``), the
-            ``escrow`` it impounded (the accrual period's charge, ``0.00`` for
-            a second payment inside one period), the ``principal`` it paid
-            down (``cash - interest - escrow``, capped at the balance; NEGATIVE
-            for an underpayment), any ``excess`` past payoff, and the running
-            ``balance_after`` -- what :func:`plan_payoff_date` scans for the
-            first ``<= 0`` to find the date the loan clears.  ``fold_forward``
-            prefix-sums the ``principal``; the rest rides so every reader of
-            an installment reads the one allocation rather than re-deriving a
-            part of it.
-        charge_date: The date of the accrual charge standing over this
-            payment (:attr:`~app.services.loan_ledger.AccrualCharge.on_date`,
-            the contract's installment date of the period it pays into) --
-            the identity of the ACCRUAL PERIOD the payment belongs to, which
-            a surface listing the plan month by month groups on.  ``None``
-            when no charge stands: a payment dated after the loan's latest
-            assertion and before the first installment after it, which pays
-            what stands (nothing -- ruling R-C's early extra, pure principal).
-        period: The rate period governing this payment
-            (:class:`~app.services.rate_period_engine.RatePeriod`): the
-            standing charge's, or for a payment no charge stands over the
-            period the loan's calendar puts its due date in
-            (:func:`~app.services.rate_period_engine.period_for_date` over
-            the plan's ``periods``).  Its ``annual_rate`` is the ARM rate
-            column's figure and its ``period_pi`` the contractual P&I a
-            surface splits an extra out against.
-    """
-
-    due_date: date
-    effective_date: date
-    cash: Decimal
-    split: PaymentCashSplit
-    charge_date: date | None
-    period: RatePeriod
-
-
-def _split_plan(
-    seed: Decimal,
-    plan: LoanForwardPlan,
-    extra_monthly: Decimal = _ZERO_MONEY,
-) -> list[PlannedInstallment]:
-    """Fold *plan* from *seed* in DUE order, returning each payment's split.
-
-    The shared forward fold every reader runs, and since plan step
-    **X-au-g-2c-3b-2** it is an ADAPTER rather than a fold: it maps the plan's
-    records onto the loan replay's event vocabulary, runs
-    :func:`~app.services.loan_ledger.replay_loan_events` -- the ONE rule, shared
-    with the settled walk -- and maps each outcome back onto the two figures the
-    forward readers need.  :func:`fold_forward` prefix-sums the ``principal`` side
-    for the balance; :func:`plan_interest_in_year` sums the ``interest`` side for
-    the tax figure, so the loan's projected balance and its projected interest
-    come from ONE fold and cannot disagree.
-
-    **It stated that rule itself until X-au-g-2c-3b-2**, and the duplication was
-    forced rather than chosen: ``balance_at`` reaches ``loan_ledger`` and not the
-    other way about, so the settled walk could not be handed this fold and wrote
-    its own.  That is the same layering shape plan steps X-au-g-2c-3a (the
-    allocation) and X-au-g-2c-3b-1 (the charge calendar) each found one tier
-    down, and the remedy is the same: the rule moves to the tier every walk can
-    reach.
-
-    **The plan asserts nothing, so its stream carries no RESET.**  A forward
-    projection starts from a seed the caller already resolved; only the settled
-    walk replays a loan's anchors.
-
-    **It stopped charging a month INSIDE the per-payment step at plan step
-    R16-a**, and that is the step rather than a detail of it.  Charging per
-    payment made the payment count the clock: measured on a production clone, 30
-    payments of ``$531.94`` fourteen days apart charged the same ``$1,096.34`` as
-    30 a month apart, split for split, so a loan paid twice as fast modelled
-    identical interest.  Charging per PERIOD makes a second payment inside one
-    period clear no fresh charge and pay pure principal.  For the
-    one-payment-per-month shape every live loan is in the two are byte-identical,
-    which is measured rather than argued
-    (``tests/manual/verify_r7d_estimate_equality.py``).
+    The ONE statement of "when does this trajectory clear the loan", read by
+    :func:`timeline_payoff_date` over the pass's timeline and by a surface
+    already holding the timeline's projected outcomes (the loan page's
+    pay-off-sooner lever, plan step R7d-g-3), so a caller with the split in
+    hand does not replay the loan a second time to learn what it already holds.
+    Public through :mod:`app.services.balance_at`.
 
     Args:
-        seed: The balance the projection starts from.
-        plan: The loan's :func:`._plan.loan_plan` forward model.  Its payments are
-            pre-sorted onto ``(due_date, effective_date)`` here, which is the
-            within-date order the fold has always used; the replay sorts stably
-            on ``(date, kind)`` and adds no tie-break of its own, so that order
-            survives (:class:`~app.services.loan_ledger.LoanEventStream`).
-        extra_monthly: A HYPOTHETICAL extra added once per ACCRUAL PERIOD, for the
-            what-if search (:func:`plan_required_extra`).  ``0.00`` -- the default,
-            and what every real read passes -- folds the plan as it stands.  Per
-            period rather than per payment since R16-a, which is what its name has
-            always claimed: added per RECORD, "an extra $100 a month" was $2,600 a
-            year for a definition paying every fortnight.  The loan's STANDING
-            ``extra_principal`` is already inside each record's cash (the PLANNED
-            tier's live D3 amount, the ESTIMATED tier's synthesis), so this is
-            strictly the extra ON TOP of the user's current plan, which is the
-            figure the target-date calculator reports.
+        installments: A timeline's projected outcomes
+            (:attr:`~app.services.loan_ledger.LoanLedgerWalk.projected_splits`),
+            in walk order.
 
     Returns:
-        One :class:`PlannedInstallment` per payment, in DUE order.
+        The DUE date the balance first reaches ``<= 0``, or ``None`` when no
+        installment does (the plan never clears the loan, or there is none).
     """
-    replay = replay_loan_events(
-        seed,
-        LoanEventStream(
-            charges=plan.charges,
-            payments=[],
-            projections=[
-                LoanCashEvent(
-                    on_date=payment.due_date,
-                    cash=payment.cash,
-                    source=payment,
-                    visible_on=payment.effective_date,
-                )
-                for payment in sorted(
-                    plan.payments,
-                    key=lambda record: (record.due_date, record.effective_date),
-                )
-            ],
-            periods=plan.periods,
-        ),
-        extra_per_period=extra_monthly,
-    )
-    return [
-        PlannedInstallment(
-            due_date=outcome.event.source.due_date,
-            effective_date=outcome.event.source.effective_date,
-            cash=outcome.event.cash,
-            split=outcome.split,
-            charge_date=(
-                None if outcome.charge is None else outcome.charge.on_date
-            ),
-            period=(
-                period_for_date(plan.periods, outcome.event.source.due_date)
-                if outcome.charge is None else outcome.charge.period
-            ),
-        )
-        for outcome in replay.payments
-    ]
+    for installment in installments:
+        if installment.balance_after <= _ZERO_MONEY:
+            return installment.due_date
+    return None
 
 
-def plan_payoff_date(
-    seed: Decimal,
-    plan: LoanForwardPlan,
-    extra_monthly: Decimal = _ZERO_MONEY,
+def owed_at(walk: LoanLedgerWalk, as_of: date) -> Decimal:
+    """Return the balance *walk* owes on *as_of*.
+
+    :func:`._fold.fold_from_walk` at one date, named because :func:`is_retired`
+    and :func:`required_extra`'s search bound both ask it, and the figure is the
+    one :func:`~app.services.balance_at.positions` shows for that day.
+
+    Args:
+        walk: The loan's walk -- its timeline (:func:`._loan_stream.loan_timeline`)
+            or its facts alone; a projection is visible after the read day, so
+            the two answer *as_of* alike.
+        as_of: The read pass's as-of.
+
+    Returns:
+        The cent-quantized balance owed on *as_of*.
+    """
+    return fold_from_walk(walk, [as_of])[as_of]
+
+
+def is_originated(owed_from: date, as_of: date) -> bool:
+    """Return whether a loan originating *owed_from* exists by *as_of*.
+
+    THE one definition of "does this loan exist yet", read by
+    :func:`is_retired` and, through ``_loan_figures``, by
+    :attr:`~app.services.balance_at.LoanFigures.is_originated`.  It lived in
+    ``_loan_figures`` alone until plan step recurrence:R16-c-1 moved the retired
+    predicate here beside the forward readers that guard on it.
+
+    Args:
+        owed_from: The loan's ``origination_date``.
+        as_of: The read pass's as-of.
+
+    Returns:
+        ``True`` when the origination date has arrived.
+    """
+    return owed_from <= as_of
+
+
+def is_retired(walk: LoanLedgerWalk, owed_from: date, as_of: date) -> bool:
+    """Return whether the loan is DONE at *as_of* -- borrowed, and now owing nothing.
+
+    THE one definition of "this loan has no debt line left", shared by
+    :attr:`~app.services.balance_at.LoanFigures.is_retired` (through
+    :mod:`._loan_figures`), the payoff, the required extra and the loan page's
+    installment list, so the seam cannot answer it two ways.  The owed figure is
+    the fold of the walk at the pass's ``as_of`` -- the SAME derivation
+    :func:`~app.services.balance_at.positions` reads through, so this predicate
+    and the balance rendered beside it cannot disagree.
+
+    **A loan that has not ORIGINATED is not retired; it has not been taken out.**
+    That guard is load-bearing, not defensive: the fold correctly answers
+    ``0.00`` for a loan configured before it closes, so without it an unclosed
+    mortgage reads as DONE -- dropped from the debt card, gone from the Horizon's
+    liabilities, erased from the property equity chart, and (since plan step
+    recurrence:R16-c-1, when the forward readers stopped starting from a seed
+    that was the opening balance for such a loan) with no payoff to date.
+
+    Args:
+        walk: The loan's walk (see :func:`owed_at`).
+        owed_from: The loan's ``origination_date``.
+        as_of: The read pass's as-of.
+
+    Returns:
+        ``True`` when the loan has originated by *as_of* and its folded events
+        say nothing is owed on it.
+    """
+    return is_originated(owed_from, as_of) and owed_at(walk, as_of) <= _ZERO_MONEY
+
+
+def timeline_payoff_date(
+    walk: LoanLedgerWalk, owed_from: date, as_of: date,
 ) -> date | None:
-    """Return the DUE date *plan* drives *seed* to zero on, or ``None``.
+    """Return the DUE date *walk*'s plan drives its balance to zero on, or ``None``.
 
-    The loan's derived payoff date: fold *plan* from *seed* in DUE order
-    (:func:`_split_plan`, the SAME fold :func:`fold_forward` runs, so the payoff
-    and the balance cannot disagree about when the loan clears) and return the DUE
-    date of the FIRST payment whose running balance reaches ``<= 0`` -- the
-    installment that pays the loan off.  This is a fold-to-zero, NOT
-    ``plan[-1].date``: the plan runs PAST the contractual payoff (the ESTIMATED
-    tail's extension, ``_plan._PAYOFF_EXTENSION_MONTHS``), so a loan paying extra
+    The loan's derived payoff date: the DUE date of the FIRST projected payment
+    whose running balance reaches ``<= 0`` -- the installment that pays the loan
+    off (:func:`installments_payoff`).  This is a fold-to-zero, NOT the plan's
+    last date: the plan runs PAST the contractual payoff (the ESTIMATED tail's
+    extension, ``_plan._PAYOFF_EXTENSION_MONTHS``), so a loan paying extra
     reaches zero at an EARLIER installment (the date the engine's own
     contract-plus-extra projection reaches, ``project_forward(extra_monthly=...)``)
     and an underpaying one at a LATER installment in the extension (a real date,
@@ -246,82 +165,59 @@ def plan_payoff_date(
     tell "already done" from "never pays off" (both differ from "pays off on date
     D"):
 
-    * **Already retired** (``seed <= 0``): the loan owes nothing at the projection
-      seed, so there is no FORWARD crossing to date.  The caller reads
+    * **Already retired** (:func:`is_retired`: originated, and owing nothing at
+      *as_of*): there is no FORWARD crossing to date.  The caller reads
       :attr:`~app.services.balance_at.LoanFigures.is_retired` for the paid-off
-      state; this does not invent a future payoff for a loan already at zero (the
-      first planned payment would otherwise look like a "payoff").
+      state; this does not invent a future payoff for a loan already at zero
+      (the first planned payment would otherwise look like a "payoff").  A loan
+      NOT yet originated is not retired: its whole plan lies ahead and this
+      dates it.
     * **Never reaches zero within the plan**: negative amortization (a payment
       below the period interest, so the balance grows), or an underpayment so
-      severe the balance is still positive after the post-contractual extension.  A
-      MILDER underpayment is NOT here -- the extension lets it clear a few months
-      past the contractual date, and this returns that later date.  Recurrence
-      stays indefinite; the ``None`` the retired case and this share is
-      disambiguated by ``is_retired`` (retired here is False).
+      severe the balance is still positive after the post-contractual extension.
+      A MILDER underpayment is NOT here -- the extension lets it clear a few
+      months past the contractual date, and this returns that later date.
+      Recurrence stays indefinite; the ``None`` the retired case and this share
+      is disambiguated by ``is_retired`` (retired here is False).
 
-    The DUE date (contract time), not the EFFECTIVE (visible) date, is returned so
-    the payoff month is the installment's own -- matching the contract's
-    ``original_forward[-1].payment_date`` the payoff has always keyed on, and, for
-    a normal future loan, equal to the effective date anyway (they differ only for
-    an overdue-but-projected installment, which almost never clears a loan).
+    The DUE date (contract time), not the visible date, is returned so the
+    payoff month is the installment's own -- matching the contract's
+    ``original_forward[-1].payment_date`` the payoff has always keyed on, and,
+    for a normal future loan, equal to the visible date anyway (they differ only
+    for an overdue-but-projected installment, which almost never clears a loan).
 
     Args:
-        seed: The balance the projection starts from -- the loan's confirmed
-            present (an originated loan) or its opening balance (one not yet
-            originated), the SAME
-            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
-            :func:`fold_forward` folds.
-        plan: The loan's :func:`._plan.loan_plan` forward model.
-        extra_monthly: A HYPOTHETICAL extra added once per ACCRUAL PERIOD, used
-            only by
-            :func:`plan_required_extra`'s search.  ``0.00`` -- the default, and
-            what every real read passes -- dates the plan as it stands.
+        walk: The loan's timeline (:func:`._loan_stream.loan_timeline`, or a
+            what-if replay of the same stream).
+        owed_from: The loan's ``origination_date``.
+        as_of: The read pass's as-of -- the day the retired test values.
 
     Returns:
         The DUE date the balance first reaches ``<= 0``, or ``None`` when the loan
-        is already retired (``seed <= 0``) or never pays off.
+        is already retired at *as_of* or never pays off.
     """
-    if seed <= _ZERO_MONEY:
+    if is_retired(walk, owed_from, as_of):
         return None
-    return installments_payoff(_split_plan(seed, plan, extra_monthly))
+    return installments_payoff(walk.projected_splits)
 
 
-def installments_payoff(installments: list[PlannedInstallment]) -> date | None:
-    """Return the DUE date of the first installment whose balance reaches zero.
-
-    The ONE statement of "when does this trajectory clear the loan", read by
-    :func:`plan_payoff_date` over a fresh fold and by a surface already holding
-    the fold's installments (the loan page's pay-off-sooner lever, plan step
-    R7d-g-3), so a caller with the split in hand does not fold the plan a
-    second time to learn what it already holds.  Public through
-    :mod:`app.services.balance_at`.
-
-    Args:
-        installments: A :func:`_split_plan` result, in DUE order.
-
-    Returns:
-        The DUE date the balance first reaches ``<= 0``, or ``None`` when no
-        installment does (the plan never clears the loan, or there is none).
-    """
-    for installment in installments:
-        if installment.split.balance_after <= _ZERO_MONEY:
-            return installment.due_date
-    return None
-
-
-def plan_required_extra(
-    seed: Decimal, plan: LoanForwardPlan, target_date: date,
+def required_extra(
+    walk: LoanLedgerWalk,
+    owed_from: date,
+    as_of: date,
+    target_date: date,
+    replay_with: Callable[[Decimal], LoanLedgerWalk],
 ) -> Decimal | None:
-    """Return the extra PER MONTH that clears *seed* by *target_date*.
+    """Return the extra PER MONTH that clears *walk*'s balance by *target_date*.
 
-    The target-date calculator's answer, folded from the SAME plan and the SAME
-    seed :func:`plan_payoff_date` and :func:`fold_forward` use (plan step C8f).
-    It answers "what must I add each month to be done by then" -- per ACCRUAL
-    PERIOD since plan step R16-a, which is what the panel has always printed
-    (``loan/_payoff_results.html`` renders it ``/mo``) and what a fortnightly
-    payer was never given: added per RECORD it was 26 helpings of "a month". Where
-    "done" is the date the BALANCE reaches zero -- so the figure and the payoff
-    chip beside it rest on one forward model.
+    The target-date calculator's answer, searched over the SAME timeline
+    :func:`timeline_payoff_date` and :func:`~app.services.balance_at.positions`
+    read (plan step C8f).  It answers "what must I add each month to be done by
+    then" -- per ACCRUAL PERIOD since plan step R16-a, which is what the panel
+    has always printed (``loan/_payoff_results.html`` renders it ``/mo``) and
+    what a fortnightly payer was never given: added per RECORD it was 26
+    helpings of "a month".  Where "done" is the date the BALANCE reaches zero --
+    so the figure and the payoff chip beside it rest on one forward model.
 
     **Why it is not the schedule search it replaced.**  The retired
     ``loan_resolver.target_date_outlook`` binary-searched
@@ -338,29 +234,33 @@ def plan_required_extra(
     and escrow first), so more extra can only move the zero-crossing earlier or
     leave it where it is.
 
-    Args:
-        seed: The balance the projection starts from -- the loan's confirmed
-            present, the SAME
-            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
-            the balance folds.
-        plan: The loan's :func:`._plan.loan_plan` forward model.  Its cash already
-            carries the loan's STANDING ``extra_principal``, so the result is the
-            amount needed ON TOP of the user's current plan.
-        target_date: The date the user wants to be done by.
-
-    **Every comparison here is on the EFFECTIVE date, not the due date.**  The
+    **Every comparison here is on the VISIBLE date, not the due date.**  The
     payoff DATE this seam reports is the clearing installment's DUE date (contract
     time, matching what the loan card has always shown -- see
-    :func:`plan_payoff_date`), but "will I be clear by X" is a question about when
-    the money MOVES, and those differ for an overdue-but-still-projected payment:
-    ruling D1 clamps its effective date to ``as_of + 1d`` while its due date stays
-    in the past.  Comparing due dates let a target in the PAST look reachable --
-    the fold "cleared" the loan on a past due date, so the search happily returned
-    a six-figure extra for a date the user cannot pay on any more.
+    :func:`timeline_payoff_date`), but "will I be clear by X" is a question about
+    when the money MOVES, and those differ for an overdue-but-still-projected
+    payment: ruling D1 clamps its visible date to ``as_of + 1d`` while its due
+    date stays in the past.  Comparing due dates let a target in the PAST look
+    reachable -- the fold "cleared" the loan on a past due date, so the search
+    happily returned a six-figure extra for a date the user cannot pay on any
+    more.
+
+    Args:
+        walk: The loan's timeline as it stands (:func:`._loan_stream.loan_timeline`).
+            Its projections' cash already carries the loan's STANDING
+            ``extra_principal``, so the result is the amount needed ON TOP of
+            the user's current plan.
+        owed_from: The loan's ``origination_date``.
+        as_of: The read pass's as-of -- the day the retired test values.
+        target_date: The date the user wants to be done by.
+        replay_with: The what-if replay of the SAME stream under a candidate
+            extra (:func:`._loan_stream.what_if_timeline` bound to the loan,
+            or the leaf's :func:`~app.services.loan_ledger.replay_loan_stream`
+            over ``walk.stream``); each probe of the search calls it once.
 
     Returns:
         ``Decimal("0.00")`` when the plan ALREADY clears the loan by
-        *target_date* (including a loan that owes nothing), the searched
+        *target_date* (including a retired loan), the searched
         per-month extra when one exists, or ``None`` for a target no extra
         reaches.  That last has two causes: no planned payment has even HAPPENED
         by then (a target in the past, or before the next installment lands), or
@@ -368,38 +268,41 @@ def plan_required_extra(
         which past the first guard means the split arithmetic stopped responding
         to more principal rather than that the date is genuinely out of reach.
     """
-    if seed <= _ZERO_MONEY:
+    if is_retired(walk, owed_from, as_of):
         return _ZERO_MONEY
 
     def _clears_by(extra: Decimal) -> bool:
         """Whether *extra* a month puts the balance at zero by the target.
 
-        Keyed on the clearing payment's EFFECTIVE date -- when its cash actually
+        Keyed on the clearing payment's VISIBLE date -- when its cash actually
         moves -- so a past due date can never stand in for a payment that has not
         happened (see the note above).
         """
-        for installment in _split_plan(seed, plan, extra):
-            if installment.split.balance_after <= _ZERO_MONEY:
-                return installment.effective_date <= target_date
+        for installment in replay_with(extra).projected_splits:
+            if installment.balance_after <= _ZERO_MONEY:
+                return installment.visible_on <= target_date
         return False
 
     if _clears_by(_ZERO_MONEY):
         return _ZERO_MONEY
     if not any(
-        payment.effective_date <= target_date for payment in plan.payments
+        payment.visible_on <= target_date for payment in walk.projected_splits
     ):
         # No planned payment has even happened by then, so no extra lands in
         # time: the target is in the past, or before the next installment.
         return None
 
-    # An UPPER BOUND has to be found, not assumed.  The seed looks like one --
-    # pay the whole balance as extra and the first installment clears it -- but
-    # it is not: the allocation (:func:`~app.utils.money.apply_payment_cash`)
-    # takes the standing interest and escrow out of the cash FIRST, so on a loan
-    # whose period interest exceeds its payment cash even
-    # ``seed`` leaves a residue.  Double until the bound genuinely reaches the
-    # target, so the bisection below starts from an invariant that HOLDS rather
-    # than one that looked obvious.
+    # An UPPER BOUND has to be found, not assumed.  The balance owed at the
+    # read looks like one -- pay it all as extra and the first installment
+    # clears it -- but it is not: the allocation
+    # (:func:`~app.utils.money.apply_payment_cash`) takes the standing interest
+    # and escrow out of the cash FIRST, so on a loan whose period interest
+    # exceeds its payment cash even that leaves a residue.  Double until the
+    # bound genuinely reaches the target, so the bisection below starts from an
+    # invariant that HOLDS rather than one that looked obvious.  For a loan not
+    # yet originated the read-day balance is 0.00 and the bound starts from
+    # what it will owe the day it closes -- its opening assertion, the first
+    # reset in its stream (the same fork the retired seed made).
     #
     # The cap is a termination backstop, not an expected outcome: past the
     # no-payment guard above, some extra always clears the loan at the first
@@ -407,7 +310,13 @@ def plan_required_extra(
     # ``else`` is not the "unreachable target" case -- that one already returned.
     # The cap exists so a future change to the split can never turn this into a
     # hang.
-    low, high = _ZERO_MONEY, seed
+    seed = owed_at(walk, as_of)
+    low, high = _ZERO_MONEY, (
+        seed if seed > _ZERO_MONEY
+        else next(
+            reset.balance for reset in walk.stream.resets if reset.is_opening
+        )
+    )
     for _ in range(_EXTRA_SEARCH_DOUBLINGS):
         if _clears_by(high):
             break
@@ -440,165 +349,3 @@ def plan_required_extra(
     if _clears_by(candidate):
         return candidate
     return high.quantize(_CENTS, rounding=ROUND_CEILING)
-
-
-def _paydown_steps(
-    seed: Decimal, plan: LoanForwardPlan, extra_monthly: Decimal = _ZERO_MONEY,
-) -> list[tuple[date, Decimal]]:
-    """Return each planned payment's paydown as a NEGATIVE change on its visible date.
-
-    The balance reader's view of :func:`_split_plan`: each split's ``principal``
-    paydown, negated and keyed by its EFFECTIVE (visible) date -- the steps
-    :func:`_sample_from_steps` prefix-sums.
-
-    Args:
-        seed: The balance the projection starts from.
-        plan: The loan's :func:`._plan.loan_plan` forward model.
-        extra_monthly: The what-if extra :func:`_split_plan` takes; ``0.00``
-            folds the plan as it stands.
-
-    Returns:
-        ``[(effective_date, balance_change), ...]`` in due order (balance_change is
-        ``-principal``).
-    """
-    return [
-        (installment.effective_date, -installment.split.principal)
-        for installment in _split_plan(seed, plan, extra_monthly)
-    ]
-
-
-def _sample_from_steps(
-    seed: Decimal,
-    owed_from: date,
-    steps: list[tuple[date, Decimal]],
-    dates: list[date],
-) -> dict[date, Decimal]:
-    """Prefix-sum the paydown *steps* from *seed* and read each date off it.
-
-    Re-keys the (contract-order) steps by their visible date, prefix-sums from the
-    seed, and bisects for each requested date -- the same visible-order read
-    :func:`app.services.balance_at._fold.fold_from_walk` makes for the ACTUAL past.  A
-    date before *owed_from* owes ``0.00`` (the loan does not exist yet).
-
-    Args:
-        seed: The balance before any paydown.
-        owed_from: The loan's ``origination_date``; a date before it owes ``0.00``.
-        steps: The ``(effective_date, balance_change)`` steps from
-            :func:`_paydown_steps`.
-        dates: The dates to value, in any order.  Duplicates collapse.
-
-    Returns:
-        ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per date.
-    """
-    # The prefix-sum and per-date read is the shared fold-sampling core; only the
-    # origination gate (a date before the loan exists owes 0.00) is projection-specific.
-    sampled = sample_cumulative(
-        seed, sorted(steps, key=lambda step: step[0]), dates,
-    )
-    return {
-        on_date: (_ZERO_MONEY if on_date < owed_from else balance)
-        for on_date, balance in sampled.items()
-    }
-
-
-def fold_forward(
-    seed: Decimal,
-    owed_from: date,
-    plan: LoanForwardPlan,
-    dates: list[date],
-    extra_monthly: Decimal = _ZERO_MONEY,
-) -> dict[date, Decimal]:
-    """Fold the confirmed-present *seed* forward over *plan* to a balance per date.
-
-    The projection half of :func:`app.services.balance_at.positions`, expressed as
-    a fold rather than a schedule-row walk.  Splits each planned payment on the
-    running balance in DUE (contract) order (:func:`_paydown_steps`), then re-keys
-    each paydown by its EFFECTIVE (visible) date and prefix-sums
-    (:func:`_sample_from_steps`) -- the SAME contract-order-split / visible-order-read
-    shape :func:`app.services.balance_at._fold.fold_from_walk` uses for the ACTUAL past,
-    so the past and the future fold consistently.  A date before ``owed_from`` (the
-    loan's origination) owes ``0.00``.
-
-    Args:
-        seed: The balance the projection starts from -- the loan's confirmed
-            present for an originated loan, or the balance it will OPEN at for one
-            not yet originated (the caller supplies the right one, as
-            :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`
-            does today).
-        owed_from: The loan's ``origination_date``; a date before it owes
-            ``0.00``.
-        plan: The loan's :func:`._plan.loan_plan` forward model.
-        dates: The dates to value the loan at, in any order.  Duplicates collapse.
-        extra_monthly: A HYPOTHETICAL extra per accrual period on top of the
-            plan (:func:`_split_plan`), for the pay-off-sooner lever's preview
-            line (plan step R7d-g-3).  ``0.00`` -- the default, and what every
-            real balance read passes -- folds the plan as it stands.
-
-    Returns:
-        ``{date: balance owed}`` -- one cent-quantized ``Decimal`` per requested
-        date.  ``{}`` for an empty *dates*.
-    """
-    return _sample_from_steps(
-        seed, owed_from, _paydown_steps(seed, plan, extra_monthly), dates,
-    )
-
-
-def plan_interest_in_year(
-    seed: Decimal,
-    plan: LoanForwardPlan,
-    year: int,
-    exclude_slots: frozenset[tuple[int, int]] = frozenset(),
-) -> Decimal:
-    """Return the interest *plan*'s payments are projected to pay in *year*.
-
-    The projected (future) half of the Schedule-A mortgage-interest figure
-    (:func:`app.services.balance_at.loan_interest_in_year`), folded from the SAME
-    forward payment records the loan's projected BALANCE folds
-    (:func:`fold_forward` over :func:`_split_plan`) -- so the tax figure's future
-    and the balance's future come from ONE model (step C6c; B-6 unified the settled
-    PAST, this the future).  It sums each payment's accrued interest attributed to
-    the year the payment is projected to be PAID: its EFFECTIVE date
-    (``max(due, as_of + 1d)``, ruling D1), the visible / expected-paid date, so an
-    overdue-but-still-projected payment's interest deducts in the year it is
-    expected to clear rather than the closed year it was contractually due.
-
-    An overdue installment with NO payment record contributes nothing: it is absent
-    from *plan* entirely (:func:`._plan.loan_plan`'s ESTIMATED tier never synthesizes a
-    strictly-past installment -- finding B-9), so a delinquent loan's unpaid past
-    does not inflate its deduction.
-
-    *exclude_slots* is the settled-slot MERGE: the caller passes the ``(year,
-    month)`` installments its SETTLED half already counts, and this drops any plan
-    record on one of them, so an installment counted as settled is not ALSO counted
-    here.  The plan's own ESTIMATED tier de-dups the settled payments VISIBLE by
-    ``as_of`` (``confirmed_shadows_through``, a UTC-visibility cut), but the caller's
-    settled half sums the fold's WALK on a DISPLAY clock; the two cuts differ for a
-    payment settled in the evening of a UTC-behind zone, so the caller closes the
-    gap by handing this the WALK's slots.  See
-    :func:`app.services.balance_at._loan_interest.loan_interest_in_year`.
-
-    Args:
-        seed: The balance the projection starts from -- the loan's confirmed
-            present (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`),
-            the SAME seed :func:`positions` folds, so the interest accrues on the
-            balance the loan actually projects.
-        plan: The loan's :func:`._plan.loan_plan` forward model.
-        year: The calendar / tax year to sum projected interest within.
-        exclude_slots: The ``(year, month)`` installment slots a settled payment
-            already covers, dropped from the sum (default: none).  A record is still
-            FOLDED (its paydown feeds later balances), only its interest is skipped.
-
-    Returns:
-        The interest projected to be paid in *year* as a cent-quantized
-        ``Decimal`` (``0.00`` when no planned payment is visible in the year).
-    """
-    return sum(
-        (
-            installment.split.interest
-            for installment in _split_plan(seed, plan)
-            if installment.effective_date.year == year
-            and (installment.due_date.year, installment.due_date.month)
-            not in exclude_slots
-        ),
-        _ZERO_MONEY,
-    )

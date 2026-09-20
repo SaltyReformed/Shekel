@@ -77,11 +77,12 @@ logger = logging.getLogger(__name__)
 
 # The three per-loan correction components, each a tuple of (the per-loan ledger
 # account KIND to resolve, the posting-leg KIND to tag the leg, the
-# :class:`LoanPaymentSplit` attribute holding the leg's amount).  The loan-linked
-# principal leg is handled separately -- it books onto the loan's existing
-# Asset/Liability account mirror (the ``linked`` ledger), not a per-loan account.
-# Driving the three components off one table keeps the target builder DRY and
-# makes "add a component" a one-line change.
+# :class:`~app.services.loan_ledger.PaymentOutcome` attribute holding the leg's
+# amount -- its flat read-through properties).  The loan-linked principal leg
+# is handled separately -- it books onto the loan's existing Asset/Liability
+# account mirror (the ``linked`` ledger), not a per-loan account.  Driving the
+# three components off one table keeps the target builder DRY and makes "add a
+# component" a one-line change.
 _LOAN_CORRECTION_COMPONENTS = (
     (LedgerAccountKindEnum.LOAN_INTEREST, PostingKindEnum.INTEREST, "interest"),
     (LedgerAccountKindEnum.LOAN_ESCROW, PostingKindEnum.ESCROW, "escrow"),

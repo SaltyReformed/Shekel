@@ -128,6 +128,7 @@ from ._walk import (
     LoanLedgerWalk,
     compute_loan_payment_splits,
     dated_deltas,
+    load_loan_stream,
     replay_loan_stream,
     walk_loan_ledger,
 )
@@ -168,6 +169,7 @@ __all__ = [
     "confirmed_shadows_through",
     "dated_deltas",
     "installment_slot",
+    "load_loan_stream",
     "loan_event_stream",
     "payment_installments",
     "payment_visible_on",

@@ -58,7 +58,7 @@ from app.services import (
 from app.services.loan_loaders import LoanAnchorFact
 from app.utils.amount_relationships import settlement_load_options
 
-from ._events import loan_event_stream
+from ._events import confirmed_shadows_through, loan_event_stream
 from ._replay import LoanEventStream, PaymentOutcome, replay_loan_events
 from ._visible import anchor_visible_on
 
@@ -208,6 +208,98 @@ def replay_loan_stream(
     )
 
 
+def load_loan_stream(
+    loan_account_id: int, scenario_id: int, *, visible_by: date | None = None,
+) -> LoanEventStream:
+    """Load a loan's recorded facts into its :class:`~._replay.LoanEventStream`.
+
+    The LOAD half of :func:`walk_loan_ledger`, public since plan step
+    recurrence:R16-c-1 so the seam's per-pass walk can take the facts VISIBLE
+    by its ``as_of`` (ruling **R-R91**) and replay them; the ledger's walk
+    takes every fact.  Nothing here reads the clock.
+
+    **The visibility bound, stated once.**  With *visible_by* a date, a
+    payment enters iff its cash had moved by it -- its SETTLED day, the one
+    clock (:func:`._events.confirmed_shadows_through`, the same set the
+    balance readers count as confirmed) -- and an assertion iff its own date
+    has arrived (:func:`._visible.anchor_visible_on`), EXCEPT the opening,
+    which always enters: a loan's origination assertion is a term of the
+    note -- the balance it will owe the day it closes, synthesized from the
+    immutable params -- not an observation made on a day, and a loan
+    configured to close next month projects its debt from it today.  That is
+    the fork the retired forward seed made ("the fold correctly reports
+    ``0.00`` owed; the projection still has to know what it will owe the day
+    it closes"): the opening enters the stream, the fold still reads ``0.00``
+    before its date (its correction is keyed at that date), and the
+    projection behind it starts from it.  A fact dated after *visible_by*
+    has not happened for that pass, so a pass pinned to an earlier day
+    answers what the loan looked like on that day rather than what was
+    recorded after it (plan step ``recurrence:R7d-h``: the pass decides which
+    crossing answers).  The charge calendar is built from the payments that
+    enter, by the one producer, so a dropped payment drops or re-dates its
+    period's charge exactly as a never-recorded one would.  For a pass whose
+    ``as_of`` is on or after every recorded fact -- every production pass,
+    and the only shape the write doors admit (ruling R-EJ refuses a future
+    settle day; the anchor doors bound their date) -- the bound drops nothing
+    and this is the ledger's own stream.
+
+    Args:
+        loan_account_id: The loan account whose facts to load.
+        scenario_id: The budget scenario the payments live in.
+        visible_by: ``None`` for every recorded fact (the ledger's walk); a
+            date for the facts a pass reading on that day has seen.
+
+    Returns:
+        The loan's recorded stream -- EMPTY (no charge, no payment, no reset)
+        when the loan has no :class:`~app.models.loan_params.LoanParams`, the
+        N1 guard; a configured loan always has at least its origination
+        assertion, which is synthesized.
+    """
+    params = loan_loaders.load_loan_params(loan_account_id)
+    if params is None:
+        # Not a configured loan yet (e.g. a payment settled before its
+        # LoanParams was created); nothing to walk until it is resolvable.
+        return LoanEventStream(charges=(), payments=(), resets=())
+    # The origination anchor is SYNTHESIZED from the immutable params, so a
+    # configured loan ALWAYS has at least one fact -- the old "no anchor
+    # events" degenerate-fixture guard is structurally unreachable now.
+    anchor_facts = [
+        fact for fact in loan_loaders.load_loan_anchor_facts(params)
+        if visible_by is None
+        or fact.is_opening
+        or anchor_visible_on(fact.anchor_date) <= visible_by
+    ]
+
+    periods = loan_resolver.resolve_periods(
+        params, loan_loaders.load_rate_changes(loan_account_id),
+    )
+    # Every escrow LINE with its full version history, loaded once; each accrual
+    # period's escrow is resolved (greatest effective_date <= the period's own
+    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
+    # since-removed version still applies to a historical period and a later
+    # escrow change never re-splits a past payment (plan Section 2 / D3).
+    escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
+    # The stream reads each shadow's due date, its pay period (loaded by the
+    # producer) and its SETTLEMENT RECORD -- the row's ENTRIES since plan step
+    # balance:X-bi-4b-1 (``row_valuation.settled_contribution`` sums them),
+    # so the record's load is stated and nothing else: it traverses no
+    # pricing relationship, so it states no pricing load (plan step
+    # balance:X-bl-2a).  It was ``options=()`` while the record was the row's
+    # own two columns.
+    shadows = (
+        loan_loaders.settled_income_shadows(
+            loan_account_id, scenario_id, options=settlement_load_options(),
+        )
+        if visible_by is None
+        else confirmed_shadows_through(
+            loan_account_id, scenario_id, visible_by,
+        )
+    )
+    return loan_event_stream(
+        anchor_facts, shadows, params.payment_day, periods, escrow_lines,
+    )
+
+
 def walk_loan_ledger(
     loan_account_id: int, scenario_id: int,
 ) -> LoanLedgerWalk:
@@ -261,40 +353,7 @@ def walk_loan_ledger(
         guard); a configured loan always walks, since its origination anchor is
         synthesized.
     """
-    params = loan_loaders.load_loan_params(loan_account_id)
-    if params is None:
-        # Not a configured loan yet (e.g. a payment settled before its
-        # LoanParams was created); nothing to walk until it is resolvable.
-        return LoanLedgerWalk(
-            [], [], LoanEventStream(charges=(), payments=(), resets=()),
-        )
-    # The origination anchor is SYNTHESIZED from the immutable params, so a
-    # configured loan ALWAYS has at least one fact -- the old "no anchor
-    # events" degenerate-fixture guard is structurally unreachable now.
-    anchor_facts = loan_loaders.load_loan_anchor_facts(params)
-
-    periods = loan_resolver.resolve_periods(
-        params, loan_loaders.load_rate_changes(loan_account_id),
-    )
-    # Every escrow LINE with its full version history, loaded once; each accrual
-    # period's escrow is resolved (greatest effective_date <= the period's own
-    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
-    # since-removed version still applies to a historical period and a later
-    # escrow change never re-splits a past payment (plan Section 2 / D3).
-    escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
-    # The stream reads each shadow's due date, its pay period (loaded by the
-    # producer) and its SETTLEMENT RECORD -- the row's ENTRIES since plan step
-    # balance:X-bi-4b-1 (``row_valuation.settled_contribution`` sums them),
-    # so the record's load is stated and nothing else: it traverses no
-    # pricing relationship, so it states no pricing load (plan step
-    # balance:X-bl-2a).  It was ``options=()`` while the record was the row's
-    # own two columns.
-    shadows = loan_loaders.settled_income_shadows(
-        loan_account_id, scenario_id, options=settlement_load_options(),
-    )
-    return replay_loan_stream(loan_event_stream(
-        anchor_facts, shadows, params.payment_day, periods, escrow_lines,
-    ))
+    return replay_loan_stream(load_loan_stream(loan_account_id, scenario_id))
 
 
 def compute_loan_payment_splits(
@@ -325,7 +384,7 @@ def compute_loan_payment_splits(
         no :class:`~app.models.loan_params.LoanParams` (not yet resolvable -- the
         N1 guard) or no settled payment.
     """
-    return walk_loan_ledger(loan_account_id, scenario_id).payment_splits
+    return walk_loan_ledger(loan_account_id, scenario_id).settled_splits
 
 
 def dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:

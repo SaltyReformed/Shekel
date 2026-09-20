@@ -789,20 +789,24 @@ class TestConfirmedViewShapeMatrix:
           second (period 2): nothing stands -> principal 1,000.00 -> 98,500.00
 
         Period 1's payment is settled LATE, on 2026-02-13; period 2's settles on
-        its own 01-30 start.  So on 2026-02-01 only the SECOND is visible, and
-        the view re-accumulates over that visible subset alone: 100,000 - 1,000 =
-        99,000.00 -- NOT the walk's 98,500.00, which would double-count a payment
-        that has not happened yet.  From 02-13 both are visible and the balance
-        is 98,500.00, with the late payment still dated at the 02-01 installment
+        its own 01-30 start.  From 02-13 both are visible and the balance is
+        98,500.00, with the late payment still dated at the 02-01 installment
         it paid.
 
-        **The visible-subset re-accumulation is what this test is FOR, and the
-        charge rule does not disturb it**: the split each payment carries is a
-        fact about the whole walk, and the view sums only the ones that have
-        happened.  Note the consequence the charge rule adds -- the payment that
-        OPENS the accrual period is the one that carries its interest, so a
-        visible subset excluding it shows 0.00 interest and the full cash as
-        principal, which is what the first assertion below now reads.
+        **Read on 2026-02-01, the pass has seen only the SECOND payment, and it
+        replays the facts it has seen** (plan step recurrence:R16-c-1, ruling
+        **R-R91**, developer 2026-09-19: "a pass's stream holds the facts
+        visible by its as_of ... projections follow").  With no other payment
+        in the stream, the second OPENS the accrual period: it clears the
+        500.00 charge and pays 500.00 of principal, 99,500.00 -- what the
+        ledger itself showed on 02-01, before the late payment's settlement
+        on 02-13 re-split it.  *Until that ruling the mid read pinned 0.00 /
+        1,000.00 / 99,000.00*: the split each payment carried was a fact of
+        the WHOLE walk (the first payment ahead of the second, though it had
+        not settled), and the view re-accumulated the visible subset of those
+        splits -- a figure no ledger displayed on any day.  The old values are
+        recorded here rather than deleted because rule 5 forbids moving a
+        pinned value without the developer's ruling, and this is the ruling.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -814,10 +818,10 @@ class TestConfirmedViewShapeMatrix:
 
             mid = _view(loan, seed_user, date(2026, 2, 1))
             assert _economics(mid) == [
-                (date(2026, 2, 1), Decimal("0.00"),
-                 Decimal("1000.00"), Decimal("99000.00")),
+                (date(2026, 2, 1), Decimal("500.00"),
+                 Decimal("500.00"), Decimal("99500.00")),
             ]
-            assert mid.balance == Decimal("99000.00")
+            assert mid.balance == Decimal("99500.00")
 
             after = _view(loan, seed_user, date(2026, 2, 13))
             assert _economics(after) == [

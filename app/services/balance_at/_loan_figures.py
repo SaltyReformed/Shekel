@@ -40,7 +40,8 @@ from decimal import Decimal
 
 from app.models.account import Account
 from ._context import BalanceContext
-from ._fold import fold_from_walk, last_closed_on
+from ._fold import last_closed_on
+from . import _plan_fold
 
 # The payoff derivation this module INJECTS into the read pass's memo (see
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
@@ -404,10 +405,11 @@ def _closing_date(
 def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
     """Return whether the loan has come into existence by *as_of*.
 
-    THE one definition of "does this loan exist yet", shared by
-    :attr:`LoanFigures.is_originated` and :func:`_is_paid_off` so the seam cannot
-    answer it two ways.  See :attr:`LoanFigures.is_originated` for why the seam
-    publishes it at all.
+    :func:`._plan_fold.is_originated` over the loan's origination -- THE one
+    definition of "does this loan exist yet", shared by
+    :attr:`LoanFigures.is_originated`, :func:`_is_paid_off` and the forward
+    readers' retired guard so the seam cannot answer it two ways.  See
+    :attr:`LoanFigures.is_originated` for why the seam publishes it at all.
 
     Args:
         resolved: The loan's
@@ -417,7 +419,7 @@ def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
     Returns:
         ``True`` when the loan's ``origination_date`` has arrived.
     """
-    return resolved.params.origination_date <= as_of
+    return _plan_fold.is_originated(resolved.params.origination_date, as_of)
 
 
 def _is_retired(
@@ -425,9 +427,12 @@ def _is_retired(
 ) -> bool:
     """Return whether the loan is DONE -- borrowed, and now owing nothing.
 
-    THE one definition of "this loan has no debt line left", shared by
-    :attr:`LoanFigures.is_retired` and :func:`_is_paid_off` (which is this plus a
-    badging guard), so the seam cannot answer it two ways.
+    :func:`._plan_fold.is_retired` over the pass's memoized walk -- THE one
+    definition of "this loan has no debt line left" since plan step
+    recurrence:R16-c-1 moved it there, where the payoff, the required extra
+    and the loan page's installment list guard on it too; shared here by
+    :attr:`LoanFigures.is_retired` and :func:`_is_paid_off` (which is this plus
+    a badging guard), so the seam cannot answer it two ways.
 
     The owed figure is the FOLD of the loan's recorded events at the pass's
     ``as_of`` (:func:`~app.services.balance_at._fold.fold_from_walk` over the
@@ -458,10 +463,9 @@ def _is_retired(
         ``True`` when the loan has originated and its folded events say nothing
         is owed.
     """
-    if not _is_originated(resolved, ctx.as_of):
-        return False
-    owed = fold_from_walk(ctx.loan_walk(account), [ctx.as_of])[ctx.as_of]
-    return owed <= ZERO_MONEY
+    return _plan_fold.is_retired(
+        ctx.loan_walk(account), resolved.params.origination_date, ctx.as_of,
+    )
 
 
 def _is_paid_off(

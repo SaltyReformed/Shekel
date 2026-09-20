@@ -3,10 +3,13 @@
 Plan step **C6a** (``docs/audits/balance_architecture/README.md``).  The forward
 projection stops walking the resolver's contractual schedule (which pays down one
 installment per month whether or not a payment was recorded -- finding B-9) and
-folds over payment RECORDS instead.  This file pins the FOLD arithmetic
-(:func:`app.services.balance_at._plan_fold.fold_forward`) against balances computed BY
-HAND -- never against the schedule walk it replaces (that would prove B-9), and
-never against a second producer that shares its code (plan Section 7.2).
+folds over payment RECORDS instead.  This file pins the FOLD arithmetic against
+balances computed BY HAND -- never against the schedule walk it replaces (that
+would prove B-9), and never against a second producer that shares its code (plan
+Section 7.2).  The ``fold_forward`` it calls is the retired ``(seed, plan)``
+contract re-expressed over the ONE timeline
+(``tests/oracles/loan_forward_fold``, plan step recurrence:R16-c-1): it runs the
+production replay and fold, with the seed as the loan's opening assertion.
 
 Each balance below is the fold of ``interest = round_money(balance * rate / 12)``
 then ``principal = cash - interest - escrow`` (capped at the balance, the surplus
@@ -27,7 +30,7 @@ from app.services.balance_at._plan import (
     LoanForwardPlan,
     PlannedPayment,
 )
-from app.services.balance_at._plan_fold import (
+from tests.oracles.loan_forward_fold import (
     fold_forward,
     plan_interest_in_year,
 )

@@ -163,8 +163,12 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     # the assert (each used to resolve its own -- a redundant query).
     linked_ledger_id = _ledger_account_for(loan_account_id).id
     _reconcile_lineage_transfer_entries(linked_ledger_id, scenario_id, walk)
+    # ``settled_splits``: the writer books RECORDED payments and nothing else.
+    # This walk is ``walk_loan_ledger``'s, which carries no projection, so the
+    # two views are one list here; reading the settled one states the
+    # precondition where it is relied on.
     reconcile_loan_payment_splits(
-        loan_account_id, scenario_id, walk.payment_splits,
+        loan_account_id, scenario_id, walk.settled_splits,
     )
     reconcile_loan_anchor_corrections(
         loan_account_id, scenario_id, walk.anchor_corrections,
@@ -244,7 +248,7 @@ def _reconcile_lineage_transfer_entries(
     # plan, so this loop's precondition is stated by the call it makes and not
     # only by the loader above it.
     expected: dict[int, dict[date, Decimal]] = {}
-    for outcome in walk.payment_splits:
+    for outcome in walk.settled_splits:
         shadow = outcome.source
         if shadow.transfer_id is None:
             continue

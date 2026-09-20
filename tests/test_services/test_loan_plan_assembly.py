@@ -25,7 +25,7 @@ from app.services.balance_at._plan import (
     loan_plan,
     memoized_plan,
 )
-from app.services.balance_at._plan_fold import fold_forward
+from tests.oracles.loan_forward_fold import fold_forward
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
@@ -295,14 +295,13 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
       * DUE-date keying (as built): ``annual_rate`` 0.12, ``escrow`` 500.00.
       * PERIOD-START keying (the N-34 defect): 0.06 and 100.00.
 
-    This is not cosmetic on the forward side.  The escrow figure is what
-    :func:`app.services.balance_at._plan_fold.fold_forward` subtracts from the record's
-    cash, and the cash itself is now built on the DUE date's escrow
+    This is not cosmetic on the forward side.  The escrow figure is what the
+    timeline's replay backs out of the record's cash, and the cash itself is now
+    built on the DUE date's escrow
     (``cash_ledger._loan_installment._shadow_live_amount``); if the two ends key on
     different dates, the difference lands silently in PROJECTED principal and
-    propagates to the forward balance, ``plan_payoff_date``,
-    ``plan_required_extra``, the projected Schedule A interest, and the property
-    equity chart's debt line.
+    propagates to the forward balance, the payoff, the required extra, the
+    projected Schedule A interest, and the property equity chart's debt line.
     """
     account = create_loan_account(
         seed_user, db.session,
@@ -454,7 +453,7 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     as_of whose contractual installment is due AT OR AFTER as_of is already paid
     down inside the fold's seed, is not a projected record, and has ``due >=
     as_of`` -- so without a settled-slot exclusion the ESTIMATED tier would
-    synthesize it and :func:`fold_forward` would subtract its principal a SECOND
+    synthesize it and the timeline's fold would subtract its principal a SECOND
     time.  It must be absent from the plan.
 
     **Today is moved to the read instant**, overriding this suite's module
