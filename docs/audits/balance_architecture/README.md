@@ -17,7 +17,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-bi-4b-1 -- every READER of the settlement record reads the COVERING MOVEMENT** (`21709195`, no migration; **R-BAL82** / **R-BAL83**, over **R-BAL80**): `settled_figure` is the sum of the row's entries and a settled row with no entry IS the `$0.00` record, so a `$0.00` typed figure is retained by nothing across a revert and a `$0.00` close admits a later purchase (R-BAL82's two consequences; the one other change is a door-unreachable drift, both shadows Projected after a `$0.00` settle, now refused at `restore_transfer`; 0 such rows on production at 07:21 2026-09-19); the correction, the fixed-figure predicates and the SQL twin read the movement; the seam still WRITES the two columns, read by nothing that counts or shows money, until `X-bi-4b-2` drops them. On the 2026-09-19 07:21 restore the balance baseline (9 accounts, 448 cells, 6,272 points), the statement baseline (143 statements) and all 229 settled rows are byte-identical on every reader; `$0.00` written. Before it, `X-bi-4a` (`babae2e3`) read movements only and closed **BAL-523** (`+$137.93` on Checking's actual line, R-BAL77). `X-bi-4b-2` (the migration and the sweep) is next | Section 5, X-bi-4 / X-bi-4b; ../../plans/rulings.md R-BAL75..R-BAL83 |
+| **just landed** | **X-bi-4b-2 -- THE RECORD IS ITS MOVEMENTS: `settled_amount` / `settled_basis_id` are DELETED** (`32c65cf1`, migration `45f10b870c8b` over `22b23085394d`, fail-closed per **R-BAL82** with a stored `$0.00` exempt; **R-BAL80** / **R-BAL83**; **R-BAL84** for the 40 stranded tests), closing the **X-bi-4 family** (4a `babae2e3`, 4b-1 `21709195`; record `archive/x_bi_4_family_2026-09-20.md`). Two BEHAVIOUR changes, each with a control: a figure correction moves the row's optimistic-lock counter again (the two-tab lost update the columns had been absorbing, back for transfers and OPEN for plain rows; `status_seam._covering._record_moved`, control `test_a_stale_tab_cannot_overwrite_a_figure_correction` on both doors), and a day-only save on a movement-less settled pair dates a `$0.00` close where it was a designed 400. On the 2026-09-19 07:21 restore: up / down / up clean, 229 settled rows read their entries, the balance, statement, ledger-net and movement baselines byte-identical, all 1,083 rows' rebuilt columns byte-identical after the downgrade; `$0.00` written. The release carries `45f10b870c8b` alone and its deploy log prints production's own count. `X-bi-5` (the definition's `is_envelope` and `tracks_purchases`'s branch sites) is next | Section 5, X-bi-5; archive/x_bi_4_family_2026-09-20.md; ../../plans/rulings.md R-BAL75..R-BAL84 |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` deletes the DEFINITION's `is_envelope` rather than the row's. Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
 | **blocked on you** | **The first SECU import LANDED 2026-09-16** (on the 2026-09-19 07:21 restore: 1 statement import, 306 bank lines, 163 matches; the observation records are the coordinator's `N-368-observation-2026-09-15.md` / `-18.md`, their rows BAL-497 / BAL-498 / BI-499 / BI-500); the second import waits on `bank_import:X-f6b-2`. What gates this arc now is the developer's file-or-not BATCH the coordinator holds and rule 5's archive: this document is measured by `wc -l` against the gate's cap and its 20-line headroom, and the next balance tick archives a completed span before it writes. Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md BAL-497, BAL-498; ../../plans/steps.md |
@@ -384,31 +384,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [x] **X-bi-3** `d1e3f7a6` -- the DECOMPOSED parent of the COVERING MOVEMENT (**R-BAL41**), ticked
     with its last leaf; five leaves, only 3d moved money. Closed **N-447**, **BAL-508**. Family
     record: `archive/x_bi_3_family_2026-09-18.md`.
-  * [ ] **X-bi-4** the DECOMPOSED parent of the fold's re-point onto movements, its design loop closed
-    2026-09-18 (**R-BAL75**..**R-BAL80**, seven forks with worked dollars, `HANDOFF-X-bi-4.md`);
-    ticks with its last leaf.
-    * [x] **X-bi-4a** `babae2e3` -- the fold and the ledger read movements only (R-BAL75, R-BAL77,
-      R-BAL78, R-BAL79, R-BAL80); the in-flight tier; DC-11; the matcher priced at the covering
-      movement (R-BAL81); `bank_import:R-FX` / `R-GG` amended. On the restore Checking's actual
-      line reads `+$137.93` and the 09-16 ledger nets move by the same (R-BAL80's third equality
-      deviates; R-BAL77 explains it); the grid, every other account and the statements are
-      byte-identical; `$0.00` written. Closed BAL-500, BAL-501, BAL-507, BAL-523 (born here).
-    * [ ] **X-bi-4b** the DECOMPOSED parent of the figure columns' deletion, split 2026-09-19
-      (R-BAL83): the readers onto the covering movement (4b-1) and the migration with the sweep
-      (4b-2); the settle DAY pair and the clearing link are NOT X-bi-4's; ticks with 4b-2.
-      * [x] **X-bi-4b-1** `21709195` -- every reader of the record onto the covering movement
-        (R-BAL80, R-BAL82, R-BAL83); baselines byte-identical on the 2026-09-19 07:21 restore.
-      * [ ] **X-bi-4b-2** the migration, fail-closed on a non-zero figure (a stored `$0.00` is
-        exempt from both refusals, R-BAL82): the two columns, the three CHECKs, the FK, the basis
-        enum and ref table, the seam's write, the retention arms, DC-11 arm 2, the column lays go.
-    The parent-account key's end shape is two plain FKs plus a co-located OWNER key, dropped at the
-    first cross-account writer, `credit_card:CC-5` (R-BAL76). The fold re-points to movements in ONE
-    commit for every account kind at once.
-    **Its design loop rules BOTH halves of the fork the card arc owes it** (`credit_card:R-CC15`, 2026-09-18; `credit_card:CC-5` builds on the answer, **R-BAL75** / **R-BAL76**): the KEY -- whether `fk_transaction_entries_parent_account` relaxes so a movement may sit on an account other than its plan row's (a card charge is the plan row's covering movement ON THE CARD; the design re-cuts it to a plain `transaction_id` FK) -- AND the fold's MOVEMENT PREDICATE: `TransactionEntry.account_id`, which `cash_ledger/_events.py:750` reads as the parent's today and the posted ledger reads as the movement's (`_posting_purchases.py:180`).
-    After X-bi-3 every settled row has exactly one covering movement, so `opening + SUM(movements)`
-    is an identity provable against the pre-state. **A per-kind cut was REJECTED**: the fold's
-    predicate is kind-blind across 66 sites, so that cut would erect a discriminator only to delete
-    it, and run two balance semantics live on one account meanwhile.
+  * [x] **X-bi-4** `32c65cf1` -- the DECOMPOSED parent of the fold's re-point onto MOVEMENTS
+    (**R-BAL75**..**R-BAL84**), ticked with its last leaf: 4a `babae2e3` (the fold and the ledger
+    read movements only), 4b-1 `21709195` (every reader onto the covering movement), 4b-2
+    `32c65cf1` (the figure columns deleted by migration `45f10b870c8b`; `$0.00` written). Closed
+    **BAL-500**, **BAL-501**, **BAL-507**, **BAL-516**, **BAL-517**, **BAL-523**. Family record:
+    `archive/x_bi_4_family_2026-09-20.md`.
   * [ ] **X-bi-5** delete the DEFINITION's `is_envelope` (the row's cell is `X-bi-7d`'s),
     `tracks_purchases`'s branch sites and the template sites, which is the fence this family makes
     structurally unnecessary rather than merely unused.
@@ -1061,10 +1042,10 @@ section 4, under their unchanged ids.*
   `STANDING.md`'s 2026-09-09 line when it ships. Also: the SessionStart hook reads `origin/dev`'s
   steps.md, not its checkout's (`~/projects/Shekel` is the deploy path, kept at main, so every
   fresh lane read a stale rank #1 until 2026-09-18).
-* [ ] **X-cp** `refactor(tests): copied builders and dead controls made honest` -- closes **BAL-516**,
-  **BAL-517**, **BAL-518**, **BAL-519**: the `settlement_columns` setattr loop copied into 16 files;
-  that helper's "ONE caller" docstring against 24 (23 besides its own module); `test_grid`'s uncompared `baseline`;
-  `test_race_conditions.py`'s one live request per race.
+* [ ] **X-cp** `refactor(tests): dead controls made honest` -- closes **BAL-518**, **BAL-519**:
+  `test_grid`'s uncompared `baseline`; `test_race_conditions.py`'s one live request per race. (Its
+  other two rows, BAL-516 / BAL-517, closed at `X-bi-4b-2`: `settlement_columns` and its 16 copies
+  were DELETED with the columns, not consolidated.)
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
@@ -1236,7 +1217,7 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 47 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 46 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
@@ -1265,7 +1246,7 @@ section 4, under their unchanged ids.*
   **The census is RE-RUN, not remembered** -- it read "26 canonical accessors plus five, measured
   2026-08-23 and not to be re-taken" until 2026-09-11, by which point it was 27 plus seven and one
   of its claims was false. Canonical:
-  (census 28 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
+  (census 27 lines `^def [a-z_]*_id\(` in `app/ref_cache/_accessors.py`).
   **`acct_type_icon` and `acct_type_max_term` have no PRODUCTION
   caller** (census 0 code lines `acct_type_(icon\|max_term)` in `app/routes/**/*.py`) and are
   candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map `init()`
