@@ -239,7 +239,8 @@ def _error_entry_response(
         host: The validated host prefix from :func:`_request_host`, so
             the re-render reconstructs the requesting surface's id.
         status: The HTTP error status (400 domain rejection, 422
-            validation failure).
+            validation failure, 404 for a submitted account that is not the
+            row's owner's -- plan step ``credit_card:CC-5-2``).
 
     Returns:
         A designed-fragment Flask response tuple.
@@ -483,7 +484,18 @@ def create_entry(txn_id):
         return _credit_payback_idempotent_response(
             exc, txn.id, f"create_entry txn_id={txn.id}", host,
         )
-    except (NotFoundError, ValidationError) as exc:
+    except NotFoundError as exc:
+        # A submitted ``account_id`` that is not the ROW's owner's -- or does
+        # not exist -- is the door's 404 (plan step ``credit_card:CC-5-2``;
+        # the security response rule: one answer for "not found" and "not
+        # yours").  Rendered as the same designed fragment a domain refusal
+        # is, so the surface reads the reason, at the status the rule names.
+        # Through CC-5-1 no ``NotFoundError`` could reach this arm at all:
+        # the row is resolved above, so every 404 the door could raise was
+        # already answered, and the 400 this shared with ``ValidationError``
+        # was never exercised.
+        return _error_entry_response(txn, str(exc), host, status=404)
+    except ValidationError as exc:
         return _error_entry_response(txn, str(exc), host)
 
     return _entry_mutation_response(txn, host)

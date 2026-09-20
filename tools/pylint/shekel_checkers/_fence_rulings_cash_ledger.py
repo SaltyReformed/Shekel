@@ -195,7 +195,13 @@ CASH_LEDGER_NON_PRODUCERS = frozenset({
     # the reason its sibling above is, and refused for the same one: it is a
     # component of an amount per transaction, not a balance per account.
     "posted_purchase_sum",
-    # The SUM of the two terms above, published at plan step
+    # The THIRD term (plan step ``credit_card:CC-5-2``, ruling **R-CC15**) --
+    # ``Sigma(purchases whose account is not the row's)`` -- the account-keyed
+    # arm beside the flag's, for the first door that files a purchase on
+    # another account than its row's.  A component of one row's amount, as
+    # its two siblings are; not a balance per account.
+    "elsewhere_purchase_sum",
+    # The SUM of the terms above, published at plan step
     # ``bank_import:X-f6a-2`` because three readers then asked for it -- the
     # row leg, the reconcile panel's "what a statement shows" caption, and
     # the statement matcher's corrected figure -- and two additions written

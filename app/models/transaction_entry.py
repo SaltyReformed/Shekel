@@ -255,8 +255,9 @@ class TransactionEntry(
         # envelope is a movement whose account is NOT its parent's, so the
         # key went with its cascade (ledger row **CC-353**); the endpoint
         # move assigns each leg's movement by hand, as it always did for the
-        # session's sake, and nothing else moves a parent's account
-        # (the maintain pass retains a row that holds a movement).
+        # session's sake, and a plan row that moves account (the maintain
+        # pass, since ruling **R-CC36** at ``CC-5-2``) LEAVES its movements
+        # where their money moved -- which is the design.
         db.ForeignKeyConstraint(
             ["transaction_id", "owner_id"],
             ["budget.transactions.id", "budget.transactions.user_id"],

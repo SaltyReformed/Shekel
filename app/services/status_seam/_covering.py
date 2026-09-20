@@ -375,6 +375,25 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     plan's name as it reads now -- and ``_mirror_assertion`` dates it on the
     row's new day.  The id survives, so a match or a log line that named it
     still names it.
+
+    **And re-points it onto the row's account** (plan step
+    ``credit_card:CC-5-2``, ruling **R-CC36**).  A kept movement sits on the
+    account the row named when it was settled; since that ruling a Projected
+    row holding a kept record FOLLOWS its definition's account move (the
+    recurrence maintain pass no longer retains it), so at the re-settle the
+    row may be on Second Checking while its record still names Checking.  The
+    record is what a settle books, and a settle books on the row's account --
+    the value the fresh-movement arm below writes (a TENDER account other
+    than the row's is ``CC-5-3``'s to add, and it replaces this value rather
+    than sitting beside it) -- so the kept movement takes it here too.
+    Without this line a revert, a definition
+    account move and a re-settle would book the payment on the OLD account
+    while the plan sits on the new one, `$150` apart on each.  Assigned
+    BEFORE the record is written, so ``record_settle_day``'s books boundary
+    (read under ``no_autoflush`` off the column) grades the day against the
+    account the record will book on.  The lazy ``account`` relationship is
+    not loaded here and is not assigned: the fold and the ledger read the
+    column, and no reader of the relationship follows on this path.
     """
     if not settlement.amount:
         _withdraw(row)
@@ -388,6 +407,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
                 "a settle writes exactly one, so a second can only have reached "
                 "the table around the status seam."
             )
+        movement.account_id = row.account_id
         if _record_onto(row, movement, settlement):
             _record_moved(row)
         return

@@ -443,6 +443,54 @@ class TestARevertUnDatesAndAReSettleReDates:
             assert movement.settled_day_basis_id == txn.settled_day_basis_id
             assert booked_a_human_figure is False
 
+    def test_a_re_settle_re_points_the_kept_movement_onto_the_rows_account(
+        self, app, seed_user, seed_periods,
+    ):
+        """Revert, move the row's account, re-settle: the record books where the plan is.
+
+        Plan step ``credit_card:CC-5-2``, ruling **R-CC36**.  The recurrence
+        maintain pass no longer retains a row holding a kept payment record
+        when its definition's account moves, so the row can sit on Second
+        Checking while its un-dated record still names Checking.  A settle
+        with no tender named books on the row's account, so the re-settle
+        re-points the SAME movement (its id survives, as ``X-bi-3e-2`` pinned)
+        and the fold reads `-148.32` on Second Checking and nothing on
+        Checking.  Without the re-point the old account carried the payment
+        while the plan sat on the new one, `$148.32` apart on each.  The
+        row's account is moved directly here: the maintain pass is the door
+        that moves it in production, and its own suite pins that it now does.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            first_id = _only_movement(txn).id
+            old_account_id, scenario_id = txn.account_id, txn.scenario_id
+            _revert(txn)
+            db.session.flush()
+            kept = _only_movement(txn)
+            assert kept.settled_on is None
+            assert kept.account_id == old_account_id
+
+            moved_to = create_savings_account(
+                seed_user, db.session, "Second Checking", Decimal("0.00"),
+            )
+            db.session.flush()
+            txn.account_id = moved_to.id
+            db.session.flush()
+
+            _settle(txn)
+            db.session.flush()
+
+            movement = _only_movement(txn)
+            assert movement.id == first_id
+            assert movement.account_id == moved_to.id
+            assert movement.settled_on == txn.settled_on
+            on_the_new = _per_day(settled_cash_facts(moved_to.id, scenario_id))
+            on_the_old = _per_day(settled_cash_facts(old_account_id, scenario_id))
+            assert on_the_new[txn.settled_on] == Decimal("-148.32")
+            assert txn.settled_on not in on_the_old
+
     def test_a_re_settle_after_a_resolved_revert_re_prices_the_same_movement(
         self, app, seed_user, seed_periods,
     ):

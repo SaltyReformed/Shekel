@@ -25,6 +25,7 @@ from tests._test_helpers import (
     an_asserted_day,
     an_entered_day,
     append_balance_assertion,
+    create_account_of_type,
     figure_source_columns,
     freeze_today,
     generate_row_of,
@@ -2229,3 +2230,101 @@ class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
             # A day that MOVED still releases the observation, which is the
             # rule the echo test above must not have weakened.
             assert saved.reconciled_by_id is None
+
+
+class TestTheAddFormNamesAnAccount:
+    """POST ``account_id`` (plan step ``credit_card:CC-5-2``, ruling **R-CC15**).
+
+    The form posts the control only when the owner has a card to choose
+    (ruling **R-CC34**), so the payloads above, which post none, are the
+    byte-identical case.  Here the field is posted: the card is written, a
+    foreign account answers the security response rule's 404 as a designed
+    fragment, and the ``CC`` box beside the card is the door's refusal at 400.
+    Through ``CC-5-1`` no ``NotFoundError`` could reach this route's handler
+    at all, so the status it now answers is asserted rather than assumed.
+    """
+
+    @staticmethod
+    def _card(seed_user):
+        return create_account_of_type(
+            seed_user, db.session, "Credit Card", "Rewards Card",
+            anchor_balance=Decimal("-500.00"),
+        )
+
+    def test_a_swipe_posted_on_the_card_is_stored_on_the_card(
+        self, app, auth_client, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The written purchase names the card; its row stays on checking."""
+        with app.app_context():
+            card = self._card(seed_user)
+            db.session.commit()
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "60.00",
+                    "description": "Kroger",
+                    "purchased_on": "2026-01-05",
+                    "account_id": str(card.id),
+                },
+            )
+            assert resp.status_code == 200
+
+            entry = db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).one()
+            assert entry.account_id == card.id
+            assert entry.transaction.account_id == seed_user["account"].id
+
+    def test_another_owners_account_is_404_as_a_designed_fragment(
+        self, app, auth_client, seed_user, seed_periods, seed_entry_template,
+        second_user,
+    ):
+        """404 for "not yours", rendered so the surface reads the reason.
+
+        The same status a missing id gets (the door raises one exception for
+        both), carrying the designed-fragment marker so htmx swaps the banner
+        in rather than dropping the body.  Nothing is written.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            for foreign_id in (second_user["account"].id, 999_999):
+                resp = auth_client.post(
+                    f"/transactions/{txn.id}/entries",
+                    data={
+                        "amount": "60.00",
+                        "description": "Kroger",
+                        "purchased_on": "2026-01-05",
+                        "account_id": str(foreign_id),
+                    },
+                )
+                assert resp.status_code == 404, foreign_id
+                assert resp.headers.get("Shekel-Designed-Fragment") == "1"
+                assert b"Account not found." in resp.data
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_the_cc_box_beside_the_card_is_refused(
+        self, app, auth_client, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Ruling **R-CC35**: the box stays, and the door refuses it beside the card."""
+        with app.app_context():
+            card = self._card(seed_user)
+            db.session.commit()
+            txn = seed_entry_template["transaction"]
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "60.00",
+                    "description": "Kroger",
+                    "purchased_on": "2026-01-05",
+                    "account_id": str(card.id),
+                    "is_credit": "on",
+                },
+            )
+            assert resp.status_code == 400
+            assert b"not both" in resp.data
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0

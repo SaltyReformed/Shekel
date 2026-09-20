@@ -97,18 +97,17 @@ class DerivedRowFields(NamedTuple):
     to be asked at rather than an answer that happens to be right.
 
     Attributes:
-        account_id: The account the row's money moves through, from the
-            template.  **The one derived field whose change is not always
-            applicable**: a row that holds purchases is not moved to another
-            account -- through plan step ``credit_card:CC-5-1`` because
-            ``fk_transaction_entries_parent_account`` dragged them with it and
-            invalidated any statement link they carried, and since that step
-            (the key dropped, ruling **R-BAL76**) because the purchases would
-            STAY where their money moved while the readers that scope a
-            purchase by its parent's account (the reconcile panel's offer)
-            are re-pointed at ``CC-5-2``, which retires this arm with them.
-            ``_recurrence_common.classify_maintain_work`` routes that case to
-            the owner, as a RETAINED conflict, instead of applying it.
+        account_id: The account the row is EXPECTED to be paid from, from the
+            template (ruling **R-CC16**).  Applicable to every row this pass
+            may rewrite since plan step ``credit_card:CC-5-2`` (ruling
+            **R-CC36**): a row holding purchases moves with its definition
+            and its purchases STAY where their money moved, each on the
+            account of its own (**R-BAL76**).  Through ``CC-5-1`` a row
+            holding records was RETAINED on an account move instead, because
+            ``fk_transaction_entries_parent_account`` dragged its purchases
+            with it and invalidated any statement link they carried; that key
+            is gone and every reader asks the movement's own account, so the
+            arm has nothing left to protect (``_maintain._no_row_is_reattributed``).
         name: The template's name.  Also propagated to rows OUTSIDE this pass's
             reach by ``definition_edit.apply_fields``,
             which covers the historic and immutable rows a regeneration never

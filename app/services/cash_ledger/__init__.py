@@ -217,6 +217,7 @@ from ._amounts import (
 from ._cash_leg import (
     cash_leg_of,
     credit_entry_sum,
+    elsewhere_purchase_sum,
     movement_cash_leg,
     movement_figure_for,
     off_statement_sum,
@@ -303,6 +304,7 @@ __all__ = [
     "earliest_assertion_day",
     "earliest_matched_line_day",
     "earliest_recorded_movement_day",
+    "elsewhere_purchase_sum",
     "loan_pricing",
     "cash_leg_of",
     "movement_cash_leg",

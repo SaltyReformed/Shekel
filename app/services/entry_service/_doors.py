@@ -21,6 +21,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
@@ -28,6 +29,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
+from app.services.account_resolver import resolve_cash_flow_set
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.settle_day import (
     SettleDay,
@@ -36,6 +38,7 @@ from app.services.settle_day import (
 )
 from app.services.stated_figure import StatedFigure
 from app.services.entry_service._refusals import (
+    _reject_flag_beside_another_account,
     _reject_future_posting_day,
     _reject_future_purchase_date,
     _reject_zero_amount,
@@ -211,7 +214,11 @@ class EntryDetails:
         purchased_on: Date the purchase HAPPENED.  Backdating is ordinary; a
             date after the user's today is refused (ruling R-M, see
             :func:`_reject_future_purchase_date`).
-        is_credit:   Whether this was paid with a credit card.
+        is_credit:   Whether this was paid with a credit card -- the CHEAT's
+            flag, kept until ``CC-7`` for the legacy lines that carry it.  A
+            purchase that names an ``account_id`` other than its row's says
+            the same thing properly and may not carry the flag too
+            (:func:`~._refusals._reject_flag_beside_another_account`).
 
         settle_day: The day the BANK took the money and HOW that day is
             known (:class:`app.services.settle_day.SettleDay`), when the caller
@@ -220,6 +227,21 @@ class EntryDetails:
             is ``statement_match._create.create_purchase_from_line``, and its
             basis is always ``observed``: the bank line IS why the purchase
             exists.
+
+        account_id: The account the purchase's money MOVED THROUGH (plan step
+            ``credit_card:CC-5-2``, ruling **R-CC15**; the movement folds on
+            its own account, **R-BAL75**), or ``None`` for its row's -- where
+            the row is EXPECTED to be paid from, which is every purchase's
+            account until a card exists and the one every caller but the
+            add-purchase form states.  A card swipe in a checking envelope
+            names the card here: the envelope's spend grows by the purchase
+            whatever account it moved through, checking's fold sees nothing
+            on that day, and the card's fold sees the swipe.  The door gates
+            it against the ROW's owner, never the caller (a companion records
+            the purchase on the owner's card, ruling **R-CC11**), and admits
+            exactly what the picker offers -- the row's own account or a
+            member of the owner's cash-flow set (ruling **R-CC37**; see
+            :func:`_purchase_account_id`).
 
     **The posting day was deliberately NOT here until plan step
     ``bank_import:X-f6a-3b``, and the premise that kept it out was true only of
@@ -242,8 +264,88 @@ class EntryDetails:
     purchased_on: date
     is_credit: bool = False
     settle_day: SettleDay | None = None
+    account_id: int | None = None
 
 
+def _purchase_account_id(txn: Transaction, details: EntryDetails) -> int:
+    """Return the account the new purchase's money moved through, gated.
+
+    Plan step ``credit_card:CC-5-2``, the FIRST door that writes a movement
+    onto another account than its row's (ruling **R-BAL76** dropped the key
+    that forbade it at ``CC-5-1``).  ``None`` is the row's own account --
+    today's behaviour for every caller, and the add-purchase form's when the
+    owner has no card (ruling **R-CC34**: the picker renders only when there
+    is a choice).
+
+    **What a purchase may name is ONE predicate, and it is the picker's**
+    (ruling **R-CC37**, developer 2026-09-20): the row's own account, or a
+    member of the ROW OWNER's cash-flow set -- the primary grid account plus
+    the active cards, :func:`~app.services.account_resolver.resolve_cash_flow_set`
+    with no override, the walk the form renders its dropdown from.  So the
+    door and the form agree by one rule, and a purchase on a 401(k), an IRA,
+    a house, a loan, a savings account or a checking account outside the set
+    is UNWRITABLE rather than merely unoffered: a swipe filed on an account
+    whose balance never folds movements would drop the envelope's hold on
+    checking by its figure and land where no screen reads it.  A row that
+    LIVES on an account outside the set keeps its purchases there, because
+    the row's own account is always admitted.  The review of this leaf's
+    first cut found the door admitting every non-loan account under a
+    docstring that claimed this parity; the predicate now IS the picker's.
+
+    **The gate is against the ROW's owner, never the caller** (design 3.2,
+    ruling **R-CC11**): a companion reaches the row through the owner's
+    accessible-transaction path and owns no account at all, so a gate on
+    ``user_id`` would refuse every companion swipe.  ``txn.user_id`` is the
+    owner, and ``fk_transaction_entries_owner_account`` holds the written row
+    to the same fact -- this gate is what turns the key's ``IntegrityError``
+    into the security response rule's 404, one answer for "no such account"
+    and "not the owner's" alike, raised before the account's name is read.
+
+    The two refusals below the 404 are the predicate's consequences, each
+    given the sentence that names its remedy: an ARCHIVED card is not an
+    active member (the row doors admit an archived account, a pre-existing
+    admission ruling **R-CC31**'s review named and a new door does not copy:
+    [[feedback_a_copied_write_inherits_no_refusal]]); an account that is
+    neither the row's nor a member -- a loan, a 401(k), savings -- is not one
+    a purchase can be paid from.
+
+    The books boundary on the card's OPENING is not asked here, and by
+    construction: a hand-typed purchase is born with no settle day, and the
+    day it later takes is written by ``settle_day.record_settle_day``, which
+    reads the ENTRY's ``account_id`` -- so a card purchase dated on or before
+    the card's opening is refused there, whatever account its row names.
+
+    Args:
+        txn: The parent row, already proven the caller's.
+        details: The submission; ``details.account_id`` is what is gated.
+
+    Returns:
+        The ``budget.accounts.id`` to write onto the purchase.
+
+    Raises:
+        NotFoundError: The account does not exist or is not the ROW's owner's.
+        ValidationError: The account is archived, or is neither the row's own
+            nor a member of the owner's cash-flow set.
+    """
+    if details.account_id is None or details.account_id == txn.account_id:
+        return txn.account_id
+    account = db.session.get(Account, details.account_id)
+    if account is None or account.user_id != txn.user_id:
+        raise NotFoundError("Account not found.")
+    if not account.is_active:
+        raise ValidationError(
+            f"'{account.name}' is archived, so a purchase cannot be filed on "
+            "it. Unarchive the account first, or pick another."
+        )
+    owner = db.session.get(User, txn.user_id)
+    cash_flow = resolve_cash_flow_set(txn.user_id, owner.settings)
+    if cash_flow is None or account.id not in cash_flow.member_ids:
+        raise ValidationError(
+            f"'{account.name}' is not an account a purchase can be paid from: "
+            "pick this row's own account, your checking account, or one of "
+            "your credit cards."
+        )
+    return account.id
 
 
 def create_entry(
@@ -270,13 +372,15 @@ def create_entry(
 
     Raises:
         NotFoundError: Transaction not found or not accessible by this
-            user.
+            user; or ``details.account_id`` names no account of the ROW's
+            owner (:func:`_purchase_account_id`).
         ValidationError: Transaction not entry-capable, is a transfer, is
             income, or has a blocked status (Cancelled, Credit, the archive, or
             a settled row whose figure is not its purchases -- see
-            :func:`_reject_settled_addition`); or a purchase day in the future,
-            a posting day in the future, or a posting day before the purchase
-            day.
+            :func:`_reject_settled_addition`); the account is archived or a
+            loan, or the ``CC`` flag is set beside an account other than the
+            row's; or a purchase day in the future, a posting day in the
+            future, or a posting day before the purchase day.
     """
     owner_id = resolve_owner_id(user_id)
 
@@ -345,6 +449,19 @@ def create_entry(
     # row storing a fixed figure cannot record one at all.
     _reject_settled_addition(txn)
 
+    # WHICH ACCOUNT the money moved through, gated against the ROW's owner
+    # (plan step ``credit_card:CC-5-2``; the rule and its refusals are
+    # :func:`_purchase_account_id`'s).  After the row guards, so the row's
+    # own refusals keep their order, and before the content guards, because a
+    # foreign account is a bad REFERENCE and answers 404 where the content
+    # rules answer with a message.  The flag beside it is refused by the same
+    # test both purchase doors apply: a purchase on another account already
+    # says how it was paid.
+    account_id = _purchase_account_id(txn, details)
+    _reject_flag_beside_another_account(
+        details.is_credit, account_id, txn.account_id,
+    )
+
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
     # confirms the row exists (ruling R-M; see
@@ -365,14 +482,13 @@ def create_entry(
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
-        # The parent's account: where the row is EXPECTED to be paid from,
-        # which is the purchase's default until the door takes an account of
-        # its own (plan step ``credit_card:CC-5-2``; a card swipe in a
-        # checking envelope is a movement ON the card, ruling **R-CC15**).
-        # Written explicitly rather than derived at flush time, so this line
-        # cannot be silently wrong -- only absent, which is a NOT NULL
-        # violation.
-        account_id=txn.account_id,
+        # The account the money MOVED THROUGH -- the caller's, gated above,
+        # else the row's own (plan step ``credit_card:CC-5-2``: a card swipe
+        # in a checking envelope is a movement ON the card, ruling **R-CC15**,
+        # and folds there, **R-BAL75**).  Written explicitly rather than
+        # derived at flush time, so this line cannot be silently wrong --
+        # only absent, which is a NOT NULL violation.
+        account_id=account_id,
         # The ROW's owner, never the caller (``user_id`` below is the AUTHOR,
         # a companion's own id when a companion records the purchase).
         # ``fk_transaction_entries_owner_transaction`` refuses any other value
@@ -411,6 +527,10 @@ def create_entry(
         entry_id=entry.id,
         amount=str(details.figure.amount),
         is_credit=details.is_credit,
+        # WHICH account the money moved through (plan step CC-5-2): a receipt
+        # naming the row alone cannot tell a checking debit from a card
+        # swipe, and the two move different balances.
+        account_id=account_id,
         # The posting day is logged because a purchase BORN with one has
         # already moved money: it books its own dated cash leg at the reconcile
         # below, where a purchase born without one holds its envelope's budget
@@ -437,6 +557,30 @@ def create_entry(
     _resync_after_entry_change(txn)
 
     return entry
+
+
+def _posting_day_after(
+    entry: TransactionEntry, valid_updates: dict,
+) -> "date | None":
+    """Return the posting day *entry* would carry once *valid_updates* is applied.
+
+    The RESULT the update door's two day rules are checked on: the submitted
+    pair's day where the submission carries ``settle_day``, else the stored
+    pair's (:func:`~app.services.settle_day.recorded_settle_day`), and
+    ``None`` where the result carries no day at all -- the outstanding state.
+
+    Args:
+        entry: The purchase being updated, as stored.
+        valid_updates: The submission, already narrowed to updatable fields.
+
+    Returns:
+        The civil day, or ``None``.
+    """
+    resulting = (
+        valid_updates["settle_day"] if "settle_day" in valid_updates
+        else recorded_settle_day(entry)
+    )
+    return resulting.day if resulting is not None else None
 
 
 def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
@@ -486,7 +630,9 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
             anything that changes what the row cost
             (:func:`_reject_settled_parent`).  An update touching only
             ``settle_day`` is admitted on a settled parent: it records when
-            the bank took the purchase, not how much of it moved.
+            the bank took the purchase, not how much of it moved.  Flipping
+            ``is_credit`` ON for a purchase whose account is not its row's is
+            refused (:func:`~._refusals._reject_flag_beside_another_account`).
     """
     unknown = set(kwargs) - _UPDATABLE_FIELDS
     if unknown:
@@ -528,6 +674,24 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # The row's own payment record is the status seam's to write (plan step
     # **X-bi-3a**); checked after ownership for the same 404 reason.
     _reject_settlement_record(entry)
+    # **Does this write flip the flag ON?**  Stated ONCE for its two readers
+    # (the refusal here and ``releases_the_link`` below): a submission that
+    # sets ``is_credit`` True on a purchase that did not carry it.
+    flips_the_flag_on = bool(
+        valid_updates.get("is_credit", False) and not entry.is_credit
+    )
+    # The same test the create door applies, on the ACT: a purchase on another
+    # account than its row's already says how it was paid, so the flag may not
+    # be flipped ON beside it (plan step ``credit_card:CC-5-2``).  The account
+    # itself is not an updatable field, so only the flag can move the pair
+    # here -- and only a flip to True is the act that creates it.  A stored
+    # flag beside a differing account is NOT refused: a legacy flagged line
+    # sits on the account its row named when it was recorded, and since ruling
+    # **R-CC36** the row may move on without it, so the edit form (which posts
+    # the flag on every submit) must still re-describe or re-date that line.
+    _reject_flag_beside_another_account(
+        flips_the_flag_on, entry.account_id, entry.transaction.account_id,
+    )
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``
@@ -542,13 +706,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # Both date rules are checked on the RESULT, not the submission: a
     # partial update moves one side against a stored other side, and both
     # directions can break the pair invariant.
-    resulting_settle_day = (
-        valid_updates["settle_day"] if "settle_day" in valid_updates
-        else recorded_settle_day(entry)
-    )
-    resulting_posting_day = (
-        resulting_settle_day.day if resulting_settle_day is not None else None
-    )
+    resulting_posting_day = _posting_day_after(entry, valid_updates)
     _reject_settled_before_purchase(
         valid_updates.get("purchased_on", entry.purchased_on),
         resulting_posting_day,
@@ -565,11 +723,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     releases_the_link = (
         "settle_day" in valid_updates
         and resulting_posting_day != entry.settled_on
-    ) or (
-        "is_credit" in valid_updates
-        and valid_updates["is_credit"]
-        and not entry.is_credit
-    )
+    ) or flips_the_flag_on
     # **Does THIS write move the envelope's credit total?** (finding N-323.)
     # Asked as the entry's own CONTRIBUTION to that sum before and after,
     # rather than as a case analysis over which fields were submitted: the sum

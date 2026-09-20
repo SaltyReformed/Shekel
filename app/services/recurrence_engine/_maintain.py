@@ -33,7 +33,6 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
-from app.services._recurrence_common import classify_unruled_work
 from app.services.recurrence_engine._generate import _selector
 from app.services.recurrence_engine._amounts import (
     _derive_row_fields,
@@ -175,21 +174,23 @@ def _rows_holding_owner_records(existing) -> set[int]:
 
     **A STATEMENT LINK counts too, and it needs no condition of its own** --
     which plan step R10-b measured, correcting what R10-a's own adversarial
-    review concluded here.  The account-move half of the retention rule is
-    justified by two composite keys that scope a clearing link BY ACCOUNT
-    (``fk_transaction_entries_reconciled_by`` on the purchase and
-    ``fk_transactions_reconciled_by`` on the row itself), so a linked row must
-    be retained -- and it already is.  ``ck_transactions_cleared_needs_settle_day``
-    says a link needs a settle day, and no row this pass can see carries one:
+    review concluded here.  ``ck_transactions_cleared_needs_settle_day`` says
+    a link needs a settle day, and no row this pass can see carries one:
     ``Projected`` is the only status the pass reaches (the module docstring),
     and the seam releases the day and the link together on the way out of the
     settled band (``status_seam.apply_status_change``).  A row that carries a
     link is settled, and a settled row's money is its entries, held by the
-    query above.  Were a linked row ever handed here, the composite key
-    itself refuses the account move rather than applying it.  (Until plan
-    step ``balance:X-bi-4b-2`` the chain ran one link further --
-    ``ck_transactions_settle_day_needs_a_record`` made a settle day imply a
-    ``settled_basis_id`` -- and rested on that column's arm.)
+    query above.  (Until plan step ``balance:X-bi-4b-2`` the chain ran one
+    link further -- ``ck_transactions_settle_day_needs_a_record`` made a
+    settle day imply a ``settled_basis_id`` -- and rested on that column's
+    arm.)  R10-b's argument was about the ACCOUNT-MOVE half of the retention
+    rule -- a link is scoped by account, so a linked row must not be moved --
+    and that half is retired for this engine at plan step
+    ``credit_card:CC-5-2`` (ruling **R-CC36**, :func:`_no_row_is_reattributed`):
+    a purchase's link is scoped by the PURCHASE's own account, which its row
+    moving never touches.  What this set still decides is the other half:
+    a row the rule no longer names is retired when it carries nothing and
+    RETAINED when it carries any of these.
 
     Args:
         existing: The rows this pass is considering.
@@ -217,44 +218,54 @@ def _rows_holding_owner_records(existing) -> set[int]:
 
 
 
-def _rows_the_definition_reattributes(existing, template) -> "set[int]":
-    """Return the ids of rows whose ACCOUNT this template has moved.
+def _no_row_is_reattributed(existing, template) -> "frozenset[int]":
+    """Return the ids of rows an account move would re-file: NONE, for a transaction.
 
-    Half of what :func:`_recurrence_common.classify_maintain_work` needs and
-    cannot ask for itself: a transaction has ONE account and a transfer has two,
-    so "the definition moved where this row's records are filed" is a question
-    about the model rather than about maintenance (plan step R10-b).
+    The transaction engine's answer to the question
+    :func:`_recurrence_common.classify_maintain_work` asks both engines
+    (``reattributed``: which rows hold records the definition's account move
+    would re-attribute), and the answer is the empty set since plan step
+    ``credit_card:CC-5-2`` (ruling **R-CC36**).
 
-    Applying such a move is what the retention rule refuses on a row holding
-    records.  Through plan step ``credit_card:CC-5-1`` the reason was the
-    schema's: ``fk_transaction_entries_parent_account`` bound a purchase's
-    account to its parent's, so moving the row dragged every purchase onto the
-    new account, and ``fk_transaction_entries_reconciled_by`` scopes a clearing
-    link BY ACCOUNT, so the statement link the purchases carried was
-    invalidated by the same edit.  Since that step a movement's account is its
-    own (ruling **R-BAL76**; the key is dropped) and a moved row would leave
-    its purchases where their money moved -- which is the design's reading --
-    but the readers that scope a purchase by its PARENT's account (the
-    reconcile panel's offer, ``reconcile_service._purchases``) are re-pointed
-    at ``CC-5-2``, and this arm is retired there with them rather than one
-    leaf early.  A row carrying NOTHING follows its template's account freely,
-    which is the ordinary case and the behaviour every earlier version had.
+    **Why it was ever non-empty, and why it is not now.**  Through plan step
+    ``credit_card:CC-5-1`` the schema bound a purchase's account to its
+    parent's (``fk_transaction_entries_parent_account``, ON UPDATE CASCADE),
+    so moving a row dragged every purchase onto the new account and
+    invalidated the account-scoped clearing link each carried
+    (``fk_transaction_entries_reconciled_by``); a row holding records was
+    therefore RETAINED where it was and reported (plan step R10-b).  Since
+    ``CC-5-1`` a movement's account is its own (ruling **R-BAL76**; the key
+    is dropped), and since ``CC-5-2`` every reader asks the movement's
+    account rather than its row's (design 3.2's census).  So a moved row
+    LEAVES its purchases where their money moved -- a `$60` card swipe stays
+    on the card when its Groceries envelope moves from Checking to Second
+    Checking, and each purchase's clearing link is scoped by the purchase's
+    own account, which the move never touches.  The row's kept payment
+    record (a reverted settle's un-dated covering movement) is re-pointed
+    onto the row's account when the row is next settled
+    (``status_seam._covering._cover``, the same ruling).  Nothing on a
+    transaction row is re-filed by its account moving, so nothing is held
+    back for it; a row holding records still RETAINS on the other shape (the
+    rule no longer names its occurrence), which is
+    :func:`_rows_holding_owner_records`' half and is unchanged.
 
-    **It takes the TEMPLATE rather than its account id** (plan step
-    balance:X-au-d), which is the shape :class:`MaintainActs` names: a transfer
-    has two endpoints and cannot be asked this with one id, so the shared
-    signature is the definition and each engine reads what it needs off it.
+    **The TRANSFER engine keeps its own non-empty answer**
+    (``transfer_recurrence._rows_the_definition_reattributes``): its endpoint
+    move carries both shadows AND their movements between accounts by hand
+    (``transfer_service._endpoints._apply_endpoint_move``), so a settled
+    leg's record WOULD be re-filed there.  The two engines differ here
+    because their models do, which is exactly what :class:`MaintainActs`
+    exists to name.
 
     Args:
-        existing: The rows this pass is considering.
-        template: The TransactionTemplate, holding its account NOW.
+        existing: The rows this pass is considering.  Unread.
+        template: The TransactionTemplate.  Unread.
 
     Returns:
-        The subset of their ids sitting on a different account.
+        The empty set.
     """
-    return {
-        row.id for row in existing if row.account_id != template.account_id
-    }
+    del existing, template
+    return frozenset()
 
 
 
@@ -389,13 +400,20 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
     one-off's placed rows (every one-off's since the family's cutover,
     ``X-bi-7d-2``) and the rows a CLEARED cadence left behind.
 
-    **The same refusal the regular pass makes, decided in the same place**
+    **It RETAINS NOTHING since plan step ``credit_card:CC-5-2`` (ruling
+    **R-CC36**), and so it decides nothing.**  Through ``CC-5-1`` it made the
+    regular pass's one account-move refusal in the shared place
     (``_recurrence_common.classify_unruled_work``, over this engine's
-    :func:`_rows_holding_owner_records` and
-    :func:`_rows_the_definition_reattributes`), so an edit means one thing
-    whether or not the definition repeats: a row whose ACCOUNT the definition
-    moved and which holds the owner's own records is RETAINED where it is.
-    Every other row takes :func:`~._amounts._derive_unruled_fields` whole --
+    :func:`_rows_holding_owner_records` and the rows whose account the
+    definition moved): a row holding purchases was RETAINED where it was,
+    because the parent-account key dragged its purchases with it.  That key
+    is gone and a moved row leaves its purchases where their money moved
+    (:func:`_no_row_is_reattributed`), so the transaction twin has no arm
+    left to decide -- and asking the classifier anyway would issue the
+    owner-records query (one ``SELECT`` per rule-less edit) to intersect it
+    with an empty set.  The transfer twin still decides there; the two
+    engines differ here because their models do.
+    Every row takes :func:`~._amounts._derive_unruled_fields` whole --
     the definition's account, name, category, type and TEMPLATE ownership,
     with the row's own due date -- through the same ``setattr`` splat
     :func:`_apply_maintain_work` uses, and its postings are reconciled
@@ -416,21 +434,16 @@ def propagate_to_unruled_definition(template, rows) -> "list[int]":
             (``definition_edit.unruled_live_rows``).
 
     Returns:
-        The ids this pass RETAINED: rows whose account the definition moved
-        and which carry the owner's own records, left exactly as found.
+        The ids this pass RETAINED, in the shape the transfer twin's route
+        reports: EMPTY for a transaction definition since ruling **R-CC36**.
     """
-    work = classify_unruled_work(
-        rows,
-        with_records=_rows_holding_owner_records(rows),
-        reattributed=_rows_the_definition_reattributes(rows, template),
-    )
-    for row in work.update:
+    for row in rows:
         for field, value in _derive_unruled_fields(template, row)._asdict().items():
             setattr(row, field, value)
     db.session.flush()
-    for row in work.update:
+    for row in rows:
         posting_service.sync_transaction_postings(row)
-    return work.retained_ids
+    return []
 
 
 #: The acts a regeneration performs that are THIS engine's own -- what
@@ -445,5 +458,5 @@ _PASS = MaintainActs(
         EVT_RECURRENCE_REGENERATED, "Recurrence regenerated for template",
     ),
     _selector, _derive_row_fields, _rows_holding_owner_records,
-    _rows_the_definition_reattributes, _apply_maintain_work,
+    _no_row_is_reattributed, _apply_maintain_work,
 )

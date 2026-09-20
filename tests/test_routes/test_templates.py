@@ -926,9 +926,7 @@ class TestTemplateUpdate:
         So the edit must COMMIT, and the notice must name what was skipped.
         """
         with app.app_context():
-            from app.services import (
-                account_service, entry_service, recurrence_engine,
-            )
+            from app.services import entry_service, recurrence_engine
             template = _create_template(
                 seed_user, name="Groceries", cadence=EVERY_PERIOD,
                 amount="500.00",
@@ -972,26 +970,31 @@ class TestTemplateUpdate:
                     purchased_on=current.start_date,
                 ),
             )
-            # Moving the template's ACCOUNT is what retains the row: its
-            # purchases would follow onto the new account and lose whatever
-            # statement link cleared them.
-            moved_to = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=seed_user["account"].account_type_id,
-                    name="Second Checking",
-                    anchor_balance=Decimal("0.00"),
-                ),
-            )
-            db.session.add(moved_to)
             db.session.commit()
-            tid, moved_to_id = template.id, moved_to.id
+            tid = template.id
+            # The cadence the edit posts is what retains the row: every OTHER
+            # paycheck from the NEXT one on, so the rule no longer names the
+            # current period's occurrence and the row holding the purchase is
+            # held back rather than retired (the empty rows the rule drops
+            # retire; the ones it keeps are updated).  FIXTURE RE-EXPRESSED at
+            # plan step ``credit_card:CC-5-2`` under CLAUDE.md rule 5 with the
+            # developer's confirmation (ruling **R-CC36**): through ``CC-5-1``
+            # this moved the template's ACCOUNT instead, which retained a row
+            # holding purchases because the parent-account key dragged them
+            # with it; a moved row now leaves its purchases where their money
+            # moved and is not retained, so that mechanism can no longer
+            # produce the conflict this case is about.  The claim graded here
+            # is unchanged: a retained-only conflict commits and says so.
+            calendar = calendar_for(seed_user["user"].id)
+            next_start = calendar.span_containing(
+                calendar.period_by_id(current.id).end_date + timedelta(days=1),
+            ).start_date
 
             resp = auth_client.post(f"/templates/{tid}", data={
                 "name": "Groceries",
                 "default_amount": "650.00",
-                "account_id": str(moved_to_id),
-                **cadence_payload(),
+                "account_id": str(seed_user["account"].id),
+                **cadence_payload(interval_n=2, starts_on=next_start),
             }, follow_redirects=True)
 
             assert resp.status_code == 200
