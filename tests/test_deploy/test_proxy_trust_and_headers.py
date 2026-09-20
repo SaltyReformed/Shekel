@@ -221,7 +221,8 @@ class TestBundledNginxSecurityHeaders:
     """
 
     @pytest.fixture(scope="class")
-    def conf_text(self) -> str:
+    @classmethod
+    def conf_text(cls) -> str:
         """Read the bundled-mode nginx.conf once per test class."""
         return BUNDLED_NGINX_CONF.read_text(encoding="utf-8")
 
@@ -334,7 +335,8 @@ class TestSharedNginxRealIpAndTokens:
     """
 
     @pytest.fixture(scope="class")
-    def conf_text(self) -> str:
+    @classmethod
+    def conf_text(cls) -> str:
         """Read the shared-mode nginx.conf once per test class."""
         return SHARED_NGINX_CONF.read_text(encoding="utf-8")
 
@@ -384,7 +386,8 @@ class TestSharedVhostSecurityHeaders:
     """
 
     @pytest.fixture(scope="class")
-    def conf_text(self) -> str:
+    @classmethod
+    def conf_text(cls) -> str:
         """Read the shared-mode shekel vhost once per test class."""
         return SHARED_VHOST_CONF.read_text(encoding="utf-8")
 
@@ -438,7 +441,8 @@ class TestSharedVhostNginxParse:
     """
 
     @pytest.fixture(scope="class")
-    def synthetic_cert_dir(self, tmp_path_factory) -> Path:
+    @classmethod
+    def synthetic_cert_dir(cls, tmp_path_factory) -> Path:
         """Generate a one-shot self-signed cert/key pair for the
         nginx -t run.  Re-uses the host's ``openssl`` binary because
         every Linux developer host already has it; skips otherwise.
@@ -537,7 +541,8 @@ class TestProdComposeNetworkTopology:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Parse the prod compose override into a Python dict.
 
         ``yaml.safe_load`` is the standard tool here: we never need
@@ -552,7 +557,8 @@ class TestProdComposeNetworkTopology:
             return yaml.safe_load(fh)
 
     @pytest.fixture(scope="class")
-    def yaml_text(self) -> str:
+    @classmethod
+    def yaml_text(cls) -> str:
         """Raw text of the prod compose override for substring
         matches that the YAML parse would normalise away.
         """
@@ -661,7 +667,8 @@ class TestBaseComposeNetworkPinning:
     """
 
     @pytest.fixture(scope="class")
-    def yaml_text(self) -> str:
+    @classmethod
+    def yaml_text(cls) -> str:
         """Read the base docker-compose.yml once per test class."""
         return BASE_COMPOSE.read_text(encoding="utf-8")
 
@@ -710,7 +717,8 @@ class TestCloudflaredTemplate:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Read the bundled cloudflared/config.yml template."""
         return CLOUDFLARED_TEMPLATE.read_text(encoding="utf-8")
 
@@ -784,7 +792,8 @@ class TestSharedNginxRuntimeHeaders:
     """
 
     @pytest.fixture(scope="class")
-    def synthetic_cert_dir(self, tmp_path_factory) -> Path:
+    @classmethod
+    def synthetic_cert_dir(cls, tmp_path_factory) -> Path:
         """Generate a one-shot self-signed cert/key pair so the
         ``listen 443 ssl;`` directive in shekel.conf can find the
         cert files at /etc/nginx/certs/.
@@ -820,7 +829,8 @@ class TestSharedNginxRuntimeHeaders:
         return cert_dir
 
     @pytest.fixture(scope="class")
-    def running_stack(self, synthetic_cert_dir: Path):
+    @classmethod
+    def running_stack(cls, synthetic_cert_dir: Path):
         """Bring up the network + stub upstream + Nginx, yield the
         ``(host_port, stub_container_name)`` pair, then tear
         everything down.
@@ -969,8 +979,9 @@ class TestSharedNginxRuntimeHeaders:
             _docker("rm", "-f", stub_name)
             _docker("network", "rm", net_name)
 
+    @staticmethod
     def _curl_headers(
-        self, host_port: str
+        host_port: str,
     ) -> tuple[str, dict[str, str]]:
         """Issue a HEAD request and parse the response status +
         headers.  Returns ``(status_line, headers_lower_keyed)``.
@@ -1006,17 +1017,19 @@ class TestSharedNginxRuntimeHeaders:
         return status_line, headers
 
     @pytest.fixture(scope="class")
-    def headers_200(self, running_stack) -> dict[str, str]:
+    @classmethod
+    def headers_200(cls, running_stack) -> dict[str, str]:
         """Capture response headers from a 200 (upstream up)."""
         host_port, _stub = running_stack
-        status, headers = self._curl_headers(host_port)
+        status, headers = cls._curl_headers(host_port)
         assert "200" in status, (
             f"expected 200 with stub upstream up; got: {status!r}"
         )
         return headers
 
     @pytest.fixture(scope="class")
-    def headers_502(self, running_stack, headers_200) -> dict[str, str]:
+    @classmethod
+    def headers_502(cls, running_stack, headers_200) -> dict[str, str]:
         """Kill the upstream stub's HTTP listener in place, then
         capture the 5xx response headers.  This is the real-world
         failure mode the ``always`` flag exists for (a gunicorn
@@ -1072,7 +1085,7 @@ class TestSharedNginxRuntimeHeaders:
         last_status = ""
         last_headers: dict[str, str] = {}
         for _ in range(8):
-            status, headers = self._curl_headers(host_port)
+            status, headers = cls._curl_headers(host_port)
             last_status = status
             last_headers = headers
             if "502" in status or "504" in status:
