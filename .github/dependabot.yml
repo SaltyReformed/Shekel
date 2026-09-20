@@ -1,0 +1,83 @@
+# Dependabot -- the standing answer to "who notices a stale pin" (developer
+# ruling 2026-09-19: pinned dependencies stay pinned; drift arrives as
+# CI-gated pull requests instead of waiting for a human to run pip-audit).
+#
+# Every pin in this repo is exact (requirements*.txt ``==``, Dockerfile and
+# compose ``image@sha256:`` digests, workflow ``uses:`` commit SHAs with a
+# version comment), and Dependabot rewrites each in place, digest and
+# comment included.  The coordinator session merges these PRs on green CI
+# like any feature -> dev PR (CLAUDE.md, Multi-session operation); a major
+# version arrives as its own PR so its changelog is read on its own.
+#
+# The first run after this file lands should find nothing: the routine
+# bump that carried it brought every pin current.
+version: 2
+updates:
+  # Python: requirements.txt (runtime) and requirements-dev.txt (tools),
+  # both at the repo root.  Minor and patch moves are grouped into one
+  # weekly PR per file class; a major is left out of the group and opens
+  # alone.  rumdl is pinned deliberately at 0.2.58 (its canonical Markdown
+  # forms changed; a bump reflows every planning document) and stays
+  # ignored until that reflow is its own decision.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    target-branch: dev
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: rumdl
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The application image's base (Dockerfile FROM ... @sha256).  Compose
+  # files are the docker-compose ecosystem below.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    target-branch: dev
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The compose files' service images (postgres, redis, nginx pins).  The
+  # postgres digest must move in docker-compose.yml and
+  # docker-compose.dev.yml in the SAME commit (their comments say so), so
+  # both files sit under one directory entry.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    target-branch: dev
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions: SHA-pinned ``uses:`` lines with a version comment;
+  # Dependabot updates both.  actionlint and zizmor gate the result.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    target-branch: dev
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci(deps)"

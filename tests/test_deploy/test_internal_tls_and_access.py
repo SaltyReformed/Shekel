@@ -102,12 +102,14 @@ class TestCloudflaredAccessPolicy:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the cloudflared config text."""
         return CLOUDFLARED_CONFIG.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Parse the cloudflared config as YAML.
 
         The placeholder values (``<TUNNEL_ID>``, ``<TEAM_NAME>``,
@@ -252,12 +254,14 @@ class TestCloudflaredMetricsLoopback:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the cloudflared config text."""
         return CLOUDFLARED_CONFIG.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Parse the cloudflared config as YAML."""
         return yaml.safe_load(CLOUDFLARED_CONFIG.read_text(encoding="utf-8"))
 
@@ -333,13 +337,15 @@ class TestProdComposeOverridePostgresTLS:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed prod override document."""
         with PROD_COMPOSE_OVERRIDE.open(encoding="utf-8") as fh:
             return yaml.safe_load(fh)
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the raw prod override text for substring assertions."""
         return PROD_COMPOSE_OVERRIDE.read_text(encoding="utf-8")
 
@@ -478,7 +484,8 @@ class TestProdComposeOverrideAppDatabaseUrl:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed prod override document."""
         with PROD_COMPOSE_OVERRIDE.open(encoding="utf-8") as fh:
             return yaml.safe_load(fh)
@@ -545,7 +552,8 @@ class TestEntrypointHonoursDbSslmode:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the entrypoint.sh source as a string."""
         return ENTRYPOINT.read_text(encoding="utf-8")
 
@@ -623,7 +631,8 @@ class TestGenerateCertScript:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the script source as a string."""
         return GENERATE_CERT_SCRIPT.read_text(encoding="utf-8")
 
@@ -821,7 +830,8 @@ class TestGitignoreExcludesPostgresKeyAndCert:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the .gitignore source as a string."""
         return GITIGNORE.read_text(encoding="utf-8")
 
@@ -870,7 +880,8 @@ class TestMergedComposeCarriesTLS:
     """
 
     @pytest.fixture(scope="class")
-    def merged(self) -> dict:
+    @classmethod
+    def merged(cls) -> dict:
         """Return the merged base + shared-mode override compose
         document as a parsed dict.
 
@@ -1021,7 +1032,8 @@ class TestRunbookDocumentsC37Procedures:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full runbook source as a string."""
         return RUNBOOK.read_text(encoding="utf-8")
 

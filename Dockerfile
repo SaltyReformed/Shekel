@@ -6,12 +6,12 @@
 # ---------------------------------------------------------------------------
 # Both stages pin the base image by sha256 digest, not by floating tag.
 # The digest references the multi-arch image index for ``python:3.14-slim``
-# rebuilt 2026-05-08, which carries:
-#   * Python 3.14.4 (latest 3.14.x)
-#   * Debian 13 (trixie) with libssl3t64 / openssl / openssl-provider-legacy
-#     at 3.5.5-1~deb13u2 -- the post-CVE-2026-28390 (HIGH) fix
-#     (audit F-025).
-#   * pip 26.0.1 -- past the CVE-2026-1703 path-traversal fix
+# rebuilt 2026-09-16 (digest refreshed 2026-09-19), which carries:
+#   * Python 3.14.7 (latest 3.14.x)
+#   * Debian 13.7 (trixie) with libssl3t64 / openssl / openssl-provider-legacy
+#     at 3.5.7-1~deb13u2 -- past the CVE-2026-28390 (HIGH) fix that the
+#     2026-05-08 digest first carried (audit F-025).
+#   * pip 26.2.1 -- past the CVE-2026-1703 path-traversal fix
 #     (audit F-120).
 #
 # The digest is the immutable identity; the ``:3.14-slim`` tag in the
@@ -38,7 +38,7 @@
 # the apt upgrade gives currency.
 
 # -- Stage 1: Builder -------------------------------------------------
-FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd AS builder
+FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS builder
 
 # Apply Debian security upgrades to the OpenSSL packages and install
 # the build-only deps (libpq headers + a C toolchain) psycopg2 needs
@@ -79,10 +79,10 @@ COPY requirements.txt .
 # dependency and the digest-pinned base image.  Bump this in lockstep
 # with a tested gunicorn upgrade.
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir 'gunicorn==26.0.0'
+    && pip install --no-cache-dir 'gunicorn==26.2.0'
 
 # -- Stage 2: Runtime -------------------------------------------------
-FROM python:3.14-slim@sha256:1697e8e8d39bf168e177ac6b5fdab6df86d81cfc24dae17dfb96cfc3ef76b4dd
+FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
 
 # Apply the same Debian OpenSSL upgrade to the runtime stage.  The
 # runtime image carries libssl3t64 (pulled in transitively by
@@ -97,8 +97,12 @@ RUN apt-get update \
         libpq5 postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user.
-RUN useradd --create-home shekel
+# Create the non-root user at a FIXED uid/gid.  1000 is what Debian's
+# useradd handed out anyway (production has run as uid 1000 since the
+# first deploy), and pinning it lets the USER line below be numeric,
+# which a host or orchestrator enforcing run-as-non-root can verify
+# without reading this image's /etc/passwd (hadolint DL3066).
+RUN groupadd --gid 1000 shekel && useradd --create-home --uid 1000 --gid 1000 shekel
 WORKDIR /home/shekel/app
 
 # Copy virtualenv from builder.  The venv carries the CVE-fixed pip
@@ -130,16 +134,21 @@ COPY --chown=shekel:shekel . .
 RUN mkdir -p /var/www/static /home/shekel/app/state \
     && chown shekel:shekel /home/shekel/app/state /var/www/static
 
-USER shekel
+# Numeric on purpose (DL3066); the passwd entry above still resolves it,
+# so HOME and ownership are those of the shekel user.
+USER 1000:1000
 EXPOSE 8000
 
 # Health check: verify the app is responding and database is reachable.
 # Uses Python's built-in urllib (curl/wget are not in the slim image).
 # --start-period gives entrypoint.sh time to run migrations and seeding
 # (schema creation + Alembic + ref data + user + tax brackets can take
-# well over 30 seconds on a fresh database).
+# well over 30 seconds on a fresh database).  Exec (JSON) form, hadolint
+# DL3025: no shell is spawned, and a non-zero exit -- urlopen raising on
+# a refused connection or a non-2xx status -- is what marks the container
+# unhealthy, so the shell form's trailing ``|| exit 1`` added nothing.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
 
 ENTRYPOINT ["/home/shekel/app/entrypoint.sh"]
 CMD ["gunicorn", "--config", "gunicorn.conf.py", "run:app"]
