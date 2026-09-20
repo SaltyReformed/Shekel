@@ -7,15 +7,14 @@ R1-R4 and the R7c cutover are ARCHIVED; the closed pattern set is GONE, which is
 for (R-R16 / R-R18 / R-R27). Which steps are in PRODUCTION is a measurement, never a stored value:
 `git branch -r --contains <hash>` against `origin/main`.
 
-**R7d DECOMPOSED into seven leaves 2026-08-25 (R-R33, R-R34), R7d-c into two more 2026-08-27 (R-R38)
-and R7d-g into three 2026-09-13 (R-R80..R-R83); every reader is on the resolver and the WRITE is
-gone.** R7d SHIPPED WHOLE 2026-09-14 with R7d-g-3 (the per-definition card; **R-R88** deleted the
-resolver's loan-level extra rather than summing, and the loan page reads the seam's forward plan).
+**R7d SHIPPED WHOLE 2026-09-14** (seven leaves, R-R33 / R-R34 / R-R38 / R-R80..R-R83 / **R-R88**):
+every reader is on the resolver and the WRITE is gone.
 **A tie-break is a sign the SEARCH is the wrong question** (R-R35): only ONE tier of three asks
-"which transfer into a loan is its payment", and **R16** deletes the rest -- DECOMPOSED into four
-leaves 2026-08-26 (**R-R36**); its summing leaf `R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), so the
-ESTIMATED tier is the outlier no longer, and `R20` SHIPPED 2026-09-19 (`b4da8068`, **R-R72** part 3:
-the stated balance is an assertion; `current_principal` gone). `R16-c` is next.
+"which transfer into a loan is its payment", and **R16** deletes the rest (four leaves, **R-R36**):
+`R16-b-2` SHIPPED 2026-09-11 (`7e2e6413`), `R20` 2026-09-19 (`b4da8068`, **R-R72** part 3: the
+stated balance is an assertion) and `R16-c-1` 2026-09-20 (`c88ed6ba`, **R-R90**: the past and the
+future are ONE event stream, byte-identical). `R16-c-2` (the contract calendar, **R-R89**; MOVES
+POSTED MONEY) is next.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
 section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
@@ -295,7 +294,7 @@ deletes that function.
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
 the ROW, where the ledger already reads it, rather than on the rule. The files carrying
-`payment_day` in code (census 20 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
+`payment_day` in code (census 19 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
 only in prose, which a code census excludes by construction --
 **already read it as the installment, bar two** -- exactly two make it a CASH day, in
 `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.
@@ -652,34 +651,21 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-09-11
       schedule bound (**R-R64**) for stated owners only.
 
-- [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**
+- [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
+      leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR
+      (c-2, the money move). Ticks with its last leaf.
 
-`loan_ledger._walk._replay_events` and `balance_at._plan_fold._split_plan` were two running-balance
-implementations of one rule. **That half is done**: `balance:X-au-g-2c-3b-2` (`3b7716f8`) moved the
-rule to `loan_ledger._replay.replay_loan_events` and both tiers now call it, which also made the
-settled walk charge once per accrual period and CLOSED **D51**.
-**This step SHRANK because part of it SHIPPED EARLY, not because scope was dropped.** What is still
-owed is the STREAM, not the arithmetic: one event list with `as_of` marking where recorded fact
-becomes projection, one seed, and one set of record types, so the two tiers differ in nothing but
-their inputs.
+- [x] **R16-c-1 -- the MERGE.** `c88ed6ba` -- as built: ONE builder, ONE replay seeded at the
+      origination, ONE record type (`PaymentOutcome`); a projected event never placed before a
+      recorded fact; a pass replays the facts visible by its `as_of` (**R-R91**); the RESET arm
+      clears standing charges (**R-R72** (2)); `projection_seed`, `fold_forward`, `_split_plan`,
+      `exclude_slots`, `LoanPaymentSplit` deleted; byte-identical (3,952 + 919 harness lines, 0
+      diff). Closed **D61**. Record: `historical/recurrence_r16c1_as_built_2026-09-20.md`.
 
-**D51 is CLOSED, and it closed OUTSIDE this arc**: at `balance:X-au-g-2c-3b-2` (`3b7716f8`), which
-made the settled walk charge once per accrual period. It is recorded here rather than only there
-because a reader of THIS arc must be able to find where a finding this arc owned actually went;
-`steps.md`'s row for that balance step carries the forward half ("satisfies **recurrence:D51**"),
-and this is the backward half.
+- [ ] **R16-c-2 -- the CALENDAR: every contractual installment charged, from origination, in the one
+      stream.** **MOVES POSTED MONEY, OWN PR, OWN RELEASE**; **R-R89** (the accrual period is the
+      contract's interval) and **R-R72** (1)+(2); D53's past half; closes **D55**.
 
-*Its predicate still greps TRUE and the defect is gone*, which is the trap worth recording: a row
-whose WORDS still match while its defect is gone, and a row whose defect remains while its words
-stop matching, are the SAME failure, and only re-reading the code separates them.
-`_walk._replay_events` does still call `split_one_payment` once per settled shadow -- but
-**that call no longer CHARGES anything, and it no longer computes anything**: it copies the four
-parts verbatim off the replay's outcome and names them. The charge is derived once per accrual
-period from the installments the payments satisfy (`charges_for_due_dates`), the replay accumulates
-it, and `apply_payment_cash` clears it at the FIRST payment in that period;
-**a second payment in the same `installment_slot` finds nothing standing and pays pure principal.**
-Measured on a forced due-month collision: interest `$1,014.06` -> `$0.00`, escrow `$616.99` ->
-`$0.00`, principal `$279.90` -> `$1,910.95`.
 **D53 is answered at `R16-b-2` and this step inherits the answer** -- the CONTRACT charges every
 forward period (**R-R37**), repealing "an overdue slot with no record ... holds flat" (B-9) for the
 FUTURE half, which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.
@@ -692,6 +678,50 @@ paid (`loan_ledger._charges.charges_for_due_dates`, D53's past half), so a read 
 seed flat where the read after it carries the skipped months' interest; the one stream charges every
 contractual installment after the loan's latest assertion, and an assertion clears the charges
 standing before it (the ruling `_replay.py` says it owes).
+
+**What it owes, as decomposed at R16-c-1's handoff (rulings R-R72 (1)+(2), R-R89, D53's past half,
+D55):**
+
+1. **The ONE contractual calendar on the leaf**:
+   `rate_period_engine.installment_dates(origination, payment_day, through)` =
+   `first_installment_date` then `_advance_one_month` (re-clamped to `payment_day` each month --
+   `_plan._charge_dates` extends with `add_months` from the last contractual row, which DRIFTS after
+   a February for a due day of 29-31; the one producer fixes that). `loan_event_stream` charges
+   every installment from origination through the last recorded fact; `merged_stream` extends the
+   same sequence through the plan's horizon (the `_PAYOFF_EXTENSION_MONTHS` rule and the
+   matured-loan `through`). `charges_for_due_dates` becomes
+   `charges_for_installments(dates, periods, escrow_lines)` (no month collapse); `installment_slot`
+   DELETED from the leaf.
+2. **Delete the partition and the projected charges**: `_plan._seed_boundaries` / `seed_slots` /
+   `_charges_for`'s exclusion, `LoanEventStream.projected_charges` and the `_PROJECTED_CHARGE` kind
+   (the plan then carries NO charges of its own: `LoanForwardPlan.charges` goes,
+   `LoanForwardPlan.periods` goes with it once the stream's `periods` serve; the what-if extra then
+   accrues at every charge on or after the projection boundary, the rule to restate). The plan's
+   `last_anchor` bound on PAYMENTS (R-R72) stays: a projection due at or before the latest visible
+   assertion is dropped.
+3. **Every `(year, month)` key in the two tiers** (R-R89): `_estimated_from_contract`'s
+   `covered_slots` -> "a record is due inside installment k's interval" (the latest contractual
+   installment date at or before the record's due date); `routes/loan/_helpers._period_slot` groups
+   on `charge_date` itself. `amortization_engine.schedule_dates` / `slotted_dates` stay for R16-e /
+   R16-f (walk 3's).
+4. **Posted money**: the settled walk's splits change wherever a month between two facts (or between
+   origination and the first fact, before the latest assertion) went unpaid: the next payment clears
+   the arrears first (the Van case in **R-R89**'s row). The release's migration RE-SYNCS every
+   loan's postings (`sync_loan_postings_all_scenarios` per loan, inside the Alembic migration -- the
+   backfill rule) and PRINTS per-loan the count of payments whose split moved and the net principal
+   delta; the harness that reads that count is written FIRST (the coordinator's standing constraint
+   for a money-moving leaf). Rehearse up / down / up on a FRESH production clone.
+5. **Harness**: extend `verify_loan_plan_sum.py` (or a sibling) to print the SETTLED splits per
+   payment and the posted per-date nets, so the diff shows the ruled move and nothing else; the
+   expected production move is bounded by "both live loans carry a 2026 assertion" (any skipped
+   month before it is cleared by the assertion; only skipped months after it, and gaps before it
+   that a later pre-assertion payment catches up, move).
+6. **Tests that pin the OLD rule and need the developer's confirmation (rule 5)**: none assert "an
+   unpaid month is uncharged in the settled walk" by name (grep 2026-09-19: no test module matches
+   `no payment.*no charge|only the months|months it saw paid`); `charges_for_due_dates`' docstring
+   states the rule and `tests/oracles/loan_monthly_composition.py:96` cites it. Expect
+   `test_loan_ledger.py` / `test_confirmed_view.py` fixtures with skipped months to move; R-R72 is
+   the developer's confirmation, cite it per changed value.
 
 - [ ] **R16-d -- the accrual CONVENTION becomes a value on the loan** (finding **D52**).
 
