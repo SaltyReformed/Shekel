@@ -51,7 +51,6 @@ from app.services.cash_flow_set import (
     PlanItems,
     leg_accounts_shown,
     own_rows_clause,
-    paycheck_rows_clause,
     set_transfer_legs,
     set_transfer_legs_in_periods,
     touched_transfers_clause,
@@ -942,8 +941,9 @@ class TestTheGridLoaderDrawsTheSetsSide:
 
         Members ``(checking, A, B)`` with the balance line on A: both
         endpoints are members and neither is the balance account.  The row
-        rule (``far_leg_clause``) drops both shadows there, so the payment is
-        drawn NOWHERE on A's grid; the leg rule answers the same.  The first
+        rule this replaced (``far_leg_clause``, deleted at leaf X-bi-6-1b)
+        dropped both shadows there, so the payment was drawn NOWHERE on A's
+        grid; the leg rule answers the same.  The first
         cut answered ``(A,)`` and ``leg_of`` refused it -- a 500 on the grid
         for every paycheck holding a payment to the other card (found by the
         leaf's adversarial review).  Whether "nowhere" is what R-CC23 means
@@ -966,21 +966,11 @@ class TestTheGridLoaderDrawsTheSetsSide:
             assert grid_transfer_legs(
                 [payment], lambda t: leg_accounts_shown(seen_from_a, t),
             ) == []
-            # And the row rule agrees: neither shadow is a paycheck row there.
-            rows = (
-                db.session.query(Transaction.id)
-                .filter(
-                    Transaction.transfer_id == payment.id,
-                    paycheck_rows_clause(seen_from_a),
-                )
-                .all()
-            )
-            assert rows == []
 
     def test_the_own_rows_clause_keeps_no_shadow(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """``own_rows_clause``: every member row, no shadow -- where the paycheck clause kept the near leg."""
+        """``own_rows_clause``: every member row, no shadow (the near leg is the LEG's)."""
         with app.app_context():
             checking = seed_user["account"]
             savings = _savings(seed_user)
@@ -999,17 +989,8 @@ class TestTheGridLoaderDrawsTheSetsSide:
                 )
                 .all()
             )
-            paycheck = (
-                db.session.query(Transaction.id)
-                .filter(
-                    Transaction.pay_period_id == seed_periods[2].id,
-                    paycheck_rows_clause(checking_set),
-                )
-                .all()
-            )
             shadow_id = _shadow_on(transfer, checking).id
 
-            assert (shadow_id,) in paycheck
             assert (shadow_id,) not in own
             assert not any(
                 db.session.get(Transaction, row_id).transfer_id is not None
@@ -1335,6 +1316,30 @@ class TestTheSetsTransferHalf:
                 *[row.id for row in rows], (transfer.id, checking.id),
             ]
 
+
+    def test_both_endpoints_members_draws_the_balance_lines_leg_from_either_line(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """R-CC23 from BOTH balance lines: the from-side's expense leg on
+        checking's line, the to-side's income leg on the card's (the two
+        cases ``TestPaycheckRowsClause`` graded as rows until leaf X-bi-6-1b)."""
+        with app.app_context():
+            checking = seed_user["account"]
+            card = _savings(seed_user, name="Card")
+            payment = create_transfer(
+                seed_user, db.session, checking, card, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            from_checking = CashFlowSet(balance=checking, members=(checking, card))
+            from_card = CashFlowSet(balance=card, members=(checking, card))
+
+            assert [(leg.account_id, leg.is_expense) for leg in set_transfer_legs(
+                from_checking, [payment],
+            )] == [(checking.id, True)]
+            assert [(leg.account_id, leg.is_income) for leg in set_transfer_legs(
+                from_card, [payment],
+            )] == [(card.id, True)]
 
     def test_the_period_loader_windows_by_membership_and_takes_the_readers_filter(
         self, app, db, seed_user, seed_periods,

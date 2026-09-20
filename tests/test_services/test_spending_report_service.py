@@ -1386,7 +1386,9 @@ class TestTheReportReadsTheCashFlowSet:
     paid by card is a row ON the card, so a report that read one account's
     settled rows left it out of where the money went.  Both window queries
     read the owner's cash-flow set now, through the one clause
-    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`) -- graded
+    (:func:`~app.services.cash_flow_set.own_rows_clause` for the rows and
+    :func:`~app.services.cash_flow_set.leg_accounts_shown` for a transfer's leg,
+    since leaf ``balance:X-bi-6-1b``; it was ``paycheck_rows_clause``) -- graded
     once per query, a pay-period window and a month window -- and the scope
     names the BALANCE account, the primary.  Every case plants a card,
     because an owner with none is a set of one and cannot tell the clause

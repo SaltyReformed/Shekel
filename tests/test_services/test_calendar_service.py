@@ -682,7 +682,9 @@ class TestTheCalendarReadsTheCashFlowSet:
     paid by card is a row ON the card, so a calendar that read one account's
     rows dropped it from the month it is due in.  The rows are the owner's
     cash-flow set's now, through the one clause
-    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`); the balance
+    (:func:`~app.services.cash_flow_set.own_rows_clause` for the rows and
+    :func:`~app.services.cash_flow_set.leg_accounts_shown` for a transfer's leg,
+    since leaf ``balance:X-bi-6-1b``; it was ``paycheck_rows_clause``); the balance
     line, the month-end figure and the scope name stay ONE member's, and
     ``account_id`` names that member the way the grid's override does.
 
