@@ -15,7 +15,6 @@ from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
     MovementFigureSourceEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -29,7 +28,7 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, Status
-from app.services import balance_at, pay_period_write
+from app.services import balance_at, pay_period_write, status_seam
 from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
@@ -57,7 +56,6 @@ from tests._test_helpers import (
     net_posted_by_day,
     open_books_before_the_first_assertion,
     override_anchor,
-    settlement_basis_id,
     shadow_amount,
     state_template_price,
     transfer_repriced_by_the_owner,
@@ -1869,7 +1867,7 @@ class TestTransferInstance:
         :class:`~app.models.transfer.Transfer` to
         ``row_valuation.settled_contribution``, which is a TRANSACTION accessor
         -- a ``Transfer`` defines no ``estimated_amount`` and no
-        ``settled_basis_id`` at all, so the only thing standing between that
+        ``entries`` at all, so the only thing standing between that
         call and an ``AttributeError`` was the Cancelled row short-circuiting on
         ``is_balance_contributing`` before either attribute was read.  It
         therefore passed while proving nothing about production, where no code
@@ -2691,20 +2689,15 @@ class TestTransferSettleDayEditDoor:
                 .one()
             )
             # The legacy shape, reproduced the only way it can be: straight at
-            # the columns, behind the seam's back.  It is a row that pre-dates
-            # the settlement record entirely -- settled status, nothing recorded
-            # -- so all three columns are cleared together.  That is narrower
-            # than what the schema forbids: only the DAY needs a figure beside
-            # it (``ck_transactions_settle_day_needs_a_record``), and a record with
-            # no day is the legal RETAINED state.
+            # the day pair, behind the seam's back -- a settled row with no
+            # day.  Its record (the covering movement) stands; the day alone
+            # is what this case is about.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
                 record_settle_day(row, None)
-                row.settled_amount = None
-                row.settled_basis_id = None
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).settled_on is None
@@ -3873,8 +3866,9 @@ class TestOneTimeTransfer:
             ).all()
             assert [leg.account_id for leg in legs].count(savings_id) == 1
             assert all(
-                leg.settled_amount == Decimal("412.90") for leg in legs
-            )
+                status_seam.recorded_settlement(leg).amount == Decimal("412.90")
+                for leg in legs
+            ), "the retained record on the reverted pair"
 
     def test_changing_accounts_is_allowed_with_no_live_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3994,7 +3988,7 @@ class TestOneTimeTransfer:
                 transfer_id=xfer_id, is_deleted=False,
             ).all()
             assert len(legs) == 2
-            assert {leg.settled_amount for leg in legs} == {Decimal("500.00")}
+            assert {settled_figure(leg) for leg in legs} == {Decimal("500.00")}
 
     def test_a_hand_edited_transfer_does_not_follow_the_definition(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4948,12 +4942,9 @@ class TestTransferActualBox:
             assert response.status_code == 200, response.get_data(as_text=True)
             db.session.expire_all()
             for leg in self._legs(xfer.id):
-                assert leg.settled_amount == Decimal("214.37"), (
-                    f"leg {leg.id} did not record the correction"
-                )
-                assert leg.settled_basis_id == settlement_basis_id(
-                    SettlementBasisEnum.CORRECTED,
-                ), "a figure a human typed is a CORRECTION, not a derivation"
+                assert status_seam.recorded_settlement(leg) == status_seam.Settlement(
+                    Decimal("214.37"), MovementFigureSourceEnum.TYPED,
+                ), f"leg {leg.id} did not record the correction as a person's"
                 assert leg.settled_on == day, (
                     "a figure correction moved the settle day"
                 )
@@ -4980,10 +4971,11 @@ class TestTransferActualBox:
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
-            derived = settlement_basis_id(SettlementBasisEnum.DERIVED)
+            resolved = MovementFigureSourceEnum.RESOLVED
             assert all(
-                leg.settled_basis_id == derived for leg in self._legs(xfer.id)
-            ), "fixture precondition: a plain settle records a DERIVED figure"
+                status_seam.recorded_settlement(leg).source is resolved
+                for leg in self._legs(xfer.id)
+            ), "fixture precondition: a plain settle records a RESOLVED figure"
             version = db.session.get(Transfer, xfer.id).version_id
 
             response = auth_client.patch(
@@ -4994,7 +4986,7 @@ class TestTransferActualBox:
             assert response.status_code == 200
             db.session.expire_all()
             for leg in self._legs(xfer.id):
-                assert leg.settled_basis_id == derived, (
+                assert status_seam.recorded_settlement(leg).source is resolved, (
                     "an echoed prefill was recorded as a human's correction"
                 )
 
@@ -5036,7 +5028,7 @@ class TestTransferActualBox:
             ), "the unlock path was broken by the echoed figure"
             for leg in self._legs(xfer.id):
                 assert leg.settled_on is None, "a revert keeps the assertion"
-                assert leg.settled_amount == Decimal("200.00"), (
+                assert status_seam.recorded_settlement(leg).amount == Decimal("200.00"), (
                     "a revert destroyed what moved"
                 )
 
@@ -5076,10 +5068,9 @@ class TestTransferActualBox:
             assert "has nothing to record" in response.get_data(as_text=True)
             db.session.expire_all()
             for leg in self._legs(xfer.id):
-                assert leg.settled_amount is None, (
+                assert status_seam.recorded_settlement(leg) is None, (
                     "a refused figure was written anyway"
                 )
-                assert leg.settled_basis_id is None
 
     def test_a_status_IN_HAND_carrying_a_correction_does_BOTH(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -5127,7 +5118,7 @@ class TestTransferActualBox:
             )
             for leg in self._legs(xfer.id):
                 assert leg.status_id == paid_id
-                assert leg.settled_amount == Decimal("187.65")
+                assert settled_figure(leg) == Decimal("187.65")
             assert net_posted_by_day(
                 JournalEntry.transfer_id == xfer.id,
             ) == {day: Decimal("187.65")}
@@ -5135,37 +5126,37 @@ class TestTransferActualBox:
     def test_a_recordless_settled_pair_repairs_with_the_day_AND_the_figure(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The legacy shape's repair, and it needs BOTH halves in one save.
+        """An undated pair holding no movement is a ``$0.00`` close: the day dates it, the box re-prices it.
 
-        A settled row carrying no settlement record predates the record
-        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_a_record``
-        pairs the day with the record, so stating the DAY alone violates it --
-        measured: the day-only save returns a designed 400 rather than
-        repairing anything.  Stating both is the repair, and the Actual box is
-        what makes it expressible.
+        A settled row carrying no settlement record predated the record
+        entirely (finding **N-181**), and through plan step
+        ``balance:X-bi-4b-1`` ``ck_transactions_settle_day_needs_a_record``
+        paired the day with the row's figure columns, so stating the DAY
+        alone was a designed 400 and the repair needed both halves in one
+        save.  The columns and the CHECK went at ``X-bi-4b-2``: a settled
+        leg holding no entry IS the ``$0.00`` record (ruling **R-BAL82**),
+        so the same pair is a close of nothing that happens to be undated.
+        Stating the day alone now DATES it -- an ordinary day correction on
+        a ``$0.00`` close, which writes no movement because a movement of
+        nothing is not one -- and the Actual box, which reads ``0`` for the
+        pair, is how the owner states what the bank really took.
 
-        The popover must therefore RENDER for such a pair: a surface that
-        refuses to draw cannot repair the row it is the only repair path for.
-        **Its Actual box reads ``0`` for the pair, not empty** (plan step
-        ``balance:X-bi-4b-1``): the record is the leg's entries and a settled
-        leg holding none is the ``$0.00`` record (ruling **R-BAL82**), so the
-        legacy shape is staged with the covering movements gone as well as
-        the columns -- with the movements standing, the box would rightly
-        prefill their ``$200.00`` -- and the repair is graded on the
-        movements the save writes.
+        The popover must RENDER for such a pair: a surface that refuses to
+        draw cannot repair the row it is the only repair path for.  The
+        shape is staged with the covering movements gone -- with them
+        standing, the box would rightly prefill their ``$200.00`` -- and both
+        saves are graded on the movements they write.
         """
         with app.app_context():
             xfer = self._settled_transfer(
                 seed_user, seed_periods_today, _THREE_DAYS_AGO(),
             )
-            # The legacy shape, reproduced the only way it can be: straight at
-            # the columns and the movements, behind the seam's back.  A
-            # shadow's movement posts nowhere (ruling R-BAL45), so there is
-            # no leg to reverse before it goes.
+            # The shape, reproduced the only way it can be: straight at the
+            # day pair and the movements, behind the seam's back.  A shadow's
+            # movement posts nowhere (ruling R-BAL45), so there is no leg to
+            # reverse before it goes.
             for leg in self._legs(xfer.id):
                 record_settle_day(leg, None)
-                leg.settled_amount = None
-                leg.settled_basis_id = None
                 for movement in leg.covering_movements:
                     leg.entries.remove(movement)
             db.session.commit()
@@ -5195,18 +5186,17 @@ class TestTransferActualBox:
                     "version_id": str(version),
                 },
             )
-            assert day_only.status_code == 400, (
-                "stating the day alone must be refused -- the CHECK pairs it "
-                "with the record, so it cannot succeed"
-            )
-            assert "records nothing that moved" in day_only.get_data(
-                as_text=True,
-            ), (
-                "the refusal must name the repair, not surface as the "
-                "constraint violation it used to be"
-            )
-
+            assert day_only.status_code == 200, day_only.get_data(as_text=True)
             db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_on == display_today(), (
+                    "the day alone did not date the $0.00 close"
+                )
+                assert leg.covering_movements == [], (
+                    "dating a close of nothing wrote a movement of nothing"
+                )
+                assert settled_figure(leg) == Decimal("0.00")
+
             version = db.session.get(Transfer, xfer.id).version_id
             repair = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
@@ -5352,7 +5342,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
             )
             db.session.expire_all()
             for leg in self._legs(xfer.id):
-                assert leg.settled_amount == Decimal("214.37"), (
+                assert settled_figure(leg) == Decimal("214.37"), (
                     "the stale save landed anyway"
                 )
 
@@ -5391,7 +5381,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
         """
         with app.app_context():
             xfer = self._settled(seed_user, seed_periods_today)
-            recorded = self._legs(xfer.id)[0].settled_amount
+            recorded = settled_figure(self._legs(xfer.id)[0])
             pin = db.session.get(Transfer, xfer.id).version_id
 
             assert auth_client.patch(
@@ -5443,7 +5433,7 @@ class TestTheTransferLockCoversTheShadowOnlyEdits:
                 ref_cache.status_id(StatusEnum.DONE)
             ), "a refused request reverted the transfer anyway"
             for leg in self._legs(xfer.id):
-                assert leg.settled_amount == Decimal("214.37")
+                assert settled_figure(leg) == Decimal("214.37")
 
 
 class TestTransferDoorsResolveOwnershipStructurally:

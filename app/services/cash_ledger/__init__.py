@@ -17,7 +17,7 @@ what would a row be worth?      :mod:`._definition_cash`  (see below)
 what does a pass derive live?   :mod:`._amount_basis`     (no loan analog)
 what does a loan resolve to?    :mod:`._loan_pricing`     (no loan analog)
 what does an installment cost?  :mod:`._loan_installment` ``loan_resolver``
-what was it worth?              :mod:`._amounts`          ``loan_ledger._split``
+what was it worth?              :mod:`._amounts`          ``loan_ledger._replay``
 did the bank show it?           :mod:`._clearing`         (no loan analog)
 in what order?                  :mod:`._walk`             ``loan_ledger._walk``
 what do they sum to?            :mod:`._flows`            (a peer reduction)

@@ -3,9 +3,9 @@
 Plan step **C3a/C3b** (``docs/audits/balance_architecture/README.md``).
 :func:`positions` is the ONE total loan balance-at-T producer the seam's AMORTIZING
 dispatch reads: the event FOLD
-(:func:`app.services.balance_at._fold.fold_from_walk` over the read pass's memoized
-walk) for a date at or before the resolver's NOW, and the forward schedule
-projection after.  The seam's SCALAR
+(:func:`app.services.balance_at._fold.fold_from_walk`) over the read pass's
+memoized TIMELINE -- the loan's recorded facts and its forward plan in ONE walk
+since plan step **recurrence:R16-c-1** (:mod:`._loan_stream`).  The seam's SCALAR
 (:func:`app.services.balance_at.balance_at`) and its LIABILITY band
 (:func:`app.services.balance_at.liability_owed_at_dates`) read it as of step C3b1;
 the per-period map (:func:`app.services.balance_at._inputs._account_balance_map`'s
@@ -24,27 +24,25 @@ E1a), not the answer to "what do I owe".  A loan whose POSTING ledger is missing
 longer an outage when the cache is cold -- it is a repairable inconsistency
 (B-8).
 
-**The future is a FOLD over the forward PLAN (step C6b).**  It folds the
-confirmed-present seed forward over the loan's
+**The future is the same fold, over the plan's outcomes behind the facts
+(step C6b, merged at recurrence:R16-c-1).**  The loan's
 :func:`~app.services.balance_at._plan.loan_plan` -- its projected payment RECORDS
-at their LIVE cash, then contractual synthesis beyond the record horizon -- rather
-than walking the resolver's contractual schedule rows.  An overdue installment
-with NO settled record no longer pays the loan down (finding B-9, killed here),
-and a projected payment folds its LIVE cash, so the loan balance and the checking
-side move together.  The seed and the origination boundary still come from the
-resolver bundle (:func:`app.services.balance_at._kernel.generate_debt_schedules`),
-and the plan is memoized on the read pass's context
-(:meth:`~app.services.balance_at.BalanceContext.loan_plan`) so one build
-serves every forward date and every producer that reads it.
+at their LIVE cash, then what its definitions would generate beyond the record
+horizon -- is appended to the recorded stream as projections and replayed once
+from the origination, rather than from a seed a separate fold resolved.  An
+overdue installment with NO settled record does not pay the loan down (finding
+B-9, killed here), and a projected payment folds its LIVE cash, so the loan
+balance and the checking side move together.  The timeline is memoized on the
+read pass (:func:`~._loan_stream.loan_timeline`) so one replay serves every
+date and every producer that reads it.
 
 **Why here, and not in the ``loan_ledger`` leaf.**  Section 3's end-state has the
-loan ledger answering a date on its own, but the forward half composes the
-resolver's seed (:func:`app.services.balance_at._kernel.generate_debt_schedules`)
-with the seam-level plan (:func:`~app.services.balance_at._plan.loan_plan`, which
-reads the resolver, the escrow lines, the projected shadows, and their live cash)
--- all above the pure leaf.  Composing them is a SEAM responsibility, not a leaf
-one; the leaf stays pure.  (An earlier note here said this producer "can move to
-``loan_ledger``" once the seed went fold-native -- step D2a made it fold-native,
+loan ledger answering a date on its own, but the plan half composes the
+resolver, the escrow lines, the projected shadows and their live cash
+(:func:`~app.services.balance_at._plan.loan_plan`) -- all above the pure leaf.
+Composing them is a SEAM responsibility, not a leaf one; the leaf stays pure.
+(An earlier note here said this producer "can move to ``loan_ledger``" once the
+seed went fold-native -- step D2a made it fold-native,
 and the note was WRONG: the D0b ruling is that a balance producer moves deeper
 INTO the seam, never out to a public leaf, where it would need the very fence
 Phase D deletes.)
@@ -66,18 +64,14 @@ from decimal import Decimal
 
 from app.models.account import Account
 
+from app.services.loan_ledger import PaymentOutcome
+
 from ._context import BalanceContext
 from ._memoize import _memoize_once, require_scenario
 from ._fold import fold_from_walk
-from . import _kernel
-from ._plan import memoized_plan
-from ._plan_fold import (
-    PlannedInstallment,
-    _split_plan,
-    fold_forward,
-    plan_payoff_date,
-    plan_required_extra,
-)
+from ._loan_stream import loan_timeline, what_if_timeline
+from ._plan_fold import is_retired, required_extra, timeline_payoff_date
+from ._resolution import resolved_loan
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -109,15 +103,16 @@ def window_sample_date(start_date: date, end_date: date, as_of: date) -> date:
     return end_date
 
 
-def _forward_schedule(
-    account: Account, ctx: BalanceContext, caller: str,
-) -> "_kernel.DebtSchedule":
-    """Return the loan's :class:`~._kernel.DebtSchedule`, or fail loud if it is not a loan.
+def _owed_from(account: Account, ctx: BalanceContext, caller: str) -> date:
+    """Return the loan's origination, refusing unless *account* is a configured loan.
 
-    The entry guard :func:`_forward_seed` and :func:`loan_what_if_owed_at_dates`
-    share: the first reads the seed off it, the second the seed AND the
-    origination gate, and neither restates the "is this a configured loan"
-    refusal.
+    The entry guard every producer in this module shares, so none restates the
+    "is this a configured loan" refusal, and the one date the retired
+    predicate needs beside the walk (:func:`._plan_fold.is_retired`).  It
+    replaced ``_forward_schedule`` / ``_forward_seed`` at plan step
+    recurrence:R16-c-1, which handed back the resolver bundle's
+    ``projection_seed`` -- a balance the timeline no longer starts from --
+    beside the same refusal.
 
     Args:
         account: The amortizing loan account.
@@ -125,89 +120,101 @@ def _forward_schedule(
         caller: The public function's name, for the fail-loud message.
 
     Returns:
-        The pass's :class:`~._kernel.DebtSchedule` for *account*.
+        The loan's ``origination_date``.
 
     Raises:
-        ValueError: When ``scenario`` is None, or when *account* is not a
-            configured loan.
+        BaselineMissingError: When ``scenario`` is None (a ``ValueError``
+            subclass, ruling R-BW).
+        ValueError: When *account* is not a configured loan.
     """
     require_scenario(ctx)
-    debt_schedule = _kernel.generate_debt_schedules(
-        [account], ctx,
-    ).get(account.id)
-    if debt_schedule is None:
+    resolved = resolved_loan(account, ctx)
+    if resolved is None:
         raise ValueError(
             f"{caller}() requires a configured loan; account {account.id} "
             f"({account.name!r}) has no LoanParams. The seam's AMORTIZING "
             f"dispatch degrades a non-loan account to the cash producer "
-            f"before reaching here."
+            f"(the cash fold) before reaching here."
         )
-    return debt_schedule
+    return resolved.params.origination_date
 
 
-def _forward_seed(account: Account, ctx: BalanceContext, caller: str) -> Decimal:
-    """Return the loan's projection SEED, or fail loud if it is not a loan.
+def _owed_from_gated(
+    sampled: dict[date, Decimal], owed_from: date,
+) -> dict[date, Decimal]:
+    """Return *sampled* with every date before *owed_from* answering ``0.00``.
 
-    The one entry-guard-plus-seed both forward derivations share
-    (:func:`loan_payoff_date` and :func:`loan_required_extra`).  It was copied
-    into each, and the copy is exactly the hazard this arc exists to remove: the
-    seed is the load-bearing input, so two copies are two places for the payoff
-    and the target-date answer to start from different balances and disagree
-    without anything failing.  ``duplicate-code`` is cross-FILE only, so nothing
-    would have caught the drift.
+    The one statement of "a loan owes nothing before it exists", applied to the
+    timeline's fold by :func:`positions` and :func:`loan_what_if_owed_at_dates`
+    -- on every date, past or future (see :func:`positions` for the past half's
+    change).  The fold itself is total and clock-free -- it answers a date before the
+    opening assertion from whatever is visible by then, which is the honest fold
+    of the events -- but a payment settled ahead of the loan's closing (ruling
+    R-C permits one whose installment falls after origination) is visible before
+    the opening is, and the balance a screen shows for a loan not yet taken out
+    is ``0.00``, never that payment's principal as a credit.
 
     Args:
-        account: The amortizing loan account.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        caller: The public function's name, for the fail-loud message.
+        sampled: :func:`~._fold.fold_from_walk`'s answer per date.
+        owed_from: The loan's ``origination_date``.
 
     Returns:
-        The loan's :attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`.
-
-    Raises:
-        ValueError: When ``scenario`` is None, or when *account* is not a
-            configured loan.
+        The same map, gated.
     """
-    return _forward_schedule(account, ctx, caller).projection_seed
+    return {
+        on_date: (ZERO_MONEY if on_date < owed_from else balance)
+        for on_date, balance in sampled.items()
+    }
 
 
 def positions(
     account: Account, ctx: BalanceContext, dates: list[date],
 ) -> dict[date, Decimal]:
-    """Return *account*'s loan balance at each of *dates* -- fold past, projection future.
+    """Return *account*'s loan balance at each of *dates* -- ONE fold over ONE timeline.
 
     The total loan balance-at-T producer (see the module docstring), applied to
-    the whole date list so N dates cost one fold walk, not N.  It dispatches each
-    date on the loan's own timeline:
+    the whole date list so N dates cost one replay, not N.  Since plan step
+    **recurrence:R16-c-1** there is no past/future dispatch here: the read
+    pass's memoized TIMELINE (:func:`~._loan_stream.loan_timeline`) holds the
+    loan's recorded facts and its forward plan in one walk, and
+    :func:`~._fold.fold_from_walk` prefix-sums its dated deltas -- each fact from
+    its settled day, each projection from its effective day (``max(due, as_of +
+    1d)``, ruling D1) -- and reads every requested date off the one running
+    total.  **A date before the origination owes ``0.00``**
+    (:func:`_owed_from_gated`): a loan owes nothing before it exists, and the
+    gate is a RULE rather than the empty prefix, because a payment can settle
+    before the loan opens -- an installment paid ahead of closing is a write
+    ruling R-C allows, and ruling R-EL bounds its settle day by the pay
+    schedule, not the origination -- and its principal is then visible before
+    the opening assertion is.  The retired forward fold applied this gate
+    (``_sample_from_steps``) to the dates it answered; **the retired past
+    branch applied none**, so on an ORIGINATED loan a date before the
+    origination with such a payment visible read that payment's principal as a
+    negative balance (the posted ledger, which books the entry at its settled
+    day, still does).  The one fold gates every date, which is the rule's own
+    statement and the one place the merge answers a date differently from
+    the two folds it replaced: disclosed at recurrence:R16-c-1, unreachable on
+    production (no live loan has a payment settled before its origination), and
+    the door that admits such a settle day is the structural fix.
 
-    * **A date at or before the resolver's NOW, for an ORIGINATED loan: the fold**
-      (:func:`app.services.balance_at._fold.fold_from_walk` over the read pass's memoized
-      walk) over the loan's source events -- the past that step B2 proves equal to
-      the sum-of-postings reader the seam read before the cutover.
-    * **A date after the NOW, OR any date for a loan not yet originated by it: the
-      forward PLAN fold** (:func:`~app.services.balance_at._plan_fold.fold_forward` over
-      the memoized :meth:`~app.services.balance_at.BalanceContext.loan_plan`)
-      -- the confirmed-present seed
-      (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`) folded
-      forward over the loan's projected payment records and contractual synthesis,
-      gated at ``owed_from`` (the loan owes ``0.00`` before it originates).  A
-      not-yet-originated loan has no confirmed past for the fold to own, so the plan
-      fold owns its whole timeline -- exactly the scalar's rule (its docstring's
-      third case).
+    **What this replaced was two folds meeting at the read day**: the settled
+    fold from ``0.00`` for a date at or before ``ctx.as_of``, and the plan fold
+    from that fold's balance (``projection_seed``) for a date after it, with a
+    set-subtraction keeping their charge calendars apart.  The two are one list
+    now, and the past half of it is byte-for-byte the posted ledger's own walk
+    (:func:`~app.services.loan_ledger.projection_boundary`).
 
     **Loan-only, and fails loud otherwise.**  A non-configured account (no
     :class:`~app.models.loan_params.LoanParams`) is the seam dispatch's
-    cash-degrade case, resolved before this is reached, so an account with no debt
-    schedule is a caller error here rather than a silent wrong answer.
+    cash-degrade case, resolved before this is reached, so an account the pass
+    cannot resolve is a caller error here rather than a silent wrong answer.
 
     Args:
         account: The amortizing loan account (the caller owns the ownership
             check).
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            -- its scenario scopes the fold and the resolver; its ``as_of`` is the
-            resolver's NOW and the past/future boundary (the SAME ``ctx.as_of`` the
-            scalar splits on, so the two cannot disagree about which dates are
-            projected).
+            -- its scenario scopes the walk and the plan; its ``as_of`` is the
+            plan's clamp floor and the projections' past/future boundary.
         dates: The calendar dates to value the loan at, in any order.  Duplicates
             collapse.
 
@@ -223,54 +230,10 @@ def positions(
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
-    require_scenario(ctx)
-    debt_schedule = _kernel.generate_debt_schedules(
-        [account], ctx,
-    ).get(account.id)
-    if debt_schedule is None:
-        raise ValueError(
-            f"positions() requires a configured loan; account {account.id} "
-            f"({account.name!r}) has no LoanParams. The seam's AMORTIZING "
-            f"dispatch degrades a non-loan account to the cash producer "
-            f"(the cash fold) before reaching here."
-        )
-    # A date is PAST (reads the fold) iff the loan has originated by the NOW and
-    # the date is at or before it; every other date -- future, or any date of a
-    # loan not yet originated -- reads the forward projection.  This is the
-    # scalar's ``as_of > ctx.as_of or owed_from > ctx.as_of`` predicate, negated.
-    originated = debt_schedule.owed_from <= ctx.as_of
-    past_dates: list[date] = []
-    forward_dates: list[date] = []
-    for on_date in dates:
-        if originated and on_date <= ctx.as_of:
-            past_dates.append(on_date)
-        else:
-            forward_dates.append(on_date)
-
-    result: dict[date, Decimal] = {}
-    if past_dates:
-        # Fold the pass's MEMOIZED walk (:meth:`BalanceContext.loan_walk`): the
-        # scalar, the per-period map, and the liability band all read this loan in
-        # one render, so walking it once and sampling here is what keeps the cutover
-        # from re-walking the loan per producer.
-        result.update(
-            fold_from_walk(ctx.loan_walk(account), past_dates),
-        )
-    if forward_dates:
-        # The future is a FOLD over the loan's forward PLAN (step C6b): its
-        # projected payment RECORDS at their live cash, then contractual synthesis
-        # beyond the record horizon (``memoized_plan``, so one plan serves
-        # every forward date), folded from the confirmed-present seed
-        # (``fold_forward``).  The plan carries the origination gate too -- a date
-        # before ``owed_from`` owes ``0.00``.  This replaces the resolver's
-        # schedule walk: an overdue installment with NO settled record no longer
-        # pays the loan down (finding B-9), and a projected payment folds its LIVE
-        # cash, not the stored amount the walk amortized.
-        result.update(fold_forward(
-            debt_schedule.projection_seed, debt_schedule.owed_from,
-            memoized_plan(account, ctx), forward_dates,
-        ))
-    return result
+    return _owed_from_gated(
+        fold_from_walk(loan_timeline(account, ctx), dates),
+        _owed_from(account, ctx, "positions"),
+    )
 
 
 def positions_period_map(
@@ -385,16 +348,16 @@ def loan_payoff_date(
     """Return *account*'s DERIVED payoff date -- the date its balance folds to zero.
 
     The payoff-date sibling of :func:`positions`: it composes the SAME confirmed
-    present seed (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`)
-    and the SAME memoized forward plan
-    (:meth:`~app.services.balance_at.BalanceContext.loan_plan`) and folds
-    them to zero (:func:`~app.services.balance_at._plan_fold.plan_payoff_date`), so the
+    timeline :func:`positions` folds
+    (:func:`~._loan_stream.loan_timeline`) and reads the first projected
+    outcome whose balance reaches zero
+    (:func:`~app.services.balance_at._plan_fold.timeline_payoff_date`), so the
     payoff is the date :func:`positions` shows the balance reaching ``0.00`` -- the
     chip, the equity chart, and the payoff cannot disagree about WHETHER the loan
     clears.  (They can differ on the DATE only in one rare edge: an overdue-but-
     projected installment that itself clears the loan folds at its past DUE date
     here but its future EFFECTIVE date in :func:`positions`; see
-    :func:`~app.services.balance_at._plan_fold.plan_payoff_date`.)  DERIVED, never
+    :func:`~app.services.balance_at._plan_fold.timeline_payoff_date`.)  DERIVED, never
     stored: it replaces the persisted-from-a-blind-walk copies
     (``LoanState.payoff_date``, ``RecurrenceRule.end_date``) the arc retires (plan
     step C8).
@@ -411,8 +374,8 @@ def loan_payoff_date(
     drift so severe it never clears within the extension folds to ``None``.  The
     drift is what C7's payment-drift warning surfaces.
 
-    ``None`` for a loan already retired (``projection_seed <= 0`` -- no forward
-    crossing), negative amortization, or an underpayment too severe to clear within
+    ``None`` for a loan already retired (owing nothing at ``ctx.as_of`` -- no
+    forward crossing), negative amortization, or an underpayment too severe to clear within
     the post-contractual extension.  The caller reads
     :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell the paid-off
     state (badge it) from the not-yet-cleared ones (recurrence stays indefinite).
@@ -440,10 +403,10 @@ def loan_payoff_date(
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
-    return plan_payoff_date(
-        _forward_seed(account, ctx, "loan_payoff_date"),
-        memoized_plan(account, ctx),
-        extra_monthly,
+    return timeline_payoff_date(
+        what_if_timeline(account, ctx, extra_monthly),
+        _owed_from(account, ctx, "loan_payoff_date"),
+        ctx.as_of,
     )
 
 
@@ -490,15 +453,16 @@ def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
 
 def loan_installments(
     account: Account, ctx: BalanceContext, extra_monthly: Decimal = ZERO_MONEY,
-) -> list[PlannedInstallment]:
+) -> list[PaymentOutcome]:
     """Return *account*'s forward trajectory, one split per planned payment.
 
     **The loan page's ONE forward walk since plan step R7d-g-3** (ruling
     **R-R88**): the band chart's projected line, the pay-off-sooner lever's
     preview and savings, this month's allocation bar and the amortization
-    table all read the seam's plan fold through this -- the SAME confirmed
-    present seed and the SAME memoized plan :func:`loan_payoff_date` and
-    :func:`positions` fold, so no loan surface can disagree with the balance
+    table all read the seam's timeline through this -- the SAME memoized
+    timeline :func:`loan_payoff_date` and :func:`positions` read, its
+    PROJECTED outcomes (:attr:`~app.services.loan_ledger.LoanLedgerWalk
+    .projected_splits`), so no loan surface can disagree with the balance
     hero or the payoff chip beside it.  Until that step they read
     ``loan_resolver.compute_payoff_scenarios``' committed slice, a second
     forward walk that priced the months no generated row covered from the
@@ -511,26 +475,28 @@ def loan_installments(
             -- its scenario scopes the resolution and plan, and its ``as_of``
             is the projection's now.
         extra_monthly: A HYPOTHETICAL extra per accrual period on top of the
-            plan, for the lever's what-if (:func:`~._plan_fold._split_plan`).
-            ``0.00`` -- the default -- is the plan as it stands.
+            plan, for the lever's what-if
+            (:func:`~._loan_stream.what_if_timeline`).  ``0.00`` -- the
+            default -- is the plan as it stands.
 
     Returns:
-        The :class:`~app.services.balance_at.PlannedInstallment` list in DUE
-        order, running to the plan's post-contractual extension (rows after
-        the payoff carry a zero balance and pay nothing down).  EMPTY for a
-        loan already retired (a seed at or below zero): its plan's payments
-        would fold to refunds against nothing owed, and no surface lists a
-        payment a paid-off loan will not make -- the same guard
-        :func:`~._plan_fold.plan_payoff_date` answers ``None`` under.
+        The timeline's projected :class:`~app.services.loan_ledger.PaymentOutcome`
+        list in walk order, running to the plan's post-contractual extension
+        (rows after the payoff carry a zero balance and pay nothing down).  EMPTY for a
+        loan already retired (owing nothing at ``ctx.as_of``): its plan's
+        payments would fold to refunds against nothing owed, and no surface
+        lists a payment a paid-off loan will not make -- the same guard
+        :func:`~._plan_fold.timeline_payoff_date` answers ``None`` under.
 
     Raises:
         BaselineMissingError: When ``scenario`` is None (ruling R-BW).
         ValueError: When *account* is not a configured loan.
     """
-    seed = _forward_seed(account, ctx, "loan_installments")
-    if seed <= ZERO_MONEY:
+    owed_from = _owed_from(account, ctx, "loan_installments")
+    walk = what_if_timeline(account, ctx, extra_monthly)
+    if is_retired(walk, owed_from, ctx.as_of):
         return []
-    return _split_plan(seed, memoized_plan(account, ctx), extra_monthly)
+    return walk.projected_splits
 
 
 def loan_what_if_owed_at_dates(
@@ -540,12 +506,13 @@ def loan_what_if_owed_at_dates(
     """Return *account*'s FORWARD balance per date under a what-if extra.
 
     The pay-off-sooner lever's preview line (plan step R7d-g-3): the same
-    forward fold :func:`positions` runs for every date after the pass's
-    now (:func:`~._plan_fold.fold_forward` over the confirmed-present seed
-    and the memoized plan), with *extra_monthly* added once per accrual
-    period.  With ``0.00`` it is :func:`positions`' own answer on those
-    dates, which is what makes the preview and the projected line one
-    walk apart by exactly the extra and nothing else.
+    fold :func:`positions` runs (:func:`~._fold.fold_from_walk` over the
+    pass's timeline), replayed with *extra_monthly* added once per accrual
+    period behind the projection boundary
+    (:func:`~._loan_stream.what_if_timeline`).  With ``0.00`` it is
+    :func:`positions`' own answer on those dates, which is what makes the
+    preview and the projected line one walk apart by exactly the extra and
+    nothing else.
 
     Args:
         account: The amortizing loan account (the caller owns the ownership
@@ -569,12 +536,9 @@ def loan_what_if_owed_at_dates(
             f"{past[0]} is not after the pass's as-of {ctx.as_of}. A past "
             f"balance is the ledger's -- ask positions()."
         )
-    debt_schedule = _forward_schedule(
-        account, ctx, "loan_what_if_owed_at_dates",
-    )
-    return fold_forward(
-        debt_schedule.projection_seed, debt_schedule.owed_from,
-        memoized_plan(account, ctx), dates, extra_monthly,
+    return _owed_from_gated(
+        fold_from_walk(what_if_timeline(account, ctx, extra_monthly), dates),
+        _owed_from(account, ctx, "loan_what_if_owed_at_dates"),
     )
 
 
@@ -584,9 +548,9 @@ def loan_required_extra(
     """Return the extra PER MONTH *account* needs to be clear by *target_date*.
 
     The target-date calculator's answer (plan step C8f), composed from the SAME
-    confirmed-present seed and the SAME memoized forward plan
-    :func:`loan_payoff_date` folds -- so "when does my plan pay this off" and
-    "what would it take to finish by X" are two questions asked of ONE model.
+    memoized timeline :func:`loan_payoff_date` reads -- so "when does my plan
+    pay this off" and "what would it take to finish by X" are two questions
+    asked of ONE model.
 
     It replaced ``loan_resolver.target_date_outlook``, which binary-searched the
     resolver's contractual schedule walk.  That walk amortizes an installment per
@@ -608,15 +572,16 @@ def loan_required_extra(
         ``None``
         when the target is unreachable -- no planned payment lands by then (a past
         target, or one before the next installment), or the search exhausted its
-        bound (see :func:`~app.services.balance_at._plan_fold.plan_required_extra`).
+        bound (see :func:`~app.services.balance_at._plan_fold.required_extra`).
 
     Raises:
         ValueError: When ``scenario`` is None, or when *account* is not a
             configured loan (the seam degrades a non-loan to the cash producer
             before reaching here).
     """
-    return plan_required_extra(
-        _forward_seed(account, ctx, "loan_required_extra"),
-        memoized_plan(account, ctx),
-        target_date,
+    return required_extra(
+        loan_timeline(account, ctx),
+        _owed_from(account, ctx, "loan_required_extra"),
+        ctx.as_of, target_date,
+        lambda extra: what_if_timeline(account, ctx, extra),
     )

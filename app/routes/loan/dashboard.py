@@ -154,8 +154,8 @@ def _next_period_payments(installments):
     periods = planned_periods(installments)
     for period in periods:
         if any(
-            installment.split.interest > Decimal("0.00")
-            or installment.split.escrow > Decimal("0.00")
+            installment.interest > Decimal("0.00")
+            or installment.escrow > Decimal("0.00")
             for installment in period
         ):
             return period
@@ -203,15 +203,15 @@ def _compute_payment_breakdown(installments, escrow_components):
         return None
     cash = sum((installment.cash for installment in period), Decimal("0.00"))
     principal = sum(
-        (installment.split.principal for installment in period),
+        (installment.principal for installment in period),
         Decimal("0.00"),
     )
     interest = sum(
-        (installment.split.interest for installment in period),
+        (installment.interest for installment in period),
         Decimal("0.00"),
     )
     escrow_portion = sum(
-        (installment.split.escrow for installment in period), Decimal("0.00"),
+        (installment.escrow for installment in period), Decimal("0.00"),
     )
 
     if principal < Decimal("0.00"):
@@ -249,7 +249,7 @@ def _compute_payment_breakdown(installments, escrow_components):
         "escrow_pct": truncated["escrow"],
         # The period's own installment date: the charge's, or the payment's
         # for one before the plan's first charge.
-        "payment_date": period[0].charge_date or period[0].effective_date,
+        "payment_date": period[0].charge_date or period[0].visible_on,
         "shortfall": shortfall,
         "next_year_escrow": next_year_escrow,
     }

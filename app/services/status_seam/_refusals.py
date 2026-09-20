@@ -4,18 +4,21 @@ Shekel Budget App -- Status Seam: the refusals
 The invariants of a settlement stated as GUARDS, so every caller of the seam
 inherits them rather than each door remembering one.  They are gathered here
 because they are one subject -- what a row may and may not assert about its own
-money -- and because :func:`._seam.apply_status_change` runs all six ahead of
+money -- and because :func:`._seam.apply_status_change` runs all five ahead of
 any mutation, so a refused call leaves the row untouched.
 
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Three of the six are this project's answer to a rule that cannot be a CHECK
+Four of the five are this project's answer to a rule that cannot be a CHECK
 constraint, and each says so in its own docstring: the settled-status
 questions need ``ref.statuses.is_settled``, which a constraint on
 ``budget.transactions`` cannot see, and the ref convention keeps status ids out
 of a schema; the stated-figure-over-purchases question is a count over
-another table (:func:`reject_stated_figure_over_purchases`).
+another table (:func:`reject_stated_figure_over_purchases`).  (A sixth,
+``reject_settle_day_without_a_record``, was the one that MIRRORED a CHECK --
+``ck_transactions_settle_day_needs_a_record`` said in words -- and went with
+that CHECK and the row's figure columns at plan step ``balance:X-bi-4b-2``.)
 
 Pure: reads columns and the settled-status predicate, raises or returns.  No
 session, no mutation, no Flask.
@@ -183,56 +186,6 @@ def reject_settlement_without_settled_status(
         "not a settled status.  A row records what moved only while it is "
         "settled (Paid or Received); mark it settled to record a "
         "figure, or leave it projected, which records nothing."
-    )
-
-
-def reject_settle_day_without_a_record(
-    row: Transaction,
-    settle_day: Optional[SettleDay],
-    settlement: Optional[Settlement],
-) -> None:
-    """Refuse a settle DAY on a row that neither records nor is recording one.
-
-    **``ck_transactions_settle_day_needs_a_record`` said in words**, at the one
-    door that writes both columns.  The constraint is the surviving half of a
-    repealed biconditional: a row asserting the day its money moved must record
-    WHAT moved, while the reverse -- a record with no day -- is the legal
-    RETAINED state a revert leaves.
-
-    **It exists because the constraint was the only thing saying it, and a
-    CHECK cannot hold a conversation.**  The full-edit popover offers the
-    settle-day box to an UNDATED settled row deliberately -- that row most needs
-    to state the real day (finding **N-181**) -- but a row predating the
-    settlement record carries no record either, so stating the day alone
-    violated the CHECK and surfaced as an ``IntegrityError`` rendered "invalid
-    reference": a message naming nothing the user could act on, for a save no
-    re-typing would fix.  The repair is to state BOTH halves, which the Actual
-    box beside the day box makes expressible, and this message says so.
-
-    Three ways past it, and they are the three legal shapes: no day is being
-    asserted; a record arrives in the same call (every settle); or the row
-    already carries one (every ordinary day correction).
-
-    Args:
-        row: The row being written.
-        settle_day: The day this call asserts and how it is known
-            (:class:`app.services.settle_day.SettleDay`), or ``None``.
-        settlement: The record this call writes, or ``None``.
-
-    Raises:
-        ValidationError: When a day is asserted for a row that records nothing
-            and is being given nothing to record.  A 400: it is reachable from
-            the correction box on a legacy row, and the message is the repair.
-    """
-    if settle_day is None or settlement is not None:
-        return
-    if row.settled_basis_id is not None:
-        return
-    raise ValidationError(
-        f"Transaction {row.id} records nothing that moved, so it cannot state "
-        "the day the money moved: the two are one assertion. Enter what the "
-        "bank actually took in the Actual box as well as the day, and both are "
-        "recorded together."
     )
 
 

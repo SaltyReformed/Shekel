@@ -175,8 +175,6 @@ def _build_shadow(
         name=name,
         category_id=xfer.category_id,
         transaction_type_id=transaction_type_id,
-        settled_amount=None,
-        settled_basis_id=None,
         # The settle DAY and its basis are the ASSERTION, and a shadow is
         # born asserting nothing: a born-SETTLED transfer's day is written
         # by ``apply_settle_day_to_pair`` below, through the seam, so this
@@ -364,7 +362,8 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # Projected rows only.  So this refusal describes a state no writer in
     # ``app/`` constructs -- and it is stated rather than assumed away, because
     # the alternative to a figure is a settlement RECORD of ``None`` on both
-    # legs, which ``row_valuation.settled_figure`` then refuses to value.
+    # legs, which every reader then values as a close of nothing (ruling
+    # **R-BAL82**): a transfer of ``$0.00`` published as a fact.
     #
     # **Hoisted AHEAD of the first write**, with every other refusal: a first
     # revision raised it after ``db.session.add`` and two flushes, in a function
@@ -459,14 +458,13 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     if created_status is not None and created_status.is_settled:
         # The shadows are BORN in the settled status, so the seam sees an
         # identity transition and cannot demand a record of what moved -- but a
-        # settled row that records nothing is one
-        # ``row_valuation.settled_figure`` refuses to value.  So the create
-        # supplies one: the figure
-        # is the transfer's own amount, which is what a born-settled transfer
-        # says moved, and its source is ``resolved`` -- the app priced it from
-        # the row rather than anyone stating what the bank took -- which is
-        # what makes the record's basis ``derived`` (plan step X-au-c3; the
-        # source is the stated field since X-bi-3e-1).
+        # settled row with no covering movement is the ``$0.00`` record
+        # (ruling **R-BAL82**), a transfer that moved nothing.  So the create
+        # supplies one: the figure is the transfer's own amount, which is
+        # what a born-settled transfer says moved, and its source is
+        # ``resolved`` -- the app priced it from the row rather than anyone
+        # stating what the bank took (the source is the stated field since
+        # X-bi-3e-1).
         apply_settle_day_to_pair(
             expense_shadow, income_shadow, spec.settle_day,
             settlement=status_seam.Settlement(

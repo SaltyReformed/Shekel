@@ -71,7 +71,6 @@ from app.enums import (
     MovementFigureSourceEnum,
     PostingKindEnum,
     SettledDayBasisEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -218,10 +217,9 @@ class TestASettleWritesTheMovementItRecords:
             assert movement.account_id == txn.account_id
             assert movement.user_id == txn.user_id
             assert movement.is_credit is False
-            # The row's own record still stands through the interval.
-            assert txn.settled_amount == Decimal("148.32")
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.DERIVED,
+            # The movement IS the row's record (plan step X-bi-4b-2).
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("148.32"), MovementFigureSourceEnum.RESOLVED,
             )
 
     def test_a_typed_correction_is_a_typed_movement(
@@ -382,11 +380,7 @@ class TestARevertUnDatesAndAReSettleReDates:
             assert survivor.settled_on is None
             assert survivor.amount == Decimal("150.00")
             assert survivor.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
-            assert txn.settled_amount == Decimal("150.00")
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
-            )
-            # The retained read takes the source off the survivor, not the mapping.
+            # The retained read takes the figure and the source off the survivor.
             retained = status_seam.recorded_settlement(txn)
             assert retained.amount == Decimal("150.00")
             assert retained.source is MovementFigureSourceEnum.TYPED
@@ -470,7 +464,7 @@ class TestARevertUnDatesAndAReSettleReDates:
             movement = _only_movement(txn)
             assert movement.id == first_id
             assert movement.amount == Decimal("160.00")
-            assert txn.settled_amount == Decimal("160.00")
+            assert row_valuation.settled_figure(txn) == Decimal("160.00")
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.RESOLVED,
             )
@@ -537,8 +531,8 @@ class TestARevertUnDatesAndAReSettleReDates:
             _settle(envelope)
             db.session.flush()
 
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
+            assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+                None, None,
             )
             assert sum(e.amount for e in envelope.entries) == Decimal("60.00")
             assert envelope.covering_movements == []
@@ -595,6 +589,91 @@ class TestTheBareSeamUnDatesAndKeeps:
             assert survivor.figure_source_id == _source(MovementFigureSourceEnum.TYPED)
 
 
+class TestARecordThatMovesMarksItsRow:
+    """``_record_moved``: the row's counter follows its record, and only a change.
+
+    Plan step ``balance:X-bi-4b-2``.  The settled figure lives on the
+    covering movement alone, so a figure correction writes this table and
+    nothing of the row; the row's optimistic-lock counter is what a stale
+    popover is caught by (``version_id``), and through ``X-bi-4b-1`` the
+    seam's write of the row's own figure columns moved it for free.  The
+    covering writer now marks the ROW modified whenever its record nets a
+    change -- and not otherwise, because a mark that moved for an identical
+    re-record would turn every second tab into a spurious 409.  Graded at
+    the seam, on the session's own dirty state, with the SECOND identical
+    write as its own case: a producer right the first time can be wrong on
+    the repeat.  The route-tier controls are the two
+    ``test_a_stale_tab_cannot_overwrite_a_figure_correction`` cases
+    (``test_full_edit_settle_door``, ``test_transfers``).
+    """
+
+    @staticmethod
+    def _re_record(txn, amount):
+        """Hand the seam an identity re-settle stating *amount* as typed."""
+        status_seam.apply_status_change(
+            txn, txn.status_id,
+            settlement=status_seam.Settlement(
+                Decimal(amount), MovementFigureSourceEnum.TYPED,
+            ),
+        )
+
+    def test_a_re_record_that_changes_the_figure_marks_the_row(
+        self, app, seed_user, seed_periods,
+    ):
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            version = txn.version_id
+            assert not db.session.is_modified(txn)
+
+            self._re_record(txn, "150.00")
+
+            assert db.session.is_modified(txn), (
+                "the record moved and the row stayed clean"
+            )
+            db.session.flush()
+            assert txn.version_id == version + 1
+            assert row_valuation.settled_figure(txn) == Decimal("150.00")
+
+    def test_an_identical_second_re_record_marks_nothing(
+        self, app, seed_user, seed_periods,
+    ):
+        """The second time: the same figure and source again nets no change."""
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            self._re_record(txn, "150.00")
+            db.session.flush()
+            version = txn.version_id
+            assert not db.session.is_modified(txn)
+
+            self._re_record(txn, "150.00")
+
+            assert not db.session.is_modified(txn), (
+                "an identical re-record marked the row"
+            )
+            db.session.flush()
+            assert txn.version_id == version
+
+    def test_a_withdrawal_marks_the_row(self, app, seed_user, seed_periods):
+        """A typed ``$0.00`` over a covered bill deletes the movement: a change."""
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            version = txn.version_id
+            assert not db.session.is_modified(txn)
+
+            self._re_record(txn, "0.00")
+
+            assert db.session.is_modified(txn)
+            db.session.flush()
+            assert txn.version_id == version + 1
+            assert txn.covering_movements == []
+
+
 class TestAZeroSettlementWritesNoMovement:
     """Zero movements is a legal count; a movement of nothing is not one."""
 
@@ -613,7 +692,7 @@ class TestAZeroSettlementWritesNoMovement:
             _settle(txn)
             db.session.flush()
             assert txn.status.is_settled
-            assert txn.settled_amount == Decimal("0.00")
+            assert row_valuation.settled_figure(txn) == Decimal("0.00")
             assert txn.covering_movements == []
 
     def test_a_typed_zero_over_a_covered_bill_withdraws_the_movement(
@@ -736,9 +815,6 @@ class TestTheSourceFollowsWhoStatedTheFigure:
             assert movement.amount == Decimal("148.40")
             assert movement.figure_source_id == _source(
                 MovementFigureSourceEnum.OBSERVED,
-            )
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.CORRECTED,
             )
             assert status_seam.recorded_settlement(txn).source is (
                 MovementFigureSourceEnum.OBSERVED
@@ -1689,8 +1765,8 @@ class TestAKeptMovementIsNotAPurchase:
                 target, planted_basis(envelope, target),
             ) == Decimal("200.00"), "the whole `$100.00` rolled"
             assert envelope.status.is_settled
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
+            assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+                None, None,
             )
             assert envelope.covering_movements == []
             assert db.session.get(TransactionEntry, survivor.id) is None
@@ -1755,8 +1831,8 @@ class TestAKeptMovementIsNotAPurchase:
             _settle(envelope)
             db.session.flush()
 
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
+            assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+                None, None,
             )
             # The purchase carries the `$30.00`; the row, closed from its
             # purchases, has no covering movement and is worth nothing of its
@@ -1930,8 +2006,8 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
                 )
             db.session.flush()
 
-            assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
+            assert status_seam.recorded_settlement(envelope) == status_seam.Settlement(
+                None, None,
             )
             assert envelope.covering_movements == []
             kept = db.session.get(TransactionEntry, purchase.id)
@@ -1993,7 +2069,7 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             retained = status_seam.recorded_settlement(txn)
             assert retained.amount == Decimal("150.00")
             assert retained.source is MovementFigureSourceEnum.TYPED
-            assert retained.basis is SettlementBasisEnum.CORRECTED
+            assert retained.stated
 
     def test_a_typed_zero_record_is_a_close_of_nothing_and_retains_nothing(
         self, app, seed_user, seed_periods,
@@ -2047,9 +2123,8 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             assert txn.covering_movements == []
             assert row_valuation.settled_figure(txn) == Decimal("0")
             retained = status_seam.recorded_settlement(txn)
-            assert retained.amount is None
-            assert retained.source is None
-            assert retained.basis is SettlementBasisEnum.PURCHASES
+            assert retained == status_seam.Settlement(None, None)
+            assert not retained.stated
 
     def test_a_purchases_record_reads_no_source(
         self, app, seed_user, seed_periods,
@@ -2066,9 +2141,8 @@ class TestTheRetainedReadTakesTheSourceOffTheMovement:
             _settle(envelope)
             db.session.flush()
             retained = status_seam.recorded_settlement(envelope)
-            assert retained.amount is None
-            assert retained.source is None
-            assert retained.basis is SettlementBasisEnum.PURCHASES
+            assert retained == status_seam.Settlement(None, None)
+            assert not retained.stated
 
     def test_both_legs_of_a_corrected_transfer_read_typed_off_their_movements(
         self, app, seed_user, seed_periods,

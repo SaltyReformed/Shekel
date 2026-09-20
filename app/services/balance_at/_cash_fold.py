@@ -24,8 +24,8 @@ branch.**  Every date is answered off a single running total
   cannot drift).
 * the **PLANNED** steps -- the still-Projected rows, each landing at
   ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot have
-  already happened").  The cash twin of
-  :func:`app.services.balance_at._plan_fold.fold_forward`.  See :func:`_cash_plan`
+  already happened").  The cash twin of the loan timeline's projections
+  (:mod:`app.services.balance_at._loan_stream`).  See :func:`_cash_plan`
   and :func:`_planned_day_nets`.
 
 **Three readers of that ONE row set** (plan steps X-c1 / X-c2b2, ruling R-K).
@@ -362,14 +362,14 @@ def assembled_fold(
             calendar does not hold -- see
             :meth:`~app.services.pay_calendar.PayCalendar.require_period`.
     """
-    # Pylint: ``protected-access`` -- the ONE crossing of this boundary in the
-    # package, and the design rather than a shortcut: this module owns the
-    # cash-fold derivation and the context owns per-pass storage, which is what
-    # plan step D-ctx-b's "the seam owns the derivation, the context owns the
-    # storage" already says for the three PUBLIC caches beside it.  THIS one is
-    # private because it holds a balance-at-T (see above), and Python has no
-    # package-private -- so the alternatives are a public cache no gate can see
-    # or eight disables at the reading call sites.  One, here, named.
+    # Pylint: ``protected-access`` -- one of TWO crossings of this boundary in
+    # the package (the other: ``_loan_stream.loan_timeline``, its loan twin
+    # since recurrence:R16-c-1), and the design rather than a shortcut: this
+    # module owns the cash-fold derivation and the context owns per-pass
+    # storage (plan step D-ctx-b's rule for the three PUBLIC caches beside it).
+    # THIS one is private because it holds a balance-at-T (see above), and
+    # Python has no package-private -- so the alternatives are a public cache
+    # no gate can see or eight disables at the reading call sites.
     cache = ctx._cash_folds  # pylint: disable=protected-access
     return _memoize_once(
         ctx, cache, account,

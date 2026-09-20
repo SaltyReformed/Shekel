@@ -28,7 +28,6 @@ from app.enums import (
     AmountSourceEnum,
     BusinessDayShiftEnum,
     RecurrenceUnitEnum,
-    SettlementBasisEnum,
     TxnTypeEnum,
 )
 from app.services import (
@@ -83,7 +82,7 @@ from tests._test_helpers import (
     rebuild_calendar_from_spans,
     resolved_amount,
     rhythm_of,
-    settlement_basis_id,
+    cover_bare_settled_row,
     settlement_if_settling,
     state_template_price,
 )
@@ -490,8 +489,9 @@ class TestRecurrenceGeneration:
             # recorded the row's own plan on the ``derived`` basis, and the
             # regenerate touched neither.
             db.session.refresh(created[0])
-            assert created[0].settled_amount == Decimal("100.00")
-            assert created[0].settled_basis_id is not None
+            assert status_seam.recorded_settlement(created[0]).amount == (
+                Decimal("100.00")
+            )
 
 
 # --- Pure Pattern Matching Tests ---------------------------------------------
@@ -2918,11 +2918,14 @@ class TestRegenerateForTemplate:
             # back to Projected in order to edit it.  Retiring it now would
             # delete that figure, which is what retention exists to keep.
             #
-            # The columns satisfy ``ck_transactions_settle_day_needs_a_record``: a
-            # record without a day is precisely what that implication admits.
+            # The record is the covering movement, kept un-dated across a
+            # revert (plan step X-bi-3e-2; the row's one home for it since
+            # X-bi-4b-2): the seam's own writer lays it, and the row's day
+            # pair stays released.
             record_settle_day(priced, None)
-            priced.settled_amount = Decimal("41.10")
-            priced.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
+            cover_bare_settled_row(
+                db.session, priced, Decimal("41.10"), submitted=Decimal("41.10"),
+            )
             db.session.flush()
 
             template.recurrence_rule = None
@@ -5753,7 +5756,6 @@ class TestARowRecordsItsOccurrence:
             assert victim.is_deleted is False
             assert victim.status.is_immutable is False
             assert victim.notes is None
-            assert victim.settled_basis_id is None
             assert victim.entries == []
 
             with pytest.raises(RecurrenceConflict) as conflict:

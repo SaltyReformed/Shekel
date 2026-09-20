@@ -276,10 +276,12 @@ class TransactionEntry(
         # BICONDITIONAL where the settled FIGURE's is a bare implication.
         #
         # **This table needs it for the same reason and gets it in the same
-        # step, which the figure's basis did not.**  ``settled_basis_id`` lives
-        # only on ``budget.transactions`` because a purchase stores no figure of
-        # its own -- it IS the figure its parent's close is made of.  A purchase
-        # does carry its own DAY, and all three kinds are written to it: the
+        # step, which the figure's provenance did not.**  Who wrote a FIGURE
+        # lives on this table alone (``figure_source_id`` below; the parent
+        # row's own ``settled_basis_id`` went at plan step
+        # ``balance:X-bi-4b-2``), because a movement IS the figure its
+        # parent's close is made of.  A purchase does carry its own DAY, and
+        # all three kinds are written to it: the
         # bank's day by ``statement_match``, a balance assertion's upper bound
         # by ``reconcile_service._purchases``, and the owner's own by
         # ``entry_service.update_entry``.

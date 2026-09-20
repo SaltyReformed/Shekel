@@ -92,6 +92,7 @@ from app.models.user import User
 from app.services import cash_ledger
 from app.services.balance_at import BalanceContext, balance_at
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.services.row_valuation import settled_figure
 
 _ZERO_MONEY = Decimal("0.00")
 _CENT = Decimal("0.01")
@@ -782,7 +783,9 @@ def _settled_rows(account_ids):
         parent transfer.
     """
     return db.session.execute(db.text("""
-        select t.id, t.account_id, t.settled_on, t.settled_amount,
+        select t.id, t.account_id, t.settled_on,
+               coalesce((select sum(e.amount) from budget.transaction_entries e
+                         where e.transaction_id = t.id), 0) as settled_amount,
                t.transfer_id
         from budget.transactions t
         join ref.statuses st on st.id = t.status_id
@@ -1323,8 +1326,8 @@ def _record(
 
     db.session.expire_all()
     txn = db.session.get(Transaction, txn_id)
-    assert (txn.settled_on, txn.settled_amount) == (day, amount), \
-        (f"transaction {txn_id} records {txn.settled_amount} on "
+    assert (txn.settled_on, settled_figure(txn)) == (day, amount), \
+        (f"transaction {txn_id} records {settled_figure(txn)} on "
          f"{txn.settled_on}, not {amount} on {day}")
     return txn_id
 

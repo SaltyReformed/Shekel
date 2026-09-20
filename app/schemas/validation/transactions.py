@@ -275,14 +275,16 @@ class MarkDoneSchema(BaseSchema):
     declaration answers it.  Marshmallow's Decimal field rejects
     malformed numeric input with a clean field-level 400 instead of
     the route's catch-and-translate 400, and
-    ``_NON_NEGATIVE_MONETARY`` is the schema-tier counterpart to the
-    DB CHECK ``settled_amount IS NULL OR settled_amount >= 0`` on
-    ``budget.transactions.settled_amount`` (the column was
-    ``actual_amount`` until plan step X-au-c3 renamed it and paired it
-    with ``settled_basis_id``).
+    ``_NON_NEGATIVE_MONETARY`` is the schema-tier counterpart to
+    ``status_seam.Settlement``'s refusal of a negative figure (the DB
+    CHECK ``ck_transactions_settled_amount`` on the row's own
+    ``settled_amount`` said the same through plan step
+    ``balance:X-bi-4b-1``; that column, ``actual_amount`` until X-au-c3,
+    went at X-bi-4b-2 and the record is the covering movement).
 
     **Its UPPER bound is what plan step X-f2-c3 added, and the lower
-    half alone was a 500.**  The column is ``numeric(12, 2)``, so a
+    half alone was a 500.**  The record's figure
+    (``budget.transaction_entries.amount``) is ``numeric(12, 2)``, so a
     figure at or above ``10 ** 10`` cannot be stored: it passed the
     ``>= 0`` validator, reached the settle verb and raised
     ``psycopg2.errors.NumericValueOutOfRange`` at flush -- unhandled,
@@ -296,9 +298,9 @@ class MarkDoneSchema(BaseSchema):
     no upper bound, which is ledger finding **N-256** rather than this
     step's to sweep.
 
-    ``allow_none=True`` matches the column's nullability, and an HTML
-    form submits every input including the empty ones, so an empty box
-    loads as ``None`` and means "nobody typed a figure".
+    ``allow_none=True`` because an HTML form submits every input
+    including the empty ones, so an empty box loads as ``None`` and
+    means "nobody typed a figure".
 
     **What ``None`` MEANS changed at plan step X-au-c3**, and this
     paragraph said the opposite until an adversarial review caught it

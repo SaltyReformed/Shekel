@@ -205,7 +205,7 @@ def estimated_from_definitions(
     (``_plan._extension_dates``) and the same span past the read, so a
     matured loan still owing is walked past today.  A definition still
     firing past the window belongs to a loan the plan cannot retire, which
-    :func:`._plan_fold.plan_payoff_date` reports as ``None``.  An occurrence
+    :func:`._plan_fold.timeline_payoff_date` reports as ``None``.  An occurrence
     the loan's latest assertion subsumes (due at or before it) is priced
     here and dropped by the caller, on the one predicate its planned rows
     are dropped on (ruling **R-R72**).

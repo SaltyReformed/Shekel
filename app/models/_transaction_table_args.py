@@ -161,89 +161,23 @@ transaction_table_args = (
         "estimated_amount >= 0",
         name="ck_transactions_estimated_amount",
     ),
-    db.CheckConstraint(
-        "settled_amount IS NULL OR settled_amount >= 0",
-        name="ck_transactions_settled_amount",
-    ),
-    # A FIGURE CARRIES ITS PROVENANCE (plan step **X-au-c3**): a stored
-    # ``settled_amount`` always says HOW it is known.  The converse is
-    # deliberately NOT asserted here, and the gap is exactly one basis:
-    # ``purchases`` stores no figure, because the row's own entries state it
-    # and a stored copy would need a reconciler
-    # (:class:`app.enums.SettlementBasisEnum`).  Saying "``purchases`` if and
-    # only if ``settled_amount IS NULL``" needs the constraint to name a ref
-    # id, which is the one thing the project's ref convention forbids putting
-    # in a schema -- so that half is a write-door rule with its own negative
-    # control (``tests/test_models/test_settlement_record.py``) rather than a
-    # constraint, and saying which is which is the point: a safety that is
-    # not a predicate is not a safety.
-    db.CheckConstraint(
-        "settled_amount IS NULL OR settled_basis_id IS NOT NULL",
-        name="ck_transactions_settled_amount_needs_basis",
-    ),
-    # AN ASSERTION NAMES WHAT IT ASSERTS (plan step **X-au-c3**): a row
-    # carrying the day its money moved always records WHAT moved.  It is the
-    # half of the settlement pairing a CHECK can state, and it is stated
-    # here because the two tiers that answer "what did this row settle at"
-    # disagree without it -- :func:`app.services.row_valuation.settled_figure`
-    # RAISES for a settled row recording nothing, while
-    # ``posting_reads.settled_figure_clause`` answers ``0`` for the same row
-    # through its entry sum's ``COALESCE``, and the SQL side is what writes
-    # the ledger.  A disagreement between a refusal and a zero is money
-    # leaving a balance in silence; a constraint is what makes the row
-    # neither tier can see.
-    #
-    # **It was named ``ck_transactions_settle_day_needs_basis`` until plan
-    # step X-az** (developer approval 2026-08-22), and the rename is a
-    # correction rather than tidying: this constraint is about the FIGURE's
-    # basis, and beside X-az's ``ck_transactions_settle_day_basis_pairing``
-    # the old name read as though it were about the DAY's.  Two live
-    # comments already read it that way.  The name it has now is what its
-    # predicate says, and it is the name of the service-tier refusal that
-    # mirrors it -- ``reject_settle_day_without_a_record``.
-    #
-    # **It is an IMPLICATION, and a first version of this step made it a
-    # BICONDITIONAL** (``ck_transactions_settlement_recorded``,
-    # ``(settled_on IS NULL) = (settled_basis_id IS NULL)``).  The ``<-``
-    # direction is what was wrong, and the way it was wrong is worth
-    # keeping: it welded two facts with different lifetimes into one record.
-    # ``settled_on`` and ``reconciled_by_id`` are the ASSERTION that this
-    # money moved on a named day and a named statement showed it -- a revert
-    # withdraws that.  ``settled_amount`` and ``settled_basis_id`` are WHAT
-    # MOVED, which is a fact about the row.  Because that direction made them
-    # share a lifetime, releasing the assertion had to destroy the figure --
-    # so following the full-edit popover's own instruction ("set Status to
-    # Projected to edit the amounts") silently deleted a number the user had
-    # read off their bank statement.  That is finding **N-241**'s shape --
-    # one thing answering two questions -- rebuilt one level up, in a step
-    # whose whole purpose was to remove it.  Every reconciliation system this
-    # was checked against separates them: an amount belongs to the
-    # transaction and cleared-ness is metadata over it, so un-clearing never
-    # touches the amount (developer, 2026-08-17).
-    #
-    # The ``->`` direction below survives that argument untouched: a
-    # RETAINED record is ``settled_on IS NULL`` with a basis, which this
-    # admits.  What keeps such a figure out of a balance is still the
-    # STATUS, asked by ``row_valuation.settled_figure``, and not this.
-    db.CheckConstraint(
-        "settled_on IS NULL OR settled_basis_id IS NOT NULL",
-        name="ck_transactions_settle_day_needs_a_record",
-    ),
     # A SETTLE DAY SAYS HOW IT IS KNOWN (plan step **X-az**, finding
     # **N-332**): a row carrying the day its money moved always records
     # which KIND of day it is -- a day the bank showed, a day a balance was
     # asserted for, or the owner's own entry
     # (:class:`app.enums.SettledDayBasisEnum`).
     #
-    # **It is a BICONDITIONAL where the figure's pairing above is an
-    # IMPLICATION, and the asymmetry is the point** (developer,
-    # 2026-08-22).  ``settled_amount`` outlives the assertion that recorded
-    # it -- a revert releases the day and KEEPS what moved -- so a figure
-    # with no day is the legal RETAINED state and the ``<-`` direction had
-    # to go.  The day and ITS basis have no such split lifetime: the basis
-    # describes the day, so the two are born and released together, and
-    # forbidding a basis left behind with no day costs nothing and removes
-    # the only residue a revert could leave.  ``settled_day_basis_id`` is
+    # **It is a BICONDITIONAL, and the asymmetry with the record was the
+    # point** (developer, 2026-08-22): what moved outlives the assertion
+    # that recorded it -- a revert releases the day and KEEPS the covering
+    # movement, un-dated (plan step X-bi-3e-2) -- so the record's pairing
+    # was an IMPLICATION while the row still carried the figure columns
+    # (``ck_transactions_settle_day_needs_a_record``, deleted with them at
+    # plan step ``balance:X-bi-4b-2``, migration ``45f10b870c8b``).  The
+    # day and ITS basis have no such split lifetime: the basis describes
+    # the day, so the two are born and released together, and forbidding a
+    # basis left behind with no day costs nothing and removes the only
+    # residue a revert could leave.  ``settled_day_basis_id`` is
     # written only through
     # :func:`app.services.settle_day.record_settle_day`, which assigns or
     # clears both columns in one statement; this is the storage tier that

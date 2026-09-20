@@ -65,7 +65,6 @@ from tests._test_helpers import (
     make_investment_account,
     read_pass,
     settle_day_columns,
-    settlement_columns,
 )
 
 #: The transfer every DB case below moves: checking -> savings.
@@ -522,19 +521,27 @@ class TestTheContributionFeedsReadTheParent:
 
 
 def _settle_shadow_around_the_service(shadow, day, amount):
-    """Write a whole settlement record and a settled status onto ONE shadow.
+    """Write a settle day and a settled status onto ONE shadow.
 
     A STATUS DRIFT: the parent and the sibling stay Projected.  Transfer
     Invariants 3 and 4 forbid it and no door writes it (every status change
     goes through ``apply_status_to_all_three``); it is written here directly
     because the class has occurred (``transfer_service._restore`` carries a
     corrector for it) and the fold's answer under it is what the controls
-    below pin.  The whole record, not the status alone: three CHECKs weld the
-    settle day to its settlement record.
+    below pin.  The day pair, not the status alone: its CHECK welds the day
+    to its basis.  The RECORD is the covering movement, which each caller
+    lays through ``cover_bare_settled_row`` after the flush, or leaves off
+    to stage a ``$0.00`` close.
+
+    Args:
+        shadow: The leg to drift.
+        day: Its settle day.
+        amount: Unused since plan step ``balance:X-bi-4b-2`` deleted the
+            row's own figure columns; kept so every caller still names what
+            the leg settled at beside the cover it writes.
     """
-    for column, value in {
-        **settle_day_columns(day), **settlement_columns(day, amount),
-    }.items():
+    del amount
+    for column, value in settle_day_columns(day).items():
         setattr(shadow, column, value)
     shadow.status_id = ref_cache.status_id(StatusEnum.DONE)
 
@@ -602,12 +609,13 @@ class TestAStatusDriftIsCountedOnce:
     def test_a_settled_shadow_with_no_movement_is_counted_once_by_the_plan(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Drift A without the mirror: the plan leg alone carries the -$250.00.
+        """Drift A without the movement: the plan leg alone carries the -$250.00.
 
-        A shadow settled bare -- record columns and no covering movement,
-        the pre-``X-bi-3d`` shape -- is worth nothing to the record half,
-        and its side's plan leg is emitted because no dated movement exists.
-        Once, by the other relation; never twice.
+        A shadow settled bare with no covering movement -- the ``$0.00``
+        record since plan step ``balance:X-bi-4b-2`` (ruling R-BAL82); the
+        pre-``X-bi-3d`` shape before it -- is worth nothing to the record
+        half, and its side's plan leg is emitted because no dated movement
+        exists.  Once, by the other relation; never twice.
         """
         with app.app_context():
             checking = seed_user["account"]

@@ -50,8 +50,8 @@ Five doors call this rule: the transaction delete verb, the purchase door, both
 CC-payback teardowns and the transfer delete.  At least four more can leave an
 act with no app row and do NOT call it -- ``routes/templates/crud``'s
 hard-delete and archive bulk statements, ``pay_period_write.retire_paydays``'
-cascade, and ``recurrence_engine``'s retire sweep (held today only by an
-implication about ``settled_basis_id``).  A rule enforced by ENUMERATION is a
+cascade, and ``recurrence_engine``'s retire sweep (held today only by its
+retention of a row holding an entry).  A rule enforced by ENUMERATION is a
 rule the next door forgets, and two of those doors are bulk SQL where a
 per-row call does not fit.  **So the INVARIANT does not rest here**: it rests
 on :func:`~app.services.statement_match.matched_subjects`' own predicate, which

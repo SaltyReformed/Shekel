@@ -180,7 +180,8 @@ def is_identity_move(row, new_status_id: int) -> bool:
     ``$90.00`` correction against a ``$500.00`` plan, replayed with an empty
     body, came back ``$90.00`` on the ``derived`` basis -- the figure survived
     and the stored answer to "did a human correct this" did not
-    (``settled_basis_id``, finding **N-241**).
+    (the row's ``settled_basis_id`` then, the movement's ``figure_source_id``
+    now; finding **N-241**).
 
     **That measurement is now closed twice over, and what this UNIQUELY protects
     is narrower than it was.**  ``Settlement.from_settle`` honours a RETAINED

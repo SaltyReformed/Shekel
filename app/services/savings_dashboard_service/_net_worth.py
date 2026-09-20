@@ -511,9 +511,11 @@ def _honest_history_start_index(
         current_period: The period containing today (the upper clamp).
         debt_schedules: account_id -> the loan's amortization ROW list
             (from :func:`app.services.balance_at.debt_schedule_rows`), for the
-            loan gate.  Not a ``DebtSchedule`` bundle: the rows carry no
-            ``projection_seed``, which is the balance the fence keeps out of an
-            out-of-cluster consumer's hands.  (A row does carry a
+            loan gate.  Not a ``DebtSchedule`` bundle -- the rows-only accessor
+            was minted so a balance the bundle then carried (its
+            ``projection_seed``, deleted at plan step recurrence:R16-c-1 with
+            the second fold it seeded) stayed out of an out-of-cluster
+            consumer's hands, and it stays the entry.  (A row does carry a
             ``remaining_balance``; this module reads only ``payment_date``.)
 
     Returns:

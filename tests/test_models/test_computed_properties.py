@@ -48,7 +48,6 @@ from tests._test_helpers import (
     one_off_row_of,
     open_books_before_the_first_assertion,
     settle_day_columns,
-    settlement_columns,
 )
 from app.services.settle_day import record_settle_day
 from app.models.amount_ownership import AmountOwnership
@@ -73,10 +72,10 @@ class TestTransactionEffectiveAmount:
     reachable on an UNSETTLED row and OUTRANKED the plan there, so the class
     pinned "a Projected row with an actual prefers the actual" (case 5A.1) and
     its ``$0.00`` twin (E-12's projected half).  Both are refuted now, and by
-    the STATUS rather than by the columns: an unsettled row carrying a recorded
+    the STATUS rather than by the record: an unsettled row carrying a recorded
     figure is perfectly constructible -- it is the RETAINED state a revert
-    leaves behind, which ``ck_transactions_settle_day_needs_a_record`` admits on
-    purpose -- and ``row_valuation.settled_figure`` answers ``None`` for it
+    leaves behind, the covering movement kept un-dated on purpose (plan step
+    X-bi-3e-2) -- and ``row_valuation.settled_figure`` answers ``None`` for it
     whatever it still remembers, so such a row is worth its PLAN.  The
     preference those two cases asserted has no state left to hold in.
 
@@ -95,7 +94,8 @@ class TestTransactionEffectiveAmount:
 
         A row built in a SETTLED status carries the whole record -- the day, the
         figure and how the figure is known -- through the one door a bare-built
-        fixture uses (``_test_helpers.settlement_columns``).  *actual* is the
+        fixture uses (``_test_helpers.cover_bare_settled_row``, which writes the
+        covering movement; plan step balance:X-bi-4b-2).  *actual* is the
         figure a human typed, which makes the record a ``corrected`` one; with
         no *actual* the record is ``derived`` at the row's own plan, which is
         what a settle with nothing to correct records.
@@ -115,8 +115,6 @@ class TestTransactionEffectiveAmount:
         )
         txn.status_id = status.id
         for _column, _value in settle_day_columns(settled_on).items():
-            setattr(txn, _column, _value)
-        for _column, _value in settlement_columns(settled_on, estimated, submitted=actual).items():
             setattr(txn, _column, _value)
         db.session.flush()
         if settled_on is not None:
@@ -948,10 +946,6 @@ class TestSettleDayRefusesAnInstant:
             txn.status_id = status.id
             for _column, _value in settle_day_columns(seed_periods[0].start_date).items():
                 setattr(txn, _column, _value)
-            for _column, _value in settlement_columns(
-                    seed_periods[0].start_date, Decimal("100.00"),
-                ).items():
-                setattr(txn, _column, _value)
             db.session.flush()
             cover_bare_settled_row(db.session, txn, "100.00")
 
@@ -1030,8 +1024,6 @@ class TestDaysPaidBeforeDue:
         )
         txn.status_id = status.id
         for _column, _value in settle_day_columns(settled_on_val).items():
-            setattr(txn, _column, _value)
-        for _column, _value in settlement_columns(settled_on_val, Decimal("100.00")).items():
             setattr(txn, _column, _value)
         db.session.flush()
         if settled_on_val is not None:

@@ -162,6 +162,7 @@ from app.utils.money import accrue_monthly_interest
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
+    independent_settled_figure,
     rhythm_of,
     SPLIT_LOAN,
     amount_basis_for_scenario,
@@ -491,16 +492,17 @@ def _independent_settled_income_cash(
 
     The independent restatement of ``settled_transfer_effect`` for a loan: over
     the loan's settled, non-deleted transfer income shadows in *scenario_id*, sum
-    ``effective = COALESCE(actual, estimated)``.  A loan's shadows are all income
-    (the to-account leg), so every term is ``+effective`` -- the cash that flowed
-    in.  Reads ``transactions``, a different table than the ledger queries above,
-    so asserting the ledger reconciles against this ties the postings to the
-    transaction source of truth.
+    ``effective``, the shadow's settled figure spelled independently
+    (:func:`~tests._test_helpers.independent_settled_figure`;
+    ``COALESCE(actual, estimated)`` through plan step ``balance:X-bi-4b-1``).
+    A loan's shadows are all income (the to-account leg), so every term is
+    ``+effective`` -- the cash that flowed in.  Reads the row tables,
+    different tables than the ledger queries above, so asserting the ledger
+    reconciles against this ties the postings to the transaction source of
+    truth.
     """
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = _db.func.coalesce(
-        Transaction.settled_amount, Transaction.estimated_amount
-    )
+    effective = independent_settled_figure()
     return (
         _db.session.query(
             _db.func.coalesce(_db.func.sum(effective), Decimal("0"))
@@ -713,10 +715,10 @@ def _assert_completeness(
     )
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
-        entries = loan_correction_entries(_db.session, split.income_shadow.id)
+        entries = loan_correction_entries(_db.session, split.source.id)
         if non_principal != Decimal("0"):
             assert entries, (
-                f"settled payment shadow {split.income_shadow.id} has non-"
+                f"settled payment shadow {split.source.id} has non-"
                 f"principal {non_principal} but no correction -- an uncorrected "
                 f"Step-2 cash entry"
             )
@@ -1458,8 +1460,9 @@ class TestOracleIsNotVacuous:
 
         A reconciled $1,000 payment has linked net +500, income cash +1,000, and
         non-principal corrections +500, so ``linked == income - non_principal``
-        holds.  Forcing the income shadow's recorded ``settled_amount`` to 9,999
-        via raw SQL (no re-sync) pushes the income cash to +9,999 while the posted ledger is
+        holds.  Forcing the income shadow's RECORD -- its covering movement's
+        figure -- to 9,999 via raw SQL (no re-sync) pushes the income cash to
+        +9,999 while the posted ledger is
         unchanged -- so ``income - non_principal`` becomes 9,499, no longer the
         +500 linked net.  The superseding invariant the sweep relies on now FAILS,
         proving it is a real comparison, not one that passes unconditionally.
@@ -1479,13 +1482,14 @@ class TestOracleIsNotVacuous:
             # Reconciled before tampering.
             assert linked == income - non_principal
 
-            # Tamper the RECORDED cash (transactions carry no balance trigger,
-            # so this commits); the posted ledger is left untouched.  It is the
+            # Tamper the RECORDED cash (entries carry no balance trigger, so
+            # this commits); the posted ledger is left untouched.  It is the
             # record and not the plan since plan step X-au-c3: a settled row's
-            # cash is what it recorded as having moved.
+            # cash is what it recorded as having moved, on its covering
+            # movement (plan step balance:X-bi-4b-2).
             db.session.execute(_db.text(
-                "UPDATE budget.transactions SET settled_amount = 9999 "
-                "WHERE id = :i"
+                "UPDATE budget.transaction_entries SET amount = 9999 "
+                "WHERE transaction_id = :i AND covers_settlement"
             ), {"i": shadow.id})
             db.session.commit()
 

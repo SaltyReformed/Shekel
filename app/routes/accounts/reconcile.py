@@ -110,8 +110,10 @@ def _submitted_corrections(form) -> dict[int, Decimal]:
     settle.  A second field declaration here would be a second answer to "what
     is a valid money input", on a money path, which is exactly what this arc
     removes; and it brings the two-place Decimal, the ``>= 0`` range mirroring
-    the ``ck_transactions_settled_amount`` CHECK, and the empty-string-to-``None``
-    normalisation for free.
+    ``status_seam.Settlement``'s own refusal of a negative figure (the
+    ``ck_transactions_settled_amount`` CHECK's through plan step
+    ``balance:X-bi-4b-1``), and the empty-string-to-``None`` normalisation for
+    free.
 
     An empty box loads as ``None`` and is DROPPED rather than recorded: a user
     who clears the figure is not asserting `$0.00`, they are declining to

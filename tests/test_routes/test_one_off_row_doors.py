@@ -62,6 +62,7 @@ from app.services.amount_ownership import state_own_amount
 from app.services.one_off import OneOffToPlace, place_one_off, place_row_of
 from app.services.template_amount_service import amount_versions
 from app.utils.dates import display_today
+from app.services.row_valuation import settled_figure
 from werkzeug.datastructures import MultiDict
 from tests._test_helpers import (
     add_entry,
@@ -1459,4 +1460,4 @@ class TestUnlockEditLock:
             row = db.session.get(Transaction, row.id)
             assert row.status.is_settled is True
             assert row.template.is_envelope is False
-            assert row.settled_amount == Decimal("162.25")
+            assert settled_figure(row) == Decimal("162.25")

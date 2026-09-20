@@ -1,18 +1,20 @@
-"""Database CHECK constraint regression tests for budget.transactions.
+"""Regression tests for the non-negative figure guarantees on a transaction.
 
-Locks the storage-tier guarantee that estimated_amount and the settled
-figure cannot hold negative values.  The constraints are declared on the
-model (`app/models/transaction.py` `ck_transactions_estimated_amount`,
-`ck_transactions_settled_amount`) and materialised by migration
-`dc46e02d15b4_add_check_constraints_to_loan_params_.py`, the second of
-them renamed with its column by `e4b8a71c0f36_settlement_record.py`.
-
-**The NULL branch changed meaning at plan step X-au-c3** and the third
-test says so.  `actual_amount IS NULL` used to be the ordinary
-projected-but-not-yet-paid row; a projected row now carries no settlement
-record at all, and the branch is exercised by the one SETTLED shape that
-stores no figure -- a `purchases` record, where the row's own entries
-state the amount.
+Locks the guarantee that a row's estimated_amount and its settled figure
+cannot hold negative values.  The plan's guard is the storage tier:
+`ck_transactions_estimated_amount`, declared on the model
+(`app/models/transaction.py`) and materialised by migration
+`dc46e02d15b4_add_check_constraints_to_loan_params_.py`.  The RECORD's
+guard is the constructor: `status_seam.Settlement.__post_init__` refuses a
+negative figure, because the record lives on the covering movement since
+plan step `balance:X-bi-4b-2` (migration `45f10b870c8b`, ruling R-BAL80),
+whose own CHECK is `amount <> 0` (a merchant credit is a negative PURCHASE,
+ruling bank_import:R-II), so the storage tier cannot say `>= 0` for it.
+Through `X-bi-4b-1` the row's own `settled_amount` carried
+`ck_transactions_settled_amount` (materialised by the same migration, renamed
+with its column by `e4b8a71c0f36_settlement_record.py`), and the second and
+third cases here graded that column; they grade the constructor and the
+`$0.00` record now.
 
 The original H-1 drift fix
 (`migrations/versions/724d21236759_drop_redundant_transaction_check_.py`)
@@ -36,28 +38,27 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app import ref_cache
-from app.enums import SettlementBasisEnum
+from app.enums import MovementFigureSourceEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
+from app.services import status_seam
+from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
     generate_row_of,
     make_expense_template,
     one_off_row_of,
     repriced_by_the_owner,
     settle_day_columns,
-    settlement_basis_id,
 )
 
 
 def _placed_row(seed_user, seed_periods_today, status_name="Projected"):
     """Place an ordinary one-off in the first paycheck, *status_name* laid on BARE.
 
-    The producer's row (plan step balance:X-bi-7c).  The settlement record
-    is the ROW's own -- ``settled_amount`` / ``settled_basis_id`` -- so the
-    two settled-figure cases lay theirs on this row and flush; the row's
-    plan figure is its definition's and never on the row, which is why the
-    negative-estimate case takes the OWN arm instead (see it).
+    The producer's row (plan step balance:X-bi-7c).  The row's plan figure
+    is its definition's and never on the row, which is why the
+    negative-estimate case takes the OWN arm instead (see it); the
+    ``$0.00``-record case lays a settled status and a day on it.
 
     Args:
         seed_user: The seeded owner fixture.
@@ -87,7 +88,7 @@ def _placed_row(seed_user, seed_periods_today, status_name="Projected"):
 
 
 class TestTransactionAmountCheckConstraints:
-    """Negative estimated_amount / settled_amount rejected at flush time."""
+    """A negative plan is refused at flush; a negative record at construction."""
 
     def test_negative_estimated_amount_rejected(
         self, app, db, seed_user, seed_periods_today
@@ -116,21 +117,41 @@ class TestTransactionAmountCheckConstraints:
             assert "ck_transactions_estimated_amount" in str(exc_info.value)
             db.session.rollback()
 
-    def test_negative_settled_amount_rejected(
+    def test_a_negative_settled_figure_is_refused_at_construction(self, app):
+        """``Settlement`` refuses a figure below zero before any row is reached.
+
+        A settle verb takes a MAGNITUDE (``StatedFigure``), and every form
+        field that feeds one validates non-negative; this is the one home of
+        the rule since plan step ``balance:X-bi-4b-2`` deleted the row's own
+        ``settled_amount`` with its CHECK.  A negative recorded figure would
+        corrupt the balance the same way a negative estimate would, and the
+        movement's own CHECK (``amount <> 0``) cannot say so for it.
+        """
+        with app.app_context():
+            with pytest.raises(ValueError, match="negative figure"):
+                status_seam.Settlement(
+                    Decimal("-1.00"), MovementFigureSourceEnum.TYPED,
+                )
+            with pytest.raises(ValueError, match="negative figure"):
+                status_seam.Settlement(
+                    Decimal("-0.01"), MovementFigureSourceEnum.RESOLVED,
+                )
+            # Zero is a magnitude: the close of nothing (ruling R-BAL82).
+            assert status_seam.Settlement(
+                Decimal("0.00"), MovementFigureSourceEnum.TYPED,
+            ).amount == Decimal("0.00")
+
+    def test_a_settled_row_with_no_movement_is_the_zero_record(
         self, app, db, seed_user, seed_periods_today
     ):
-        """Writing a Transaction with settled_amount < 0 raises IntegrityError.
+        """A settled row holding no entry records ``$0.00``, and storage admits it.
 
-        The ck_transactions_settled_amount CHECK constraint admits NULL
-        (the `purchases` record, whose figure its entries state) and
-        otherwise pins storage to non-negative values.  Mirrors the
-        estimated_amount guarantee -- a negative recorded figure would
-        corrupt the balance calculator the same way a negative estimate
-        would.
-
-        The rest of the record is COHERENT (a settled status, a settle day,
-        and a basis that stores its figure) so the flush fails on the
-        constraint under test and not on the record's own pairing.
+        Through plan step X-au-c3 the CHECK's NULL branch admitted the
+        ``purchases`` record, the one settled shape that stored no figure;
+        since ``balance:X-bi-4b-2`` no settled row stores one, and a settled
+        row with no entries at all IS the ``$0.00`` record (ruling R-BAL82)
+        -- a routine state (an empty envelope closed, a bill budgeted at
+        nothing marked paid) the storage tier must keep admitting.
         """
         with app.app_context():
             txn = _placed_row(seed_user, seed_periods_today, status_name="Paid")
@@ -138,45 +159,11 @@ class TestTransactionAmountCheckConstraints:
                 seed_periods_today[0].start_date,
             ).items():
                 setattr(txn, column, value)
-            txn.settled_amount = Decimal("-1.00")
-            txn.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
-            with pytest.raises(IntegrityError) as exc_info:
-                db.session.flush()
-            assert "ck_transactions_settled_amount" in str(exc_info.value)
-            db.session.rollback()
-
-    def test_null_settled_amount_allowed(
-        self, app, db, seed_user, seed_periods_today
-    ):
-        """A `purchases` record stores no figure, and the CHECK admits it.
-
-        Asserts the CHECK predicate's NULL branch
-        (`settled_amount IS NULL OR settled_amount >= 0`).  A regression
-        that tightened the constraint to `settled_amount >= 0` (no NULL
-        branch) would block every envelope close -- a routine application
-        path -- and this test would catch it before the migration hit
-        production.
-
-        **The shape that exercises it changed at plan step X-au-c3.**  It used
-        to be the ordinary projected row, whose `actual_amount` was NULL until
-        somebody typed one; a projected row now carries no settlement record at
-        all, so the branch belongs to the one SETTLED basis that stores nothing.
-        """
-        with app.app_context():
-            txn = _placed_row(seed_user, seed_periods_today, status_name="Paid")
-            for column, value in settle_day_columns(
-                seed_periods_today[0].start_date,
-            ).items():
-                setattr(txn, column, value)
-            purchases_basis = ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
-            )
-            txn.settled_amount = None
-            txn.settled_basis_id = purchases_basis
             db.session.flush()
-            # The row was flushed at placement, so its id proves nothing about
-            # this UPDATE: read the stored record back.
             db.session.refresh(txn)
-            assert txn.settled_amount is None
-            assert txn.settled_basis_id == purchases_basis
+            assert txn.entries == []
+            assert settled_figure(txn) == Decimal("0.00")
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                None, None,
+            )
             db.session.rollback()

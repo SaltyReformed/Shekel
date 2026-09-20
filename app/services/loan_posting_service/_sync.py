@@ -47,7 +47,6 @@ from app.utils.money import round_money
 from app.services.loan_ledger import (
     LoanLedgerWalk,
     dated_deltas,
-    payment_visible_on,
     walk_loan_ledger,
 )
 
@@ -164,8 +163,12 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     # the assert (each used to resolve its own -- a redundant query).
     linked_ledger_id = _ledger_account_for(loan_account_id).id
     _reconcile_lineage_transfer_entries(linked_ledger_id, scenario_id, walk)
+    # ``settled_splits``: the writer books RECORDED payments and nothing else.
+    # This walk is ``walk_loan_ledger``'s, which carries no projection, so the
+    # two views are one list here; reading the settled one states the
+    # precondition where it is relied on.
     reconcile_loan_payment_splits(
-        loan_account_id, scenario_id, walk.payment_splits,
+        loan_account_id, scenario_id, walk.settled_splits,
     )
     reconcile_loan_anchor_corrections(
         loan_account_id, scenario_id, walk.anchor_corrections,
@@ -199,7 +202,8 @@ def _reconcile_lineage_transfer_entries(
     (:func:`._linked_ledger._transfer_nets_by_date`) and compares each
     against what a clean ledger holds: for a settled walk payment, its full
     cash at its settle date (the SAME leaf clock the fold and the writer
-    share -- :func:`app.services.loan_ledger.payment_visible_on`); for any
+    share -- the event's ``visible_on``, read once by the stream's builder
+    through :func:`app.services.loan_ledger.payment_visible_on`); for any
     other transfer, nothing (every date nets zero).  Only a transfer that fails
     that comparison is re-synced, so the steady-state cost is the ONE probe
     query; each stale transfer runs
@@ -244,14 +248,14 @@ def _reconcile_lineage_transfer_entries(
     # plan, so this loop's precondition is stated by the call it makes and not
     # only by the loader above it.
     expected: dict[int, dict[date, Decimal]] = {}
-    for split in walk.payment_splits:
-        shadow = split.income_shadow
+    for outcome in walk.settled_splits:
+        shadow = outcome.source
         if shadow.transfer_id is None:
             continue
         cash = round_money(settled_contribution(shadow))
         if cash == 0:
             continue
-        expected[shadow.transfer_id] = {payment_visible_on(shadow): cash}
+        expected[shadow.transfer_id] = {outcome.visible_on: cash}
     stale_ids = {
         transfer_id
         for transfer_id in set(posted) | set(expected)

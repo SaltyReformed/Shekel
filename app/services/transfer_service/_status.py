@@ -240,9 +240,9 @@ def apply_settle_day_to_pair(
             (:class:`app.services.status_seam.Settlement`).  Its shadows are
             constructed already in the settled status, so the seam sees an
             IDENTITY transition and cannot ask them for a record -- but a
-            settled row that records nothing is one
-            ``row_valuation.settled_figure`` refuses to value, so the create
-            must supply one.
+            settled row with no covering movement is the ``$0.00`` record
+            (ruling **R-BAL82**), a transfer that moved nothing, so the
+            create must supply one.
             :func:`apply_settle_day_correction`, the other caller, passes
             ``None``: it corrects the day of a pair whose record already exists,
             and re-stating the figure there would re-price a settled row from

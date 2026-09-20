@@ -1,6 +1,8 @@
 """Dump what the forward loan plan SUMS, and what moves when a definition does.
 
-The regression harness for recurrence plan step **R16-b-2**, which makes the
+The regression harness for recurrence plan step **R16-b-2** (and, with doors 6
+and 7, for **R16-c-1**'s claim that merging the two folds moves nothing).
+R16-b-2 makes the
 balance seam's ESTIMATED tier sum EVERY definition paying into a loan on its
 own cadence, price every occurrence no row answers (ruling **R-R64**), and
 charge the CONTRACT's calendar (ruling **R-R68**) -- every installment after
@@ -9,8 +11,9 @@ the loan's LATEST balance assertion, whether or not a payment lands in it
 before it is charged).  Run it on a worktree at the base commit and on the
 branch, against the same clone, and diff the two outputs from line 2.
 
-**The BASELINE is expected byte-identical, and five doors are PLANTED so the
-diff MUST move where the rulings say it moves.**  Both of the developer's live
+**The BASELINE is expected byte-identical, and seven doors are PLANTED so the
+diff MUST move where the rulings say it moves (doors 1-5) or MUST NOT move
+where a restructure claims it does not (doors 6-7).**  Both of the developer's live
 loan payments are stated-price, monthly on the contractual day, and every
 forward slot the schedule reaches is answered by a row, so on unmodified data
 the sum and the old one-definition tier name the same occurrences at the same
@@ -51,6 +54,17 @@ runs.  Each door constructs a state in which the two tiers differ:
   settled installment, inside that installment's month.  The old calendar charged that month a second time at
   the extra's date; the seed already charged it, so the sum charges it once
   and the extra pays pure principal.
+* **DOORS 6 and 7 -- a DELINQUENT loan (plan step recurrence:R16-c-1)**: the
+  settled installments before the latest settled one are REVERTED to
+  projected through the status door -- one on the Van (its 2026-06-23 true-up
+  leaves it one), TWO on the Mortgage (07-01 and 08-01 behind the settled
+  09-01).  The merge that replays the recorded facts and the plan as ONE
+  stream must walk the skipped months' charges and their catch-ups in
+  contract order behind the facts (April's charge, April's catch-up, May's
+  charge, May's catch-up); a first cut applied both charges first, which the
+  two-catch-up door reads as the Mortgage payoff moving ``2048-12-01`` ->
+  ``2049-01-01`` and every projected balance point with it (30 lines), and the
+  one-catch-up door cannot see at all.  Both read 0 lines on the fix.
 
 Nothing it prints carries a sequence-assigned id, for the reason
 ``verify_generation_pass.py`` states: PostgreSQL does not roll a sequence
@@ -343,6 +357,68 @@ def main():
         db.session.flush()
         ctx5 = BalanceContext.build(USER_ID, AS_OF)
         _plan_lines("D5", _loan(VAN_ACCOUNT_ID), ctx5, months=12)
+        db.session.rollback()
+
+        # --- DOOR 6: a DELINQUENT loan -- two installments skipped with
+        # their rows still PROJECTED behind a later SETTLED payment (the shape
+        # recurrence:R16-c-1's adversarial review measured its first cut
+        # moving, +$2.54: the plan's charges for the skipped months must walk
+        # charge / catch-up / charge / catch-up behind the facts, never both
+        # charges first).  The two settled Van installments before the latest
+        # settled one are REVERTED to projected through the status door.
+        db.session.begin_nested()
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+        settled6 = sorted(
+            confirmed_shadows_through(
+                VAN_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
+            ),
+            key=lambda shadow: shadow.due_date,
+        )
+        skipped = settled6[-3:-1]
+        print(
+            "# DOOR 6 reverting the Van installments due "
+            + ", ".join(str(shadow.due_date) for shadow in skipped)
+            + f" to projected behind the settled {settled6[-1].due_date}"
+        )
+        for shadow in skipped:
+            transfer_service.update_transfer(
+                shadow.transfer_id, USER_ID,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+        db.session.flush()
+        ctx6 = BalanceContext.build(USER_ID, AS_OF)
+        _plan_lines("D6", _loan(VAN_ACCOUNT_ID), ctx6, months=12)
+        db.session.rollback()
+
+        # --- DOOR 7: the same shape on the MORTGAGE, whose latest assertion
+        # (2026-05-22) leaves FOUR settled installments behind the latest one,
+        # so TWO skipped months (07-01, 08-01) stand behind the settled 09-01
+        # -- the two-catch-up shape the Van cannot hold (its 2026-06-23
+        # true-up leaves one installment before its latest settled).  One
+        # catch-up was identical even under the first cut's clamp; two is
+        # where it parted.
+        db.session.begin_nested()
+        settled7 = sorted(
+            confirmed_shadows_through(
+                MORTGAGE_ACCOUNT_ID, get_baseline_scenario(USER_ID).id, AS_OF,
+            ),
+            key=lambda shadow: shadow.due_date,
+        )
+        skipped7 = settled7[-3:-1]
+        print(
+            "# DOOR 7 reverting the Mortgage installments due "
+            + ", ".join(str(shadow.due_date) for shadow in skipped7)
+            + f" to projected behind the settled {settled7[-1].due_date}"
+        )
+        for shadow in skipped7:
+            transfer_service.update_transfer(
+                shadow.transfer_id, USER_ID,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+        db.session.flush()
+        ctx7 = BalanceContext.build(USER_ID, AS_OF)
+        _plan_lines("D7", _loan(MORTGAGE_ACCOUNT_ID), ctx7, months=12)
         db.session.rollback()
 
         print("# rolled back")

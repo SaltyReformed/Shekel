@@ -542,11 +542,11 @@ def settle_transaction(
         # and itself.  One rule, asked once.
         booked = settle_amount(txn, basis)
         correction = submitted if _is_correction(txn, submitted, booked) else None
-        # Acts 1 and 2 in ONE call: what moved, how it is known, and the day.
-        # The record is written by the seam rather than here so ``settled_amount``
-        # keeps the ONE writer ``settled_on`` has (finding **N-185**'s rule
-        # applied to the column beside it) -- two writers of one money column in
-        # one request is the shape this arc removes.
+        # Acts 1 and 2 in ONE call: what moved, who wrote it, and the day.
+        # The record is written by the seam rather than here so the covering
+        # movement keeps the ONE writer ``settled_on`` has (finding **N-185**'s
+        # rule applied to the record beside it) -- two writers of one money
+        # fact in one request is the shape this arc removes.
         #
         # ``recorded_settlement`` is what the row STILL carries from a settle it
         # has since been reverted out of: a revert releases the assertion and
@@ -600,9 +600,9 @@ def settle_from_entries(
     at `$0.00` through carry-forward.
 
     Effect on *txn* (in place):
-      - **NO figure is stored at all** (plan step X-au-c3).  The record's basis
-        is ``purchases``, and a ``purchases`` settlement leaves
-        ``settled_amount`` NULL because the row's own entries ARE the record:
+      - **NO figure is stored at all** (plan step X-au-c3).  The record is
+        ``Settlement(None, None)`` and the seam writes no covering movement
+        for it, because the row's own entries ARE the record:
         ``row_valuation.settled_figure`` sums them on demand.  It USED to set
         ``actual_amount = sum(entries)``, and dropping that copy is what deleted
         ``entry_service``'s re-derivation of a settled envelope's figure -- with

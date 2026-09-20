@@ -63,7 +63,11 @@ from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.cash_ledger import AmountBasis, amount_basis
 from app.services.income_service import PaycheckPricing, paycheck_pricing
-from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
+from app.services.loan_ledger import (
+    LoanLedgerWalk,
+    load_loan_stream,
+    replay_loan_stream,
+)
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.recurrence import (
     OccurrencePlacement,
@@ -209,6 +213,14 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         payoffs: The read pass's per-loan derived-payoff cache, keyed by
             ``account.id`` and FILLED by the seam's
             :func:`~app.services.balance_at._positions.memoized_payoff`.
+        _timelines: The pass's per-loan TIMELINE memo (plan step
+            recurrence:R16-c-1), keyed by ``account.id`` and FILLED by the seam's
+            :func:`~app.services.balance_at._loan_stream.loan_timeline`: the
+            loan's facts walk with its forward plan replayed behind it, one
+            :class:`~app.services.loan_ledger.LoanLedgerWalk` for the whole
+            timeline.  PRIVATE for the reason ``_cash_folds`` is (below): a
+            merged walk carries balance-at-T, and the seam module that derives
+            it makes the one named crossing.
         _cash_folds: The pass's per-account cash-fold memo, keyed by
             ``account.id`` and filled by :meth:`cash_fold`.  **PRIVATE, and not
             for the reason ``_walks`` is** (that one is private because this
@@ -294,6 +306,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         default_factory=dict, repr=False, compare=False,
     )
     payoffs: "dict[int, date | None]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    _timelines: dict[int, LoanLedgerWalk] = field(
         default_factory=dict, repr=False, compare=False,
     )
     _cash_folds: "dict[int, AssembledCashFold]" = field(
@@ -485,26 +500,38 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         return self.scenario.id if self.scenario is not None else None
 
     def loan_walk(self, account: Account) -> LoanLedgerWalk:
-        """Return *account*'s ledger walk for this pass, walking it at most once.
+        """Return *account*'s walk of the facts VISIBLE to this pass, walking once.
 
         The memo that collapses a read pass's N folds of one loan to one WALK.
-        The seam's total loan producer
-        (:func:`app.services.balance_at.positions`) folds a loan's SOURCE events
-        for the past, and the scalar, the per-period map, and the liability band
-        each read it in a single ``/savings`` render.  The walk
-        (:func:`~app.services.loan_ledger.walk_loan_ledger`) is the expensive part
-        -- it loads the loan's params, anchors, rate periods, escrow lines and
-        settled shadows -- so re-walking it per producer is exactly the redundant
-        derivation the seam's resolution memo already removes.  The
-        first call walks; every later call in the same pass samples that same
-        :class:`~app.services.loan_ledger.LoanLedgerWalk` through
-        :func:`~app.services.balance_at._fold.fold_from_walk`.
+        The seam's confirmed view, its retired predicate, its paid-in-year
+        figures and -- through the timeline that appends the forward plan to
+        this walk's stream (:func:`~app.services.balance_at._loan_stream
+        .loan_timeline`) -- its balance, payoff and projected interest all read
+        it in a single ``/savings`` render.  The LOAD
+        (:func:`~app.services.loan_ledger.load_loan_stream`) is the expensive
+        part -- the loan's params, anchors, rate periods, escrow lines and
+        settled shadows -- so re-loading per producer is exactly the redundant
+        derivation the seam's resolution memo already removes.  The first call
+        loads and replays; every later call in the same pass reads that same
+        :class:`~app.services.loan_ledger.LoanLedgerWalk`.
 
-        The walk takes NO as-of and reads no clock -- it replays the loan's FACTS
-        whole (:func:`~app.services.loan_ledger.walk_loan_ledger`) -- so this memo
-        is a pure function of the loan and the pass's pinned ``scenario``, exactly
-        like the resolver memo above.  A reader bounds the walk to a date; the memo
-        does not.
+        **It replays the facts VISIBLE by this pass's ``as_of``** (plan step
+        recurrence:R16-c-1, ruling **R-R91**;
+        :func:`~app.services.loan_ledger.load_loan_stream`'s ``visible_by``):
+        a payment from its settled day, an assertion from its own date, the
+        opening always.  That is the spec's ``as_of`` -- the mark where
+        recorded fact becomes projection -- stated ONCE, at the load, so a
+        pass pinned to an earlier day answers what the loan looked like on
+        that day (plan step ``recurrence:R7d-h``: the pass decides which
+        crossing answers), and every reader that needs the bounded set reads
+        THIS walk's stream (the plan's seed boundaries included,
+        ``_plan._seed_boundaries``) rather than deriving the bound again.  The
+        ledger's own walk
+        (:func:`~app.services.loan_ledger.walk_loan_ledger`) takes no bound and
+        is not this memo.  For a pass whose ``as_of`` is on or after every
+        recorded fact -- every production pass -- the two are the same walk.
+        So this memo is a pure function of the loan and the pass's pinned
+        ``scenario`` and ``as_of``, exactly like the resolver memo above.
 
         **Un-FENCED at plan step D3, the same ground as the resolution memo.**
         The walk is FACTS, not a balance-at-T (plan step D-fold), and the leaf's
@@ -540,7 +567,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         """
         return _memoize_once(
             self, self._walks, account,
-            lambda: walk_loan_ledger(account.id, self.scenario_id),
+            lambda: replay_loan_stream(load_loan_stream(
+                account.id, self.scenario_id, visible_by=self.as_of,
+            )),
         )
 
     def calendar(self) -> PayCalendar:

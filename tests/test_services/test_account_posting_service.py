@@ -569,8 +569,8 @@ class TestWalkAccountLedger:
             ).count() == 1, "the legacy leg must post under the row"
             # Break the row AFTER its postings exist: a bulk update bypasses
             # the ORM, exactly as the real hazard does.  The purchases RECORD
-            # stays: ``ck_transactions_settle_day_needs_a_record`` is an
-            # implication, so a retained record with no day is admissible.
+            # stays: the row's entries are its record, and a retained record
+            # with no day is the state a revert leaves.
             _db.session.query(Transaction).filter(
                 Transaction.id == txn.id,
             ).update(

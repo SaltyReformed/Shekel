@@ -21,7 +21,6 @@ from unittest.mock import patch
 from app import ref_cache
 from app.enums import (
     MovementFigureSourceEnum,
-    SettlementBasisEnum,
     StatusEnum,
     TxnTypeEnum,
 )
@@ -790,64 +789,56 @@ class TestTheSettleDayFloor:
             assert txn.settled_on == before_the_schedule
 
 
-class TestASettleDayNeedsARecord:
-    """``ck_transactions_settle_day_needs_a_record``, said in words at the door.
+class TestAnUndatedCloseOfNothingTakesADay:
+    """A settled row with no record and no day is a ``$0.00`` close that is undated.
 
-    The constraint is the surviving half of a repealed biconditional: a row
-    asserting the day its money moved must record WHAT moved, while a record
-    with no day is the legal RETAINED state a revert leaves.
-
-    **The guard exists because the constraint was the only thing saying it, and
-    a CHECK cannot hold a conversation.**  The full-edit popover offers the
-    settle-day box to an UNDATED settled row deliberately -- that row is the one
-    that most needs to state the real day (finding **N-181**).  But a row from
-    BEFORE the settlement record carries no record either, so stating the day
-    alone violated the CHECK and surfaced as an ``IntegrityError`` rendered to
-    the user as "invalid reference": a message naming nothing they could act on,
-    for a save no amount of re-typing would have fixed.
+    Through plan step ``balance:X-bi-4b-1`` this class graded
+    ``reject_settle_day_without_a_record`` -- ``ck_transactions_settle_day_
+    needs_a_record`` said in words at the door, refusing a day on a settled
+    row that recorded nothing (the legacy shape of finding **N-181**) with
+    the repair in the message.  ``X-bi-4b-2`` deleted the row's figure
+    columns, the CHECK and the refusal together: a settled row holding no
+    covering movement IS the ``$0.00`` record (ruling **R-BAL82**), so the
+    state the refusal guarded has no spelling, and the same row is an
+    ordinary close of nothing that happens to carry no day.  Stating the day
+    DATES it; stating a figure with the day records it.
     """
 
-    def test_a_day_alone_on_a_recordless_settled_row_is_refused(
+    def test_a_day_alone_on_a_recordless_settled_row_dates_it(
         self, app, db, seed_user, seed_periods,
     ):
-        """The legacy shape: settled, recording nothing, asked for a day.
+        """The shape that used to be refused: settled, no record, asked for a day.
 
-        Refused with the repair in the message, and the row untouched -- the
-        guard is ordered with the seam's other pre-mutation refusals for exactly
-        that reason.
+        The day lands and no movement is written -- a movement of nothing is
+        not one (``ck_transaction_entries_positive_amount``) -- so the row
+        reads ``$0.00`` on that day.
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
-            # The legacy shape, reproduced the only way it can be: straight at
-            # the columns.  The seam refuses to CREATE one.
+            # The shape, reproduced the only way it can be: straight at the
+            # day pair.  The row holds no movement (``_make_txn`` lays none).
             record_settle_day(txn, None)
-            txn.settled_amount = None
-            txn.settled_basis_id = None
+            db.session.flush()
+            assert txn.covering_movements == []
+
+            status_seam.apply_status_change(
+                txn, txn.status_id, settle_day=an_entered_day(display_today()),
+            )
             db.session.flush()
 
-            with pytest.raises(ValidationError) as exc:
-                status_seam.apply_status_change(
-                    txn, txn.status_id, settle_day=an_entered_day(display_today()),
-                )
+            assert txn.settled_on == display_today()
+            assert txn.covering_movements == []
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                None, None,
+            )
 
-            assert "records nothing that moved" in str(exc.value)
-            assert txn.settled_on is None, "a refused call wrote the day anyway"
-
-    def test_the_same_day_lands_when_the_record_arrives_WITH_it(
+    def test_the_same_day_with_a_record_writes_the_movement_on_that_day(
         self, app, db, seed_user, seed_periods,
     ):
-        """The firing control, and the repair the message names.
-
-        Identical call plus a settlement: both halves of the assertion in one
-        act, which is what the Actual box beside the day box makes expressible.
-        Without this the test above would pass against a guard that refused
-        every day.
-        """
+        """Both halves in one act, which is what the Actual box beside the day box expresses."""
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
             record_settle_day(txn, None)
-            txn.settled_amount = None
-            txn.settled_basis_id = None
             db.session.flush()
 
             status_seam.apply_status_change(
@@ -860,7 +851,11 @@ class TestASettleDayNeedsARecord:
             db.session.flush()
 
             assert txn.settled_on == display_today()
-            assert txn.settled_amount == Decimal("50.00")
+            (movement,) = txn.covering_movements
+            assert movement.settled_on == display_today()
+            assert status_seam.recorded_settlement(txn) == status_seam.Settlement(
+                Decimal("50.00"), MovementFigureSourceEnum.TYPED,
+            )
 
     def test_an_ordinary_day_correction_is_untouched_by_the_guard(
         self, app, db, seed_user, seed_periods,

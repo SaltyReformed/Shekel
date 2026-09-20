@@ -185,14 +185,16 @@ def record_settle_day(
     table's ``ck_*_settle_day_basis_pairing`` -- a BICONDITIONAL, so a day
     without a basis AND a basis left behind with no day are both unstorable.
 
-    **The biconditional is the difference from the FIGURE's pairing one column
-    over, and it is deliberate** (developer, 2026-08-22).
-    ``ck_transactions_settled_amount_needs_basis`` is a bare implication because
-    a revert RELEASES the day and KEEPS what moved, so a figure legitimately
-    outlives the assertion that recorded it.  The day and its basis have no such
-    asymmetry: the basis describes the day, so the two share one lifetime, and
-    the stronger constraint costs nothing and forbids the residue a revert would
-    otherwise be free to leave.
+    **The biconditional was the difference from the FIGURE's pairing one
+    column over, and it is deliberate** (developer, 2026-08-22).  The row's own
+    figure columns carried a bare implication
+    (``ck_transactions_settled_amount_needs_basis``, deleted with them at plan
+    step ``balance:X-bi-4b-2``) because a revert RELEASES the day and KEEPS what
+    moved, so a figure legitimately outlives the assertion that recorded it --
+    as the covering movement, un-dated, does now.  The day and its basis have no
+    such asymmetry: the basis describes the day, so the two share one lifetime,
+    and the stronger constraint costs nothing and forbids the residue a revert
+    would otherwise be free to leave.
 
     **It refuses a day the account's books do not reach** (plan step X-f3c-2b,
     finding **N-378**).  An opening equity is the balance at the CLOSE of

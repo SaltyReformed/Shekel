@@ -105,7 +105,8 @@ class TestDockerfileDigestPin:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full Dockerfile source as a string."""
         return DOCKERFILE.read_text(encoding="utf-8")
 
@@ -184,7 +185,8 @@ class TestDockerfileOpenSSLUpgrade:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full Dockerfile source as a string."""
         return DOCKERFILE.read_text(encoding="utf-8")
 
@@ -235,7 +237,8 @@ class TestDockerfilePipUpgrade:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full Dockerfile source as a string."""
         return DOCKERFILE.read_text(encoding="utf-8")
 
@@ -297,7 +300,8 @@ class TestDockerfilePreservesC34Invariants:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full Dockerfile source as a string."""
         return DOCKERFILE.read_text(encoding="utf-8")
 
@@ -321,14 +325,23 @@ class TestDockerfilePreservesC34Invariants:
         )
 
     def test_runs_as_unprivileged_shekel_user(self, text: str) -> None:
-        """``USER shekel`` appears so Gunicorn runs as the
-        unprivileged user.  Required for the C-35 cap_drop ALL +
-        no-new-privileges hardening to remain effective.
+        """``USER 1000:1000`` appears so Gunicorn runs as the
+        unprivileged shekel user, created at that fixed uid/gid.
+        Required for the C-35 cap_drop ALL + no-new-privileges
+        hardening to remain effective.  Numeric rather than by name
+        since the 2026-09-19 dependency refresh (hadolint DL3066): a
+        runtime enforcing run-as-non-root can verify a number without
+        the image's passwd file, and the developer confirmed the
+        expected text changed.
         """
-        assert "USER shekel" in text, (
-            "Dockerfile no longer drops to the shekel user; the C-35 "
-            "cap_drop ALL hardening assumes the process is already "
-            "non-root.  Restore ``USER shekel`` before EXPOSE."
+        assert "USER 1000:1000" in text, (
+            "Dockerfile no longer drops to the shekel user (uid 1000); "
+            "the C-35 cap_drop ALL hardening assumes the process is "
+            "already non-root.  Restore ``USER 1000:1000`` before EXPOSE."
+        )
+        assert "useradd --create-home --uid 1000 --gid 1000 shekel" in text, (
+            "The shekel user is no longer created at the fixed uid 1000 "
+            "that ``USER 1000:1000`` names; the two lines must agree."
         )
 
     def test_healthcheck_present(self, text: str) -> None:
@@ -355,12 +368,14 @@ class TestProdComposeOverridePinsByDigest:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full prod override source as a string."""
         return PROD_COMPOSE_OVERRIDE.read_text(encoding="utf-8")
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed prod override document.
 
         Class-scoped so the YAML is parsed once and reused across
@@ -422,7 +437,8 @@ class TestBaseComposeDocumentsOverride:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full base compose source as a string."""
         return DOCKER_COMPOSE.read_text(encoding="utf-8")
 
@@ -476,7 +492,8 @@ class TestEnvExampleDocumentsDigestVariable:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full .env.example source as a string."""
         return ENV_EXAMPLE.read_text(encoding="utf-8")
 
@@ -647,7 +664,8 @@ class TestDeployScriptCosignWrappers:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full deploy.sh source as a string."""
         return DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
@@ -803,13 +821,15 @@ class TestDockerPublishWorkflowSignsImage:
     """
 
     @pytest.fixture(scope="class")
-    def parsed(self) -> dict:
+    @classmethod
+    def parsed(cls) -> dict:
         """Return the parsed workflow YAML."""
         with DOCKER_PUBLISH_WORKFLOW.open(encoding="utf-8") as fh:
             return yaml.safe_load(fh)
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the raw workflow text for substring assertions."""
         return DOCKER_PUBLISH_WORKFLOW.read_text(encoding="utf-8")
 
@@ -906,7 +926,8 @@ class TestGitignoreExcludesCosignKeys:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full .gitignore source as a string."""
         return GITIGNORE.read_text(encoding="utf-8")
 
@@ -945,7 +966,8 @@ class TestDeployReadmeDocumentsRotation:
     """
 
     @pytest.fixture(scope="class")
-    def text(self) -> str:
+    @classmethod
+    def text(cls) -> str:
         """Return the full deploy README source as a string."""
         return DEPLOY_README.read_text(encoding="utf-8")
 

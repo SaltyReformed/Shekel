@@ -436,8 +436,10 @@ def record_settled_days(
     # writer's own docstring calls the day an UPPER BOUND, and until this step
     # the only way a reader could tell was to test whether ``reconciled_by_id``
     # was populated -- which is exactly the "infer a fact from a column being
-    # populated" shape ``settled_basis_id`` exists one column over to delete
-    # (finding **N-241**).  The statement matcher is that reader, and reading
+    # populated" shape finding **N-241** deleted one column over (the row's
+    # ``settled_basis_id``, itself retired at plan step ``balance:X-bi-4b-2``
+    # for the movement's ``figure_source_id``).  The statement matcher is that
+    # reader, and reading
     # the bound as an observation cost 50 duplicate purchases worth
     # ``$3,590.00`` before ``f633d46a``.
     #

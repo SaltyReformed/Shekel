@@ -36,11 +36,12 @@ class StatusEnum(enum.Enum):
     ``transaction_service.deletion_refusal`` never named it.
 
     **How firmly a settled row is known is PROVENANCE, and it already ships**:
-    ``settled_basis_id`` (how the FIGURE is known), ``settled_day_basis_id``
-    (how the DAY is known) and ``reconciled_by_id`` (which statement was seen
-    to show it) -- three columns answering three different questions, each
-    correctable without destroying the row.  A status member is a cruder fourth
-    answer to the same question and the only one with no way back.
+    the covering movement's ``figure_source_id`` (who wrote the FIGURE),
+    ``settled_day_basis_id`` (how the DAY is known) and ``reconciled_by_id``
+    (which statement was seen to show it) -- three columns answering three
+    different questions, each correctable without destroying the row.  A
+    status member is a cruder fourth answer to the same question and the only
+    one with no way back.
 
     ``pay_period_locks`` answers the neighbouring question -- whether a SPAN may
     still be rewritten -- but it is a read-only CLASSIFIER rather than a second
@@ -697,78 +698,18 @@ class StatementSourceEnum(enum.Enum):
     """
 
     SECU_CHECKING_CSV = "secu_checking_csv"
-class SettlementBasisEnum(enum.Enum):
-    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
-
-    A row is a PLAN until its money moves and a RECORD of what moved once it
-    has.  ``estimated_amount`` / ``amount_source_id`` are the plan and no settle
-    path writes either of them; ``settled_on`` / ``settled_amount`` /
-    ``settled_basis_id`` are the record and nothing but a settle writes those.
-    This enum is the record's third column: it says which of three ways the
-    figure beside it was arrived at.
-
-        derived   -- the app resolved it at the moment of the settle, from
-                     whatever prices the row (its definition's price series, its
-                     salary profile, its loan's schedule).  That resolution is
-                     not repeatable, which is why the answer is RECORDED rather
-                     than re-asked: an effective-dated price series admits a
-                     version dated into the past, so the same question answered
-                     a year later can give a different figure and be right both
-                     times -- the series says what the price WAS, and the bank
-                     says what it TOOK.
-        corrected -- a human read it off a statement and typed it.  It beats the
-                     derivation, because a figure somebody read is a fact and a
-                     derivation is an inference.
-        purchases -- the row's own purchases state it, and it is the one basis
-                     that stores NO figure: ``settled_amount`` is NULL and the
-                     amount is the sum of the row's entries, which are
-                     themselves the records.  Storing it would be a second copy
-                     of a value the row's own children already hold, with a
-                     reconciler to keep the two in step -- the shape ruling
-                     **R-FI** exists to delete.
-
-    **The point of the enum is that WHAT moved and WHO said so stopped sharing a
-    column.**  ``actual_amount`` carried both until this step: its VALUE was the
-    settled figure and its NULL-ness was read by three subsystems as *a human
-    entered this* (ruling **R-FH**).  Two defects followed from the one
-    overload.  A machine-derived figure written there manufactured a correction
-    that never happened (finding **N-241**).  And a settled row that carried no
-    correction carried no recorded figure at all -- so every reader fell back to
-    the row's PLAN, and because a plan is a derivation, the plan then had to be
-    frozen against later change.  Splitting the two makes the record mandatory,
-    and a mandatory record is what leaves nothing to freeze.
-
-    Application code resolves these via ``ref_cache.settlement_basis_id`` and
-    compares against the integer ID -- never the string ``name`` -- matching the
-    project-wide ``ref-table: IDs for logic, strings for display only``
-    invariant.  There is deliberately no member meaning *not settled*: that is
-    the ABSENCE of a basis, so a NULL test answers "has this row ever recorded
-    a settle" with no ref id frozen into the schema -- the same reason
-    :class:`AmountSourceEnum` has no ``own`` member.  Whether the row is settled
-    NOW is a different question with a different answer: its STATUS
-    (``row_valuation.settled_figure``), because a revert keeps what moved.
-
-    **RETIRING** (plan step ``balance:X-bi-4b``, ruling **R-BAL80**).  Since
-    ``X-bi-4b-1`` every reader of the record asks the row's covering
-    movement -- its figure and :class:`MovementFigureSourceEnum` -- and this
-    catalogue's one remaining reader is the seam's write of the row's column
-    (``status_seam.apply_status_change``), the movement's stale cache through
-    the interval; ``X-bi-4b-2`` deletes the column, the ref table and this
-    enum together.
-    """
-
-    DERIVED = "derived"
-    CORRECTED = "corrected"
-    PURCHASES = "purchases"
 
 
 class SettledDayBasisEnum(enum.Enum):
     """HOW a settled row's settle DAY is known (plan step **X-az**).
 
-    :class:`SettlementBasisEnum`'s twin one column over.  That one says how the
-    FIGURE beside ``settled_on`` is known; this one says how the DAY itself is.
-    Three writers put three different kinds of fact into that one column and
-    nothing said which (finding **N-332**):
+    :class:`MovementFigureSourceEnum`'s twin for the DAY: that one says who
+    wrote the FIGURE a settled row's covering movement carries; this one says
+    how the day itself is known.  (Its twin was ``SettlementBasisEnum`` on
+    the row's own ``settled_basis_id`` until plan step ``balance:X-bi-4b-2``
+    deleted that column, migration ``45f10b870c8b``.)  Three writers put three
+    different kinds of fact into ``settled_on`` and nothing said which
+    (finding **N-332**):
 
         observed  -- a bank statement showed the money posting on this day.  It
                      is a POINT: the bank named the day, and an observation
@@ -798,9 +739,10 @@ class SettledDayBasisEnum(enum.Enum):
     observation had already cost **50 duplicate purchases worth `$3,590.00`** on
     the developer's dev database before ``f633d46a``, and inferring a fact from
     another column being populated is the shape finding **N-241** deleted one
-    column over -- ``settled_basis_id`` exists precisely so that *"which one a
-    figure is stands in ``settled_basis_id`` rather than being inferred from a
-    column being populated"*.
+    column over -- the row's ``settled_basis_id`` existed (X-au-c3 to
+    X-bi-4b-2) precisely so that *"which one a figure is stands in
+    ``settled_basis_id`` rather than being inferred from a column being
+    populated"*, a question the movement's ``figure_source_id`` answers now.
 
     **It does NOT replace ``reconciled_by_id``, and the two are not the same
     question.**  That column names WHICH statement was seen to show this money;
@@ -858,14 +800,16 @@ class MovementFigureSourceEnum(enum.Enum):
                      day-only confirmation).
 
     **A reader needs it, which is why it is a column and not a label.**
-    ``Settlement.from_settle`` re-prices a ``derived`` record and honours a
-    ``corrected`` one; once a bill's figure lives on its covering movement
-    rather than on ``transactions.settled_basis_id`` (which
-    ``balance:X-bi-4`` makes derivable), that distinction has no other home.
-    The catalogue is NEW rather than a reuse of :class:`SettlementBasisEnum`
-    because that one's ``purchases`` member means nothing on a movement (a
-    movement IS a purchase) and its ``corrected`` member is defined as *a
-    human typed it*, which a bank-born purchase would have to claim falsely.
+    ``Settlement.from_settle`` re-prices a ``resolved`` record and honours a
+    stated one (``Settlement.stated``); a bill's figure lives on its covering
+    movement and nowhere else since plan step ``balance:X-bi-4b-2`` deleted
+    ``transactions.settled_basis_id`` (migration ``45f10b870c8b``), so that
+    distinction has no other home.  The catalogue was NEW rather than a
+    reuse of that column's ``SettlementBasisEnum`` (``derived`` /
+    ``corrected`` / ``purchases``, retired with it) because its ``purchases``
+    member meant nothing on a movement (a movement IS a purchase) and its
+    ``corrected`` member was defined as *a human typed it*, which a bank-born
+    purchase would have to claim falsely.
 
     **It records who last WROTE the figure, and a withdrawal does not
     launder it**: releasing a match leaves a purchase's ``observed`` day in

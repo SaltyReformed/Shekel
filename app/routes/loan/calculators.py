@@ -59,7 +59,7 @@ def _plan_trajectory(installments):
         interest the plan pays from the pass's now.
     """
     interest = round_money(sum(
-        (installment.split.interest for installment in installments),
+        (installment.interest for installment in installments),
         Decimal("0.00"),
     ))
     return balance_at.installments_payoff(installments), interest
