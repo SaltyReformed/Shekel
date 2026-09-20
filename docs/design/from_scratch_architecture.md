@@ -168,8 +168,8 @@ Two claims survive any partition and they are the ones that carry the argument:
    not a comparison against the reset and no partition can rescue it. *(An earlier draft added
    "including the days the reset does not touch"; the same paragraph proves that set is EMPTY.)*
 
-And one sentence about the step this began with: **`X-f3c-4` as specified would book
-`-$1,777.31` on 2026-08-28, the single day `e_a = $0.00` proves the app already correct.**
+And one sentence about the step this began with: **`X-f3c-4` as specified would book `-$1,777.31` on
+2026-08-28, the single day `e_a = $0.00` proves the app already correct.**
 
 ### 1.5 The import is money-neutral, rehearsed on production
 
@@ -249,7 +249,8 @@ that.
 
 **Every plan item is satisfied by zero or more MOVEMENTS.** A bill is the one-movement case; an
 envelope is the many-movement case. `budget.transaction_entries` becomes the general movement table,
-and `is_envelope` stops being a concept.
+and `is_envelope` stops being a RECORD-side concept: the fold and the settle verb read movements
+(`X-bi-4a`); the definition keeps it as the plan item's KIND (**R-BAL85**).
 
 `budget.transaction_entries` is already most of a movement row: `transaction_id` (the plan item it
 satisfies), `account_id` (held to the parent's by `fk_transaction_entries_parent_account`),
@@ -504,7 +505,14 @@ defect this arc exists to remove, shipped on purpose.
 4. **The fold re-points to movements in ONE commit, for every kind at once** -- because after leaf 3
    every settled row has exactly one covering movement, so `opening + SUM(movements)` is an identity
    provable against the pre-state. No semantics straddle.
-5. **Delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites.**
+5. ~~**Delete `is_envelope`, `tracks_purchases`'s branch sites and the template sites.**~~
+   **DISSOLVED** as `balance:X-bi-5` by ruling **R-BAL85** (2026-09-20): rule 14's two homes closed
+   at `X-bi-7d` and the settle verb's branch stopped reading the flag at `X-bi-4a`
+   (`settles_from_entries` is `bool(purchases)`, **R-BAL78**); what the flag still decides,
+   carry-forward's rollover against move-whole, derives from nothing stored (Gas 51/51, Groceries
+   51/51 forward rows empty and envelopes; every bill's likewise), so the definition keeps it as the
+   plan item's kind; the cumulative envelope is NAMED (not ruled) as the from-scratch end state for
+   `bank_import:X-gg`'s owned question.
 
 The costly, irreversible act is leaf 3, and it is a service-door write with a rehearsal. The fold
 flip is a re-pointing graded by a before/after equality.
@@ -664,7 +672,9 @@ structural code. What this design removes, as opposed to guards:
 - **the `account_trueup` equity plug** -- no longer written, so `N-171` needs no booking act;
 - **the assertion RESET** -- `R-FO`'s five-way dispatch loses its PLAIN arm honestly rather than by
   the flip's fiat;
-- **`is_envelope`** -- 80 branch sites, and with it the two settle paths in one door;
+- **`is_envelope` as a RECORD concept** -- the settle verb's branch reads `bool(purchases)` since
+  `X-bi-4a` (**R-BAL78**), so the flag picks no settle path; the definition's flag stays as the plan
+  item's KIND (**R-BAL85**);
 - **`N-314`'s ruling** -- replaced by an evidence rank in a schema, so no code branches on which
   record wins;
 - **`R-GY`'s offer gate in its current direction** -- the gate stops being a fence on an act and
@@ -985,11 +995,10 @@ already took. Writing a due date onto the 26 undated rows -- 8 of them settled, 
 records a fact nobody stated, finding **N-181**'s class, and whether that is `R-HJ`'s class or the
 cutover's is fork B's question, asked there with its cost. The downgrade is 10.8.
 
-**9. Overlap with `X-bi-5`.** That step's sentence reads *delete `is_envelope`*; after this family
-the ROW has no such column, so `X-bi-5` deletes the DEFINITION's `is_envelope`, `tracks_purchases`
-and its branch sites -- the envelope CONCEPT -- and its row and README entry are re-pointed to say
-so in this family's registry commit, so no two steps claim one deletion. `companion_visible`
-outlives the concept on the definition and no step touches it after this one.
+**9. Overlap with `X-bi-5`.** Re-pointed here at the DEFINITION's `is_envelope` and DISSOLVED
+2026-09-20 (**R-BAL85**): after this family the definition's flag is the kind's one home and
+`tracks_purchases` its one reader, carry-forward needs the kind before any purchase exists, and no
+step deletes it. `companion_visible` likewise stays on the definition and no step touches it.
 
 **10. The cap.** The balance README stands at 1308 of 1330 with the two owed ticks netting about
 `-1`; a container entry and four leaf entries at two to three lines each fit, with the argument

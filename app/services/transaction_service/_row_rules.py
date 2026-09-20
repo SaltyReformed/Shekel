@@ -68,8 +68,8 @@ def settles_from_entries(txn: Transaction) -> bool:
     ``Kayla's Spending Money``, envelope-tracked, `$100.00` budgeted, ZERO
     entries, must not derive its amount from entries that do not exist --
     is what the ``purchases`` half already answers, so the flag's half is
-    gone from this predicate ahead of ``balance:X-bi-5``, which deletes the
-    flag itself.
+    gone from this predicate; the flag itself stays on the definition as the
+    plan item's KIND (ruling **R-BAL85**), read where no purchase exists yet.
 
     **The row's own payment record is not a purchase** (plan step **X-bi-3a**,
     ruling **R-BAL39**).  ``Kayla's Spending Money`` closed EMPTY at the door
@@ -84,8 +84,8 @@ def settles_from_entries(txn: Transaction) -> bool:
     KEEPS un-dated under the Projected row this predicate is most often asked
     of (:attr:`~app.models.transaction.Transaction.purchases`, ruling
     **R-BAL68**: the one reading, shared with every other purchase-meaning
-    reader rather than hand-rolled here).  ``balance:X-bi-5`` deletes
-    ``tracks_purchases`` and the branch sites this predicate serves.
+    reader rather than hand-rolled here).  ``tracks_purchases`` is the ONE
+    accessor for a ROW's kind (rulings **R-JQ**, **R-BAL85**).
 
     Args:
         txn: The row.  Reads the ``entries`` relationship through

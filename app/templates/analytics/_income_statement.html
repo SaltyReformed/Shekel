@@ -31,19 +31,19 @@
 
 <div class="d-flex flex-wrap align-items-center justify-content-end gap-2 mb-3">
   <div class="btn-group" role="group" aria-label="Time window">
-    <button class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+    <button type="button" class="btn btn-sm {% if window_type == 'pay_period' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.income_statement_tab', window='pay_period') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-indicator="#tab-spinner">
       Pay Period
     </button>
-    <button class="btn btn-sm {% if window_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+    <button type="button" class="btn btn-sm {% if window_type == 'month' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.income_statement_tab', window='month') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-indicator="#tab-spinner">
       Month
     </button>
-    <button class="btn btn-sm {% if window_type == 'year' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+    <button type="button" class="btn btn-sm {% if window_type == 'year' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.income_statement_tab', window='year') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-indicator="#tab-spinner">
