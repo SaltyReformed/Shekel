@@ -49,22 +49,41 @@ this step exists to stop reading.
 ``(transfer id, the account it is on)`` -- :attr:`~TransferLeg.cell_key` --
 and its cell's doors are the transfer's own routes.  The grid's leg carries
 one more thing the fold's never does: its RECORD, the covering movement the
-status seam wrote when the transfer settled (:attr:`~TransferLeg.record`),
-dated once the money moved and kept un-dated across a revert (ruling
-**R-BAL61**).  Through the interval before ``X-bi-6``'s last leaf that
-movement hangs off the transfer's shadow row on that account, so
-:func:`covering_movements_by_leg` reaches it through ONE join -- the join
-:func:`planned_transfer_legs` already uses to decide which relation a leg is
-in -- and the last leaf moves that join once when the movement re-parents
-onto ``budget.transfers``.  The fold's loader still emits only legs whose
-record is ``None``, so no fold read changed at 6-1.
+status seam wrote when the transfer settled (:attr:`~TransferLeg.record`).
+**R-BAL87's text says "its dated covering movement"; the record here is
+that movement dated OR kept un-dated across a revert** (ruling **R-BAL61**),
+one word wider than the ruling's, because the grid draws a reverted leg's
+"marking paid records $X" caption off the kept movement exactly as it draws
+a reverted row's (``retained_settle_amounts_by_id``'s rule); a settled leg's
+record is dated, so the ruling's case is unchanged.  Through the interval
+before ``X-bi-6``'s last leaf that movement hangs off the transfer's shadow
+row on that account, so :func:`covering_movements_by_leg` reaches it through
+ONE join -- the join :func:`planned_transfer_legs` already uses to decide
+which relation a leg is in -- and the last leaf moves that join once when
+the movement re-parents onto ``budget.transfers``.  The fold's loader still
+emits only legs whose record is ``None``.
+
+**One fold PREDICATE did change at 6-1, and it is pinned rather than
+denied**: sharing the join gave :func:`planned_transfer_legs`' ``dated_leg``
+test the term ``the shadow is live`` (``Transaction.is_deleted IS FALSE``)
+that it did not carry before -- the term the settled half's
+``balance_contributing_clause`` has always applied to the same movement.
+On every door-written state the two predicates agree (no door soft-deletes
+one shadow alone); on the double drift -- a dated movement under a shadow
+deleted around the service, the parent still Projected -- the leg used to
+vanish from both halves and is now counted once, by the plan (R-JA: the
+parent decides).  ``tests/test_services/test_transfer_legs.py``'s drift
+class pins it, red under the old predicate.
 
 **A leg's LABEL is composed here** (:func:`leg_label`), from the endpoints'
 CURRENT names: "Transfer to <to-account>" on the from-side, "Transfer from
 <from-account>" on the to-side.  It is the one composition the shadow
 constructor (``transfer_service._create.shadow_names``) and the grid's row
 label read, so a renamed account re-labels every leg it touches where a
-shadow's stored ``name`` went stale -- the one visible change 6-1 makes.
+shadow's stored ``name`` went stale -- one of the two visible changes 6-1
+makes.  The other: a leg's ``notes`` are its PARENT's (a shadow was written
+with none and no writer mirrored them), so a transfer's notes show on its
+grid cell's title where the shadow's showed nothing.
 
 **Why a leaf module, below both readers.**  The cash ledger needs every leg an
 account is on (both sides, for its cash fold); the loan loaders need the legs
@@ -265,10 +284,6 @@ class TransferLeg:
         """``False``: see :attr:`template_id`."""
         return False
 
-    @property
-    def settled_on(self) -> date | None:
-        """The day this side's money moved, off the record, or ``None``."""
-        return None if self.record is None else self.record.settled_on
 
     @property
     def pay_period_id(self) -> int:

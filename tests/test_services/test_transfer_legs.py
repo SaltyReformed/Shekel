@@ -620,6 +620,61 @@ class TestAStatusDriftIsCountedOnce:
                 _AMOUNT
             )
 
+    def test_a_dated_movement_under_a_DELETED_shadow_is_not_a_record_and_the_plan_counts_once(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The fold's one predicate CHANGE at leaf X-bi-6-1, declared and pinned.
+
+        The plan's ``dated_leg`` EXISTS now rides
+        ``transfer_legs._covering_movements_query``, which requires the shadow
+        the movement hangs off to be LIVE -- the term the pre-leaf predicate
+        did not carry.  On any door-written state the two agree (no door
+        soft-deletes one shadow alone).  On the double drift built here -- a
+        settled leg's dated movement under a shadow soft-deleted around the
+        service, the parent still Projected -- the old predicate saw a dated
+        movement and emitted no plan leg, while the settled half already
+        excluded the deleted shadow (``balance_contributing_clause``): the
+        leg vanished from BOTH halves.  Now the plan emits it and the balance
+        moves by the parent's amount exactly once, which is R-JA's direction
+        (the parent decides) and the settled half's own rule applied to the
+        plan.  An adversarial review found the change shipped under a
+        "no fold read changed" claim; this is the pin the claim owed.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            scenario = seed_user["scenario"]
+            period = seed_periods[2]
+            day = period.start_date
+            checking_before = _balance_on(checking, scenario, day)
+            transfer = create_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            shadow = _shadow_on(transfer, checking)
+            _settle_shadow_around_the_service(shadow, day, _AMOUNT)
+            db.session.flush()
+            cover_bare_settled_row(db.session, shadow, _AMOUNT)
+            shadow.is_deleted = True
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transfer, transfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.PROJECTED)
+            ), "the drift did not land: the parent must stay Projected"
+
+            legs = planned_transfer_legs(
+                checking.id, scenario.id, options=(),
+            )
+            assert [leg.transfer.id for leg in legs] == [transfer.id], (
+                "the plan must emit the leg whose only dated movement hangs "
+                "off a DELETED shadow: that movement is no record"
+            )
+            assert covering_movements_by_leg([transfer.id]) == {}
+            assert _balance_on(checking, scenario, day) - checking_before == (
+                -_AMOUNT
+            ), "counted once, by the plan"
+
     def test_a_settled_shadow_with_no_movement_is_counted_once_by_the_plan(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
@@ -805,7 +860,7 @@ class TestALegsRecordIsItsCoveringMovement:
                 record=leg.record,
             )
             assert leg.record is not None and leg.record.account_id == savings.id
-            assert leg.settled_on == date(2026, 2, 3)
+            assert leg.record.settled_on == date(2026, 2, 3)
             assert leg.cell_key == (settled.id, savings.id)
 
 
@@ -862,6 +917,48 @@ class TestTheGridLoaderDrawsTheSetsSide:
             assert grid_transfer_legs(
                 [transfer], lambda t: leg_accounts_shown(CashFlowSet.single(elsewhere), t),
             ) == []
+
+    def test_both_endpoints_in_the_set_and_the_balance_line_on_neither_draws_nowhere(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The rule's fourth arm, reproduced: a checking -> B payment seen from A.
+
+        Members ``(checking, A, B)`` with the balance line on A: both
+        endpoints are members and neither is the balance account.  The row
+        rule (``far_leg_clause``) drops both shadows there, so the payment is
+        drawn NOWHERE on A's grid; the leg rule answers the same.  The first
+        cut answered ``(A,)`` and ``leg_of`` refused it -- a 500 on the grid
+        for every paycheck holding a payment to the other card (found by the
+        leaf's adversarial review).  Whether "nowhere" is what R-CC23 means
+        here is an open question for the developer, recorded at X-bi-6-1.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            card_a = _savings(seed_user, name="Card A")
+            card_b = _savings(seed_user, name="Card B")
+            payment = create_transfer(
+                seed_user, db.session, checking, card_b, seed_periods[2],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+            seen_from_a = CashFlowSet(
+                balance=card_a, members=(checking, card_a, card_b),
+            )
+
+            assert leg_accounts_shown(seen_from_a, payment) == ()
+            assert grid_transfer_legs(
+                [payment], lambda t: leg_accounts_shown(seen_from_a, t),
+            ) == []
+            # And the row rule agrees: neither shadow is a paycheck row there.
+            rows = (
+                db.session.query(Transaction.id)
+                .filter(
+                    Transaction.transfer_id == payment.id,
+                    paycheck_rows_clause(seen_from_a),
+                )
+                .all()
+            )
+            assert rows == []
 
     def test_the_own_rows_clause_keeps_no_shadow(
         self, app, db, seed_user, seed_periods,
@@ -1039,4 +1136,4 @@ class TestALegsDisplayProjections:
         savings.name = "Emergency Fund"
         assert expense.name == "Transfer to Emergency Fund"
         assert expense.template_id is None and expense.recurs is False
-        assert expense.settled_on is None
+        assert expense.record is None

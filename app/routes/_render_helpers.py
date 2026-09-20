@@ -20,6 +20,7 @@ from flask import render_template, request
 from flask_login import current_user
 from werkzeug.datastructures import MultiDict
 
+from app.exceptions import NotFoundError
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -42,7 +43,6 @@ from app.services.transaction_service import (
     retained_settle_amounts_by_id,
 )
 from app.services.transfer_legs import TransferLeg, grid_transfer_leg
-from app.services.transfer_service import load_transfer_rows
 from app.utils.dates import display_today
 
 
@@ -190,14 +190,17 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
 
     **It is SEPARATE from :func:`transfer_settlement_amounts` rather than a
     third field on it, and the split is by what each surface renders.**  The
-    cell and the quick edit show a PLAN and nothing else, while that producer
-    loads the shadow pair and reads two settlement records to answer -- so
-    bundling them would make every cell swap pay for two figures it does not
-    display.  The popover, which shows all three, calls both.  *A first draft of
-    this paragraph cited finding N-296 for that cost and an adversarial review
-    opened the row: N-296 is a per-DEFINITION eager load in BATCH callers, whose
-    remedy is `pricing_load_options` and whose step is `X-bm`.  It says nothing
-    about this.  The argument above needs no citation.*
+    quick edit shows a PLAN and nothing else, while that producer loads the
+    shadow pair and reads two settlement records to answer -- so bundling them
+    would make the quick-edit swap pay for two figures it does not display.
+    The popover shows all three and calls both; so does the transfers page's
+    CELL since leaf ``X-bi-6-1`` closed finding **N-303** (it showed the plan
+    over a figure just corrected, because it was handed neither map).  *A
+    first draft of this paragraph cited finding N-296 for that cost and an
+    adversarial review opened the row: N-296 is a per-DEFINITION eager load in
+    BATCH callers, whose remedy is `pricing_load_options` and whose step is
+    `X-bm`.  It says nothing about this.  The argument above needs no
+    citation.*
 
     **SINGLE-ROW reads only**, the boundary :attr:`Transfer.settled_on`
     documents, and the leaf that stated that boundary in advance has arrived.
@@ -294,15 +297,18 @@ def transfer_settlement_amounts(
     the transfers page and a grid SHADOW cell -- and a rule written at each is
     how one click shows a different figure from another.
 
-    **It asks the two published producers rather than reading the columns.**
-    :func:`~app.services.cash_ledger.settled_amounts_by_id` is what every other
-    surface shows a settled row's figure from, and
-    :func:`~app.services.transaction_service.retained_settle_amounts_by_id` is
-    built from the same function the settle verb honours
-    (``status_seam.honoured_correction``) -- so what this popover promises and
-    what a tick books cannot drift.  Neither is transaction-specific: both are
-    pure reads of a row's own settlement record, and a shadow carries one
-    exactly as a plain row does.
+    **It asks the LEG producers, the same two the grid prices a leg's cell
+    by** (leaf ``X-bi-6-1``, ruling **R-BAL87**; rule 14):
+    :func:`~app.services.cash_ledger.leg_settled_amounts_by_key` and
+    :func:`~app.services.transaction_service.leg_retained_amounts_by_key` over
+    ONE leg read through :func:`~app.services.transfer_legs.grid_transfer_leg`,
+    so what this popover promises, what the cell beside it shows and what a
+    tick books are one walk.  Until that leaf it loaded the shadow pair and
+    read the expense SHADOW's entries through the row producers -- a second
+    walk over the same record that agreed with the cell's only while Transfer
+    Invariant 3 held, which an adversarial review named.  Both leg producers
+    are built from the seam's own reads (``movement_settlement``,
+    ``honoured_figure``), the leaves the row producers read through too.
 
     **The EXPENSE leg answers**, which is the leg
     ``transfer_service._settle.settle`` resolves its figures from and the leg
@@ -314,24 +320,30 @@ def transfer_settlement_amounts(
     agree with is what keeps either from silently becoming "whichever row came
     back first".
 
+    **It answers for a SOFT-DELETED transfer**, where the pair loader it used
+    to call refused one: the transfers page's cell reaches here on the stale
+    response after a rival's delete won (``_stale_transfer_response``), and a
+    deleted transfer's leg simply carries no record.  The popover door refuses
+    a deleted transfer itself (``transfers.get_full_edit``).
+
     Args:
         xfer: The transfer the popover is rendering.
-        user_id: The owner, for the loader's defense-in-depth ownership check.
+        user_id: The owner, a defense-in-depth ownership check the loader used
+            to make and this keeps: a transfer that is not *user_id*'s is
+            refused as not found.
 
     Returns:
         A :class:`TransferSettlementAmounts` whose two maps hold one entry each.
 
     Raises:
-        NotFoundError: If *xfer* is not *user_id*'s or is soft-deleted.
-        ValidationError: If the shadow pair is corrupt -- fail loud, because a
-            popover drawn over a broken pair offers controls that cannot work.
+        NotFoundError: If *xfer* is not *user_id*'s.
     """
-    rows = load_transfer_rows(xfer.id, user_id)
-    settled = settled_amounts_by_id([rows.expense])
-    retained = retained_settle_amounts_by_id([rows.expense])
+    if xfer.user_id != user_id:
+        raise NotFoundError(f"Transfer {xfer.id} not found.")
+    leg = grid_transfer_leg(xfer, xfer.from_account_id)
     return TransferSettlementAmounts(
-        settled={xfer.id: settled[rows.expense.id]},
-        retained={xfer.id: retained[rows.expense.id]},
+        settled={xfer.id: leg_settled_amounts_by_key([leg])[leg.cell_key]},
+        retained={xfer.id: leg_retained_amounts_by_key([leg])[leg.cell_key]},
     )
 
 
@@ -469,6 +481,14 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
     three fragments cannot name the balance line three ways, nor one way the
     page does not.
 
+    **It publishes what the pair RECORDED and what a re-settle would RE-BOOK
+    beside the plan** (leaf ``X-bi-6-1``, closing finding **N-303**): the
+    cell was handed ``budgets`` alone and so painted the plan over a figure
+    the same click's popover had just corrected -- the "one row, two figures
+    on two surfaces" shape :class:`RenderAmounts` exists to prevent.  The
+    two maps come from :func:`transfer_settlement_amounts`, the popover's own
+    producer, so the cell and the popover cannot disagree about the pair.
+
     Args:
         xfer: The transfer to render.  Owner-established by the caller -- see
             :func:`transfer_budgets`, which states what that does and does not
@@ -485,11 +505,14 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
             rule cannot answer.  Unreachable while every transfer owns its
             figure; the leaves after this one are what give it a population.
     """
+    amounts = transfer_settlement_amounts(xfer, current_user.id)
     return render_template(
         "transfers/_transfer_cell.html",
         xfer=xfer,
         account=fragment_balance_line(xfer.user_id),
         budgets=transfer_budgets(xfer),
+        settled=amounts.settled,
+        retained=amounts.retained,
         **extra,
     )
 

@@ -467,8 +467,6 @@ def get_accessible_transaction(txn_id):
             path=request.path,
         )
         return None
-    if is_transfer_shadow(txn):
-        return None
     requester_id = _safe_user_id()
     owner_id = txn.user_id
     companion_role_id = ref_cache.role_id(RoleEnum.COMPANION)
@@ -502,6 +500,12 @@ def get_accessible_transaction(txn_id):
                 path=request.path,
             )
             return None
+    # AFTER both access branches, deliberately: a stranger's or a companion's
+    # probe naming another owner's shadow row is an access denial first
+    # (WARNING, the F-144 contract above) and "not found" second, exactly as
+    # ``routes/transactions/_helpers._get_owned_transaction`` orders it.
+    if is_transfer_shadow(txn):
+        return None
     return txn
 
 

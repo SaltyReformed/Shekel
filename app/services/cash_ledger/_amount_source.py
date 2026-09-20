@@ -75,7 +75,7 @@ flag (``routes/transactions/mutations.py:251``), carry-forward sets it in a bulk
 ``query.update`` no ORM validator sees (``carry_forward_service/_execute.py:157``),
 and Credit and Cancelled leave Projected WITHOUT entering the settled band, so no
 freeze ever fires.  Production carries 7 Cancelled and 2 Credit template-linked
-rows and ``routes/grid/page.py``'s ``_load_grid_items`` loads every one
+rows and ``routes/grid/_items.py``'s ``load_grid_items`` loads every one
 of them with no status predicate,
 so the first bucket to derive would have taken out the whole screen.  Asking the
 column instead makes the two agree by construction: the state the CHECK pairs a

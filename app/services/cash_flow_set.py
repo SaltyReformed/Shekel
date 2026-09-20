@@ -249,6 +249,20 @@ def leg_accounts_shown(cash_flow: CashFlowSet, transfer: Transfer) -> tuple[int,
     because a caller holds the transfer already and the membership test is
     the same predicate that query filters on.
 
+    **The fourth arm is the rule's own gap, reproduced rather than decided
+    here**: both endpoints in the set and the balance line on NEITHER -- a
+    checking -> card B payment seen from card A's balance line, members
+    ``(checking, A, B)``.  :func:`far_leg_clause` drops BOTH shadows there
+    (each is a member row that is not the balance account, of an intra-set
+    transfer), so the payment is drawn nowhere on A's grid, and
+    :func:`far_legs_of` keeps both out of the subtotal the same way.  This
+    answers ``()`` for exactly that case, which is what the rows did; whether
+    R-CC23 MEANS "nowhere" there is an open question for the developer,
+    recorded at leaf ``balance:X-bi-6-1`` (its adversarial review found the
+    first cut returning the balance account here, which
+    :func:`~app.services.transfer_legs.leg_of` refuses as a leg the transfer
+    has no side on -- a 500 on the grid).
+
     Args:
         cash_flow: The set.
         transfer: A transfer the caller loaded.
@@ -262,7 +276,10 @@ def leg_accounts_shown(cash_flow: CashFlowSet, transfer: Transfer) -> tuple[int,
     on_from = transfer.from_account_id in members
     on_to = transfer.to_account_id in members
     if on_from and on_to:
-        return (cash_flow.balance.id,)
+        balance_id = cash_flow.balance.id
+        if balance_id in (transfer.from_account_id, transfer.to_account_id):
+            return (balance_id,)
+        return ()
     if on_from:
         return (transfer.from_account_id,)
     if on_to:

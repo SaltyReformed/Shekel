@@ -824,6 +824,75 @@ class TestAccessDeniedLogging:
         )
 
 
+class TestATransferShadowRowAtTheTransactionDoor:
+    """Plan step balance:X-bi-6-1's interval fence, and WHERE in the door it sits.
+
+    A transfer's shadow row is "not found" at ``get_accessible_transaction``
+    (``is_transfer_shadow``), but AFTER the two access branches: a stranger
+    naming another owner's shadow is an access denial first -- WARNING, the
+    F-144 contract -- and "not found" second.  The leaf's first cut fenced
+    before the branches, so an IDOR probe against any of production's 354
+    shadow rows would have logged at INFO under ``resource_not_found``, with
+    the victim's ``transfer_id``; an adversarial review found it.
+    """
+
+    @staticmethod
+    def _shadow_of_a_transfer(db, seed_user, period):
+        """A checking -> savings transfer's expense shadow for *seed_user*."""
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_savings_account, create_transfer,
+        )
+        savings = create_savings_account(
+            seed_user, db.session, "Savings", Decimal("0.00"),
+        )
+        transfer = create_transfer(
+            seed_user, db.session, seed_user["account"], savings, period,
+            amount=Decimal("250.00"),
+        )
+        db.session.commit()
+        return (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=transfer.id, account_id=seed_user["account"].id)
+            .one()
+        )
+
+    def test_the_owner_s_own_shadow_is_not_found_at_info(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The owner asking for their own shadow: 'not found', INFO, the transfer named."""
+        with app.test_request_context("/transactions/1/cell"):
+            shadow = self._shadow_of_a_transfer(db, seed_user, seed_periods[0])
+            login_user(seed_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(shadow.id)
+        assert result is None
+        record = cap.find(EVT_RESOURCE_NOT_FOUND)
+        assert record is not None and record.levelno == logging.INFO
+        assert record.transfer_id == shadow.transfer_id
+        assert cap.find(EVT_ACCESS_DENIED_CROSS_USER) is None
+
+    def test_a_stranger_s_probe_of_a_shadow_is_a_cross_user_denial_at_warning(
+        self, app, db, seed_user, seed_periods, second_user,
+    ):
+        """Owner B naming owner A's shadow: ``access_denied_cross_user``, WARNING, first."""
+        with app.test_request_context("/transactions/1/mark-done"):
+            shadow = self._shadow_of_a_transfer(db, seed_user, seed_periods[0])
+            login_user(second_user["user"])
+            with _AuthHelpersLogCapture() as cap:
+                result = get_accessible_transaction(shadow.id)
+        assert result is None
+        record = cap.find(EVT_ACCESS_DENIED_CROSS_USER)
+        assert record is not None, (
+            "a stranger's probe of a shadow row must be an access denial; "
+            f"records: {[(r.levelname, getattr(r, 'event', None)) for r in cap.records]}"
+        )
+        assert record.levelno == logging.WARNING
+        assert record.owner_id == seed_user["user"].id
+        assert cap.find(EVT_RESOURCE_NOT_FOUND) is None, (
+            "the fence must not log the victim's transfer before the denial"
+        )
+
+
 class TestRequireOwnerFailsClosed:
     """Plan step ``bank_import:X-gs`` (ledger row **BI-486**).
 

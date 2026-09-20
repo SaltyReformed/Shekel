@@ -34,7 +34,10 @@ from app.models.ref import AccountType, Status
 from app.models.transaction import Transaction
 from app.services import account_service, transfer_service
 from app.services.grid_view_service import leg_dom_id
-from tests._test_helpers import open_books_before_the_first_assertion
+from tests._test_helpers import (
+    create_account_of_type,
+    open_books_before_the_first_assertion,
+)
 
 
 def _create_savings(seed_user, name="Savings"):
@@ -230,6 +233,48 @@ class TestTheGridDrawsALegOffItsParent:
         assert 'class="paybtn"' in cell
 
 
+class TestAPaymentToTheOtherCardSeenFromACard:
+    """Two cards, a checking -> card B payment, the grid seen from card A.
+
+    The cash-flow set is checking plus BOTH cards whichever member's balance
+    line renders (``account_resolver``), so from card A the payment has both
+    endpoints in the set and the balance line on neither -- the arm the
+    leaf's first cut turned from "drawn nowhere" (the row rule's answer) into
+    a 500 (the leg loader asked ``leg_of`` for a leg on A).  Pins the page
+    rendering and the payment drawn nowhere on it, which is today's rule and
+    an open question for the developer (R-CC23 never named this arm).
+    """
+
+    def test_the_grid_renders_and_the_payment_is_drawn_nowhere(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            card_a = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Card A",
+            )
+            card_b = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Card B",
+            )
+            db.session.commit()
+            payment = _create_transfer(
+                seed_user, seed_periods_today[4], card_b, amount=Decimal("165.00"),
+            )
+            xfer_id, a_id, b_id, checking_id = (
+                payment.id, card_a.id, card_b.id, checking.id,
+            )
+            resp = auth_client.get(f"/grid?account_id={a_id}")
+            from_checking = auth_client.get("/grid")
+
+        assert resp.status_code == 200, resp.get_data(as_text=True)[:300]
+        html = resp.get_data(as_text=True)
+        for account_id in (checking_id, a_id, b_id):
+            assert f'id="{leg_dom_id(xfer_id, account_id)}"' not in html
+        # From checking's own line the same payment shows once, from checking.
+        assert from_checking.status_code == 200
+        assert f'id="{leg_dom_id(xfer_id, checking_id)}"' in from_checking.get_data(as_text=True)
+
+
 class TestTheTransferDoorsServeTheLeg:
     """The leg's cell and card come back from the transfer's own doors."""
 
@@ -334,3 +379,82 @@ class TestTheTransferDoorsServeTheLeg:
         assert f'name="leg_account_id" value="{checking_id}"' in html
         assert html.count(f'hx-vals=\'{{"leg_account_id": "{checking_id}"}}\'') == 2
         assert 'name="amount_as_rendered"' in html
+
+
+class TestTheTransfersPageCellShowsTheRecord:
+    """Findings N-303 and N-420, closed where R-BAL87 said: the transfers page's cell.
+
+    The cell was handed ``budgets`` alone, so after a corrected settle it
+    painted the PLAN over the figure the same click's popover had just
+    recorded (N-303), and it printed that figure through a raw format
+    string rather than ``money`` (N-420).  It reads the popover's two maps
+    now and draws a settled transfer as the grid draws a settled row.
+    """
+
+    def test_a_corrected_settle_shows_the_record_struck_against_the_plan(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today[4], savings)
+            settle = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.DONE)),
+                    "settled_amount": "187.50",
+                },
+            )
+            assert settle.status_code == 200, settle.get_data(as_text=True)[:300]
+            # The transfers page's own cell, with no grid context.
+            cell = auth_client.get(f"/transfers/cell/{xfer.id}").get_data(as_text=True)
+        assert "$187.50 (est: $200.00) (Paid)" in cell
+        assert "text-decoration-line-through" in cell
+        assert "$188" in cell and "$200" in cell
+        assert '"{:,.0f}".format' not in cell
+
+    def test_a_reverted_transfer_says_what_a_re_settle_would_book(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today[4], savings)
+            auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.DONE)),
+                    "settled_amount": "187.50",
+                },
+            )
+            revert = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"status_id": str(ref_cache.status_id(StatusEnum.PROJECTED))},
+            )
+            assert revert.status_code == 200
+            cell = auth_client.get(f"/transfers/cell/{xfer.id}").get_data(as_text=True)
+        assert "$200.00 -- marking paid records $187.50 (Projected)" in cell
+
+    def test_the_conflict_cell_of_a_deleted_transfer_still_renders(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A rival's delete won: the stale response draws the plan, not a 500.
+
+        The pair loader refuses a deleted parent, so the renderer publishes
+        the two maps empty for one rather than asking; this pins that the
+        designed conflict fragment survives the maps' arrival.
+        """
+        with app.app_context():
+            savings = _create_savings(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today[4], savings)
+            xfer_id = xfer.id
+            transfer_service.delete_transfer(xfer_id, seed_user["user"].id, soft=True)
+            db.session.commit()
+            # A form pinned to a version the delete has since bumped.
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer_id}",
+                data={"notes": "late edit", "version_id": "1"},
+            )
+        assert resp.status_code == 409, resp.get_data(as_text=True)[:300]
+        html = resp.get_data(as_text=True)
+        assert "changed by another action" in html
+        assert "$200.00" in html
+

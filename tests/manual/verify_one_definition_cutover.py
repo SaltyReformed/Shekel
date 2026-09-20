@@ -81,6 +81,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User
 from app.routes.grid._items import load_grid_items
+from app.services.cash_flow_set import CashFlowSet  # noqa: E402  pylint: disable=wrong-import-position
 from app.services import balance_at, companion_service, grid_view_service
 from app.services.cash_ledger import amounts_by_id, resolve_transaction_amount
 from app.services.spending_analysis import payment_timeliness_from_txns
@@ -149,8 +150,9 @@ def _bare_rows(ctx):
 def _grid(account, ctx, periods, categories):
     """The grid's row keys, cells and figures for *account* over *periods*."""
     # The grid's window is rows AND transfer legs since balance:X-bi-6-1; this
-    # harness measured definitions, which only rows carry.
-    rows = load_grid_items(account, ctx, periods).rows
+    # harness measured definitions, which only rows carry.  The loader takes
+    # the account's cash-flow SET (credit_card:CC-4-1), a set of one here.
+    rows = load_grid_items(CashFlowSet.single(account), ctx, periods).rows
     income_keys = grid_view_service.build_row_keys(rows, categories, True)
     expense_keys = grid_view_service.build_row_keys(rows, categories, False)
     matched = grid_view_service.build_matched_by_row_period(

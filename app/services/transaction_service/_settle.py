@@ -420,8 +420,9 @@ def settle_transaction(
     transfer invariants **3** and **4** broken in one call, and silently,
     because ``sync_transaction_postings`` returns ``[]`` for a shadow so the
     ledger stays flat while the grid shows one leg settled.  No caller can
-    reach it today (``mark_done`` routes a shadow to ``_mark_done_shadow``
-    first), but this is a PUBLIC verb documented as what a door calls, and
+    reach it today (since plan step balance:X-bi-6-1 a shadow row is "not
+    found" at every transaction door, so ``mark_done`` never holds one), but
+    this is a PUBLIC verb documented as what a door calls, and
     X-f2-c3 puts transfer shadows in the reconcile panel.  A verb owns its own
     preconditions.
 
