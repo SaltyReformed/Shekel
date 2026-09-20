@@ -30,7 +30,12 @@ from app.services.cash_flow_set import (
     set_transfer_legs_in_periods,
 )
 from app.services.entry_service import compute_entry_sums, compute_remaining
-from app.services.transfer_legs import PlanItem, TransferLeg, cell_key
+from app.services.transfer_legs import (
+    PlanItem,
+    TransferLeg,
+    cell_key,
+    expense_legs,
+)
 from app.utils.balance_predicates import is_projected_clause
 
 
@@ -63,13 +68,18 @@ def _query_unpaid_expense_rows(
     ``R-CC23``: once, from the balance line's side, when both endpoints are
     members).  It was ``Transaction.account_id == account_id``, then the
     paycheck-rows clause that carried the near-side shadow in as an expense
-    row; the two loads below keep both properties and read no shadow.
+    row; the two loads below keep both properties and neither selects a
+    shadow row of its own (a settled leg's RECORD is still reached through
+    the one join in ``transfer_legs``, which walks ``transactions.transfer_id``
+    until ``X-bi-6-4`` re-parents the movement).
 
-    **A transfer's EXPENSE leg is a bill; its income leg is not.**  The
-    Gate B4b ruling read "a transfer-out shadow is an obligation the paycheck
-    still owes on the member it leaves"; a leg states the same thing from
-    its side rather than from a row's type: the from-side leg (money leaves)
-    is kept, the to-side leg (money arrives) dropped.  A payment from the
+    **A transfer's EXPENSE leg is a bill; its income leg is not**
+    (:func:`~app.services.transfer_legs.expense_legs`, the one spelling the
+    Spending report shares).  The Gate B4b ruling read "a transfer-out shadow
+    is an obligation the paycheck still owes on the member it leaves"; a leg
+    states the same thing from its side rather than from a row's type: the
+    from-side leg (money leaves) is kept, the to-side leg (money arrives)
+    dropped.  A payment from the
     balance account to a card is therefore one obligation, on the balance
     line's side; a card -> checking transfer is none (the set shows it from
     the balance line, where it is an income leg); a transfer with one
@@ -119,12 +129,9 @@ def _query_unpaid_expense_rows(
         )
         .all()
     )
-    legs = [
-        leg for leg in set_transfer_legs_in_periods(
-            cash_flow, scenario_id, period_ids, is_projected_clause(Transfer),
-        )
-        if leg.is_expense
-    ]
+    legs = expense_legs(set_transfer_legs_in_periods(
+        cash_flow, scenario_id, period_ids, is_projected_clause(Transfer),
+    ))
     return PlanItems.of(rows, legs)
 
 

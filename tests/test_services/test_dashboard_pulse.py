@@ -28,7 +28,6 @@ from strings per the testing standards.
 from datetime import date
 from decimal import Decimal
 
-import pytest
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
@@ -1291,6 +1290,37 @@ class TestTheBillsAreLegsReadOffTheParent:
             assert bill["amount_base"] is None
             assert bill["is_tracked"] is False
             assert bill["days_until_due"] == (date(2026, 3, 24) - _TODAY).days
+
+    def test_a_soft_deleted_transfer_is_no_bill(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The loader's ``Transfer.is_deleted`` term, graded on the one reader
+        with no Python re-check behind it (the review of leaf X-bi-6-1b):
+        a soft-deleted projected transfer draws no leg and moves no total."""
+        with app.app_context():
+            checking = seed_user["account"]
+            period = seed_periods[_CURRENT_IDX]
+            savings = create_savings_account(
+                seed_user, db.session, "Sweep Target", Decimal("0.00"),
+            )
+            deleted = create_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("400.00"), due_date=date(2026, 3, 24),
+            )
+            db.session.commit()
+            transfer_service.delete_transfer(
+                deleted.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            section = dashboard_section(seed_user["user"].id)
+
+            unpaid = _bills._query_unpaid_expense_rows(  # pylint: disable=protected-access
+                section.cash_flow, seed_user["scenario"].id, [period.id],
+            )
+            assert unpaid.legs == []
+            result = dashboard_service.compute_pulse_section(section)
+            assert result["still_due"]["current_period"] == Decimal("0.00")
+            assert result["due_soon"] == []
 
     def test_a_transfer_into_the_set_is_no_bill(
         self, app, seed_user, seed_periods, db,
