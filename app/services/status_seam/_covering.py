@@ -125,10 +125,13 @@ two of the owner's accounts is neither income nor expense.
 
 **A movement moves with its parent** (ruling **R-BAL46**).  The one parent
 whose account can change is a shadow re-pointed by
-``transfer_service._endpoints._apply_endpoint_move``; the co-located key
-``fk_transaction_entries_parent_account`` cascades the move (migration
-``c4e8a2d7f1b3``) and the applier assigns the movements' account as well, so
-the session agrees with the database.  Nothing here reads the account.
+``transfer_service._endpoints._apply_endpoint_move``, and that applier is the
+ONE writer of the move since plan step ``credit_card:CC-5-1``: the co-located
+key that cascaded it, ``fk_transaction_entries_parent_account``, is dropped
+(ruling **R-BAL76**), because a movement's account is its own -- where its
+money moved, which for a card purchase in a checking envelope is the card.
+The movement this module writes takes its parent's account until the settle
+door takes a TENDER of its own (``CC-5-3``); nothing here reads the account.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 mutates in place and never commits; the withdraw arm's posting reversal
@@ -372,6 +375,25 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     plan's name as it reads now -- and ``_mirror_assertion`` dates it on the
     row's new day.  The id survives, so a match or a log line that named it
     still names it.
+
+    **And re-points it onto the row's account** (plan step
+    ``credit_card:CC-5-2``, ruling **R-CC36**).  A kept movement sits on the
+    account the row named when it was settled; since that ruling a Projected
+    row holding a kept record FOLLOWS its definition's account move (the
+    recurrence maintain pass no longer retains it), so at the re-settle the
+    row may be on Second Checking while its record still names Checking.  The
+    record is what a settle books, and a settle books on the row's account --
+    the value the fresh-movement arm below writes (a TENDER account other
+    than the row's is ``CC-5-3``'s to add, and it replaces this value rather
+    than sitting beside it) -- so the kept movement takes it here too.
+    Without this line a revert, a definition
+    account move and a re-settle would book the payment on the OLD account
+    while the plan sits on the new one, `$150` apart on each.  Assigned
+    BEFORE the record is written, so ``record_settle_day``'s books boundary
+    (read under ``no_autoflush`` off the column) grades the day against the
+    account the record will book on.  The lazy ``account`` relationship is
+    not loaded here and is not assigned: the fold and the ledger read the
+    column, and no reader of the relationship follows on this path.
     """
     if not settlement.amount:
         _withdraw(row)
@@ -385,14 +407,21 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
                 "a settle writes exactly one, so a second can only have reached "
                 "the table around the status seam."
             )
+        movement.account_id = row.account_id
         if _record_onto(row, movement, settlement):
             _record_moved(row)
         return
     movement = TransactionEntry(
         transaction_id=row.id,
-        # The parent's account, as ``entry_service.create_entry`` writes it:
-        # ``fk_transaction_entries_parent_account`` refuses any other value.
+        # The parent's account -- where the row was EXPECTED to be paid from
+        # (ruling **R-CC16**) -- as ``entry_service.create_entry`` writes it,
+        # until the settle door takes the TENDER account of its own (plan step
+        # ``credit_card:CC-5-3``: a bill charged to the card is settled with
+        # its covering movement on the card, ruling **R-CC15**).
         account_id=row.account_id,
+        # The row's OWNER, which ``fk_transaction_entries_owner_transaction``
+        # holds it to (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
+        owner_id=row.user_id,
         # The AUTHOR column names who recorded the movement; the seam records
         # it on the owner's behalf, and the owner is the row's.
         user_id=row.user_id,

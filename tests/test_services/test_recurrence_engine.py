@@ -2412,16 +2412,22 @@ class TestRegenerateForTemplate:
             # refusal to delete.
             assert db.session.get(Transaction, empty_id) is None
 
-    def test_an_account_move_retains_a_row_that_holds_a_purchase(
+    def test_an_account_move_carries_a_row_holding_a_purchase_and_leaves_the_purchase(
         self, app, db, seed_user, seed_periods
     ):
-        """Repointing a template's account must not drag purchases silently.
+        """A moved row LEAVES its purchases where their money moved (ruling **R-CC36**).
 
-        The developer's ruling on the third shape: a purchase's account IS its
-        parent's (``fk_transaction_entries_parent_account``) and its statement
-        link is scoped BY account (``fk_transaction_entries_reconciled_by``), so
-        moving the row moves the purchases and invalidates what cleared them.
-        The pass leaves such a row exactly as it found it and reports it.
+        RE-EXPRESSED at plan step ``credit_card:CC-5-2`` under CLAUDE.md rule
+        5 with the developer's confirmation (2026-09-20, the option picked:
+        *"Retire it and re-point on re-settle"*).  Through ``CC-5-1`` this
+        case pinned the opposite -- the row was RETAINED and reported --
+        because ``fk_transaction_entries_parent_account`` dragged every
+        purchase onto the new account and invalidated the account-scoped
+        clearing link each carried.  That key is dropped (**R-BAL76**), every
+        reader asks the purchase's own account (design 3.2), and a purchase's
+        link is scoped by the PURCHASE's account, which its row moving never
+        touches.  So the row follows its definition, no conflict is raised
+        for it, and the purchase's account is exactly what it was.
         """
         with app.app_context():
             template = self._make_envelope_template(seed_user)
@@ -2436,7 +2442,8 @@ class TestRegenerateForTemplate:
             spent_on, untouched = created[0], created[1]
             spent_id, empty_id = spent_on.id, untouched.id
             original_account_id = spent_on.account_id
-            self._record_purchase(spent_on, seed_user)
+            purchase = self._record_purchase(spent_on, seed_user)
+            purchase_id = purchase.id
 
             moved_to = account_service.create_account(
                 account_service.AccountSpec(
@@ -2451,18 +2458,23 @@ class TestRegenerateForTemplate:
             template.account_id = moved_to.id
             db.session.flush()
 
-            with pytest.raises(RecurrenceConflict) as raised:
-                recurrence_engine.regenerate_for_template(
-                    template, schedule, seed_user["scenario"].id,
-                )
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
             db.session.flush()
+            db.session.expire_all()
 
-            assert raised.value.retained == [spent_id]
-            assert db.session.get(Transaction, spent_id).account_id == (
+            # The row moved; its purchase did not.
+            assert db.session.get(Transaction, spent_id).account_id == moved_to.id
+            assert db.session.get(TransactionEntry, purchase_id).account_id == (
                 original_account_id
             )
-            # The CONTROL: a row with no purchases DOES follow the template, so
-            # the retention is the purchase's doing and the move still works.
+            # The row still holds the purchase -- nothing was dropped or
+            # re-created on the way.
+            assert [e.id for e in db.session.get(Transaction, spent_id).purchases] == [
+                purchase_id,
+            ]
+            # And a row with no purchases follows exactly as it always did.
             assert db.session.get(Transaction, empty_id).account_id == moved_to.id
 
     def test_a_note_alone_retains_an_orphaned_row(
@@ -2737,15 +2749,19 @@ class TestRegenerateForTemplate:
             )
             assert (set(before) - set(after)) and (set(after) - set(before))
 
-    def test_propagating_retains_a_row_holding_records_when_its_account_moves(
+    def test_propagating_carries_a_row_holding_records_when_its_account_moves(
         self, app, db, seed_user, seed_periods
     ):
-        """The same refusal the regular pass makes, on the same two functions.
+        """The same decision the regular pass makes, on the same two functions.
 
-        A row holding a purchase is RETAINED where it is when its rule-less
-        definition moves to another account -- moving it would drag the
-        purchase's leg onto an account the money never left -- and its id is
-        answered back for the route to report; a row holding nothing follows.
+        RE-EXPRESSED at plan step ``credit_card:CC-5-2`` under CLAUDE.md rule
+        5 with the developer's confirmation (2026-09-20, ruling **R-CC36**).
+        It pinned the RETENTION through ``CC-5-1``: moving the row then
+        dragged the purchase's leg onto an account the money never left.  A
+        purchase names its own account now, so a row holding one follows its
+        rule-less definition's account move exactly as an empty row does, the
+        purchase stays where its money moved, and the route is handed nothing
+        to report.
         """
         with app.app_context():
             template = self._make_envelope_template(seed_user)
@@ -2777,14 +2793,18 @@ class TestRegenerateForTemplate:
 
             template.account_id = other.id
             db.session.flush()
+            purchase_id = holding.purchases[0].id
             retained = recurrence_engine.propagate_to_unruled_definition(
                 template, [holding, empty],
             )
             db.session.flush()
 
-            assert retained == [holding.id]
-            assert holding.account_id == old_account
+            assert retained == []
+            assert holding.account_id == other.id
             assert empty.account_id == other.id
+            assert db.session.get(TransactionEntry, purchase_id).account_id == (
+                old_account
+            )
 
     def test_a_cross_user_scenario_is_refused_and_retires_nothing(
         self, app, db, seed_user, seed_periods, second_user

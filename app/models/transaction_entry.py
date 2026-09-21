@@ -42,12 +42,32 @@ class TransactionEntry(
 
     Columns:
         transaction_id  -- The parent transaction this entry belongs to.
-        account_id      -- The account this purchase's cash leaves.  It IS the
-                           parent's, and ``fk_transaction_entries_parent_account``
-                           makes a disagreement unrepresentable rather than
-                           merely unlikely.  See the column comment for why the
-                           app stores what it could join for.
-        user_id         -- The user who created the entry (owner or companion).
+        account_id      -- The account this movement's money moved THROUGH:
+                           its own, and free to differ from its parent's since
+                           plan step ``credit_card:CC-5-1`` (rulings
+                           **R-BAL75**, **R-BAL76**), so that a card purchase
+                           inside a checking envelope can be a movement on the
+                           card once the card's doors write one (``CC-5-2``,
+                           ``CC-5-3``); until then every door writes the
+                           parent's account.  The parent's ``account_id`` is
+                           where the row was EXPECTED to be paid from (ruling
+                           **R-CC16**).  Held to the ROW's
+                           OWNER by ``fk_transaction_entries_owner_account``
+                           below, so a movement on another owner's account is
+                           unwritable rather than gated.  Through that step it
+                           was the parent's by construction
+                           (``fk_transaction_entries_parent_account``).
+        owner_id        -- The OWNER of this movement: the parent row's
+                           ``user_id``, a co-located key column held equal to
+                           it by ``fk_transaction_entries_owner_transaction``
+                           and to the account's by
+                           ``fk_transaction_entries_owner_account`` -- the
+                           construction ``fk_transactions_owner_account`` uses
+                           one table up.  Never the author: a companion who
+                           records a purchase writes ``user_id``, and the
+                           purchase is still the owner's.
+        user_id         -- The user who created the entry (owner or companion):
+                           the AUTHOR, never the owner.
         amount          -- What the purchase cost, as a signed figure
                            (CHECK ``<> 0``).  POSITIVE for a purchase and
                            NEGATIVE for a REFUND, which is a merchant credit
@@ -215,42 +235,56 @@ class TransactionEntry(
         db.UniqueConstraint(
             "id", "account_id", name="uq_transaction_entries_id_account",
         ),
-        # **This entry's account IS its parent's, guaranteed rather than
-        # maintained** (plan step X-f3a-1).  The pair keys straight onto
-        # ``uq_transactions_id_account``, so a row whose ``account_id`` differs
-        # from its parent's cannot be written at all -- which is what lets
-        # ``fk_transaction_entries_reconciled_by`` below scope a clearing link by
-        # account without trusting any writer to remember.
+        # **This movement's OWNER is its parent row's, guaranteed rather than
+        # maintained** (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
+        # The pair keys onto ``uq_transactions_id_user``, the superkey added
+        # for exactly this, so ``owner_id`` cannot be written as anyone but
+        # the row's owner.  ``ON DELETE CASCADE`` matches the single-column
+        # ``transaction_id`` key beside it, which stays as the ``transaction``
+        # relationship's declared join path: that key is about the PARENT'S
+        # EXISTENCE and this one is about AGREEMENT, and two keys over the
+        # same column deleting differently would make a delete's outcome
+        # depend on which PostgreSQL evaluated (ruling **R-CC32**).
         #
-        # ``ON DELETE CASCADE`` matches the single-column ``transaction_id`` key
-        # beside it, which stays as this relationship's declared join path: that
-        # key is about the PARENT'S EXISTENCE and this one is about AGREEMENT,
-        # and two keys over the same column cascading differently would make a
-        # delete's outcome depend on which PostgreSQL evaluated.
-        #
-        # ``ON UPDATE CASCADE`` since plan step **X-bi-3c** (ruling
-        # **R-BAL46**, migration ``c4e8a2d7f1b3``): the one parent whose
-        # account can move is a transfer shadow (``transfer_service.
-        # _endpoints._apply_endpoint_move``), and since that step a settled
-        # shadow carries a covering movement -- so the database moves the
-        # movement with its parent, and no writer can move a parent without
-        # its movements.  The applier assigns the movements' account too, for
-        # the session's sake alone: the ORM never learns what a cascade wrote.
-        # The trade: the NO ACTION rule refused ANY parent-account move that
-        # left an entry behind, an envelope's purchases included; no writer
-        # makes that move (the maintain pass retains such a row), the shadow
-        # is the cascade's one beneficiary, and ``X-bi-6`` restores NO ACTION
-        # with the shadow rows it deletes.
+        # Through CC-5-1 the pair here was ``(transaction_id, account_id)``
+        # onto ``uq_transactions_id_account`` --
+        # ``fk_transaction_entries_parent_account``, plan step X-f3a-1 -- which
+        # held a movement's account EQUAL to its parent's, and its ``ON UPDATE
+        # CASCADE`` (plan step X-bi-3c, ruling R-BAL46) moved the movements
+        # with a re-pointed transfer shadow.  A card purchase in a checking
+        # envelope is a movement whose account is NOT its parent's, so the
+        # key went with its cascade (ledger row **CC-353**); the endpoint
+        # move assigns each leg's movement by hand, as it always did for the
+        # session's sake, and a plan row that moves account (the maintain
+        # pass, since ruling **R-CC36** at ``CC-5-2``) LEAVES its movements
+        # where their money moved -- which is the design.
         db.ForeignKeyConstraint(
-            ["transaction_id", "account_id"],
-            ["budget.transactions.id", "budget.transactions.account_id"],
-            name="fk_transaction_entries_parent_account",
+            ["transaction_id", "owner_id"],
+            ["budget.transactions.id", "budget.transactions.user_id"],
+            name="fk_transaction_entries_owner_transaction",
             ondelete="CASCADE",
-            onupdate="CASCADE",
+        ),
+        # **...AND ITS ACCOUNT IS THAT OWNER'S**, which is the half that makes
+        # a movement on another owner's account unrepresentable: the owner key
+        # above alone would leave the account free to be anyone's.  Keyed onto
+        # ``uq_accounts_id_user``, exactly as ``fk_transactions_owner_account``
+        # is one table up.  ``ON DELETE RESTRICT`` matches the single-column
+        # ``account_id`` key on the column itself, for the reason its sibling
+        # above gives: an account holding a movement cannot vanish -- a card
+        # carrying a checking envelope's swipes least of all -- and the
+        # account door archives such an account instead (ruling **R-CC32**).
+        db.ForeignKeyConstraint(
+            ["account_id", "owner_id"],
+            ["budget.accounts.id", "budget.accounts.user_id"],
+            name="fk_transaction_entries_owner_account",
+            ondelete="RESTRICT",
         ),
         # WHICH STATEMENT showed this purchase, as a COMPOSITE key over the
-        # account (ruling **R-FL**).  The transaction twin of
-        # ``fk_transactions_reconciled_by``; see
+        # MOVEMENT's account (ruling **R-FL**): since plan step
+        # ``credit_card:CC-5-1`` that is the account its money moved through,
+        # which is what a card statement clearing a card purchase needs and
+        # what a checking statement can never have shown.  The transaction
+        # twin of ``fk_transactions_reconciled_by``; see
         # ``app.models.transaction.Transaction`` for why a single-column key
         # cannot express the rule.
         db.ForeignKeyConstraint(
@@ -293,8 +327,13 @@ class TransactionEntry(
         # Payback sibling -- so this link, which is scoped to the ENVELOPE's
         # account, could only ever claim that the checking statement showed it.
         # False by construction, and unwritable rather than merely unoffered.
-        # The credit-card arc revisits it (CC1b): a card with statements of its
-        # own is an account this column cannot name at all.
+        # Plan step ``credit_card:CC-5-1`` made the card's OWN representation
+        # storable -- a movement whose ``account_id`` names the card, which
+        # clears on the card's statement -- but no door writes one until
+        # ``CC-5-2`` / ``CC-5-3``, and the cheat's door (``create_entry`` with
+        # ``is_credit``) still writes a flagged line on checking until
+        # ``CC-7`` retires it; ``CC-7`` deletes the flag, this CHECK and the
+        # cheat together once no line carries the flag.
         db.CheckConstraint(
             "reconciled_by_id IS NULL OR is_credit IS FALSE",
             name="ck_transaction_entries_card_purchase_clears_nowhere",
@@ -318,19 +357,47 @@ class TransactionEntry(
         db.ForeignKey("budget.transactions.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # The account this purchase's cash leaves.  NOT NULL, and it is the PARENT'S
-    # account by construction -- ``fk_transaction_entries_parent_account`` above
-    # is what says so, so this is a co-located key rather than a copy some writer
-    # has to keep in step.
+    # The account this movement's money moved THROUGH -- its OWN fact since
+    # plan step ``credit_card:CC-5-1`` (rulings **R-BAL75**, **R-BAL76**), read
+    # on this account by the fold (``cash_ledger._events._movements_of``), the
+    # posted ledger (``_posting_purchases._purchase_target``) and the anchor
+    # self-heal (``posting_service._family_accounts``), whatever account its
+    # parent row names.  ``ON DELETE RESTRICT``, as ``transactions.account_id``
+    # is: a record of money that moved through an account does not vanish with
+    # the account (ruling **R-CC32**), and this single-column key is the
+    # ``account`` relationship's declared join path beside the composite owner
+    # key above that holds the account to the row's owner.
     #
-    # **It is stored rather than joined for because clearing is a PER-ACCOUNT
-    # question.**  A checking statement shows a transfer's outgoing leg and the
-    # savings statement shows the incoming one, so "which statement showed this"
-    # is only checkable against an account -- and a foreign key cannot reach one
-    # two hops away.  Plan step X-f3b then makes a cleared purchase a cash
-    # posting on this same account, at which point the column is the fact rather
-    # than the constraint's scaffolding.
-    account_id = db.Column(db.Integer, nullable=False)
+    # Through CC-5-1 it was the PARENT'S account by construction
+    # (``fk_transaction_entries_parent_account``), a co-located key column
+    # rather than a fact of its own; the reason it was STORED then still holds
+    # now that it is one: clearing is a PER-ACCOUNT question, a checking
+    # statement shows a transfer's outgoing leg and the savings statement the
+    # incoming one, so "which statement showed this" is only checkable against
+    # an account, and a cleared purchase is a cash posting on this account
+    # (plan step X-f3b).
+    account_id = db.Column(
+        db.Integer, db.ForeignKey(
+            "budget.accounts.id", name="fk_transaction_entries_account_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+    # WHO OWNS this movement: the parent row's owner, as a co-located key
+    # column (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).  Not a
+    # copy some writer keeps in step -- ``fk_transaction_entries_owner_transaction``
+    # refuses any value but the row's ``user_id`` and
+    # ``fk_transaction_entries_owner_account`` refuses an account that owner
+    # does not hold -- so the two writers of a movement (``entry_service.
+    # create_entry`` and the status seam's ``_cover``) state it from the row
+    # and cannot state it wrong.  No key of its own onto ``auth.users``: a
+    # user delete is refused one table up by ``fk_transactions_user_id``
+    # (order-independent, migration ``d4a92f6b13c8``), and this column names
+    # a real user through the row's, which that key holds.  Stated explicitly
+    # at construction rather than derived at flush, as ``account_id`` always
+    # was: a line that cannot be silently wrong, only absent, and absent is a
+    # NOT NULL violation.
+    owner_id = db.Column(db.Integer, nullable=False)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
     purchased_on = db.Column(
@@ -389,10 +456,30 @@ class TransactionEntry(
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships
+    # ``foreign_keys`` on both, because each parent is reached by TWO declared
+    # keys -- the single-column one and the composite that also holds the
+    # owner (plan step ``credit_card:CC-5-1``) -- and SQLAlchemy cannot pick a
+    # join path between them.  The single-column key is the declared path,
+    # the choice ``Transaction.account`` makes over
+    # ``fk_transactions_owner_account``: adding ``AND owner_id = ...`` to every
+    # load would re-check in SQL what the database refused to store, while
+    # making ``owner_id`` a column two relationships wanted to write on flush.
     transaction = db.relationship(
         "Transaction", foreign_keys=[transaction_id],
         back_populates="entries",
     )
+    # The account the money moved through, for a reader that wants the
+    # ACCOUNT rather than its id.  Lazy (the default): ``lazy="joined"``
+    # here chains ``Account``'s own joined tree onto every movement load
+    # (measured at CC-5-1's review: the fold's movement query went from 11
+    # joins to 17).  Its readers are the transfer endpoint move, which
+    # assigns it, and the grid's account chip and the entry list's account
+    # name (plan step ``credit_card:CC-5-2``), which read ``.name`` only for
+    # a movement off its row's account -- an identity-map hit for a member
+    # of the owner's cash-flow set, which the page's resolver has loaded
+    # (measured: a card swipe adds no statement to the grid render), and
+    # one load per distinct account per render otherwise.
+    account = db.relationship("Account", foreign_keys=[account_id])
     user = db.relationship("User", lazy="joined")
     credit_payback = db.relationship(
         "Transaction", foreign_keys=[credit_payback_id],

@@ -431,7 +431,7 @@ class TestEntryIntegration:
         txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
@@ -459,7 +459,7 @@ class TestEntryIntegration:
         txn = generate_row_of(template, seed_periods_today[0])
         entry = TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
@@ -607,13 +607,13 @@ class TestMarkDoneIntegration:
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
             purchased_on=date(2026, 1, 6),
         ))
@@ -647,7 +647,7 @@ class TestEntryDataInHTML:
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=seed_user["user"].id,
             amount=Decimal("200.00"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))
@@ -714,7 +714,7 @@ class TestEntryDataInHTML:
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=seed_user["user"].id,
             amount=Decimal("120.00"), description="Shell",
             purchased_on=date(2026, 1, 5),
         ))
@@ -751,7 +751,7 @@ class TestEntryDataInHTML:
         txn = generate_row_of(template, seed_periods_today[0])
         db.session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id, user_id=seed_user["user"].id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=seed_user["user"].id,
             amount=Decimal("55.50"), description="Kroger",
             purchased_on=date(2026, 1, 5),
         ))

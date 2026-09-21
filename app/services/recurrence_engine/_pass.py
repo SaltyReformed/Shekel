@@ -111,8 +111,11 @@ class MaintainActs(NamedTuple):
         owner_records: ``(existing) -> set[int]`` -- the rows carrying the
             owner's own records, which is a question about this engine's tables.
         reattributed: ``(existing, template) -> set[int]`` -- the rows whose
-            ACCOUNTS the definition has moved; one account for a transaction, a
-            pair for a transfer.
+            records the definition's ACCOUNT move would re-file.  A pair of
+            endpoints for a transfer, whose move carries the shadows' movements
+            with it; the EMPTY set for a transaction since plan step
+            ``credit_card:CC-5-2`` (ruling **R-CC36**), whose purchases stay on
+            their own accounts when the row moves.
         write: ``(work, derived, template, scenario_id, projected_id) ->
             (created, updated)`` -- the only writer in the maintain path.
     """

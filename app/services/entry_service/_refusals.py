@@ -672,6 +672,41 @@ def _reject_settled_before_purchase(
         )
 
 
+def _reject_flag_beside_another_account(
+    is_credit: bool, account_id: int, row_account_id: int,
+) -> None:
+    """Refuse the ``CC`` flag on a purchase whose account is not its row's.
+
+    Plan step ``credit_card:CC-5-2``, ruling **R-CC15**: a card swipe in a
+    checking envelope is a movement ON the card, named by the purchase's own
+    ``account_id``.  The ``is_credit`` flag is the CHEAT's spelling of the
+    same fact -- *this purchase's money is not on this row's account* -- and
+    it survives to ``CC-7`` only because the legacy lines that carry it have
+    no account of their own to say it with.  A purchase carrying BOTH would
+    be one fact in two homes (CLAUDE.md rule 14), and the flag's arm in
+    ``cash_ledger.movement_cash_leg`` would zero a movement the card's fold
+    must read.  Refused at both purchase doors, so the combination is
+    unwritable rather than reconciled; ``cash_ledger.off_statement_sum``
+    still partitions its terms by both facts, so the sum would hold even for
+    a row that reached the table around the doors.
+
+    Args:
+        is_credit: The flag the write would leave on the purchase.
+        account_id: The account the write would leave the purchase on.
+        row_account_id: Its parent row's account.
+
+    Raises:
+        ValidationError: When *is_credit* is set and the two accounts differ.
+    """
+    if is_credit and account_id != row_account_id:
+        raise ValidationError(
+            "A purchase on another account than its row's already says how it "
+            "was paid, so the CC box does not apply to it: pick the card as "
+            "the purchase's account, or tick CC and leave the account as the "
+            "row's, not both."
+        )
+
+
 def _reject_settlement_record(entry: TransactionEntry) -> None:
     """Refuse an entry-door write to a row's own SETTLEMENT RECORD.
 

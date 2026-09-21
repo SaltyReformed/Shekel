@@ -153,10 +153,13 @@ def propagate_to_unruled_rows(template) -> list[int]:
     regenerate, and the reason a rule-less definition's category, account,
     type or ownership declaration reaches the grid at all: :func:`apply_fields`
     carries the NAME to every row of every definition, and nothing carried
-    the rest.  The engine decides what to write and what to leave alone
-    (``recurrence_engine.propagate_to_unruled_definition``: a row whose
-    account the definition moved and which holds the owner's records is
-    RETAINED where it is); the caller reports the rows it left.
+    the rest.  The engine writes every row it is handed
+    (``recurrence_engine.propagate_to_unruled_definition``; through plan step
+    ``credit_card:CC-5-1`` it RETAINED a row whose account the definition
+    moved and which held the owner's records, an arm ruling **R-CC36**
+    retired -- a moved row leaves its purchases where their money moved) and
+    answers the rows it left, empty for a transaction definition; the caller
+    reports them.
 
     Args:
         template: The updated rule-less

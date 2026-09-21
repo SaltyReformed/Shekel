@@ -73,7 +73,7 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
     def _bare_purchase(envelope, seed_user, settled_on, basis):
         """Stage one purchase with the given day pair and NO source."""
         entry = TransactionEntry(
-            transaction_id=envelope.id, account_id=envelope.account_id,
+            transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
             user_id=seed_user["user"].id, amount=Decimal("12.79"),
             description="Kroger", purchased_on=envelope.pay_period.start_date,
             **settle_day_columns(settled_on, basis),

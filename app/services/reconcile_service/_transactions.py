@@ -59,13 +59,18 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
     """Return what the STATEMENT shows for *txn*, or ``None`` when it is *booked*.
 
     Finding **N-226**, widened by ruling **R-FM**.  An envelope settles at
-    ``sum(entries)`` over EVERY entry it holds, and TWO kinds of those never
+    ``sum(entries)`` over EVERY entry it holds, and THREE kinds of those never
     leave checking at the tick:
 
-    * a CARD purchase, which leaves later through its own CC Payback sibling --
-      which is exactly why the purchase arm refuses to OFFER one; and
-    * a purchase that has ALREADY POSTED, whose cash left on its own recorded
-      day and is already a movement of its own in the ledger (plan step X-f3b).
+    * a CARD purchase marked by the flag, which leaves later through its own
+      CC Payback sibling -- which is exactly why the purchase arm refuses to
+      OFFER one;
+    * a purchase whose money moved through ANOTHER account than the row's
+      (plan step ``credit_card:CC-5-2``, ruling **R-CC15**) -- the card's
+      statement shows it and the purchase arm offers it THERE; and
+    * a purchase on this account that has ALREADY POSTED, whose cash left on
+      its own recorded day and is already a movement of its own in the ledger
+      (plan step X-f3b).
 
     So the figure a tick books and the figure the bank shows for it now are two
     different numbers for one row, and this screen is the one read beside a
@@ -90,9 +95,12 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
         booked: What a tick would book (``transaction_service.settle_amount``).
 
     Returns:
-        ``booked`` minus the card entries and the already-posted purchases when
-        the row holds any, else ``None`` -- which is every bill, every deposit
-        and every envelope whose purchases are all debits and all outstanding.
+        ``booked`` minus the card entries, the purchases whose money moved
+        through another account (plan step ``credit_card:CC-5-2``: a card
+        swipe recorded in a checking envelope) and the already-posted
+        purchases on this account, when the row holds any, else ``None`` --
+        which is every bill, every deposit and every envelope whose purchases
+        are all debits on its own account and all outstanding.
         Production carries 18 card entries in history and ZERO on a Projected
         envelope, so the card term is latent; the posted term is LIVE, on 2 of
         the 9 posted purchases (`$45.85`) measured 2026-08-14.

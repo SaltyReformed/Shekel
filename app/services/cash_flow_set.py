@@ -127,6 +127,33 @@ class CashFlowSet:
         """Every member but the balance account, in member order."""
         return tuple(m for m in self.members if m.id != self.balance.id)
 
+    def seen_from(self, balance: Account) -> "CashFlowSet":
+        """The VIEW of this set behind *balance*'s line: the ``?account_id=`` rule.
+
+        The one rule of the grid's override, stated on the set it applies to
+        (plan step ``credit_card:CC-5-2``; the walk lived inline in the
+        resolver's private builder, then named ``_cash_flow_set``, since
+        CC-4-1): a member keeps the
+        set's rows behind its own balance line, and an account OUTSIDE the
+        set is that account's single-account view, exactly as before the set
+        existed.  A pure derivation, so the OWNER's set is resolved once per
+        request and the view it renders is read off it -- the alternative,
+        a second resolve for the accounts a purchase may name beside the
+        one for the rows the page shows, would run the primary chain and
+        the cards query twice per grid render for one answer.
+
+        Args:
+            balance: An account the caller has ADMITTED as the balance line
+                (:func:`~app.services.account_resolver.resolve_cash_flow_set`
+                runs the admission test); never an unadmitted row.
+
+        Returns:
+            This set behind *balance*, or :meth:`single` of *balance*.
+        """
+        if balance.id in self.member_ids:
+            return CashFlowSet(balance=balance, members=self.members)
+        return CashFlowSet.single(balance)
+
     @classmethod
     def single(cls, account: Account) -> "CashFlowSet":
         """The set of ONE account: its own rows behind its own balance line.
@@ -139,6 +166,56 @@ class CashFlowSet:
         subtotals are the account's own.
         """
         return cls(balance=account, members=(account,))
+
+
+def purchase_accounts(
+    cash_flow: CashFlowSet | None, txn: Transaction,
+) -> tuple[Account, ...]:
+    """Return the accounts a purchase under *txn* may name, in picker order.
+
+    **The ONE spelling of "which accounts may this row's purchase have moved
+    through"** (developer rulings ``credit_card:R-CC37``, 2026-09-20, and
+    **R-CC39**, 2026-09-21, which confirms it for EVERY row -- a Savings
+    envelope offers Savings, Checking and the cards -- and amends R-CC34's
+    narrower parenthetical; plan step CC-5-2): the row's own account, then
+    every member of the ROW OWNER's cash-flow set that is not it, in the
+    set's own order.  The purchase door
+    (``entry_service._doors._purchase_account_id``) admits exactly this
+    tuple's accounts and the add-purchase form renders its picker from it, so
+    the door and the form cannot part: a swipe on a 401(k), an IRA, a house, a
+    loan or a savings account is unwritable rather than merely unoffered,
+    while a row that LIVES on such an account keeps its purchases there --
+    its own account is always the first member.
+
+    *cash_flow* is the OWNER's set with NO override
+    (:func:`~app.services.account_resolver.resolve_cash_flow_set` with
+    ``override_account_id=None``), never the page's.  A ``?account_id=``
+    override naming an account outside the set collapses the page's set to
+    that one account (the single-account view above), which is a fact about
+    the VIEW; what a purchase may name is a fact about the owner, and reading
+    the view's set here would offer the picker on one page and not another
+    for the same row.  ``None`` -- an owner with no grid-eligible account at
+    all -- leaves the row's own account as the one choice.
+
+    The first member is the form's default: a purchase with no account named
+    is on its row's account (the door's ``None`` arm).
+
+    Args:
+        cash_flow: The row OWNER's cash-flow set, resolved with no override,
+            or ``None``.
+        txn: The plan row the purchase is recorded against.  Its ``account``
+            is a joined load, so this reads no query.
+
+    Returns:
+        The row's own account first, then the set's other members in member
+        order; never empty.
+    """
+    if cash_flow is None:
+        return (txn.account,)
+    return (
+        txn.account,
+        *[m for m in cash_flow.members if m.id != txn.account_id],
+    )
 
 
 def _intra_set_transfers(cash_flow: CashFlowSet):

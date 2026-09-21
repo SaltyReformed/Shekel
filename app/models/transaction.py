@@ -484,7 +484,7 @@ class Transaction(
     # cannot choose a join path and raises ``AmbiguousForeignKeysError`` at
     # mapper configuration.  The SINGLE-column key is the declared path, which
     # is the same choice ``TransactionEntry.transaction`` makes over
-    # ``fk_transaction_entries_parent_account``: the join loads a parent, and
+    # ``fk_transaction_entries_owner_transaction``: the join loads a parent, and
     # adding ``AND parent.user_id = t.user_id`` to every load would re-check in
     # SQL what the database has already refused to store -- while making
     # ``user_id`` a column TWO relationships wanted to write on flush.

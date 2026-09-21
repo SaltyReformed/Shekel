@@ -30,7 +30,9 @@ Architecture:
 
 from decimal import Decimal
 
+from app.models.account import Account
 from app.models.transaction_entry import TransactionEntry
+from app.services.cash_flow_set import CashFlowSet, purchase_accounts
 from app.services.pay_calendar import DerivedPeriod
 from app.utils.entry_partition import partition_entries
 from app.utils.money import percent_complete
@@ -183,6 +185,7 @@ def build_entry_lists_dict(
     transactions: list,
     budgets: dict[int, Decimal],
     periods: "dict[int, DerivedPeriod]",
+    cash_flow: CashFlowSet | None,
 ) -> dict[int, dict]:
     """Build a {txn_id: entry_list_data} mapping for envelope transactions.
 
@@ -226,6 +229,15 @@ def build_entry_lists_dict(
     :func:`~app.services.grid_view_service.due_captions_by_key` makes for the
     same shape one step earlier.
 
+    **The OWNER's cash-flow set arrives as an argument too** (plan step
+    ``credit_card:CC-5-2``), for the add-purchase form's account picker: each
+    row's choice is :func:`~app.services.cash_flow_set.purchase_accounts` over
+    it, the one spelling the purchase door tests against (ruling **R-CC37**).
+    An argument and NOT a default, so that a caller which forgets it fails
+    loudly rather than rendering a form with no picker on the initial grid
+    while the HTMX refresh renders one -- the exact two-callers shape
+    :func:`entry_list_view` exists to make unrepresentable.
+
     Args:
         transactions: List of Transaction objects with ``entries`` and
             ``template`` accessible.
@@ -237,6 +249,13 @@ def build_entry_lists_dict(
             *budgets*' reason: a row whose paycheck is missing means the caller
             built this map from a different row set than it is rendering, and a
             silent skip would drop an out-of-period warning the screen owes.
+        cash_flow: The rows' OWNER's cash-flow set, resolved with NO override
+            (:func:`~app.services.account_resolver.resolve_cash_flow_set`), or
+            ``None`` for an owner with no grid-eligible account.  The owner's,
+            never the requester's: a companion's page renders the owner's
+            picker (ruling **R-CC11**).  Never the page's overridden set: an
+            override outside the set collapses it to one account, which is a
+            fact about the view and not about what a purchase may name.
 
     Returns:
         dict mapping envelope transaction ID to one
@@ -260,6 +279,7 @@ def build_entry_lists_dict(
             txn.purchases,
             budgets[txn.id],
             periods[txn.pay_period_id],
+            purchase_accounts(cash_flow, txn),
         )
         for txn in transactions
         if txn.tracks_purchases
@@ -270,6 +290,7 @@ def entry_list_view(
     entries: list[TransactionEntry],
     budget: Decimal,
     period: "DerivedPeriod",
+    accounts: tuple[Account, ...],
 ) -> dict:
     """Return the WHOLE derived context one envelope's entry list renders from.
 
@@ -340,11 +361,26 @@ def entry_list_view(
             rather than an ORM ``PayPeriod`` because a period's span is the
             derivation over the owner's paydays, not the column the table
             stores beside them.
+        accounts: The accounts a NEW purchase under this row may name, in
+            picker order with the row's own first --
+            :func:`~app.services.cash_flow_set.purchase_accounts` over the
+            OWNER's cash-flow set (plan step ``credit_card:CC-5-2``, ruling
+            **R-CC37**).  The purchase door admits exactly these, so the form
+            offers what the door takes.  A fourth argument the callers pair
+            the way they pair *period*: :func:`build_entry_lists_dict`
+            derives it per row from the one set it is handed, and
+            ``routes.entries._render_entry_list`` from the row's owner.
 
     Returns:
-        The four keys the template consumes:
+        The five keys the template consumes:
 
           - ``entries``: the list as given.
+          - ``accounts``: the tuple as given.  The template renders its
+            ``<select name="account_id">`` only when it holds more than one
+            (ruling **R-CC34**: with one choice there is no control, and the
+            door's ``None`` arm files the purchase on the row's account) --
+            so every form of an owner with no card is byte-identical to
+            before the picker existed.
           - ``remaining`` (Decimal): the row's resolved budget minus the sum
             of all entries (debit + credit), via :func:`compute_remaining`.
           - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
@@ -365,6 +401,7 @@ def entry_list_view(
     """
     return {
         "entries": entries,
+        "accounts": accounts,
         "remaining": compute_remaining(budget, entries),
         "out_of_period_ids": {
             e.id for e in entries if not period.covers(e.purchased_on)

@@ -729,7 +729,7 @@ class TestWalkAccountLedger:
             )
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("40.00"),
                 description="ticked on the second reading",

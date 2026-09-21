@@ -13,7 +13,7 @@ of ``app/routes/_commit_helpers.py``.
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qsl, urlsplit
 
 from flask import render_template, request
@@ -34,7 +34,11 @@ from app.services.cash_ledger import (
     resolve_transfer_amount,
     settled_amounts_by_id,
 )
-from app.services.account_resolver import resolve_cash_flow_set
+from app.services.account_resolver import (
+    resolve_owner_and_view,
+    resolve_owner_cash_flow_set,
+)
+from app.services.cash_flow_set import CashFlowSet
 from app.services.entry_service import build_entry_sums_dict
 from app.services import grid_view_service
 from app.services.grid_view_service import due_captions_by_key
@@ -436,6 +440,10 @@ def fragment_balance_line(owner_id: int) -> Account | None:
     them anyway; the explicit test is what makes that the RULE rather than a
     property of the current population.
 
+    **It is the balance-line half of :func:`fragment_cash_flow`** since plan
+    step ``credit_card:CC-5-2``; a fragment that also draws an envelope's
+    add-purchase picker reads both halves from that one walk.
+
     Args:
         owner_id: ``auth.users.id`` of the row or transfer being rendered.
 
@@ -445,12 +453,58 @@ def fragment_balance_line(owner_id: int) -> Account | None:
         balance line").  ``None`` too for an owner with no grid-eligible
         account, as the page's own context is.
     """
+    return fragment_cash_flow(owner_id).balance_line
+
+
+class FragmentCashFlow(NamedTuple):
+    """What a one-row fragment resolves about the owner's cash-flow set, once.
+
+    Attributes:
+        purchases: The OWNER's set with no override -- the accounts a purchase
+            under the row may name
+            (:func:`~app.services.cash_flow_set.purchase_accounts`, ruling
+            **R-CC37**) -- or ``None`` for an owner with no grid-eligible
+            account.  Resolved for the row's owner whoever the requester is: a
+            companion records the owner's purchase (ruling **R-CC11**).
+        balance_line: :func:`fragment_balance_line`'s answer -- the page's
+            balance line for the owner, ``None`` for anyone else.
+    """
+
+    purchases: CashFlowSet | None
+    balance_line: Account | None
+
+
+def fragment_cash_flow(owner_id: int) -> FragmentCashFlow:
+    """Resolve a one-row fragment's two cash-flow answers from ONE walk.
+
+    The mobile card draws an account chip (against the page's balance line)
+    AND an add-purchase picker (from the owner's set), and the HTMX entry
+    list draws the picker alone; each question is one resolve of the same
+    set, so a fragment that asked them apart paid the primary chain and the
+    cards query twice (the review of plan step ``credit_card:CC-5-2``).  For
+    the OWNER both come off
+    :func:`~app.services.account_resolver.resolve_owner_and_view` with the
+    page's override; for anyone else the balance line is ``None`` by
+    :func:`fragment_balance_line`'s rule and the picker is the owner's set by
+    :func:`~app.services.account_resolver.resolve_owner_cash_flow_set`.
+
+    Args:
+        owner_id: ``auth.users.id`` of the row being rendered.
+
+    Returns:
+        The :class:`FragmentCashFlow` for this request.
+    """
     if current_user.id != owner_id:
-        return None
-    cash_flow = resolve_cash_flow_set(
+        return FragmentCashFlow(
+            purchases=resolve_owner_cash_flow_set(owner_id), balance_line=None,
+        )
+    sets = resolve_owner_and_view(
         current_user.id, current_user.settings, _page_account_override(),
     )
-    return cash_flow.balance if cash_flow is not None else None
+    return FragmentCashFlow(
+        purchases=sets.owner,
+        balance_line=sets.view.balance if sets.view is not None else None,
+    )
 
 
 def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
@@ -567,15 +621,21 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
 
     **The BALANCE LINE is the fifth thing the cell draws against** (plan step
     ``credit_card:CC-4-2``, ruling **R-CC16**): a row on another account
-    than the balance line's carries an account chip, which the partial
-    decides off ``t.account_id`` against the ``account`` published here, the
-    way the grid page's row macro publishes its own.  Resolved through
+    than the balance line's carries an account chip, and since plan step
+    ``credit_card:CC-5-2`` so does a row whose MOVEMENTS are -- the
+    ``account_chips`` macro decides off ``t.account_id`` and each of
+    ``t.entries``' against the ``account`` published here, the way the grid
+    page's row macro publishes its own.  Resolved through
     :func:`fragment_balance_line`, the same call the transfer cell's arrow
     reads, and PUBLISHED even when it resolves ``None``: the partial reads it
     with ``is not none``, so a surface that forgets the key raises where a
-    ``None`` draws no chip.  The chip's label is ``t.account.name``, which
-    costs this fragment nothing -- ``Transaction.account`` is
-    ``lazy="joined"`` on the model, so the row's own load hydrated it.
+    ``None`` draws no chip.  The chips' labels cost this fragment nothing
+    beyond what it already paid: ``Transaction.account`` is
+    ``lazy="joined"`` on the model, the family is loaded by
+    :func:`fragment_amounts`'s settled-record read (17 statements for a
+    bill's cell and 18 for an envelope's, one of them the family, on the
+    tree before CC-5-2 and after it), and a movement's account is an
+    identity-map hit for a member of the owner's set.
 
     Args:
         txn: The Transaction object to render.

@@ -410,22 +410,26 @@ class TestARuleLessDefinitionsEditReachesItsRows:
             db.session.expire_all()
             assert db.session.get(Transaction, row.id).account_id == other.id
 
-    def test_an_account_move_retains_a_row_holding_a_record_and_says_so(
+    def test_an_account_move_carries_a_row_holding_a_record_and_says_nothing(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """THE refusal the recurring pass makes, made here too.
+        """The decision the recurring pass makes, made here too -- and it retains nothing.
 
-        A row with the owner's own note is RETAINED where it is when the
-        definition moves its account -- ``_rows_holding_owner_records`` and
-        ``_rows_the_definition_reattributes``, the same two functions -- and
-        the owner is told, exactly as the transfer twin does
-        (``test_a_non_repeating_transfer_holding_a_record_is_retained_too``).
+        RE-EXPRESSED at plan step ``credit_card:CC-5-2`` under CLAUDE.md rule
+        5 with the developer's confirmation (2026-09-20, ruling **R-CC36**).
+        Through ``CC-5-1`` a row with the owner's own note was RETAINED where
+        it was when the definition moved its account, and the owner told --
+        the transfer twin still is
+        (``test_a_non_repeating_transfer_holding_a_record_is_retained_too``),
+        because its endpoint move re-files the shadows' movements.  A
+        transaction row's note is filed on no account and its purchases stay
+        on their own, so the row follows its definition and the panel prints
+        no "kept the value" notice for it.
         """
         with app.app_context():
             template, row = self._rule_less_with_a_row(seed_user, seed_periods)
             row.notes = "paid from the old account already"
             db.session.commit()
-            old_account = row.account_id
             other = create_account_of_type(
                 seed_user, db.session, "Checking", "Other Checking",
             )
@@ -436,13 +440,12 @@ class TestARuleLessDefinitionsEditReachesItsRows:
                 name="Streaming (moved)", account_id=str(other.id),
             )
             assert resp.status_code == 200
-            assert b"kept the value it already had" in resp.data
+            assert b"kept the value it already had" not in resp.data
 
             db.session.expire_all()
             row = db.session.get(Transaction, row.id)
-            assert row.account_id == old_account
-            # The bulk rename still reaches it: retention is about the fields
-            # the definition would REATTRIBUTE, and a name moves nothing.
+            assert row.account_id == other.id
+            assert row.notes == "paid from the old account already"
             assert row.name == "Streaming (moved)"
 
     def test_an_overridden_row_is_left_alone(

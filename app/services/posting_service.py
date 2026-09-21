@@ -524,10 +524,12 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
 def _family_accounts(txn: Transaction) -> tuple:
     """Return every real account the family's linked legs can touch.
 
-    The row's own account and each movement's -- the SAME set today, held
-    equal by ``fk_transaction_entries_parent_account``, and two sets once the
-    card arc drops that key at its first cross-account writer (ruling
-    **R-BAL76**): a movement's leg lands on the movement's account
+    The row's own account and each movement's -- one set while every door
+    writes a movement on its parent's account, and two the moment one does
+    not (the key that held them equal,
+    ``fk_transaction_entries_parent_account``, went at plan step
+    ``credit_card:CC-5-1``, ruling **R-BAL76**): a movement's leg lands on
+    the movement's account
     (``_posting_purchases._purchase_target``), so the anchor self-heal must
     look wherever a leg can land rather than at the parent alone (plan step
     ``balance:X-bi-4a``, ruling **R-BAL75**).  Deduplicated, in first-seen
