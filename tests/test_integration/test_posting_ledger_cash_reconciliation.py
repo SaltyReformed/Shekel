@@ -520,6 +520,16 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
     A ``transaction_id IS NULL`` group is a hard-deleted transaction's
     SET-NULL'd legs: the reverse-before-delete pair MUST net to zero, asserted
     here so a stranded (un-reversed) leg would be caught.
+
+    **The owner's Transfers-in-transit account is a counter account too**
+    (plan step ``balance:X-bi-6-3``, rulings **R-BAL45** and **R-BAL101**):
+    a transfer SHADOW's covering movement books its cash leg against it, so
+    a shadow's net on transit is the negation of its signed cash effect by
+    the very rule every category row obeys -- the expense shadow's movement
+    lands ``+figure`` on transit, the income shadow's ``-figure`` -- and the
+    routing check for a shadow is that the counter IS the transit row, never
+    a category.  Across a settled pair the two nets cancel, which the
+    trial-balance and per-linked sweeps read as transit at zero.
     """
     counters = (
         _db.session.query(LedgerAccount)
@@ -577,17 +587,31 @@ def _assert_counter_accounts_reconcile(scenario_id: int) -> None:
                 f"counter {counter.id}: transaction {transaction_id} linked to "
                 f"a non-zero leg no longer exists (link should have SET NULL)"
             )
-            # A non-zero net on a counter account comes from an active,
-            # non-transfer transaction with a DATED movement under it -- its
-            # covering movement or a purchase -- whatever its status (plan
-            # step ``balance:X-bi-4a``); everything else nets to zero.
-            assert txn.transfer_id is None
+            # A non-zero net on a counter account comes from an active row
+            # with a DATED movement under it -- its covering movement or a
+            # purchase -- whatever its status (plan step ``balance:X-bi-4a``);
+            # everything else nets to zero.  A transfer SHADOW's movement
+            # counts against the owner's transit row by the same rule (plan
+            # step ``balance:X-bi-6-3``).
             assert txn.is_deleted is False
             expected_counter = -_signed_cash_effect(txn)
             assert net == expected_counter, (
                 f"counter {counter.id}: transaction {transaction_id} net {net} "
                 f"!= expected counter leg {expected_counter}"
             )
+            # Routing: a shadow's leg lands on the transit row and nowhere
+            # else -- a transfer between the owner's own accounts is neither
+            # income nor expense, so a category counter here is the very
+            # mis-post ruling R-BAL45 rejected.
+            if txn.transfer_id is not None:
+                assert counter.kind_id == ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.TRANSIT,
+                ), (
+                    f"counter {counter.id}: shadow {transaction_id} routed its "
+                    f"counter leg to a non-transit account"
+                )
+                rhs += net
+                continue
             # Routing: a still-categorized transaction's leg must land on the
             # account its CURRENT category resolves to (catches a same-class
             # wrong-category post the magnitude check alone would miss).  A
@@ -795,7 +819,7 @@ class TestPerCounterAccountReconciliation:
 
         The categorized expense books the Groceries-Expense category row; the
         uncategorized one books the per-(owner, class) Expense fallback
-        (``is_fallback`` True); the income books the Salary-Income row.  Each
+        (``is_owner_bucket`` True); the income books the Salary-Income row.  Each
         counter total is hand-checked, and the counter-account sweep reconciles
         every one by the ``transaction_id`` linkage.
         """
@@ -841,9 +865,9 @@ class TestPerCounterAccountReconciliation:
                 salary_counter, scenario_id,
             ) == Decimal("-2000.00")
 
-            # The fallback row is the is_fallback singleton, not a category row.
+            # The fallback row is the is_owner_bucket singleton, not a category row.
             fallback = db.session.get(LedgerAccount, fallback_counter)
-            assert fallback.is_fallback is True
+            assert fallback.is_owner_bucket is True
             assert fallback.category_id is None
 
             _assert_full_reconciliation(scenario_id)
@@ -932,7 +956,7 @@ class TestPerCounterAccountReconciliation:
             orphan = db.session.get(LedgerAccount, orphan_id)
             assert orphan.category_id is None
             assert orphan.account_id is None
-            assert orphan.is_fallback is False  # an orphan, not the fallback
+            assert orphan.is_owner_bucket is False  # an orphan, not the fallback
             assert orphan.name == hobbies_display_name  # snapshot survives delete
             assert db.session.get(Transaction, txn_id).category_id is None
 
@@ -963,14 +987,15 @@ class TestPerEntryAndTrialBalance:
     def test_every_entry_balances_and_trial_balance_is_zero(
         self, app, db, seed_user,
     ):
-        """A transfer plus a cash expense and income each post a balanced entry.
+        """A transfer plus a cash expense and income each post balanced entries.
 
-        Arithmetic: one $100 transfer (Checking -> Savings), one $50 Groceries
-        expense, and one $2000 Salary income each post a single two-leg entry
-        summing to zero -- and the Step-5 openings (Checking +1000/-1000,
-        Savings +100/-100 against their equity twins) are balanced pairs too
-        -- so no entry violates ``SUM = 0`` / ``COUNT >= 2`` and the
-        whole-ledger total stays 0.00.
+        Arithmetic: one $100 transfer (Checking -> Savings) posts two two-leg
+        entries via transit, one $50 Groceries expense and one $2000 Salary
+        income each post a single two-leg entry, every one summing to zero --
+        and the Step-5 openings (Checking +1000/-1000, Savings +100/-100
+        against their equity twins) are balanced pairs too -- so no entry
+        violates ``SUM = 0`` / ``COUNT >= 2`` and the whole-ledger total
+        stays 0.00.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -992,11 +1017,13 @@ class TestPerEntryAndTrialBalance:
             )
             db.session.commit()
 
-            # Three settled sources -> three source-linked balanced entries
-            # (the Step-5 openings carry their own correction sources).  The
-            # two expense sources link by their covering movement since plan
-            # step X-bi-3a (``transaction_entry_id``), and the income one
-            # since X-bi-3b; the transfer by ``transfer_id``.
+            # Three settled sources -> four source-linked balanced entries
+            # (the Step-5 openings carry their own correction sources).  Every
+            # one links by its covering movement (``transaction_entry_id``):
+            # the two cash rows since plan steps X-bi-3a / X-bi-3b, and the
+            # transfer's TWO sides since plan step ``balance:X-bi-6-3`` (one
+            # per movement, each against transit; it was one entry by
+            # ``transfer_id``).
             assert (
                 _db.session.query(JournalEntry)
                 .filter(_db.or_(
@@ -1005,7 +1032,7 @@ class TestPerEntryAndTrialBalance:
                     JournalEntry.transaction_entry_id.isnot(None),
                 ))
                 .count()
-            ) == 3
+            ) == 4
             assert _entries_violating_balance() == []
             assert _trial_balance() == Decimal("0.00")
 

@@ -167,7 +167,7 @@ def _uncategorized_net(seed_user, ledger_class):
         db.session.query(LedgerAccount)
         .filter(
             LedgerAccount.user_id == seed_user["user"].id,
-            LedgerAccount.is_fallback.is_(True),
+            LedgerAccount.is_owner_bucket.is_(True),
             LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                 ledger_class,
             ),
@@ -638,12 +638,12 @@ class TestTheLedgerBooksItToUncategorized:
         # to the family and the figures stand.
         legs = (
             db.session.query(
-                LedgerAccount.is_fallback, db.func.sum(Posting.amount),
+                LedgerAccount.is_owner_bucket, db.func.sum(Posting.amount),
             )
             .join(Posting, Posting.ledger_account_id == LedgerAccount.id)
             .join(JournalEntry, JournalEntry.id == Posting.journal_entry_id)
             .filter(family_journal_filter(row))
-            .group_by(LedgerAccount.is_fallback)
+            .group_by(LedgerAccount.is_owner_bucket)
             .all()
         )
         assert dict(legs) == {True: Decimal("-0.05"), False: Decimal("0.05")}

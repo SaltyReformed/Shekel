@@ -53,6 +53,7 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services import loan_loaders
 from app.services.loan_ledger import confirmed_shadows_through
 from app.services.posting_service import _ledger_account_for
@@ -142,15 +143,19 @@ def _principal_net_by_shadow(
     """Return each settled payment's NET principal on the loan's linked ledger.
 
     A payment's principal is its net on the loan's LINKED (liability) ledger --
-    the Step-2 cash leg plus the Step-4 split correction -- which by the balanced
+    the cash leg plus the Step-4 split correction -- which by the balanced
     construction of the correction is exactly the real debt it paid down (a
     payoff-overpayment's excess goes to a Refund leg, not principal).  The cash
-    leg links by the payment's ``transfer_id`` (``transaction_id`` NULL); the
-    correction links by the income shadow's ``transaction_id``; so both linkages
-    map to the same settled shadow and their nets accumulate into that payment's
-    principal.  A non-payment linked posting -- the opening, every true-up, a raw
-    transaction typed onto the loan -- matches no settled shadow and is excluded,
-    so this is payment principal only.
+    leg links by the loan-side MOVEMENT's ``transaction_entry_id`` (plan step
+    ``balance:X-bi-6-3``, ruling **R-BAL45**: one entry per side, the
+    loan-side one on the loan-side shadow's covering movement; it linked the
+    payment's ``transfer_id`` while the cash was one entry per transfer); the
+    correction links by the income shadow's ``transaction_id``; so both
+    linkages map to the same settled shadow -- the movement through its parent
+    -- and their nets accumulate into that payment's principal.  A non-payment
+    linked posting -- the opening, every true-up, a raw transaction typed onto
+    the loan -- matches no settled shadow and is excluded, so this is payment
+    principal only.
 
     Covers EVERY settled payment (no period bound), matching the all-settled
     basis of :func:`_interest_net_by_shadow`, so
@@ -166,31 +171,56 @@ def _principal_net_by_shadow(
         ``{shadow transaction id: net principal Decimal}`` (unrounded running
         sums; the caller rounds); empty when the loan has no settled payment.
     """
-    # ``options=()``: only ``id`` and ``transfer_id`` are read below, both
-    # columns of the row itself, so no relationship is traversed and none is
-    # loaded (plan step balance:X-bl-2a made that the caller's call).
+    # ``options=()``: only ``id`` is read off the row below, so no
+    # relationship is traversed and none is loaded (plan step balance:X-bl-2a
+    # made that the caller's call); the covering movements are read in ONE
+    # statement of their own rather than through ``entries`` per shadow.
     shadows = loan_loaders.settled_income_shadows(
         loan_account_id, scenario_id, options=(),
     )
     shadow_ids = {shadow.id for shadow in shadows}
-    shadow_id_by_transfer = {
-        shadow.transfer_id: shadow.id for shadow in shadows
-    }
+    shadow_id_by_movement = _covering_movement_parents(shadow_ids)
     linked = _ledger_account_for(loan_account_id)
     principal_by_shadow: dict[int, Decimal] = {}
-    for _date, _source, transfer_id, transaction_id, net in _linked_entry_nets(
+    for _date, _source, movement_id, transaction_id, net in _linked_entry_nets(
         linked.id, scenario_id,
     ):
         if transaction_id in shadow_ids:
             key = transaction_id
-        elif transfer_id in shadow_id_by_transfer:
-            key = shadow_id_by_transfer[transfer_id]
+        elif movement_id in shadow_id_by_movement:
+            key = shadow_id_by_movement[movement_id]
         else:
             continue
         principal_by_shadow[key] = (
             principal_by_shadow.get(key, _ZERO_MONEY) + net
         )
     return principal_by_shadow
+
+
+def _covering_movement_parents(shadow_ids: set[int]) -> dict[int, int]:
+    """Return ``{covering movement id: shadow id}`` over *shadow_ids*.
+
+    One statement over ``budget.transaction_entries`` keyed by the seam's
+    mark (``covers_settlement``), so the cash-leg nets keyed by movement map
+    back onto the payment they belong to without a load per shadow.  At most
+    one per shadow (``uq_transaction_entries_one_settlement_record``).
+
+    Args:
+        shadow_ids: The settled income shadows' ids.
+
+    Returns:
+        The map; empty when *shadow_ids* is.
+    """
+    if not shadow_ids:
+        return {}
+    return dict(
+        db.session.query(TransactionEntry.id, TransactionEntry.transaction_id)
+        .filter(
+            TransactionEntry.transaction_id.in_(shadow_ids),
+            TransactionEntry.covers_settlement.is_(True),
+        )
+        .all()
+    )
 
 
 def _linked_entry_nets(
@@ -200,9 +230,12 @@ def _linked_entry_nets(
 
     One grouped load of EVERY posting on the linked ledger in the scenario --
     the same total set the balance readers sum -- projected per journal entry
-    as ``(entry_date, source_kind_id, transfer_id, transaction_id, net)``.
-    :func:`_principal_net_by_shadow` groups them onto the payment each belongs
-    to, which is what the payment-history table's principal column reads.
+    as ``(entry_date, source_kind_id, transaction_entry_id, transaction_id,
+    net)``.  :func:`_principal_net_by_shadow` groups them onto the payment
+    each belongs to, which is what the payment-history table's principal
+    column reads.  The movement link replaced ``transfer_id`` at plan step
+    ``balance:X-bi-6-3``, when the cash leg became the loan-side movement's
+    own entry.
     Reading the nets per entry -- rather than re-deriving splits from rates --
     is what keeps that column a READ of the ledger's actual legs rather than a
     recomputation of the walk it is meant to cross-check.
@@ -213,14 +246,15 @@ def _linked_entry_nets(
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        One ``(entry_date, source_kind_id, transfer_id, transaction_id, net)``
-        tuple per distinct linkage group; empty when nothing is posted yet.
+        One ``(entry_date, source_kind_id, transaction_entry_id,
+        transaction_id, net)`` tuple per distinct linkage group; empty when
+        nothing is posted yet.
     """
     return (
         db.session.query(
             JournalEntry.entry_date,
             JournalEntry.source_kind_id,
-            JournalEntry.transfer_id,
+            JournalEntry.transaction_entry_id,
             JournalEntry.transaction_id,
             db.func.sum(Posting.amount),
         )
@@ -232,7 +266,7 @@ def _linked_entry_nets(
         .group_by(
             JournalEntry.entry_date,
             JournalEntry.source_kind_id,
-            JournalEntry.transfer_id,
+            JournalEntry.transaction_entry_id,
             JournalEntry.transaction_id,
         )
         .all()

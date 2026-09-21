@@ -28,8 +28,8 @@ from sqlalchemy.exc import IntegrityError
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
-from app.models.ref import Status
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import loan_loaders
 from app.services._posting_reconcile import account_owner_id
@@ -51,7 +51,7 @@ from app.services.loan_ledger import (
 )
 
 from ._anchors import reconcile_loan_anchor_corrections
-from ._linked_ledger import _transfer_nets_by_date, _visible_nets
+from ._linked_ledger import _movement_nets_by_date, _visible_nets
 from ._payments import reconcile_loan_payment_splits
 
 _ZERO_MONEY = Decimal("0.00")
@@ -197,23 +197,25 @@ def _reconcile_lineage_transfer_entries(
     **The candidate set comes from the LEDGER, not the walk** (the step's
     adversarial review, H2): a REVERTED or SOFT-DELETED payment is outside
     the walk's settled set, but its pre-E1a cash entries can carry exactly
-    the same cross-date residue -- so the probe reads every transfer's
-    non-zero per-date nets off the linked ledger
-    (:func:`._linked_ledger._transfer_nets_by_date`) and compares each
-    against what a clean ledger holds: for a settled walk payment, its full
-    cash at its settle date (the SAME leaf clock the fold and the writer
-    share -- the event's ``visible_on``, read once by the stream's builder
-    through :func:`app.services.loan_ledger.payment_visible_on`); for any
-    other transfer, nothing (every date nets zero).  Only a transfer that fails
-    that comparison is re-synced, so the steady-state cost is the ONE probe
-    query; each stale transfer runs
-    :func:`app.services.posting_service.sync_transfer_postings` -- the one
-    existing date-aware reconcile for those entries -- with the settled sense
-    of its CURRENT status (``False`` for a soft-deleted row, whose effect
-    must reverse to zero).  A pre-guard legacy transfer OUT of the loan
-    (the R6 KEEP arm) never matches its walk expectation and re-syncs as a
-    no-op each pass -- bounded, and such a loan is already assert-blocked as
-    an N-11-class F1 item.
+    the same cross-date residue -- so the probe reads every loan-side
+    movement's non-zero per-date nets off the linked ledger
+    (:func:`._linked_ledger._movement_nets_by_date`; a payment's cash leg is
+    its loan-side covering movement's own entry since plan step
+    ``balance:X-bi-6-3``, ruling **R-BAL45**) and compares each against what
+    a clean ledger holds: for a settled walk payment, its full cash at its
+    settle date (the SAME leaf clock the fold and the writer share -- the
+    event's ``visible_on``, read once by the stream's builder through
+    :func:`app.services.loan_ledger.payment_visible_on`), keyed by the
+    shadow's covering movement; for any other movement, nothing (every date
+    nets zero).  Only a movement that fails that comparison is re-synced, so
+    the steady-state cost is the ONE probe query; each stale movement's
+    TRANSFER runs :func:`app.services.posting_service.sync_transfer_postings`
+    -- the one date-aware reconcile for those entries, which reads each
+    movement's own state (a soft-deleted shadow is non-contributing, so its
+    leg reverses) and brings the legacy one-entry source to zero besides.  A
+    pre-guard legacy transfer OUT of the loan (the R6 KEEP arm) never matches
+    its walk expectation and re-syncs as a no-op each pass -- bounded, and
+    such a loan is already assert-blocked as an N-11-class F1 item.
 
     Note the honest scope widening: the loan sync may RE-DATE a payment's
     cash entry, which touches the CHECKING side of that entry -- moving no
@@ -231,7 +233,7 @@ def _reconcile_lineage_transfer_entries(
         PostingError: From the transfer sync, for a broken chart-of-accounts
             pairing (fail-loud, same as every posting path).
     """
-    posted = _transfer_nets_by_date(linked_ledger_id, scenario_id)
+    posted = _movement_nets_by_date(linked_ledger_id, scenario_id)
     # Zero-filtered SYMMETRICALLY with the posted side (its zero-net dates are
     # dropped): a settled payment with a zero cash contribution -- the waived-fee
     # ``actual_amount=0`` case -- posts nothing, so expecting ``{date: 0.00}``
@@ -246,8 +248,12 @@ def _reconcile_lineage_transfer_entries(
     # ``settled_contribution`` answers from that record.  Since plan step X-bx
     # that accessor REFUSES a row which has not settled rather than pricing its
     # plan, so this loop's precondition is stated by the call it makes and not
-    # only by the loader above it.
+    # only by the loader above it.  The record IS the shadow's covering
+    # movement (plan step ``balance:X-bi-4b-1``), so a non-zero cash has
+    # exactly one (``uq_transaction_entries_one_settlement_record``), and its
+    # id is the key the posted side groups by.
     expected: dict[int, dict[date, Decimal]] = {}
+    transfer_by_movement: dict[int, int] = {}
     for outcome in walk.settled_splits:
         shadow = outcome.source
         if shadow.transfer_id is None:
@@ -255,26 +261,37 @@ def _reconcile_lineage_transfer_entries(
         cash = round_money(settled_contribution(shadow))
         if cash == 0:
             continue
-        expected[shadow.transfer_id] = {outcome.visible_on: cash}
+        movement = shadow.covering_movements[0]
+        expected[movement.id] = {outcome.visible_on: cash}
+        transfer_by_movement[movement.id] = shadow.transfer_id
     stale_ids = {
-        transfer_id
-        for transfer_id in set(posted) | set(expected)
-        if posted.get(transfer_id, {}) != expected.get(transfer_id, {})
+        movement_id
+        for movement_id in set(posted) | set(expected)
+        if posted.get(movement_id, {}) != expected.get(movement_id, {})
     }
     if not stale_ids:
         return
+    # A posted movement the walk does not expect -- a reverted or soft-deleted
+    # payment's, or one a legacy transfer OUT of the loan wrote -- names its
+    # transfer through its parent row, in one statement for all of them.  Every
+    # one resolves: only a shadow's movement posts under the transfer-movement
+    # source, and a hard-deleted movement's residue was excluded above.
+    unresolved = stale_ids - set(transfer_by_movement)
+    if unresolved:
+        transfer_by_movement.update(
+            db.session.query(TransactionEntry.id, Transaction.transfer_id)
+            .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+            .filter(TransactionEntry.id.in_(unresolved))
+            .all()
+        )
     transfers = (
         db.session.query(Transfer)
-        .filter(Transfer.id.in_(stale_ids))
+        .filter(Transfer.id.in_({transfer_by_movement[m] for m in stale_ids}))
         .order_by(Transfer.id)
         .all()
     )
     for xfer in transfers:
-        status = db.session.get(Status, xfer.status_id)
-        sync_transfer_postings(
-            xfer,
-            settled=status.is_settled and not xfer.is_deleted,
-        )
+        sync_transfer_postings(xfer)
 
 
 def _assert_checked_projection(

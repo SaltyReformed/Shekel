@@ -492,14 +492,23 @@ class PostingSourceEnum(enum.Enum):
     envelope whose bank posting day the owner has recorded (plan step X-f3b,
     ruling **R-FM**): it links ``transaction_entry_id`` and carries NULL in the
     other two source FKs, and it books its own cash leg on its own day so its
-    envelope's close books only the remainder.  Later steps add ``paycheck``
-    and ``credit_payback`` via data migrations.  Values match
+    envelope's close books only the remainder.  ``transfer_movement`` is ONE
+    side of a settled transfer -- a shadow's covering movement, booked on its
+    own bank day against the owner's Transfers-in-transit clearing account
+    (plan step ``balance:X-bi-6-3``, rulings **R-BAL45** and **R-BAL101**):
+    it links ``transaction_entry_id`` exactly as ``purchase`` does and carries
+    NULL in the other two.  The ``transfer`` kind is LEGACY since that step --
+    the one-entry-per-transfer shape the deploy resync reversed once -- and
+    survives only on those reversed pairs until ``X-bi-6-5`` drops
+    ``journal_entries.transfer_id``.  Later steps add ``paycheck`` and
+    ``credit_payback`` via data migrations.  Values match
     ``ref.posting_sources.name``.
     """
 
     TRANSFER = "transfer"
     TRANSACTION = "transaction"
     PURCHASE = "purchase"
+    TRANSFER_MOVEMENT = "transfer_movement"
     LOAN_PAYMENT = "loan_payment"
     LOAN_OPENING = "loan_opening"
     LOAN_TRUEUP = "loan_trueup"
@@ -512,7 +521,7 @@ class LedgerAccountKindEnum(enum.Enum):
 
     The explicit, positive discriminator that replaces inferring a ledger
     account's kind from the NULL-pattern of its ``account_id`` /
-    ``category_id`` / ``is_fallback`` columns (see
+    ``category_id`` / ``is_owner_bucket`` columns (see
     :class:`app.models.ledger_account.LedgerAccount`).  Every row carries a
     ``kind_id`` FK to one of these values; readers branch on the integer ID,
     never on which FKs happen to be NULL.
@@ -521,7 +530,8 @@ class LedgerAccountKindEnum(enum.Enum):
 
         linked    -- one per real ``budget.accounts`` row (Asset/Liability).
         category  -- one per budget category per Income/Expense class.
-        fallback  -- the per-(owner, class) Uncategorized bucket.
+        fallback  -- the per-(owner, class) Uncategorized bucket, an
+                     OWNER-BUCKET kind (``is_owner_bucket``; see ``transit``).
         orphan    -- a former category row whose category was deleted.
 
     The next three are the per-loan ledger accounts Step 4's loan-payment
@@ -565,6 +575,18 @@ class LedgerAccountKindEnum(enum.Enum):
     an opening is capital brought onto the books, not something earned (a
     Property's ``$350,000.00`` opening is not a gain).
 
+    Plan step ``balance:X-bi-6-3`` (rulings **R-BAL45**, **R-BAL99**) adds
+    the second OWNER-BUCKET kind beside ``fallback``:
+
+        transit -- the owner's Transfers-in-transit clearing account (Asset
+                   class): the counter leg of every settled transfer's TWO
+                   per-movement entries, so each side posts on its own bank
+                   day and the account nets to zero once both have cleared.
+                   No ``account_id`` / ``category_id`` / ``loan_account_id``;
+                   held to one per owner by the owner-bucket key
+                   ``(user_id, class_id, kind_id) WHERE is_owner_bucket``,
+                   the same key that holds the ``fallback`` rows.
+
     Application code resolves these via ``ref_cache.ledger_account_kind_id``
     and compares against the integer ID -- never the string ``name`` --
     matching the project-wide ``ref-table: IDs for logic, strings for display
@@ -582,6 +604,7 @@ class LedgerAccountKindEnum(enum.Enum):
     ANCHOR_EQUITY = "anchor_equity"
     INTEREST_INCOME = "interest_income"
     UNREALIZED_CHANGE = "unrealized_change"
+    TRANSIT = "transit"
 
 
 class AmountSourceEnum(enum.Enum):

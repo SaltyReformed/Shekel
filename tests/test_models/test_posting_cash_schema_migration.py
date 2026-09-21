@@ -5,7 +5,14 @@ Build-Order Step 3, Commit 2
 The migration is purely additive: it adds ``budget.ledger_accounts.category_id``
 and ``is_fallback`` (+ two partial unique indexes + two partition CHECKs) and
 ``budget.journal_entries.transaction_id`` (+ one partial index), plus the two
-SET-NULL FKs.  No table, no data, no trigger.
+SET-NULL FKs.  No table, no data, no trigger.  Three of its objects were
+RENAMED at HEAD by plan step ``balance:X-bi-6-3``'s migration ``c7d1e9a4b2f8``
+(ruling R-BAL99): ``is_fallback`` is ``is_owner_bucket``, the fallback
+singleton ``uq_ledger_accounts_uncategorized (user_id, class_id) WHERE
+is_fallback`` is ``uq_ledger_accounts_owner_bucket (user_id, class_id, kind_id)
+WHERE is_owner_bucket``, and ``ck_ledger_accounts_fallback_shape`` is
+``ck_ledger_accounts_owner_bucket_shape``; the catalog assertions below read
+the HEAD names, and the downgrade-source check reads this migration's own.
 
 The migration is already at HEAD when these tests run (the template builder
 upgraded it base->head), so the per-worker DB shows the post-migration
@@ -76,21 +83,25 @@ class TestMigratedColumns:
             assert row[0] == "integer"
             assert row[1] == "YES"
 
-    def test_is_fallback_column(self, app, db):
-        """``ledger_accounts.is_fallback`` is a NOT NULL boolean defaulting false."""
+    def test_owner_bucket_column(self, app, db):
+        """The bucket flag is a NOT NULL boolean defaulting false at HEAD.
+
+        Added as ``is_fallback`` here; ``is_owner_bucket`` since
+        ``c7d1e9a4b2f8`` (the module docstring).
+        """
         with app.app_context():
             row = db.session.execute(text(
                 "SELECT data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
                 "WHERE table_schema = 'budget' "
                 "  AND table_name = 'ledger_accounts' "
-                "  AND column_name = 'is_fallback'"
+                "  AND column_name = 'is_owner_bucket'"
             )).fetchone()
-            assert row is not None, "is_fallback column missing at HEAD"
+            assert row is not None, "is_owner_bucket column missing at HEAD"
             assert row[0] == "boolean"
             assert row[1] == "NO"
             assert row[2] is not None and "false" in row[2], (
-                f"is_fallback must default false; found default {row[2]!r}"
+                f"is_owner_bucket must default false; found default {row[2]!r}"
             )
 
     def test_transaction_id_column(self, app, db):
@@ -133,21 +144,25 @@ class TestMigratedIndexes:
             assert "category_id IS NOT NULL" in ddl
             assert "account_id IS NULL" in ddl
 
-    def test_uncategorized_unique_index(self, app, db):
-        """``uq_ledger_accounts_uncategorized`` is unique on (user, class) WHERE is_fallback.
+    def test_owner_bucket_unique_index(self, app, db):
+        """The bucket singleton is unique on (user, class, kind) WHERE the flag.
 
-        Keyed ``WHERE is_fallback`` (NOT ``WHERE category_id IS NULL``) -- the
-        H1 fix.  Asserting the NULL/NULL predicate is ABSENT guards against a
-        regression back to the colliding design.
+        Keyed on the flag (NOT ``WHERE category_id IS NULL``) -- the H1 fix.
+        Asserting the NULL/NULL predicate is ABSENT guards against a
+        regression back to the colliding design.  Added here as
+        ``uq_ledger_accounts_uncategorized (user_id, class_id) WHERE
+        is_fallback``; re-keyed and renamed by ``c7d1e9a4b2f8`` (the module
+        docstring), the ``kind_id`` in the key being what lets a second
+        bucket kind (``transit``) share the index.
         """
         with app.app_context():
-            ddl = self._indexdef(db, "uq_ledger_accounts_uncategorized")
-            assert ddl is not None, "uq_ledger_accounts_uncategorized missing"
+            ddl = self._indexdef(db, "uq_ledger_accounts_owner_bucket")
+            assert ddl is not None, "uq_ledger_accounts_owner_bucket missing"
             assert "UNIQUE INDEX" in ddl
-            assert "user_id, class_id" in ddl
-            assert "is_fallback" in ddl
+            assert "user_id, class_id, kind_id" in ddl
+            assert "is_owner_bucket" in ddl
             assert "category_id IS NULL" not in ddl, (
-                "the singleton must key on is_fallback, not the NULL/NULL "
+                "the singleton must key on is_owner_bucket, not the NULL/NULL "
                 "shape -- keying on category_id IS NULL re-opens the H1 "
                 "category-delete collision"
             )
@@ -175,15 +190,19 @@ class TestMigratedConstraints:
             assert "account_id IS NULL" in ddl
             assert "category_id IS NULL" in ddl
 
-    def test_fallback_shape_check(self, app, db):
-        """The fallback-shape CHECK is present with the model's predicate."""
+    def test_owner_bucket_shape_check(self, app, db):
+        """The bucket-shape CHECK is present with the model's predicate.
+
+        Added here as ``ck_ledger_accounts_fallback_shape``; renamed with the
+        flag by ``c7d1e9a4b2f8`` (the module docstring).
+        """
         with app.app_context():
             ddl = db.session.execute(text(
                 "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                "WHERE conname = 'ck_ledger_accounts_fallback_shape'"
+                "WHERE conname = 'ck_ledger_accounts_owner_bucket_shape'"
             )).scalar()
-            assert ddl is not None, "fallback-shape CHECK missing at HEAD"
-            assert "is_fallback" in ddl
+            assert ddl is not None, "bucket-shape CHECK missing at HEAD"
+            assert "is_owner_bucket" in ddl
             assert "account_id IS NULL" in ddl
             assert "category_id IS NULL" in ddl
 

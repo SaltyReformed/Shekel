@@ -270,9 +270,9 @@ def self_heal_anchor_corrections(
        and tracing it made the difference visible.
 
        **It remains SOUND, and the reason is an invariant rather than luck.**
-       Every emitted ``entry_date`` is a source's ``settled_on``
-       (``posting_service._entry_date`` for a transfer, the movement's own
-       ``settled_on`` for a purchase-sourced leg), and a
+       Every emitted ``entry_date`` is a source's ``settled_on`` (the
+       movement's own, for every movement-sourced leg -- a transfer's two
+       included since plan step ``balance:X-bi-6-3``), and a
        linked source's clearing statement must close on the day the DATE rule
        picks -- ``StatementCoverage._recorded_anchor_id`` refuses any other,
        and every door that moves a settle day releases the link.  So a source

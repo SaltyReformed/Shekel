@@ -56,11 +56,36 @@ _MIN_POSTING_LEGS = 2
 # descriptions.
 _MAX_DESCRIPTION_LENGTH = 200
 
-# The two ``journal_entries`` source links whose legs a TRANSACTION types
+# The two ``journal_entries`` source links whose legs a parent ROW types
 # (:func:`emit_typed_source_deltas`): the row's own leg and its movements'.
-# A transfer's legs link by ``transfer_id`` and carry the ``transfer`` kind
-# through ``posting_service.sync_transfer_postings``, never through here.
+# A transfer's legs are its shadows' movements since plan step
+# ``balance:X-bi-6-3`` (ruling **R-BAL101**) and come through here like every
+# other movement; only the LEGACY one-entry transfer source, keyed
+# ``transfer_id``, is reconciled by ``posting_service.sync_transfer_postings``
+# directly.
 _TYPED_SOURCE_LINKS = frozenset({"transaction_id", "transaction_entry_id"})
+
+
+def is_transfer_leg(txn) -> bool:
+    """Return whether *txn* is one leg of a transfer -- a shadow row.
+
+    The ONE spelling of the writer's shape dispatch (plan step
+    ``balance:X-bi-6-3``, ruling **R-BAL101**): a shadow's movement books
+    against the owner's transit account under the ``transfer_movement``
+    source with the ``transfer`` leg kind, and the three sites that decide
+    that -- the counter leg, the source kind, the leg kind -- ask this rather
+    than each reading ``transfer_id`` for themselves (the leaf's adversarial
+    review counted three spellings).  A shadow names its transfer; nothing
+    else does.  Plan step ``X-bi-6-5`` deletes the shadow rows and this
+    predicate with them.
+
+    Args:
+        txn: The parent row.
+
+    Returns:
+        ``True`` for a transfer shadow.
+    """
+    return txn.transfer_id is not None
 
 
 def ledger_class_of(txn) -> LedgerAccountClassEnum:
@@ -91,19 +116,27 @@ def posting_kind_of(txn) -> int:
     """Return the ``ref.posting_kinds`` id every leg of *txn*'s money carries.
 
     Both legs of an ordinary-transaction entry carry the same kind, by the
-    transaction type (mirroring the transfer path, where both legs are
-    ``transfer``); no Step-3 reader differentiates per-leg kind.  A MOVEMENT's
-    legs carry its PARENT's kind (plan step ``balance:X-bi-3b``): a purchase
-    against an envelope is an ``expense`` posting and a paycheck's covering
-    movement an ``income`` one, for the one reason :func:`ledger_class_of`
-    gives.
+    transaction type; no Step-3 reader differentiates per-leg kind.  A
+    MOVEMENT's legs carry its PARENT's kind (plan step ``balance:X-bi-3b``): a
+    purchase against an envelope is an ``expense`` posting and a paycheck's
+    covering movement an ``income`` one, for the one reason
+    :func:`ledger_class_of` gives -- and a transfer shadow's covering movement
+    a ``transfer`` one (plan step ``balance:X-bi-6-3``, ruling **R-BAL101**),
+    because a transfer between the owner's own accounts is neither income nor
+    expense, which is why its counter leg is the transit account and not a
+    category (ruling **R-BAL45**).  The kind the one-entry transfer shape
+    carried is the kind its two per-movement entries carry.
 
     Args:
-        txn: The transaction, income or expense.
+        txn: The parent row: an income or expense transaction, or a transfer
+            shadow (``transfer_id`` set).
 
     Returns:
-        The stored id of :attr:`PostingKindEnum.INCOME` or ``.EXPENSE``.
+        The stored id of :attr:`PostingKindEnum.TRANSFER` for a shadow's
+        money, else of :attr:`PostingKindEnum.INCOME` or ``.EXPENSE``.
     """
+    if is_transfer_leg(txn):
+        return ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
     return ref_cache.posting_kind_id(
         PostingKindEnum.INCOME if txn.is_income else PostingKindEnum.EXPENSE
     )
@@ -219,10 +252,17 @@ def posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal
 
     Args:
         source_filter: The SQLAlchemy filter expression selecting the source's
-            journal entries (by ``transfer_id``, ``transaction_id`` or
-            ``transaction_entry_id``).  The three are disjoint by construction
-            -- every entry sets exactly one -- so a source's reconcile never
-            reads back a sibling's legs.
+            journal entries: its concrete link (``transfer_id``,
+            ``transaction_id`` or ``transaction_entry_id``) AND its
+            ``source_kind_id``.  The link alone is not a source since plan
+            step ``balance:X-bi-6-3`` (ruling **R-BAL100**): a loan payment's
+            split correction and its cash leg both link the loan-side
+            movement's ``transaction_entry_id``, under two source kinds, so a
+            filter by link alone would sum the split into the cash leg's
+            posted side and the delta would reverse it.  Every writer's
+            filter names its kind (:func:`emit_typed_source_deltas` adds it;
+            the legacy transfer arm and the correction packages state it
+            themselves).
 
     Returns:
         ``{(pay_period_id, entry_date): {ledger_account_id: net Decimal}}``
@@ -421,19 +461,24 @@ def emit_typed_source_deltas(
     *txn* here; everything the source decides arrives by argument.
 
     Args:
-        txn: The transaction whose type, owner, scenario and kind the legs
-            carry.
+        txn: The parent row whose type, owner, scenario and kind the legs
+            carry: a transaction, or a transfer shadow (whose movement's legs
+            carry the ``transfer`` kind, :func:`posting_kind_of`).
         targets: What the ledger should net to, per ``(pay period, entry
             date)``; EMPTY to reverse the source to zero.
-        source: The ``ref.posting_sources`` kind this source posts under.
+        source: The ``ref.posting_sources`` kind this source posts under.  It
+            is stamped on the header AND filtered on when the posted side is
+            read back, so two sources sharing one link (a loan-side
+            movement's cash leg and its split correction, ruling
+            **R-BAL100**) never reconcile each other away.
         description: The human label, already truncated to
             :data:`_MAX_DESCRIPTION_LENGTH` where it was composed (the rule
             :func:`source_entry_builder` states).
         log_label: Names the source in the per-entry INFO line.
         **linkage: The ONE concrete source FK, by keyword -- ``transaction_id``
             or ``transaction_entry_id`` -- which is both the entry header's
-            link and the filter that reads the source's posted legs back, so
-            the two cannot name different rows.
+            link and, with *source*, the filter that reads the source's
+            posted legs back, so the two cannot name different rows.
 
     Returns:
         The emitted delta entries; ``[]`` when the ledger is already at target.
@@ -453,14 +498,18 @@ def emit_typed_source_deltas(
             f"{sorted(linkage)}"
         )
     link_column, link_id = next(iter(linkage.items()))
+    source_kind_id = ref_cache.posting_source_id(source)
     return emit_source_deltas(
         targets=targets,
-        source_filter=getattr(JournalEntry, link_column) == link_id,
+        source_filter=db.and_(
+            getattr(JournalEntry, link_column) == link_id,
+            JournalEntry.source_kind_id == source_kind_id,
+        ),
         kind_id=posting_kind_of(txn),
         build_entry=source_entry_builder(
             user_id=txn.user_id,
             scenario_id=txn.scenario_id,
-            source_kind_id=ref_cache.posting_source_id(source),
+            source_kind_id=source_kind_id,
             description=description,
             **linkage,
         ),

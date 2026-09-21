@@ -70,6 +70,7 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    transfer_family_journal_filter,
 )
 
 
@@ -669,16 +670,18 @@ class TestDowngradeReversible:
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
             assert interest_ledger is not None
+            # Each transfer's cash is TWO per-movement entries since plan
+            # step ``balance:X-bi-6-3``.
             loan_cash_entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
+                .filter(transfer_family_journal_filter(xfer.id)).count()
             )
-            assert loan_cash_entries == 1
+            assert loan_cash_entries == 2
             savings_cash_entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=cash_xfer.id).count()
+                .filter(transfer_family_journal_filter(cash_xfer.id)).count()
             )
-            assert savings_cash_entries == 1
+            assert savings_cash_entries == 2
             linked_before = len(
                 ledger_accounts_for_account(db.session, loan.id)
             )
@@ -695,15 +698,15 @@ class TestDowngradeReversible:
             # Step-4 artifacts removed.
             assert loan_correction_entries(db.session, shadow.id) == []
             assert _per_loan_ledger_count(loan) == 0
-            # Step-2 cash entries + linked ledger accounts survive.
+            # The cash entries + linked ledger accounts survive.
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(xfer.id)).count()
+            ) == 2
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=cash_xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(cash_xfer.id)).count()
+            ) == 2
             assert len(
                 ledger_accounts_for_account(db.session, loan.id)
             ) == linked_before
@@ -805,15 +808,16 @@ class TestGenesisBoundaryMigration:
                     account_correction_source_ids,
                 ),
             ).count() == 0
-            # Payment correction, interest ledger, Step-2 cash, linked ledger survive.
+            # Payment correction, interest ledger, the cash entries, linked
+            # ledger survive.
             assert len(loan_correction_entries(db.session, shadow.id)) == 1
             assert find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             ) is not None
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(xfer.id)).count()
+            ) == 2
 
     def test_downgrade_source_removes_genesis_entries_and_equity_accounts(self):
         """The downgrade source deletes genesis entries + equity_opening accounts."""

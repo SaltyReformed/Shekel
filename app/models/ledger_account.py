@@ -15,14 +15,14 @@ debit-normal; Liability/Income/Equity are credit-normal -- see
 **The explicit row-kind discriminator (``kind_id``).**  Every row carries a
 NOT NULL ``kind_id`` FK to :class:`app.models.ref.LedgerAccountKind` that
 names its kind *positively* -- a reader branches on that integer ID, never
-on which of ``account_id`` / ``category_id`` / ``is_fallback`` /
+on which of ``account_id`` / ``category_id`` / ``is_owner_bucket`` /
 ``loan_account_id`` happen to be NULL.  ``kind_id`` is the authoritative
 discriminator; it is stamped by the sole writer (``ledger_account_service``)
 on exactly the same trust contract ``class_id`` carries (see "Storage-tier
 shape enforcement" below for what the constraints do and do not police).
-Eleven kinds coexist in one table:
+Twelve kinds coexist in one table:
 
-* **linked** (``account_id`` set, ``category_id`` NULL, ``is_fallback``
+* **linked** (``account_id`` set, ``category_id`` NULL, ``is_owner_bucket``
   False, ``loan_account_id`` NULL) -- one per real ``budget.accounts`` row,
   created by the account-create sync hook (``ledger_account_service``) and by
   the Step-2 backfill migration.  ``name`` is ``NULL`` and the display label
@@ -30,7 +30,7 @@ Eleven kinds coexist in one table:
   row is Asset or Liability (derived from the account-type category:
   Liability category -> Liability class; Asset, Retirement, and Investment
   categories -> Asset class).
-* **category** (``account_id`` NULL, ``category_id`` set, ``is_fallback``
+* **category** (``account_id`` NULL, ``category_id`` set, ``is_owner_bucket``
   False, ``loan_account_id`` NULL) -- one Income or Expense ledger account
   per budget category per accounting class: the per-category chart of
   accounts the cash-posting step (Build-Order Step 3) books an ordinary
@@ -40,13 +40,24 @@ Eleven kinds coexist in one table:
   enables live reporting grouping while the category exists.  A ``Category``
   is type-agnostic, so a category used for both an income and an expense
   transaction correctly yields two rows -- one per class.
-* **fallback** (``account_id`` NULL, ``category_id`` NULL, ``is_fallback``
-  True, ``loan_account_id`` NULL) -- the per-user ``Uncategorized Income`` /
-  ``Uncategorized Expense`` buckets (exactly one per owner per class) that
-  catch a settled transaction whose ``category_id`` is NULL.  ``name``
-  carries the canonical label.  The ``is_fallback`` flag is what marks a
-  row as *the* fallback.
-* **orphan** (``account_id`` NULL, ``category_id`` NULL, ``is_fallback``
+* **fallback** and **transit** -- the OWNER-BUCKET family (``account_id``
+  NULL, ``category_id`` NULL, ``is_owner_bucket`` True, ``loan_account_id``
+  NULL): a row that is the owner's ONE bucket for its (class, kind), with no
+  real account, category or loan behind it, held to one per
+  ``(user_id, class_id, kind_id)`` by ``uq_ledger_accounts_owner_bucket``.
+  **fallback** is the per-user ``Uncategorized Income`` / ``Uncategorized
+  Expense`` bucket (one per owner per class) that catches a settled
+  transaction whose ``category_id`` is NULL.  **transit** is the owner's
+  ``Transfers in transit`` clearing account (Asset class; plan step
+  ``balance:X-bi-6-3``, rulings **R-BAL45** and **R-BAL99**): the counter leg
+  of a settled transfer's two per-movement entries, one per side on its own
+  bank day, which nets to zero once both sides have cleared.  ``name``
+  carries the canonical label on both.  A future bucket kind needs an enum
+  member, a ref row and a resolver arm, and no schema: keying the family on
+  the KIND is what lets the ruled generalisation (R-BAL99) add one without an
+  index, exactly as ``(account_id, kind_id)`` let ruling R-FO add two counter
+  kinds.
+* **orphan** (``account_id`` NULL, ``category_id`` NULL, ``is_owner_bucket``
   False, ``loan_account_id`` NULL) -- a former **category** row whose budget
   category was later deleted: ``category_id`` is SET NULL but the row, its
   ``name`` snapshot, and its immutable postings persist (a permanent,
@@ -54,14 +65,14 @@ Eleven kinds coexist in one table:
   account).  Orphans are deliberately NOT unique: any number coexist with one
   another and with the fallback of the same class.
 * **loan_interest** / **loan_escrow** / **loan_refund** (``loan_account_id``
-  set, ``account_id`` NULL, ``category_id`` NULL, ``is_fallback`` False) --
+  set, ``account_id`` NULL, ``category_id`` NULL, ``is_owner_bucket`` False) --
   the three per-loan accounts the Step-4 loan-payment correction books into:
   the loan's accrued-interest Expense account, its configured-escrow Expense
   account, and its payoff-overpayment refund Asset account.  ``name``
   snapshots a per-loan label naming the loan and the component; at most one
   of each kind exists per loan (``uq_ledger_accounts_loan``).
 * **equity_opening** (``loan_account_id`` set, ``account_id`` NULL,
-  ``category_id`` NULL, ``is_fallback`` False) -- the loan's opening-balance
+  ``category_id`` NULL, ``is_owner_bucket`` False) -- the loan's opening-balance
   Equity account: the credit counter-leg of the once-per-loan opening-equity
   entry the loan read switch (Build-Order Step 4, second half) books at
   origination so the ledger is authoritative for the loan's confirmed balance.
@@ -70,7 +81,7 @@ Eleven kinds coexist in one table:
   (Equity) and in what books it (the opening entry, not the payment
   correction).  ``name`` snapshots a per-loan "<loan> -- Opening" label.
 * **anchor_equity** / **interest_income** / **unrealized_change**
-  (``account_id`` set, ``category_id`` NULL, ``is_fallback`` False,
+  (``account_id`` set, ``category_id`` NULL, ``is_owner_bucket`` False,
   ``loan_account_id`` NULL) -- the three per-account COUNTER accounts a
   NON-loan account's balance assertions book their counter-leg into: the
   balanced ``account_opening`` / ``account_trueup`` corrections make every
@@ -89,34 +100,40 @@ Eleven kinds coexist in one table:
   rule below is the LINKED-row rule, so a reader rendering a counter row
   branches on ``kind_id`` and uses the snapshot, never ``account.name``.
 
-**Why ``is_fallback`` exists.**  A fallback and an orphan are BOTH
-``(account_id NULL, category_id NULL)`` -- nothing in those two columns
-tells them apart.  Without a discriminator, a per-(owner, class) singleton
-over the NULL/NULL space would (a) forbid a second retired category of a
-class, and worse (b) make a category delete's ``category_id`` SET NULL
-*fail at the database* the moment the orphan it produces lands on an
-existing fallback of that class -- the SET NULL is part of the DELETE, so
-the whole category delete would raise.  ``is_fallback`` confines the
-singleton to the true fallback, so a deleted category becomes a
-freely-coexisting orphan and the delete always succeeds.
+**Why ``is_owner_bucket`` exists.**  An owner bucket and an orphan are BOTH
+``(account_id NULL, category_id NULL, loan_account_id NULL)`` -- nothing in
+those columns tells them apart, and a partial unique index cannot name a
+kind (a CHECK cannot subquery ``ref.ledger_account_kinds``, and the project
+forbids hardcoding its ids).  Without a discriminator, a per-(owner, class,
+kind) singleton over the all-NULL space would (a) forbid a second retired
+category of a class, and worse (b) make a category delete's ``category_id``
+SET NULL *fail at the database* the moment the orphan it produces lands on
+an existing bucket of that class -- the SET NULL is part of the DELETE, so
+the whole category delete would raise.  ``is_owner_bucket`` confines the
+singleton to the buckets, so a deleted category becomes a freely-coexisting
+orphan and the delete always succeeds.  It was ``is_fallback`` -- one flag
+for one kind -- until plan step ``balance:X-bi-6-3`` needed a second
+link-less singleton and ruling **R-BAL99** generalised it rather than add a
+flag per kind.
 
 **Storage-tier shape enforcement.**  The constraints keep each row's column
 *shape* mutually exclusive and consistent with its kind; the ``kind_id``
 value itself is trusted from the sole writer (the same contract ``class_id``
 has -- no CHECK pins ``class_id`` to a valid class for the shape either).
 ``ck_ledger_accounts_account_or_category_null`` forbids setting both
-``account_id`` and ``category_id``; ``ck_ledger_accounts_fallback_shape``
-forbids ``is_fallback`` on anything but the NULL/NULL shape;
+``account_id`` and ``category_id``; ``ck_ledger_accounts_owner_bucket_shape``
+forbids ``is_owner_bucket`` on anything but the NULL/NULL shape;
 ``ck_ledger_accounts_loan_shape`` forbids a ``loan_account_id`` row from also
-carrying an ``account_id`` / ``category_id`` / ``is_fallback`` (so a per-loan
+carrying an ``account_id`` / ``category_id`` / ``is_owner_bucket`` (so a per-loan
 row can never also be a linked / category / fallback row); and each
 *constrained* kind has its own partial unique index -- one account-linked
 row per ``(account, kind)`` (``uq_ledger_accounts_account_kind``: exactly
 one ``linked`` row per real account, and at most one of each per-account
 COUNTER kind), one
 category row per ``(user, category, class)``
-(``uq_ledger_accounts_category``), one fallback per ``(user, class)``
-(``uq_ledger_accounts_uncategorized``, keyed ``WHERE is_fallback``), and one
+(``uq_ledger_accounts_category``), one owner bucket per ``(user, class,
+kind)`` (``uq_ledger_accounts_owner_bucket``, keyed ``WHERE
+is_owner_bucket``), and one
 per ``(user, loan, kind)`` (``uq_ledger_accounts_loan``, keyed ``WHERE
 loan_account_id IS NOT NULL``).  Orphans carry no uniqueness by design.
 
@@ -231,9 +248,9 @@ ledger row.
 accumulates immutable postings, so the ledger account itself can never be
 deleted; when the budgeting category it snapshots is deleted, clearing the
 back-link (and keeping the ``name`` snapshot) turns the row into an
-**orphan** (``is_fallback`` stays False, so it freely coexists with the
+**orphan** (``is_owner_bucket`` stays False, so it freely coexists with the
 fallback and any other orphans -- see the row-kind taxonomy and the
-"Why ``is_fallback`` exists" note above; without that discriminator this
+"Why ``is_owner_bucket`` exists" note above; without that discriminator this
 SET NULL would collide with the per-(owner, class) fallback singleton and
 abort the category delete).  RESTRICT would wrongly forbid deleting a
 category that has posted history.  Like ``account``, the relationship is
@@ -252,13 +269,14 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
     authoritative discriminator readers branch on), an optional ``account_id``
     linking it 1:1 to a real ``budget.accounts`` row, an optional
     ``category_id`` linking a per-category Income/Expense row to its budget
-    category, an ``is_fallback`` flag marking the per-(owner, class)
-    Uncategorized bucket, an optional ``loan_account_id`` linking a per-loan
+    category, an ``is_owner_bucket`` flag marking the owner-bucket family
+    (the per-(owner, class) Uncategorized bucket and the owner's Transfers-in-
+    transit account), an optional ``loan_account_id`` linking a per-loan
     interest / escrow / refund / opening row to the loan it books against, and
     an optional display ``name`` (set on the non-linked category / fallback /
     orphan / per-loan rows; a linked row derives its label from
-    ``account.name``).  See the module docstring for the nine-kind taxonomy,
-    why the loan shape CHECK does not pin ``kind_id``, why ``is_fallback``
+    ``account.name``).  See the module docstring for the twelve-kind taxonomy,
+    why the loan shape CHECK does not pin ``kind_id``, why ``is_owner_bucket``
     exists, the display rule, and the FK-action rationale (the CASCADE
     impossibility argument for ``account_id``, the RESTRICT for ``class_id`` /
     ``kind_id`` / ``loan_account_id``, and the SET NULL disposal for
@@ -305,23 +323,31 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
                 "category_id IS NOT NULL AND account_id IS NULL"
             ),
         ),
-        # Exactly one *fallback* ledger account per (owner, class) -- one
-        # Uncategorized-Income and one Uncategorized-Expense per user.  Keyed
-        # ``WHERE is_fallback`` (NOT ``WHERE category_id IS NULL``) so the
-        # singleton confines itself to the true fallback: a deleted-category
-        # ORPHAN is also ``(account_id NULL, category_id NULL)`` but carries
-        # ``is_fallback`` False, so it stays outside this index and any number
-        # of orphans coexist with the fallback (see the module docstring's
-        # "Why is_fallback exists" -- keying on ``category_id IS NULL`` would
-        # instead make a category delete's SET NULL collide here and abort).
-        # ``ck_ledger_accounts_fallback_shape`` guarantees an ``is_fallback``
-        # row has the NULL/NULL shape, so the ``(user_id, class_id)`` key
-        # (both non-NULL) enforces the singleton cleanly.
+        # Exactly one OWNER-BUCKET ledger account per (owner, class, kind) --
+        # one Uncategorized-Income and one Uncategorized-Expense (``fallback``)
+        # and one Transfers-in-transit (``transit``, Asset) per user.  Keyed
+        # ``WHERE is_owner_bucket`` (NOT ``WHERE category_id IS NULL``) so the
+        # singleton confines itself to the buckets: a deleted-category ORPHAN
+        # is also all-NULL but carries ``is_owner_bucket`` False, so it stays
+        # outside this index and any number of orphans coexist with the
+        # buckets (see the module docstring's "Why is_owner_bucket exists" --
+        # keying on ``category_id IS NULL`` would instead make a category
+        # delete's SET NULL collide here and abort).  ``kind_id`` is in the
+        # key so the family scales by ROWS: a future bucket kind needs no
+        # index (ruling R-BAL99), and the ``fallback`` guarantee is unchanged
+        # (one row of that kind per owner per class).
+        # ``ck_ledger_accounts_owner_bucket_shape`` guarantees a flagged row
+        # has the NULL/NULL shape, so the three-column key (all non-NULL)
+        # enforces the singleton cleanly.  It was ``uq_ledger_accounts_
+        # uncategorized (user_id, class_id) WHERE is_fallback`` until plan step
+        # ``balance:X-bi-6-3``'s migration re-keyed it; the ``postgresql_where``
+        # text matches that migration's index DDL byte-for-byte so autogenerate
+        # produces no spurious diff.
         db.Index(
-            "uq_ledger_accounts_uncategorized",
-            "user_id", "class_id",
+            "uq_ledger_accounts_owner_bucket",
+            "user_id", "class_id", "kind_id",
             unique=True,
-            postgresql_where=db.text("is_fallback"),
+            postgresql_where=db.text("is_owner_bucket"),
         ),
         # At most one *per-loan* ledger account of each kind per loan -- one
         # ``loan_interest``, one ``loan_escrow``, one ``loan_refund``, one
@@ -361,15 +387,18 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
             "account_id IS NULL OR category_id IS NULL",
             name="ck_ledger_accounts_account_or_category_null",
         ),
-        # ``is_fallback`` marks ONLY the Uncategorized fallback bucket, which
+        # ``is_owner_bucket`` marks ONLY the owner-bucket family (the
+        # Uncategorized fallbacks and the Transfers-in-transit account), which
         # by definition has neither a real account nor a category.  Forbidding
-        # ``is_fallback`` on any other shape keeps the flag a true discriminator
-        # (so the fallback singleton index above cannot be subverted by a
-        # linked/category row flagged ``is_fallback``) and lets that index key
-        # simply ``WHERE is_fallback``.
+        # ``is_owner_bucket`` on any other shape keeps the flag a true
+        # discriminator (so the bucket singleton index above cannot be
+        # subverted by a linked/category row flagged ``is_owner_bucket``) and
+        # lets that index key simply ``WHERE is_owner_bucket``.  A loan row
+        # cannot carry it either: ``ck_ledger_accounts_loan_shape`` below says
+        # so from the loan side.
         db.CheckConstraint(
-            "NOT is_fallback OR (account_id IS NULL AND category_id IS NULL)",
-            name="ck_ledger_accounts_fallback_shape",
+            "NOT is_owner_bucket OR (account_id IS NULL AND category_id IS NULL)",
+            name="ck_ledger_accounts_owner_bucket_shape",
         ),
         # A *per-loan* row (``loan_account_id`` set) is ONLY a per-loan row:
         # it carries no real-account link, no category link, and is not the
@@ -380,12 +409,14 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         # CHECK cannot subquery ``ref.ledger_account_kinds`` and the project
         # forbids hardcoding its IDs -- see the module docstring's
         # "Why ck_ledger_accounts_loan_shape does not pin kind_id" and the
-        # parallel un-CHECKed ``class_id``).  ``NOT is_fallback`` matches the
-        # sibling ``ck_ledger_accounts_fallback_shape`` form so the two read
-        # alike; the predicate matches the migration's CHECK DDL byte-for-byte.
+        # parallel un-CHECKed ``class_id``).  ``NOT is_owner_bucket`` matches
+        # the sibling ``ck_ledger_accounts_owner_bucket_shape`` form so the two
+        # read alike; the predicate matches the migration's CHECK DDL
+        # byte-for-byte (re-created under the same name by plan step
+        # ``balance:X-bi-6-3``'s migration, which renamed the column).
         db.CheckConstraint(
             "loan_account_id IS NULL OR (account_id IS NULL AND "
-            "category_id IS NULL AND NOT is_fallback)",
+            "category_id IS NULL AND NOT is_owner_bucket)",
             name="ck_ledger_accounts_loan_shape",
         ),
         # Ownership-filtered queries (reconciliation, reporting) scan by
@@ -482,15 +513,17 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         ),
         nullable=True,
     )
-    # True ONLY on the per-(owner, class) Uncategorized fallback bucket;
-    # False on every linked, category, and deleted-category *orphan* row.
-    # The discriminator that lets ``uq_ledger_accounts_uncategorized`` apply
-    # the singleton to the true fallback while leaving orphans (also NULL/
-    # NULL, see the module docstring's "Why is_fallback exists") free to
-    # coexist -- which is what keeps a category delete's ``category_id`` SET
-    # NULL from colliding with the fallback.  ``ck_ledger_accounts_fallback_shape``
-    # ties it to the NULL/NULL shape.
-    is_fallback = db.Column(
+    # True ONLY on an OWNER-BUCKET row -- the per-(owner, class) Uncategorized
+    # fallback and the owner's Transfers-in-transit account; False on every
+    # linked, category, per-loan and deleted-category *orphan* row.  The
+    # discriminator that lets ``uq_ledger_accounts_owner_bucket`` apply the
+    # singleton to the buckets while leaving orphans (also NULL/NULL, see the
+    # module docstring's "Why is_owner_bucket exists") free to coexist --
+    # which is what keeps a category delete's ``category_id`` SET NULL from
+    # colliding with the fallback.  ``ck_ledger_accounts_owner_bucket_shape``
+    # ties it to the NULL/NULL shape.  Named ``is_fallback`` until plan step
+    # ``balance:X-bi-6-3`` (ruling R-BAL99).
+    is_owner_bucket = db.Column(
         db.Boolean, nullable=False, default=False,
         server_default=db.text("false"),
     )
@@ -556,5 +589,5 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
             f"<LedgerAccount id={self.id} kind_id={self.kind_id} "
             f"account_id={self.account_id} category_id={self.category_id} "
             f"loan_account_id={self.loan_account_id} "
-            f"is_fallback={self.is_fallback} class_id={self.class_id}>"
+            f"is_owner_bucket={self.is_owner_bucket} class_id={self.class_id}>"
         )

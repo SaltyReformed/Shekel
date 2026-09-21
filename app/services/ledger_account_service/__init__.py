@@ -18,8 +18,13 @@ surface.
   (:func:`ledger_class_id_for_category`) the account-type boundary guards apply
   to a PROPOSED category, and the re-class an unposted type change needs.
 * :mod:`._categories` -- the per-category Income/Expense rows an ordinary
-  settled transaction's counter-leg books into, and the per-(owner, class)
-  ``Uncategorized`` fallback for a transaction with no category (Step 3).
+  settled transaction's counter-leg books into (Step 3), and the door that
+  answers the per-(owner, class) ``Uncategorized`` fallback for a transaction
+  with no category by delegating to the buckets.
+* :mod:`._buckets` -- the OWNER-BUCKET family (ruling **R-BAL99**, plan step
+  ``balance:X-bi-6-3``): the ``fallback`` rows and the owner's ``transit``
+  Transfers-in-transit clearing account, one resolver keyed
+  ``(user, class, kind)``.
 * :mod:`._loans` -- the four per-loan rows: ``loan_interest``, ``loan_escrow``,
   ``loan_refund`` (Step 4's payment split) and ``equity_opening`` (the loan
   read switch's origination entry).
@@ -30,7 +35,8 @@ surface.
 
 It was ONE 962-line module until plan step X-f3d, which needed room in it: four
 unrelated resolvers had accumulated behind one name, and the split is by the
-kind of chart row each one writes.  The public names are unchanged and are
+kind of chart row each one writes; ``balance:X-bi-6-3`` added the fifth when
+the fallback became one of two bucket kinds.  The public names are unchanged and are
 re-exported here, so every consumer keeps reading them off ``ledger_account_service``
 -- the chart's one public surface, the same posture ``posting_service`` keeps
 over ``posting_reads``.
@@ -40,8 +46,9 @@ over ``posting_reads``.
 As the sole writer, this package stamps every row's explicit ``kind_id``
 discriminator (``LedgerAccountKindEnum`` -> ``ref.ledger_account_kinds`` id):
 :func:`create_ledger_account_for_account` writes ``linked``,
-:func:`get_or_create_category_ledger_account` writes ``fallback`` (the
-Uncategorized bucket) or ``category``,
+:func:`get_or_create_category_ledger_account` writes ``category`` (and hands a
+category-less row to the bucket resolver, which writes ``fallback``),
+:func:`get_or_create_transit_ledger_account` writes ``transit``,
 :func:`get_or_create_loan_ledger_account` writes one of the four per-loan kinds,
 and :func:`get_or_create_account_counter_account` writes one of the three
 per-account counter kinds.
@@ -71,6 +78,7 @@ from the live ``account.name`` (see
 :class:`app.models.ledger_account.LedgerAccount`).
 """
 
+from ._buckets import get_or_create_transit_ledger_account
 from ._categories import get_or_create_category_ledger_account
 from ._counters import (
     anchor_correction_counter_kind,
@@ -91,6 +99,7 @@ __all__ = [
     "get_or_create_account_counter_account",
     "get_or_create_category_ledger_account",
     "get_or_create_loan_ledger_account",
+    "get_or_create_transit_ledger_account",
     "ledger_class_id_for_category",
     "sync_linked_ledger_class",
 ]

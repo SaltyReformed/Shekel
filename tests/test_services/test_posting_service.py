@@ -14,15 +14,24 @@ reconciliation helpers the oracle consumes (the transaction source's own,
 ``settled_transaction_effect``, went at plan step ``balance:X-bi-4a``).
 
 The transfer tests pin the load-bearing properties with hand-computed
-arithmetic:
+arithmetic.  **A settled transfer is TWO entries since plan step
+``balance:X-bi-6-3``** (rulings **R-BAL45** and **R-BAL101**): one per side's
+covering movement, on that movement's own day, each against the owner's
+Transfers-in-transit account -- ``{from -amount, transit +amount}`` and
+``{to +amount, transit -amount}`` -- so every figure a real account's ledger
+carries below is what it was under the one-entry shape, and the transit account
+nets to zero per transfer.  The cases that read "the transfer's entry" were
+re-expressed for the pair when the shape moved (each docstring says how);
+every per-real-account figure is unchanged:
 
   * **Sign + balance** -- a settle posts ``-amount`` on the from-account's
-    ledger and ``+amount`` on the to-account's, summing to zero; the rule is
-    class-independent (asset->asset AND asset->liability).
-  * **Effective amount, not transfer amount** -- a settled shadow
-    ``actual_amount`` overrides the nominal transfer amount (the value the
-    balance calculator and the oracle use).
-  * **Idempotency** -- a repeat settle computes ``delta = 0`` and writes
+    ledger and ``+amount`` on the to-account's, each against transit, each
+    entry summing to zero; the rule is class-independent (asset->asset AND
+    asset->liability).
+  * **Effective amount, not transfer amount** -- a settled shadow's RECORD
+    (its covering movement's figure) overrides the nominal transfer amount
+    (the value the balance calculator and the oracle use).
+  * **Idempotency** -- a repeat sync computes ``delta = 0`` and writes
     nothing.
   * **Reversal reads the ledger** -- a revert / delete negates exactly what
     was posted, not the (possibly-edited) transfer amount; a revert ->
@@ -68,7 +77,7 @@ The ``settled_*_effect`` source-table readers are unchanged.
 # pattern; test bodies bind fixtures by name.
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -100,6 +109,8 @@ from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
     family_journal_filter,
+    transfer_family_journal_filter,
+    transit_ledger_account,
     figure_source_columns,
     add_txn,
     an_entered_day,
@@ -126,12 +137,57 @@ def _ledger_id(account):
 
 
 def _entries_for_transfer(transfer_id):
-    """Return every journal entry for *transfer_id*, oldest first."""
+    """Return every journal entry of the transfer's FAMILY, oldest first.
+
+    The two per-movement entries a settle writes since plan step
+    ``balance:X-bi-6-3`` (each linked by ``transaction_entry_id`` to one
+    side's covering movement), plus anything the legacy one-entry source still
+    links by ``transfer_id`` (``transfer_family_journal_filter``).
+    """
     return (
         _db.session.query(JournalEntry)
-        .filter_by(transfer_id=transfer_id)
+        .filter(transfer_family_journal_filter(transfer_id))
         .order_by(JournalEntry.id)
         .all()
+    )
+
+
+def _transit_ledger_id(seed_user):
+    """Return the owner's Transfers-in-transit ledger account id (a lookup)."""
+    return transit_ledger_account(_db.session, seed_user["user"].id).id
+
+
+def _side_entries(transfer_id):
+    """Return ``{account_id: [entries]}`` of a transfer's family by SIDE.
+
+    Each per-movement entry links its side's covering movement, whose
+    ``account_id`` is the side's; the legacy ``transfer_id``-linked entries
+    (none in a go-forward suite) would carry no movement and are keyed
+    ``None``.
+    """
+    by_side: dict = {}
+    for entry in _entries_for_transfer(transfer_id):
+        movement = (
+            _db.session.get(TransactionEntry, entry.transaction_entry_id)
+            if entry.transaction_entry_id is not None else None
+        )
+        key = movement.account_id if movement is not None else None
+        by_side.setdefault(key, []).append(entry)
+    return by_side
+
+
+def _covering_movement_of_side(transfer_id, account_id):
+    """Return the covering movement of the transfer's shadow on *account_id*."""
+    return (
+        _db.session.query(TransactionEntry)
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.transfer_id == transfer_id,
+            Transaction.account_id == account_id,
+            Transaction.is_deleted.is_(False),
+            TransactionEntry.covers_settlement.is_(True),
+        )
+        .one()
     )
 
 
@@ -277,71 +333,102 @@ def savings(app, db, seed_user):  # pylint: disable=unused-argument
 
 
 class TestSyncSettlePostsBalancedEntry:
-    """A settled transfer posts exactly one balanced two-leg entry."""
+    """A settled transfer posts exactly two balanced entries, one per side."""
 
     def test_asset_to_asset_signs_balance_and_metadata(
         self, app, db, seed_user, savings,
     ):
-        """Checking -> Savings $100 posts -100 / +100, summing to zero.
+        """Checking -> Savings $100 posts {Chk -100, T +100} and {Sav +100, T -100}.
 
-        Arithmetic (plan Section 1): the from leg is -100.00 (a credit: money
-        leaving Checking), the to leg is +100.00 (a debit: money entering
-        Savings); -100.00 + 100.00 = 0.00.  Both ledgers are Asset class, but
-        the builder never branches on class -- the sign follows direction.
-        Also pins the header metadata (source kind, transfer link, owner,
-        scenario, period) and the per-leg posting kind.
+        Arithmetic (ruling **R-BAL45**'s shape C, built at plan step
+        ``balance:X-bi-6-3``): the from-side entry is -100.00 on Checking (a
+        credit: money leaving) against +100.00 on Transfers in transit; the
+        to-side entry is +100.00 on Savings (a debit: money entering) against
+        -100.00 on transit.  Each entry sums to zero; transit nets 0.00 across
+        the pair; Checking and Savings carry exactly the -100.00 / +100.00 the
+        one-entry shape gave them.  Both ledgers are Asset class, but the
+        builder never branches on class -- the sign follows direction.  Also
+        pins the header metadata (the ``transfer_movement`` source kind, the
+        link to the side's covering movement and NO ``transfer_id``, owner,
+        scenario, period, the movement's own description) and the per-leg
+        ``transfer`` posting kind.  Re-expressed from the one-entry shape when
+        it moved; the per-account figures are unchanged.
         """
         with app.app_context():
+            checking = seed_user["account"]
             transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
+                seed_user, _db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
+            checking_ledger = _ledger_id(checking)
             savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
 
             # Commit-5 wiring: settling through the transfer service already
-            # auto-posted the entry; read it back (a re-sync would no-op).
-            entry = _entries_for_transfer(transfer.id)[0]
+            # auto-posted both entries; read them back (a re-sync would no-op).
+            by_side = _side_entries(transfer.id)
+            assert set(by_side) == {checking.id, savings.id}
+            [from_entry] = by_side[checking.id]
+            [to_entry] = by_side[savings.id]
 
-            # Header metadata.
-            assert entry.transfer_id == transfer.id
-            assert entry.user_id == seed_user["user"].id
-            assert entry.scenario_id == _scenario_id(seed_user)
-            assert entry.pay_period_id == seed_user["bootstrap_period"].id
-            assert entry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSFER,
-            )
-            assert entry.description == "Transfer: Checking to Posting Savings"
-            # entry_date is a concrete civil date: the server-side
-            # the helper's default settle day was
-            # materialized, not left as an unresolved SQL expression.
-            assert isinstance(entry.entry_date, date)
-            # Legs: -100 from Checking, +100 to Savings, summing to zero.
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-100.00")
-            assert legs[savings_ledger] == Decimal("100.00")
-            assert sum(legs.values()) == Decimal("0.00")
-            # Every leg carries the transfer posting kind.
-            kinds = {
-                leg.posting_kind_id
-                for leg in _db.session.query(Posting)
-                .filter_by(journal_entry_id=entry.id)
-                .all()
+            # Header metadata, each side linking ITS covering movement.
+            for entry, account in ((from_entry, checking), (to_entry, savings)):
+                movement = _covering_movement_of_side(transfer.id, account.id)
+                assert entry.transfer_id is None
+                assert entry.transaction_id is None
+                assert entry.transaction_entry_id == movement.id
+                assert entry.user_id == seed_user["user"].id
+                assert entry.scenario_id == _scenario_id(seed_user)
+                assert entry.pay_period_id == seed_user["bootstrap_period"].id
+                assert entry.source_kind_id == ref_cache.posting_source_id(
+                    PostingSourceEnum.TRANSFER_MOVEMENT,
+                )
+                assert entry.description == movement.description
+                # entry_date is a concrete civil date -- the movement's own
+                # recorded day, materialized.
+                assert entry.entry_date == movement.settled_on
+                assert isinstance(entry.entry_date, date)
+                # Every leg carries the transfer posting kind.
+                kinds = {
+                    leg.posting_kind_id
+                    for leg in _db.session.query(Posting)
+                    .filter_by(journal_entry_id=entry.id)
+                    .all()
+                }
+                assert kinds == {
+                    ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
+                }
+            assert from_entry.description == "Transfer to Posting Savings"
+            assert to_entry.description == "Transfer from Checking"
+            # Legs: -100 from Checking against +100 transit; +100 to Savings
+            # against -100 transit; each entry sums to zero.
+            from_legs = _legs_by_ledger(from_entry.id)
+            assert from_legs == {
+                checking_ledger: Decimal("-100.00"),
+                transit_ledger: Decimal("100.00"),
             }
-            assert kinds == {
-                ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
+            to_legs = _legs_by_ledger(to_entry.id)
+            assert to_legs == {
+                savings_ledger: Decimal("100.00"),
+                transit_ledger: Decimal("-100.00"),
             }
-            # Exactly one entry for the transfer.
-            assert len(_entries_for_transfer(transfer.id)) == 1
+            assert sum(from_legs.values()) == Decimal("0.00")
+            assert sum(to_legs.values()) == Decimal("0.00")
+            # Transit nets to zero across the pair.
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
+            # Exactly two entries for the transfer.
+            assert len(_entries_for_transfer(transfer.id)) == 2
 
     def test_asset_to_liability_signs(self, app, db, seed_user):
-        """Checking -> Mortgage $250 posts -250 / +250 (pay-down).
+        """Checking -> Mortgage $250 posts -250 / +250 (pay-down), via transit.
 
         Arithmetic (plan Section 1, second worked example): paying down a
         liability is still from=-amount / to=+amount.  -250.00 on the Asset
-        Checking ledger, +250.00 on the Liability Mortgage ledger, summing to
-        zero -- the sign rule is class-independent.
+        Checking ledger against +250.00 transit, +250.00 on the Liability
+        Mortgage ledger against -250.00 transit; each entry sums to zero and
+        transit nets to zero -- the sign rule is class-independent.
+        Re-expressed for the pair at plan step ``balance:X-bi-6-3``.
         """
         with app.app_context():
             mortgage = create_account_of_type(
@@ -355,27 +442,37 @@ class TestSyncSettlePostsBalancedEntry:
             _db.session.commit()
             checking_ledger = _ledger_id(seed_user["account"])
             mortgage_ledger = _ledger_id(mortgage)
+            transit_ledger = _transit_ledger_id(seed_user)
 
-            # Commit-5 wiring: the mortgage pay-down auto-posted on settle;
-            # read the entry back (a re-sync would no-op).
-            entry = _entries_for_transfer(transfer.id)[0]
-
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-250.00")
-            assert legs[mortgage_ledger] == Decimal("250.00")
-            assert sum(legs.values()) == Decimal("0.00")
+            # Commit-5 wiring: the mortgage pay-down auto-posted on settle as
+            # two per-movement entries (plan step ``balance:X-bi-6-3``); read
+            # them back by side (a re-sync would no-op).
+            by_side = _side_entries(transfer.id)
+            [from_entry] = by_side[seed_user["account"].id]
+            [to_entry] = by_side[mortgage.id]
+            assert _legs_by_ledger(from_entry.id) == {
+                checking_ledger: Decimal("-250.00"),
+                transit_ledger: Decimal("250.00"),
+            }
+            assert _legs_by_ledger(to_entry.id) == {
+                mortgage_ledger: Decimal("250.00"),
+                transit_ledger: Decimal("-250.00"),
+            }
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
 
     def test_settle_uses_effective_amount_not_transfer_amount(
         self, app, db, seed_user, savings,
     ):
-        """A settled shadow ``actual_amount`` overrides the transfer amount.
+        """A settled shadow's RECORD overrides the transfer amount.
 
-        The transfer's nominal amount is $100, but the settled actual is
-        $97.50 (mirrored to both shadows), so the shadow ``effective_amount``
-        is $97.50 -- the value the balance calculator and the oracle use.  The
-        posting must be -97.50 / +97.50, NOT -100 / +100 (the plan Section 5
-        prose said ``xfer.amount``; the correct, oracle-reconciling value is
-        the shadow effective amount, matching the Commit-3 backfill).
+        The transfer's nominal amount is $100, but the settled record is
+        $97.50 (each side's covering movement carries it), so each side's
+        leg is $97.50 -- the value the balance calculator and the oracle use.
+        The postings must be -97.50 / +97.50 on the real accounts, NOT -100 /
+        +100 (the plan Section 5 prose said ``xfer.amount``; the correct,
+        oracle-reconciling value is the record, matching the Commit-3
+        backfill).  Re-expressed for the pair at plan step
+        ``balance:X-bi-6-3``.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -386,14 +483,22 @@ class TestSyncSettlePostsBalancedEntry:
             _db.session.commit()
             checking_ledger = _ledger_id(seed_user["account"])
             savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
 
-            # Commit-5 wiring: the divergent settled actual auto-posted; read
-            # the entry back (a re-sync would no-op).
-            entry = _entries_for_transfer(transfer.id)[0]
-
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-97.50")
-            assert legs[savings_ledger] == Decimal("97.50")
+            # Commit-5 wiring: the divergent settled record auto-posted as two
+            # per-movement entries (plan step ``balance:X-bi-6-3``); read them
+            # back by side (a re-sync would no-op).
+            by_side = _side_entries(transfer.id)
+            [from_entry] = by_side[seed_user["account"].id]
+            [to_entry] = by_side[savings.id]
+            assert _legs_by_ledger(from_entry.id) == {
+                checking_ledger: Decimal("-97.50"),
+                transit_ledger: Decimal("97.50"),
+            }
+            assert _legs_by_ledger(to_entry.id) == {
+                savings_ledger: Decimal("97.50"),
+                transit_ledger: Decimal("-97.50"),
+            }
 
 
 #: A settle day in the PAST of this suite's frozen today (2026-03-20, set by
@@ -439,10 +544,16 @@ class TestSyncSettleEntryDate:
                 settled_on=_A_RECORDED_SETTLE_DAY,
             )
             _db.session.commit()
-            # Commit-5 wiring: the settle auto-posted; read the entry back.
-            entry = _entries_for_transfer(transfer.id)[0]
+            # Commit-5 wiring: the settle auto-posted both sides; read them
+            # back.  Each entry is dated by ITS movement's recorded day (plan
+            # step ``balance:X-bi-6-3``), which the pair applier mirrors onto
+            # both sides until ``X-bi-6-4`` lets them part.
+            entries = _entries_for_transfer(transfer.id)
+            assert len(entries) == 2
             # The recorded day, verbatim -- no conversion, no fallback.
-            assert entry.entry_date == _A_RECORDED_SETTLE_DAY
+            assert {entry.entry_date for entry in entries} == {
+                _A_RECORDED_SETTLE_DAY,
+            }
 
     def test_a_settled_transfer_cannot_be_left_without_a_day(
         self, app, db, seed_user, savings,
@@ -490,27 +601,27 @@ class TestSyncIdempotency:
             _db.session.commit()
 
             # Both manual re-syncs are no-ops: create_settled_transfer already
-            # auto-posted the +100 entry, so current == target and delta == 0.
-            first = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
-            second = posting_service.sync_transfer_postings(
-                transfer, settled=True,
-            )
+            # auto-posted the two per-movement entries, so current == target
+            # and delta == 0 on each (the door reads each movement's own
+            # state since plan step ``balance:X-bi-6-3``; there is no flag).
+            first = posting_service.sync_transfer_postings(transfer)
+            second = posting_service.sync_transfer_postings(transfer)
             _db.session.commit()
 
             assert first == []
             assert second == []
-            assert len(_entries_for_transfer(transfer.id)) == 1
+            assert len(_entries_for_transfer(transfer.id)) == 2
 
     def test_cancel_with_nothing_posted_is_noop(
         self, app, db, seed_user, savings,
     ):
-        """settled=False on a never-posted transfer writes nothing.
+        """A sync of a never-posted, Projected transfer writes nothing.
 
-        Arithmetic: current 0, target 0, delta 0 -> no entry.  This is the
-        projected -> cancelled path (a transfer cancelled before it ever
-        settled has no ledger effect to reverse).
+        Arithmetic: current 0, target 0 (its movements are un-dated, so
+        nothing posts), delta 0 -> no entry.  This is the projected ->
+        cancelled path (a transfer cancelled before it ever settled has no
+        ledger effect to reverse).  It passed ``settled=False`` until plan
+        step ``balance:X-bi-6-3`` deleted the flag.
         """
         with app.app_context():
             transfer = transfer_service.create_transfer(
@@ -527,9 +638,7 @@ class TestSyncIdempotency:
             )
             _db.session.commit()
 
-            result = posting_service.sync_transfer_postings(
-                transfer, settled=False,
-            )
+            result = posting_service.sync_transfer_postings(transfer)
             _db.session.commit()
 
             assert result == []
@@ -547,25 +656,35 @@ class TestSyncReversal:
     def test_reverse_negates_posted_amount_not_transfer_amount(
         self, app, db, seed_user, savings,
     ):
-        """Reverting posts the negation of what is posted, ignoring xfer.amount.
+        """A teardown posts the negation of what is posted, ignoring xfer.amount.
 
-        Arithmetic: settle posts +100 to the Savings ledger.  Then the
-        transfer amount is mutated to 999 (the value a naive
-        ``target = xfer.amount`` reversal would use).  The reversal instead
-        reads the posted net (+100) and posts the delta to reach 0:
-        0 - 100 = -100 on Savings, +100 on Checking.  The Savings ledger nets
-        back to its $100.00 opening; the reversal leg is -100, NOT -999.
+        Arithmetic: the settle posts +100 to the Savings ledger and -100 to
+        Checking (each against transit).  Then the transfer amount is mutated
+        to 999 (the value a naive ``target = xfer.amount`` reversal would
+        use).  The reversal instead reads each side's posted net back and
+        posts the delta to reach 0: -100 on Savings against +100 transit,
+        +100 on Checking against -100 transit.  The Savings ledger nets back
+        to its $100.00 opening; the reversal legs are 100, NOT 999.
+
+        The door is the TEARDOWN twin (plan step ``balance:X-bi-6-3``, ruling
+        **R-BAL101**): ``sync_transfer_postings`` reads each movement's own
+        state and would find two live, dated movements and leave them posted;
+        reversing a still-settled pair is what the delete door does, through
+        ``reverse_transfer_postings_before_delete``.  It called the sync with
+        ``settled=False`` until that step deleted the flag.
         """
         with app.app_context():
+            checking = seed_user["account"]
             transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
+                seed_user, _db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
+            checking_ledger = _ledger_id(checking)
             savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
 
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            posting_service.sync_transfer_postings(transfer)
             _db.session.commit()
 
             # Mutate the transfer amount to a value a naive reversal would
@@ -573,31 +692,44 @@ class TestSyncReversal:
             state_own_amount(transfer, Decimal("999.00"))
             _db.session.flush()
 
-            [reversal] = posting_service.sync_transfer_postings(
-                transfer, settled=False,
-            )
+            posting_service.reverse_transfer_postings_before_delete(transfer)
             _db.session.commit()
 
-            legs = _legs_by_ledger(reversal.id)
-            assert legs[savings_ledger] == Decimal("-100.00")
-            assert legs[checking_ledger] == Decimal("100.00")
+            by_side = _side_entries(transfer.id)
+            [_, from_reversal] = by_side[checking.id]
+            [_, to_reversal] = by_side[savings.id]
+            assert _legs_by_ledger(to_reversal.id) == {
+                savings_ledger: Decimal("-100.00"),
+                transit_ledger: Decimal("100.00"),
+            }
+            assert _legs_by_ledger(from_reversal.id) == {
+                checking_ledger: Decimal("100.00"),
+                transit_ledger: Decimal("-100.00"),
+            }
             # Settled then reversed: the Savings ledger nets back to its
             # $100.00 opening (the absolute Step-5 semantics).
             assert posting_service.account_posting_total(
                 savings.id, _scenario_id(seed_user),
             ) == Decimal("100.00")
-            # Two entries survive (append-only correction, never an edit).
-            assert len(_entries_for_transfer(transfer.id)) == 2
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
+            # Four entries survive (append-only correction, never an edit).
+            assert len(_entries_for_transfer(transfer.id)) == 4
 
     def test_revert_edit_amount_resettle_posts_new_amount(
         self, app, db, seed_user, savings,
     ):
         """A revert -> edit-amount -> re-settle posts the new amount.
 
-        Arithmetic: settle $100 (+100), revert (-100, net 0), edit the amount
-        to $150, re-settle (current 0 -> target 150, delta +150).  The
-        transfer's three entries net to +150 -- the new settled shadow effect
-        -- so the Savings total is its $100.00 opening + 150 = 250.00.
+        Arithmetic: settle $100 (+100 on Savings), revert (-100, net 0), edit
+        the amount to $150, re-settle (current 0 -> target 150, delta +150).
+        The transfer's entries net to +150 on Savings -- the new settled
+        record -- so the Savings total is its $100.00 opening + 150 =
+        250.00.  Six entries since plan step ``balance:X-bi-6-3``: two per
+        act, one per side.  The revert UN-DATES both movements (ruling
+        **R-BAL61**), which is what the door's reconcile reads to reverse;
+        the manual syncs between the doors are no-ops that prove the doors
+        already left the ledger at target (they were told ``settled=`` until
+        that step deleted the flag).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -607,15 +739,16 @@ class TestSyncReversal:
             )
             _db.session.commit()
 
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
-            # Revert to Projected, then reverse the posting.
+            # Revert to Projected: the door un-dates the movements and its
+            # reconcile reverses the pair; a manual sync then finds nothing.
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transfer_postings(transfer, settled=False)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             # Edit the amount while Projected, then re-settle and re-post.
@@ -627,7 +760,7 @@ class TestSyncReversal:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
                 settle_day=an_entered_day(display_today()),
             )
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
@@ -639,8 +772,9 @@ class TestSyncReversal:
             assert posting_service.settled_transfer_effect(
                 savings.id, scenario_id,
             ) == Decimal("150.00")
-            # Three entries: settle, reverse, re-settle.
-            assert len(_entries_for_transfer(transfer.id)) == 3
+            assert _ledger_total(_transit_ledger_id(seed_user)) == Decimal("0.00")
+            # Six entries: settle, reverse, re-settle -- two sides each.
+            assert len(_entries_for_transfer(transfer.id)) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +804,7 @@ class TestReconciliationHelpers:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
@@ -706,14 +840,14 @@ class TestReconciliationHelpers:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
             )
-            posting_service.sync_transfer_postings(transfer, settled=False)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
@@ -744,7 +878,7 @@ class TestReconciliationHelpers:
                 settled_amount=Decimal("97.50"),
             )
             _db.session.commit()
-            posting_service.sync_transfer_postings(transfer, settled=True)
+            assert posting_service.sync_transfer_postings(transfer) == []
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
@@ -754,6 +888,329 @@ class TestReconciliationHelpers:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("197.50")
+
+
+# ---------------------------------------------------------------------------
+# The deploy resync re-books the legacy one-entry shape (R-BAL98)
+# ---------------------------------------------------------------------------
+
+
+def _real_account_nets_by_day(*ledger_ids):
+    """Return ``{(ledger_account_id, entry_date): net}`` over the given ledgers.
+
+    The grade ruling **R-BAL98** names: a re-book that changes the ledger's
+    SHAPE must leave every real account's net per day exactly as it was.  An
+    independent re-grouping of the legs by the entry's date and the leg's
+    ledger account, zero-net keys dropped, never the service's own readers.
+    """
+    rows = (
+        _db.session.query(
+            Posting.ledger_account_id, JournalEntry.entry_date,
+            _db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(Posting.ledger_account_id.in_(ledger_ids))
+        .group_by(Posting.ledger_account_id, JournalEntry.entry_date)
+        .all()
+    )
+    return {
+        (ledger_id, day): net for ledger_id, day, net in rows if net != 0
+    }
+
+
+class TestTheDeployResyncReBooksTheLegacyShape:
+    """``resync_all_cash_postings`` moves a one-entry transfer to shape C once.
+
+    Ruling **R-BAL98** (plan step ``balance:X-bi-6-3``): the 19 production
+    transfers booked as ONE entry each are re-booked by the deploy's first
+    hook through the go-forward ``sync_transfer_postings`` -- the legacy
+    ``transfer`` source reversed at its own date, the two per-movement
+    entries posted against transit -- and graded by three equalities: every
+    real account's net per day byte-identical, transit netting zero per
+    transfer, the trial balance closing.  This is the CI half of that grade
+    (the clone rehearsal is the other): a settled transfer is forged into the
+    legacy shape exactly as production holds it, and the real resync runs.
+    """
+
+    def test_one_pass_re_books_and_a_second_pass_writes_nothing(
+        self, app, db, seed_user, savings,
+    ):
+        """One resync: legacy reversed, both sides posted, nets unchanged, then 0.
+
+        Arithmetic: a $100 Checking -> Savings transfer settled on day D.
+        Forged legacy state: ONE ``transfer``-source entry dated D,
+        ``{Checking -100, Savings +100}``, and no movement-linked entry --
+        production's shape before this step.  Per (real account, day) before:
+        Checking D -100.00, Savings D +100.00 (each on its opening, which
+        sits on an earlier day).  The resync reports (0, 1): the legacy
+        entry reversed at D (its source nets zero), two per-movement entries
+        posted at D -- {Checking -100, transit +100} and {Savings +100,
+        transit -100} -- so per (real account, day) after == before, transit
+        nets 0.00, the trial balance is 0.00, and the family holds four
+        entries.  A second resync reports (0, 0) and adds nothing.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            checking_ledger = _ledger_id(checking)
+            savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
+            day = _covering_movement_of_side(transfer.id, checking.id).settled_on
+
+            # Forge the legacy shape: drop the go-forward per-movement entries
+            # (raw SQL, as every legacy forge in the suite: the ORM's
+            # append-only guard is about the app's own writes) and book the
+            # one entry the pre-6-3 writer wrote, dated at the settle day.
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.journal_entries WHERE id IN ("
+                "  SELECT je.id FROM budget.journal_entries je"
+                "  JOIN budget.transaction_entries te"
+                "    ON te.id = je.transaction_entry_id"
+                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
+                "  WHERE sh.transfer_id = :t)"
+            ), {"t": transfer.id})
+            legacy = JournalEntry(
+                user_id=seed_user["user"].id,
+                scenario_id=_scenario_id(seed_user),
+                pay_period_id=seed_user["bootstrap_period"].id,
+                entry_date=day,
+                source_kind_id=ref_cache.posting_source_id(
+                    PostingSourceEnum.TRANSFER,
+                ),
+                transfer_id=transfer.id,
+                description="Transfer: Checking to Posting Savings",
+            )
+            transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            _emit_balanced_entry(legacy, [
+                _PostingLeg(checking_ledger, Decimal("-100.00"), transfer_kind),
+                _PostingLeg(savings_ledger, Decimal("100.00"), transfer_kind),
+            ])
+            _db.session.commit()
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
+            before = _real_account_nets_by_day(checking_ledger, savings_ledger)
+            assert before[(checking_ledger, day)] == Decimal("-100.00")
+            assert before[(savings_ledger, day)] == Decimal("100.00")
+
+            assert posting_service.resync_all_cash_postings() == (0, 1)
+            _db.session.commit()
+
+            # The legacy source nets to zero at its own date.
+            legacy_net = (
+                _db.session.query(_db.func.coalesce(_db.func.sum(Posting.amount), 0))
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    JournalEntry.transfer_id == transfer.id,
+                    JournalEntry.entry_date == day,
+                    Posting.ledger_account_id == savings_ledger,
+                )
+                .scalar()
+            )
+            assert legacy_net == 0
+            # Both sides posted against transit, at the same day.
+            by_side = _side_entries(transfer.id)
+            [from_entry] = by_side[checking.id]
+            [to_entry] = by_side[savings.id]
+            assert _legs_by_ledger(from_entry.id) == {
+                checking_ledger: Decimal("-100.00"),
+                transit_ledger: Decimal("100.00"),
+            }
+            assert _legs_by_ledger(to_entry.id) == {
+                savings_ledger: Decimal("100.00"),
+                transit_ledger: Decimal("-100.00"),
+            }
+            assert {from_entry.entry_date, to_entry.entry_date} == {day}
+            # The three equalities.
+            assert _real_account_nets_by_day(
+                checking_ledger, savings_ledger,
+            ) == before
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
+            assert _db.session.query(
+                _db.func.coalesce(_db.func.sum(Posting.amount), 0)
+            ).scalar() == 0
+            assert len(_entries_for_transfer(transfer.id)) == 4
+
+            assert posting_service.resync_all_cash_postings() == (0, 0)
+            assert len(_entries_for_transfer(transfer.id)) == 4
+
+    def test_a_refused_transfer_is_skipped_whole(
+        self, app, db, seed_user, savings,
+    ):
+        """A transfer one side of which cannot post leaves NOTHING half-booked.
+
+        The leaf's adversarial review, finding 1: the pair's door writes in
+        sequence (the legacy reversal, then each side), so a refusal on the
+        second side would leave the first side and the reversal committed by
+        the batch -- Checking debited into transit, nothing arriving, a trial
+        balance that still closes.  The resync runs each transfer under a
+        SAVEPOINT and rolls a refused one back whole.  Arithmetic: the legacy
+        shape forged as in the case above (the entry intact, both legs), then
+        the TO-side movement re-pointed onto an account whose ledger pairing
+        has been removed (an impossible state, the fail-loud fixture's) -- so
+        the door reverses the legacy entry, posts the from side, and only
+        then is refused.  The resync reports (0, 0) and skips the transfer;
+        the legacy entry still stands un-reversed, no per-movement entry
+        exists, transit is untouched.  Mutation: without the savepoint the
+        reversal and the from-side entry survive the refusal, transit holds
+        +100.00 and the legacy entry is netted away.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            checking_ledger = _ledger_id(checking)
+            savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
+            day = _covering_movement_of_side(transfer.id, checking.id).settled_on
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.journal_entries WHERE id IN ("
+                "  SELECT je.id FROM budget.journal_entries je"
+                "  JOIN budget.transaction_entries te"
+                "    ON te.id = je.transaction_entry_id"
+                "  JOIN budget.transactions sh ON sh.id = te.transaction_id"
+                "  WHERE sh.transfer_id = :t)"
+            ), {"t": transfer.id})
+            legacy = JournalEntry(
+                user_id=seed_user["user"].id,
+                scenario_id=_scenario_id(seed_user),
+                pay_period_id=seed_user["bootstrap_period"].id,
+                entry_date=day,
+                source_kind_id=ref_cache.posting_source_id(
+                    PostingSourceEnum.TRANSFER,
+                ),
+                transfer_id=transfer.id,
+                description="Transfer: Checking to Posting Savings",
+            )
+            transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            _emit_balanced_entry(legacy, [
+                _PostingLeg(checking_ledger, Decimal("-100.00"), transfer_kind),
+                _PostingLeg(savings_ledger, Decimal("100.00"), transfer_kind),
+            ])
+            _db.session.commit()
+            # An unpaired account for the to-side movement to sit on: created
+            # (which pairs it), its pairing removed (no legs on it), and the
+            # to-side movement re-pointed onto it by raw SQL -- the legacy
+            # entry keeps both legs, so the refusal comes from the second
+            # side's missing pairing and nowhere earlier.
+            unpaired = create_account_of_type(
+                seed_user, _db.session, "Savings", "Unpaired Savings",
+            )
+            _db.session.commit()
+            _db.session.execute(_db.text(
+                "DELETE FROM budget.ledger_accounts WHERE account_id = :a"
+            ), {"a": unpaired.id})
+            _db.session.execute(_db.text(
+                "UPDATE budget.transaction_entries SET account_id = :u "
+                "WHERE id = :m"
+            ), {
+                "u": unpaired.id,
+                "m": _covering_movement_of_side(transfer.id, savings.id).id,
+            })
+            _db.session.commit()
+
+            assert posting_service.resync_all_cash_postings() == (0, 0)
+            _db.session.commit()
+
+            # Nothing half-booked: the legacy SOURCE still nets its whole
+            # effect (un-reversed -- the entry's own legs are append-only, so
+            # the net is what grades it), no per-movement entry exists,
+            # transit is untouched.
+            legacy_nets = {
+                ledger_id: net
+                for ledger_id, net in _db.session.query(
+                    Posting.ledger_account_id, _db.func.sum(Posting.amount),
+                )
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(JournalEntry.transfer_id == transfer.id)
+                .group_by(Posting.ledger_account_id)
+                .all()
+            }
+            assert legacy_nets == {
+                checking_ledger: Decimal("-100.00"),
+                savings_ledger: Decimal("100.00"),
+            }
+            assert _db.session.query(JournalEntry).filter(
+                JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                    PostingSourceEnum.TRANSFER_MOVEMENT,
+                ),
+            ).count() == 0
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
+            assert _ledger_total(checking_ledger) == Decimal("900.00")
+
+    def test_a_reverted_transfers_legacy_residue_heals_too(
+        self, app, db, seed_user, savings,
+    ):
+        """Cross-date legacy residue on a REVERTED transfer nets to zero per date.
+
+        The leaf's adversarial review, finding 5: the loan lineage probe no
+        longer reads the legacy source, and a reverted transfer is neither
+        settled nor holds a dated movement, so the resync's transfer arm must
+        reach it by its LEGACY ENTRIES or the E1a review's H2 residue (a
+        settle / reversal pair straddling two dates, net zero in total and
+        not per date) would be healed by nothing.  Arithmetic: settle then
+        revert (the movement entries net zero), then forge the residue: a
+        legacy entry at D {Checking -100, Savings +100} and its reversal at
+        D-8 {Checking +100, Savings -100}.  Per (real account, day) before
+        the forge is the clean state; the resync reports (0, 1) and restores
+        it exactly -- both legacy keys net zero -- and a second pass is
+        (0, 0).
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            user_id = seed_user["user"].id
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            day = _covering_movement_of_side(transfer.id, checking.id).settled_on
+            transfer_service.update_transfer(
+                transfer.id, user_id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            _db.session.commit()
+            checking_ledger = _ledger_id(checking)
+            savings_ledger = _ledger_id(savings)
+            clean = _real_account_nets_by_day(checking_ledger, savings_ledger)
+
+            transfer_kind = ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)
+            for entry_day, checking_leg in (
+                (day, Decimal("-100.00")),
+                (day - timedelta(days=8), Decimal("100.00")),
+            ):
+                residue = JournalEntry(
+                    user_id=user_id,
+                    scenario_id=_scenario_id(seed_user),
+                    pay_period_id=seed_user["bootstrap_period"].id,
+                    entry_date=entry_day,
+                    source_kind_id=ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER,
+                    ),
+                    transfer_id=transfer.id,
+                    description="Transfer: Checking to Posting Savings",
+                )
+                _emit_balanced_entry(residue, [
+                    _PostingLeg(checking_ledger, checking_leg, transfer_kind),
+                    _PostingLeg(savings_ledger, -checking_leg, transfer_kind),
+                ])
+            _db.session.commit()
+            assert _real_account_nets_by_day(
+                checking_ledger, savings_ledger,
+            ) != clean
+
+            assert posting_service.resync_all_cash_postings() == (0, 1)
+            _db.session.commit()
+
+            assert _real_account_nets_by_day(
+                checking_ledger, savings_ledger,
+            ) == clean
+            assert posting_service.resync_all_cash_postings() == (0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -820,8 +1277,11 @@ class TestFailLoud:
         """A transfer whose account has no ledger pairing raises PostingError.
 
         Removing the Savings account's linked ledger row (an impossible state
-        in production -- every account is paired) makes the settle sync fail
-        loudly rather than post a one-legged or silently-wrong entry.
+        in production -- every account is paired) makes the sync fail loudly
+        rather than post a one-legged or silently-wrong entry.  The row's
+        postings go with it (``account_postings.ledger_account_id`` CASCADE),
+        so the to-side movement reads as unposted and the door tries to post
+        it -- into a pairing that no longer exists.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -835,35 +1295,71 @@ class TestFailLoud:
             ), {"a": savings.id})
             _db.session.commit()
 
+            # The pair's door reconciles from what is posted, so with the
+            # Savings pairing gone the to-side movement's target cannot be
+            # built; the refusal fires before anything is written.
             with pytest.raises(PostingError, match="ledger account"):
-                posting_service.sync_transfer_postings(transfer, settled=True)
+                posting_service.sync_transfer_postings(transfer)
 
-    def test_settle_missing_income_shadow_fails_loud(
+    def test_a_half_pair_posts_its_half_into_transit(
         self, app, db, seed_user, savings,
     ):
-        """A settled transfer with no active income shadow raises PostingError.
+        """A transfer with only its from-side shadow posts that side, in transit.
 
-        Removing the to-account income shadow (an impossible
-        Transfer-Invariant-1 violation in production -- a transfer always has
-        its two shadows) makes the settle sync fail loudly rather than post a
-        one-legged or silently-wrong entry.
+        **A declared behaviour change of plan step ``balance:X-bi-6-3``
+        (rulings R-BAL45, R-BAL101), re-expressed from
+        ``test_settle_missing_income_shadow_fails_loud``.**  The one-entry
+        writer read the INCOME shadow's record for the pair and REFUSED when
+        it was missing; shape C has no pair to read -- each side's movement
+        posts on its own, against transit -- so a pair with one side is the
+        in-transit state: money left Checking and has not arrived.  Transfer
+        Invariant 1 (two shadows) is the transfer service's and the integrity
+        checks' to police, not the ledger writer's, which neither refuses nor
+        fabricates the missing side.
+
+        Arithmetic: from a ledger the teardown brought to zero (both sides
+        posted and reversed: transit 0.00), the income shadow is removed and
+        the sync runs: it emits ONE entry, {Checking -100, transit +100}, and
+        nothing for the missing side; transit holds +100.00 -- the half in
+        flight.  (The to-side's earlier entries survive as a net-zero pair
+        whose links the raw delete SET-NULLed; the readers drop unlinked
+        residue.)  The leaf's adversarial review found the first cut reading
+        back the entry the SETTLE had written; this grades the sync's own.
         """
         with app.app_context():
+            checking = seed_user["account"]
             transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
+                seed_user, _db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
+            checking_ledger = _ledger_id(checking)
+            savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
+            posting_service.reverse_transfer_postings_before_delete(transfer)
+            _db.session.commit()
+            assert _ledger_total(transit_ledger) == Decimal("0.00")
             # Remove the income shadow (the income-type row on the to-account)
-            # via raw SQL.
+            # via raw SQL; its covering movement cascades with it.
             _db.session.execute(_db.text(
                 "DELETE FROM budget.transactions "
                 "WHERE transfer_id = :t AND account_id = :a"
             ), {"t": transfer.id, "a": savings.id})
             _db.session.commit()
 
-            with pytest.raises(PostingError, match="income shadow"):
-                posting_service.sync_transfer_postings(transfer, settled=True)
+            [posted] = posting_service.sync_transfer_postings(transfer)
+            _db.session.commit()
+
+            assert _legs_by_ledger(posted.id) == {
+                checking_ledger: Decimal("-100.00"),
+                transit_ledger: Decimal("100.00"),
+            }
+            assert _ledger_total(transit_ledger) == Decimal("100.00")
+            # The missing side posted nothing: Savings sits on its opening.
+            assert posting_service.account_posting_total(
+                savings.id, _scenario_id(seed_user),
+            ) == Decimal("100.00")
+            assert posting_service.sync_transfer_postings(transfer) == []
 
     def test_emit_balanced_entry_rejects_single_leg(self, app, db, seed_user):
         """The builder refuses an entry with fewer than two legs.
@@ -1467,7 +1963,7 @@ class TestTransactionCounterLegRouting:
         """A categorized expense books its counter leg into the category row.
 
         The non-cash leg lands in the (owner, Groceries, Expense) ledger
-        account -- a category row (``is_fallback`` False, ``category_id`` set),
+        account -- a category row (``is_owner_bucket`` False, ``category_id`` set),
         NOT a real-account link.
         """
         with app.app_context():
@@ -1488,7 +1984,7 @@ class TestTransactionCounterLegRouting:
             legs = _legs_by_ledger(entry.id)
             non_cash = [lid for lid in legs if lid != cash_ledger]
             assert non_cash == [groceries.id]
-            assert groceries.is_fallback is False
+            assert groceries.is_owner_bucket is False
             assert groceries.account_id is None
             assert groceries.category_id == seed_user["categories"][
                 "Groceries"
@@ -1500,7 +1996,7 @@ class TestTransactionCounterLegRouting:
         """A NULL-category expense books its counter leg into the fallback.
 
         The non-cash leg lands in the per-(owner, Expense) Uncategorized
-        fallback (``is_fallback`` True, ``category_id`` NULL), the catch-all
+        fallback (``is_owner_bucket`` True, ``category_id`` NULL), the catch-all
         for a settled transaction whose category is NULL.
         """
         with app.app_context():
@@ -1521,23 +2017,104 @@ class TestTransactionCounterLegRouting:
             legs = _legs_by_ledger(entry.id)
             non_cash = [lid for lid in legs if lid != cash_ledger]
             assert non_cash == [fallback.id]
-            assert fallback.is_fallback is True
+            assert fallback.is_owner_bucket is True
             assert fallback.category_id is None
             assert fallback.class_id == ref_cache.ledger_account_class_id(
                 LedgerAccountClassEnum.EXPENSE,
             )
 
 
-class TestTransactionShadowNoop:
-    """A transfer shadow is never posted as an ordinary transaction."""
+class TestTransactionShadowFamily:
+    """A transfer shadow's family posts through the ONE movement writer."""
 
-    def test_transfer_shadow_is_noop(self, app, db, seed_user, savings):
-        """``sync_transaction_postings`` on a transfer shadow is a no-op.
+    def test_a_shadow_reconciles_its_movement_against_transit(
+        self, app, db, seed_user, savings,
+    ):
+        """``sync_transaction_postings`` on a shadow posts its side, into transit.
 
-        A transfer's shadow transactions carry ``transfer_id``; Step 2 posts
-        them via the ``transfer_id`` linkage.  The defensive guard returns None
-        for a shadow so it can never get a second, ``transaction_id``-linked
-        entry (which would double-count it).
+        Re-expressed from ``test_transfer_shadow_is_noop`` at plan step
+        ``balance:X-bi-6-3`` (ruling **R-BAL101**): the guard that returned
+        ``[]`` for a shadow is gone with ruling R-BAL45's interval, so a door
+        reaching a shadow's family reconciles it -- its own TRANSACTION source
+        target empty as every row's, its covering movement's leg against the
+        owner's transit account under the ``transfer_movement`` source, never
+        a category.  Proved from a ledger the teardown has brought to zero:
+        the income shadow alone re-posts exactly {Savings +100, transit -100},
+        and the expense side stays reversed.
+
+        A settled shadow at target is a no-op through the same door, which the
+        first assertion pins; the old test could not tell that no-op from the
+        guard's.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            transfer = create_settled_transfer(
+                seed_user, _db.session, checking, savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            _db.session.commit()
+            income_shadow = (
+                _db.session.query(Transaction)
+                .filter_by(transfer_id=transfer.id, account_id=savings.id)
+                .one()
+            )
+            assert income_shadow.transfer_id is not None
+            savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
+
+            # At target after the settle: the door writes nothing.
+            assert posting_service.sync_transaction_postings(income_shadow) == []
+
+            posting_service.reverse_transfer_postings_before_delete(transfer)
+            _db.session.commit()
+            assert _ledger_total(savings_ledger) == Decimal("100.00")  # opening
+
+            [entry] = posting_service.sync_transaction_postings(income_shadow)
+            _db.session.commit()
+
+            assert entry.transaction_entry_id == _covering_movement_of_side(
+                transfer.id, savings.id,
+            ).id
+            assert entry.transaction_id is None
+            assert entry.source_kind_id == ref_cache.posting_source_id(
+                PostingSourceEnum.TRANSFER_MOVEMENT,
+            )
+            assert _legs_by_ledger(entry.id) == {
+                savings_ledger: Decimal("100.00"),
+                transit_ledger: Decimal("-100.00"),
+            }
+            # No transaction-sourced entry exists for the shadow (its own
+            # target is empty), and the expense side stayed reversed.
+            assert _db.session.query(JournalEntry).filter_by(
+                transaction_id=income_shadow.id,
+            ).count() == 0
+            assert posting_service.account_posting_total(
+                checking.id, _scenario_id(seed_user),
+            ) == Decimal("1000.00")
+
+    def test_a_movement_reconcile_reads_only_its_own_source_kind(
+        self, app, db, seed_user, savings,
+    ):
+        """An entry linking the same movement under ANOTHER source is untouched.
+
+        The hazard rulings **R-BAL100** and **R-BAL101** arm together: a loan
+        payment's SPLIT correction links the loan-side movement's
+        ``transaction_entry_id`` under the ``loan_payment`` source, beside the
+        movement's own cash leg under ``transfer_movement``.  A reconcile that
+        read the posted side by LINK alone would sum the split's legs into the
+        cash leg's, compute a delta against the cash target, and REVERSE the
+        split.  Every typed reconcile filters on its source kind as well as its
+        link (``_posting_write.emit_typed_source_deltas``), so it must not.
+
+        Planted by hand -- a balanced ``loan_payment`` entry of $30.00 linked
+        to the income shadow's covering movement, between the transit row and
+        the Savings row -- then the pair re-synced: the sync writes nothing
+        (the cash leg is at target and the split is not its concern) and the
+        family holds exactly the three entries planted.  Mutation, observed
+        to FIRE on 2026-09-21: with the kind term dropped from the filter the
+        sync emitted a fourth entry reversing the $30.00 (``== []`` failed).
+        The planted legs themselves are append-only and so never asserted --
+        a claim the ledger cannot falsify grades nothing.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -1545,19 +2122,38 @@ class TestTransactionShadowNoop:
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
             )
             _db.session.commit()
-            shadow = (
-                _db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id)
-                .first()
+            movement = _covering_movement_of_side(transfer.id, savings.id)
+            savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
+            planted = JournalEntry(
+                user_id=seed_user["user"].id,
+                scenario_id=_scenario_id(seed_user),
+                pay_period_id=seed_user["bootstrap_period"].id,
+                entry_date=movement.settled_on,
+                source_kind_id=ref_cache.posting_source_id(
+                    PostingSourceEnum.LOAN_PAYMENT,
+                ),
+                transaction_entry_id=movement.id,
+                description="planted split beside the cash leg",
             )
-            assert shadow.transfer_id is not None
-
-            result = posting_service.sync_transaction_postings(shadow)
+            _emit_balanced_entry(planted, [
+                _PostingLeg(
+                    savings_ledger, Decimal("-30.00"),
+                    ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+                ),
+                _PostingLeg(
+                    transit_ledger, Decimal("30.00"),
+                    ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
+                ),
+            ])
             _db.session.commit()
 
-            assert result == []
-            # No transaction-sourced entry exists for the shadow.
-            assert _entries_for_transaction(shadow.id) == []
+            assert posting_service.sync_transfer_postings(transfer) == []
+            _db.session.commit()
+
+            # The movement's own family: the cash leg, the planted entry, and
+            # nothing the sync added.
+            assert len(_entries_for_transfer(transfer.id)) == 3
 
 
 class TestTransactionEntryDate:
@@ -1846,34 +2442,51 @@ class TestPeriodAttribution:
         """The transfer reversal lands in the settle period, like a transaction.
 
         Settle a $100 Checking -> Savings transfer in period P (auto-posted at
-        creation), move it to F with the equivalent settle-day state as the
-        transfer PATCH leaves it, and reconcile ``settled=False``: the
-        reversal entry carries P, both ledgers net to zero in P, and F holds
-        nothing -- the transfer twin of the transaction case above.
+        creation as two per-movement entries), then revert AND move it to F
+        in one PATCH through the transfer door -- the revert un-dates both
+        movements (ruling **R-BAL61**) and the door's reconcile reverses what
+        is posted: each side's reversal entry carries P, both real ledgers
+        and transit net to zero in P, and F holds nothing -- the transfer
+        twin of the transaction case above.  Re-expressed at plan step
+        ``balance:X-bi-6-3``: it moved the parent's period by hand and called
+        the sync with ``settled=False``; the door reads the movements now, so
+        the revert-and-move is made the way the PATCH makes it.
         """
         with app.app_context():
             period = seed_periods[0]
             moved_to = seed_periods[5]
+            checking = seed_user["account"]
             transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
+                seed_user, _db.session, checking, savings,
                 period, amount=Decimal("100.00"),
             )
             _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
+            checking_ledger = _ledger_id(checking)
             savings_ledger = _ledger_id(savings)
+            transit_ledger = _transit_ledger_id(seed_user)
 
-            transfer.pay_period_id = moved_to.id
-            _db.session.flush()
-            [reversal] = posting_service.sync_transfer_postings(
-                transfer, settled=False,
+            transfer_service.update_transfer(
+                transfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                pay_period_id=moved_to.id,
             )
             _db.session.commit()
 
-            assert reversal.pay_period_id == period.id
-            legs = _legs_by_ledger(reversal.id)
-            assert legs[savings_ledger] == Decimal("-100.00")
-            assert legs[checking_ledger] == Decimal("100.00")
+            by_side = _side_entries(transfer.id)
+            [_, from_reversal] = by_side[checking.id]
+            [_, to_reversal] = by_side[savings.id]
+            assert from_reversal.pay_period_id == period.id
+            assert to_reversal.pay_period_id == period.id
+            assert _legs_by_ledger(to_reversal.id) == {
+                savings_ledger: Decimal("-100.00"),
+                transit_ledger: Decimal("100.00"),
+            }
+            assert _legs_by_ledger(from_reversal.id) == {
+                checking_ledger: Decimal("100.00"),
+                transit_ledger: Decimal("-100.00"),
+            }
             per_period = _period_nets_for_transfer(transfer.id)
             assert per_period[period.id][savings_ledger] == Decimal("0.00")
             assert per_period[period.id][checking_ledger] == Decimal("0.00")
+            assert per_period[period.id][transit_ledger] == Decimal("0.00")
             assert moved_to.id not in per_period

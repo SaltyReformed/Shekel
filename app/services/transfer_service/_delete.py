@@ -58,14 +58,18 @@ def delete_transfer(transfer_id, user_id, soft=False):
 
     # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
     # Reverse any posted effect BEFORE the row is removed, so a settled
-    # transfer's ledger entry nets to zero.  Runs first -- while xfer.id and
-    # the shadows still exist -- so the reversal entry can link ``transfer_id``
-    # and read the shadow settle date; a hard delete then SET-NULLs the link,
-    # leaving the immutable net-zero pair as history.  Idempotent no-op for a
-    # never-settled or already-reversed transfer (the account-delete and
+    # transfer's per-movement entries net to zero.  Runs first -- while
+    # xfer.id, the shadows and their covering movements still exist -- so each
+    # reversal entry can link its movement and read the posted legs back; a
+    # hard delete then SET-NULLs the links, leaving the immutable net-zero
+    # pairs as history.  The TEARDOWN door, not the pair's sync (plan step
+    # ``balance:X-bi-6-3``, ruling **R-BAL101**): the sync reads each
+    # movement's own state and would find two live, dated movements at this
+    # moment and leave them posted.  Idempotent no-op for a never-settled or
+    # already-reversed transfer (the account-delete and
     # recurrence-regeneration paths only ever reach those: Guard 4 in
     # ``accounts/crud.py`` archives any account with settled history).
-    posting_service.sync_transfer_postings(xfer, settled=False)
+    posting_service.reverse_transfer_postings_before_delete(xfer)
 
     # ── Loan-payment split reversal (Build-Order Step 4) ───────────
     # Reverse this payment's split correction while the income shadow id still

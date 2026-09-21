@@ -255,6 +255,7 @@ from ._events import (
     coverage_for,
     governing_account_opening,
     in_flight_movements,
+    movements_with_parents,
     settled_cash_facts,
 )
 from ._facts import (
@@ -318,6 +319,7 @@ __all__ = [
     "cash_leg_of",
     "movement_cash_leg",
     "movement_figure_for",
+    "movements_with_parents",
     "off_statement_sum",
     "settled_contribution",
     "planned_cash_rows",

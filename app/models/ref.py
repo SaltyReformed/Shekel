@@ -687,7 +687,7 @@ class LedgerAccountKind(db.Model):
 
     The explicit, positive discriminator (Build-Order Step 4) that replaces
     inferring a ledger account's kind from the NULL-pattern of its
-    ``account_id`` / ``category_id`` / ``is_fallback`` columns.  Every
+    ``account_id`` / ``category_id`` / ``is_owner_bucket`` columns.  Every
     ``budget.ledger_accounts`` row carries a ``kind_id`` FK to one of these
     rows (Commit 2); the kind fixes how a reader enumerates and groups the
     chart of accounts without testing which columns are NULL.

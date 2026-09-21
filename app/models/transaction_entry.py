@@ -161,10 +161,10 @@ class TransactionEntry(
     posting writer, the statement matcher's pricing -- is kind-blind and
     sums by ruling **R-FM**'s identity over POSTED movements, so a covered
     bill's own leg nets to zero and its dated movement carries the money,
-    and an un-dated one carries nothing; the posting writer alone branches,
-    returning for a transfer shadow's entries, because a shadow's movement
-    posts nowhere until the ledger takes its ruled shape (ruling
-    **R-BAL45**, plan step **X-bi-6**).
+    and an un-dated one carries nothing; the posting writer branches only on
+    the COUNTER leg, booking a transfer shadow's movement against the owner's
+    Transfers-in-transit account rather than a category (ruling **R-BAL45**'s
+    shape C, built at plan step ``balance:X-bi-6-3``).
     The bill / envelope distinction is the plan item's KIND, kept on its
     definition (ruling **R-BAL85**); no reader of this table derives it here.
 

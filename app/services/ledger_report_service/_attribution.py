@@ -21,8 +21,12 @@ from its pay period, which is what the derivation this replaced did:
   ``settled_on`` -- for a loan payment, the loan-side income shadow it links;
 * transfer-linked entries (``transfer_id`` set): by the transfer's INCOME
   shadow's ``settled_on`` (Transfer Invariant 3 mirrors the day onto both
-  shadows, and ``posting_service._entry_date`` dates the entry off exactly this
-  shadow), so a transfer's two legs land on one date;
+  shadows, and the one-entry writer dated the entry off exactly this shadow),
+  so a transfer's two legs land on one date.  **LEGACY since plan step
+  ``balance:X-bi-6-3``**: the go-forward writer books a transfer as two
+  movement-linked entries (the next bucket), and every entry this bucket
+  still reads is a reversed pair netting to zero -- the bucket goes with
+  its readers' re-key;
 * purchase-linked entries (``transaction_entry_id`` set, both other FKs NULL):
   by the PURCHASE's own ``transaction_entries.settled_on`` -- the fourth source
   the write-side walk has partitioned since plan step X-f3b (ruling **R-FM**:

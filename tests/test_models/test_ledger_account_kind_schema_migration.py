@@ -15,7 +15,9 @@ the per-loan link:
     NULL``;
   * ``ck_ledger_accounts_loan_shape`` -- a column-shape CHECK confining a
     per-loan row to ``account_id`` / ``category_id`` NULL and ``NOT
-    is_fallback``.
+    is_fallback`` -- spelled ``NOT is_owner_bucket`` at HEAD since plan step
+    ``balance:X-bi-6-3``'s migration ``c7d1e9a4b2f8`` renamed the flag
+    (ruling R-BAL99); the stored CHECK followed the rename by itself.
 
 The migration is already at HEAD when these tests run (the template builder
 upgraded base->head), so the per-worker DB shows the post-migration schema.
@@ -196,7 +198,8 @@ class TestMigratedLoanUniqueAndCheck:
             assert "loan_account_id IS NULL" in ddl
             assert "account_id IS NULL" in ddl
             assert "category_id IS NULL" in ddl
-            assert "is_fallback" in ddl
+            # The flag's HEAD name (``is_fallback`` until ``c7d1e9a4b2f8``).
+            assert "is_owner_bucket" in ddl
             assert "kind_id" not in ddl, (
                 "the loan-shape CHECK must not reference kind_id -- a CHECK "
                 "cannot subquery ref.ledger_account_kinds and the project "
@@ -219,9 +222,24 @@ class TestBackfillShapeMapping:
     """
 
     def _derived_and_stored_kind(self, db, row_id):
-        """Return (backfill-CASE-derived kind id, stored kind_id) for a row."""
+        """Return (backfill-CASE-derived kind id, stored kind_id) for a row.
+
+        The frozen CASE names the flag by its own-revision name,
+        ``is_fallback``; the column is ``is_owner_bucket`` at HEAD since plan
+        step ``balance:X-bi-6-3``'s migration ``c7d1e9a4b2f8`` (ruling
+        R-BAL99), so the SELECT re-homes that one identifier -- the CASE's
+        logic over the four shapes it was written for is what this evaluates,
+        and the frozen text stays the single source of it.
+        """
+        frozen_flag = "WHEN is_fallback "
+        assert frozen_flag in _MIGRATION._KIND_FROM_SHAPE_CASE_SQL, (
+            "the frozen efca4315bf81 CASE changed; update the anchor here"
+        )
+        case_sql = _MIGRATION._KIND_FROM_SHAPE_CASE_SQL.replace(
+            frozen_flag, "WHEN is_owner_bucket ",
+        )
         row = db.session.execute(text(
-            f"SELECT ({_MIGRATION._KIND_FROM_SHAPE_CASE_SQL}) AS derived, "
+            f"SELECT ({case_sql}) AS derived, "
             "kind_id AS stored "
             "FROM budget.ledger_accounts WHERE id = :id"
         ), {"id": row_id}).fetchone()
@@ -266,14 +284,18 @@ class TestBackfillShapeMapping:
             assert stored == derived
 
     def test_fallback_shape_maps_to_fallback(self, app, db, seed_user):
-        """An ``is_fallback`` NULL/NULL row derives (and was stamped) ``fallback``."""
+        """A flagged NULL/NULL row derives (and was stamped) ``fallback``.
+
+        The flag is ``is_owner_bucket`` at HEAD (``is_fallback`` at the
+        migration's own revision; plan step ``balance:X-bi-6-3``).
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             row = LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             )
             _db.session.add(row)
@@ -286,7 +308,7 @@ class TestBackfillShapeMapping:
         """A NULL/NULL non-fallback row derives (and was stamped) ``orphan``.
 
         The CASE's ELSE branch -- the residual shape a deleted-category orphan
-        leaves -- must map to ``orphan``, distinct from the ``is_fallback``
+        leaves -- must map to ``orphan``, distinct from the flagged
         fallback that shares the NULL/NULL columns.
         """
         with app.app_context():
@@ -295,7 +317,7 @@ class TestBackfillShapeMapping:
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
                 kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
-                account_id=None, category_id=None, is_fallback=False,
+                account_id=None, category_id=None, is_owner_bucket=False,
                 name="Family: Groceries",
             )
             _db.session.add(row)

@@ -37,11 +37,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
-    typed,
-    record_paydays_across_a_hole,
-    rhythm_of,
     all_periods,
-    pay_periods_hydrated,
     an_asserted_day,
     an_entered_day,
     an_observed_day,
@@ -49,16 +45,21 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     field_is_disabled,
-    last_covered_day,
     generate_transfer_of,
+    last_covered_day,
     make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
     open_books_before_the_first_assertion,
     override_anchor,
+    pay_periods_hydrated,
+    record_paydays_across_a_hole,
+    rhythm_of,
     shadow_amount,
     state_template_price,
+    transfer_family_journal_filter,
     transfer_repriced_by_the_owner,
+    typed,
 )
 from app.services.row_valuation import settled_contribution, settled_figure
 from app.services.settle_day import (
@@ -1299,7 +1300,7 @@ class TestTransferInstance:
                 )
                 dated = sorted(
                     e.entry_date for e in db.session.query(JournalEntry)
-                    .filter_by(transfer_id=xfer.id).all()
+                    .filter(transfer_family_journal_filter(xfer.id)).all()
                 )
                 return paid, dated
 
@@ -2258,7 +2259,7 @@ class TestAdHoc:
                 return sorted(
                     entry.entry_date
                     for entry in db.session.query(JournalEntry)
-                    .filter(JournalEntry.transfer_id == xfer.id)
+                    .filter(transfer_family_journal_filter(xfer.id))
                     .all()
                 )
 
@@ -2336,8 +2337,11 @@ class TestTransferSettleDayEditDoor:
         Thin wrapper over the shared
         :func:`tests._test_helpers.net_posted_by_day`; see it for why the NET
         rather than the raw ``entry_date`` list is what grades a correction.
+        Over the transfer's FAMILY -- its two per-movement entries since plan
+        step ``balance:X-bi-6-3`` -- whose per-account magnitude on a day is
+        the figure either side moved.
         """
-        return net_posted_by_day(JournalEntry.transfer_id == xfer_id)
+        return net_posted_by_day(transfer_family_journal_filter(xfer_id))
 
     @staticmethod
     def _shadow_days(xfer_id):
@@ -5008,7 +5012,7 @@ class TestTransferActualBox:
                     "a figure correction moved the settle day"
                 )
             assert net_posted_by_day(
-                JournalEntry.transfer_id == xfer.id,
+                transfer_family_journal_filter(xfer.id),
             ) == {day: Decimal("214.37")}
 
     def test_an_ECHO_of_the_recorded_figure_records_nothing(
@@ -5179,7 +5183,7 @@ class TestTransferActualBox:
                 assert leg.status_id == paid_id
                 assert settled_figure(leg) == Decimal("187.65")
             assert net_posted_by_day(
-                JournalEntry.transfer_id == xfer.id,
+                transfer_family_journal_filter(xfer.id),
             ) == {day: Decimal("187.65")}
 
     def test_a_recordless_settled_pair_repairs_with_the_day_AND_the_figure(

@@ -37,16 +37,17 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
-    typed,
-    record_paydays_across_a_hole,
-    rhythm_of,
-    write_past_the_amount_seam,
     add_anchor_history,
     an_entered_day,
+    cover_bare_settled_row,
     create_loan_account,
     generate_transfer_of,
-    cover_bare_settled_row,
+    record_paydays_across_a_hole,
+    rhythm_of,
     shadow_amount,
+    transfer_family_journal_filter,
+    typed,
+    write_past_the_amount_seam,
 )
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
@@ -110,7 +111,7 @@ def _ledger_nets_for_transfer(transfer_id):
     rows = (
         db.session.query(Posting.ledger_account_id, Posting.amount)
         .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(JournalEntry.transfer_id == transfer_id)
+        .filter(transfer_family_journal_filter(transfer_id))
         .all()
     )
     nets = {}
