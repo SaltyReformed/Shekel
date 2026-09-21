@@ -134,9 +134,9 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
   - [x] **CC-5-3** `9a74658f` -- the settle-with-tender door: `Settlement.account_id` (None = the
         seam's ONE default `tender_account_id_of`, the kept movement's account else the row's;
         `R-CC42`); ONE gate `movement_account.admitted_movement_account_id` for all three writers;
-        `_cover` books on the tender on the movement's day, basis `entered`, refused on or before
-        the card's opening; `_re_point` moves a kept movement only for a NAMED tender; the "Paid
-        from" picker (`R-CC39`); `covered_cash_leg` takes the account (`R-CC40` half 1).
+        `_cover` books on the tender on the movement's day, refused on or before the card's opening;
+        `_re_point` moves a kept movement only for a NAMED tender; the "Paid from" picker
+        (`R-CC39`); `covered_cash_leg` takes the account (`R-CC40` half 1).
 - [ ] **CC-5-4** `feat(cards): the card's line meets the bill it paid` -- design 3.2 and `R-CC40`'s
       HALF 2: the payment movement is the CARD screen's candidate for the bill (`statement_match`
       candidates, moving, accept, the accepted register, undo -- bank-import's files,
