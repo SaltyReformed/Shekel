@@ -31,6 +31,7 @@ from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 
@@ -200,9 +201,12 @@ def account_has_history(account_id: int) -> bool:
     refuses an account only for its RECURRING definitions now (ruling
     **R-BAL23**), and a rule-less one goes with the account when it defines
     nothing -- so the row that makes it define something has to be seen here
-    even when it sits on another account, which a retained row does after its
-    definition's account moved (``recurrence_engine`` keeps a row holding the
-    owner's records where it is).  ``transactions.template_id`` was
+    even when it sits on another account, which a settled, an overridden or
+    a soft-deleted row does after its definition's account moved (the
+    maintain pass rewrites only a Projected, un-edited row; through
+    ``credit_card:CC-5-1`` it also RETAINED a row holding the owner's records
+    where it was, an arm ruling **R-CC36** retired for transaction
+    definitions).  ``transactions.template_id`` was
     ``ON DELETE SET NULL`` until the family's cutover (``X-bi-7d-2``):
     deleting such a definition under a live derived row left one with no
     definition to price it, which ``cash_ledger`` refuses on every screen
@@ -226,6 +230,58 @@ def account_has_history(account_id: int) -> bool:
                 TransactionTemplate.account_id == account_id,
             ),
             Transaction.is_deleted.is_(False),
+        ).exists()
+    ).scalar()
+
+
+def account_holds_other_rows_movements(account_id: int) -> bool:
+    """Check if money moved through an account from rows that are not its own.
+
+    The MOVEMENT arm of :func:`account_has_history` (plan step
+    ``credit_card:CC-5-2``).  A purchase names the account its money moved
+    through (ruling **R-CC15**; a movement folds there, **R-BAL75**), and
+    since ``CC-5-1`` dropped the key that held it to its row's account, a
+    card can hold swipes recorded in checking envelopes: real history on the
+    card, under rows the row arm never counts because they are checking's.
+    ``fk_transaction_entries_account_id`` is ``ON DELETE RESTRICT`` (ruling
+    **R-CC32**), so an account holding such a movement met the hard-delete
+    door's ``DELETE`` as a 500 rather than as the designed archive every
+    other kind of history gets.
+
+    **The set is exactly what the door's cleanup cannot dispose of**, stated
+    the way the row arm states its own.  The door deletes every row ON the
+    account (step 2) and every row UNDER one of the account's rule-less
+    definitions (step 2b, ``definition_delete.permanently_delete_definition``;
+    guard 3 has already refused a recurring one), and a movement cascades
+    with its row (``fk_transaction_entries_owner_transaction``).  So a
+    movement on this account survives the cleanup exactly when its row is
+    NEITHER on the account NOR under one of its definitions -- a plan item
+    that lives elsewhere and whose money crossed here -- and that is the
+    movement this counts, whatever its row's ``is_deleted`` says: a
+    soft-deleted checking envelope keeps its card swipe, the row is not
+    checking's ghost to hard-delete, and the swipe still names the card.  A
+    movement whose row IS the account's is left to the row arm: live, the
+    row already archives the account; a ghost, step 2 takes both.
+
+    Args:
+        account_id: The Account.id to check.
+
+    Returns:
+        True if any ``budget.transaction_entries`` row names this account
+        while its parent row sits on another account and under no definition
+        of this account's.
+    """
+    return db.session.query(
+        db.session.query(TransactionEntry)
+        .join(TransactionEntry.transaction)
+        .outerjoin(Transaction.template)
+        .filter(
+            TransactionEntry.account_id == account_id,
+            Transaction.account_id != account_id,
+            db.or_(
+                Transaction.template_id.is_(None),
+                TransactionTemplate.account_id != account_id,
+            ),
         ).exists()
     ).scalar()
 

@@ -63,7 +63,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
     """
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=transaction.id, account_id=transaction.account_id,
+        transaction_id=transaction.id, account_id=transaction.account_id, owner_id=transaction.user_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,
@@ -2518,7 +2518,7 @@ class TestASettledRowMayStillGAINAPurchase:
             # PAST the door on purpose -- see the docstring.
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("600.00"), description="BJs",
                 purchased_on=display_today(), **settle_day_columns(display_today()),

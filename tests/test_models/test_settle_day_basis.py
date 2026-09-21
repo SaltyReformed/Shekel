@@ -155,7 +155,7 @@ def _make_envelope_with_purchase(seed_user, seed_periods, **entry_overrides):
     """Return a flushed envelope and one UNFLUSHED purchase against it.
 
     The entry side needs a real parent because
-    ``fk_transaction_entries_parent_account`` makes a purchase's ``account_id``
+    ``fk_transaction_entries_owner_account`` holds a purchase's ``account_id``
     its parent's, so a bare purchase cannot be written at all.
 
     Args:
@@ -174,6 +174,7 @@ def _make_envelope_with_purchase(seed_user, seed_periods, **entry_overrides):
     fields = {
         "transaction_id": parent.id,
         "account_id": parent.account_id,
+        "owner_id": parent.user_id,
         "user_id": seed_user["user"].id,
         "amount": Decimal("18.64"),
         "description": "Food Lion",

@@ -2459,7 +2459,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
     for amt in cleared_amounts:
         db_session.add(TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
             user_id=seed_user["user"].id,
             amount=amt,
             description="Cleared purchase",

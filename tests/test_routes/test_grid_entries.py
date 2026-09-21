@@ -21,8 +21,10 @@ from app.extensions import db
 from app.models.transaction_entry import TransactionEntry
 from app.models.ref import TransactionType
 from app.routes._render_helpers import fragment_amounts
+from app.services.account_resolver import resolve_owner_cash_flow_set
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.pay_calendar import FiledRow, calendar_for
+from app.services.settle_day import record_settle_day
 from app.services import transaction_service
 
 from tests._test_helpers import (
@@ -33,7 +35,6 @@ from tests._test_helpers import (
     make_expense_template,
     one_off_row_of,
 )
-from app.services.settle_day import record_settle_day
 
 
 def _sums(rows):
@@ -94,7 +95,13 @@ def _lists(rows):
             FiledRow.for_row(row),
         )
         periods[period.period_id] = period
-    return build_entry_lists_dict(rows, budgets, periods)
+    # The OWNER's cash-flow set with no override, as every route passes it
+    # (plan step credit_card:CC-5-2): every row here is one owner's, and an
+    # empty list has no owner (the builder never reads the set for it).
+    return build_entry_lists_dict(
+        rows, budgets, periods,
+        resolve_owner_cash_flow_set(rows[0].user_id) if rows else None,
+    )
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
                          estimated=Decimal("500.00")):
@@ -159,7 +166,7 @@ def _add_entry(txn, seed_user, amount, is_credit=False,
     """
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
@@ -433,7 +440,9 @@ class TestBuildEntryListsDict:
             budgets = fragment_amounts(txn).budgets
 
             with pytest.raises(KeyError):
-                build_entry_lists_dict([txn], budgets, {})
+                build_entry_lists_dict(
+                    [txn], budgets, {}, resolve_owner_cash_flow_set(txn.user_id),
+                )
 
     def test_envelope_without_entries_still_included(
         self, app, seed_user, seed_periods_today,

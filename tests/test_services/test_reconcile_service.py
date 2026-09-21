@@ -50,6 +50,7 @@ from app.utils.log_events import (
 from tests._test_helpers import (
     an_entered_day,
     count_amount_bases,
+    create_account_of_type,
     figure_source_columns,
     generate_row_of,
     last_covered_day,
@@ -72,17 +73,21 @@ from app.services.settle_day import record_settle_day
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
-                purchased_on=None, is_credit=False):
+                purchased_on=None, is_credit=False, account_id=None):
     """Create an entry directly via ORM (bypasses service validation).
 
     The twin of ``test_entry_service``'s helper, carried with the tests that
     use it rather than imported across test modules: it exists to build a row
     WITHOUT the service under test, so a shared version would couple two
-    modules' fixtures to one shape for no gain.
+    modules' fixtures to one shape for no gain.  *account_id* is the account
+    the purchase's money moved through (plan step ``credit_card:CC-5-2``);
+    the row's own when omitted, which is every case but the card swipe.
     """
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=transaction.id, account_id=transaction.account_id,
+        transaction_id=transaction.id,
+        account_id=transaction.account_id if account_id is None else account_id,
+        owner_id=transaction.user_id,
         user_id=user.id,
         amount=Decimal(amount),
         description=description,
@@ -454,6 +459,53 @@ class TestTheOutstandingSet:
             assert db.session.get(
                 TransactionEntry, entry_b.id,
             ).settled_on is None
+
+    def test_a_card_swipe_in_a_checking_envelope_is_offered_on_the_CARDs_statement(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The scope asks the PURCHASE's account, not its row's (plan step CC-5-2).
+
+        Rulings **R-CC15** / **R-BAL75**: a swipe recorded in a checking
+        envelope with the card as its account is a movement ON the card.  The
+        card's statement is what shows it, so the card's reconcile offers it
+        and stamps it; checking's does neither, though the envelope row is
+        checking's.  Graded from both doors, as every clause here is.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            txn = seed_entry_template["transaction"]
+            assert txn.account_id == seed_user["account"].id
+            swipe = _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                purchased_on=_BEFORE_THE_STATEMENT, account_id=card.id,
+            )
+            db.session.commit()
+
+            # Checking: not offered, not stamped -- the money never moved
+            # through it.
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [swipe.id]) == 0
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, swipe.id).settled_on is None
+
+            # The card: offered under its envelope's heading, and stamped.
+            on_the_card = _reconciled(seed_user, account_id=card.id)
+            offered = [
+                (group.transaction_id, purchase.entry_id)
+                for group in reconcile_service.outstanding_set(on_the_card).groups
+                for purchase in group.purchases
+            ]
+            assert offered == [(txn.id, swipe.id)]
+            assert reconcile_service.record_settled_days(
+                on_the_card, {swipe.id},
+            ) == 1
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, swipe.id,
+            ).settled_on == _OBSERVED_ON
 
     def test_another_users_purchase_matches_nothing(
         self, app, db, seed_user, seed_second_user, seed_periods,
@@ -2236,6 +2288,79 @@ class TestTheCashFigureBesideTheBookedOne:
             offer = self._offered(seed_user)[txn.id]
             assert offer.amount == Decimal("100.00")
             assert offer.cash_amount == Decimal("40.00")
+
+    def test_a_swipe_on_the_CARD_is_off_the_checking_statement_and_counted_ONCE(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Plan step ``credit_card:CC-5-2``: the third term, and the partition.
+
+        `$40` debit on checking + `$60` swipe ON the card (no flag) + `$25`
+        swipe on the card ALREADY POSTED: booked `$125.00`; checking's
+        statement shows `$40.00`.  The posted card swipe sits in exactly one
+        term -- the account's, not the posted-purchase one -- or the cash
+        figure would read `$15.00`, a purchase taken out twice.  Graded on the
+        panel's own figure and on the three terms directly, so a term that
+        stopped partitioning would fail here and not only downstream.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Target", account_id=card.id,
+            )
+            posted_on_the_card = _make_entry(
+                txn, seed_user["user"], amount="25.00",
+                description="Shell", account_id=card.id,
+            )
+            record_settle_day(posted_on_the_card, an_entered_day(_OBSERVED_ON))
+            db.session.commit()
+
+            offer = self._offered(seed_user)[txn.id]
+            assert offer.amount == Decimal("125.00")
+            assert offer.cash_amount == Decimal("40.00")
+
+            assert cash_ledger.credit_entry_sum(txn) == Decimal("0")
+            assert cash_ledger.elsewhere_purchase_sum(txn) == Decimal("85.00")
+            assert cash_ledger.posted_purchase_sum(txn) == Decimal("0")
+            assert cash_ledger.off_statement_sum(txn) == Decimal("85.00")
+
+    def test_a_flagged_line_on_another_account_is_counted_ONCE_around_the_doors(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The partition holds for a row NO door writes: flag AND another account.
+
+        Both purchase doors refuse the combination
+        (``entry_service._refusals._reject_flag_beside_another_account``), so
+        this plants it on the model directly -- the state the doors exist to
+        keep out, graded here so the sum's partition rests on the terms
+        themselves and not on the doors: `$60` flagged on the card is the
+        FLAG's term alone, and `off_statement_sum` reads `$60.00`, never
+        `$120.00`.  Deleting ``not entry.is_credit`` from
+        ``elsewhere_purchase_sum`` doubles it.
+        """
+        with app.app_context():
+            card = create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            txn = seed_entry_template["transaction"]
+            _make_entry(txn, seed_user["user"], amount="40.00")
+            _make_entry(
+                txn, seed_user["user"], amount="60.00",
+                description="Target", is_credit=True, account_id=card.id,
+            )
+            db.session.commit()
+
+            assert cash_ledger.credit_entry_sum(txn) == Decimal("60.00")
+            assert cash_ledger.elsewhere_purchase_sum(txn) == Decimal("0")
+            assert cash_ledger.posted_purchase_sum(txn) == Decimal("0")
+            assert cash_ledger.off_statement_sum(txn) == Decimal("60.00")
+            assert self._offered(seed_user)[txn.id].cash_amount == Decimal("40.00")
 
     def test_an_envelope_of_DEBITS_publishes_no_second_figure(
         self, app, db, seed_user, seed_periods, seed_entry_template,

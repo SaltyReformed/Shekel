@@ -166,12 +166,12 @@ def _plant_bare(  # pylint: disable=too-many-arguments
         figure, settled_on, source = settled
         db.session.execute(sa.text("""
             INSERT INTO budget.transaction_entries
-                (transaction_id, account_id, user_id, amount, description,
-                 purchased_on, settled_on, settled_day_basis_id, is_credit,
-                 covers_settlement, figure_source_id, version_id,
+                (transaction_id, account_id, owner_id, user_id, amount,
+                 description, purchased_on, settled_on, settled_day_basis_id,
+                 is_credit, covers_settlement, figure_source_id, version_id,
                  created_at, updated_at)
-            VALUES (:tid, :aid, :uid, :amt, :name, :son, :son, :sday, FALSE,
-                    TRUE, :fsrc, 1, now(), now())
+            VALUES (:tid, :aid, :uid, :uid, :amt, :name, :son, :son, :sday,
+                    FALSE, TRUE, :fsrc, 1, now(), now())
         """), {
             "tid": row_id, "aid": params["aid"], "uid": params["uid"],
             "amt": figure, "name": name, "son": settled_on,

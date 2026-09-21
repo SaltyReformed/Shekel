@@ -44,7 +44,7 @@ class TestSyncEntryPayback:
         """
         entry = TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
@@ -62,7 +62,7 @@ class TestSyncEntryPayback:
         """
         entry = TransactionEntry(
             **figure_source_columns(),
-            transaction_id=txn.id, account_id=txn.account_id,
+            transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
@@ -514,7 +514,7 @@ class TestPaybackCorrectness:
 
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Field parity",
@@ -561,7 +561,7 @@ class TestPaybackCorrectness:
 
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Period check",
@@ -589,7 +589,7 @@ class TestPaybackCorrectness:
 
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Name check",
@@ -621,13 +621,13 @@ class TestPaybackCorrectness:
 
             e1 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn1.id, account_id=txn1.account_id, user_id=user.id,
+                transaction_id=txn1.id, account_id=txn1.account_id, owner_id=txn1.user_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Txn1",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn2.id, account_id=txn2.account_id, user_id=user.id,
+                transaction_id=txn2.id, account_id=txn2.account_id, owner_id=txn2.user_id, user_id=user.id,
                 amount=Decimal("200.00"), description="Txn2",
                 purchased_on=date(2026, 1, 30), is_credit=True,
             )
@@ -657,7 +657,7 @@ class TestPaybackCorrectness:
             for amt in ["33.33", "33.33", "33.34"]:
                 e = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=user.id,
                     amount=Decimal(amt),
                     description="Split",
@@ -684,7 +684,7 @@ class TestPaybackCorrectness:
 
             e = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("0.01"),
                 description="Penny",
@@ -717,7 +717,7 @@ class TestEntryLinkIntegrity:
             for i, amt in enumerate(["30.00", "40.00", "30.00"]):
                 e = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=user.id,
                     amount=Decimal(amt),
                     description=f"Store {i}",
@@ -747,7 +747,7 @@ class TestEntryLinkIntegrity:
 
             e1 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="First",
@@ -762,7 +762,7 @@ class TestEntryLinkIntegrity:
 
             e2 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Second",
@@ -791,7 +791,7 @@ class TestEntryLinkIntegrity:
 
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Toggle",
@@ -829,7 +829,7 @@ class TestEntryLinkIntegrity:
 
             debit = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("200.00"),
                 description="Debit",
@@ -838,7 +838,7 @@ class TestEntryLinkIntegrity:
             )
             credit = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Credit",
@@ -868,13 +868,13 @@ class TestEntryLinkIntegrity:
 
             e1 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
@@ -921,19 +921,19 @@ class TestPaybackLifecycle:
 
             e1 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
                 purchased_on=date(2026, 1, 6), is_credit=True,
             )
             e3 = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("75.00"), description="C",
                 purchased_on=date(2026, 1, 7), is_credit=True,
             )
@@ -975,7 +975,7 @@ class TestPaybackLifecycle:
 
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                 amount=Decimal("100.00"), description="Toggle",
                 purchased_on=date(2026, 1, 5), is_credit=True,
             )
@@ -1007,7 +1007,7 @@ class TestPaybackLifecycle:
             for i in range(3):
                 e = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id, user_id=user.id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id, user_id=user.id,
                     amount=Decimal("50.00"), description=f"Debit {i}",
                     purchased_on=date(2026, 1, 5), is_credit=False,
                 )

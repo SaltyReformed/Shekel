@@ -47,6 +47,7 @@ from app.enums import RoleEnum
 from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
+from app.services.account_resolver import resolve_owner_cash_flow_set
 from app.services.cash_ledger import (
     baseline_amount_basis,
     amounts_by_id,
@@ -172,8 +173,17 @@ def _build_partial_context(
     # it out (the design review of plan step C2-f2b), so asking for a whole
     # calendar here to look up a period we are already holding would be a
     # redundant read for no new answer.
+    #
+    # **The OWNER's cash-flow set, for the add-purchase picker** (plan step
+    # ``credit_card:CC-5-2``): a companion records the owner's purchase
+    # (ruling R-CC11), and the purchase door gates the account against the
+    # ROW's owner, so the picker a companion sees is the owner's -- the
+    # linked owner's set, never the companion's own (empty) one.  This page
+    # renders no balance line and no chip (``account`` is ``None`` below);
+    # the picker is a different question, and it has an answer here.
     entry_lists = build_entry_lists_dict(
         transactions, budgets, {view.period.period_id: view.period},
+        resolve_owner_cash_flow_set(owner_id),
     )
     return {
         "periods": [view.period],

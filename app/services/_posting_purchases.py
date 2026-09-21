@@ -164,9 +164,11 @@ def _purchase_target(entry, txn: Transaction) -> dict[int, Decimal]:
     that raise a reconcile, on a Projected row as well as a settled one).
 
     Args:
-        entry: The purchase.  Its ``account_id`` IS its parent's
-            (``fk_transaction_entries_parent_account`` makes any other value
-            unwritable), so the cash account is read straight off it.
+        entry: The purchase.  Its ``account_id`` is the account its money
+            moved THROUGH -- its own, and free to differ from its parent's
+            since plan step ``credit_card:CC-5-1`` (ruling **R-BAL75**: the
+            ledger, the fold and the self-heal all read the movement's) --
+            so the cash account is read straight off it.
         txn: Its parent transaction, taken as an ARGUMENT rather than through
             ``entry.transaction`` so the caller that already holds it -- every
             caller does -- pays no lazy load, and so every movement of one

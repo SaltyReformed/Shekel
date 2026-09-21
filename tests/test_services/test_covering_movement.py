@@ -94,6 +94,7 @@ from app.services import (
     transaction_service,
     transfer_service,
 )
+from app.services.account_resolver import resolve_owner_cash_flow_set
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import settled_cash_facts
 from app.services.cash_ledger._amounts import (
@@ -442,6 +443,54 @@ class TestARevertUnDatesAndAReSettleReDates:
             assert movement.purchased_on == txn.settled_on
             assert movement.settled_day_basis_id == txn.settled_day_basis_id
             assert booked_a_human_figure is False
+
+    def test_a_re_settle_re_points_the_kept_movement_onto_the_rows_account(
+        self, app, seed_user, seed_periods,
+    ):
+        """Revert, move the row's account, re-settle: the record books where the plan is.
+
+        Plan step ``credit_card:CC-5-2``, ruling **R-CC36**.  The recurrence
+        maintain pass no longer retains a row holding a kept payment record
+        when its definition's account moves, so the row can sit on Second
+        Checking while its un-dated record still names Checking.  A settle
+        with no tender named books on the row's account, so the re-settle
+        re-points the SAME movement (its id survives, as ``X-bi-3e-2`` pinned)
+        and the fold reads `-148.32` on Second Checking and nothing on
+        Checking.  Without the re-point the old account carried the payment
+        while the plan sat on the new one, `$148.32` apart on each.  The
+        row's account is moved directly here: the maintain pass is the door
+        that moves it in production, and its own suite pins that it now does.
+        """
+        with app.app_context():
+            txn = _bill(seed_user, seed_periods[0])
+            _settle(txn)
+            db.session.flush()
+            first_id = _only_movement(txn).id
+            old_account_id, scenario_id = txn.account_id, txn.scenario_id
+            _revert(txn)
+            db.session.flush()
+            kept = _only_movement(txn)
+            assert kept.settled_on is None
+            assert kept.account_id == old_account_id
+
+            moved_to = create_savings_account(
+                seed_user, db.session, "Second Checking", Decimal("0.00"),
+            )
+            db.session.flush()
+            txn.account_id = moved_to.id
+            db.session.flush()
+
+            _settle(txn)
+            db.session.flush()
+
+            movement = _only_movement(txn)
+            assert movement.id == first_id
+            assert movement.account_id == moved_to.id
+            assert movement.settled_on == txn.settled_on
+            on_the_new = _per_day(settled_cash_facts(moved_to.id, scenario_id))
+            on_the_old = _per_day(settled_cash_facts(old_account_id, scenario_id))
+            assert on_the_new[txn.settled_on] == Decimal("-148.32")
+            assert txn.settled_on not in on_the_old
 
     def test_a_re_settle_after_a_resolved_revert_re_prices_the_same_movement(
         self, app, seed_user, seed_periods,
@@ -1363,14 +1412,17 @@ class TestATransfersMovementsFollowItsLifecycle:
     def test_an_endpoint_move_carries_the_movements_to_the_new_account(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-BAL46: the movement's account IS its parent's, on a move too.
+        """Ruling R-BAL46: a leg's movement moves with its leg, by the applier.
 
-        Without migration ``c4e8a2d7f1b3``'s ``ON UPDATE CASCADE`` the move is
-        refused by ``fk_transaction_entries_parent_account`` (measured: five
-        endpoint-move cases); without the applier's own assignment the
-        session's movement still says the old account after the flush.
-        Both are read here: the in-session object before any expire, and the
-        walks of the vacated and the new account after.
+        Since plan step ``credit_card:CC-5-1`` the applier's own assignment is
+        the ONE writer of the move (``_endpoints._apply_endpoint_move``): the
+        composite key whose ``ON UPDATE CASCADE`` used to move the row beneath
+        it, ``fk_transaction_entries_parent_account``, is dropped (ruling
+        R-BAL76), so a movement's account is its own and only the applier
+        re-points a leg's.  Both the session and the database are read here:
+        the in-session object before any expire, the row after, and the walks
+        of the vacated and the new account.  Delete the assignment and the
+        movement stays on the vacated account in all three.
         """
         with app.app_context():
             savings = create_savings_account(
@@ -1792,7 +1844,10 @@ class TestAKeptMovementIsNotAPurchase:
                     seed_user["user"].id,
                 ).require_period(FiledRow.for_row(envelope)),
             }
-            listed = build_entry_lists_dict([envelope], budgets, periods)
+            listed = build_entry_lists_dict(
+                [envelope], budgets, periods,
+                resolve_owner_cash_flow_set(envelope.user_id),
+            )
             assert listed[envelope.id]["entries"] == []
             assert entry_service.get_entries_for_transaction(
                 envelope.id, seed_user["user"].id,
@@ -1909,7 +1964,7 @@ class TestTheRecordIsMarkedAndTheSeamsAlone:
             movement = _only_movement(txn)
             assert movement.covers_settlement is True
             db.session.add(TransactionEntry(
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id, amount=Decimal("1.00"),
                 description="second record", purchased_on=txn.settled_on,
                 covers_settlement=True,
@@ -2031,7 +2086,7 @@ class TestTheCatalogueIsSeededAndResolvable:
         with app.app_context():
             envelope = _bill(seed_user, seed_periods[0], "100.00", is_envelope=True)
             db.session.add(TransactionEntry(
-                transaction_id=envelope.id, account_id=envelope.account_id,
+                transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
                 user_id=seed_user["user"].id, amount=Decimal("5.00"),
                 description="bare", purchased_on=date(2026, 1, 5),
             ))

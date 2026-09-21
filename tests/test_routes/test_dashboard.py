@@ -204,7 +204,7 @@ class TestDashboardPulseRendering:
             envelope = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=envelope.id, account_id=envelope.account_id,
+                transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
                 description="overspend",
@@ -309,7 +309,7 @@ class TestDashboardPulseRendering:
             tracked = generate_row_of(template, cur)
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=tracked.id, account_id=tracked.account_id,
+                transaction_id=tracked.id, account_id=tracked.account_id, owner_id=tracked.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),
                 description="groceries",

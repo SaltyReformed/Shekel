@@ -70,10 +70,21 @@ def _outstanding_scope(statement: "_rows.Statement"):
     makes the per-arm reading the obvious one: this function is not visible
     outside its own arm.
 
-    Six clauses, each load-bearing:
+    Seven clauses, each load-bearing:
 
     * ``settled_on IS NULL`` -- the definition itself.  A purchase whose
       posting day is already recorded is not outstanding, whatever that day is.
+    * the PURCHASE is on THIS account -- ``TransactionEntry.account_id``, the
+      account its money moved through (plan step ``credit_card:CC-5-2``,
+      rulings **R-CC15** and **R-BAL75**).  It was the PARENT's account
+      through ``CC-5-1``, inside the subquery below, and the two were equal
+      on every row by the key that step dropped.  A card swipe recorded in a
+      checking envelope is a movement ON the card: it is what the CARD's
+      statement shows and what checking's never will, so it is offered on the
+      card's statement and not on checking's, while its envelope row stays
+      where it was filed.  ``_post_stamped_purchases`` re-scoped the STAMPED
+      set by the movement's account already; the offer and the tick now ask
+      one column.
     * ``NOT covers_settlement`` -- a PURCHASE, never the row's own payment
       record (plan step ``balance:X-bi-3e-2``, ruling **R-BAL68**).  The
       status seam's covering movement is a ``transaction_entries`` row too,
@@ -87,7 +98,9 @@ def _outstanding_scope(statement: "_rows.Statement"):
       scope and the fold's reservation exclude the mark by one spelling.
     * ``is_credit IS FALSE`` -- a credit-card purchase never touches checking;
       it leaves through its own CC Payback sibling, so it is not on this
-      account's statement and reconciling it would mean nothing.
+      account's statement and reconciling it would mean nothing.  The CHEAT's
+      spelling of the account clause above, for the legacy lines that carry
+      the flag with no account of their own; ``CC-7`` deletes it.
     * ``purchased_on <= observed_on`` -- a purchase made AFTER the day the
       balance was read cannot be inside it.  Offering one would let the user
       record a posting day earlier than the purchase, which
@@ -95,10 +108,13 @@ def _outstanding_scope(statement: "_rows.Statement"):
       database; filtering here means that constraint is a backstop rather than
       a reachable 500.
     * the parent is filed in one of :attr:`~._rows.Statement.owned_period_ids`
-      and is on THIS account -- a balance assertion declares the real balance of
-      one account, and a user may hold more than one checking account (there is
-      no per-type uniqueness).  Reconciling across accounts would drop another
-      account's reservation without ever raising its anchor.
+      -- a balance assertion declares the real balance of one account, and a
+      user may hold more than one checking account (there is no per-type
+      uniqueness), so WHICH account is the purchase's own clause above, and
+      this one is the OWNER's: the parent sits in the owner's calendar.
+      Reconciling across owners is unrepresentable by the movement's own
+      owner key too; this clause is what keeps the parent inside the owner's
+      calendar, which the labelling below reads.
       **The owner half came off a ``pay_periods.user_id`` join until
       pay-calendar plan step C4-a-2** and comes off the CALENDAR now, for the
       reason that property states: it is what makes
@@ -161,13 +177,13 @@ def _outstanding_scope(statement: "_rows.Statement"):
     """
     return [
         TransactionEntry.settled_on.is_(None),
+        TransactionEntry.account_id == statement.account_id,
         ~status_seam.covering_clause(),
         TransactionEntry.is_credit.is_(False),
         TransactionEntry.purchased_on <= statement.observed_on,
         TransactionEntry.transaction_id.in_(
             db.session.query(Transaction.id).filter(
                 Transaction.pay_period_id.in_(statement.owned_period_ids),
-                Transaction.account_id == statement.account_id,
                 balance_contributing_clause(),
             )
         ),

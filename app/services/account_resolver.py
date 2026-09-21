@@ -23,6 +23,14 @@ queries.
   whose balance line is the primary or an override within the set.
   Read by the grid, the dashboard and the spending report.
 
+* ``resolve_owner_and_view`` -- both halves of that answer from one walk,
+  the OWNER's set (what a purchase under any of their rows may name,
+  ruling ``credit_card:R-CC37``) and the VIEW behind the request's
+  balance line; ``resolve_cash_flow_set`` is its view half, and
+  ``resolve_owner_cash_flow_set`` its owner half by the owner's id alone,
+  for the purchase door and the single-row fragment renders (plan step
+  CC-5-2).
+
 * ``resolve_analytics_cash_flow_set`` -- the SAME set for the calendar,
   which takes an explicit ``account_id`` as a question about THAT
   account: an override the admission test refuses answers ``None`` (the
@@ -39,10 +47,13 @@ cash-flow balance (ruling D4 / step A1; plan step X-a1 closed the
 calendar door finding N-38 measured open).
 """
 
+from typing import NamedTuple
+
 from app import ref_cache
 from app.enums import AcctCategoryEnum, AcctTypeEnum
 from app.extensions import db
 from app.models.account import Account
+from app.models.user import User
 from app.services import account_service
 from app.services.cash_flow_set import CashFlowSet
 
@@ -304,19 +315,44 @@ def _active_revolving_accounts(user_id) -> list[Account]:
     )
 
 
-def _cash_flow_set(
+class ResolvedCashFlow(NamedTuple):
+    """The OWNER's cash-flow set and the VIEW of it a request renders.
+
+    Two answers from one walk (plan step ``credit_card:CC-5-2``): the owner's
+    set is what a purchase under any of their rows may name (ruling
+    **R-CC37**), and the view is what the page shows behind its balance line
+    -- the same set when the request names no override or a member of it,
+    and one account's single-account view when the override names an account
+    outside it (:meth:`~app.services.cash_flow_set.CashFlowSet.seen_from`).
+    The grid page reads both; every other reader reads the view through
+    :func:`resolve_cash_flow_set`, or the owner's set through
+    :func:`resolve_owner_cash_flow_set`.
+
+    Attributes:
+        owner: The owner's set with no override, or ``None`` when they have
+            no grid-eligible account at all.
+        view: That set behind the admitted balance line, or the owner's set
+            itself; ``None`` exactly when *owner* is.
+    """
+
+    owner: CashFlowSet | None
+    view: CashFlowSet | None
+
+
+def _cash_flow_sets(
     user_id, user_settings, balance: Account | None,
-) -> CashFlowSet | None:
-    """Build the owner's cash-flow set behind *balance*, or the primary.
+) -> ResolvedCashFlow:
+    """Build the owner's cash-flow set, and its view behind *balance*.
 
     The ONE walk both public resolvers share: the primary is
     :func:`resolve_grid_account`'s answer with no override, the members are
-    the primary plus every active revolving account, and the balance line is
-    *balance* when the caller admitted one -- a member keeps the set's rows
-    behind its own line; an owned cash-flow account outside the set collapses
-    the set to itself -- else the primary.  What differs between the two
-    callers is only what they do with an override the admission test refuses,
-    and that policy is theirs; the set is built here once.
+    the primary plus every active revolving account, and the view is the
+    set :meth:`~app.services.cash_flow_set.CashFlowSet.seen_from` *balance*
+    when the caller admitted one -- a member keeps the set's rows behind its
+    own line; an owned cash-flow account outside the set collapses the view
+    to itself -- else the set itself.  What differs between the two callers
+    is only what they do with an override the admission test refuses, and
+    that policy is theirs; the set is built here once.
 
     Args:
         user_id: The current user's id.
@@ -327,24 +363,25 @@ def _cash_flow_set(
             restating it.
 
     Returns:
-        The :class:`~app.services.cash_flow_set.CashFlowSet`, or ``None`` when
-        the owner has no grid-eligible account at all.
+        The :class:`ResolvedCashFlow`; both ``None`` when the owner has no
+        grid-eligible account at all.
     """
     primary = resolve_grid_account(user_id, user_settings)
     if primary is None:
-        return None
-    members = (
-        primary,
-        *[
-            card for card in _active_revolving_accounts(user_id)
-            if card.id != primary.id
-        ],
+        return ResolvedCashFlow(owner=None, view=None)
+    owner = CashFlowSet(
+        balance=primary,
+        members=(
+            primary,
+            *[
+                card for card in _active_revolving_accounts(user_id)
+                if card.id != primary.id
+            ],
+        ),
     )
     if balance is None:
-        return CashFlowSet(balance=primary, members=members)
-    if balance.id not in {member.id for member in members}:
-        members = (balance,)
-    return CashFlowSet(balance=balance, members=members)
+        return ResolvedCashFlow(owner=owner, view=owner)
+    return ResolvedCashFlow(owner=owner, view=owner.seen_from(balance))
 
 
 def resolve_cash_flow_set(
@@ -386,6 +423,10 @@ def resolve_cash_flow_set(
       the ONE admission test :func:`_admissible_grid_account`, so the primary
       chain runs once per request whatever the override.
 
+    This is the VIEW half of :func:`resolve_owner_and_view`; the grid page,
+    which also needs the owner's set for its add-purchase pickers, calls that
+    and reads both from one walk.
+
     Args:
         user_id: The current user's id.
         user_settings: The user's ``UserSettings`` row (or ``None``).
@@ -396,10 +437,62 @@ def resolve_cash_flow_set(
         the owner has no grid-eligible account at all (the same state
         :func:`resolve_grid_account` answers ``None`` for).
     """
-    return _cash_flow_set(
+    return resolve_owner_and_view(user_id, user_settings, override_account_id).view
+
+
+def resolve_owner_and_view(
+    user_id, user_settings=None, override_account_id=None,
+) -> ResolvedCashFlow:
+    """Return the owner's cash-flow set AND the view the request renders, from one walk.
+
+    :func:`resolve_cash_flow_set` with its owner's set kept (plan step
+    ``credit_card:CC-5-2``): the grid page shows the view's rows behind the
+    view's balance line and offers, under every envelope, the accounts a
+    purchase may name -- the OWNER's set, whatever the override
+    (:func:`~app.services.cash_flow_set.purchase_accounts`).  Resolving the
+    two apart -- the alternative this leaf's review weighed -- would run the
+    primary chain and the cards query twice per render for one answer; here
+    the primary chain runs once and the view is derived
+    (:meth:`~app.services.cash_flow_set.CashFlowSet.seen_from`).
+
+    Args:
+        user_id: The current user's id.
+        user_settings: The user's ``UserSettings`` row (or ``None``).
+        override_account_id: Explicit account id from a query param, admitted
+            or refused exactly as :func:`resolve_cash_flow_set` does.
+
+    Returns:
+        The :class:`ResolvedCashFlow`; both halves ``None`` when the owner has no
+        grid-eligible account at all.
+    """
+    return _cash_flow_sets(
         user_id, user_settings,
         _admissible_grid_account(user_id, override_account_id),
     )
+
+
+def resolve_owner_cash_flow_set(owner_id: int) -> CashFlowSet | None:
+    """Return *owner_id*'s cash-flow set with no override, by their id alone.
+
+    :func:`resolve_cash_flow_set` for a surface that holds the OWNER's id and
+    not their ``UserSettings`` row: the purchase door and the three
+    single-row renders that draw a row's add-purchase form (the HTMX entry
+    list, the mobile card fragment, the companion page), each of which reaches
+    the row's owner through ``txn.user_id`` rather than ``current_user``
+    (ruling **R-CC11**: a companion records the OWNER's purchase, so the
+    picker is the owner's).  One spelling of "the owner's set" for the four,
+    where each carried the ``User`` read and the resolver call as a pair.
+
+    The ``User`` read is an identity-map hit whenever the owner is the
+    requester; for a companion it is one indexed read.
+
+    Args:
+        owner_id: ``auth.users.id`` of the row's owner.
+
+    Returns:
+        The owner's set, or ``None`` when they have no grid-eligible account.
+    """
+    return resolve_owner_and_view(owner_id, db.session.get(User, owner_id).settings).owner
 
 
 def resolve_analytics_cash_flow_set(
@@ -409,7 +502,7 @@ def resolve_analytics_cash_flow_set(
 
     The calendar's twin of :func:`resolve_cash_flow_set` (plan step
     ``credit_card:CC-4-3``): the SAME set, through the same walk
-    (:func:`_cash_flow_set`), with one difference in what an explicit
+    (:func:`_cash_flow_sets`), with one difference in what an explicit
     ``account_id`` means.  The grid resolver treats a refused override as
     absent and falls through to the primary; here an explicit id is a
     question about THAT account, so one the admission test refuses --
@@ -441,8 +534,8 @@ def resolve_analytics_cash_flow_set(
         account at all.
     """
     if account_id is None:
-        return _cash_flow_set(user_id, user_settings, None)
+        return _cash_flow_sets(user_id, user_settings, None).view
     balance = _admissible_grid_account(user_id, account_id)
     if balance is None:
         return None
-    return _cash_flow_set(user_id, user_settings, balance)
+    return _cash_flow_sets(user_id, user_settings, balance).view

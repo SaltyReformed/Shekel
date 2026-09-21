@@ -48,6 +48,16 @@ class EntryCreateSchema(BaseSchema):
     by ticking the purchase at a balance true-up or by editing the entry -- see
     :class:`EntryUpdateSchema`.  Offering it here would invite a value that is
     a forecast rather than an observation.
+
+    **``account_id`` is the account the purchase's money moved through** (plan
+    step ``credit_card:CC-5-2``, ruling **R-CC15**): the card, for a swipe in
+    a checking envelope.  OPTIONAL, and absent means the row's own account --
+    the form posts it only when the owner has a card to choose (ruling
+    **R-CC34**), so a form with no picker submits exactly what it did before
+    this step.  The schema says only that it is a row id; WHOSE account it is,
+    and whether it may hold a purchase, is ``entry_service.create_entry``'s
+    gate against the ROW's owner.  It is absent from :class:`EntryUpdateSchema`
+    because the update door does not move a purchase between accounts.
     """
 
     @pre_load
@@ -67,6 +77,7 @@ class EntryCreateSchema(BaseSchema):
     )
     purchased_on = fields.Date(required=True)
     is_credit = fields.Boolean(load_default=False)
+    account_id = RowId()
 
 
 class EntryUpdateSchema(BaseSchema):

@@ -27,9 +27,15 @@ The shapes under test, and what each one would cost if it were writable:
 * **no link at all** -- ``MATCH SIMPLE``'s arm, which is what lets a composite
   key sit beside a nullable column: every row in the database is in this state
   today and none of them may be refused;
-* **an entry whose ``account_id`` disagrees with its parent's** --
-  ``fk_transaction_entries_parent_account``, without which the entry's own
-  clearing key would be scoped by a column any writer could set wrong;
+* **an entry on another OWNER's account, or claiming an owner that is not
+  its row's** -- ``fk_transaction_entries_owner_account`` and
+  ``fk_transaction_entries_owner_transaction`` (plan step
+  ``credit_card:CC-5-1``, ruling **R-BAL76**), which replaced the
+  parent-account co-location that held a movement's account EQUAL to its
+  parent's: a movement's account is its own since that step (a card purchase
+  in a checking envelope sits on the card), so the legitimate write the old
+  key refused -- another account of the SAME owner -- must be ACCEPTED, and
+  a parent's account move no longer carries its movements;
 * **deleting an assertion a line still names** -- the ``ON DELETE RESTRICT``,
   which refuses rather than silently converting a recorded observation into
   "never observed";
@@ -194,6 +200,7 @@ def _make_entry(data, parent: Transaction, **overrides) -> TransactionEntry:
     fields = {
         "transaction_id": parent.id,
         "account_id": parent.account_id,
+        "owner_id": parent.user_id,
         "user_id": data["user"].id,
         "amount": Decimal("25.00"),
         "description": "Clearing control",
@@ -340,54 +347,130 @@ class TestAPurchasesClearingLinkIsScopedByAccount:
             db.session.rollback()
 
 
-class TestAPurchasesAccountIsItsParents:
-    """``fk_transaction_entries_parent_account`` makes disagreement impossible."""
+class TestAMovementsAccountIsItsOwnAndItsOwnerIsItsRows:
+    """The two owner keys of plan step ``credit_card:CC-5-1`` (ruling **R-BAL76**).
 
-    def test_a_disagreeing_account_is_refused(
+    **Re-expressed 2026-09-20 with the developer's confirmation** (CLAUDE.md
+    rule 5, under R-BAL76): through that step this class graded
+    ``fk_transaction_entries_parent_account``, which held a movement's account
+    EQUAL to its parent's and cascaded a parent's move onto its movements.
+    The card's first door writes a movement whose account is NOT its parent's
+    -- a card purchase inside a checking envelope -- so the key is dropped and
+    what the schema holds instead is OWNERSHIP:
+    ``fk_transaction_entries_owner_transaction`` keeps ``owner_id`` the row's
+    and ``fk_transaction_entries_owner_account`` keeps the account that
+    owner's.  Each key is graded ALONE below (the other satisfied), because a
+    row that breaks both is refused by whichever PostgreSQL evaluates first
+    and would grade neither by name.
+
+    The clearing key this file is about rests on ``account_id`` exactly as it
+    did: a movement clears against a statement of the account its money moved
+    through, which since this step is the movement's OWN account -- what a
+    card statement clearing a card purchase needs.
+    """
+
+    def test_another_account_of_the_same_owner_is_writable(
         self, app, db, seed_full_user_data,
     ):
-        """An entry may not claim an account its parent does not have.
+        """The design's card swipe: a purchase on savings under a checking row.
 
-        This key is what the clearing key above RESTS ON: it scopes a purchase's
-        link through ``account_id``, so an ``account_id`` a writer could set
-        freely would make that scope decorative.  Both keys together are one
-        rule -- a purchase clears against the statement of the account whose
-        cash it actually leaves.
+        The legitimate write the dropped key refused, which must now be
+        ACCEPTED -- a key that refuses the correct write is worse than none.
+        Both owner keys are satisfied: the row and the savings account are the
+        same owner's.
         """
         with app.app_context():
             parent = _make_transaction(seed_full_user_data)
             db.session.add(parent)
             db.session.flush()
+            savings = seed_full_user_data["savings_account"]
+            assert savings.id != parent.account_id
 
             entry = _make_entry(
-                seed_full_user_data, parent,
-                account_id=seed_full_user_data["savings_account"].id,
+                seed_full_user_data, parent, account_id=savings.id,
+            )
+            db.session.add(entry)
+            db.session.flush()
+
+            assert entry.account_id == savings.id
+            assert entry.owner_id == parent.user_id
+            assert entry.account.id == savings.id
+            db.session.rollback()
+
+    def test_another_owners_account_is_refused_by_name(
+        self, app, db, seed_full_user_data, seed_second_user,
+    ):
+        """A movement may not sit on an account its row's owner does not hold.
+
+        ``owner_id`` is the row's (so the transaction-owner key is satisfied)
+        and the account is the SECOND user's, so exactly one key fails and it
+        is named.  This is what makes a movement on another owner's account
+        unwritable rather than gated at a door (R-BAL76), and it is what the
+        card's ownership gate -- against the ROW's owner, never the caller --
+        leans on.
+        """
+        with app.app_context():
+            parent = _make_transaction(seed_full_user_data)
+            db.session.add(parent)
+            db.session.flush()
+            foreign = seed_second_user["account"]
+            assert foreign.user_id != parent.user_id
+
+            entry = _make_entry(
+                seed_full_user_data, parent, account_id=foreign.id,
             )
             db.session.add(entry)
             with pytest.raises(
                 sqlalchemy.exc.IntegrityError,
-                match="fk_transaction_entries_parent_account",
+                match="fk_transaction_entries_owner_account",
             ):
                 db.session.flush()
             db.session.rollback()
 
-    def test_a_parents_account_move_carries_its_purchases(
+    def test_an_owner_that_is_not_the_rows_is_refused_by_name(
+        self, app, db, seed_full_user_data, seed_second_user,
+    ):
+        """``owner_id`` may not name anyone but the parent row's owner.
+
+        The account and the stated owner AGREE (both the second user's, so
+        the account-owner key is satisfied) and only the row disagrees, so
+        exactly one key fails and it is named.  Either key alone would leave
+        the other parent free to be anyone's; the pair is what makes the two
+        parents unable to disagree.
+        """
+        with app.app_context():
+            parent = _make_transaction(seed_full_user_data)
+            db.session.add(parent)
+            db.session.flush()
+            other = seed_second_user
+
+            entry = _make_entry(
+                seed_full_user_data, parent,
+                account_id=other["account"].id,
+                owner_id=other["user"].id,
+            )
+            db.session.add(entry)
+            with pytest.raises(
+                sqlalchemy.exc.IntegrityError,
+                match="fk_transaction_entries_owner_transaction",
+            ):
+                db.session.flush()
+            db.session.rollback()
+
+    def test_a_parents_account_move_leaves_its_purchases_where_their_money_moved(
         self, app, db, seed_full_user_data,
     ):
-        """The key CASCADES a parent's account UPDATE onto its entries.
+        """No cascade: a parent's account UPDATE does not move its movements.
 
-        Plan step **X-bi-3c**, ruling **R-BAL46**, migration ``c4e8a2d7f1b3``:
-        the one parent whose account can move is a transfer shadow
-        (``transfer_service._endpoints._apply_endpoint_move``), and since that
-        step a settled shadow carries a covering movement.  Driven at the
-        database tier -- a raw UPDATE of the parent, the ORM told nothing --
-        so it grades the key and not the applier: against the DELETE-only key
-        this UPDATE is refused by name (measured on the tree without the
-        migration, five endpoint-move cases).
-
-        Kept beside the disagreement refusal above because the two are ONE
-        rule read in two directions: a disagreeing pair cannot be WRITTEN, and
-        a parent's move cannot LEAVE one behind.
+        Through plan step ``credit_card:CC-5-1`` the dropped key CASCADED a
+        parent's account move onto its entries (plan step X-bi-3c, ruling
+        R-BAL46); a movement records where money moved, and re-pointing the
+        row's EXPECTATION does not change that fact.  Driven at the database
+        tier -- a raw UPDATE of the parent, the ORM told nothing -- so it
+        grades the schema and not any applier.  The one writer that DOES move
+        a leg's movement with its leg, the transfer endpoint move, assigns it
+        by hand and is graded in ``test_covering_movement.py``
+        (``TestATransfersMovementsFollowItsLifecycle``).
         """
         with app.app_context():
             parent = _make_transaction(seed_full_user_data)
@@ -396,6 +479,7 @@ class TestAPurchasesAccountIsItsParents:
             entry = _make_entry(seed_full_user_data, parent)
             db.session.add(entry)
             db.session.flush()
+            checking_id = parent.account_id
             savings_id = seed_full_user_data["savings_account"].id
 
             db.session.execute(
@@ -405,14 +489,14 @@ class TestAPurchasesAccountIsItsParents:
                 ),
                 {"account": savings_id, "id": parent.id},
             )
-            moved = db.session.execute(
+            stayed = db.session.execute(
                 sa.text(
                     "SELECT account_id FROM budget.transaction_entries "
                     "WHERE id = :id"
                 ),
                 {"id": entry.id},
             ).scalar_one()
-            assert moved == savings_id
+            assert stayed == checking_id
             db.session.rollback()
 
     def test_the_service_door_writes_the_parents_account(
@@ -420,9 +504,11 @@ class TestAPurchasesAccountIsItsParents:
     ):
         """``entry_service.create_entry`` fills the column rather than the schema.
 
-        The key above refuses a WRONG value; nothing refuses an ABSENT one
+        The keys above refuse a wrong OWNER; nothing refuses an ABSENT account
         except NOT NULL, and the app has exactly one door that creates a
-        purchase.  This grades that door against the parent it was handed.
+        purchase.  This grades that door against the parent it was handed:
+        the parent's account, which is a purchase's default until the door
+        takes an account of its own (plan step ``credit_card:CC-5-2``).
         """
         with app.app_context():
             parent = seed_entry_template["transaction"]

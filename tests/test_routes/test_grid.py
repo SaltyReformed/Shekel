@@ -25,6 +25,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
+from app.services.account_resolver import ResolvedCashFlow
 from app.services.cash_flow_set import CashFlowSet
 from app.services.grid_view_service import leg_dom_id
 from app import ref_cache
@@ -1096,6 +1097,7 @@ class TestTransactionCRUD:
                 **figure_source_columns(),
                 transaction_id=txn.id,
                 account_id=txn.account_id,
+                owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 # A refund larger than the envelope holds, which is the shape
                 # a cross-period merchant credit files (ruling R-II).
@@ -5125,7 +5127,7 @@ class TestGridPeriodSubtotalCanonical:
             ):
                 entry = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -5265,7 +5267,7 @@ class TestGridPeriodSubtotalCanonical:
             for amt in (Decimal("100.00"), Decimal("150.00")):
                 entry = TransactionEntry(
                     **figure_source_columns(),
-                    transaction_id=txn.id, account_id=txn.account_id,
+                    transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                     user_id=seed_user["user"].id,
                     amount=amt,
                     description="confirmed purchase",
@@ -11008,9 +11010,17 @@ class TestTheChipMarksARowOnAnotherAccount:
             )
             db.session.commit()
             phone_id = phone.id
+            # The resolver the fragment producer reads for the OWNER branch
+            # (``resolve_owner_and_view`` since plan step credit_card:CC-5-2,
+            # one walk for the balance line and the picker): made to answer
+            # for anyone, so only the owner test stands between the companion
+            # and a chip.
             monkeypatch.setattr(
-                "app.routes._render_helpers.resolve_cash_flow_set",
-                lambda user_id, settings=None, override=None: CashFlowSet.single(checking),
+                "app.routes._render_helpers.resolve_owner_and_view",
+                lambda user_id, settings=None, override=None: ResolvedCashFlow(
+                    owner=CashFlowSet.single(checking),
+                    view=CashFlowSet.single(checking),
+                ),
             )
             response = companion_client.post(
                 f"/transactions/{phone_id}/mark-done",

@@ -145,7 +145,7 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
             _db.session.flush()
             _db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=envelope.id, account_id=envelope.account_id,
+                transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
                 user_id=seed_user["user"].id, description="Card purchase",
                 amount=Decimal("181.58"), is_credit=True,
             ))
@@ -213,7 +213,7 @@ class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
             _db.session.flush()
             _db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=envelope.id, account_id=envelope.account_id,
+                transaction_id=envelope.id, account_id=envelope.account_id, owner_id=envelope.user_id,
                 user_id=seed_user["user"].id, description="Card purchase",
                 amount=Decimal("181.58"), is_credit=True,
             ))

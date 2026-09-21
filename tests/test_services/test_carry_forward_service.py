@@ -1507,7 +1507,7 @@ def _add_entry(txn, seed_user, amount, *, description="Test purchase",
 
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description=description,

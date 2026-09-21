@@ -22,7 +22,7 @@ from app.models.category import Category
 from app.models.ref import Status
 from app.routes._render_helpers import (
     fragment_amounts,
-    fragment_balance_line,
+    fragment_cash_flow,
     render_transaction_cell,
 )
 from app.schemas.validation import (
@@ -157,6 +157,12 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     a targeted "what is the next payday after this one" query here would be a
     second implementation of the rule this arc exists to state once.
 
+    **And that owner's cash-flow set, since plan step ``credit_card:CC-5-2``**,
+    for the envelope's add-purchase account picker -- the owner's set with no
+    override, the purchase door's own predicate -- from the SAME walk that
+    resolves the chip's balance line (:func:`fragment_cash_flow`), so the
+    card pays one resolve for its two questions.
+
     Args:
         txn: The Transaction just settled, with ``entries`` and
             ``template`` accessible.
@@ -232,6 +238,13 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         if txn.tracks_purchases
         else None
     )
+    # The owner's cash-flow set, resolved ONCE for the two things this card
+    # draws from it (plan step credit_card:CC-5-2): the balance line its
+    # account chip is decided against, and the add-purchase picker's
+    # accounts -- the OWNER's set with no override, because the purchase
+    # door admits the row's own account plus the owner's members whatever
+    # page the card is on.  Two questions, one walk.
+    cash_flow = fragment_cash_flow(owner_id)
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
@@ -247,6 +260,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         entry_lists=build_entry_lists_dict(
             [txn], budgets,
             {} if period is None else {period.period_id: period},
+            cash_flow.purchases,
         ),
         can_edit=can_edit,
         id_prefix=card_prefix,
@@ -255,7 +269,7 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         # lands on, or ``None`` for a companion -- by the row's OWNER, not by
         # ``can_edit``, which is a render-routing field the form posts.  The
         # one resolution the desktop cell and the transfer cell share.
-        account=fragment_balance_line(owner_id),
+        account=cash_flow.balance_line,
         # The USER's civil day, never the process's.  This reaches
         # ``grid/_transaction_entries.html``'s add-purchase form as the
         # ``purchased_on`` default and both pickers' ``max``, and

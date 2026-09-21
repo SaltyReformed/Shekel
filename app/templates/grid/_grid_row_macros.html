@@ -146,6 +146,47 @@
 {%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
+{% macro account_chips(item, account, is_leg, chip_class='ms-1') -%}
+{#- The account chips of one plan item, on every surface that draws it: the
+    desktop cell, the mobile card and the Plan row (plan steps
+    credit_card:CC-4-2 and CC-5-2, rulings R-CC16 and R-CC15).  ONE rule for
+    "which accounts is this item's money on, other than the balance line's":
+    the item's own account, then the account of each MOVEMENT in the item's
+    family (`entries`: purchases and the seam's covering movement alike, so
+    a settle-with-tender's movement earns its chip by the same test), each
+    distinct account once, in that order, LESS the balance line's account.
+    A row on checking holding a card swipe chips the card from checking's
+    grid and chips checking from the card's; a row on the balance line whose
+    money moved on it chips nothing.  A LEG has no family (its covering
+    movement is on its own account), so it chips its own account or nothing.
+
+    `account` is the balance line's Account and is read with `is not none`
+    rather than by truth: a surface that forgets to publish it RAISES on
+    `.id`, while a legitimate `none` (no balance line: the companion) draws
+    no chip.  Accounts are compared by id and a NAME is read only for a
+    chipped one (`Transaction.account` is a joined load; a movement's
+    account is lazy and identity-mapped, so a movement on a member of the
+    owner's set reads no query -- measured at CC-5-2).  The chip is the
+    shared non-money marker's NEUTRAL variant (`.flag-chip--neutral`,
+    components.css), told apart by its text, never by colour.
+
+    Emits NOTHING -- no bytes at all -- when there is no chip, so a caller
+    can capture the output and wrap it only when it is non-empty (the cell
+    does); each chip is preceded by one newline, which is the one
+    collapsible space between inline markers.  `chip_class` is the caller's
+    layout class: `ms-1` beside the badges on a card row, `mw-100
+    text-truncate` under the amount in the desktop cell. -#}
+{%- if account is not none %}
+{%- set ns = namespace(seen=[account.id]) %}
+{%- for candidate in ([item] if is_leg else [item] + item.entries|list) %}
+{%- if candidate.account_id not in ns.seen %}
+{%- set ns.seen = ns.seen + [candidate.account_id] %}
+<span class="flag-chip flag-chip--neutral {{ chip_class }}" title="On {{ candidate.account.name }}">{{ candidate.account.name }}</span>
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- endmacro %}
+
 {% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, due_captions, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
@@ -439,12 +480,11 @@
         {% if not is_leg and txn.credit_payback_for_id %}
           <span class="badge-credit ms-1">CC</span>
         {% endif %}
-        {#- The account chip (plan step credit_card:CC-4-2): the row's money
-            moves on another account than the balance line's.  Whitespace-
-            controlled so a card on the balance line emits no bytes here. -#}
-        {%- if account is not none and txn.account_id != account.id %}
-          <span class="flag-chip flag-chip--neutral ms-1" title="On {{ txn.account.name }}">{{ txn.account.name }}</span>
-        {%- endif %}
+        {#- The account chips (plan steps credit_card:CC-4-2 and CC-5-2): the
+            row's own account and its movements' accounts, less the balance
+            line's -- ONE rule, `account_chips` above.  It emits no bytes for
+            a row on the balance line whose money moved on it. -#}
+        {{- account_chips(txn, account, is_leg) }}
       </span>
       <span class="font-mono fw-semibold text-nowrap{% if show_progress and over_budget %} text-danger{% endif %}">
         {% if show_progress %}
@@ -523,7 +563,8 @@
          the over-limit cards stuck on the loading spinner forever.
          ``entry_lists`` (built by ``entry_service.build_entry_lists_dict``
          on the route, passed via ``render_template`` context) carries
-         ``entries`` / ``remaining`` / ``out_of_period_ids`` for every
+         ``entries`` / ``remaining`` / ``out_of_period_ids`` /
+         ``posted_ids`` / ``accounts`` for every
          envelope txn; the include uses those plus ``today`` (also from
          context) and the default ``editing_id=None`` to mirror what
          ``_render_entry_list`` in ``app/routes/entries.py`` produces per
@@ -558,6 +599,11 @@
              `_entry_data` carries must be set here;
              `entry_service.entry_list_view` is the one producer of that set. #}
           {% set posted_ids = _entry_data.posted_ids %}
+          {# The add-purchase picker's accounts (plan step credit_card:CC-5-2).
+             The same trap as `posted_ids`: `accounts|length` over an Undefined
+             is 0 SILENTLY, which would hide the picker on every initial render
+             while the HTMX refresh drew it. #}
+          {% set accounts = _entry_data.accounts %}
           {% set editing_id = none %}
           {% set entry_list_host = id_prefix %}
           {% set entry_list_host_id = "entry-list-" ~ (id_prefix ~ "-" if id_prefix else "") ~ txn.id %}
@@ -653,12 +699,9 @@
       {% if not is_leg and txn.credit_payback_for_id %}
         <span class="badge-credit ms-1">CC</span>
       {% endif %}
-      {#- The account chip (plan step credit_card:CC-4-2), as on the
-          interactive card; whitespace-controlled so a row on the balance
-          line emits no bytes here. -#}
-      {%- if account is not none and txn.account_id != account.id %}
-        <span class="flag-chip flag-chip--neutral ms-1" title="On {{ txn.account.name }}">{{ txn.account.name }}</span>
-      {%- endif %}
+      {#- The account chips, as on the interactive card: `account_chips`
+          above, the one rule. -#}
+      {{- account_chips(txn, account, is_leg) }}
     </span>
     <span class="font-mono fw-semibold text-nowrap">
       {{ money(display_amount, cents=false) }}{{ retained_badge(will_book) }}

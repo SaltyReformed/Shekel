@@ -243,22 +243,30 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
     against the wrong loan.  Assigning the relationship writes both halves at
     once and leaves nothing to remember.
 
-    **A settled leg's covering movement moves with it** (plan step
-    **X-bi-3c**, ruling **R-BAL46**).  A movement's account IS its parent's --
-    ``fk_transaction_entries_parent_account`` keys the pair onto the parent's
-    ``(id, account_id)`` and, since migration ``c4e8a2d7f1b3``, CASCADES the
-    parent's UPDATE -- so the database moves the movement whether or not this
-    function does.  It is assigned here as well for the SESSION's sake: the
-    ORM never learns what a cascade wrote, and a loaded movement left saying
-    the old account would disagree with the row beneath it for the rest of
-    the request.  Assigning the id rather than a relationship, because the
-    entry declares none over ``account_id`` (the column is the co-located key
-    the composite FK holds, not a join path).  A movement carrying a clearing
-    link refuses the move at the database -- ``fk_transaction_entries_
-    reconciled_by`` names a statement of the account it was on -- exactly as
-    the shadow's own ``fk_transactions_reconciled_by`` refuses it today
-    (ledger row **BAL-503**), so the movement adds no failure its parent does
-    not have.
+    **A settled leg's covering movement moves with it, and THIS function is
+    what moves it** (plan step **X-bi-3c**, ruling **R-BAL46**).  A leg's
+    movement records money that moved through the leg's account, so the leg
+    and its movement are one fact and are re-pointed together.  Through plan
+    step ``credit_card:CC-5-1`` the database moved the movement too:
+    ``fk_transaction_entries_parent_account`` keyed the pair onto the parent's
+    ``(id, account_id)`` and, since migration ``c4e8a2d7f1b3``, CASCADED the
+    parent's UPDATE, and this assignment existed for the SESSION's sake alone
+    (the ORM never learns what a cascade writes).  That key is dropped
+    (ruling **R-BAL76**: a movement's account is its own, so a card purchase
+    in a checking envelope can sit on the card), which makes this assignment
+    the ONE writer of a re-pointed leg's movement account -- what the
+    cascade's one beneficiary needed, stated where the act is (ledger row
+    **CC-353**).  Assigned as the id AND the relationship: the id because
+    ``settle_day.record_settle_day`` reads ``movement.account_id`` for the
+    books boundary before any flush syncs it from the relationship (the
+    CC-5-1 review's L1), the relationship because a loaded ``account`` would
+    otherwise answer the old account until expired -- the defect measured
+    above on ``Transfer.to_account``.  A
+    movement carrying a clearing link refuses the move at the database --
+    ``fk_transaction_entries_reconciled_by`` names a statement of the account
+    it was on -- exactly as the shadow's own ``fk_transactions_reconciled_by``
+    refuses it today (ledger row **BAL-503**), so the movement adds no
+    failure its parent does not have.
 
     **Read for EVERY leg, settled or not** (ruling **R-BAL72**, plan step
     ``balance:X-bi-3e-2``).  It was read for a settled leg alone while a
@@ -296,4 +304,11 @@ def _apply_endpoint_move(rows: TransferRows, endpoints: _Endpoints) -> None:
         (rows.income, endpoints.to_account),
     ):
         for movement in shadow.covering_movements:
+            # BOTH the column and the relationship, because each has a
+            # reader before the flush that syncs them: ``record_settle_day``
+            # reads ``account_id`` for the books boundary under
+            # ``no_autoflush`` (a combined move-and-day-correction reaches it
+            # through the seam), and a loaded ``account`` would answer the
+            # old account until expired.  The two write one value at flush.
             movement.account_id = account.id
+            movement.account = account
