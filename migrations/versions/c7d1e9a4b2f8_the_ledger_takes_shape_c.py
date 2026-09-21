@@ -8,8 +8,9 @@ Plan step ``balance:X-bi-6-3``.  Rulings **R-BAL45** (a settled transfer is
 TWO movements, each posted as its own journal entry against a
 Transfers-in-transit clearing account on its own bank day), **R-BAL98** (WHERE
 the re-book runs), **R-BAL99** (how the clearing account is held to one per
-owner), **R-BAL100** (the loan split's link) and **R-BAL101** (one movement
-writer).
+owner), **R-BAL101** (one movement writer) and **R-BAL102** (the loan payment
+split is a derivation keyed by its period and day, linking no row; it re-ruled
+**R-BAL100**).
 
 **What this migration does, and what it deliberately does NOT.**  It is the
 step's DATA BOUNDARY: it gives the schema and the reference catalogue what the
@@ -28,7 +29,7 @@ on the 2026-09-20 13:59 production restore before ruling: on every one of the
 posted figure, so the re-book is byte-identical per (real account, day) and
 the transit account nets to zero per transfer.
 
-Three things change here:
+Four things change here:
 
 1. **The owner-bucket family** (ruling **R-BAL99**).  ``budget.ledger_accounts``
    tells its kinds apart by which link column is set; the Uncategorized bucket
@@ -61,6 +62,19 @@ Three things change here:
    ``transfer`` source becomes LEGACY: the first deploy's resync reverses every
    entry that carries it, and the reversed pairs (netting zero at their own
    date) keep it until ``X-bi-6-5`` drops ``journal_entries.transfer_id``.
+4. **The loan payment split links no row** (ruling **R-BAL102**).  Every
+   ``loan_payment`` journal entry carried the loan-side income shadow's
+   ``transaction_id``, the key its reconcile read it back by; the split is a
+   derivation of the loan walk and is keyed like the loan's opening and
+   true-ups now -- ``(source kind, pay_period_id, entry_date)`` on the loan's
+   own chart rows -- so the link is CLEARED here (25 entries on the 2026-09-20
+   restore, graded: none left carrying any of the three links).  Nothing is
+   re-booked: every one of those entries already sits at its payment's period
+   and visible day, which IS the new key, so the deploy's loan hook computes
+   zero deltas over them (measured in the rehearsal).  ``transaction_id`` is
+   thereby dead on every live entry too -- the ``transaction`` source has been
+   at zero since ``balance:X-bi-4a`` -- and ``X-bi-6-5`` drops it with
+   ``transfer_id``.
 
 **Inline seed rationale.**  Both reference rows are seeded here (not deferred
 to the entrypoint's ``seed_reference_data`` pass) so ``ref_cache.init()``
@@ -71,13 +85,19 @@ member with no row is a fatal ``RuntimeError`` at app start.  ``ON CONFLICT
 entrypoint's later idempotent reseed (``app/ref_seeds.py`` carries the identical
 names; the dual-seed pattern of ``f5037400dc5e`` / ``e6b4a2d8c713``).
 
-**Downgrade.**  The reverse direction needs no app logic and MUST happen here,
-in the only order the RESTRICT foreign keys and the balanced-entry invariant
-permit: delete every ``transfer_movement`` journal entry WHOLE (its legs
-cascade through ``fk_account_postings_journal_entry_id``; deleting the transit
-chart row first would instead cascade ONE leg of each entry and leave the
-real-account leg standing unbalanced), then the emptied ``transit`` chart rows,
-then the two reference rows, then the index / CHECK / column back to their
+**Downgrade.**  The reverse direction needs no app logic and MUST happen here.
+First, by convention rather than by any key (it touches no transit row and no
+reference row), delete every ``loan_payment`` journal entry WHOLE (the old
+image's loan reconcile reads a payment's split by its shadow's
+``transaction_id`` and would post a SECOND split beside an unlinked one,
+tripping its own checked-projection assert; deleted, its second deploy hook
+re-posts each split keyed by shadow and the assert holds).  Then, in the only
+order the RESTRICT foreign keys and the balanced-entry invariant permit: every
+``transfer_movement`` journal entry WHOLE (its legs cascade through
+``fk_account_postings_journal_entry_id``; deleting the transit chart row first
+would instead cascade ONE leg of each entry and leave the real-account leg
+standing unbalanced), then the emptied ``transit`` chart rows, then the two
+reference rows, then the index / CHECK / column back to their
 ``45f10b870c8b`` names and key.  The old image's first deploy then re-posts
 the old one-entry shape from the transfer rows through ITS
 ``sync_transfer_postings`` (the legacy entries this release reversed net to
@@ -123,8 +143,36 @@ _OWNER_BUCKETS_SQL = (
     "SELECT COUNT(*) FROM budget.ledger_accounts WHERE is_owner_bucket"
 )
 
+#: The loan payment split's link, cleared (thing 4).  Every link column, not
+#: only the one the split carried, so the grade below can read "no link at
+#: all" rather than "not that link".
+_UNLINK_LOAN_PAYMENT_ENTRIES_SQL = (
+    "UPDATE budget.journal_entries "
+    "   SET transaction_id = NULL, transfer_id = NULL, "
+    "       transaction_entry_id = NULL "
+    " WHERE source_kind_id = ("
+    "       SELECT id FROM ref.posting_sources WHERE name = 'loan_payment'"
+    "       )"
+    "   AND (transaction_id IS NOT NULL OR transfer_id IS NOT NULL "
+    "        OR transaction_entry_id IS NOT NULL)"
+)
+_LINKED_LOAN_PAYMENT_ENTRIES_SQL = (
+    "SELECT COUNT(*) FROM budget.journal_entries "
+    " WHERE source_kind_id = ("
+    "       SELECT id FROM ref.posting_sources WHERE name = 'loan_payment'"
+    "       )"
+    "   AND (transaction_id IS NOT NULL OR transfer_id IS NOT NULL "
+    "        OR transaction_entry_id IS NOT NULL)"
+)
+
 #: Downgrade, in dependency order.  The entries first and WHOLE (see the
 #: module docstring for why the chart row cannot go first).
+_DELETE_LOAN_PAYMENT_ENTRIES_SQL = (
+    "DELETE FROM budget.journal_entries "
+    " WHERE source_kind_id = ("
+    "       SELECT id FROM ref.posting_sources WHERE name = 'loan_payment'"
+    "       )"
+)
 _DELETE_TRANSFER_MOVEMENT_ENTRIES_SQL = (
     "DELETE FROM budget.journal_entries "
     " WHERE source_kind_id = ("
@@ -178,17 +226,31 @@ def upgrade():
     op.execute(_SEED_TRANSIT_KIND_SQL)
     op.execute(_SEED_TRANSFER_MOVEMENT_SOURCE_SQL)
     buckets = bind.execute(sa.text(_OWNER_BUCKETS_SQL)).scalar()
+    unlinked = bind.execute(sa.text(_UNLINK_LOAN_PAYMENT_ENTRIES_SQL)).rowcount
+    still_linked = bind.execute(
+        sa.text(_LINKED_LOAN_PAYMENT_ENTRIES_SQL)
+    ).scalar()
+    if still_linked:
+        raise RuntimeError(
+            f"X-bi-6-3: {still_linked} loan_payment journal entr(y/ies) still "
+            f"carry a source link after the unlink; the split is keyed by "
+            f"no row (R-BAL102) and the migration refuses to leave one."
+        )
     print(
         "X-bi-6-3: is_fallback -> is_owner_bucket, keyed (user, class, kind); "
         f"{buckets} owner bucket(s) carried over; 'transit' kind and "
         "'transfer_movement' source seeded.  The 19 settled transfers are "
-        "re-booked per movement by the deploy's cash resync (R-BAL98)."
+        "re-booked per movement by the deploy's cash resync (R-BAL98).  "
+        f"{unlinked} loan_payment split entr(y/ies) unlinked from their "
+        "shadow (R-BAL102), 0 left linked; the deploy's loan hook computes "
+        "zero deltas over them."
     )
 
 
 def downgrade():
-    """Tear the transit ledger down whole, then restore the fallback-only flag."""
+    """Delete the splits and the transit ledger whole, then restore the flag."""
     bind = op.get_bind()
+    splits = bind.execute(sa.text(_DELETE_LOAN_PAYMENT_ENTRIES_SQL)).rowcount
     entries = bind.execute(
         sa.text(_DELETE_TRANSFER_MOVEMENT_ENTRIES_SQL)
     ).rowcount
@@ -222,7 +284,9 @@ def downgrade():
         postgresql_where=sa.text("is_fallback"),
     )
     print(
-        f"X-bi-6-3 downgrade: deleted {entries} transfer_movement journal "
-        f"entr(y/ies) whole and {chart_rows} transit chart row(s); the old "
-        "image's cash resync re-posts the one-entry shape."
+        f"X-bi-6-3 downgrade: deleted {splits} loan_payment journal "
+        f"entr(y/ies) whole (the old image's loan hook re-posts them keyed by "
+        f"shadow), {entries} transfer_movement journal entr(y/ies) whole and "
+        f"{chart_rows} transit chart row(s); the old image's cash resync "
+        "re-posts the one-entry shape."
     )

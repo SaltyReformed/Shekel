@@ -1,7 +1,7 @@
 """Shared read primitives over a loan's linked-ledger postings.
 
-The low-level queries the attribution reads in :mod:`._reader` and the sync's
-E1a checks in :mod:`._sync` are built on:
+The low-level queries the display's configured-loan guard in :mod:`._display`
+and the sync's E1a checks in :mod:`._sync` are built on:
 
 * :func:`_has_opening_posting` -- the "is this loan configured in this scenario"
   sentinel a posting read guards on before it trusts a ``$0.00`` (an
@@ -147,9 +147,10 @@ def _movement_nets_by_date(
     plan step ``balance:X-bi-6-3`` (ruling **R-BAL45**'s shape C) -- keyed
     ``{transaction_entry_id: {entry_date: net}}`` with zero-net dates dropped
     (a reconciled reversal pair nets its date to zero, which is the clean
-    state).  The source-kind filter is load-bearing: the payment's SPLIT
-    correction links the same movement under the ``loan_payment`` kind
-    (ruling **R-BAL100**), and it is not cash.  Entries whose
+    state).  The source-kind filter names the ONE source that is cash: the
+    payment's SPLIT correction lands on the same linked ledger under the
+    ``loan_payment`` kind and links no row at all (ruling **R-BAL102**), and
+    it is not cash.  Entries whose
     ``transaction_entry_id`` is NULL -- a hard-deleted movement's ``SET
     NULL`` residue -- are excluded: there is no row left to re-sync, so any
     cross-date residue there is an F1-class data item the checked-projection

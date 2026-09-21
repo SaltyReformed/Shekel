@@ -2868,9 +2868,12 @@ class TestMovingATransferBetweenAccounts:
         ``PostingError: Ledger account N holds a nonzero net for transfer ids
         [...] but no active shadow on account M resolves them; Transfer
         Invariant 1 is broken`` -- measured on a production clone before the
-        order was fixed.  What THIS case pins is the pre-move split reversal:
-        remove it and the loan keeps a correction for a payment it no longer
-        has.
+        order was fixed.  What THIS case pins is the vacated loan's re-sync
+        AFTER the move (``_loan_posting._resync_vacated_loan``): remove it and
+        the loan keeps a correction for a payment it no longer has.  Through
+        plan step ``balance:X-bi-6-1b`` it pinned a split reversal BEFORE the
+        move as well; the split links no row since ``X-bi-6-3`` (ruling
+        R-BAL102), so the after-resync alone reverses the departed key.
         """
         with app.app_context():
             td = transfer_data

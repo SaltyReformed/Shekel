@@ -1851,10 +1851,11 @@ def linked_ledger_account(db_session, account_id):
     )
 
 
-def make_balanced_entry(
+def make_balanced_entry(  # pylint: disable=too-many-arguments
     session, seed_user, *, from_ledger_id, to_ledger_id,
     amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
-    source_kind=None, posting_kind=None, period_id=None,
+    transaction_entry_id=None, source_kind=None, posting_kind=None,
+    period_id=None,
 ):
     """Create and commit one balanced journal entry (two legs summing to zero).
 
@@ -1884,6 +1885,10 @@ def make_balanced_entry(
         amount: The leg magnitude (Decimal).
         transfer_id: Optional ``budget.transfers`` back-link.
         transaction_id: Optional ``budget.transactions`` back-link.
+        transaction_entry_id: Optional ``budget.transaction_entries``
+            back-link (a movement's).  A test planting a DUAL-linked entry --
+            the shape no writer produces -- passes this beside
+            *transaction_id* to grade the readers' partition.
         source_kind: :class:`~app.enums.PostingSourceEnum` member, or
             ``None`` for TRANSFER.
         posting_kind: :class:`~app.enums.PostingKindEnum` member, or
@@ -1915,6 +1920,7 @@ def make_balanced_entry(
         source_kind_id=ref_cache.posting_source_id(source_kind),
         transfer_id=transfer_id,
         transaction_id=transaction_id,
+        transaction_entry_id=transaction_entry_id,
         description="Test entry",
     )
     session.add(entry)
@@ -1932,36 +1938,102 @@ def make_balanced_entry(
     return entry
 
 
-def loan_correction_entries(db_session, shadow_id):
-    """Return the Build-Order Step 4 loan_payment corrections under a shadow.
+def loan_correction_entries(db_session, shadow):
+    """Return the loan_payment corrections booked at a payment's KEY.
 
-    The ``budget.journal_entries`` rows the loan-payment posting service books
-    under an income shadow's ``transaction_id`` (``source_kind = loan_payment``),
-    ordered by id.  Shared by the Step-4 split-service suite and the Step-4
-    wiring suite so both read a payment's corrections the same way (a
-    duplicate-code finding otherwise).
+    The ``budget.journal_entries`` rows the loan posting package books for one
+    settled payment's split, ordered by id.  **Re-expressed at plan step
+    ``balance:X-bi-6-3`` (ruling R-BAL102, a rule-5 class (a) re-expression
+    Josh confirmed 2026-09-21):** the split is a DERIVATION keyed
+    ``(loan_payment kind, the payment's pay period, its visible day)`` on the
+    loan's own chart rows and links NO row, so "the corrections under this
+    shadow" is now "the corrections at this payment's key" -- selected by
+    source kind, the shadow's ``pay_period_id``, its settled day and a leg on
+    the loan's chart rows.  Through that step the split carried the shadow's
+    ``transaction_id`` and this read it by that link.  A shadow with no settled
+    day has no key and is REFUSED rather than answered ``[]`` (the leaf-2
+    adversarial review: an empty answer for a reverted shadow would let
+    "after the revert the split is gone" pass without reading the ledger);
+    a test that holds a reverted or deleted payment reads
+    :func:`loan_correction_entries_at` with the key it captured before the
+    act.  Shared by the split-service, wiring, backfill and reconciliation
+    suites so all read a payment's corrections the same way.
 
     Args:
         db_session: The test ``db.session``.
-        shadow_id: The loan-side income shadow's id whose corrections to fetch.
+        shadow: The loan-side income shadow :class:`~app.models.transaction.
+            Transaction` whose payment's corrections to fetch (``account_id``,
+            ``pay_period_id`` and ``settled_on`` are read).
 
     Returns:
         list[:class:`~app.models.journal_entry.JournalEntry`] -- the correction
-        entries booked under *shadow_id*, ascending by id (empty when none).
+        entries at the payment's key, ascending by id (empty when none).
+
+    Raises:
+        ValueError: If *shadow* carries no settled day (it has no key).
+    """
+    if shadow.settled_on is None:
+        raise ValueError(
+            f"loan_correction_entries: shadow {shadow.id} carries no settled "
+            f"day and so no split key; read loan_correction_entries_at with "
+            f"the key captured before the act that released the day."
+        )
+    return loan_correction_entries_at(
+        db_session, shadow.account_id, shadow.scenario_id,
+        shadow.pay_period_id, shadow.settled_on,
+    )
+
+
+def loan_correction_entries_at(
+    db_session, loan_account_id, scenario_id, period_id, day,
+):
+    """Return the loan_payment corrections at ONE key on a loan's chart rows.
+
+    The key form of :func:`loan_correction_entries`, for a test that holds the
+    payment's period and day but no longer holds a settled shadow -- after a
+    revert (the shadow's day is released, the correction stays at the day it
+    was posted), after a hard delete (the shadow is gone), or for a key the
+    walk merged two payments into.  The ``loan_payment`` journal entries in
+    *period_id* dated *day* with a leg on any of the loan's own chart rows
+    (:func:`app.services._posting_reconcile.account_chart_row_ids`: its linked
+    row and its per-loan interest / escrow / refund / opening-equity rows) in
+    *scenario_id* (postings are scenario-scoped, and a loan paid in two
+    scenarios holds one split per scenario at the same key), ascending by id.
+
+    Args:
+        db_session: The test ``db.session``.
+        loan_account_id: The loan whose chart rows scope the read.
+        scenario_id: The budget scenario the split was posted in.
+        period_id: The key's ``pay_period_id``.
+        day: The key's ``entry_date``.
+
+    Returns:
+        list[:class:`~app.models.journal_entry.JournalEntry`], ascending by id
+        (empty when nothing is posted at the key).
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
     from app.enums import PostingSourceEnum
-    from app.models.journal_entry import JournalEntry
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.services._posting_reconcile import account_chart_row_ids
 
+    on_loan_rows = (
+        db_session.query(Posting.journal_entry_id)
+        .filter(Posting.ledger_account_id.in_(
+            account_chart_row_ids(loan_account_id),
+        ))
+    )
     return (
         db_session.query(JournalEntry)
-        .filter_by(
-            transaction_id=shadow_id,
-            source_kind_id=ref_cache.posting_source_id(
+        .filter(
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT
             ),
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.pay_period_id == period_id,
+            JournalEntry.entry_date == day,
+            JournalEntry.id.in_(on_loan_rows),
         )
         .order_by(JournalEntry.id)
         .all()

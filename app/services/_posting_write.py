@@ -255,14 +255,16 @@ def posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal
             journal entries: its concrete link (``transfer_id``,
             ``transaction_id`` or ``transaction_entry_id``) AND its
             ``source_kind_id``.  The link alone is not a source since plan
-            step ``balance:X-bi-6-3`` (ruling **R-BAL100**): a loan payment's
-            split correction and its cash leg both link the loan-side
-            movement's ``transaction_entry_id``, under two source kinds, so a
-            filter by link alone would sum the split into the cash leg's
-            posted side and the delta would reverse it.  Every writer's
-            filter names its kind (:func:`emit_typed_source_deltas` adds it;
-            the legacy transfer arm and the correction packages state it
-            themselves).
+            step ``balance:X-bi-6-3`` (ruling **R-BAL101**'s clause): on the
+            base the loan payment's split correction shared the loan-side
+            shadow's ``transaction_id`` with the transaction source, so a
+            filter by link alone would have summed the split into that
+            source's posted side and the delta would have reversed it, and
+            a guard that skipped shadows was the only fence keeping that
+            read unreachable.  Every writer's filter names its kind
+            (:func:`emit_typed_source_deltas` adds it; the legacy transfer
+            arm and the correction packages state it themselves), and the
+            split links no row at all since ruling **R-BAL102**.
 
     Returns:
         ``{(pay_period_id, entry_date): {ledger_account_id: net Decimal}}``
@@ -468,9 +470,10 @@ def emit_typed_source_deltas(
             date)``; EMPTY to reverse the source to zero.
         source: The ``ref.posting_sources`` kind this source posts under.  It
             is stamped on the header AND filtered on when the posted side is
-            read back, so two sources sharing one link (a loan-side
-            movement's cash leg and its split correction, ruling
-            **R-BAL100**) never reconcile each other away.
+            read back, so two sources that ever share one link (the loan
+            payment split shared the loan-side shadow's ``transaction_id``
+            with the transaction source until ruling **R-BAL102** gave it no
+            link at all) never reconcile each other away.
         description: The human label, already truncated to
             :data:`_MAX_DESCRIPTION_LENGTH` where it was composed (the rule
             :func:`source_entry_builder` states).

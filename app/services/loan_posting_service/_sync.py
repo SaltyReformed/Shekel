@@ -1,12 +1,13 @@
 """Loan posting orchestration: unified per-scenario sync, all-scenarios, backfill.
 
-The entry points that drive a loan's FULL genesis reconcile -- both the
-per-payment split corrections (:mod:`._payments`) and the opening / true-up
-anchor corrections (:mod:`._anchors`) -- off ONE running-balance walk
+The entry points that drive a loan's FULL genesis reconcile -- the opening /
+true-up anchor corrections and the per-payment split corrections, ONE
+reconcile since plan step ``balance:X-bi-6-3`` (:mod:`._corrections`, ruling
+**R-BAL102**) -- off ONE running-balance walk
 (:func:`app.services.loan_ledger.walk_loan_ledger`) per (loan, scenario), so the two halves share
 the balance interest accrued on and no chokepoint walks the loan twice:
 
-* :func:`sync_loan_postings` -- one scenario, one walk, both reconciles.
+* :func:`sync_loan_postings` -- one scenario, one walk, one reconcile.
 * :func:`sync_loan_postings_all_scenarios` -- every scenario a loan has payments
   in, PLUS the owner's baseline (so a payment-less new loan's opening still
   posts).  A balance true-up, a rate change, and a params edit all live on the
@@ -50,9 +51,8 @@ from app.services.loan_ledger import (
     walk_loan_ledger,
 )
 
-from ._anchors import reconcile_loan_anchor_corrections
+from ._corrections import reconcile_loan_corrections
 from ._linked_ledger import _movement_nets_by_date, _visible_nets
-from ._payments import reconcile_loan_payment_splits
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -96,12 +96,14 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
 
     The unified per-scenario chokepoint: walks the loan's anchors and confirmed
     payments ONCE (:func:`walk_loan_ledger`), then reconciles BOTH halves off
-    that single walk -- the per-payment split corrections
-    (:func:`._payments.reconcile_loan_payment_splits`) and the opening / true-up
-    anchor corrections (:func:`._anchors.reconcile_loan_anchor_corrections`).
-    Because a pre-true-up payment change moves a later true-up's ``owed_before``
-    (and every payment's split rides the same running balance), the two halves
-    must reconcile TOGETHER off the same walk; splitting them would risk a stale
+    that single walk in ONE pass -- the opening / true-up anchor corrections
+    and the per-payment split corrections
+    (:func:`._corrections.reconcile_loan_corrections`, one posted read and
+    one delta loop over the three correction kinds since plan step
+    ``balance:X-bi-6-3``, ruling **R-BAL102**).  Because a pre-true-up
+    payment change moves a later true-up's ``owed_before`` (and every
+    payment's split rides the same running balance), the two halves must
+    reconcile TOGETHER off the same walk; splitting them would risk a stale
     true-up or a double walk (the two full-loan walks a pair of self-contained
     syncs would each cost).
 
@@ -111,7 +113,7 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     (:func:`_reconcile_lineage_transfer_entries`, step E1a) may additionally
     RE-DATE a settled payment's Step-2 cash entry -- which touches Checking's
     ledger but moves no net anywhere: it corrects WHICH DAY the cash moved,
-    never how much.  After all three reconcile, the CHECKED-PROJECTION assert
+    never how much.  After both reconcile, the CHECKED-PROJECTION assert
     (:func:`_assert_checked_projection`, plan step E1a) verifies the linked
     ledger's per-date nets against the same walk and raises rather than
     letting a divergent ledger commit.
@@ -124,10 +126,10 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     sync happened to run.  Flushes but does not commit (the caller owns the
     transaction).
 
-    **Takes the owner's write lock before it walks** (plan step X-f1c3c).  All
-    three reconciles below are read-modify-writes -- read what is posted,
-    subtract it from what the walk says, write the difference -- and two of
-    them interleaved both compute their delta against the same posted state.
+    **Takes the owner's write lock before it walks** (plan step X-f1c3c).  Both
+    reconciles below are read-modify-writes -- read what is posted, subtract
+    it from what the walk says, write the difference -- and two of them
+    interleaved both compute their delta against the same posted state.
     The loan half never had even the accidental serialisation the cash half
     lost at ruling R-EN: a loan true-up appends to
     :class:`~app.models.loan_anchor_event.LoanAnchorEvent` and UPDATEs no row,
@@ -163,16 +165,7 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     # the assert (each used to resolve its own -- a redundant query).
     linked_ledger_id = _ledger_account_for(loan_account_id).id
     _reconcile_lineage_transfer_entries(linked_ledger_id, scenario_id, walk)
-    # ``settled_splits``: the writer books RECORDED payments and nothing else.
-    # This walk is ``walk_loan_ledger``'s, which carries no projection, so the
-    # two views are one list here; reading the settled one states the
-    # precondition where it is relied on.
-    reconcile_loan_payment_splits(
-        loan_account_id, scenario_id, walk.settled_splits,
-    )
-    reconcile_loan_anchor_corrections(
-        loan_account_id, scenario_id, walk.anchor_corrections,
-    )
+    reconcile_loan_corrections(loan_account_id, scenario_id, walk)
     _assert_checked_projection(
         loan_account_id, scenario_id, walk, linked_ledger_id,
     )

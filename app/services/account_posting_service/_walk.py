@@ -38,8 +38,13 @@ date boundary here and as a sort position in the read fold.
 transaction rows.**  Grouping the linked ledger's own postings by source is
 timing-proof against the reverse-before-delete discipline (a reverted source
 nets to zero and drops out regardless of partition) and future-proof for new
-source kinds (any transaction- or transfer-linked entry is attributed by its
-linkage, not by an enumerated source-kind list).
+source kinds (any transaction- or movement-linked entry is attributed by its
+linkage, not by an enumerated source-kind list).  A transfer's legs are its
+two covering movements' since plan step ``balance:X-bi-6-3`` (ruling
+**R-BAL45**), read by the movement loader like any movement's; the
+``transfer_id``-keyed loader this module carried for the one-entry shape is
+gone with the shape (the legacy pairs net to zero and are excluded by the
+``transfer_id IS NULL`` guards until ``X-bi-6-5`` drops the column).
 
 The loan analogue is :mod:`app.services.loan_ledger`; loans
 never walk here (their anchors are dated ``LoanAnchorEvent`` facts replayed
@@ -127,7 +132,7 @@ class AccountAnchorCorrection:
 class _PostedSource:
     """One source's posted effect on a linked ledger, with what cleared it.
 
-    The four source loaders' shared return shape, and it is a RECORD rather
+    The three source loaders' shared return shape, and it is a RECORD rather
     than the ``(day, net)`` tuple it replaced because the walk now needs a third
     fact: which statement was recorded as showing this money (ruling **R-FL**).
     It satisfies :class:`app.services.cash_ledger.ClearableLine`, so
@@ -136,9 +141,10 @@ class _PostedSource:
     :class:`~app.services.cash_ledger.CashSourceFact`.
 
     Attributes:
-        settled_on: The civil day this source's cash moved -- a transaction's, a
-            transfer shadow's or a PURCHASE's stored ``settled_on``, and for
-            RESIDUE the period's ``start_date``.
+        settled_on: The civil day this source's cash moved -- a transaction's
+            or a MOVEMENT's stored ``settled_on`` (a purchase, a covering
+            movement, a transfer's side), and for RESIDUE the period's
+            ``start_date``.
         reconciled_by_id: The ``account_anchor_history`` row whose statement was
             recorded as showing it, or ``None``.  **Residue always answers
             ``None``, structurally**: its journal entries carry every source FK
@@ -162,11 +168,11 @@ def _linked_net_rows(
 ) -> list:
     """Return ``(group_key, net)`` sums over one linked ledger's postings.
 
-    The shared query shape of the four source loaders: sum
+    The shared query shape of the three source loaders: sum
     ``account_postings.amount`` over the linked ledger's legs in
     *scenario_id*, grouped by the caller's source-identity column
-    (``transaction_id``, ``transfer_id``, ``transaction_entry_id``, or the
-    residue period start).
+    (``transaction_id``, ``transaction_entry_id``, or the residue period
+    start).
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
@@ -209,14 +215,23 @@ def _transaction_source_days(
     resolved.  The pay-period join this used to carry is gone with the
     NULL-instant fallback it fed.
 
-    The ``transfer_id IS NULL`` and ``transaction_entry_id IS NULL`` filters
-    make the FOUR source loaders a provable PARTITION of the linked ledger: no
-    writer produces a multi-linked entry today (the docstring convention in
+    The ``transaction_entry_id IS NULL`` filter makes the THREE source loaders
+    a provable PARTITION of the linked ledger's LIVE entries: no writer
+    produces a multi-linked entry today (the docstring convention in
     :mod:`app.models.journal_entry`), but nothing at the storage tier forbids
-    one, and without the filters such an entry would be summed into two loaders
+    one, and without the filter such an entry would be summed into two loaders
     -- double-counted in ``ledger_before``.  A multi-linked entry classifies as
-    transfer-linked first and purchase-linked second (the plan's
-    reader-contract C-3 ordering, extended at plan step X-f3b).
+    movement-linked (the plan's reader-contract C-3 ordering, extended at plan
+    step X-f3b, and the ledger report's twin carries the same guard since
+    ``balance:X-bi-6-3``).  The ``transfer_id IS NULL`` filter excludes the
+    legacy one-entry ``transfer`` pairs, and that exclusion is a FENCE rather
+    than coverage: no loader reads a ``transfer_id``-linked entry since that
+    step deleted the transfer loader (ruling **R-BAL102**), so a legacy entry
+    with a nonzero net would be invisible to ``ledger_before`` rather than
+    refused as the deleted loader refused one with no shadow.  Safe only
+    because the deploy resync brings every legacy pair to zero at its own
+    date and no writer posts under that source; the column and this filter go
+    at ``X-bi-6-5``.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
@@ -280,110 +295,22 @@ def _transaction_source_days(
     ]
 
 
-def _transfer_source_days(
-    account_id: int, linked_ledger_id: int, scenario_id: int,
-) -> list[_PostedSource]:
-    """Return one :class:`_PostedSource` per transfer-linked source.
-
-    Groups the linked ledger's postings under transfer-linked journal
-    entries by ``transfer_id`` and attributes each nonzero net to the shadow
-    **on the account being walked**, through the SHARED
-    :func:`app.utils.balance_predicates.settled_day` -- which REFUSES a shadow
-    carrying no day rather than falling back to its pay-period start, because
-    the day is a stored fact now and its absence is a broken invariant.  A
-    reverted or reversed-before-delete transfer nets to zero and is dropped
-    before the shadow is resolved, so only a shadow with live posted effect is
-    ever dated.  The shadow's own id is passed to the accessor (not the
-    transfer's) so a refusal names the row that is actually broken.
-
-    **It read the INCOME shadow until plan step X-f3a-1, whichever account was
-    being walked, and that was safe for the DAY and is not safe for the LINK.**
-    Transfer Invariant 3 mirrors ``settled_on`` onto both shadows, so the day is
-    identical either way and nothing moves by this change (``_entry_date``
-    dates transfer entries off the income shadow for the same reason).  Clearing
-    is NOT mirrored and must not be: a transfer leaves one account and arrives
-    at another, so the checking statement shows the outgoing leg and the savings
-    statement shows the incoming one, and they clear on different days or not at
-    all.  Reading the income shadow's link while walking the FROM account's
-    ledger would attribute the other account's statement to this account's
-    money.
-
-    Args:
-        account_id: The account being walked -- which of the transfer's two
-            shadows is this ledger's.
-        linked_ledger_id: The account's LINKED ledger account id.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        The sources, unordered (the walk sorts the merged set).
-
-    Raises:
-        PostingError: If a nonzero net's transfer has no active shadow on this
-            account, or has MORE than one.  A transfer with a live posted
-            effect is settled, and a settled transfer has exactly its two
-            shadows (Transfer Invariant 1); a miss or a duplicate is a
-            broken invariant that must fail loudly rather than silently
-            mis-partition real money on an arbitrary shadow's ``settled_on``.
-    """
-    nets = {
-        transfer_id: net
-        for transfer_id, net in _linked_net_rows(
-            linked_ledger_id, scenario_id, JournalEntry.transfer_id,
-            [JournalEntry.transfer_id.isnot(None)],
-        )
-        if net != 0
-    }
-    if not nets:
-        return []
-    dated = (
-        db.session.query(
-            Transaction.transfer_id, Transaction.id, Transaction.settled_on,
-            Transaction.reconciled_by_id,
-        )
-        .filter(
-            Transaction.transfer_id.in_(nets),
-            Transaction.account_id == account_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .all()
-    )
-    facts = {
-        transfer_id: (settled_day(shadow_id, stored_day), reconciled_by_id)
-        for transfer_id, shadow_id, stored_day, reconciled_by_id in dated
-    }
-    if len(dated) != len(facts):
-        raise PostingError(
-            f"Ledger account {linked_ledger_id} resolved more than one "
-            f"active shadow on account {account_id} for a transfer; Transfer "
-            f"Invariant 1 is broken and the attribution day would be arbitrary."
-        )
-    missing = set(nets) - set(facts)
-    if missing:
-        raise PostingError(
-            f"Ledger account {linked_ledger_id} holds a nonzero net for "
-            f"transfer ids {sorted(missing)} but no active shadow on account "
-            f"{account_id} resolves them; Transfer Invariant 1 is broken."
-        )
-    return [
-        _PostedSource(
-            settled_on=facts[key][0],
-            reconciled_by_id=facts[key][1],
-            net=nets[key],
-        )
-        for key in nets
-    ]
-
-
 def _purchase_source_days(
     linked_ledger_id: int, scenario_id: int,
 ) -> list[_PostedSource]:
-    """Return one :class:`_PostedSource` per purchase-linked source.
+    """Return one :class:`_PostedSource` per movement-linked source.
 
-    The fourth partition (ruling **R-FM**, plan step X-f3b): a PURCHASE whose
+    The movement partition (ruling **R-FM**, plan step X-f3b): a PURCHASE whose
     bank posting day the owner recorded books its own cash leg, so the walk must
-    read that leg's own day and its own clearing link.  Groups the linked
-    ledger's postings under purchase-linked journal entries by
-    ``transaction_entry_id`` and attributes each nonzero net to the STORED
+    read that leg's own day and its own clearing link -- and since plan step
+    ``balance:X-bi-3b`` a bill's or a paycheck's covering movement, and since
+    ``balance:X-bi-6-3`` each side of a settled transfer (ruling **R-BAL45**:
+    the ``transfer_movement`` source, keyed by the shadow's covering movement
+    exactly as a purchase is keyed, so this account's side of a transfer is
+    read off ITS movement's day and ITS movement's clearing link, which the
+    seam mirrors from the shadow on this account).  Groups the linked ledger's
+    postings under movement-linked journal entries by ``transaction_entry_id``
+    and attributes each nonzero net to the STORED
     ``transaction_entries.settled_on``.
 
     **This is the loader the linkage exists for.**  Grouping a purchase's legs
@@ -423,14 +350,11 @@ def _purchase_source_days(
             linked_ledger_id, scenario_id, JournalEntry.transaction_entry_id,
             [
                 JournalEntry.transaction_entry_id.isnot(None),
-                # The exclusion that makes the FOUR loaders a partition rather
-                # than three plus an overlap: no writer produces a multi-linked
-                # entry (``source_entry_builder`` sets exactly one FK), and
-                # nothing at the storage tier forbids one, so without this a
-                # transfer-linked entry carrying a purchase id would be summed
-                # by this loader AND the transfer loader -- double-counted into
-                # ``ledger_before``.  Transfer-linked wins, which is the
-                # reader-contract C-3 ordering the sibling loader states.
+                # The legacy one-entry ``transfer`` pairs carry this column
+                # and net to zero; nothing live does (plan step
+                # ``balance:X-bi-6-3``), and the column goes at ``X-bi-6-5``.
+                # The partition guard against the TRANSACTION loader is on
+                # that loader's side: a dual-linked entry is this one's.
                 JournalEntry.transfer_id.is_(None),
             ],
         )
@@ -482,6 +406,9 @@ def _residue_source_days(
     concrete source FKs NULL and a non-correction source kind -- in
     practice hard-delete residue, whose ``transaction_id`` / ``transfer_id`` /
     ``transaction_entry_id`` were SET-NULLed when the source row was deleted.
+    (A loan payment's split is sourceless by design since ruling
+    **R-BAL102** and is not residue, but it books onto the loan's own chart
+    rows and never onto a linked ledger this walk runs over.)
     Each
     period's residue is attributed at that period's ``start_date`` -- a civil
     date used AS a civil date, never routed through an instant, which is the
@@ -555,21 +482,24 @@ def _residue_source_days(
 
 
 def _source_net_days(
-    account_id: int, linked_ledger_id: int, scenario_id: int,
+    linked_ledger_id: int, scenario_id: int,
 ) -> list[_PostedSource]:
     """Return every source fact on one linked ledger, sorted by day.
 
-    The union of the FOUR source partitions -- transaction-linked,
-    transfer-linked, purchase-linked (ruling **R-FM**, plan step X-f3b) and
-    residue -- covering every posting on the linked
-    ledger except the account's own anchor corrections, each as a
-    :class:`_PostedSource`.  Sorted ascending by day, which is no longer what
-    decides which assertion absorbs what (that is the clearing rule's, ruling
-    **R-FL**) but keeps the walk's own iteration reproducible.
+    The union of the THREE source partitions -- transaction-linked,
+    movement-linked (ruling **R-FM**, plan step X-f3b; a transfer's sides
+    since ``balance:X-bi-6-3``) and residue -- covering every posting on the
+    linked ledger except the account's own anchor corrections and the legacy
+    ``transfer``-source pairs (at zero since the deploy resync; the loader
+    that read them went with the one-entry shape, see
+    :func:`_transaction_source_days`), each as a :class:`_PostedSource`.
+    Sorted ascending by day, which is no longer what decides which assertion
+    absorbs what (that is the clearing rule's, ruling **R-FL**) but keeps the
+    walk's own iteration reproducible.  It took the
+    walked ``account_id`` while the transfer loader needed to know which of a
+    transfer's two shadows was this ledger's; a movement is on one account.
 
     Args:
-        account_id: The account being walked -- which of a transfer's two
-            shadows is this ledger's.
         linked_ledger_id: The account's LINKED ledger account id.
         scenario_id: The budget scenario to scope to.
 
@@ -578,7 +508,6 @@ def _source_net_days(
     """
     sources = (
         _transaction_source_days(linked_ledger_id, scenario_id)
-        + _transfer_source_days(account_id, linked_ledger_id, scenario_id)
         + _purchase_source_days(linked_ledger_id, scenario_id)
         + _residue_source_days(linked_ledger_id, scenario_id)
     )
@@ -670,7 +599,7 @@ def walk_account_ledger(
     if not facts:
         return []
     linked = _ledger_account_for(account_id)
-    sources = _source_net_days(account_id, linked.id, scenario_id)
+    sources = _source_net_days(linked.id, scenario_id)
 
     # Which assertion CLEARED each source -- opening and true-up alike, because
     # an assertion is the CLOSING BALANCE for its day (ruling R-DH (a)) and a

@@ -715,7 +715,7 @@ def _assert_completeness(
     )
     for split in splits:
         non_principal = split.interest + split.escrow + split.excess
-        entries = loan_correction_entries(_db.session, split.source.id)
+        entries = loan_correction_entries(_db.session, split.source)
         if non_principal != Decimal("0"):
             assert entries, (
                 f"settled payment shadow {split.source.id} has non-"
@@ -850,7 +850,7 @@ class TestParallelRunAgainstResolver:
                 loan.id, scenario_id,
             ) == scheduled_pi - Decimal("500.00") - _ANCHOR_BALANCE
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
     def test_tracking_start_opening_matches_resolver(
@@ -1061,12 +1061,13 @@ class TestParallelRunAgainstResolver:
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
-            assert loan_correction_entries(db.session, shadow.id) != []
+            assert loan_correction_entries(db.session, shadow) != []
 
-            # Post the opening + true-up (the read-switch corrections).
-            loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id,
-            )
+            # Post the opening + true-up (the read-switch corrections): the
+            # ONE sync since plan step ``balance:X-bi-6-3`` (the anchor-only
+            # door went with the split's row key, ruling R-BAL102; the split
+            # it reconciles beside is already at target, so nothing moves).
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
             db.session.commit()
 
             # -(linked net) reproduces the resolver's anchor, which subsumes P1.
@@ -1536,7 +1537,7 @@ class TestOracleIsNotVacuous:
             # Inject one extra, unmatched leg onto the correction entry, on the
             # loan's interest ledger.  Flush (not commit) makes it visible; the
             # deferred balanced trigger validates only at COMMIT, never reached.
-            correction = loan_correction_entries(db.session, shadow.id)[0]
+            correction = loan_correction_entries(db.session, shadow)[0]
             interest_ledger = find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
@@ -1991,7 +1992,7 @@ class TestResolverIsLedgerFree:
 
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             linked = linked_ledger_account(db.session, loan.id)
-            entry = loan_correction_entries(db.session, shadow.id)[0]
+            entry = loan_correction_entries(db.session, shadow)[0]
             db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
                 "  (journal_entry_id, ledger_account_id, amount, posting_kind_id) "

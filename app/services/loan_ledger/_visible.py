@@ -32,7 +32,7 @@ carries in ``journal_entries.entry_date``:
   2026-07-01 Eastern and the last day of that pay period.
 * an **ANCHOR** is visible from its **own civil date** (``anchor_date``) -- the one
   date it ever asserts, and the ``entry_date`` the anchor correction is posted at
-  (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).
+  (:func:`app.services._posting_reconcile.emit_correction_entry`).
 
 **This is step C2 -- the one clock that replaced the two boundary predicates the
 old rule used.**  Before it, a payment counted from its pay period's ``start_date``
@@ -84,7 +84,7 @@ def anchor_visible_on(anchor_date: date) -> date:
 
     The anchor's OWN civil date (step C2): an assertion happens on the date it
     asserts, which is the ``entry_date`` its correction is posted at
-    (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  It no
+    (:func:`app.services._posting_reconcile.emit_correction_entry`).  It no
     longer needs the owner's calendar -- the pre-C2 rule
     ``LEAST(anchor_date, containing period.start)`` did, only to reach the pay
     period the anchor had to be FILED under -- a requirement of the per-period

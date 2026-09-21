@@ -159,7 +159,7 @@ def _fenced_module_ruling(
     Matches the enclosing module's fully-qualified name against
     :data:`_FENCED_MODULE_RULINGS` exactly, or as a package prefix -- so a fenced
     module split into a package (or a package's submodules, e.g.
-    ``loan_posting_service._reader``) stays scoped.  Returns ``None`` when the
+    ``loan_posting_service._linked_ledger``) stays scoped.  Returns ``None`` when the
     module defines no fenced producer, in which case the completeness check does
     not apply to it.
 
