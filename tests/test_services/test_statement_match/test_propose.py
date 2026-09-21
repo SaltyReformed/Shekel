@@ -20,11 +20,8 @@ from decimal import Decimal
 from app.enums import SettledDayBasisEnum
 from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match import DAY_WINDOW
-from app.services.statement_match._offers import (
-    BankLine,
-    CandidateRow,
-    RowKind,
-)
+from app.services.statement_match._offers import BankLine
+from app.services.statement_match._subjects import CandidateRow, RowKind
 from app.services.statement_match._propose import (
     MAX_GROUP_DAY_ROWS,
     _day_buckets,
@@ -95,7 +92,7 @@ def _row(row_id, amount, settled_on=_DAY, is_settled=True, label=None,
     **It carries a pay period too, because ``_candidates`` fills one on every
     row including a settled one** -- and a settled row's window is its settle
     day REGARDLESS of that period, which is the "observation beats belief" half
-    of :attr:`~._offers.CandidateRow.expected_window`.  Building these without
+    of :attr:`~._subjects.CandidateRow.expected_window`.  Building these without
     a period left that branch order ungraded: a mutation reading
     ``expected_on`` first passed the whole file.  Found by adversarial
     financial review 2026-08-19.
@@ -127,7 +124,7 @@ def _bill(row_id, amount, period=_PERIOD, label=None):
 
 
 class TestTheWindowAccessorItself:
-    """:attr:`~._offers.CandidateRow.expected_window` in its own right.
+    """:attr:`~._subjects.CandidateRow.expected_window` in its own right.
 
     Every bound in this module rests on this one accessor, and its three
     branches -- observation, purchase day, pay period -- plus its two absent
@@ -246,7 +243,7 @@ class TestOneLineToOneRow:
         """An OBSERVATION beats a belief, and the branch order is the rule.
 
         ``_candidates`` fills a pay period on every row, settled ones
-        included, so :attr:`~._offers.CandidateRow.expected_window` has to
+        included, so :attr:`~._subjects.CandidateRow.expected_window` has to
         choose -- and reading the period first would widen a settled row's
         window from one day to a fortnight plus the slack at each end.  Here
         the line is 16 days from the row's own settle day and comfortably
@@ -265,7 +262,7 @@ class TestOneLineToOneRow:
         has to survive every bound put on it.  The row is built as production
         holds one -- budgeted in a paycheck -- because since plan step
         X-f6a-3c that paycheck is what bounds it
-        (:attr:`~._offers.CandidateRow.expected_window`); the class below is
+        (:attr:`~._subjects.CandidateRow.expected_window`); the class below is
         where the bound itself is graded.
         """
         proposals = _offers(
@@ -947,7 +944,7 @@ class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
     transaction day is after its posting day, which the only adapter cannot
     produce.  The WINDOW does the work instead -- an undated purchase's window
     is the day it was MADE
-    (:attr:`~._offers.CandidateRow.expected_window`), so a line more than
+    (:attr:`~._subjects.CandidateRow.expected_window`), so a line more than
     :data:`DAY_WINDOW` days from it is illegal, and that is an ordinary SECU
     line.
     """

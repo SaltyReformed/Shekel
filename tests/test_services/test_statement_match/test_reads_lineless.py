@@ -18,7 +18,7 @@ degraded case.  So the reader degrades and the operator is told at ERROR.
 guard inside the fold, which is the same invariant spelled a second time in a
 language the COUNTS read could not share -- so a caption derived from the
 table and cards derived from the fold disagreed by one for every such act.
-:data:`~app.services.statement_match._release.NAMES_A_BANK_LINE` states it once
+:data:`~app.services.statement_match._acts.NAMES_A_BANK_LINE` states it once
 in SQL: the loader narrows on it, so the fold cannot receive one and its guard
 is deleted; and :func:`~app.services.statement_match._accepted_view
 .accepted_counts` narrows and ALARMS on it, which is the read the Reconcile

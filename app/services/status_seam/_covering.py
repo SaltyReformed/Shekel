@@ -171,7 +171,7 @@ from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import posting_service
+from app.services import match_withdrawal, posting_service
 from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
@@ -205,13 +205,18 @@ def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
 
     **The one valuation of a settled row**, for every reader that asks what
     the row moves rather than what its movements do: the statement matcher's
-    offer and post-apply check (``_candidates._price``), its accepted register
-    (``_accepted_view``) and its undo dialog (``_release``).  Ruling
-    **R-BAL81** (plan step ``balance:X-bi-4a``): a row is worth what its
-    covering movement moves, so a covered bill, paycheck or transfer leg is
-    worth its figure and a ``purchases``-basis envelope -- which has no
-    covering movement, its purchases being the record -- is worth ``0`` and
-    is not offered; its purchases are.
+    accepted register (``_accepted_view``, for a member naming the row and
+    for one naming the row's payment alike) and its undo dialog
+    (``_release``, for a row an act created).  Ruling **R-BAL81** (plan step
+    ``balance:X-bi-4a``): a row is worth what its covering movement moves,
+    so a covered bill, paycheck or transfer leg is worth its figure and a
+    ``purchases``-basis envelope -- which has no covering movement, its
+    purchases being the record -- is worth ``0``.  The matcher's OFFER read
+    this too through plan step ``credit_card:CC-5-3``, when a settled row was
+    its candidate; since ``credit_card:CC-5-4a-1`` (ruling **R-CC43**) the
+    movement is the candidate and is priced as a movement
+    (``statement_match._valuation.settlement_price``), so the offer no
+    longer asks the row.
 
     **Worth it ON THE ACCOUNT ASKED ABOUT** (plan step ``credit_card:CC-5-3``,
     ruling **R-CC40**, developer 2026-09-21).  Every reader here is a
@@ -223,11 +228,11 @@ def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
     checking's screen the row is worth ``0`` and is not offered (a stray
     ``$120`` line there stays unexplained until the owner records it, rather
     than being paired with a bill whose money moved elsewhere); the card's
-    screen is where the movement is the candidate, which is leaf ``CC-5-4``'s
-    (the ruling's second half).  The account-blind sum had no reader left
-    once every caller asked about one account, so the parameter is REQUIRED:
-    a default would keep the wrong meaning as what a caller gets by saying
-    nothing.  The fold reads the same fact the same way
+    screen is where the movement is the candidate (the ruling's second half,
+    plan step ``credit_card:CC-5-4a-1``).  The account-blind sum had no
+    reader left once every caller asked about one account, so the parameter
+    is REQUIRED: a default would keep the wrong meaning as what a caller
+    gets by saying nothing.  The fold reads the same fact the same way
     (``cash_ledger._events.settled_cash_facts`` folds a movement on its own
     account, ruling **R-BAL75**).  Through ``X-bi-3e``'s first cut those
     three readers spelled ``settled_cash_leg`` ALONE and two of them read
@@ -236,9 +241,9 @@ def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
     ``settled_family_leg`` summed the row's leg and this, which priced an
     envelope ROW at its un-dated purchases beside the purchases themselves
     and let an accept date a day the fold no longer read (X-bi-4a's review
-    H1).  One producer is the remedy, not three patches; whether the
-    MOVEMENT becomes the matcher's subject is still ``bank_import``'s
-    question.  An UN-DATED movement -- a reverted row's, kept since plan step
+    H1).  One producer is the remedy, not three patches; and the MOVEMENT
+    is the matcher's subject since ruling **R-CC43** (plan step
+    ``credit_card:CC-5-4a-1``).  An UN-DATED movement -- a reverted row's, kept since plan step
     ``X-bi-3e-2`` -- is worth nothing here, as it posts nothing
     (``purchase_posts``) and folds to nothing (``_events.settled_cash_facts``):
     the same three-way agreement, stated by the day rather than by the row's
@@ -315,8 +320,10 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
     **The row's link reaches only a movement on the ROW's account** (plan
     step ``credit_card:CC-5-3``, ruling **R-CC15**; :func:`_links_the_row`).
     A movement on another account -- the card, for a bill charged to it --
-    carries its OWN clearing link, written by that account's statement when
-    it is offered there (leaf ``CC-5-4``), and the row's link stays the
+    carries its OWN clearing link, written by that account's reconcile panel
+    when it is ticked there (leaf ``credit_card:CC-5-4b``; the statement
+    matcher offers it since ``CC-5-4a-1`` and writes no link, ruling
+    **R-FV**), and the row's link stays the
     row's: the checking statement the row's link names never showed money
     that moved on the card, and ``fk_transaction_entries_reconciled_by``
     holds the movement's link to the movement's account, so the copy would
@@ -325,7 +332,7 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
     a named day), and only the COPY is gated: without that the revert of a
     card-cleared bill would un-date the movement with its link standing,
     which ``ck_transaction_entries_cleared_needs_settle_day`` refuses at the
-    flush (the review of this leaf; the writer of that link is CC-5-4's).
+    flush (the review of this leaf; the writer of that link is CC-5-4b's).
     """
     if movement.settled_on != row.settled_on:
         # A covering movement's purchase day IS its settle day (ruling
@@ -453,6 +460,22 @@ def _re_point(
       (``fk_transaction_entries_reconciled_by`` holds the link to the
       movement's account); the row's is released HERE because the seam's
       own release arms are about the DAY and cannot see the tender;
+    * **every MATCH naming the movement is withdrawn** (plan step
+      ``credit_card:CC-5-4a-1``, ruling **R-CC46**, developer 2026-09-21),
+      on the same argument one clause up: a match asserts that a named
+      account's bank line IS this movement, and money that moved on another
+      account was shown by no such line.  Every accepted match names the
+      movement (ruling **R-CC43**) through a member the key
+      ``fk_statement_match_members_entry_account`` holds to the movement's
+      account, so the assertion is both false and unstorable once the
+      account changes; ``match_withdrawal.withdraw_for_moved_movement`` takes
+      the member as a delete would, withdraws an act left naming no app row,
+      and FLUSHES before the assignment below -- the unit of work orders a
+      DELETE after an UPDATE, and the key is checked at the flush.  The
+      screen that offers the move discloses it first
+      (``pending_for_moved_movement``, the popover's "Paid from" caption);
+      the refused alternative kept the correction from happening while a
+      match stood;
     * the account is assigned;
     * **the day the movement will END with is graded against the new
       account's books boundary FIRST** (``cash_ledger.
@@ -491,6 +514,7 @@ def _re_point(
         return False
     if row.settled_on is not None:
         reject_movement_before_books_open(account_id, row.settled_on)
+    match_withdrawal.withdraw_for_moved_movement(movement, row.user_id)
     movement.reconciled_by_id = None
     row.reconciled_by_id = None
     movement.account_id = account_id

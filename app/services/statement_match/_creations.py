@@ -14,7 +14,7 @@ above are what the owner may ASK for, and that one is what an act DID create,
 carried to the write door so an undo can take it back.
 
 **The split is a line cap made useful rather than worked around.**  Adding the
-fact a scored near miss needs (:attr:`~._offers.CandidateRow.states_own_figure`)
+fact a scored near miss needs (:attr:`~._subjects.CandidateRow.states_own_figure`)
 took :mod:`._offers` past this project's 1,000-line module bound, and the two
 honest answers to that are to cut the record or to cut the module.  Nothing
 here changed on the way across.
@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 
 from app.utils.digit_strings import parse_row_id
 
-from ._offers import CandidateRow, RowKind
+from ._subjects import CandidateRow, RowKind
 from ._outcome import FiledMerchant
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -381,12 +381,12 @@ class CreatedSubject:
     (:class:`app.models.statement_match.StatementMatchCreation`), and this is
     the value the write door carries the second one in.
 
-    **It is not a :class:`~._offers.CandidateRow`, and it cannot be.**  A
+    **It is not a :class:`~._subjects.CandidateRow`, and it cannot be.**  A
     candidate is a row a bank line could BE -- priced, dated and offerable --
     and the container this door may also create is none of those: an envelope
     holding one purchase that already carries its own posting day is worth
     ``0.00``, which is exactly the answer
-    :func:`~._candidates.transaction_candidate` returns ``None`` for.  So the
+    :func:`~._valuation.transaction_candidate` returns ``None`` for.  So the
     creation record takes the three facts it actually needs and no more.
 
     Attributes:

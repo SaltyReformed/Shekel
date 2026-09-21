@@ -74,10 +74,11 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services import pay_calendar
 
     from ._creations import PurchaseDestination
-    from ._offers import BankLine, CandidateRow, MatchProposal
+    from ._offers import BankLine, MatchProposal
     from ._placement import Placement
     from ._reads import ReviewSet
     from ._scope import ReviewScope
+    from ._subjects import CandidateRow
 
 
 class AddAct(enum.Enum):
@@ -300,7 +301,7 @@ class MatchCandidates:
         """Return the pass's unexplained rows, indexed by pay period.
 
         **A row is in every period its own WINDOW touches**
-        (:attr:`~._offers.CandidateRow.expected_window`), which is the one
+        (:attr:`~._subjects.CandidateRow.expected_window`), which is the one
         published answer to *when does the app think this money moved* and is
         deliberately not a second day rule invented here.  A purchase made in
         one period and settled in the next is therefore offered on both, which

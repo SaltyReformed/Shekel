@@ -449,7 +449,7 @@ def require_period(
     counter-examples and are not, and they are NAMED rather than counted --
     counting them is what :func:`period_by_id`'s own docstring records going
     stale, repeatedly -- so the next reader does not read them as permission.
-    ``statement_match._candidates.transaction_candidate`` asks
+    ``statement_match._valuation.transaction_candidate`` asks
     :func:`period_by_id` of a stored ``pay_period_id`` and treats the ``None``
     as "not offerable, and not an error";
     ``statement_match._destinations.destinations_for`` indexes

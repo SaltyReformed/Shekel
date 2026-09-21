@@ -765,7 +765,7 @@ def settled_day_basis_id(member):
     ``budget.transactions.settled_day_basis_id`` and
     ``budget.transaction_entries.settled_day_basis_id`` by the settle doors and
     read by the statement matcher's window rule
-    (``statement_match._offers.CandidateRow.expected_window``) -- always via the
+    (``statement_match._subjects.CandidateRow.expected_window``) -- always via the
     integer ID, never the string ``name``.  Matches the project-wide
     IDs-for-logic invariant.
 

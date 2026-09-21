@@ -33,7 +33,8 @@ import re
 from collections import defaultdict
 from decimal import Decimal
 
-from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
+from ._offers import BankLine, MatchProposal
+from ._subjects import CandidateRow, RowKind
 from ._pairing import day_distance, within_window
 
 
@@ -257,7 +258,7 @@ def _is_a_near_miss(line: BankLine, row: CandidateRow) -> bool:
       could re-offer one would be a second answer to a question already
       answered;
     * a row whose figure is not correctable
-      (:attr:`~._offers.CandidateRow.figure_is_correctable`) -- a transfer
+      (:attr:`~._subjects.CandidateRow.figure_is_correctable`) -- a transfer
       shadow, an envelope worth its purchases, a payback worth the spend it
       repays.  Measured live: 2 of the 4 uncorroborated near candidates on the
       developer's own clone are CC paybacks, refused by the door by name;

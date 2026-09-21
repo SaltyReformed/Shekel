@@ -35,11 +35,8 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match import DAY_WINDOW, NEAR_MISS_BOUND
 from app.services.statement_match._near import near_misses
 from app.services.statement_match._pairing import days_outside
-from app.services.statement_match._offers import (
-    BankLine,
-    CandidateRow,
-    RowKind,
-)
+from app.services.statement_match._offers import BankLine
+from app.services.statement_match._subjects import CandidateRow, RowKind
 from app.services.statement_match._propose import propose
 
 _DAY = date(2026, 7, 2)
@@ -99,7 +96,7 @@ def _reconciled(row_id, amount, made, asserted):
 
     The panel stamps the day a BALANCE was asserted for, which is an upper
     bound rather than an observation, so
-    :attr:`~._offers.CandidateRow.expected_window` opens at the day the
+    :attr:`~._subjects.CandidateRow.expected_window` opens at the day the
     purchase was MADE.  59 of the developer's own 61 reconciled purchases are
     this shape, and no case in this file built one until adversarial review
     2026-08-22.
@@ -363,7 +360,7 @@ class TestItOffersNothingTheDoorWouldREFUSE:
 
     Every clause here mirrors one of ``_variance.reject_unrecordable``'s, read
     off the row rather than re-derived -- which is what
-    :attr:`~._offers.CandidateRow.figure_is_correctable` exists for.
+    :attr:`~._subjects.CandidateRow.figure_is_correctable` exists for.
     """
 
     def test_a_row_whose_FIGURE_IS_NOT_ITS_OWN_is_not_offered(self):
@@ -431,7 +428,7 @@ class TestItOffersNothingTheDoorWouldREFUSE:
 
 
 class TestTheCorrectableAccessorItself:
-    """:attr:`~._offers.CandidateRow.figure_is_correctable` in its own right.
+    """:attr:`~._subjects.CandidateRow.figure_is_correctable` in its own right.
 
     The composite BOTH the proposer and the accept door ask, reached only
     through :func:`~._near.near_misses` above.  It is asserted directly too

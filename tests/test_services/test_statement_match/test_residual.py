@@ -53,7 +53,7 @@ from app.services import statement_match, status_seam
 from app.services.row_valuation import settled_figure
 from app.services.statement_match import RowKind
 from app.services.pay_calendar import calendar_for
-from app.services.statement_match._candidates import purchase_candidate
+from app.services.statement_match._valuation import purchase_candidate
 from app.services.statement_match._landing import (
     DifferenceLanding,
     corrected_figure,
@@ -653,7 +653,14 @@ class TestTheMintedRowIsAMemberOfTheMatch:
     """The identity holds by CONSTRUCTION, which is the step's whole shape."""
 
     def test_it_is_recorded_as_a_member(self, app, db, seed_user):
-        """Three members for two submitted rows."""
+        """Three members for two submitted rows.
+
+        The minted row is named through its PAYMENT -- the covering movement
+        its settle wrote -- as every row is since plan step
+        ``credit_card:CC-5-4a-1`` (ruling **R-CC43**); its creation record
+        still names the row.  Through ``CC-5-3`` this looked the member up by
+        ``transaction_id``.
+        """
         line, salary, allowance = _payroll(seed_user)
 
         accepted = _submit(
@@ -662,12 +669,14 @@ class TestTheMintedRowIsAMemberOfTheMatch:
         )
 
         row = _minted(seed_user)[0]
+        (movement,) = row.covering_movements
         member = (
             db.session.query(StatementMatchMember)
-            .filter(StatementMatchMember.transaction_id == row.id)
+            .filter(StatementMatchMember.transaction_entry_id == movement.id)
             .one()
         )
         assert member.match_id == accepted.match_id
+        assert member.transaction_id is None
 
     def test_the_accepted_group_AGREES(self, app, db, seed_user):
         """The panel's own re-derivation of the balance this door checked.
@@ -1408,7 +1417,7 @@ class TestTheSHAPESAGroupCanTake:
             seed_user, name="Groceries", amount="60.00", is_envelope=True,
         )
         # A purchase stores a positive figure; its CASH effect is the
-        # negation (``_candidates.purchase_candidate``), so this contributes
+        # negation (``_valuation.purchase_candidate``), so this contributes
         # -60.00 to the app side.
         purchase = a_purchase(
             seed_user, envelope, amount="60.00", purchased_on=bank_day,
@@ -1786,7 +1795,7 @@ class TestCorrectingAPurchaseOntoTheBanksFigure:
     """``corrected_figure`` inverts the purchase candidate's own negation.
 
     Plan step ``bank_import:X-gj-2b``, ruling **R-II**.  A purchase's cash is
-    ``-entry.amount`` (:func:`~._candidates.purchase_candidate`), so the figure
+    ``-entry.amount`` (:func:`~._valuation.purchase_candidate`), so the figure
     that moves its cash onto the bank's is ``-bank_cash``.
 
     **It was ``abs(bank_cash)``, and the two agree only for an OUTFLOW.**
@@ -2193,22 +2202,26 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
             attributed=(RowKind.TRANSACTION, salary),
         )
 
+        # The members name each row's PAYMENT (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC43**), and the row is
+        # reached through it; the sum is the rows' settled figures, as before.
         members = (
             db.session.query(StatementMatchMember)
             .filter(
                 StatementMatchMember.match_id == accepted.match_id,
-                StatementMatchMember.transaction_id.isnot(None),
+                StatementMatchMember.transaction_entry_id.isnot(None),
             )
             .all()
         )
         total = sum(
             (
-                settled_figure(db.session.get(Transaction, member.transaction_id))
+                settled_figure(member.entry.transaction)
                 for member in members
             ),
             Decimal("0.00"),
         )
         assert len(members) == 2
+        assert all(member.entry.covers_settlement for member in members)
         assert total == line.amount
 
     def test_naming_a_row_this_match_does_NOT_carry_is_refused(

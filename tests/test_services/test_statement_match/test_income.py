@@ -375,7 +375,15 @@ class TestTheLineStopsBeingUnexplained:
     """A recorded deposit is MATCHED to its own row, like every other act."""
 
     def test_it_records_a_match_naming_both(self, app, db, seed_user):
-        """Without this the line would be re-offered on the next render."""
+        """Without this the line would be re-offered on the next render.
+
+        The app-side member names the recorded row's PAYMENT -- its covering
+        movement, the money the bank showed -- and not the row (plan step
+        ``credit_card:CC-5-4a-1``, ruling **R-CC43**: *the MOVEMENT is the
+        subject of every settled match*); through ``CC-5-3`` this asserted
+        ``transaction_id == recorded.transaction_id``.  The row is still what
+        the act CREATED, which the undo reads from the other relation.
+        """
         line = _a_deposit(seed_user)
 
         recorded = _record(seed_user, line)
@@ -386,9 +394,11 @@ class TestTheLineStopsBeingUnexplained:
             .all()
         )
         assert {m.bank_statement_line_id for m in members} == {line.id, None}
-        assert {m.transaction_id for m in members} == {
-            None, recorded.transaction_id,
-        }
+        assert {m.transaction_id for m in members} == {None}
+        (movement,) = db.session.get(
+            Transaction, recorded.transaction_id,
+        ).covering_movements
+        assert {m.transaction_entry_id for m in members} == {None, movement.id}
 
     def test_the_awaiting_count_FALLS(self, app, db, seed_user):
         """The figure the grid badge renders, measured on both sides.
