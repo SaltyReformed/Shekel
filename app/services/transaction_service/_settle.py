@@ -43,6 +43,7 @@ from app.services.cash_ledger import (
     derived_amount_basis,
     contribution_of,
 )
+from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import purchases_total
 from app.services.settle_day import SettleDay
 from app.services.stated_figure import StatedFigure
@@ -53,6 +54,8 @@ from app.services.status_seam import (
     honoured_figure,
     movement_settlement,
     recorded_settlement,
+    tender_account_id_of,
+    tender_for_status,
 )
 from app.services.transaction_service._status_rules import settled_status_id
 from app.utils.balance_predicates import is_identity_move, settled_status_ids
@@ -329,6 +332,7 @@ def settle_transaction(
     *,
     submitted: StatedFigure | None = None,
     settle_day: SettleDay | None = None,
+    tender_account_id: int | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
@@ -458,6 +462,32 @@ def settle_transaction(
             the tick cannot reach either, because an assertion's own
             ``observed_on`` is already refused in the future by
             ``anchor_service``.
+        tender_account_id: The account the money MOVED THROUGH -- the
+            TENDER (plan step ``credit_card:CC-5-3``, ruling **R-CC15**: a
+            bill charged to the card is settled with its covering movement
+            on the card) -- when the CALLER names one: the "Paid from"
+            picker through ``mark_done`` and the popover, and the two
+            statement-driven doors, which FORCE the statement's own account
+            (the reconcile panel's tick, the matcher's transaction arm: a
+            statement showed the money on the account it is a statement
+            of).  An ECHO of what the row records -- the popover's picker
+            untouched, which always shows the recorded tender -- names
+            nothing new and is dropped (``status_seam.tender_for_status``,
+            the one echo rule, shared with the identity arm); anything else
+            is gated here against the ROW's owner and the owner's cash-flow
+            set by the one gate the purchase door uses
+            (``movement_account.admitted_movement_account_id``), so a
+            payment on a 401(k) or a savings account is unwritable and a
+            foreign account is a 404, before any mutation.  ``None`` means
+            nobody named one, and the seam books on its one default -- the
+            kept record's account, else the row's own (ruling **R-CC42**:
+            where the money moved is retained across a revert as a stated
+            figure is).  **The entries branch ignores it**, exactly as it
+            ignores *submitted*: an envelope's purchases are its record and
+            each carries its own account; the popover renders no picker on
+            such a row and the PATCH door refuses one, so what reaches this
+            branch with a tender is the panel's tick, which names the
+            statement's account for every row it settles.
 
     Returns:
         Whether this settle booked a HUMAN's figure -- what the reconcile
@@ -474,8 +504,12 @@ def settle_transaction(
     Raises:
         ValidationError: On a transfer shadow or a soft-deleted row, from the
             envelope branch's remaining preconditions, from an illegal
-            transition, or from the seam's settle-day refusals.  All are 400s at
-            the route.
+            transition, from the seam's settle-day refusals, or from the
+            tender gate (an archived account, or one outside the owner's
+            cash-flow set).  All are 400s at the route.
+        NotFoundError: When *tender_account_id* names no account of the ROW's
+            owner (the security response rule: one answer for "not found"
+            and "not yours").  A 404 at the route.
         PostingError: From act 3, on a broken ledger invariant.  Deliberately
             NOT a sibling of ``ValidationError`` -- it must fail loud rather
             than render as a designed refusal.
@@ -484,6 +518,24 @@ def settle_transaction(
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
     # its own three refusals, and for the same reason.
     reject_unsettleable(txn)
+    # The tender's reading and its gate, before any mutation for the same
+    # reason and ahead of the identity no-op below: a bad REFERENCE is refused
+    # whatever the row's state, so a replayed settle naming a foreign account
+    # is a 404 and never a silent 200.  The reading first
+    # (``status_seam.tender_for_status``, the one echo rule): an account equal
+    # to what the row RECORDS names nothing new and is not gated -- the
+    # popover's picker always shows the recorded tender, an ARCHIVED card
+    # included (the review of this leaf: a since-archived card's echo met the
+    # gate's archived refusal and the documented Paid button refused a
+    # tender nobody changed), and R-CC42 keeps a kept record where it is.
+    # The status handed to the reading is the one this verb settles INTO, so
+    # its non-settled refusal cannot fire here.
+    tender = tender_for_status(
+        txn, settled_status_id(txn), tender_account_id,
+        tender_account_id_of(txn),
+    )
+    if tender is not None:
+        tender = admitted_movement_account_id(txn, tender, movement="payment")
 
     # **A row ALREADY in the status this settle would move it to is an
     # idempotent no-op**, which is the rule
@@ -591,7 +643,7 @@ def settle_transaction(
         apply_status_change(
             txn, settled_status_id(txn), settle_day=settle_day,
             settlement=Settlement.from_settle(
-                booked, correction, recorded_settlement(txn),
+                booked, correction, recorded_settlement(txn), tender=tender,
             ),
         )
 

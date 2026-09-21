@@ -2259,7 +2259,7 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         assert [m.amount for m in paycheck.covering_movements] == [
             Decimal("2473.43"),
         ]
-        assert status_seam.covered_cash_leg(paycheck) == Decimal("2473.43")
+        assert status_seam.covered_cash_leg(paycheck, paycheck.account_id) == Decimal("2473.43")
 
     def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
         """The control, and it is what makes the test above mean anything.

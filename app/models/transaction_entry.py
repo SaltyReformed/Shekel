@@ -46,10 +46,13 @@ class TransactionEntry(
                            its own, and free to differ from its parent's since
                            plan step ``credit_card:CC-5-1`` (rulings
                            **R-BAL75**, **R-BAL76**), so that a card purchase
-                           inside a checking envelope can be a movement on the
-                           card once the card's doors write one (``CC-5-2``,
-                           ``CC-5-3``); until then every door writes the
-                           parent's account.  The parent's ``account_id`` is
+                           inside a checking envelope is a movement on the
+                           card: the purchase door writes one since
+                           ``CC-5-2`` and the settle verb's TENDER since
+                           ``CC-5-3`` (a bill charged to the card holds its
+                           covering movement there, ruling **R-CC15**); every
+                           other door writes the parent's account.  The
+                           parent's ``account_id`` is
                            where the row was EXPECTED to be paid from (ruling
                            **R-CC16**).  Held to the ROW's
                            OWNER by ``fk_transaction_entries_owner_account``
@@ -329,8 +332,9 @@ class TransactionEntry(
         # False by construction, and unwritable rather than merely unoffered.
         # Plan step ``credit_card:CC-5-1`` made the card's OWN representation
         # storable -- a movement whose ``account_id`` names the card, which
-        # clears on the card's statement -- but no door writes one until
-        # ``CC-5-2`` / ``CC-5-3``, and the cheat's door (``create_entry`` with
+        # clears on the card's statement -- written by the purchase door since
+        # ``CC-5-2`` and by the settle verb's tender since ``CC-5-3``, while
+        # the cheat's door (``create_entry`` with
         # ``is_credit``) still writes a flagged line on checking until
         # ``CC-7`` retires it; ``CC-7`` deletes the flag, this CHECK and the
         # cheat together once no line carries the flag.

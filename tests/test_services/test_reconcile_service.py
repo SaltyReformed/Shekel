@@ -2456,7 +2456,7 @@ class TestTheCashFigureBesideTheBookedOne:
             db.session.expire_all()
             settled = db.session.get(Transaction, txn.id)
             assert settled.covering_movements == []
-            assert status_seam.covered_cash_leg(settled) == Decimal("0.00")
+            assert status_seam.covered_cash_leg(settled, settled.account_id) == Decimal("0.00")
             assert sum(
                 (
                     cash_ledger.movement_cash_leg(settled, entry)

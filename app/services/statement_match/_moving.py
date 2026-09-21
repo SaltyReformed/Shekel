@@ -53,7 +53,7 @@ from ._landing import DifferenceLanding
 
 
 def _apply_day(
-    row: CandidateRow, owner_id: int, days: "MatchDays",
+    row: CandidateRow, scope: ReviewScope, days: "MatchDays",
     figure: Decimal | None = None,
 ) -> str:
     """Move one member row onto the bank's days AND figure through its own door.
@@ -72,11 +72,24 @@ def _apply_day(
     * every other transaction goes through
       ``transaction_service.apply_requested_status``, with the row's OWN status
       when it is already settled (an edit that changes only the day is an
-      identity transition) and its type's settled status when it is not.
+      identity transition) and its type's settled status when it is not --
+      **and with the pass's ACCOUNT as the tender** (plan step
+      ``credit_card:CC-5-3``, ruling **R-CC15**: a statement-driven settle
+      forces the statement's own account).  The bank line says this
+      account's feed showed the money, so the row's covering movement books
+      here; named rather than left to the seam's default because a Projected
+      row the owner reverted out of a card-tendered settle keeps that record
+      and the default would keep it on the card (ruling **R-CC42**).  The
+      offer set is this account's own rows, so the named tender is the row's
+      own account and passes the verb's gate by its first member; for a row
+      ALREADY settled it re-states the account the row is priced on (ruling
+      **R-CC40**: a settled row is offered here only while its movement is
+      here), an echo the door drops.
 
     Args:
         row: The member being moved.
-        owner_id: The user the route proved owns the account.
+        scope: The pass: the owner the route proved owns the account, and
+            the account whose statement is being reviewed.
         days: The days the bank states for this match.
         figure: What the bank says this row is worth
             (:meth:`~._variance.DifferenceLanding.figure_for`), or ``None``
@@ -162,17 +175,17 @@ def _apply_day(
             moves["purchased_on"] = purchase_day
         if stated is not None:
             moves["figure"] = stated
-        entry_service.update_entry(row.row_id, owner_id, **moves)
+        entry_service.update_entry(row.row_id, scope.owner_id, **moves)
         return outcome
 
     if row.transfer_id is not None:
         if row.is_settled:
             transfer_service.update_transfer(
-                row.transfer_id, owner_id, settle_day=settle_day,
+                row.transfer_id, scope.owner_id, settle_day=settle_day,
             )
         else:
             transfer_service.settle_transfer(
-                row.transfer_id, owner_id, settle_day=settle_day,
+                row.transfer_id, scope.owner_id, settle_day=settle_day,
             )
         return outcome
 
@@ -183,6 +196,7 @@ def _apply_day(
     )
     transaction_service.apply_requested_status(
         txn, target_status_id, settle_day=settle_day, submitted=stated,
+        tender_account_id=scope.account_id,
     )
     return outcome
 
@@ -275,7 +289,7 @@ def move_members(
     figures = [landing.figure_for(row) for row in ordered]
     return Moved(
         outcomes=[
-            _apply_day(row, scope.owner_id, days, figure)
+            _apply_day(row, scope, days, figure)
             for row, figure in zip(ordered, figures, strict=True)
         ],
         redated_count=redated_count,

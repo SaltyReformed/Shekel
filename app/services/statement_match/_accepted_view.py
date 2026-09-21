@@ -276,7 +276,7 @@ def accepted_groups(
             _accepted_row(
                 member.transaction
                 if member.transaction_id is not None else member.entry,
-                posts_on,
+                posts_on, match.account_id,
             )
             for member in match.members
             if member.transaction_id is not None
@@ -521,7 +521,7 @@ def accepted_register(
     )
 
 
-def _accepted_row(row, posts_on: date) -> AcceptedRow:
+def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
     """Return one member of an accepted match, valued as it stands NOW.
 
     **The valuation is the cash ledger's, and it is what makes a soft-deleted
@@ -539,11 +539,20 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
     for re-review rather than the page raising (finding **N-302**'s shape);
     the arithmetic says the same thing now.
 
+    **And for one whose payment was moved onto ANOTHER account** (plan step
+    ``credit_card:CC-5-3``, ruling **R-CC40**): a member's row is on the
+    match's account by the member key, and its covering movement is worth
+    something on that account only while it is ON it -- a "Paid from"
+    correction onto the card since the match was accepted reads ``0.00`` by
+    the same arithmetic, and the match stops holding.
+
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
             :class:`~app.models.transaction_entry.TransactionEntry` the member
             names.
         posts_on: The day the match asserted.
+        account_id: The match's account -- the statement the member was
+            matched on, and the account a transaction member is valued ON.
 
     Returns:
         Its :class:`AcceptedRow`.
@@ -551,9 +560,10 @@ def _accepted_row(row, posts_on: date) -> AcceptedRow:
     if isinstance(row, Transaction):
         return AcceptedRow(
             label=row.name, settled_on=row.settled_on,
-            # What the row's covering movement moves (ruling **R-BAL81**) --
-            # the same valuation the offer and the post-apply check use.
-            cash_amount=status_seam.covered_cash_leg(row),
+            # What the row's covering movement moves ON THIS ACCOUNT (rulings
+            # **R-BAL81**, **R-CC40**) -- the same valuation the offer and
+            # the post-apply check use.
+            cash_amount=status_seam.covered_cash_leg(row, account_id),
             agrees=row.settled_on == posts_on,
         )
     # **A CARD purchase moves no cash through THIS account at all** -- it

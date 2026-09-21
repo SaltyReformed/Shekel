@@ -2354,7 +2354,7 @@ class TestASettledRowMayStillGAINAPurchase:
             held = _make_entry(txn, seed_user["user"], amount="50.00")
             self._close(txn)
             account_id, scenario_id = txn.account_id, txn.scenario_id
-            assert status_seam.covered_cash_leg(txn) == Decimal("0.00")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("0.00")
             assert [
                 (item.entry_id, item.delta)
                 for item in cash_ledger.in_flight_movements(account_id, scenario_id)
@@ -2377,7 +2377,7 @@ class TestASettledRowMayStillGAINAPurchase:
             db.session.flush()
             db.session.expire(txn)
 
-            assert status_seam.covered_cash_leg(txn) == Decimal("0.00")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("0.00")
             assert [
                 (item.entry_id, item.delta)
                 for item in cash_ledger.in_flight_movements(account_id, scenario_id)
@@ -2505,7 +2505,7 @@ class TestASettledRowMayStillGAINAPurchase:
             account_id, scenario_id = txn.account_id, txn.scenario_id
             # The covering movement carries the `$500.00`; the row is worth
             # it (R-BAL81) and the family moves it.
-            assert status_seam.covered_cash_leg(txn) == Decimal("-500.00")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("-500.00")
             assert sum(
                 (cash_ledger.movement_cash_leg(txn, entry) for entry in txn.entries),
                 Decimal("0.00"),
@@ -2541,7 +2541,7 @@ class TestASettledRowMayStillGAINAPurchase:
             ) == facts_before - Decimal("600.00")
             # ...while the row's own valuation is untouched, so only a reader
             # of the family can see the double count.
-            assert status_seam.covered_cash_leg(txn) == Decimal("-500.00")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("-500.00")
 
     def test_an_UNDATED_purchase_is_admitted_on_a_closed_row_and_is_in_flight(
         self, app, db, seed_user, seed_entry_template,

@@ -4,18 +4,20 @@ Shekel Budget App -- Status Seam: the refusals
 The invariants of a settlement stated as GUARDS, so every caller of the seam
 inherits them rather than each door remembering one.  They are gathered here
 because they are one subject -- what a row may and may not assert about its own
-money -- and because :func:`._seam.apply_status_change` runs all five ahead of
-any mutation, so a refused call leaves the row untouched.
+money -- and because :func:`._seam.apply_status_change` runs four of them
+ahead of any mutation, so a refused call leaves the row untouched; the two
+form readings beside it (``figure_for_status``, ``tender_for_status``) run
+the other two for the edit doors, ahead of the seam.
 
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Four of the five are this project's answer to a rule that cannot be a CHECK
+Five of the six are this project's answer to a rule that cannot be a CHECK
 constraint, and each says so in its own docstring: the settled-status
 questions need ``ref.statuses.is_settled``, which a constraint on
 ``budget.transactions`` cannot see, and the ref convention keeps status ids out
 of a schema; the stated-figure-over-purchases question is a count over
-another table (:func:`reject_stated_figure_over_purchases`).  (A sixth,
+another table (:func:`reject_stated_figure_over_purchases`).  (A seventh,
 ``reject_settle_day_without_a_record``, was the one that MIRRORED a CHECK --
 ``ck_transactions_settle_day_needs_a_record`` said in words -- and went with
 that CHECK and the row's figure columns at plan step ``balance:X-bi-4b-2``.)
@@ -151,6 +153,46 @@ def reject_figure_without_settled_status(
         f"{noun} {row.id} is not settling, so a figure has nothing to record: "
         "an amount here states what MOVED. Mark it paid to record what left "
         "the account, or change its own amount to re-price the plan."
+    )
+
+
+def reject_tender_without_settled_status(
+    row: Transaction, new_status_id: int,
+) -> None:
+    """Refuse a submitted TENDER for a status that settles nothing.
+
+    :func:`reject_figure_without_settled_status`'s twin for the record's third
+    fact (plan step ``credit_card:CC-5-3``): the account a payment moved
+    through is a statement about money that MOVED, so beside a status under
+    which nothing moves it has nothing to record.  A FORM never reaches it --
+    :func:`~app.services.status_seam.tender_for_status` drops an untouched
+    picker on the way OUT of the settled band, ruling **R-EG**'s argument
+    applied to the tender -- so what lands here is a submission asserting
+    both facts on purpose: "it was paid from the card" and "it did not
+    move".  Refused rather than dropped, for the reason the figure's twin
+    gives: a silently discarded field is how a user's stated fact vanishes.
+
+    A ``Transaction`` alone: a transfer's money moves on its legs, and the
+    transfer service names each leg's account itself.
+
+    Args:
+        row: The row the tender arrived for.  The CALLER establishes that a
+            tender did arrive -- this asks only whether the status can hold
+            one.
+        new_status_id: The ``ref.statuses.id`` the row is moving to, which
+            for a tender-only edit is the row's own (an identity transition).
+
+    Raises:
+        ValidationError: When *new_status_id* is not a settled status.  A 400
+            at the route.
+    """
+    if new_status_id in settled_status_ids():
+        return
+    raise ValidationError(
+        f"Transaction {row.id} is not settling, so a 'Paid from' account has "
+        "nothing to record: it states which account the money MOVED through. "
+        "Mark it paid to record the payment, or set it to Projected and leave "
+        "the account as it was."
     )
 
 

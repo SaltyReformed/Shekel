@@ -24,18 +24,24 @@ value type holding the invariant by construction.  The row's own
 second home, written by the seam from this value until plan step
 ``balance:X-bi-4b-2`` deleted it (ruling **R-BAL80**).
 
+**The record's third fact is the TENDER since plan step ``credit_card:CC-5-3``**
+(rulings **R-CC15**, **R-CC42**): the account the covering movement books on,
+a write-side field of :class:`Settlement` and, on a read, the movement's own
+``account_id`` (:func:`tender_account_id_of`, the seam's one default).
+
 Pure: reads a row's ``entries`` relationship (its covering movement) and the
 ref cache, constructs values.  No query of its own, no session, no mutation,
 no Flask.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Optional
 
 from app import ref_cache
 from app.enums import MovementFigureSourceEnum
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services.row_valuation import settled_figure
 from app.services.stated_figure import StatedFigure
 from app.utils.balance_predicates import settled_status_ids
@@ -43,7 +49,7 @@ from app.utils.balance_predicates import settled_status_ids
 
 @dataclass(frozen=True)
 class Settlement:
-    """WHAT a settle records: the figure that moved and who wrote it.
+    """WHAT a settle records: the figure that moved, who wrote it, and the tender.
 
     The value a settle door hands :func:`apply_status_change` so the whole
     record -- the day, the figure and its source -- is written in ONE act (plan
@@ -78,6 +84,20 @@ class Settlement:
     alone through plan step ``balance:X-bi-4b-1``; column, property and
     catalogue went together at ``X-bi-4b-2`` (ruling **R-BAL80**).
 
+    **The TENDER is the record's third fact** (plan step ``credit_card:CC-5-3``,
+    rulings **R-CC15** and **R-CC42**): the account the money moved through,
+    written as the covering movement's own ``account_id`` -- the card, for a
+    bill the owner charged; the row's own account for every settle through
+    ``CC-5-2``.  It is a WRITE-side field: ``None`` means the door named no
+    tender and the seam books on its one default
+    (:func:`tender_account_id_of`: the kept record's account, else the
+    row's), so a re-settle after a revert keeps where the money moved exactly
+    as it keeps a stated figure (R-CC42).  A record READ off a movement
+    (:func:`movement_settlement`) leaves it ``None`` for the same reason a
+    read carries no instruction: ``transfer_service`` hands a drifted
+    shadow's SIBLING's record to the seam, and a sibling's account would
+    book the shadow's movement on the wrong side of the pair.
+
     Attributes:
         amount: What moved.  ``None`` exactly when the row's own entries
             state the figure -- an envelope closed from its purchases, or a
@@ -86,20 +106,30 @@ class Settlement:
         source: Who wrote it (:class:`app.enums.MovementFigureSourceEnum`).
             ``None`` exactly when *amount* is: a purchases record has no
             figure of its own to have been written.
+        account_id: The TENDER -- the ``budget.accounts.id`` the covering
+            movement books on -- when the door named one, already gated
+            against the row's owner and the owner's cash-flow set
+            (``movement_account.admitted_movement_account_id``); ``None``
+            for the seam's default.  Never set on a ``purchases`` record,
+            which writes no movement to book anywhere.
     """
 
     amount: Optional[Decimal]
     source: Optional[MovementFigureSourceEnum]
+    account_id: Optional[int] = None
 
     def __post_init__(self) -> None:
-        """Refuse a record whose figure and source contradict each other.
+        """Refuse a record whose figure, source and tender contradict each other.
 
         Raises:
             ValueError: When a figure arrives with no source, a source with
-                no figure, or a figure below zero.  A programming error at
-                the call site rather than a user error, so it is not a
-                ``ValidationError``: no form can express any of the three
-                (every ``settled_amount`` field validates non-negative).
+                no figure, a figure below zero, or a tender on a record that
+                writes no movement.  A programming error at the call site
+                rather than a user error, so it is not a ``ValidationError``:
+                no form can express any of the four (every ``settled_amount``
+                field validates non-negative; the settle verb's entries
+                branch ignores a tender as it ignores a figure, and the
+                edit door refuses one on such a row).
         """
         if self.amount is not None and self.amount < 0:
             raise ValueError(
@@ -122,6 +152,12 @@ class Settlement:
                 f"writer: {self.source.value!r} here would credit someone "
                 "with a figure the row's own children state. Pass source=None "
                 "with amount=None."
+            )
+        if self.amount is None and self.account_id is not None:
+            raise ValueError(
+                "A 'purchases' settlement writes no covering movement, so it "
+                f"names no tender: account {self.account_id} here would have "
+                "nothing to book on. Each purchase carries its own account."
             )
 
     @property
@@ -151,6 +187,7 @@ class Settlement:
         booked: Decimal,
         correction: "StatedFigure | None",
         retained: "Settlement | None" = None,
+        tender: Optional[int] = None,
     ) -> "Settlement":
         """Return the record a settle makes, given every figure it may have.
 
@@ -205,16 +242,30 @@ class Settlement:
                 record from an earlier settle it has since been reverted out of
                 (``status_seam.recorded_settlement``); ``None`` when it carries
                 none.
+            tender: The account the door named for the covering movement,
+                already gated (plan step ``credit_card:CC-5-3``), or ``None``
+                for the seam's default.  It rides every arm alike: the
+                retained record is honoured WHOLE for its figure and source,
+                and its tender is the seam's default anyway (the kept
+                movement's own account, ruling **R-CC42**), so a named tender
+                replaces nothing the retained record states.
 
         Returns:
             A ``corrected`` record for a figure stated now or stated before and
-            not withdrawn, else a ``derived`` one on the ``resolved`` source.
+            not withdrawn, else a ``derived`` one on the ``resolved`` source;
+            each carrying *tender*.
         """
         if correction is not None:
-            return cls(amount=correction.amount, source=correction.source)
+            return cls(
+                amount=correction.amount, source=correction.source,
+                account_id=tender,
+            )
         if retained is not None and retained.stated:
-            return retained
-        return cls(amount=booked, source=MovementFigureSourceEnum.RESOLVED)
+            return replace(retained, account_id=tender)
+        return cls(
+            amount=booked, source=MovementFigureSourceEnum.RESOLVED,
+            account_id=tender,
+        )
 
 
 def _source_of(movement) -> MovementFigureSourceEnum:
@@ -282,24 +333,86 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
     Raises:
         KeyError: When the movement's ``figure_source_id`` names no member
             of its enum (:func:`_source_of`).
-        ValueError: When the row holds more than one covering movement --
-            unstorable under ``uq_transaction_entries_one_settlement_record``,
-            so reaching it means a second was written around the index and
-            the seam (``_covering._cover`` refuses the same state).
+        ValueError: When the row holds more than one covering movement
+            (:func:`covering_movement_of`).
     """
-    movements = row.covering_movements
-    if movements:
-        movement, *extra = movements
-        if extra:
-            raise ValueError(
-                f"Transaction {row.id} holds {len(movements)} covering "
-                "movements; a settle writes exactly one, so a second can only "
-                "have reached the table around the status seam."
-            )
+    movement = covering_movement_of(row)
+    if movement is not None:
         return movement_settlement(movement)
     if row.status_id in settled_status_ids():
         return Settlement(amount=None, source=None)
     return None
+
+
+def covering_movement_of(row: Transaction) -> Optional[TransactionEntry]:
+    """Return the ONE covering movement *row* holds, dated or kept, or ``None``.
+
+    The read every reader of the record shares -- :func:`recorded_settlement`
+    for the figure and its source, :func:`tender_account_id_of` for the
+    account, and the seam's own ``_covering._cover`` for the row it re-dates
+    on a re-settle -- so the count invariant is stated once rather than at
+    each of them.
+
+    Args:
+        row: The transaction to read, with ``entries`` loaded or loadable.
+
+    Returns:
+        The movement marked ``covers_settlement``, or ``None`` when the row
+        holds none.
+
+    Raises:
+        ValueError: When the row holds more than one covering movement --
+            unstorable under ``uq_transaction_entries_one_settlement_record``,
+            so reaching it means a second was written around the index and
+            the seam.
+    """
+    movements = row.covering_movements
+    if not movements:
+        return None
+    movement, *extra = movements
+    if extra:
+        raise ValueError(
+            f"Transaction {row.id} holds {len(movements)} covering "
+            "movements; a settle writes exactly one, so a second can only "
+            "have reached the table around the status seam."
+        )
+    return movement
+
+
+def tender_account_id_of(row: Transaction) -> int:
+    """Return the account a settle of *row* books on when no tender is named.
+
+    **The ONE default for the tender**, read by the seam's writer
+    (``_covering._cover``, for a :class:`Settlement` whose ``account_id`` is
+    ``None``) and by the full-edit popover to preselect its "Paid from"
+    picker -- so what the screen shows selected and what an untouched Save
+    books cannot differ, and an untouched picker posts an ECHO the door
+    drops (``_seam.tender_for_status``).
+
+    **Where the money moved is retained across a revert** (plan step
+    ``credit_card:CC-5-3``, ruling **R-CC42**, developer 2026-09-21), exactly
+    as a stated figure is (:meth:`Settlement.from_settle`): a row holding a
+    kept record answers that record's account, so the one-click re-settle of
+    a reverted card-tendered bill keeps its ``$120`` on the card; a row
+    holding none answers its own account -- where it is EXPECTED to be paid
+    from (ruling **R-CC16**).  This AMENDS ruling **R-CC36**'s re-point
+    clause: a Projected row whose definition moved accounts keeps its kept
+    record where the money moved, and only a NAMED tender moves it (the
+    refused alternative booked the reverted card bill on checking silently,
+    the card ``$120`` low and checking ``$120`` high).
+
+    Args:
+        row: The transaction about to settle, re-settle or be drawn.
+
+    Returns:
+        A ``budget.accounts.id``: the kept covering movement's, else the
+        row's own.
+
+    Raises:
+        ValueError: From :func:`covering_movement_of`, on a row holding two.
+    """
+    movement = covering_movement_of(row)
+    return row.account_id if movement is None else movement.account_id
 
 
 def movement_settlement(movement) -> Settlement:

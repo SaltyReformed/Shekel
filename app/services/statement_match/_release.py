@@ -476,7 +476,7 @@ def _names_of(match: StatementMatch) -> "tuple[set[int], set[int]]":
 
 
 def _subject_removal(
-    creation: StatementMatchCreation, subject,
+    creation: StatementMatchCreation, subject, account_id: int,
 ) -> "tuple[PlannedRemoval, str | None]":
     """Return the removal for one created SUBJECT, and why it may be refused.
 
@@ -509,6 +509,9 @@ def _subject_removal(
         creation: The creation record, carrying the revision this act left.
         subject: The :class:`~app.models.transaction.Transaction` or
             :class:`~app.models.transaction_entry.TransactionEntry` it names.
+        account_id: The act's account, the one a created ROW is valued ON
+            (ruling **R-CC40**): its covering movement is worth something to
+            this undo only while it is on the account the act was about.
 
     Returns:
         ``(row, refusal)`` -- what would be removed, and the sentence
@@ -535,8 +538,9 @@ def _subject_removal(
     cash = (
         _entry_cash(subject) if is_purchase
         # The money a release takes out of the books sits on the row's
-        # covering movement (plan step **X-bi-3a**), which goes with the row.
-        else status_seam.covered_cash_leg(subject)
+        # covering movement (plan step **X-bi-3a**), which goes with the row
+        # -- valued on the act's account (plan step ``credit_card:CC-5-3``).
+        else status_seam.covered_cash_leg(subject, account_id)
     )
     row = PlannedRemoval(
         kind=RowKind.PURCHASE if is_purchase else RowKind.TRANSACTION,
@@ -565,12 +569,15 @@ def _subject_removal(
     return row, None
 
 
-def _container_removal(container: Transaction) -> PlannedRemoval:
+def _container_removal(
+    container: Transaction, account_id: int,
+) -> PlannedRemoval:
     """Return the removal for an emptied CONTAINER.
 
     **The price is READ rather than assumed**, because what a row moves is the
     cash ledger's answer and this module is not a second one: a container is
-    worth what its covering movement moves (ruling **R-BAL81**), and an
+    worth what its covering movement moves on the act's account (rulings
+    **R-BAL81**, **R-CC40**), and an
     emptied ``purchases`` settlement has none, so it reads ``0.00``.  An
     EDITED container never reaches here -- :func:`_container_survives` holds
     it by its revision first -- and nothing here can refuse to price, a
@@ -583,6 +590,7 @@ def _container_removal(container: Transaction) -> PlannedRemoval:
 
     Args:
         container: The budget line this act created, now holding nothing.
+        account_id: The act's account, the one the container is valued ON.
 
     Returns:
         Its :class:`PlannedRemoval`.
@@ -590,7 +598,7 @@ def _container_removal(container: Transaction) -> PlannedRemoval:
     return PlannedRemoval(
         kind=RowKind.TRANSACTION, row_id=container.id,
         label=container.name,
-        cash_amount=status_seam.covered_cash_leg(container),
+        cash_amount=status_seam.covered_cash_leg(container, account_id),
         is_container=True, subject=container,
     )
 
@@ -631,7 +639,7 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
         if not named:
             containers.append((subject, creation))
             continue
-        row, blocked = _subject_removal(creation, subject)
+        row, blocked = _subject_removal(creation, subject, match.account_id)
         subjects.append(row)
         refusal = refusal if refusal is not None else blocked
 
@@ -659,7 +667,10 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
         container for container, creation in containers
         if not _container_survives(container, creation, going)
     ]
-    kept = [_container_removal(container) for container in emptied]
+    kept = [
+        _container_removal(container, match.account_id)
+        for container in emptied
+    ]
     rows = (*subjects, *kept)
     return PlannedRemovals(
         rows=rows,

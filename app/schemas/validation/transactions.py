@@ -135,6 +135,20 @@ class TransactionUpdateSchema(BaseSchema):
     # moved -- the way to remove one is to move the row out of the settled
     # band, which the status seam does as part of the same write.
     settled_on = fields.Date()
+    # WHICH ACCOUNT the money moved through -- the TENDER (plan step
+    # ``credit_card:CC-5-3``, ruling **R-CC15**): the popover's "Paid from"
+    # picker, posted on every Save beside ``settled_amount`` and ``settled_on``
+    # and read the same way -- an echo of what the row records is dropped, a
+    # different account beside a settling or settled status re-points the
+    # payment's covering movement, and one beside a status that settles
+    # nothing is refused (``status_seam.tender_for_status``).  It reaches the
+    # record only through ``transaction_service.apply_requested_status``,
+    # never the ``setattr`` loop (``_SEAM_OWNED_FIELDS``).  The row's OWNER
+    # gates it, never the caller (ruling **R-CC11**); a foreign id is the
+    # door's 404.  Rendered only when the owner's cash-flow set offers a
+    # choice (ruling **R-CC34**), so a one-account form posts nothing here
+    # and ``_normalize_empty_inputs`` drops an empty select.
+    tender_account_id = RowId()
     version_id = RowId(validate=validate.Range(min=1))
 
 
@@ -335,3 +349,11 @@ class MarkDoneSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=_NON_NEGATIVE_MONETARY,
     )
+    # The TENDER -- which account the money moved through (plan step
+    # ``credit_card:CC-5-3``, ruling **R-CC15**), posted by the popover's
+    # Paid / Received buttons, which include its "Paid from" picker; absent
+    # when the surface carries no picker (the cell's checkmark, the mobile
+    # card, a one-account owner: ruling **R-CC34**), and then the settle
+    # verb's seam books on its default -- the kept record's account, else the
+    # row's (ruling **R-CC42**).  Gated by the verb against the ROW's owner.
+    tender_account_id = RowId()
