@@ -114,13 +114,30 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         calendar's twin is `resolve_analytics_cash_flow_set`); no migration; 21 surfaces
         byte-identical on production's shape; suite 14680/0.
 - [ ] **CC-5** `feat(cards): a purchase is a movement on the card` -- design 3.2 (`R-CC15`): the
-      settle-with-tender door (the movement's day, default the act's, basis `entered`, refused on or
-      before the card's opening) and the card purchase entry; the parent-account key re-cut to a
-      plain `transaction_id` FK (**CC-353**, renamed from BAL-506, closes with it); every reader in
-      3.2's census re-pointed onto the movement's account, the entry reduction gaining its
-      account-keyed arm BESIDE the flag's (`_amounts.py`, `_cash_leg.py`: the balance and
-      bank-import lanes' files, coordinated at build); the ownership gate against the ROW's owner;
-      the movement chip. The flag survives to CC-7.
+      DECOMPOSED parent, split 2026-09-20 (the card lane's trace) into 5-1 (the key), 5-2 (the
+      purchase door, its readers and the picker) and 5-3 (the settle-with-tender door); 5-1 and 5-2
+      land in ONE PR (`R-CC33`); ticks with 5-3. Holds **CC-354** until 5-3's entry names the leaf
+      that takes its five sign sites. The flag survives to CC-7.
+  - [x] **CC-5-1** `4045a9b1` -- the key: `fk_transaction_entries_parent_account` and its
+        `ON UPDATE CASCADE` dropped, `owner_id` NOT NULL backfilled, three keys holding a movement
+        to its own account and to its row's owner (`R-BAL76`'s letter; `R-CC32`: the owner key
+        CASCADEs, the account keys RESTRICT); migration `9900b309f0b0`; no door wrote cross-account
+        yet, every balance byte-identical; suite 14919/0. Closed **CC-353**. Record (the rulings'
+        verbatim texts too): `historical/credit_card_cc5_key_and_purchase_as_built_2026-09-21.md`.
+  - [x] **CC-5-2** `af3b9f5b` -- the first cross-account writer (two commits, `3ca97070` first): the
+        purchase door takes an account gated on the ROW's owner (`R-CC37`, `R-CC39`: its own or any
+        member of the owner's set); the reconcile scope, `off_statement_sum` and delete guard 4
+        re-keyed to the movement's account; the account-move retention retired (`R-CC36`); the
+        picker from the door's own tuple, hidden with one choice (`R-CC34`, `R-CC35`); the entry
+        list and ONE chip macro name the movement's account; suite 15014/0.
+- [ ] **CC-5-3** `feat(cards): the settle-with-tender door` -- design 3.2: `Settlement` gains the
+      tender account (default the row's expectation, else its own; a statement-driven settle forces
+      the statement's account); `_cover` / `_record_onto` write the covering movement onto the
+      tender on the movement's day, basis `entered`, refused on or before the card's opening;
+      `_mirror_assertion` and `record_clearing` stop copying the row's clearing link onto a movement
+      on another account; `mark_done`'s "Paid from" picker reads `purchase_accounts` (`R-CC39`: one
+      function, two doors); undo is the ordinary revert. OPENS with a fork for the developer: the
+      `statement_match` offer of a card-settled row (the card's statement, checking's, or both).
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
