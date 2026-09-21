@@ -149,14 +149,19 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         records the payment its settle wrote; a re-pointed payment withdraws the matches naming it,
         disclosed (`R-CC46`); both member shapes still read until 4a-2.
 - [ ] **CC-5-4a-2** `feat(cards): a member is a bank line or a movement` -- `R-CC45`'s second half:
-      a migration re-keys every accepted act's row member (221 acts on production at the 08-27
-      count) onto that bill's payment after a census on the newest production dump and an ASSERT of
-      one act per row; a member with no payment to re-key onto (a bill closed from its purchases, a
-      `$0.00` close, a Credit or Cancelled bill matched before today's refusals) REFUSES the
-      migration and the developer rules it; then `statement_match_members.transaction_id` goes with
-      its key and unique index, and the six bill-member readers (the register, the undo, the claims,
-      the withdrawal on delete, the bank agreement) lose that arm. Its own PR and release, graded
-      byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
+      a migration re-keys every accepted act's row member (103 row members on the 2026-09-21 dump;
+      221 acts at the 08-27 count) onto that bill's payment after a census on the newest production
+      dump and an ASSERT of one act per row; a member with no payment to re-key onto (a bill closed
+      from its purchases, a `$0.00` close, a Credit or Cancelled bill matched before today's
+      refusals) REFUSES the migration and the developer rules it; then
+      `statement_match_members.transaction_id` goes with its key and unique index, and the six
+      bill-member readers (`_candidates.matched_subjects`, `_candidates._is_claimed`,
+      `_accepted_view._accepted_row`, `_acts.named_rows`, `match_withdrawal`,
+      `bank_agreement._rows_on`) lose that arm; with the row-member shape gone a definition's
+      account move touches no member's subject (closes **CC-356**), and
+      `status_seam/_covering.py:36-40`'s stale module docstring (it names `_candidates._price`,
+      gone) is this leaf's to correct (announce-first, balance's region). Its own PR and release,
+      graded byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
       2026-09-21 10:33 dump at `9900b309f0b0`).
 - [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
       of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
