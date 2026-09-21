@@ -248,13 +248,15 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             status, so :func:`create_transfer` rejects that combination loudly
             rather than recording a settle day for a payment that has not
             happened.
-        occurs_on: WHICH OCCURRENCE of its template's cadence this transfer
-            answers, or ``None`` for a transfer no cadence named -- an ad-hoc
-            one, or the one-time branch of ``routes/transfers/_instances``.
-            Only the transfer recurrence engine states it, and it is NOT
-            mirrored to the shadows: a shadow is created from its parent rather
-            than from an occurrence, and no generate pass asks a shadow whether
-            an occurrence has been written (plan step **R17**).
+        occurs_on: WHICH OCCURRENCE this transfer answers: the day its
+            template's cadence named (the transfer recurrence engine), or its
+            own due date for a ONE-TIME transfer (the one-time branch of
+            ``routes/transfers/_instances``, since plan step
+            ``balance:X-ci-1``, ruling **R-BAL94**); ``None`` only for an
+            ad-hoc transfer, which no definition placed.  It is NOT mirrored
+            to the shadows: a shadow is created from its parent rather than
+            from an occurrence, and no generate pass asks a shadow whether an
+            occurrence has been written (plan step **R17**).
     """
 
     user_id: int

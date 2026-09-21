@@ -122,6 +122,18 @@ def _materialize_one_time_transfer(template, start_period):
     picker away from Monthly left the typed day on the payload and silently
     re-dated the transfer.  With no rule there is nothing to read it from.
 
+    **The transfer records that day as the occurrence it answers** (plan
+    step ``balance:X-ci-1``, ruling **R-BAL94**: ``occurs_on = due_date`` on
+    a one-time transfer, the twin of ``one_off.place_row_of``'s birth
+    write).  It was born answering NO occurrence until then -- the one-time
+    branch was the last writer of the undated shape finding **REC-516**
+    names, and the rule ``recurrence:R19-b`` waited on for this table --
+    so a cadence added to the definition later that names this day adopts
+    the transfer as its occurrence, and one that does not retains it as
+    the conflict it is.  Every later writer of the date keeps the pair
+    equal inside ``transfer_service.update_transfer`` (**R-BAL96**); the
+    two transfers born before this leaf are backfilled at ``X-ci-3``.
+
     Args:
         template: The persisted (flushed) TransferTemplate, with no rule.
         start_period: The paycheck the transfer lands in, already resolved
@@ -170,6 +182,7 @@ def _materialize_one_time_transfer(template, start_period):
                 name=template.name,
                 transfer_template_id=template.id,
                 due_date=start_period.start_date,
+                occurs_on=start_period.start_date,
             ),
         )
     except (NotFoundError, ShekelValidationError) as exc:

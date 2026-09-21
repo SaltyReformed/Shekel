@@ -456,7 +456,7 @@ def bounds_are_the_loans(template: Any, pass_ctx: BalanceContext) -> bool:
     if is_standing_loan_payment(template, pass_ctx):
         return True
     account_id = getattr(template, "to_account_id", None)
-    if account_id is None or template.recurrence_rule is None or template.is_active:
+    if account_id is None or not template.recurs or template.is_active:
         return False
     if loan_loaders.load_loan_params(account_id) is None:
         return False
@@ -576,7 +576,7 @@ def refuse_recurrence_update(
     clearing = (
         recurrence_submitted
         and data.get("recurrence_unit") is None
-        and template.recurrence_rule is not None
+        and template.recurs
     )
     states_a_bound = (
         ctx.end_bound is not None or RECURRENCE_STARTS_ON_KEY in data

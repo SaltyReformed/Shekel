@@ -175,7 +175,7 @@ def definition_recurs(template) -> bool:
         ``True`` iff the definition is not archived and carries a recurrence
         rule.
     """
-    return template.is_active is not False and template.recurrence_rule is not None
+    return template.is_active is not False and template.recurs
 
 
 def resolve_generation_plan(

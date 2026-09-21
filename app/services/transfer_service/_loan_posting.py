@@ -37,7 +37,6 @@ from app.services import (
     loan_posting_service,
 )
 from app.services.pay_calendar import DerivedPeriod
-from app.services.transfer_service._ownership import _get_owned_period
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -191,9 +190,9 @@ _POSTING_RELEVANT_INSTALLMENT_FIELDS = frozenset(
 
 def _reject_installment_move_before_loan(
     xfer: Transfer,
-    user_id: int,
     updates: dict[str, object],
     to_account: Account,
+    period_after: DerivedPeriod | None,
 ) -> None:
     """Refuse an ``update_transfer`` edit that drags a loan payment behind its loan.
 
@@ -217,84 +216,51 @@ def _reject_installment_move_before_loan(
     leaves behind, such as a settled payment whose cash really moved -- editable
     in every other respect instead of frozen.
 
-    A submitted ``pay_period_id`` is ownership-checked HERE, ahead of the guard,
-    because the guard reads that period's ``start_date`` as the installment
-    fallback: leaving the check to the caller's later ``pay_period_id`` block
-    would let an unowned row answer this guard, returning a 400 carrying a date
-    derived from it where the project's security-response rule requires an
-    indistinguishable 404.  The later block's own call stays -- it is
-    idempotent, and dropping it would make that section depend on this one.
-
-    **That second call is a SECOND walk, and plan step ``pay_calendar:C13-b``
-    measured what it costs rather than arguing about it.**  Both resolutions
-    now derive the owner's calendar (``_ownership._get_owned_period``), where
-    both used to load a ``budget.pay_periods`` row.  Measured 2026-09-03 on
-    ``PATCH /transfers/instance/<id>`` moving a transfer between periods:
-    **21 statements before the step and 23 after, TWO payday reads either
-    side.**  So the duplication is older than this step and this step costs it
-    two statements -- collapsing it would return one of those, which is not
-    enough to restructure a pre-write guard block for.  Left as it is,
-    deliberately, with the number recorded so the next reader weighs a figure
-    rather than this paragraph.
-    **The destination account is the caller's already-owned value for the same
-    reason** (plan step R10-b): the guard names that account in its refusal
-    message, so resolving an unowned id here would answer a cross-user probe
-    with that account's NAME.
+    **The paycheck the edit leaves the transfer in arrives RESOLVED** (plan
+    step ``balance:X-ci-1``, ruling **R-BAL96**), and this guard no longer
+    resolves one.  It called ``_ownership._get_owned_period`` itself, and so
+    did ``._update._reject_unowned_references`` two gates later -- a second
+    walk of the owner's calendar for one edit, measured at plan step
+    ``pay_calendar:C13-b`` (2026-09-03, ``PATCH /transfers/instance/<id>``
+    moving a transfer between periods: 21 statements before that step, 23
+    after, two payday reads either side) and left in place then because two
+    statements were not enough to restructure a pre-write block for.  The
+    re-placing rule this leaf adds needs the same paycheck a third time, and
+    three walks for one value is the shape the developer's DRY rule names
+    (one producer per request, threaded), so ``._update`` resolves it ONCE --
+    which is also where the submitted ``pay_period_id`` is ownership-checked
+    now, ahead of this guard, for the reason this guard used to do it: it
+    reads that period's ``start_date`` as the installment fallback, and an
+    unowned row answering it would return a 400 carrying a date derived from
+    it where the security-response rule requires an indistinguishable 404.
+    **The destination account is the caller's already-owned value for the
+    same reason** (plan step R10-b): the guard names that account in its
+    refusal message, so resolving an unowned id here would answer a
+    cross-user probe with that account's NAME.
 
     Args:
-        xfer: The transfer being updated (supplies the current period / due date
-            for any field the edit does not move).
-        user_id: The acting user, for the pay-period ownership check.
+        xfer: The transfer being updated (supplies the current due date for
+            an edit that does not move it).
         updates: The :func:`update_transfer` kwargs about to be applied --
-            read, not written; *xfer* still holds its pre-edit values.
+            read, not written; *xfer* still holds its pre-edit values.  A
+            placed transfer's re-placed ``due_date`` is already in it
+            (``._placed.re_place_and_grade_the_day`` runs first), so a one-time payment
+            into a loan is graded on the installment the move leaves it with.
         to_account: The destination this edit LEAVES the transfer with, already
             ownership-checked by the caller -- ``xfer.to_account`` when the edit
             moves no endpoint.
+        period_after: The paycheck this edit leaves the transfer in, resolved
+            off the owner's calendar by the caller whenever *updates* names
+            one of the three fields above; ``None`` otherwise, and not read.
 
     Raises:
-        NotFoundError: If a submitted ``pay_period_id`` is not the user's, or
-            the paycheck this edit leaves the transfer in is not in the
-            owner's calendar.
         ValidationError: If the resulting installment falls at or before the
             destination loan's origination.
     """
     if not _POSTING_RELEVANT_INSTALLMENT_FIELDS & updates.keys():
         return
-    # ONE resolution for both jobs (plan step ``pay_calendar:C13-b``).  This
-    # was a conditional ``_get_owned_period`` for the ownership half and a
-    # second ``db.session.get(PayPeriod, ...)`` inside the guard for the
-    # installment half -- two reads of one row whenever the edit moved the
-    # period.  The unconditional form also states the paycheck the edit LEAVES
-    # the transfer in, which is the value the guard actually grades.
-    #
-    # **It resolves on paths that previously touched nothing**, because an
-    # argument is evaluated before the guard's own two early returns (a
-    # non-loan destination, a loan with no params): an edit carrying only
-    # ``due_date`` or ``to_account_id`` now reads the transfer's OWN period.
-    # That read can refuse, and what makes it safe to be total is a key on a
-    # DIFFERENT TABLE: ``budget.transfers`` has a plain ``pay_period_id`` FK
-    # and no composite owner key -- that is finding **P83**, still open -- so
-    # the guarantee is transitive, through the shadows, and the key that
-    # carries it is ``fk_transactions_owner_ACCOUNT``.
-    #
-    # *A first version of this comment named ``fk_transactions_owner_period``,
-    # which is the one key in migration ``d4a92f6b13c8`` that CANNOT grade
-    # this*: the backfill is
-    # ``SET user_id = p.user_id FROM budget.pay_periods p``, so that key is
-    # satisfied by construction and refuses nothing.  The account key is not.
-    # A legacy transfer owned by A but filed in B's period puts its shadows on
-    # A's accounts -- ``create_transfer`` owner-checks both endpoints against
-    # ``spec.user_id`` -- while the backfill stamps ``user_id = B``, so
-    # ``(A's account_id, B)`` matches no ``budget.accounts`` row and the
-    # ``ADD CONSTRAINT`` aborts.  **The migration's own docstring says exactly
-    # this** ("the backfill reads the PAY PERIOD, and the account key is what
-    # grades it"), which is where this should have been read the first time.
     _reject_payment_before_origination(
-        to_account,
-        _get_owned_period(
-            updates.get("pay_period_id", xfer.pay_period_id), user_id,
-        ),
-        updates.get("due_date", xfer.due_date),
+        to_account, period_after, updates.get("due_date", xfer.due_date),
     )
 
 
