@@ -22,10 +22,14 @@ from app.services import (
     category_service,
     definition_delete,
     pay_period_service,
+    status_seam,
     transaction_service,
 )
-from app.services.account_resolver import resolve_cash_flow_set
-from app.services.cash_flow_set import CashFlowSet
+from app.services.account_resolver import (
+    resolve_cash_flow_set,
+    resolve_owner_cash_flow_set,
+)
+from app.services.cash_flow_set import CashFlowSet, purchase_accounts
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import require_owner
@@ -170,6 +174,7 @@ def get_full_edit(txn_id):
     # the refusal's merchant-rule arm and the dialog's pair sentence want the
     # same answer, and the delete verb threads it the same way.
     last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
+    tender_accounts, tender_account_id = _tender_picker(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
         txn=txn,
@@ -259,7 +264,56 @@ def get_full_edit(txn_id):
         delete_preview=transaction_service.preview_deletion(
             txn, last_row_of_definition=last_row_of_definition,
         ),
+        # **The "Paid from" picker** (plan step ``credit_card:CC-5-3``): the
+        # accounts a payment under this row may have moved through, in
+        # picker order -- the row's own first, then the OWNER's cash-flow set
+        # (ruling **R-CC39**; the SAME tuple the add-purchase form renders
+        # and both doors gate on) -- and which one to preselect: what the row
+        # RECORDS as its tender (the kept payment's account, else the row's
+        # own; ``status_seam.tender_account_id_of``, the seam's one default),
+        # so an untouched Save posts an echo the door drops and a reverted
+        # card-tendered bill shows the card (ruling **R-CC42**).  The card
+        # renders it only when there is a choice (ruling **R-CC34**).
+        # Resolved for the OWNER (``txn.user_id``; this door is owner-only,
+        # so the two coincide) with no override, as every picker is.
+        tender_accounts=tender_accounts,
+        tender_account_id=tender_account_id,
     )
+
+
+def _tender_picker(txn):
+    """Return ``(accounts, selected id)`` for the popover's "Paid from" picker.
+
+    The accounts a payment under *txn* may NAME
+    (:func:`~app.services.cash_flow_set.purchase_accounts` over the OWNER's
+    set, the tuple both doors gate on) **plus the account the row RECORDS
+    when that is no longer among them** -- a card the owner has since
+    archived, or a checking account that was the primary when the bill was
+    paid.  The same shape this route gives an archived category one block
+    up, and for the same reason: a ``<select>`` whose preselected value is
+    missing submits its FIRST option, so without this arm an untouched Save
+    on a bill paid from a since-archived card would post the row's own
+    account, read as a CORRECTION (not the echo the door drops), re-point
+    the payment onto checking and release both clearing links -- and the
+    documented unlock path (Status = Projected) would be refused for a
+    tender nobody changed.  Found by the neutral review of this leaf.  The
+    recorded account never reaches the gate: an echo of it is dropped
+    before the gate is asked (``status_seam.tender_for_status``).
+
+    Args:
+        txn: The row the popover is drawn for, with ``entries`` loaded.
+
+    Returns:
+        The tuple to render, in picker order, and the id to preselect.
+    """
+    accounts = purchase_accounts(resolve_owner_cash_flow_set(txn.user_id), txn)
+    recorded_id = status_seam.tender_account_id_of(txn)
+    if recorded_id not in {account.id for account in accounts}:
+        accounts = (*accounts, db.session.get(Account, recorded_id))
+    return accounts, recorded_id
+
+
+# ---- the empty-cell family ------------------------------------------
 
 
 # ---- the empty-cell family ------------------------------------------

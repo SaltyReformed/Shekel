@@ -123,15 +123,24 @@ shadow's movement through the purchase source was rejected there: that
 source's counter leg is the parent's CATEGORY account, and a transfer between
 two of the owner's accounts is neither income nor expense.
 
-**A movement moves with its parent** (ruling **R-BAL46**).  The one parent
-whose account can change is a shadow re-pointed by
-``transfer_service._endpoints._apply_endpoint_move``, and that applier is the
-ONE writer of the move since plan step ``credit_card:CC-5-1``: the co-located
-key that cascaded it, ``fk_transaction_entries_parent_account``, is dropped
-(ruling **R-BAL76**), because a movement's account is its own -- where its
-money moved, which for a card purchase in a checking envelope is the card.
-The movement this module writes takes its parent's account until the settle
-door takes a TENDER of its own (``CC-5-3``); nothing here reads the account.
+**A movement's account is its own -- where its money moved** (rulings
+**R-BAL46**, **R-BAL75**, **R-BAL76**).  The co-located key that held it to
+its parent's, ``fk_transaction_entries_parent_account``, is dropped since
+plan step ``credit_card:CC-5-1``; a shadow's movements are re-pointed by hand
+by ``transfer_service._endpoints._apply_endpoint_move`` when its endpoint
+moves.  **The movement this module writes books on the TENDER** (plan step
+``credit_card:CC-5-3``, rulings **R-CC15** and **R-CC42**): the account the
+:class:`~app.services.status_seam._record.Settlement` names when the door
+named one -- the card, for a bill the owner charged to it -- else the seam's
+one default, :func:`~._record.tender_account_id_of` (the kept movement's own
+account, so a revert keeps where the money moved as it keeps the figure;
+the row's own account for a first settle, where it is EXPECTED to be paid
+from).  A named tender re-points a kept movement (``_re_point``: both
+clearing links released, the day re-graded against the new account's
+opening); the row's clearing link reaches only a movement on the row's
+account (``_links_the_row``); and a settled row is worth its covering
+movement's cash ON THE ACCOUNT ASKED ABOUT (:func:`covered_cash_leg`,
+ruling **R-CC40**).
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): no Flask imports;
 mutates in place and never commits; the withdraw arm's posting reversal
@@ -163,9 +172,16 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
-from app.services.cash_ledger import movement_cash_leg
+from app.services.cash_ledger import (
+    movement_cash_leg,
+    reject_movement_before_books_open,
+)
 from app.services.settle_day import record_settle_day, recorded_settle_day
-from app.services.status_seam._record import Settlement
+from app.services.status_seam._record import (
+    Settlement,
+    covering_movement_of,
+    tender_account_id_of,
+)
 
 
 def covering_clause():
@@ -184,8 +200,8 @@ def covering_clause():
     return TransactionEntry.covers_settlement.is_(True)
 
 
-def covered_cash_leg(row: Transaction) -> Decimal:
-    """Return what a settled *row* is WORTH: the cash its covering movement moves.
+def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
+    """Return what a settled *row* is WORTH on *account_id*: its covering movement's cash there.
 
     **The one valuation of a settled row**, for every reader that asks what
     the row moves rather than what its movements do: the statement matcher's
@@ -195,7 +211,25 @@ def covered_cash_leg(row: Transaction) -> Decimal:
     covering movement moves, so a covered bill, paycheck or transfer leg is
     worth its figure and a ``purchases``-basis envelope -- which has no
     covering movement, its purchases being the record -- is worth ``0`` and
-    is not offered; its purchases are.  Through ``X-bi-3e``'s first cut those
+    is not offered; its purchases are.
+
+    **Worth it ON THE ACCOUNT ASKED ABOUT** (plan step ``credit_card:CC-5-3``,
+    ruling **R-CC40**, developer 2026-09-21).  Every reader here is a
+    statement-side reader holding one account -- the screen being reviewed,
+    the match's own -- and a settled row's money is where its covering
+    movement is, which since ``CC-5-3`` may be another account than the
+    row's: a ``$120`` hotel bill on checking paid FROM THE CARD holds its
+    movement on the card.  Checking's feed never shows that money, so on
+    checking's screen the row is worth ``0`` and is not offered (a stray
+    ``$120`` line there stays unexplained until the owner records it, rather
+    than being paired with a bill whose money moved elsewhere); the card's
+    screen is where the movement is the candidate, which is leaf ``CC-5-4``'s
+    (the ruling's second half).  The account-blind sum had no reader left
+    once every caller asked about one account, so the parameter is REQUIRED:
+    a default would keep the wrong meaning as what a caller gets by saying
+    nothing.  The fold reads the same fact the same way
+    (``cash_ledger._events.settled_cash_facts`` folds a movement on its own
+    account, ruling **R-BAL75**).  Through ``X-bi-3e``'s first cut those
     three readers spelled ``settled_cash_leg`` ALONE and two of them read
     every accepted bill as a match that stopped holding and every undo as
     moving no money (adversarial review, 2026-09-16); then
@@ -234,16 +268,19 @@ def covered_cash_leg(row: Transaction) -> Decimal:
 
     Args:
         row: The transaction, with ``entries`` loaded or loadable.
+        account_id: The account whose statement is asking -- the only
+            account a covering movement is worth anything on.
 
     Returns:
-        The signed sum, ``Decimal("0")`` when nothing is covered, posted or
-        contributing.
+        The signed sum, ``Decimal("0")`` when nothing is covered, posted,
+        contributing or on *account_id*.
     """
     return sum(
         (
             movement_cash_leg(row, movement)
             for movement in row.covering_movements
             if movement.settled_on is not None
+            and movement.account_id == account_id
         ),
         Decimal("0"),
     )
@@ -274,6 +311,21 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
       the row on an asserted day, and the movement sits inside that assertion
       too.  An identity re-submit (a popover Save with the status untouched)
       lands here and changes nothing.
+
+    **The row's link reaches only a movement on the ROW's account** (plan
+    step ``credit_card:CC-5-3``, ruling **R-CC15**; :func:`_links_the_row`).
+    A movement on another account -- the card, for a bill charged to it --
+    carries its OWN clearing link, written by that account's statement when
+    it is offered there (leaf ``CC-5-4``), and the row's link stays the
+    row's: the checking statement the row's link names never showed money
+    that moved on the card, and ``fk_transaction_entries_reconciled_by``
+    holds the movement's link to the movement's account, so the copy would
+    be unstorable as well as false.  **A day move still WITHDRAWS such a
+    movement's own link** (ruling **R-FL**: the observation was of money on
+    a named day), and only the COPY is gated: without that the revert of a
+    card-cleared bill would un-date the movement with its link standing,
+    which ``ck_transaction_entries_cleared_needs_settle_day`` refuses at the
+    flush (the review of this leaf; the writer of that link is CC-5-4's).
     """
     if movement.settled_on != row.settled_on:
         # A covering movement's purchase day IS its settle day (ruling
@@ -283,7 +335,9 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
         if row.settled_on is not None:
             movement.purchased_on = row.settled_on
         record_settle_day(movement, recorded_settle_day(row))
-        movement.reconciled_by_id = row.reconciled_by_id
+        movement.reconciled_by_id = (
+            row.reconciled_by_id if _links_the_row(row, movement) else None
+        )
         return
     observed = ref_cache.settled_day_basis_id(SettledDayBasisEnum.OBSERVED)
     if (
@@ -291,8 +345,29 @@ def _mirror_assertion(row: Transaction, movement: TransactionEntry) -> None:
         and movement.settled_day_basis_id != observed
     ):
         record_settle_day(movement, recorded_settle_day(row))
-    if movement.reconciled_by_id is None:
+    if movement.reconciled_by_id is None and _links_the_row(row, movement):
         movement.reconciled_by_id = row.reconciled_by_id
+
+
+def _links_the_row(row: Transaction, movement: TransactionEntry) -> bool:
+    """Return whether the row's clearing link describes *movement* too.
+
+    ONE predicate for the two writers that copy ``reconciled_by_id`` off the
+    row (:func:`_mirror_assertion`, :func:`record_clearing`): a statement
+    that showed the ROW's money on the row's account showed this movement
+    exactly when the movement is on that account.  The composite key
+    ``fk_transaction_entries_reconciled_by`` says the same in the storage
+    tier; this is the seam's spelling, so the false state is refused before
+    the flush rather than by it.
+
+    Args:
+        row: The settled transaction.
+        movement: Its covering movement.
+
+    Returns:
+        ``True`` when the movement is on the row's own account.
+    """
+    return movement.account_id == row.account_id
 
 
 def _record_moved(row: Transaction) -> None:
@@ -359,6 +434,69 @@ def _record_onto(
     )
 
 
+def _re_point(
+    row: Transaction, movement: TransactionEntry, account_id: int,
+) -> bool:
+    """Move *movement* onto *account_id* if it is not there; say whether it moved.
+
+    The TENDER's write onto a movement that already exists (plan step
+    ``credit_card:CC-5-3``): a re-settle naming an account other than the
+    kept movement's, or a "Paid from" correction on a settled row.  Three
+    consequences, in this order:
+
+    * **both clearing links are RELEASED** -- the movement's and the row's.
+      A link records that a named statement of a named account was seen to
+      show this money; money that moved on another account was shown by no
+      such statement, so the observation is withdrawn rather than left to
+      contradict the record (the same rule a settle-day move applies, ruling
+      **R-FL**).  The storage tier would refuse the movement's anyway
+      (``fk_transaction_entries_reconciled_by`` holds the link to the
+      movement's account); the row's is released HERE because the seam's
+      own release arms are about the DAY and cannot see the tender;
+    * the account is assigned;
+    * **the day the movement will END with is graded against the new
+      account's books boundary FIRST** (``cash_ledger.
+      reject_movement_before_books_open``, the same producer
+      ``settle_day.record_settle_day`` asks).  The ROW's day, which the seam
+      has written before anything reaches :func:`_cover` and which
+      ``_mirror_assertion`` copies onto the movement next: the day writer
+      asks the boundary only when a day is written, the mirror writes one
+      only when the days differ, and a tender correction on a settled row
+      leaves them equal -- so without this line a payment dated before the
+      card's opening could be moved onto the card unrefused.  The row's day
+      rather than the movement's OLD one, because a settle-day move and a
+      tender arrive in ONE popover Save and the old day is not what the
+      movement ends up dated (the review of this leaf: a payment on the
+      card's opening day, corrected in one Save to the day after AND the
+      card, was refused for a day it was leaving).  Asked before this
+      function's two assignments, so a refused re-point writes nothing here;
+      what the seam wrote earlier in the same act (the status, the row's
+      day pair) is the caller's rollback's, as every refusal raised inside
+      ``sync_covering_movement`` is.
+
+    Args:
+        row: The settled or settling transaction, its day pair already
+            written for this act.
+        movement: Its covering movement.
+        account_id: The account the record names, already gated.
+
+    Returns:
+        Whether the movement's account changed, for :func:`_record_moved`.
+
+    Raises:
+        ValidationError: When the row's day is on or before the new
+            account's opening.
+    """
+    if movement.account_id == account_id:
+        return False
+    if row.settled_on is not None:
+        reject_movement_before_books_open(account_id, row.settled_on)
+    movement.reconciled_by_id = None
+    row.reconciled_by_id = None
+    movement.account_id = account_id
+    return True
+
+
 def _cover(row: Transaction, settlement: Settlement) -> None:
     """Ensure *row* holds exactly one covering movement mirroring *settlement*.
 
@@ -376,49 +514,46 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
     row's new day.  The id survives, so a match or a log line that named it
     still names it.
 
-    **And re-points it onto the row's account** (plan step
-    ``credit_card:CC-5-2``, ruling **R-CC36**).  A kept movement sits on the
-    account the row named when it was settled; since that ruling a Projected
-    row holding a kept record FOLLOWS its definition's account move (the
-    recurrence maintain pass no longer retains it), so at the re-settle the
-    row may be on Second Checking while its record still names Checking.  The
-    record is what a settle books, and a settle books on the row's account --
-    the value the fresh-movement arm below writes (a TENDER account other
-    than the row's is ``CC-5-3``'s to add, and it replaces this value rather
-    than sitting beside it) -- so the kept movement takes it here too.
-    Without this line a revert, a definition
-    account move and a re-settle would book the payment on the OLD account
-    while the plan sits on the new one, `$150` apart on each.  Assigned
-    BEFORE the record is written, so ``record_settle_day``'s books boundary
-    (read under ``no_autoflush`` off the column) grades the day against the
-    account the record will book on.  The lazy ``account`` relationship is
-    not loaded here and is not assigned: the fold and the ledger read the
-    column, and no reader of the relationship follows on this path.
+    **And books it on the TENDER** (plan step ``credit_card:CC-5-3``, rulings
+    **R-CC15** and **R-CC42**): the account the record names when the door
+    named one, else the seam's one default,
+    :func:`~._record.tender_account_id_of` -- the kept movement's own account
+    for a re-settle, the row's own for a first settle -- so a revert keeps
+    where the money moved exactly as it keeps a stated figure, and only a
+    NAMED tender re-points a kept movement (:func:`_re_point`).  Through
+    ``CC-5-2`` this arm re-pointed a kept movement onto the ROW's account
+    unconditionally (ruling **R-CC36**'s re-point clause, for a Projected row
+    whose definition moved accounts while it held a kept record); R-CC42
+    amends that clause, because under a tender the same columns cannot tell
+    that case from a bill the owner charged to the card and reverted to edit,
+    and the one-click re-settle of the latter must not move its ``$120`` back
+    onto checking.  Assigned BEFORE the record is written, so
+    ``record_settle_day``'s books boundary (read under ``no_autoflush`` off
+    the column) grades the day against the account the record will book on.
+    The lazy ``account`` relationship is not loaded here and is not assigned:
+    the fold and the ledger read the column, and no reader of the
+    relationship follows on this path.
     """
     if not settlement.amount:
         _withdraw(row)
         return
-    existing = row.covering_movements
-    if existing:
-        movement, *extra = existing
-        if extra:
-            raise ValueError(
-                f"Transaction {row.id} holds {len(existing)} covering movements; "
-                "a settle writes exactly one, so a second can only have reached "
-                "the table around the status seam."
-            )
-        movement.account_id = row.account_id
-        if _record_onto(row, movement, settlement):
+    account_id = (
+        settlement.account_id if settlement.account_id is not None
+        else tender_account_id_of(row)
+    )
+    movement = covering_movement_of(row)
+    if movement is not None:
+        re_pointed = _re_point(row, movement, account_id)
+        if _record_onto(row, movement, settlement) or re_pointed:
             _record_moved(row)
         return
     movement = TransactionEntry(
         transaction_id=row.id,
-        # The parent's account -- where the row was EXPECTED to be paid from
-        # (ruling **R-CC16**) -- as ``entry_service.create_entry`` writes it,
-        # until the settle door takes the TENDER account of its own (plan step
-        # ``credit_card:CC-5-3``: a bill charged to the card is settled with
-        # its covering movement on the card, ruling **R-CC15**).
-        account_id=row.account_id,
+        # The TENDER (above): the account the money moved through, which is
+        # the row's own -- where it was EXPECTED to be paid from (ruling
+        # **R-CC16**) -- unless the door named another (a bill charged to the
+        # card is settled with its covering movement on the card, **R-CC15**).
+        account_id=account_id,
         # The row's OWNER, which ``fk_transaction_entries_owner_transaction``
         # holds it to (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
         owner_id=row.user_id,
@@ -516,6 +651,14 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
     rule inert for every bill it ticks (found by ``test_cash_walk``'s
     governing-assertion case, 2026-09-16).
 
+    **The mirror takes the link only on the ROW's account** (plan step
+    ``credit_card:CC-5-3``, :func:`_links_the_row`): the panel's tick settles
+    the row with the statement's account as its tender, so the movement it
+    just wrote IS on the row's account and takes the link; a movement on
+    another account -- a kept card tender the tick did not re-point, which
+    cannot happen through the tick (it names the tender) but can through a
+    caller of the bare seam -- would carry a link its own key refuses.
+
     Args:
         row: The settled transaction the statement showed -- a plain row, or
             the one LEG of a transfer on the account whose statement was read
@@ -525,7 +668,8 @@ def record_clearing(row: Transaction, anchor_id: int) -> None:
     """
     row.reconciled_by_id = anchor_id
     for movement in row.covering_movements:
-        movement.reconciled_by_id = anchor_id
+        if _links_the_row(row, movement):
+            movement.reconciled_by_id = anchor_id
 
 
 def sync_covering_movement(

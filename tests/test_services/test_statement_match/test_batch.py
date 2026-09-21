@@ -1659,7 +1659,7 @@ class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
             name="Home Improvement",
         ).one()
         assert envelope.covering_movements == []
-        assert status_seam.covered_cash_leg(envelope) == Decimal("0.00")
+        assert status_seam.covered_cash_leg(envelope, envelope.account_id) == Decimal("0.00")
         assert _balance(seed_user, later + timedelta(days=2)) == (
             before - Decimal("75.00")
         )

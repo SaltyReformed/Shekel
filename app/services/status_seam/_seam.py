@@ -46,6 +46,7 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
     reject_stated_figure_over_purchases,
+    reject_tender_without_settled_status,
 )
 from app.utils.balance_predicates import (
     enters_settled_band,
@@ -269,6 +270,52 @@ def figure_for_status(
             return None
         reject_figure_without_settled_status(row, new_status_id)
     return submitted
+
+
+def tender_for_status(
+    row: Transaction,
+    new_status_id: int,
+    submitted_account_id: Optional[int],
+    recorded_account_id: int,
+) -> Optional[int]:
+    """Return the TENDER a submission means, or refuse a real conflict.
+
+    :func:`figure_for_status`'s twin for the record's third fact (plan step
+    ``credit_card:CC-5-3``): the full-edit popover posts its "Paid from"
+    picker on every Save, preselected from what the row records
+    (:func:`~._record.tender_account_id_of`), so an untouched picker is an
+    ECHO -- dropped whatever the status, because a re-statement of the
+    account the record already names is not a correction and must not turn
+    an identity Save into a re-point.  A DIFFERENT account beside a status
+    that settles nothing asserts two contradictory things -- "it was paid
+    from the card" and "it did not move" -- and is REFUSED
+    (:func:`~._refusals.reject_tender_without_settled_status`), never
+    dropped: the figure's twin measured what a silent drop costs.
+
+    Args:
+        row: The row the submission is about, for the refusal's sentence.
+        new_status_id: The ``ref.statuses.id`` the row is moving to -- the
+            SUBMITTED status when the form carried one, else the row's own.
+        submitted_account_id: The account the form named, or ``None`` when it
+            carried no picker (one member: ruling **R-CC34**).
+        recorded_account_id: What the row records as its tender -- the
+            kept movement's account, else the row's own -- which is what the
+            picker was preselected from, so equality here is exactly "the
+            user did not touch it".
+
+    Returns:
+        *submitted_account_id* when it names an account other than the
+        recorded one and the row is settling or staying settled; ``None``
+        when nothing was submitted or the submission is an echo.
+
+    Raises:
+        ValidationError: When an account DIFFERING from the record arrives
+            beside a status that settles nothing.  A 400 at either route.
+    """
+    if submitted_account_id is None or submitted_account_id == recorded_account_id:
+        return None
+    reject_tender_without_settled_status(row, new_status_id)
+    return submitted_account_id
 
 
 def apply_status_change(

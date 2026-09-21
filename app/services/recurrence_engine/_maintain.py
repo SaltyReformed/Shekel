@@ -241,9 +241,10 @@ def _no_row_is_reattributed(existing, template) -> "frozenset[int]":
     on the card when its Groceries envelope moves from Checking to Second
     Checking, and each purchase's clearing link is scoped by the purchase's
     own account, which the move never touches.  The row's kept payment
-    record (a reverted settle's un-dated covering movement) is re-pointed
-    onto the row's account when the row is next settled
-    (``status_seam._covering._cover``, the same ruling).  Nothing on a
+    record (a reverted settle's un-dated covering movement) keeps its
+    account when the row is next settled; only a NAMED tender moves it
+    (ruling **R-CC42**, ``status_seam._covering._cover`` / ``_re_point``,
+    which amended this ruling's re-point clause).  Nothing on a
     transaction row is re-filed by its account moving, so nothing is held
     back for it; a row holding records still RETAINS on the other shape (the
     rule no longer names its occurrence), which is
