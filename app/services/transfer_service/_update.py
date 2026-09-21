@@ -30,8 +30,13 @@ from app.services.transfer_service._endpoints import (
     _resolve_endpoints,
 )
 from app.services.transfer_service._loan_posting import (
+    _POSTING_RELEVANT_INSTALLMENT_FIELDS,
     _reject_installment_move_before_loan,
     _reverse_loan_payment_before_it_leaves,
+)
+from app.services.transfer_service._placed import (
+    re_place_and_grade_the_day,
+    restate_definition_price,
 )
 from app.services.transfer_service._posting_sync import (
     _reconcile_postings_after_update,
@@ -219,7 +224,7 @@ def _dispatch_settle(
 
 
 def _apply_remaining_fields(
-    rows: TransferRows, updates: "dict[str, object]",
+    rows: TransferRows, updates: "dict[str, object]", *, date_moves: bool,
 ) -> None:
     """Apply every field a SETTLE does not own, mirroring it across the rows.
 
@@ -240,16 +245,21 @@ def _apply_remaining_fields(
     Args:
         rows: The transfer and both shadows.
         updates: The kwargs left for this function to apply.
+        date_moves: Whether this update leaves a PLACED transfer on a
+            different day than it has -- the one predicate under which its
+            occurrence follows its date (**R-BAL94**), decided by the caller
+            before its first write beside the sibling refusal that shares
+            it, so the two cannot part.
 
     Note:
         It takes no ``user_id``: the two ownership refusals it used to make now
-        run before the first write (:func:`_reject_unowned_references`), so what
-        is left here is assignment only.
+        run before the first write (:func:`_reject_unowned_references` and the
+        period resolution in :func:`_apply_transfer_updates`), so what is left
+        here is assignment only.
 
     Raises:
-        ValidationError: From an ownership check, an illegal transition, or
-            the settle-day correction door.
-        NotFoundError: From an unowned period or category.
+        ValidationError: From an illegal transition or the settle-day
+            correction door.
     """
     # ── status_id + the settlement RECORD ─────────────────────────
     # ONE seam pass carrying both, mirroring
@@ -342,11 +352,35 @@ def _apply_remaining_fields(
     # ── due_date ──────────────────────────────────────────────────
     # The parent transfer is canonical; mirror to both shadows so the
     # three rows stay equal (Transfer Invariant 3).
+    #
+    # **A PLACED transfer's occurrence follows its date** (plan step
+    # ``balance:X-ci-1``, ruling **R-BAL94**: a one-time transfer records its
+    # own due date as the occurrence it answers, the twin of
+    # ``one_off.state_due_date``).  This arm is the ONE writer of a transfer's
+    # date -- every door that moves one calls ``update_transfer`` (Transfer
+    # Invariant 4) -- so writing ``occurs_on`` beside it here is what makes
+    # the two columns unable to part, whichever door moved the date and
+    # whether it typed the day or the period move re-placed it
+    # (``._placed.re_place_and_grade_the_day``).  **Only when the date MOVES**, which
+    # is the twin's guard (``_field_updates._place_the_date``: ``if due ==
+    # txn.due_date: return``) and X-ci-1's adversarial review found it
+    # missing: the full-edit form posts ``due_date`` on EVERY save, so a
+    # notes-only save of a cleared cadence's survivor -- whose occurrence is
+    # the day its cadence named, not its due day (a monthly rule with a due
+    # day; a first-of-month rule due on the payday) -- was silently re-keyed
+    # onto its due date, and a cadence re-added later that names the old
+    # day no longer adopted it.  A GENERATED transfer's ``occurs_on`` is the
+    # occurrence its cadence named and a re-dating by the maintain pass does
+    # not move it; an ad-hoc transfer answers no occurrence.  NOT mirrored
+    # to the shadows, for the reason the column states: a shadow is created
+    # from its parent, never from an occurrence.
     if "due_date" in updates:
         new_due = updates["due_date"]
         rows.transfer.due_date = new_due
         for shadow in rows.shadows:
             shadow.due_date = new_due
+        if date_moves:
+            rows.transfer.occurs_on = new_due
 
     # ── settle_day ────────────────────────────────────────────────
     # The ONE caller that legitimately supplies a day is the user CORRECTING
@@ -369,13 +403,13 @@ def _apply_remaining_fields(
 def _reject_unowned_references(
     user_id: int, updates: "dict[str, object]",
 ) -> None:
-    """Refuse an unowned period or category BEFORE any field is written.
+    """Refuse an unowned category BEFORE any field is written.
 
-    The two user-scoped FKs :func:`update_transfer` accepts, checked with the
-    other pre-write gates rather than at the arm that assigns them.  They ran
-    inside :func:`_apply_remaining_fields`, which is AFTER
-    :func:`_dispatch_settle` has written the status, the pair's day and the
-    settlement record to both shadows -- so an unowned id raised with the
+    The user-scoped FK :func:`update_transfer` accepts that no derivation
+    answers, checked with the other pre-write gates rather than at the arm
+    that assigns it.  It ran inside :func:`_apply_remaining_fields`, which is
+    AFTER :func:`_dispatch_settle` has written the status, the pair's day and
+    the settlement record to both shadows -- so an unowned id raised with the
     settlement already staged, and the route's ``NotFoundError`` exit returns
     404 without rolling back (unlike ``_error_transfer_response``, which does).
     Nothing persists today, because Flask-SQLAlchemy's teardown removes the
@@ -384,24 +418,25 @@ def _reject_unowned_references(
 
     ``category_id`` is re-checked at the route boundary too (commit C-27 /
     F-043); this is the service tier's own, so a caller that skips the route
-    cannot write across an ownership line.  **``pay_period_id`` no longer is**
-    -- plan step ``pay_calendar:C13-b`` deleted that route probe as one of the
-    four duplicates of :func:`~._ownership._get_owned_period`, so this call and
-    :func:`~._loan_posting._reject_installment_move_before_loan`'s are the two
-    that remain.  That pair is a SECOND walk and the cost of it is measured in
-    the latter's docstring.
+    cannot write across an ownership line.  **``pay_period_id`` is not here
+    any more** (plan step ``balance:X-ci-1``): it was resolved off the owner's
+    calendar HERE and, two gates earlier, inside
+    ``._loan_posting._reject_installment_move_before_loan`` -- the second walk
+    ``pay_calendar:C13-b`` measured and left -- and the re-placing rule that
+    leaf adds needed the same paycheck a third time.  :func:`_apply_transfer_updates`
+    resolves it ONCE now, ahead of every gate that reads it, and that
+    resolution IS the period's ownership check (an id another owner holds is
+    absent from the calendar, ruling **R-BAL96**).
 
     Args:
         user_id: The owner every referenced row must belong to.
         updates: The update kwargs as submitted.
 
     Raises:
-        NotFoundError: If a submitted ``pay_period_id`` or ``category_id`` is
-            not *user_id*'s.  The security response rule collapses "not found"
-            and "not yours" to one answer.
+        NotFoundError: If a submitted ``category_id`` is not *user_id*'s.
+            The security response rule collapses "not found" and "not yours"
+            to one answer.
     """
-    if "pay_period_id" in updates:
-        _get_owned_period(updates["pay_period_id"], user_id)
     if updates.get("category_id") is not None:
         _get_owned_category(updates["category_id"], user_id)
 
@@ -545,6 +580,11 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # whether a leg moved, and a leg an autoflush has already written answers
     # only through its counter (see ``_bump_parent_version_if_a_leg_moved``).
     versions_before = _versions_of(rows)
+    # The transfer's SHAPE, read before any write for the reason the
+    # transaction PATCH reads ``recurs`` before its field loop: the accessor
+    # lazy-loads the definition, and a load after the first ``setattr`` would
+    # autoflush a half-applied row (plan step ``balance:X-ci-1``).
+    placed = rows.transfer.is_placed
 
     # The ENDPOINTS this update leaves the transfer with, resolved and refused
     # first because the guard below GRADES against the resulting destination:
@@ -554,10 +594,41 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # (plan step R10-b).
     endpoints = _resolve_endpoints(rows, user_id, updates)
 
+    # The PAYCHECK this update leaves the transfer in, resolved ONCE off the
+    # owner's calendar and threaded to every reader below (ruling **R-BAL96**,
+    # plan step ``balance:X-ci-1``): the installment guard grades against its
+    # start, a placed transfer's move re-places its date on it, and the
+    # resolution is itself the submitted ``pay_period_id``'s ownership check
+    # -- an id another owner holds is absent from the calendar, one answer for
+    # "no such period" and "not yours".  Resolved exactly when one of the
+    # three installment-relevant fields is named (which includes every move),
+    # the guard's own trigger; ``None`` otherwise, and read by nothing.  Until
+    # this leaf the guard and :func:`_reject_unowned_references` each derived
+    # the calendar for it -- the second walk C13-b measured at two statements
+    # and left; a third reader is what made one producer worth the change.
+    period_after = (
+        _get_owned_period(
+            updates.get("pay_period_id", rows.transfer.pay_period_id), user_id,
+        )
+        if _POSTING_RELEVANT_INSTALLMENT_FIELDS & updates.keys()
+        else None
+    )
+
+    # A PLACED transfer's move RE-PLACES its date (ruling **R-BAL93**) and the
+    # day it is left with may not be one a sibling of its definition already
+    # answers -- both before any write and before the installment guard, so a
+    # one-time payment into a loan is graded on the installment the move
+    # leaves it with.  The answer, whether the date MOVES, is the one
+    # predicate the due-date arm below keys the occurrence on.  See
+    # :mod:`._placed`.
+    date_moves = re_place_and_grade_the_day(
+        rows.transfer, updates, period_after, placed=placed,
+    )
+
     # R-C: refuse an edit that would move a loan payment before its loan, before
     # any field is applied.  See :func:`_reject_installment_move_before_loan`.
     _reject_installment_move_before_loan(
-        rows.transfer, user_id, updates, endpoints.to_account,
+        rows.transfer, updates, endpoints.to_account, period_after,
     )
 
     # The FIGURE's own gate, in the same place and for the same reason: a
@@ -567,10 +638,18 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # actually meant.
     _grade_submitted_figure(rows, updates)
 
-    # The two OWNERSHIP refusals, hoisted here for the same rule.  They ran at
-    # the arms that assign them, which is after the settle has already written
-    # both shadows.
+    # The category's OWNERSHIP refusal, hoisted here for the same rule.  It ran
+    # at the arm that assigns it, which is after the settle has already written
+    # both shadows.  (The period's is the resolution above.)
     _reject_unowned_references(user_id, updates)
+
+    # A PLACED transfer's typed figure RESTATES its definition (ruling
+    # **R-BAL92**; **R-BAL96** as amended): the first write of this update,
+    # placed after every refusal and BEFORE the ownership arm and the settle
+    # dispatch, so a figure typed beside a settling status is the price the
+    # legs book.  It writes the ownership and the flag into ``updates`` for
+    # the arms below to apply, and does nothing when no figure was typed.
+    restate_definition_price(rows.transfer, updates, placed=placed)
 
     # The AMOUNT's own refusal, hoisted for the same rule and by plan step
     # R10-b's adversarial review.  It ran at the arm that assigns it, two
@@ -689,7 +768,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     else:
         remaining = updates
 
-    _apply_remaining_fields(rows, remaining)
+    _apply_remaining_fields(rows, remaining, date_moves=date_moves)
 
     _bump_parent_version_if_a_leg_moved(rows, versions_before)
 
@@ -813,7 +892,14 @@ def update_transfer(transfer_id, user_id, **kwargs):
     figure travels as ``amount_ownership`` below, and a bare ``amount`` is
     silently ignored like any other unlisted key):
         status_id      -- New status for transfer and both shadows.
-        pay_period_id  -- New period for transfer and both shadows.
+        pay_period_id  -- New period for transfer and both shadows.  On a
+                          PLACED transfer (a rule-less definition's one-time
+                          transfer) the move RE-PLACES its due date as well
+                          (ruling **R-BAL93**, plan step X-ci-1): the target
+                          paycheck's start unless the date was not the source
+                          paycheck's start -- an owner-stated day, read by
+                          position -- or a ``due_date`` arrives beside the
+                          move, which is the owner's.  See :mod:`._placed`.
         from_account_id -- New SOURCE account for the transfer and its expense
                           shadow, whose display name is re-derived with it.
                           May not be an amortizing loan (a disbursement is not
@@ -842,7 +928,11 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           arriving on any other status is REFUSED: an amount
                           states what MOVED, and this pair's money has not.
         due_date       -- Due date for the transfer and both shadows
-                          (Date or None).
+                          (Date or None).  On a PLACED transfer the parent's
+                          ``occurs_on`` follows it (ruling **R-BAL94**), and a
+                          day another transfer of the same definition already
+                          answers is refused (the occurrence index's rule,
+                          as a designed ``ValidationError``).
         settle_day     -- The civil day the money moved and HOW that day is
                           known, for both shadows
                           (:class:`app.services.settle_day.SettleDay` or None).
@@ -854,6 +944,18 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           longer says anything about who owns the amount; since
                           plan step X-au-h it means exactly *this row is the
                           OWNER's, not the rule's*.
+        definition_price -- The figure a HUMAN typed on a PLACED transfer's
+                          popover (a rule-less definition's one-time transfer;
+                          plan step X-ci-1, rulings **R-BAL92** and **R-BAL96**
+                          as amended): the definition's price is RESTATED in
+                          place at the transfer's final due date, all three
+                          rows are declared priced by the definition, and the
+                          flag comes off -- before the settle dispatch, so a
+                          settling ``status_id`` in the same call books it.
+                          Refused on any other transfer, and beside an
+                          ``amount_ownership``.  A definition owning no price
+                          series (derive-mode loan) is not this: its typed
+                          figure is the pair's OWN, sent as ``amount_ownership``.
         amount_ownership -- WHAT PRICES this pair, as ONE value (ruling
                           **R-BAL11**, plan step X-au-f): an
                           :class:`~app.models.amount_ownership.AmountOwnership`

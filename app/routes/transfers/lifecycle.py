@@ -258,7 +258,7 @@ def unarchive_transfer_template(template_id):
     if refused is not None:
         return refused
 
-    if template.recurrence_rule:
+    if template.recurs:
         refused = regenerate_or_refuse(
             template,
             PreEditTemplateState(

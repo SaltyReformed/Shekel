@@ -44,7 +44,6 @@ that called a door would be the cycle the C3-a split exists to prevent.
 import logging
 from datetime import date
 
-from sqlalchemy import or_
 from sqlalchemy.orm import selectinload
 
 from app.exceptions import (
@@ -60,7 +59,6 @@ from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
 from app.utils.balance_predicates import (
     is_projected,
-    is_projected_clause,
     settled_status_ids,
 )
 from app.utils.log_events import ACCESS, EVT_RESOURCE_NOT_FOUND, log_event
@@ -328,37 +326,68 @@ def regenerate_keep_through_period(
 
 
 
+def _live_rows_of(model, definition, period_ids, *scope):
+    """Load *model*'s live rows in *period_ids*, each with its definition.
+
+    The ONE query shape both arms of :func:`count_discardable_items` load
+    through, so the two cannot come to scope a period differently: the
+    period set, the live filter and the eager load of the definition are
+    stated here, and each arm adds only what is its own (the transaction arm
+    keeps transfer shadows out).  ``selectinload`` fetches every row's
+    definition in one query rather than one per row, since this runs over
+    every period a truncate would drop.
+
+    Args:
+        model: ``Transaction`` or ``Transfer``.
+        definition: The relationship to the row's definition
+            (``Transaction.template`` / ``Transfer.template``).
+        period_ids: The pay-period ids being deleted.
+        *scope: Any further filter clauses the arm needs.
+
+    Returns:
+        The rows, definitions loaded.
+    """
+    return (
+        db.session.query(model)
+        .options(selectinload(definition))
+        .filter(
+            model.pay_period_id.in_(period_ids),
+            model.is_deleted.is_(False),
+            *scope,
+        )
+        .all()
+    )
+
+
 def count_discardable_items(period_ids):
     """Count rows in the periods that regeneration cannot reproduce.
 
     A row needs the user's confirmation before truncate / regenerate
-    wipes it when no rule would write it back (``Transaction.recurs`` is
-    ``False``: a hand-entered row, or a row of a definition with no cadence),
-    when it is a manual override, or when it carries a deliberate
-    non-Projected status (Credit / Cancelled -- settled rows are already
-    hard-locked upstream, so they never reach here).  Transfer shadows
-    always carry ``template_id IS NULL``, so the transaction scan excludes
-    them (``transfer_id IS NULL``) and transfers are counted once on their
-    own table via the parallel predicate (``transfer_template_id`` in place
-    of ``template_id``).  That way a recurring transfer (regenerable) does
-    not falsely trip the gate while an ad-hoc transfer does.  The
+    wipes it when no rule would write it back (``recurs`` is ``False``: a
+    hand-entered row, or a row of a definition with no cadence), when it is
+    a manual override, or when it carries a deliberate non-Projected status
+    (Credit / Cancelled -- settled rows are already hard-locked upstream, so
+    they never reach here).  Transfer shadows always carry ``template_id IS
+    NULL``, so the transaction scan excludes them (``transfer_id IS NULL``)
+    and transfers are counted once on their own table by the same three
+    questions.  That way a recurring transfer (regenerable) does not falsely
+    trip the gate while a one-time or ad-hoc transfer does.  The
     not-Projected test routes through ``balance_predicates.is_projected``
     (negated) so no inline status-id comparison lives here (D6-09).
 
-    **The transaction arm LOADS the rows and asks each one** (plan step
-    ``balance:X-bi-7a``), the shape ruling **R-BAL19** gave the companion
+    **Both arms LOAD the rows and ask each one** -- the transaction arm
+    since plan step ``balance:X-bi-7a`` and the transfer arm since
+    ``balance:X-ci-1``, the shape ruling **R-BAL19** gave the companion
     query for finding **BAL-482**: "no rule would write it back" is
     ``recurs``'s rule, and a ``WHERE`` restating it -- the ``template_id IS
-    NULL`` this arm read until then -- was that rule spelled a second time in
-    another language, and wrong in it: a rule-less definition's row is
-    template-linked, so the SQL counted it REGENERABLE and truncate promised
-    a row back that no rule will write (the transaction half of the twin's
-    defect **BAL-492**).  The query keeps the period / live / not-a-shadow
-    scope; the three owner-held facts are asked in Python.  The definition is
-    loaded in one ``selectinload`` query rather than one per row, since this runs
-    over every period a truncate would drop.  **The transfer arm is
-    unchanged here and still carries the twin's half of that defect**,
-    owned by ``balance:X-ci``.
+    NULL`` / ``transfer_template_id IS NULL`` each arm read until then --
+    was that rule spelled a second time in another language, and wrong in
+    it: a rule-less definition's row is template-linked, so the SQL counted
+    it REGENERABLE and truncate promised a row back that no rule will write
+    (finding **BAL-492**, both halves).  The queries keep the period / live
+    / not-a-shadow scope (:func:`_live_rows_of`); the three owner-held facts
+    are asked in Python, and the two arms ask them through one predicate so
+    a transfer and a transaction cannot be graded by different rules.
 
     Args:
         period_ids: The pay-period ids being deleted.
@@ -367,30 +396,18 @@ def count_discardable_items(period_ids):
         The number of unrecoverable rows (non-shadow transactions plus
         transfers; a transfer counts once, not its two shadows).
     """
-    period_rows = (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.template))
-        .filter(
-            Transaction.pay_period_id.in_(period_ids),
-            Transaction.is_deleted.is_(False),
-            Transaction.transfer_id.is_(None),
-        )
-        .all()
+    def unrecoverable(row):
+        return not row.recurs or row.is_override or not is_projected(row)
+
+    transactions = _live_rows_of(
+        Transaction, Transaction.template, period_ids,
+        Transaction.transfer_id.is_(None),
     )
-    txn_count = sum(
-        1 for txn in period_rows
-        if not txn.recurs or txn.is_override or not is_projected(txn)
+    transfers = _live_rows_of(Transfer, Transfer.template, period_ids)
+    return (
+        sum(1 for row in transactions if unrecoverable(row))
+        + sum(1 for row in transfers if unrecoverable(row))
     )
-    transfer_count = db.session.query(Transfer.id).filter(
-        Transfer.pay_period_id.in_(period_ids),
-        Transfer.is_deleted.is_(False),
-        or_(
-            Transfer.transfer_template_id.is_(None),
-            Transfer.is_override.is_(True),
-            ~is_projected_clause(Transfer),
-        ),
-    ).count()
-    return txn_count + transfer_count
 
 
 

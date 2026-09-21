@@ -16,6 +16,7 @@ figure, graded byte-identical over the developer's saved paychecks.
 """
 
 from app.extensions import db
+from app.models._derived_flag import DerivedFlag
 from app.models.mixins import (
     IsActiveMixin,
     OptimisticLockMixin,
@@ -173,6 +174,27 @@ class PaycheckLine(
         cascade="all, delete-orphan", passive_deletes=True,
         back_populates="paycheck_line",
     )
+
+    @DerivedFlag
+    def recurs(self):
+        """True when this line has a recurrence rule.
+
+        **The ONE accessor for "does this payroll line repeat on a cadence"**
+        (plan step ``balance:X-ci-1``, ruling **R-BAL97**): the third body of
+        :attr:`~app.models.transaction_template.TransactionTemplate.recurs`,
+        one per definition kind that carries a rule, stated on the
+        definition because that is where the fact lives (**R-BAL20**).  A
+        line with no rule is priced into EVERY paycheck (ruling **R-SAL3**);
+        one with a rule is priced where its cadence lands.  The two generic
+        sites that asked this by reading ``recurrence_rule is None`` -- the
+        salary form's Frequency cell and the shared clear-recurrence helper
+        -- read here since X-ci-1.
+
+        A :class:`DerivedFlag` for the reason its twins are (ruling
+        **R-IZ**): a plain property at class level compares ``False`` to
+        everything, and a SQL body would be a second spelling of one rule.
+        """
+        return self.recurrence_rule is not None
 
     @property
     def user_id(self) -> int:

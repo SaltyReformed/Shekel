@@ -458,7 +458,7 @@ def is_standing_loan_payment(
         ``True`` when the destination is a configured loan and *template* is
         the recurring transfer the seam resolves as that loan's payment.
     """
-    if template.recurrence_rule is None:
+    if not template.recurs:
         return False
     account = destination_account(template)
     if account is None:

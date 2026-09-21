@@ -244,6 +244,25 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # Move transfers via the service.  De-duplicate by transfer_id because
     # the query is not account-scoped and may return both shadows from the
     # same transfer.  Each transfer counts as 1 carried-forward item.
+    #
+    # **The flag is a RECURRING definition's transfer's alone** (plan step
+    # ``balance:X-ci-1``, ruling **R-BAL93**; this arm was finding
+    # **BAL-493**'s third writer, flipping ``is_override`` on every transfer
+    # it moved): it is what keeps the maintain and generate passes off a row
+    # the owner placed elsewhere, exactly as the discrete branch's first
+    # pass above flips it for a recurring definition's row.  A ONE-TIME
+    # transfer -- a rule-less definition's -- is never overridden against a
+    # cadence it does not have, and a flag there only hid it from
+    # ``transfer_recurrence.propagate_to_unruled_template`` for good; its
+    # move RE-PLACES its due date and carries ``occurs_on`` with it INSIDE
+    # ``update_transfer`` (**R-BAL96**), so this door states the period and
+    # nothing else, as the ``re_placed_ids`` pass states the same rule in
+    # SQL for a transaction.  An ad-hoc transfer takes no flag either: no
+    # pass will ever write over it.  Asked of the shadow's parent through its
+    # ``transfer`` relationship -- a load per transfer, which is what the
+    # service call beside it already costs.  **Plan step ``balance:X-bi-6-4``
+    # rewrites this arm to walk ``budget.transfers``**; what it carries
+    # forward is the flag keyed on ``recurs``.
     moved_transfer_ids = set()
     for txn in ctx.shadow_txns:
         if txn.transfer_id not in moved_transfer_ids:
@@ -251,12 +270,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             # to the target period, even if only one shadow was in
             # the query results.  This self-heals any period mismatch
             # between siblings (design doc section 10A.2).
-            transfer_service.update_transfer(
-                txn.transfer_id,
-                user_id,
-                pay_period_id=target_period_id,
-                is_override=True,
-            )
+            moved = {"pay_period_id": target_period_id}
+            if txn.transfer.recurs:
+                moved["is_override"] = True
+            transfer_service.update_transfer(txn.transfer_id, user_id, **moved)
             moved_transfer_ids.add(txn.transfer_id)
             count += 1
 

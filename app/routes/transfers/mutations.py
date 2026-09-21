@@ -27,7 +27,7 @@ from app.models.transfer import Transfer
 from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import status_seam, transfer_service
+from app.services import status_seam, template_amount_service, transfer_service
 from app.services.settle_day import settle_day_from_columns
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
@@ -82,16 +82,16 @@ _LOCKED_EDIT_FIELDS = frozenset({
 
 
 def _reject_generated_due_date_edit(xfer, data):
-    """Refuse a due-date edit on a transfer a recurring definition generated.
+    """Refuse a due-date edit a transfer's shape does not admit.
 
     **The transfer twin of ``routes/transactions/_gates
-    ._reject_generated_due_date_edit``, and it arrives with the cutover that
-    makes it load-bearing** (finding **BAL-476**, plan step X-au-f).  A
+    ._reject_generated_due_date_edit``, and it arrived with the cutover that
+    made it load-bearing** (finding **BAL-476**, plan step X-au-f).  A
     generated transfer's due date is its DEFINITION's: it is a member of
     ``transfer_recurrence.DerivedTransferFields``, computed from the rule and
     the period and rewritten by the maintain splat on every regeneration -- so
-    an edit here never survived a later template save even before this step.
-    What this step adds is that the same date now resolves the transfer's PRICE
+    an edit here never survived a later template save even before that step.
+    What X-au-f added is that the same date now resolves the transfer's PRICE
     through amount rule 3, so the field has gone from an edit that did not last
     to one that can leave a row no rule is able to price.
 
@@ -102,19 +102,30 @@ def _reject_generated_due_date_edit(xfer, data):
     handler on those paths.  A transfer reaches nine render sites through
     ``_render_helpers.render_transfer_cell`` with the same absence of handlers.
 
-    **The PREDICATE is :attr:`~app.models.transfer.Transfer.due_date_is_its_definitions`
-    and lives on the row**, because the transfer has a SECOND edit door -- a
-    PATCH addressed to a shadow, answered by updating its parent -- and this
-    gate covered only one of them until an adversarial review said so.
-
-    **Keyed on PRESENCE rather than on emptiness**, exactly as its twin is:
-    moving the date is refused as well as clearing it, because a moved date
-    re-prices the transfer against a different point in its definition's series,
-    silently, and the next regeneration puts it back.
-
-    **An AD-HOC transfer is untouched.**  It owns its figure -- structurally,
-    per ``ck_transfers_adhoc_owns_amount`` -- so amount rule 1 answers it off a
-    column and no rule reads its date, which is why the form still offers it.
+    **Three shapes get three answers, keyed on ``recurs`` and ``is_placed``
+    since plan step ``balance:X-ci-1``** -- the twin's three arms.  It read
+    ``Transfer.due_date_is_its_definitions``, a property that spelled
+    ``transfer_template_id IS NOT NULL`` and lived on the row because the
+    transfer had a SECOND edit door; leaf ``balance:X-bi-6-1`` deleted that
+    door, and the link read as *generated* is what this leaf deletes
+    (finding **BAL-493**'s family).  A transfer a RULE generated: the FIELD
+    is refused, keyed on PRESENCE rather than emptiness exactly as its twin
+    is, because moving the date re-prices the transfer against a different
+    point in its definition's series, silently, and the next regeneration
+    puts it back.  A ONE-TIME transfer -- a rule-less definition's placed
+    transfer, or a cleared cadence's survivor: the date is the OWNER's to
+    state (ruling **R-BAL93**: due on its placed paycheck's start unless the
+    owner says otherwise, re-placed by a period move), no cadence derives it
+    and no pass rewrites it, so MOVING it is allowed and the price follows
+    the date (amount rule 3 reads the definition's series as of the new
+    day); CLEARING it is not, because that same rule needs the day, which
+    ``ck_transfers_template_row_needs_due_date`` says in storage -- this arm
+    exists so the owner reads *why* rather than the generic invalid-reference
+    sentence a constraint hit renders.  The form renders the input
+    ``required`` for such a transfer, so this is the crafted-request and
+    stale-form backstop.  An AD-HOC transfer (no definition, the shape
+    ``X-ci-3`` deletes): untouched, clearable, as the developer ratified for
+    its door.
 
     **A DERIVE-mode loan payment would survive a cleared date**, and it is
     refused here anyway.  Rule 4's derive arm dates its installment through
@@ -133,15 +144,23 @@ def _reject_generated_due_date_edit(xfer, data):
     Returns:
         A designed 400 response tuple, or ``None`` when the edit may proceed.
     """
-    if "due_date" not in data or not xfer.due_date_is_its_definitions:
+    if "due_date" not in data:
         return None
-    return _error_transfer_response(
-        xfer.id,
-        "This instance's due date comes from its recurring transfer, which is "
-        "also what prices it. Change the due day on the recurring transfer to "
-        "move every instance, or type an amount here to make this one's figure "
-        "its own.",
-    )
+    if xfer.recurs:
+        return _error_transfer_response(
+            xfer.id,
+            "This instance's due date comes from its recurring transfer, which "
+            "is also what prices it. Change the due day on the recurring "
+            "transfer to move every instance, or type an amount here to make "
+            "this one's figure its own.",
+        )
+    if xfer.is_placed and data["due_date"] is None:
+        return _error_transfer_response(
+            xfer.id,
+            "This transfer's due date can be moved but not cleared: its price "
+            "is resolved on that day.",
+        )
+    return None
 
 
 def _reject_finalised_transfer_edit(xfer, data):
@@ -267,11 +286,28 @@ def update_transfer(xfer_id):
     period_changed = (
         "pay_period_id" in data and data["pay_period_id"] != xfer.pay_period_id
     )
+    # The transfer's SHAPE, read here before anything is graded so the
+    # definition's lazy load happens with nothing staged; the flip below reads
+    # this local, and the gates re-read the accessors off the loaded row.
+    recurs = xfer.recurs
 
-    # Auto-set is_override when a template-linked transfer's amount or
+    # Auto-set is_override when a RECURRING definition's transfer's amount or
     # period actually CHANGES, so transfer_recurrence does not regenerate over
     # the edited instance (mirrors the transaction move in
     # transactions.update_transaction and the carry-forward transfer move).
+    #
+    # **Keyed on ``recurs`` since plan step ``balance:X-ci-1``, not on the
+    # link** (ruling **R-BAL93**, finding **BAL-493**): a ONE-TIME transfer --
+    # a rule-less definition's placed transfer -- is never overridden against
+    # a cadence it does not have, and the flag only hid it from
+    # ``transfer_recurrence.propagate_to_unruled_template`` for good, so the
+    # definition's rename or re-price reached nothing (transfer 409 on the
+    # 2026-09-20 restore).  Its typed figure RESTATES the definition instead
+    # (:func:`_execute_transfer_update`, **R-BAL92**) and its period move
+    # RE-PLACES its date inside the service door (**R-BAL96**); an ad-hoc
+    # transfer took no flag before and takes none now.  ``recurs`` is read
+    # ABOVE, before the payload is graded, because the accessor lazy-loads the
+    # definition.
     #
     # **It tested for the field's PRESENCE until plan step X-f2-c3, and the
     # difference was a money defect.**  This form renders the Amount input on
@@ -315,7 +351,7 @@ def update_transfer(xfer_id):
     # next reader concludes it is not needed.  The gates grade what was
     # SUBMITTED; the service is handed what was MEANT.
     data.pop(as_rendered_field("amount"), None)
-    if xfer.transfer_template_id and (amount_authored or period_changed):
+    if recurs and (amount_authored or period_changed):
         data["is_override"] = True
 
     # The settle-day grading, the finalised-row edit lock (#26) and the service
@@ -677,16 +713,18 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     Args:
         xfer: The owned Transfer being edited.
         data: The loaded TransferUpdateSchema payload (``is_override`` may
-            already be set by the caller for template-linked moves, and the
-            rendered-figure companion already removed by it).  **Mutated in
+            already be set by the caller for a recurring definition's moves,
+            and the rendered-figure companion already removed by it).  **Mutated in
             place here**: an ``amount`` no human authored is dropped below,
             after the caller's gates have graded the payload as submitted.
         amount_authored: Whether the ``amount`` in *data*, if any, is a figure a
             HUMAN typed (ruling **R-JR**).  Passed rather than re-derived
             because the fact lives in the payload the caller already consumed.
-            It is what this door TRANSLATES into the service's one parameter:
-            an authored figure becomes an ownership the pair OWNS, and an
-            echoed one becomes no statement about the amount at all.
+            It is what this door TRANSLATES into the service's parameter:
+            an authored figure becomes an ownership the pair OWNS -- or, on a
+            one-time transfer, the definition's price to restate
+            (``definition_price``, **R-BAL92**) -- and an echoed one becomes
+            no statement about the amount at all.
 
     Returns:
         ``None`` on success -- the caller renders the updated cell -- or a
@@ -713,8 +751,47 @@ def _execute_transfer_update(xfer, data, *, amount_authored):
     # down two facts for the service to combine.  Saying NOTHING is spelled by
     # omitting the key, which is why the echo is popped rather than sent as an
     # empty ownership.
+    #
+    # **A ONE-TIME transfer's typed figure RESTATES its definition's price in
+    # place, and the pair stays priced by it** (plan step ``balance:X-ci-1``,
+    # ruling **R-BAL92**, the twin of ``one_off.restate_price``): a rule-less
+    # definition's one placed transfer IS the definition, so the figure is a
+    # statement about the definition and not about one occurrence among many
+    # -- which is why a RECURRING transfer's typed figure detaches that row
+    # (OWN, ``is_override``) and this one never does.  The door says so with
+    # the figure -- ``definition_price``, an explicit act the service performs
+    # (``_placed.restate_definition_price``: the version the transfer's FINAL
+    # due date reads is corrected, all three rows are declared priced by the
+    # definition, the flag comes off) -- rather than a ``derived_ownership``
+    # beside a restate of its own, because the service both RE-PLACES the
+    # date the restate reads and SETTLES the pair on the price it reads, and
+    # only inside the door can the act sit between the two (**R-BAL96** as
+    # amended 2026-09-21: as first built the popover restated after the
+    # door, and a figure typed beside Status = Paid booked the old price on
+    # both legs).  A rule-less definition that owns no price series -- a
+    # derive-mode loan payment, 0 on the 2026-09-20 restore -- keeps ruling
+    # **R-JM**'s arm: the pair's OWN figure at the parent, with no flag, so
+    # the definition's other fields still reach it.
+    #
+    # **The FLAG comes off with the figure, whatever it was** -- the twin's
+    # R-BAL37 heal: a one-time transfer the pre-X-ci flip detached (OWN with
+    # ``is_override`` beside it, transfer 409's state) is declared the ruled
+    # shape on its next typed figure, so the propagation reaches it again;
+    # on a transfer never detached the write is idempotent.  A rename, a
+    # move or a date edit alone leaves a detached one as it stands, exactly
+    # as on the transaction side; ``X-ci-3`` re-attaches the residue nobody
+    # re-priced.  The service's ``restate_in_effect`` raises ``ValueError``
+    # for a definition holding no version, which every producer of one opens
+    # through ``set_amount``: a state the app does not write, so it is not
+    # caught here, as its twin does not catch it.
     figure = data.pop("amount", None)
-    if amount_authored and figure is not None:
+    typed_on_placed = amount_authored and figure is not None and xfer.is_placed
+    if typed_on_placed and template_amount_service.owns_its_amount(xfer.template):
+        data["definition_price"] = figure
+    elif typed_on_placed:
+        data["amount_ownership"] = AmountOwnership.own(figure)
+        data["is_override"] = False
+    elif amount_authored and figure is not None:
         data["amount_ownership"] = AmountOwnership.own(figure)
     # **The Actual box's figure is a PERSON's statement of what the bank
     # took**, and the route says so with the figure (plan step X-bi-3e-1,

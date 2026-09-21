@@ -631,7 +631,7 @@ def sync_loan_payment_start(account_id: int) -> "TransferTemplate | None":
     # The template lookup comes FIRST: with no recurring payment there is
     # nothing to re-derive.  Cheapest disqualifying check first.
     template = active_recurring_transfer_template(account_id, account.user_id)
-    if template is None or template.recurrence_rule is None:
+    if template is None or not template.recurs:
         return None
     params = loan_loaders.load_loan_params(account_id)
     if params is None:

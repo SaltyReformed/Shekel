@@ -524,7 +524,7 @@ def update_transfer_template(template_id):
     # rule-less (defect D16).
     before = PreEditTemplateState(
         amount=template.default_amount,
-        had_recurrence_rule=template.recurrence_rule is not None,
+        had_recurrence_rule=template.recurs,
     )
 
     # Route-boundary FK ownership (commit C-27 / F-043), asked BEFORE anything
@@ -699,7 +699,7 @@ def _regenerate_and_commit_template(
     # A template that neither has nor had a rule does not regenerate at all
     # (the gate below returns before touching a row -- that is what closes
     # defect D16), so its already-created Transfer is reached HERE or nowhere.
-    if not before.had_recurrence_rule and template.recurrence_rule is None:
+    if not before.had_recurrence_rule and not template.recurs:
         refused = propagate_to_non_repeating_transfers(template)
         if refused is not None:
             return refused
@@ -749,7 +749,7 @@ def _regenerate_and_commit_template(
     # notice says which rows it did not reach.  (``routes/templates/crud.py``
     # carries the same wording on the transaction side, stale since plan step
     # R10-a; reported, not fixed here.)
-    if before.had_recurrence_rule and template.recurrence_rule is None:
+    if before.had_recurrence_rule and not template.recurs:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
             "transfers were removed, except any you have records against; "
