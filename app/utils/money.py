@@ -62,7 +62,7 @@ monthly factor has one home, and it is no longer a number this module can
 state.
 """
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 CENTS = Decimal("0.01")
 ZERO = Decimal("0")
@@ -180,6 +180,68 @@ def round_money_floor(value: Decimal) -> Decimal:
             f"round_money_floor expects Decimal, got {type(value).__name__}: {value!r}"
         )
     return value.quantize(CENTS, rounding=ROUND_FLOOR)
+
+
+class MoneyTextError(ValueError):
+    """*text* is not a money figure this app records.
+
+    Attributes:
+        reason: The phrase a caller's sentence can carry -- ``"not a
+            decimal string"``, ``"not an amount"``, ``"not a real number"``
+            or ``"too large to record"``.
+    """
+
+    def __init__(self, reason: str, text: str):
+        super().__init__(f"{text!r} is {reason}")
+        self.reason = reason
+
+
+def money_from_text(text: str) -> Decimal:
+    """Return a figure stated as TEXT as the cents this app records.
+
+    **The ONE walk from a source's text to a recorded money figure** -- a
+    bank's CSV cell, a feed's JSON string (plan step ``bank_import:X-f6b-2``,
+    rule 14: three adapters spelled it three times, agreeing today).  The
+    Decimal is constructed from the string and never from a float
+    (``docs/coding-standards.md``); the figure is refused when it is not
+    finite, because ``Decimal("NaN")`` raises nowhere on its own and
+    poisons every sum it reaches (``sNaN``, ``Infinity`` and an overflowing
+    exponent raise on construction or below; quiet ``NaN`` is the one that
+    gets through); and it is rounded through :func:`round_money`, the app's
+    one rounding rule, INSIDE the refusal -- a finite figure with a large
+    exponent (``1E+30`` and up) passes the finiteness check and then raises
+    ``InvalidOperation`` from ``quantize``.  Both were found by adversarial
+    review of the CSV adapter (2026-08-22) and are kept here so no adapter
+    can lose one.
+
+    The caller cleans its own text first (a CSV's ``$`` and ``,``, or
+    nothing for a feed that states a bare decimal string) and wraps the
+    error in its own refusal with its own label.
+
+    Args:
+        text: The figure as the source stated it.  A STRING: a source that
+            hands a number has already put the figure through a float, or
+            would let this one, so anything else is refused unread.
+
+    Returns:
+        The figure, rounded to cents.
+
+    Raises:
+        MoneyTextError: With the reason, when *text* is not a string, not a
+            number, not a real number, or too large to round.
+    """
+    if not isinstance(text, str):
+        raise MoneyTextError("not a decimal string", text)
+    try:
+        value = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise MoneyTextError("not an amount", text) from exc
+    if not value.is_finite():
+        raise MoneyTextError("not a real number", text)
+    try:
+        return round_money(value)
+    except InvalidOperation as exc:
+        raise MoneyTextError("too large to record", text) from exc
 
 
 def percent_complete(total: Decimal, target: Decimal) -> Decimal:

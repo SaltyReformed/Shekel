@@ -44,8 +44,14 @@ from app.models.statement_import import (
 from app.models.journal_entry import Posting
 from app.models.transaction import Transaction
 from app.services import account_service
-from app.models.statement_import import BankStatementLine
-from app.services.statement_import import record_statement
+from app.services.statement_import import (
+    ParsedStatement,
+    Provenance,
+    covered_runs,
+    parse_statement,
+    record_parsed,
+    record_statement,
+)
 from app.services.statement_import._balance import bank_levels
 from app.models.ref import AccountType
 from app.services.row_valuation import settled_figure
@@ -270,9 +276,10 @@ class TestItRecordsWhatTheBankSaid:
 
         A PRIOR import supplies the opening, because "cannot be placed" is a
         statement about a known opening the figure fails to reconcile with --
-        and it OVERLAPS, as a real consecutive export does, or the walk stops
-        at the uncovered day between them and falls back to taking the figure
-        at face value.
+        and it OVERLAPS, as a real consecutive export does; across a gap the
+        walk prices nothing before the file and the claim is unsolved for
+        THAT reason instead (ruling **bank_import:R-BI35**;
+        ``test_a_window_after_a_GAP_while_a_level_stands_records_its_claim_UNSOLVED``).
         """
         _record(seed_user, _file())
 
@@ -1520,3 +1527,252 @@ class TestAGroupIsReconciledAsASet:
 
         assert second.recorded_count == 0
         assert db.session.query(BankStatementLine).count() == 2
+
+
+class TestTheRecordingWalkBehindTheUploadDoor:
+    """Ruling **R-BI30**: reading is the upload's, recording is everyone's.
+
+    :func:`record_statement` is ``parse_statement`` then
+    :func:`record_parsed`; the walk is ONE, so what the two doors record for
+    the same statement is identical.  And the walk accepts ZERO lines -- the
+    arm ruling **R-BAL71** describes (a feed sync over a quiet window covers
+    what it asked for and states a balance), which no file can reach because
+    the CSV adapter refuses an empty file.
+    """
+
+    def test_the_two_doors_record_the_same_import(self, app, db, seed_user):
+        """The upload door on one account, the recording half on another,
+        the same lines under a second account number (one owner may not
+        pair two accounts to one external identity): every column of the
+        two import rows agrees but the account and the digest, which is the
+        file's own; the line rows, the sightings, the placed level and the
+        coverage agree, column by column."""
+        payload = _file()
+        second = _second_account(db, seed_user)
+        second_payload = _file(account_number="******9999")
+
+        via_upload = _record(seed_user, payload, file_name="statement.csv")
+        via_walk = record_parsed(
+            second.id,
+            seed_user["user"].id,
+            Provenance(
+                source=_SOURCE,
+                file_name="statement.csv",
+                file_digest=hashlib.sha256(second_payload).hexdigest(),
+            ),
+            parse_statement(_SOURCE, second_payload),
+        )
+
+        rows = {
+            row.account_id: row
+            for row in db.session.query(StatementImport).all()
+        }
+        first, other = rows[seed_user["account"].id], rows[second.id]
+        for column in (
+            "source_id", "file_name", "declared_start", "declared_end",
+            "stated_balance", "stated_balance_on",
+        ):
+            assert getattr(first, column) == getattr(other, column), column
+        assert first.file_digest == hashlib.sha256(payload).hexdigest()
+        assert other.file_digest == hashlib.sha256(second_payload).hexdigest()
+        assert (via_upload.line_count, via_upload.recorded_count) == (3, 3)
+        assert (via_walk.line_count, via_walk.recorded_count) == (3, 3)
+        assert via_upload.balance == via_walk.balance
+        assert covered_runs(second.id) == covered_runs(seed_user["account"].id)
+
+        def lines_of(account_id):
+            return [
+                (row.posted_on, row.amount, row.sequence_in_group)
+                for row in db.session.query(BankStatementLine)
+                .filter_by(account_id=account_id)
+                .order_by(BankStatementLine.posted_on, BankStatementLine.id)
+            ]
+
+        def sightings_of(account_id):
+            # Merchants are per account, so the NAME is what can agree.
+            return [
+                (row.description, db.session.get(Merchant, row.merchant_id).name,
+                 row.transaction_on, row.external_id, row.running_balance,
+                 row.source_category)
+                for row in db.session.query(StatementLineSighting)
+                .filter_by(account_id=account_id)
+                .order_by(StatementLineSighting.line_id)
+            ]
+
+        def level_of(account_id):
+            [(level, release)] = bank_levels(account_id)
+            return (
+                level.anchor_balance, level.observed_on, level.evidence_id,
+                release,
+            )
+
+        assert lines_of(second.id) == lines_of(seed_user["account"].id)
+        assert sightings_of(second.id) == sightings_of(seed_user["account"].id)
+        assert level_of(second.id) == level_of(seed_user["account"].id)
+
+    def test_a_statement_with_no_line_is_recorded_and_covers_its_window(
+        self, app, db, seed_user,
+    ):
+        """A quiet window: the act, its declared days and its claim, no line.
+
+        The claim lands through :func:`resolve_anchor`'s first-import arm
+        (nothing recorded constrains it): the window's end, uncorroborated,
+        the day assumed rather than solved.  The receipt reads ``(0, 0)`` off
+        the same aggregate as always.
+        """
+        outcome = record_parsed(
+            seed_user["account"].id,
+            seed_user["user"].id,
+            Provenance(
+                source=StatementSourceEnum.SIMPLEFIN,
+                file_name="SimpleFIN 2026-03-02..2026-03-08",
+                file_digest=hashlib.sha256(b"{}").hexdigest(),
+            ),
+            ParsedStatement(
+                external_account_id="ACT-quiet",
+                lines=[],
+                declared_start=date(2026, 3, 2),
+                declared_end=date(2026, 3, 8),
+                stated_balance=Decimal("100.00"),
+                stated_balance_on=date(2026, 3, 8),
+            ),
+        )
+
+        assert (outcome.line_count, outcome.recorded_count) == (0, 0)
+        assert outcome.already_known == 0
+        assert (outcome.declared_start, outcome.declared_end) == (
+            date(2026, 3, 2), date(2026, 3, 8),
+        )
+        assert outcome.anchors_released == 0
+        row = db.session.query(StatementImport).one()
+        assert row.file_name == "SimpleFIN 2026-03-02..2026-03-08"
+        assert row.source_id == ref_cache.statement_source_id(
+            StatementSourceEnum.SIMPLEFIN,
+        )
+        assert (row.declared_start, row.declared_end) == (
+            date(2026, 3, 2), date(2026, 3, 8),
+        )
+        assert row.stated_balance == Decimal("100.00")
+        assert db.session.query(BankStatementLine).count() == 0
+        assert db.session.query(StatementLineSighting).count() == 0
+        assert covered_runs(seed_user["account"].id) == [
+            (date(2026, 3, 2), date(2026, 3, 8)),
+        ]
+        [(level, release)] = bank_levels(seed_user["account"].id)
+        assert level.statement_import_id == row.id
+        assert level.anchor_balance == Decimal("100.00")
+        assert level.observed_on == date(2026, 3, 8)
+        assert ref_cache.statement_balance_evidence_member(
+            level.evidence_id
+        ) is StatementBalanceEvidenceEnum.UNCORROBORATED
+        assert release is None
+        assert outcome.balance.day_is_solved is False
+        # The identity the walk learned, as a first import from any source.
+        identity = db.session.query(AccountExternalIdentity).one()
+        assert identity.external_account_id == "ACT-quiet"
+        assert identity.feed_id is None
+
+    def test_a_quiet_window_after_a_recorded_one_solves_its_claim(
+        self, app, db, seed_user,
+    ):
+        """The Share account's every night: a balance and no line, placed
+        against the opening the earlier lines fixed -- the recorded-opening
+        arm, solved on the window's end."""
+        _record(seed_user, _file())  # closes at 1534.19 on 03-04
+
+        outcome = record_parsed(
+            seed_user["account"].id,
+            seed_user["user"].id,
+            Provenance(
+                source=_SOURCE,
+                file_name="quiet.csv",
+                file_digest=hashlib.sha256(b"quiet").hexdigest(),
+            ),
+            ParsedStatement(
+                external_account_id=build.ACCOUNT_IDENTITY,
+                lines=[],
+                declared_start=date(2026, 3, 5),
+                declared_end=date(2026, 3, 11),
+                stated_balance=Decimal("1534.19"),
+                stated_balance_on=date(2026, 3, 11),
+            ),
+        )
+
+        assert outcome.balance.effective_on == date(2026, 3, 11)
+        assert outcome.balance.day_is_solved is True
+        # Solved against the recorded opening, which comes back capped at
+        # CORROBORATED (``recorded_opening_before``: two statements agree,
+        # and never stronger than the anchor that priced the day).
+        assert outcome.balance.evidence is StatementBalanceEvidenceEnum.CORROBORATED
+        assert covered_runs(seed_user["account"].id) == [
+            (date(2026, 3, 2), date(2026, 3, 11)),
+        ]
+
+    def test_a_window_after_a_GAP_while_a_level_stands_records_its_claim_UNSOLVED(
+        self, app, db, seed_user,
+    ):
+        """Ruling **bank_import:R-BI35**, through the door.  A level stands
+        (the CSV's, at 03-04); this window opens on 03-10 with 03-05..03-09
+        unimported, so the fold prices nothing before it.  Until the ruling
+        the assumed arm placed the claim as an uncorroborated level -- the
+        ordinary night for the feed, whose windows open on a hole; now the
+        claim is recorded and unsolved, visible, and no level is placed."""
+        _record(seed_user, _file())  # closes at 1534.19 on 03-04
+
+        outcome = record_parsed(
+            seed_user["account"].id,
+            seed_user["user"].id,
+            Provenance(
+                source=_SOURCE,
+                file_name="after-a-gap.csv",
+                file_digest=hashlib.sha256(b"gap").hexdigest(),
+            ),
+            ParsedStatement(
+                external_account_id=build.ACCOUNT_IDENTITY,
+                lines=[],
+                declared_start=date(2026, 3, 10),
+                declared_end=date(2026, 3, 16),
+                stated_balance=Decimal("1534.19"),
+                stated_balance_on=date(2026, 3, 16),
+            ),
+        )
+
+        assert outcome.balance.stated == Decimal("1534.19")
+        assert outcome.balance.effective_on is None
+        assert outcome.balance.evidence is None
+        assert outcome.balance.day_is_solved is False
+        [(level, _release)] = bank_levels(seed_user["account"].id)
+        assert level.observed_on == date(2026, 3, 4)  # the CSV's alone
+        assert covered_runs(seed_user["account"].id) == [
+            (date(2026, 3, 2), date(2026, 3, 4)),
+            (date(2026, 3, 10), date(2026, 3, 16)),
+        ]
+
+    def test_a_quiet_window_with_no_claim_covers_and_places_nothing(
+        self, app, db, seed_user,
+    ):
+        """A back-walk window's run: no line, no balance stated -- the act
+        and its coverage, no level."""
+        outcome = record_parsed(
+            seed_user["account"].id,
+            seed_user["user"].id,
+            Provenance(
+                source=StatementSourceEnum.SIMPLEFIN,
+                file_name="SimpleFIN 2026-03-02..2026-03-08",
+                file_digest=hashlib.sha256(b"{}").hexdigest(),
+            ),
+            ParsedStatement(
+                external_account_id="ACT-quiet",
+                lines=[],
+                declared_start=date(2026, 3, 2),
+                declared_end=date(2026, 3, 8),
+            ),
+        )
+
+        assert outcome.balance is None
+        assert (outcome.line_count, outcome.recorded_count) == (0, 0)
+        assert db.session.query(StatementImport).count() == 1
+        assert bank_levels(seed_user["account"].id) == []
+        assert covered_runs(seed_user["account"].id) == [
+            (date(2026, 3, 2), date(2026, 3, 8)),
+        ]

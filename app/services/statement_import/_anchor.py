@@ -183,9 +183,18 @@ class ImportedBalance:
             receipt reads an import whose level has just been written and
             can carry no release.  ``None`` with :attr:`effective_on` ``None``
             means the figure was never placed.
+        opening_known: Whether the resolve had an opening to check the claim
+            against -- the file's own chain or the recorded walk (``True``),
+            or nothing priced the day before the window (``False``: the arm
+            ruling **bank_import:R-BI35** added, and the assumed arm).  Known
+            only at the resolve, like :attr:`day_is_solved`, so the read
+            model leaves it ``None``; the receipt reads it to say WHY an
+            unplaced figure was not placed, because "no day reconciles it"
+            and "nothing recorded reaches back to it" call for different
+            acts of the owner.
         day_is_solved: Whether :attr:`effective_on` was WORKED OUT from a
             balance the app already held, rather than assumed.  ``False`` for
-            an unplaced figure and for the third arm of :func:`resolve_anchor`,
+            an unplaced figure and for the last arm of :func:`resolve_anchor`,
             which has nothing to solve against and takes the file's last line.
 
             **The two are not the same quality of fact, and the evidence ladder
@@ -207,6 +216,7 @@ class ImportedBalance:
     effective_on: date | None
     evidence: StatementBalanceEvidenceEnum | None
     day_is_solved: bool = False
+    opening_known: "bool | None" = None
     release: PlacementRelease | None = None
 
     @property
@@ -443,9 +453,10 @@ def recorded_opening_before(
     exact if every line between the anchor and *day* is recorded; a gap between
     two imports means lines nobody has imported, and summing across one yields
     a confident wrong number.  The fold leaves such a day out of its result, and
-    answering ``None`` here sends the caller to ``uncorroborated``, which the
-    receipt SAYS -- an unchecked anchor the owner is told about beats a checked
-    one that is false.
+    answering ``None`` here sends the caller to UNSOLVED while a level stands
+    (ruling **bank_import:R-BI35**) and to ``uncorroborated`` on a true first
+    import, which the receipt SAYS either way -- an unchecked claim the owner
+    is told about beats a checked one that is false.
     """
     day_before = day - timedelta(days=1)
     folded = fold_bank_balances(account_id, [day_before])
@@ -500,7 +511,7 @@ def release_anchors_from(account_id: int, day: date, import_id: int) -> int:
     **An anchor is a conclusion drawn from the lines recorded at or before its
     own day, so a write that changes those lines takes the conclusion with
     it.**  Both doors that change them call this:
-    :func:`~._record.record_statement` with the earliest day it freshly
+    :func:`~._record.record_parsed` with the earliest day it freshly
     recorded, and :func:`~._undo.delete_import` with the earliest day whose
     lines it is about to remove.  Which levels go is :func:`resting_on`'s
     answer over :func:`~._balance.standing_bank_levels`; this function only
@@ -555,7 +566,10 @@ def release_anchors_from(account_id: int, day: date, import_id: int) -> int:
 
 
 def resolve_anchor(
-    parsed: ParsedStatement, recorded: "KnownOpening | None",
+    parsed: ParsedStatement,
+    recorded: "KnownOpening | None",
+    *,
+    levels_stand: bool,
 ) -> "ImportedBalance | None":
     """Return what this file determines about its own stated balance.
 
@@ -571,15 +585,30 @@ def resolve_anchor(
         recorded: What the account's already-recorded statements say it held
             before the window's first day, with the strength of that claim,
             or ``None`` when they do not say.
+        levels_stand: Whether ANY bank level STANDS on the account
+            (:func:`~._balance.standing_bank_levels`: a level no release has
+            withdrawn).  With *recorded* ``None`` it tells a true first
+            import (nothing to check against, so a day is ASSUMED and the
+            receipt says so) from a window whose opening is merely unpriced
+            -- a gap in coverage between a standing level and here -- where
+            the claim is recorded UNSOLVED rather than placed on a guess.
+            **"No bank level at all" is read as no STANDING level, and it
+            must be**: a released level prices nothing, so counting it would
+            leave every later claim unsolved for ever and no statement could
+            ever re-establish a level, where the walk promises the next
+            import does.  A gap only a CSV can fill leaves the feed's claim
+            unsolved every night until someone fills it; that is the state
+            the receipt names.
 
     Returns:
         The :class:`ImportedBalance`, or ``None`` when the file states no
         balance at all.  A file that DOES state one but whose own lines cannot
-        reach the day it claims gets a value with ``effective_on`` and
-        ``evidence`` both ``None`` -- the claim recorded, the anchor
-        undetermined, which is the honest absence rather than a guess.
-        :attr:`~ImportedBalance.day_is_solved` says which of the three arms
-        answered: the first two WORK OUT a day, the third assumes one.
+        reach the day it claims, or whose opening no coverage prices while a
+        level stands, gets a value with ``effective_on`` and ``evidence``
+        both ``None`` -- the claim recorded, the anchor undetermined, which
+        is the honest absence rather than a guess.
+        :attr:`~ImportedBalance.day_is_solved` says which arm answered: the
+        first two WORK OUT a day, the last assumes one.
 
     Raises:
         StatementBalanceUnexplained: When the file carries a per-line running
@@ -587,11 +616,24 @@ def resolve_anchor(
             **Only that**: a mismatch against RECORDED history is not the
             file's fault, and an earlier draft refused honest exports for it.
 
-    **Three arms, and each is named rather than reached by falling out of a
+    **Four arms, and each is named rather than reached by falling out of a
     loop.**  A first draft iterated ``(chain, recorded)`` and returned on the
     first non-``None``, which stated a fallback that did not exist -- a chain
     that failed to solve never tried the recorded opening, correctly, but the
     shape said otherwise.  Found by adversarial review 2026-08-23.
+
+    **The assumed arm fires for a true first import only** (ruling
+    **bank_import:R-BI35**, plan step ``bank_import:X-f6b-2``): until then
+    it fired whenever the opening was unpriced, which is the ORDINARY night
+    for the bank feed -- the day before a window's run is a raw day, a hole
+    in coverage -- so a claim the feed DERIVED (Bridge's balance less every
+    line after the run) was placed as a level every night, badged
+    uncorroborated, with nothing to expose a figure it got wrong: measured
+    2026-09-20, a phantom line in Bridge's list and not in its balance put
+    it 43.40 above the recorded walk.  A CSV after a gap took the same arm
+    with an exact figure and a guessed day, which the 2026-08-16 lag shape
+    showed can be wrong by 1,006.72.  Recorded unsolved, the claim is on the
+    receipt and the reconcile page, and it places nothing.
     """
     if parsed.stated_balance is None or parsed.stated_balance_on is None:
         return None
@@ -612,6 +654,7 @@ def resolve_anchor(
             effective_on=solved,
             evidence=StatementBalanceEvidenceEnum.FILE_CHAIN,
             day_is_solved=True,
+            opening_known=True,
         )
     if recorded is not None:
         # What the account already holds decides, and no failure to solve is
@@ -623,6 +666,19 @@ def resolve_anchor(
             effective_on=solved,
             evidence=None if solved is None else recorded.evidence,
             day_is_solved=solved is not None,
+            opening_known=True,
+        )
+    if levels_stand:
+        # A level stands on this account and the day before this window is
+        # simply not priced: a gap in coverage lies between them (a hole the
+        # feed will re-fetch, a span nobody imported).  Assuming a day here
+        # would place the claim as a level with no check (ruling **R-BI35**);
+        # recorded unsolved, it is visible and governs nothing.  A window
+        # whose opening IS priced solves its own, which the feed's next night
+        # is once the hole closes and a CSV gap is once someone fills it.
+        return ImportedBalance(
+            **claim, effective_on=None, evidence=None, day_is_solved=False,
+            opening_known=False,
         )
     # Nothing constrains it, which is what a FIRST import is.  The figure is
     # taken as the balance at the end of the declared window -- what the bank
@@ -640,4 +696,5 @@ def resolve_anchor(
         effective_on=min(parsed.declared_end, parsed.stated_balance_on),
         evidence=StatementBalanceEvidenceEnum.UNCORROBORATED,
         day_is_solved=False,
+        opening_known=False,
     )

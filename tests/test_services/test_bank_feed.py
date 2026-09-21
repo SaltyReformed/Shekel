@@ -793,6 +793,32 @@ class TestTheListingIsLiveAndRead:
             bank_feed.list_bridge_accounts(seed_user["user"].id)
         assert excinfo.value.error_class == "UnexpectedShape"
 
+    def test_a_balance_that_is_not_a_decimal_string_is_refused(
+        self, app, db, seed_user, bridge,
+    ):
+        """Bridge's ``balance`` is read through the ONE walk from a source's
+        text to a figure (``money_from_text``), as the sync reads the same
+        field: a JSON number has been a float somewhere, and a quiet ``NaN``
+        would have rendered and then 500'd the money macro.  Both were
+        accepted here until plan step ``bank_import:X-f6b-2``'s sync leaf
+        (a review's rule-14 finding: two readers of one field disagreeing)."""
+        _connect(seed_user, bridge)
+        db.session.flush()
+        for balance in (2073.40, "NaN"):
+            bridge.get_answer = _FakeResponse(
+                f"{_ACCESS_URL}/accounts", json_body=_listing_body(accounts=[
+                    {"id": _CHECKING, "name": "Checking (3820)",
+                     "currency": "USD", "balance": balance,
+                     "available-balance": "2073.40",
+                     "balance-date": 1789775211, "transactions": [],
+                     "holdings": []},
+                ]),
+            )
+
+            with pytest.raises(BridgeRefused) as excinfo:
+                bank_feed.list_bridge_accounts(seed_user["user"].id)
+            assert excinfo.value.error_class == "UnexpectedShape", balance
+
     def test_a_non_json_answer_is_refused_with_its_status(
         self, app, db, seed_user, bridge,
     ):

@@ -1,10 +1,18 @@
-"""The ONE door that records what a statement said.
+"""The ONE walk that records what a statement said, behind two doors.
 
-Everything it can refuse, it refuses BEFORE it INSERTS a row: the file is
-parsed, its running-balance chain verified, its account identity reconciled and
+Everything it can refuse, it refuses BEFORE it INSERTS a row: the statement is
+read, its running-balance chain verified, its account identity reconciled and
 its lines compared against what is already recorded, and only then is anything
 staged.  So a refused import writes no new line without depending on the
 rollback.
+
+**Reading is the upload's; recording is everyone's** (ruling **R-BI30**, plan
+step ``bank_import:X-f6b-2``).  :func:`record_statement` reads an uploaded
+file with its source's adapter and hands what it stated to
+:func:`record_parsed`, which is the walk from the running-balance check on;
+the bank feed's sync hands it what :mod:`._simplefin` read off Bridge's
+answer.  One recording walk, and a source that is not a file needs no place
+in the file parsers' table to reach it.
 
 **The claim is about the SESSION too, and it was not until plan step
 ``bank_import:X-gd-1``.**  The reconciliation walks group by group, and the
@@ -78,9 +86,10 @@ from ._anchor import (
     release_anchors_from,
     resolve_anchor,
 )
+from ._balance import standing_bank_levels
 from ._identity import record_identity, verify_identity
 from ._integrity import verify_running_balance
-from ._line import KeyedLine, StatementLine, group_key
+from ._line import KeyedLine, ParsedStatement, StatementLine, group_key
 from ._merchants import resolve_merchants
 from ._reconcile import _Reconciled, _reconcile
 
@@ -139,6 +148,31 @@ class ImportOutcome:
         arithmetic itself is a caller that can do it backwards.
         """
         return self.line_count - self.recorded_count
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where an import ACT came from, as ``budget.statement_imports`` records it.
+
+    Ruling **R-BI30** (plan step ``bank_import:X-f6b-2``, the sync leaf): the
+    recording half of this door takes what a source STATED -- a
+    :class:`~._line.ParsedStatement` -- and the source and provenance of the
+    act.  The three provenance facts are ONE value rather than three
+    parameters, because a public door taking six is the shape this project
+    answers with a parameter object.  The upload door builds it from the
+    file; the feed's sync builds one per window it records.
+
+    Attributes:
+        source: Which adapter read the statement, or the feed's source.
+        file_name: What the act is called -- the uploaded file's own name, or
+            the sync's window in words.  Truncated to the column at the row.
+        file_digest: SHA-256 of the bytes the source answered, hex, so a
+            re-import of the identical file is visible as an identical digest.
+    """
+
+    source: StatementSourceEnum
+    file_name: str
+    file_digest: str
 
 
 def _recorded_groups(
@@ -449,17 +483,18 @@ def record_statement(
     file_name: str,
     payload: bytes,
 ) -> ImportOutcome:
-    """Record what a statement said, once.
+    """Record what an UPLOADED statement said, once.
 
-    The whole import, in the order its refusals have to happen: parse, verify
-    the file against itself, reconcile the account identity, then compare
-    against what is already recorded.  Only after all four does anything get
-    staged.
-
-    **Re-importing an overlapping span records a SIGHTING of every line it
-    already holds and records the ACT** (ruling **R-BI10**).  The line stays
-    one line; this import's window now also vouches for its days; and the
-    receipt's ``recorded_count`` reports honestly that it added nothing.
+    **The upload door, and only the reading is its own** (ruling **R-BI30**,
+    plan step ``bank_import:X-f6b-2``): the file is read by its source's
+    adapter, and everything after that -- the running-balance check on -- is
+    :func:`record_parsed`, the ONE recording walk.  The split is what lets
+    the bank feed's reader (:mod:`._simplefin`, whose input is Bridge's JSON
+    and the window the sync asked for, not bytes) reach the same walk
+    without an entry in :data:`~._adapters._PARSERS`, the table of FILE
+    parsers the upload form offers: no fence keeps the feed off the form,
+    because the form offers what has a file parser and the feed has none.
+    This door's signature is the one the statements route calls.
 
     Args:
         account_id: The account the user chose.  The CALLER has already proven
@@ -487,9 +522,77 @@ def record_statement(
         StatementLineConflict: This source restates a line's wording.
     """
     parsed = parse_statement(source, payload)
+    return record_parsed(
+        account_id,
+        user_id,
+        Provenance(
+            source=source,
+            file_name=file_name,
+            file_digest=hashlib.sha256(payload).hexdigest(),
+        ),
+        parsed,
+    )
+
+
+def record_parsed(
+    account_id: int,
+    user_id: int,
+    provenance: Provenance,
+    parsed: ParsedStatement,
+) -> ImportOutcome:
+    """Record what a source STATED, once.
+
+    The recording walk, in the order its refusals have to happen: verify the
+    statement against itself, reconcile the account identity, then compare
+    against what is already recorded.  Only after all three does anything
+    get staged.  Every source reaches here -- the upload door through
+    :func:`record_statement`, the bank feed's sync with what
+    :func:`~._simplefin.read_account` read -- so the record is written one
+    way (ruling **R-BI30**).
+
+    **Re-importing an overlapping span records a SIGHTING of every line it
+    already holds and records the ACT** (ruling **R-BI10**).  The line stays
+    one line; this import's window now also vouches for its days; and the
+    receipt's ``recorded_count`` reports honestly that it added nothing.
+
+    **A statement with NO line is recorded** (ruling **R-BAL71**: coverage is
+    the declared window, and a feed sync over a quiet window covers what it
+    asked for and may state a balance).  The CSV adapter refuses an empty
+    file, so this arm was unreachable until the feed; every step below is
+    total over an empty list: the balance chain and the id checks have
+    nothing to walk, :func:`_reconcile` decides an empty partition,
+    :func:`~._anchor.resolve_anchor` places a stated balance on the window's
+    end or the day before it, and the release below is guarded by the
+    fresh half.  The receipt reads ``(0, 0)`` off the same aggregate as
+    always.
+
+    Args:
+        account_id: The account the statement is recorded into.  Ownership
+            is the caller's to have proven, as :func:`record_statement`
+            says.
+        user_id: Who performed the import.
+        provenance: The source and the act's name and digest.
+        parsed: What the source stated: its account, its lines in
+            CHRONOLOGICAL order, the window it declares and its claim.
+
+    Returns:
+        The :class:`ImportOutcome`.
+
+    Raises:
+        StatementParseError: The source states one of its own ids twice, or
+            a running balance on only some lines.
+        StatementIntegrityError: The running balances do not follow from
+            the lines.
+        StatementBalanceUnexplained: The stated balance reconciles with what
+            is already known on no day the statement covers.
+        StatementAccountMismatch: The statement is for a different account.
+        StatementLineIdMoved: This source restates a line's day or amount
+            under an id it already holds.
+        StatementLineConflict: This source restates a line's wording.
+    """
     verify_running_balance(parsed.lines)
 
-    source_id = ref_cache.statement_source_id(source)
+    source_id = ref_cache.statement_source_id(provenance.source)
     identity_is_new = verify_identity(
         account_id, user_id, source_id, parsed.external_account_id,
     )
@@ -512,6 +615,7 @@ def record_statement(
     balance = resolve_anchor(
         parsed,
         recorded_opening_before(account_id, parsed.declared_start),
+        levels_stand=bool(standing_bank_levels(account_id)),
     )
 
     # Every refusal is now behind us, so this is the first write.
@@ -524,8 +628,8 @@ def record_statement(
         account_id=account_id,
         user_id=user_id,
         source_id=source_id,
-        file_name=file_name[:255],
-        file_digest=hashlib.sha256(payload).hexdigest(),
+        file_name=provenance.file_name[:255],
+        file_digest=provenance.file_digest,
         declared_start=parsed.declared_start,
         declared_end=parsed.declared_end,
         # The bank's OWN claim, verbatim.  The claim and the day it is FOR

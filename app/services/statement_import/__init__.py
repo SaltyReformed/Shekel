@@ -18,7 +18,14 @@ The public surface, and what each piece is for:
 
 * :class:`StatementLine` -- the ONE normalized line shape every adapter
   produces, so everything downstream of a parser is source-independent.
-* :func:`supported_sources` / :func:`parse_statement` -- the adapter registry.
+* :func:`supported_sources` / :func:`parse_statement` -- the FILE adapter
+  registry: what the upload form offers and how it reads what was uploaded.
+* :func:`read_account` -- the bank FEED's reader (ruling **R-BI30**, plan step
+  ``bank_import:X-f6b-2``): one Bridge account answer, the window the sync
+  asked for and the day it is, to a :class:`FeedReading` -- one
+  :class:`ParsedStatement` per run of final days around every raw day
+  (ruling **R-BI34**), the holes, and what was held.  A source adapter beside
+  the CSV's, never in the file table: it reads no file.
 * :func:`group_key` / :func:`pair_by_statement` / :func:`fresh_ordinals` -- the
   identity rule, which needs no id of the source's own.  A line's STORED key is
   ``(account, posted_on, amount, ordinal)``; the ordinal is a SURROGATE this app
@@ -27,10 +34,14 @@ The public surface, and what each piece is for:
   ``bank_import:X-f6a-4``).
 * :func:`verify_running_balance` -- the self-check a source with a running
   balance affords, and the reason the CSV was chosen over the OFX.
-* :func:`record_statement` -- the one write door, returning
-  :class:`ImportOutcome`.  A placed figure is a LEVEL row naming the import
-  (plan step ``balance:X-bj-1``), and :func:`bank_levels` is the one read of
-  which levels stand and which a release has withdrawn.
+* :func:`record_statement` -- the UPLOAD door: read the file, then
+  :func:`record_parsed`.  :func:`record_parsed` -- the ONE recording walk,
+  taking what a source stated (a :class:`ParsedStatement`) and the act's
+  :class:`Provenance`, returning :class:`ImportOutcome` (ruling **R-BI30**:
+  reading is the upload's, recording is everyone's).  A placed figure is a
+  LEVEL row naming the import (plan step ``balance:X-bj-1``), and
+  :func:`bank_levels` is the one read of which levels stand and which a
+  release has withdrawn.
 * :func:`delete_import` -- the one UNDO door, returning
   :class:`ImportRemoval`, and the only thing in this package that destroys.
   It is what finding **N-302** says a refusal owes (plan step
@@ -97,13 +108,15 @@ from ._reads import (
     recent_lines,
     recorded_span,
 )
-from ._record import ImportOutcome, record_statement
+from ._record import ImportOutcome, Provenance, record_parsed, record_statement
+from ._simplefin import FeedReading, read_account
 from ._undo import ImportRemoval, delete_import
 
 __all__ = [
     "BankAnchor",
     "BankBalances",
     "Checkpoint",
+    "FeedReading",
     "GroupPairing",
     "ImportOutcome",
     "ImportedBalance",
@@ -112,6 +125,7 @@ __all__ = [
     "ImportRemovalPreview",
     "ImportRemoval",
     "KeyedLine",
+    "Provenance",
     "RecordedRun",
     "RecordedSpan",
     "SourceOption",
@@ -132,7 +146,9 @@ __all__ = [
     "pair_by_statement",
     "ParsedStatement",
     "parse_statement",
+    "read_account",
     "recent_lines",
+    "record_parsed",
     "record_statement",
     "recorded_opening_before",
     "record_identity",

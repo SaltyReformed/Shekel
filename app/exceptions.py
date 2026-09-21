@@ -772,3 +772,37 @@ class BridgeRefused(BankFeedError):
 class MappingRefused(BankFeedError):
     """A mapping submission names an account the owner may not declare, or
     declares two Bridge accounts to be one account here."""
+
+
+class FeedAnswerUnreadable(BankFeedError):
+    """Bridge's answer for ONE account is not one the feed's reader records.
+
+    Plan step ``bank_import:X-f6b-2``, the sync leaf (ruling **R-BI30**: the
+    feed's reader is a source adapter beside the CSV's).  Three states, one
+    class, because each is a fact about the ANSWER rather than about the
+    request or the credential: the account is not in dollars, which this
+    app records nothing else in; a field the reader needs is missing or not
+    the shape Bridge documents (a day that is not a timestamp, an amount that
+    is not a decimal string); or a line is posted outside the days the sync
+    asked for, so the claim the reader derives could not be trusted.  The
+    sync refuses THAT account's night and moves on (ruling **R-BI31**); the
+    sentence names no URL, and the log carries which field was at fault.
+
+    Attributes:
+        field: The Bridge field the answer failed on (``currency``,
+            ``posted``, ``amount``, ...), for the log.
+        problem: What was wrong with it, as one word the log can be
+            filtered on -- ``missing``, ``shape``, ``currency`` or
+            ``outside_window`` -- because the log carries the class and
+            these two facts, not the sentence.
+    """
+
+    def __init__(self, sentence: str, *, field: str, problem: str):
+        super().__init__(sentence)
+        self.field = field
+        self.problem = problem
+
+    @property
+    def log_details(self) -> dict:
+        """The field the answer failed on and what was wrong with it."""
+        return {"field": self.field, "problem": self.problem}

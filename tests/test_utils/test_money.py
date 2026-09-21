@@ -26,7 +26,13 @@ from decimal import Decimal
 
 import pytest
 
-from app.utils.money import round_money, round_money_ceiling, round_money_floor
+from app.utils.money import (
+    MoneyTextError,
+    money_from_text,
+    round_money,
+    round_money_ceiling,
+    round_money_floor,
+)
 
 
 class TestRoundMoney:
@@ -157,3 +163,45 @@ class TestRoundMoneyFloor:
         """
         with pytest.raises(TypeError, match="round_money_floor expects Decimal"):
             round_money_floor(2.34)
+
+
+class TestMoneyFromText:
+    """The ONE walk from a source's text to a recorded figure (plan step
+    ``bank_import:X-f6b-2``): three adapters spelled it three times, and the
+    two arms adversarial review found on the CSV's -- a quiet ``NaN`` that
+    raises nowhere on its own, and a finite ``1E+30`` that raises from the
+    quantize -- are kept here for every adapter."""
+
+    def test_a_decimal_string_becomes_cents_half_up(self):
+        """Constructed from the string, rounded through the one rule."""
+        assert money_from_text("386.05") == Decimal("386.05")
+        assert money_from_text("-165.220000") == Decimal("-165.22")
+        assert money_from_text("2.345") == Decimal("2.35")
+        assert money_from_text("0.00") == Decimal("0.00")
+
+    def test_every_refusal_names_its_reason(self):
+        """Not a string (a number has been a float somewhere), not a number,
+        not a real number, too large to round: each its own reason."""
+        cases = {
+            386.05: "not a decimal string",
+            386: "not a decimal string",
+            None: "not a decimal string",
+            "abc": "not an amount",
+            "": "not an amount",
+            "NaN": "not a real number",
+            "Infinity": "not a real number",
+            "-Infinity": "not a real number",
+            "1E+30": "too large to record",
+        }
+        for text, reason in cases.items():
+            with pytest.raises(MoneyTextError) as caught:
+                money_from_text(text)
+            assert caught.value.reason == reason, text
+            assert isinstance(caught.value, ValueError)
+
+    def test_a_signalling_nan_and_an_overflowing_exponent_are_refused_too(self):
+        """The Decimal constructor raises on these itself; the refusal is the
+        same class either way, so no adapter has to know which."""
+        for text in ("sNaN", "1E+9999999999999999999"):
+            with pytest.raises(MoneyTextError):
+                money_from_text(text)

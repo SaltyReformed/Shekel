@@ -68,10 +68,10 @@ import io
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from app.exceptions import StatementParseError
-from app.utils.money import round_money
+from app.utils.money import MoneyTextError, money_from_text
 
 from ._line import ParsedStatement, StatementLine
 
@@ -167,24 +167,16 @@ class SecuTotals:
 def _money(raw: str, label: str) -> Decimal:
     """Return *raw* as a cents-rounded finite Decimal, refusing anything else.
 
-    Constructed from the string per ``docs/coding-standards.md``: money never
-    passes through float, least of all at the boundary where it enters from a
-    file.  Rounded through :func:`app.utils.money.round_money` rather than a
-    bare ``quantize`` so a bank exporting sub-cent precision is handled by the
-    app's ONE rounding rule (``ROUND_HALF_UP``) -- SECU's own OFX writes six
-    decimal places (``-165.220000``), so the case is real.
-
-    **The finiteness check is not defensive style; it closes a measured hole.**
-    ``Decimal("NaN")`` does NOT raise on construction and does NOT raise in
-    ``round_money``'s quantize -- it returns ``Decimal('NaN')`` -- so without
-    this arm a file stating ``NaN`` for an amount is accepted, committed into a
-    ``Numeric(12,2)`` column (PostgreSQL takes it), and then poisons everything
-    downstream: it compares equal to nothing so no matcher can ever see it, it
-    makes ``SUM()`` over the account ``NaN``, and the ``money`` display macro's
-    ``value < 0`` raises ``InvalidOperation`` -- so every later render of the
-    page 500s, permanently, with no in-app way to remove the row.  ``sNaN``,
-    ``Infinity`` and overflowing exponents all raise on their own; quiet ``NaN``
-    is the one that gets through.
+    The CSV's own cleaning -- SECU writes ``$`` and thousands separators --
+    over :func:`~app.utils.money.money_from_text`, the ONE walk from a
+    source's text to a recorded figure (constructed from the string, never
+    a float; refused when not finite, because a quiet ``NaN`` raises nowhere
+    on its own; rounded through the app's one rule INSIDE the refusal, since
+    ``1E+30`` passes the finiteness check and raises from ``quantize``).
+    Those two arms were measured here first, by adversarial robustness
+    review 2026-08-22, and the leaf keeps them for every adapter; SECU's own
+    OFX writes six decimal places (``-165.220000``), so the rounding case is
+    real.
 
     Args:
         raw: The cell's text.
@@ -194,31 +186,14 @@ def _money(raw: str, label: str) -> Decimal:
         The value, rounded to cents.
 
     Raises:
-        StatementParseError: When the cell is not a finite number.
+        StatementParseError: When the cell is not a finite number this app
+            can record.
     """
     try:
-        value = Decimal(raw.strip().replace("$", "").replace(",", ""))
-    except (InvalidOperation, ValueError) as exc:
+        return money_from_text(raw.strip().replace("$", "").replace(",", ""))
+    except MoneyTextError as exc:
         raise StatementParseError(
-            f"This file has {label} that is not an amount: {raw!r}.  Nothing "
-            f"was imported."
-        ) from exc
-    if not value.is_finite():
-        raise StatementParseError(
-            f"This file has {label} that is not a real number: {raw!r}.  "
-            f"Nothing was imported."
-        )
-    # **The rounding is INSIDE the refusal, and it was not.**  A finite figure
-    # with a large exponent -- ``1E+30`` and up -- passes the check above and
-    # then raises ``InvalidOperation`` from ``quantize``, outside any handler
-    # this module owns, so it reached the app's 500 page rather than the
-    # importer's own message.  Reachable from every cell this function reads.
-    # Found by adversarial robustness review 2026-08-22.
-    try:
-        return round_money(value)
-    except InvalidOperation as exc:
-        raise StatementParseError(
-            f"This file has {label} too large to record: {raw!r}.  Nothing "
+            f"This file has {label} that is {exc.reason}: {raw!r}.  Nothing "
             f"was imported."
         ) from exc
 

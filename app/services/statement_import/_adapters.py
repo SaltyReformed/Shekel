@@ -23,9 +23,15 @@ from app.exceptions import StatementParseError
 from . import _secu_csv
 from ._line import ParsedStatement
 
-#: Which parser reads which source.  A ``dict`` keyed by the ENUM MEMBER rather
-#: than by the ref-table id, because this mapping is about code and a ref id is
-#: a database fact -- and because a member that gains no entry here fails at the
+#: Which FILE parser reads which source: the parsers the upload form offers,
+#: and only those (ruling **R-BI30**).  A source whose statement is not a file
+#: -- the bank feed, whose reader :mod:`._simplefin` takes Bridge's answer and
+#: the window the sync asked for -- has no entry here and needs none: it
+#: reaches the recording walk through :func:`~._record.record_parsed`, and
+#: the form derives what it offers from this table, so nothing has to keep
+#: the feed OFF the form.  A ``dict`` keyed by the ENUM MEMBER rather than by
+#: the ref-table id, because this mapping is about code and a ref id is a
+#: database fact -- and because a member that gains no entry here fails at the
 #: lookup below with a message naming it, rather than resolving to some
 #: default parser that would read the wrong file happily.
 _PARSERS = {

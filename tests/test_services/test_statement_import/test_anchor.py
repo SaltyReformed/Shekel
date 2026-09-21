@@ -354,6 +354,7 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
                 stated_balance_on=date(2026, 3, 7),
             ),
             _known("1000.00", _CORROBORATED),
+            levels_stand=True,
         )
         unplaced = resolve_anchor(
             ParsedStatement(
@@ -363,6 +364,7 @@ class TestTheSolveFindsTheDayTheFigureIsFor:
                 stated_balance_on=date(2026, 3, 7),
             ),
             _known("1000.00", _CORROBORATED),
+            levels_stand=True,
         )
 
         assert placed.effective_on == date(2026, 3, 7)
@@ -382,6 +384,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             None,
+            levels_stand=False,
         )
 
         assert balance.evidence is _FILE_CHAIN
@@ -395,6 +398,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             _known("1000.00", _CORROBORATED),
+            levels_stand=True,
         )
 
         assert balance.evidence is _CORROBORATED
@@ -416,6 +420,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             _known("1000.00", _UNCORROBORATED),
+            levels_stand=True,
         )
 
         assert balance.effective_on == date(2026, 3, 2)
@@ -428,10 +433,35 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("9999.99"), date(2026, 3, 5)),
             None,
+            levels_stand=False,
         )
 
         assert balance.evidence is _UNCORROBORATED
         assert balance.effective_on == date(2026, 3, 2)
+
+    def test_an_UNPRICED_opening_while_a_level_stands_is_UNSOLVED_not_assumed(
+        self,
+    ):
+        """Ruling **bank_import:R-BI35**: the assumed arm is for a true
+        first import only.  A level stands somewhere on the account and the
+        day before this window is simply not priced -- a gap in coverage
+        between them -- so the claim is recorded unsolved, visibly, and
+        places nothing.  The same call with no level standing is the
+        assumed arm above; the one bit is the difference."""
+        lines = _plain(["100.00", "-40.00"])
+
+        balance = resolve_anchor(
+            _parsed(lines, Decimal("9999.99"), date(2026, 3, 5)),
+            None,
+            levels_stand=True,
+        )
+
+        assert balance is not None
+        assert balance.stated == Decimal("9999.99")
+        assert balance.effective_on is None
+        assert balance.evidence is None
+        assert balance.day_is_solved is False
+        assert not balance.is_anchored
 
     def test_the_assumed_day_is_BOUNDED_by_the_day_the_header_names(self):
         """The other arm the CHECK constraint refused, and it had no guard.
@@ -447,6 +477,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("2000.00"), date(2026, 3, 1)),
             None,
+            levels_stand=False,
         )
 
         assert balance.effective_on == date(2026, 3, 1)
@@ -463,6 +494,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         balance = resolve_anchor(
             _parsed(lines, Decimal("1060.00"), date(2026, 3, 5)),
             _known("1100.00"),
+            levels_stand=True,
         )
 
         assert balance.evidence is _FILE_CHAIN
@@ -473,6 +505,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         assert resolve_anchor(
             _parsed(_plain(["100.00"]), None, None),
             _known("1000.00"),
+            levels_stand=True,
         ) is None
 
     def test_a_figure_with_no_DAY_determines_nothing_either(self):
@@ -487,6 +520,7 @@ class TestTheEvidenceIsTheWeakestLinkInTheChain:
         assert resolve_anchor(
             _parsed(_plain(["100.00"]), Decimal("500.00"), None),
             _known("1000.00"),
+            levels_stand=True,
         ) is None
 
 
@@ -529,6 +563,7 @@ class TestAFileMayStateABalanceItsOwnLinesCannotReach:
         balance = resolve_anchor(
             _parsed(lines, Decimal("2459.60"), date(2026, 8, 23)),
             _known("1000.00"),
+            levels_stand=True,
         )
 
         assert balance.stated == Decimal("2459.60")
@@ -553,6 +588,7 @@ class TestAFileMayStateABalanceItsOwnLinesCannotReach:
         balance = resolve_anchor(
             _parsed(lines, Decimal("9999.99"), date(2026, 3, 1)),
             _known("1000.00"),
+            levels_stand=True,
         )
 
         assert not balance.is_anchored
@@ -575,6 +611,7 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
             resolve_anchor(
                 _parsed(lines, Decimal("9999.99"), date(2026, 3, 9)),
                 None,
+                levels_stand=False,
             )
 
         assert raised.value.stated == Decimal("9999.99")
@@ -588,6 +625,7 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
             resolve_anchor(
                 _parsed(lines, Decimal("500.00"), date(2026, 3, 5)),
                 None,
+                levels_stand=False,
             )
 
         assert raised.value.stated == Decimal("500.00")
@@ -606,6 +644,7 @@ class TestAFileThatCONTRADICTSItselfIsRefused:
         balance = resolve_anchor(
             _parsed(lines, Decimal("1100.00"), date(2026, 3, 9)),
             None,
+            levels_stand=False,
         )
 
         assert balance.effective_on == date(2026, 3, 1)
@@ -763,8 +802,10 @@ class TestTheRecordedHistoryWalk:
 
         The anchor's import spans 03-01..03-03; 03-04 is covered by nothing, so
         a walk to 03-05 crosses a day whose lines nobody has imported.
-        Answering ``None`` sends the caller to ``uncorroborated``, which the
-        receipt SAYS.  A pre-existing test asked this three MONTHS past the
+        Answering ``None`` sends the caller to UNSOLVED while a level stands
+        (ruling **bank_import:R-BI35**) and to ``uncorroborated`` on a first
+        import, which the receipt SAYS.  A pre-existing test asked this three
+        MONTHS past the
         boundary and so could not see an off-by-one; mutating the comparison
         to ``>=`` left the whole suite green.  Found by adversarial review
         2026-08-23.
