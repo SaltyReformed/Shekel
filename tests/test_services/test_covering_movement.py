@@ -94,6 +94,7 @@ from app.services import (
     transaction_service,
     transfer_service,
 )
+from app.services.account_resolver import resolve_owner_cash_flow_set
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import settled_cash_facts
 from app.services.cash_ledger._amounts import (
@@ -1843,7 +1844,10 @@ class TestAKeptMovementIsNotAPurchase:
                     seed_user["user"].id,
                 ).require_period(FiledRow.for_row(envelope)),
             }
-            listed = build_entry_lists_dict([envelope], budgets, periods)
+            listed = build_entry_lists_dict(
+                [envelope], budgets, periods,
+                resolve_owner_cash_flow_set(envelope.user_id),
+            )
             assert listed[envelope.id]["entries"] == []
             assert entry_service.get_entries_for_transaction(
                 envelope.id, seed_user["user"].id,

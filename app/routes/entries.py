@@ -22,10 +22,12 @@ from app.models.transaction_entry import TransactionEntry
 from app.routes._typed_figure import typed_figure
 from app.routes._render_helpers import (
     fragment_amounts,
+    fragment_cash_flow,
     render_transaction_cell,
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
+from app.services.cash_flow_set import purchase_accounts
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
@@ -197,7 +199,16 @@ def _render_entry_list(
     period = calendar_for(txn.user_id).require_period(
         FiledRow.for_row(txn),
     )
-    view = entry_service.entry_list_view(entries, budgets[txn.id], period)
+    # The accounts a new purchase may name (plan step credit_card:CC-5-2):
+    # the row's own plus the OWNER's cash-flow set, by the row's owner for
+    # the calendar's reason -- the purchase door gates against ``txn.user_id``
+    # (ruling R-CC11), so a companion's refresh carries the owner's picker.
+    # Through the fragment producer the mobile card and the cell share, so
+    # one request's fragments resolve the set by one rule.
+    view = entry_service.entry_list_view(
+        entries, budgets[txn.id], period,
+        purchase_accounts(fragment_cash_flow(txn.user_id).purchases, txn),
+    )
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,

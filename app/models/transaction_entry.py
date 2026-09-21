@@ -469,12 +469,16 @@ class TransactionEntry(
         back_populates="entries",
     )
     # The account the money moved through, for a reader that wants the
-    # ACCOUNT rather than its id.  Lazy (the default): no reader asks it yet
-    # -- the transfer endpoint move assigns it, nothing loads it -- and
-    # ``lazy="joined"`` here chains ``Account``'s own joined tree onto every
-    # movement load (measured at CC-5-1's review: the fold's movement query
-    # went from 11 joins to 17), a cost the reader that needs it pays when it
-    # arrives (the movement chip, plan step ``credit_card:CC-5-2``).
+    # ACCOUNT rather than its id.  Lazy (the default): ``lazy="joined"``
+    # here chains ``Account``'s own joined tree onto every movement load
+    # (measured at CC-5-1's review: the fold's movement query went from 11
+    # joins to 17).  Its readers are the transfer endpoint move, which
+    # assigns it, and the grid's account chip and the entry list's account
+    # name (plan step ``credit_card:CC-5-2``), which read ``.name`` only for
+    # a movement off its row's account -- an identity-map hit for a member
+    # of the owner's cash-flow set, which the page's resolver has loaded
+    # (measured: a card swipe adds no statement to the grid render), and
+    # one load per distinct account per render otherwise.
     account = db.relationship("Account", foreign_keys=[account_id])
     user = db.relationship("User", lazy="joined")
     credit_payback = db.relationship(

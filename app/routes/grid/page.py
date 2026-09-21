@@ -29,7 +29,7 @@ from app.services import (
     pay_period_rolling,
 )
 from app.services.account_resolver import (
-    resolve_cash_flow_set,
+    resolve_owner_and_view,
     serves_cash_detail,
 )
 from app.services.balance_at import BalanceContext
@@ -159,14 +159,24 @@ class _GridContext(NamedTuple):
     Attributes:
         balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of +
             the owner's pay calendar).
-        cash_flow: The owner's cash-flow set -- checking and its cards, with
-            the balance line's account named (developer ruling
-            ``credit_card:R-CC16``, plan step CC-4-1;
-            :func:`~app.services.account_resolver.resolve_cash_flow_set`) --
+        cash_flow: The VIEW of the owner's cash-flow set this page renders --
+            checking and its cards, with the balance line's account named
+            (developer ruling ``credit_card:R-CC16``, plan step CC-4-1;
+            :func:`~app.services.account_resolver.resolve_owner_and_view`) --
             or ``None`` when the user has no account rows at all (the
             post-Commit-3 user-with-zero-accounts edge case).  The rows this
             page loads are every member's; the balance, the anchor and the
             bank control are :attr:`account`'s.
+        owner_cash_flow: The OWNER's set with no override, from the same walk
+            -- what a purchase under any row on this page may name (plan step
+            ``credit_card:CC-5-2``, ruling **R-CC37**;
+            :func:`~app.services.cash_flow_set.purchase_accounts`).  A second
+            field rather than :attr:`cash_flow` because an override naming an
+            account OUTSIDE the set collapses the view to that one account --
+            the rows this page shows -- while what a purchase may name is the
+            owner's set whatever page it is recorded from, and the purchase
+            door tests against exactly that.  The same object as
+            :attr:`cash_flow` when the request names no override.
         num_periods: Count of visible pay-period columns.
         start_offset: Offset added to the current period's
             ``period_index`` for the leftmost visible column.
@@ -186,6 +196,7 @@ class _GridContext(NamedTuple):
 
     balance_ctx: BalanceContext
     cash_flow: CashFlowSet | None
+    owner_cash_flow: CashFlowSet | None
     num_periods: int
     start_offset: int
     current_period: DerivedPeriod
@@ -271,7 +282,14 @@ def _resolve_grid_context(user_id, request_args, settings):
     # override -- an override within the set keeps the set's rows behind
     # that member's balance; one outside it (a savings account) is that
     # account's single-account grid as it always was.
-    cash_flow = resolve_cash_flow_set(
+    #
+    # Both halves from ONE walk (plan step credit_card:CC-5-2): the view this
+    # page shows, and the owner's set with no override for the add-purchase
+    # picker under every envelope -- the purchase door admits the row's own
+    # account plus the OWNER's members whatever page the row is recorded
+    # from, and an override outside the set has just collapsed the view to
+    # one account.
+    cash_flow_sets = resolve_owner_and_view(
         user_id, settings, request_args.get("account_id", type=int),
     )
 
@@ -292,7 +310,8 @@ def _resolve_grid_context(user_id, request_args, settings):
 
     return _GridContext(
         balance_ctx=balance_ctx,
-        cash_flow=cash_flow,
+        cash_flow=cash_flow_sets.view,
+        owner_cash_flow=cash_flow_sets.owner,
         num_periods=num_periods,
         start_offset=start_offset,
         current_period=current_period,
@@ -420,7 +439,9 @@ class _GridEntryMaps(NamedTuple):
     entry_lists: dict[int, dict]
 
 
-def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
+def _build_entry_maps(
+    transactions, budgets, all_periods, owner_cash_flow,
+) -> _GridEntryMaps:
     """Build the two ENVELOPE maps, and the paycheck spans one of them needs.
 
     **They were built inside :func:`_build_grid_row_data` until pay-calendar
@@ -457,6 +478,9 @@ def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
             it is handed.  Passing the visible slice instead would be a
             ``KeyError`` on a live render, which is why the two reads sit in
             one function rather than being resolved apart.
+        owner_cash_flow: ``ctx.owner_cash_flow`` -- the owner's set with no
+            override, from which each envelope's add-purchase picker is
+            derived (plan step ``credit_card:CC-5-2``).
 
     Returns:
         The :class:`_GridEntryMaps` for this render.
@@ -478,6 +502,7 @@ def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
         entry_lists=build_entry_lists_dict(
             transactions, budgets,
             {period.period_id: period for period in all_periods},
+            owner_cash_flow,
         ),
     )
 
@@ -782,7 +807,9 @@ def index():
     # window comes from, which is what makes it hold the paydays just appended.
     # Over the ROWS alone: a leg holds no purchases, and the card macro reads
     # both maps with ``.get``.
-    entry_maps = _build_entry_maps(items.rows, amounts.budgets, ctx.all_periods)
+    entry_maps = _build_entry_maps(
+        items.rows, amounts.budgets, ctx.all_periods, ctx.owner_cash_flow,
+    )
 
     return render_template(
         "grid/grid.html",

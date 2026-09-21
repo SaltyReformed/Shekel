@@ -29,7 +29,8 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
-from app.services.account_resolver import resolve_cash_flow_set
+from app.services.account_resolver import resolve_owner_cash_flow_set
+from app.services.cash_flow_set import purchase_accounts
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.settle_day import (
     SettleDay,
@@ -280,17 +281,22 @@ def _purchase_account_id(txn: Transaction, details: EntryDetails) -> int:
     **What a purchase may name is ONE predicate, and it is the picker's**
     (ruling **R-CC37**, developer 2026-09-20): the row's own account, or a
     member of the ROW OWNER's cash-flow set -- the primary grid account plus
-    the active cards, :func:`~app.services.account_resolver.resolve_cash_flow_set`
-    with no override, the walk the form renders its dropdown from.  So the
-    door and the form agree by one rule, and a purchase on a 401(k), an IRA,
-    a house, a loan, a savings account or a checking account outside the set
-    is UNWRITABLE rather than merely unoffered: a swipe filed on an account
-    whose balance never folds movements would drop the envelope's hold on
-    checking by its figure and land where no screen reads it.  A row that
-    LIVES on an account outside the set keeps its purchases there, because
-    the row's own account is always admitted.  The review of this leaf's
-    first cut found the door admitting every non-loan account under a
-    docstring that claimed this parity; the predicate now IS the picker's.
+    the active cards,
+    :func:`~app.services.account_resolver.resolve_owner_cash_flow_set`, with
+    no override.  It is spelled ONCE, as
+    :func:`~app.services.cash_flow_set.purchase_accounts` -- the tuple the
+    add-purchase form renders its dropdown from -- and this door tests
+    membership in that same tuple, so the door and the form cannot part: a
+    purchase on a 401(k), an IRA, a house, a loan, a savings account or a
+    checking account outside the set is UNWRITABLE rather than merely
+    unoffered, because a swipe filed on an account whose balance never folds
+    movements would drop the envelope's hold on checking by its figure and
+    land where no screen reads it.  A row that LIVES on an account outside
+    the set keeps its purchases there, because the row's own account is
+    always the tuple's first member.  The review of this leaf's first cut
+    found the door admitting every non-loan account under a docstring that
+    claimed this parity; the grid half (the second commit of CC-5-2) made
+    the predicate one function rather than two spellings that agreed.
 
     **The gate is against the ROW's owner, never the caller** (design 3.2,
     ruling **R-CC11**): a companion reaches the row through the owner's
@@ -337,9 +343,8 @@ def _purchase_account_id(txn: Transaction, details: EntryDetails) -> int:
             f"'{account.name}' is archived, so a purchase cannot be filed on "
             "it. Unarchive the account first, or pick another."
         )
-    owner = db.session.get(User, txn.user_id)
-    cash_flow = resolve_cash_flow_set(txn.user_id, owner.settings)
-    if cash_flow is None or account.id not in cash_flow.member_ids:
+    cash_flow = resolve_owner_cash_flow_set(txn.user_id)
+    if account.id not in {a.id for a in purchase_accounts(cash_flow, txn)}:
         raise ValidationError(
             f"'{account.name}' is not an account a purchase can be paid from: "
             "pick this row's own account, your checking account, or one of "
