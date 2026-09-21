@@ -660,6 +660,9 @@ class TestTheMintedRowIsAMemberOfTheMatch:
         ``credit_card:CC-5-4a-1`` (ruling **R-CC43**); its creation record
         still names the row.  Through ``CC-5-3`` this looked the member up by
         ``transaction_id``.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
         """
         line, salary, allowance = _payroll(seed_user)
 
@@ -2205,6 +2208,9 @@ class TestAGroupsDifferenceLandsOnTheMemberTheOwnerNames:
         # The members name each row's PAYMENT (plan step
         # ``credit_card:CC-5-4a-1``, ruling **R-CC43**), and the row is
         # reached through it; the sum is the rows' settled figures, as before.
+        # Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        # under R-CC43 -- the member names the payment; a day moves through the seam that mirrors
+        # it; a settled row is ticked as its payment."
         members = (
             db.session.query(StatementMatchMember)
             .filter(

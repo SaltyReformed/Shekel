@@ -1071,6 +1071,9 @@ def a_submission(
     what the owner would tick -- the payment -- and its assertions about the
     day, the figure and the ledger grade the same act they always did.  A
     row offered neither way falls back to the not-offerable token above.
+    Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions under
+    R-CC43 -- the member names the payment; a day moves through the seam that mirrors it; a settled
+    row is ticked as its payment."
 
     Args:
         scope: The pass being submitted against

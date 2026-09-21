@@ -1182,6 +1182,9 @@ class TestTheRegisterBoundsWhatItRenders:
         # mirrors the day onto the covering movement the act names (plan
         # step ``credit_card:CC-5-4a-1``, ruling **R-CC43**; through
         # ``CC-5-3`` the act named the row and this wrote its column).
+        # Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        # under R-CC43 -- the member names the payment; a day moves through the seam that mirrors
+        # it; a settled row is ticked as its payment."
         member = db.session.query(StatementMatchMember).filter(
             StatementMatchMember.match_id == doomed.match_id,
             StatementMatchMember.transaction_entry_id.isnot(None),

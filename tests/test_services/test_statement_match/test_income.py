@@ -383,6 +383,9 @@ class TestTheLineStopsBeingUnexplained:
         subject of every settled match*); through ``CC-5-3`` this asserted
         ``transaction_id == recorded.transaction_id``.  The row is still what
         the act CREATED, which the undo reads from the other relation.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
         """
         line = _a_deposit(seed_user)
 

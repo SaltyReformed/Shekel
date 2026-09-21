@@ -233,6 +233,9 @@ class TestABalancedMatchIsRecorded:
         door, which wrote its covering movement, and that movement -- the
         money the bank showed -- is what the act records.  Through
         ``CC-5-3`` this asserted ``transaction_id == txn.id``.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
@@ -442,15 +445,12 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         scope = a_scope(seed_user)
         submission = a_submission(scope, lines=[line], transactions=[txn])
 
-        # Through the row's own door, which mirrors the day onto the covering
-        # movement -- the subject the screen offered for a settled row and
-        # whose revision the token carries (plan step ``credit_card:
-        # CC-5-4a-1``, ruling **R-CC43**).  This wrote ``txn.settled_on``
-        # around the seam through ``CC-5-3``, when the row was the subject.
-        transaction_service.apply_requested_status(
-            txn, txn.status_id,
-            settle_day=an_entered_day(line.posted_on + timedelta(days=2)),
-        )
+        # A raw write around the seam, on the ROW alone: the subject the
+        # screen offered is the row's PAYMENT (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC43**), and this edit never
+        # touches the movement -- so it is the ROW's counter, carried in the
+        # payment's token beside the movement's, that has to catch it.
+        txn.settled_on = line.posted_on - timedelta(days=2)
         db.session.flush()
 
         with pytest.raises(ValidationError, match="reviewed against different"):
@@ -1193,6 +1193,9 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
         covering movement the act names (plan step ``credit_card:CC-5-4a-1``,
         ruling **R-CC43**); this wrote the row's day pair directly through
         ``CC-5-3``, when the act named the row.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
         """
         salary, _ = self._accepted_pair(db, seed_user)
         transaction_service.apply_requested_status(
