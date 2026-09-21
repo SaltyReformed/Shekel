@@ -11,7 +11,7 @@ the wording, EARLIEST stated day for the transaction day) with a two-element
 case where id order and the claimed order disagree.
 
 **The id step and the cross-source step are reached through
-:func:`~app.services.statement_import._record._pair_group` directly**, the
+:func:`~app.services.statement_import._reconcile._pair_group` directly**, the
 allowance ``test_anchor`` takes for ``resting_on``: the one adapter that
 exists carries no ids and there is one source, so no file can put either
 shape through the door.  The rows are still real -- built through the ORM,
@@ -45,13 +45,15 @@ from app.services.statement_import import (
     recent_lines,
     record_statement,
 )
-# Pylint: protected-access -- the pairing step and the id refusal are private
-# collaborations of the record door with no importer outside the package; a
-# test of the RULE reaches into them, the allowance ``test_anchor`` takes for
-# ``resting_on``.
+# Pylint: protected-access -- the pairing step (the record door's
+# reconciliation leaf) and the id refusals are private collaborations of the
+# record door with no importer outside the package; a test of the RULE reaches
+# into them, the allowance ``test_anchor`` takes for ``resting_on``.
+from app.services.statement_import._reconcile import (  # pylint: disable=protected-access
+    _pair_group,
+)
 from app.services.statement_import._record import (  # pylint: disable=protected-access
     _held_ids,
-    _pair_group,
     _refuse_moved_ids,
     _refuse_repeated_ids,
 )
