@@ -462,8 +462,8 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         which is the kind that gets weakened rather than believed. The claim
         worth holding is that EVERY parsed key is bare; the second version named
         ``credit_card:CC-5`` as its specimen and lost it when that step became a
-        container (2026-09-21), so the specimen is FOUND: any row whose cell has a
-        parenthesis beside a key. The module sits at pylint's 1000-line ceiling.
+        container (2026-09-21), so the specimen is FOUND, not named (any row whose
+        cell has a parenthesis beside a key); re-cut with the developer's confirmation.
         """
         rows = registry.step_rows()
         annotated = [row for row in rows if "(" in row.blocked and row.blocked_keys()]

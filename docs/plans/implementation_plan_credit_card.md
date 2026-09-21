@@ -115,9 +115,10 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         byte-identical on production's shape; suite 14680/0.
 - [ ] **CC-5** `feat(cards): a purchase is a movement on the card` -- design 3.2 (`R-CC15`): the
       DECOMPOSED parent, split 2026-09-20 (the card lane's trace) into 5-1 (the key), 5-2 (the
-      purchase door, its readers and the picker) and 5-3 (the settle-with-tender door); 5-1 and 5-2
-      land in ONE PR (`R-CC33`); ticks with 5-3. Holds **CC-354** until 5-3's entry names the leaf
-      that takes its five sign sites. The flag survives to CC-7.
+      purchase door, its readers and the picker) and 5-3 (the settle-with-tender door), 5-1 and 5-2
+      in ONE PR (`R-CC33`), and 2026-09-21 (at 5-3's entry) into 5-4 (the matcher's card-screen
+      half, `R-CC40`) and 5-5 (the net-worth sign fix, `R-CC41`); ticks with 5-5. The flag survives
+      to CC-7.
   - [x] **CC-5-1** `4045a9b1` -- the key: `fk_transaction_entries_parent_account` and its
         `ON UPDATE CASCADE` dropped, `owner_id` NOT NULL backfilled, three keys holding a movement
         to its own account and to its row's owner (`R-BAL76`'s letter; `R-CC32`: the owner key
@@ -126,18 +127,33 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         verbatim texts too): `historical/credit_card_cc5_key_and_purchase_as_built_2026-09-21.md`.
   - [x] **CC-5-2** `af3b9f5b` -- the first cross-account writer (two commits, `3ca97070` first): the
         purchase door takes an account gated on the ROW's owner (`R-CC37`, `R-CC39`: its own or any
-        member of the owner's set); the reconcile scope, `off_statement_sum` and delete guard 4
-        re-keyed to the movement's account; the account-move retention retired (`R-CC36`); the
-        picker from the door's own tuple, hidden with one choice (`R-CC34`, `R-CC35`); the entry
-        list and ONE chip macro name the movement's account; suite 15014/0.
+        member of the owner's set); the reconcile scope re-keyed to the movement's account,
+        `off_statement_sum` and guard 4 given a movement arm; the account-move retention retired
+        (`R-CC36`); the picker from the door's tuple, hidden with one choice (`R-CC34`), the CC
+        checkbox kept (`R-CC35`); ONE chip macro names the movement's account; suite 15014/0.
 - [ ] **CC-5-3** `feat(cards): the settle-with-tender door` -- design 3.2: `Settlement` gains the
       tender account (default the row's expectation, else its own; a statement-driven settle forces
       the statement's account); `_cover` / `_record_onto` write the covering movement onto the
       tender on the movement's day, basis `entered`, refused on or before the card's opening;
       `_mirror_assertion` and `record_clearing` stop copying the row's clearing link onto a movement
-      on another account; `mark_done`'s "Paid from" picker reads `purchase_accounts` (`R-CC39`: one
-      function, two doors); undo is the ordinary revert. OPENS with a fork for the developer: the
-      `statement_match` offer of a card-settled row (the card's statement, checking's, or both).
+      on another account; the full-edit popover's settle section and `mark_done`'s form gain the
+      "Paid from" picker, both reading `purchase_accounts` (`R-CC39`: one function, three doors);
+      undo is the ordinary revert. HALF 1 of `R-CC40` (ruled at this leaf's entry):
+      `status_seam.covered_cash_leg` takes the account and the matcher's three readers
+      (`_candidates`, `_accepted_view`, `_release`) pass the statement's, so on an account's screen
+      a settled row is worth what its payment moved ON THAT ACCOUNT, zero when it moved elsewhere.
+- [ ] **CC-5-4** `feat(cards): the card's line meets the bill it paid` -- design 3.2 and `R-CC40`'s
+      HALF 2: the payment movement is the CARD screen's candidate for the bill (`statement_match`
+      candidates, moving, accept, the accepted register, undo -- bank-import's files,
+      announce-first; the card's reconcile panel's purchases arm gets the same admission), matched
+      as a MOVEMENT member and dated through the bill's own door because the movement follows the
+      row; accept dates the bill by the card's line, the card's actual equals the bank, nothing is
+      counted twice. Must land before any card import exists.
+- [ ] **CC-5-5** `fix(cards): a card in credit is the issuer owing` -- `R-CC41`: the five `abs()`
+      sites (`balance_at/_liability.py` `_spliced_owed_series` and `liability_owed_at_dates`,
+      `savings_dashboard_service/_net_worth.py`'s hero and trend series, `_debt_line.py`'s
+      no-payoff-model debt total) as ONE subject, the trend's index 0 still reconciling to the hero
+      by construction; `$0.00` on production (no card). Closes **CC-354**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
