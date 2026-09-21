@@ -361,7 +361,7 @@ def _apply_remaining_fields(
     # Invariant 4) -- so writing ``occurs_on`` beside it here is what makes
     # the two columns unable to part, whichever door moved the date and
     # whether it typed the day or the period move re-placed it
-    # (``._placed.re_place_on_move``).  **Only when the date MOVES**, which
+    # (``._placed.re_place_and_grade_the_day``).  **Only when the date MOVES**, which
     # is the twin's guard (``_field_updates._place_the_date``: ``if due ==
     # txn.due_date: return``) and X-ci-1's adversarial review found it
     # missing: the full-edit form posts ``due_date`` on EVERY save, so a

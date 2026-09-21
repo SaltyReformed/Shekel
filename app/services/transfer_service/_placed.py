@@ -21,7 +21,7 @@ reused as they are:
   For a one-time payment INTO A LOAN the due date is the installment it
   satisfies, so the re-placed date is graded by the loan-installment guard
   exactly as a hand-typed one is (it reads ``updates["due_date"]``, which
-  :func:`re_place_on_move` has written by then).
+  :func:`re_place_and_grade_the_day` has written by then).
 * **The transfer records its own due date as the occurrence it answers**
   (ruling **R-BAL94**, the twin of **R-BAL25**): ``occurs_on = due_date``,
   written at birth (``routes/transfers/_instances``) and by

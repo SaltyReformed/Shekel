@@ -5,7 +5,7 @@
 # X-ci-1 as built: the transfer twin takes `recurs`, and a one-time transfer's three doors stop reading its link as generated (2026-09-21)
 
 Archived at the tick of X-ci-1 (`465f91cd`), the first of the three leaves **R-BAL95** cut `X-ci` into. The commit
-is the record; the build's harnesses, the 13-mutation battery and the two adversarial reviews are
+is the record; the build's harnesses, the 13-mutation battery and the adversarial review are
 `~/projects/shekel-handoffs/HANDOFF-X-ci.md` and `balance-2026-09-21/xci-1/`. No schema, no money moved.
 Below: the X-ci entry as it stood before the split (verbatim), the `steps.md` row as it stood, the two ledger
 rows the leaf closed, and the developer's answers to the four design questions (2026-09-20) and the four
@@ -160,7 +160,7 @@ RULING (verbatim): The next leaf already rewrites this module (it deletes the ad
 Rejected: "A new leaf of its own" (a separate step, next free X-cu, for the route-tier handler fix and its control; X-ci-2 stays tests-only beyond the producer as R-BAL95 worded it).
 
 
-## R-BAL96's row as the lane drafted it (2,000+ characters with its amendment; `rulings.md` holds the condensed row)
+## R-BAL96's row as the lane drafted it (2,000+ characters with its amendment; `rulings.md` holds the condensed row; its `_placed.re_place_on_move` is the name the leaf's M1 rework renamed to `re_place_and_grade_the_day` before committing, kept here as drafted)
 
 | arc | id | also | date | what was ruled |
 |---|---|---|---|---|

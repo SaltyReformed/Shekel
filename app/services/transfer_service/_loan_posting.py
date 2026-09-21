@@ -244,7 +244,7 @@ def _reject_installment_move_before_loan(
         updates: The :func:`update_transfer` kwargs about to be applied --
             read, not written; *xfer* still holds its pre-edit values.  A
             placed transfer's re-placed ``due_date`` is already in it
-            (``._placed.re_place_on_move`` runs first), so a one-time payment
+            (``._placed.re_place_and_grade_the_day`` runs first), so a one-time payment
             into a loan is graded on the installment the move leaves it with.
         to_account: The destination this edit LEAVES the transfer with, already
             ownership-checked by the caller -- ``xfer.to_account`` when the edit
