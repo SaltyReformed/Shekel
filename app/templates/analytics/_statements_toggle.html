@@ -15,14 +15,14 @@
           title="The confirmed double-entry posting ledger; the balance sheet's two-part trial balance ties it out.">confirmed</span>
   </div>
   <div class="btn-group" role="group" aria-label="Statement type">
-    <button class="btn btn-sm {% if active_statement == 'income' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+    <button type="button" class="btn btn-sm {% if active_statement == 'income' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.income_statement_tab') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-indicator="#tab-spinner"
             {% if active_statement == 'income' %}aria-current="true"{% endif %}>
       Income Statement
     </button>
-    <button class="btn btn-sm {% if active_statement == 'balance' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
+    <button type="button" class="btn btn-sm {% if active_statement == 'balance' %}btn-primary{% else %}btn-outline-secondary{% endif %}"
             hx-get="{{ url_for('analytics.balance_sheet_tab') }}"
             hx-target="#tab-content" hx-swap="innerHTML"
             hx-indicator="#tab-spinner"

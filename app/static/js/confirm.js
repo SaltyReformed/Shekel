@@ -96,10 +96,11 @@
   });
 
   // Bound on `document`, not `document.body`, because there IS no body when
-  // this runs.  htmx 2.0.4 dispatches every event with `bubbles: true` and
-  // `cancelable: true` (vendor/htmx/htmx.min.js), so the event reaches
-  // document and preventDefault here still cancels the request -- which is
-  // what makes htmx re-issue it only through the Confirm button below.
+  // this runs.  htmx 2.0.10 dispatches every event with `bubbles: true` and
+  // `cancelable: true` (vendor/htmx/htmx.min.js; re-read at the 2.0.4 ->
+  // 2.0.10 refresh), so the event reaches document and preventDefault here
+  // still cancels the request -- which is what makes htmx re-issue it only
+  // through the Confirm button below.
   document.addEventListener('htmx:confirm', function(e) {
     var question = e.detail.question;
     if (!question) return;

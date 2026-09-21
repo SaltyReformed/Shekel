@@ -473,7 +473,7 @@ a payment brings it back, which is the timing the card is being used to choose; 
 readable at a glance.
 
 On checking's grid the payment is the transfer's checking leg, a payable in the due date's period
-(R-CC10, structural under `transfer_legs.PlannedTransferLeg` since X-bi-6a); the timing shift R-CC12
+(R-CC10, structural under `transfer_legs.TransferLeg` since X-bi-6a); the timing shift R-CC12
 accepts is the correct one. Underpayment (payment < minimum) warns -- a non-blocking notice with a
 one-click "pay statement balance" that flips the mode, which is a rewrite of the transfer's
 recurrence rule (the PERIOD unit to MONTH on `payment_due_day`, `recurrence_rule.py:343-402`) and a

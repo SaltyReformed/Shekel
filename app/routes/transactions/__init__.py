@@ -24,19 +24,14 @@ Module map:
 * :mod:`app.routes.transactions.forms` -- read-only GET HTMX partials.
 * :mod:`app.routes.transactions.create` -- create handlers.
 * :mod:`app.routes.transactions.mutations` -- PATCH/DELETE edit + the
-  mark-done / credit / cancel status workflow, for REGULAR (non-shadow)
-  rows (co-located so their shared apply / commit / error-tail parallel
-  code stays intra-file).
-* :mod:`app.routes.transactions._shadow_mutations` -- the three branches
-  where those same routes land on a transfer SHADOW and re-express the
-  request as a ``transfer_service.update_transfer`` call.  Split out at
-  plan step X-f1c when ``mutations`` hit the 1000-line ceiling; the three
-  moved TOGETHER, so their parallelism with each other stays intra-file
-  rather than becoming cross-file ``duplicate-code``.  **This entry and
-  the parenthetical above are the correction a neutral review demanded:
-  the map still credited ``mutations`` with co-locating the shadow code
-  the same commit had moved out of it, and did not list this module at
-  all.**
+  mark-done / credit / cancel status workflow (co-located so their shared
+  apply / commit / error-tail parallel code stays intra-file).  The three
+  branches where those routes landed on a transfer SHADOW row and
+  re-expressed the request as a transfer update (``_shadow_mutations``,
+  split out at plan step X-f1c) are gone since leaf ``balance:X-bi-6-1``:
+  the grid draws a transfer's leg off its parent and the leg's cell calls
+  the transfer's own routes, and a shadow row is a 404 at
+  :func:`~app.routes.transactions._helpers._get_owned_transaction`.
 * :mod:`app.routes.transactions.carry_forward` -- carry-forward routes.
 """
 

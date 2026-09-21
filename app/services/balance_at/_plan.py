@@ -200,7 +200,7 @@ from app.services.cash_ledger import (
 )
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import due_after_anchor, period_for_date
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.utils.dates import add_months
 from app.utils.money import round_money
 
@@ -264,14 +264,14 @@ class _ForwardInputs:
 
 
 def _planned_from_legs(
-    legs: list[PlannedTransferLeg],
+    legs: list[TransferLeg],
     basis: AmountBasis,
     fwd: _ForwardInputs,
 ) -> list[PlannedPayment]:
     """Build the PLANNED tier: one record per projected transfer into the loan.
 
     Each still-projected transfer into the loan -- as the
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` of its parent row
+    :class:`~app.services.transfer_legs.TransferLeg` of its parent row
     (plan step **balance:X-bi-6a**, ruling **R-BAL13**) -- becomes a
     :class:`PlannedPayment` at what a SCREEN would show for it, which is what
     the amount model RESOLVES the parent to

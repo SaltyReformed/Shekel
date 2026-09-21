@@ -352,16 +352,21 @@ class TestTransferShadowMarkDoneStateMachine:
         db_session.commit()
         return xfer
 
-    def test_mark_done_on_cancelled_transfer_shadow_returns_400(
+    def test_mark_done_on_cancelled_transfer_from_its_leg_returns_400(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """mark_done on a CANCELLED transfer shadow returns 400.
+        """mark_done on a CANCELLED transfer from its grid LEG returns 400.
 
-        The only cover for ``_shadow_mutations._mark_done_shadow``'s
-        ``except ValidationError -> _error_transaction_response`` branch.  It
-        was written over a SETTLED shadow until plan step **balance:X-am**
-        deleted that status, and a first pass deleted it outright -- leaving
-        the branch with no test at all, which an adversarial review caught.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        posted to the SHADOW row's transaction door, the only cover for
+        ``_shadow_mutations._mark_done_shadow``'s refusal branch; that module
+        is deleted and the grid's Mark Paid is the transfer's door carrying
+        ``leg_account_id``, whose ``except ValidationError ->
+        _error_transfer_response`` branch renders the refusal into the LEG's
+        cell.  It was written over a SETTLED shadow until plan step
+        **balance:X-am** deleted that status, and a first pass deleted it
+        outright -- leaving the branch with no test at all, which an
+        adversarial review caught.
 
         **Cancelled is the better specimen anyway, because the button is
         RENDERED there.**  The card partials suppress Mark Paid on
@@ -385,20 +390,26 @@ class TestTransferShadowMarkDoneStateMachine:
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .first()
             )
-            resp = auth_client.post(f"/transactions/{shadow.id}/mark-done")
+            resp = auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done",
+                data={"leg_account_id": str(shadow.account_id)},
+            )
             assert resp.status_code == 400
-            assert "Invalid transfer status transition" in resp.data.decode()
+            html = resp.data.decode()
+            assert "Invalid transfer status transition" in html
+            assert f'data-leg-account-id="{shadow.account_id}"' in html
 
             db.session.expire_all()
             assert db.session.get(Transaction, shadow.id).status_id == (
                 ref_cache.status_id(StatusEnum.CANCELLED)
             )
 
-    def test_cancel_on_paid_transfer_shadow_returns_400(
+    def test_cancel_on_paid_transfer_from_its_leg_returns_400(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Cancel on a Paid transfer shadow returns 400 (Done -> Cancelled
-        is illegal under the state machine)."""
+        """Cancel on a Paid transfer from its grid LEG returns 400 (Done ->
+        Cancelled is illegal under the state machine).  Re-expressed on the
+        transfer door at plan step balance:X-bi-6-1 (ruling R-BAL87)."""
         with app.app_context():
             xfer = self._create_transfer_with_shadows(
                 app, db.session, seed_user, seed_periods_today,
@@ -416,28 +427,47 @@ class TestTransferShadowMarkDoneStateMachine:
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .first()
             )
-            resp = auth_client.post(f"/transactions/{shadow.id}/cancel")
+            resp = auth_client.post(
+                f"/transfers/instance/{xfer.id}/cancel",
+                data={"leg_account_id": str(shadow.account_id)},
+            )
             assert resp.status_code == 400
+            assert f'data-leg-account-id="{shadow.account_id}"' in resp.data.decode()
 
-    def test_rejected_shadow_update_rolls_back_staged_mutations(
+    def test_rejected_transfer_update_rolls_back_staged_mutations(
         self, app, seed_user, seed_periods_today,
     ):
-        """deep-quality-hunt #42: a rejected amount+illegal-status shadow
+        """deep-quality-hunt #42: a rejected amount+illegal-status transfer
         PATCH leaves NO dirty mutations staged on the session.
+
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)** from
+        ``_shadow_mutations._apply_shadow_update``, the deleted door this
+        graded, onto the door the grid's leg uses: the transfer PATCH's own
+        executor (``routes/transfers/mutations._execute_transfer_update``),
+        whose ``except ValidationError -> _error_transfer_response`` is the
+        rollback under test -- and which had no rollback control of its own
+        until this re-expression.
 
         transfer_service.update_transfer mutates xfer.amount and both
         shadows' estimated_amount in-memory BEFORE the state-machine
         transition check raises ValidationError, so without the
-        except-branch rollback in _apply_shadow_update those dirty
-        mutations sit on the session and any later commit in the same
-        request would flush the half-applied change (transfer invariant
-        3).  Drive the path directly (a route-level test cannot observe
-        this -- per-request teardown discards the session either way) and
-        assert the session is clean after the 400.
+        except-branch rollback those dirty mutations sit on the session and
+        any later commit in the same request would flush the half-applied
+        change (transfer invariant 3).  Drive the path directly (a
+        route-level test cannot observe this -- per-request teardown
+        discards the session either way) and assert the session is clean
+        after the 400.
+
+        **Measured 2026-09-20 on the transfer executor**: with BOTH the
+        ``rollback()`` and the ``expire_all()`` deleted from
+        ``_error_transfer_response`` the commit below wrote ``999.00``; with
+        the rollback alone deleted it still passed, because ``expire_all()``
+        on its own discards a pending, unflushed change -- so a mutation of
+        this control must remove both lines to prove anything.
         """
         from flask_login import login_user  # pylint: disable=import-outside-toplevel
-        from app.routes.transactions.mutations import (  # pylint: disable=import-outside-toplevel
-            _apply_shadow_update,
+        from app.routes.transfers.mutations import (  # pylint: disable=import-outside-toplevel
+            _execute_transfer_update,
         )
 
         with app.test_request_context():
@@ -474,14 +504,15 @@ class TestTransferShadowMarkDoneStateMachine:
             # PATCH carries an amount change AND an illegal transition
             # (transfer projected -> credit): update_transfer stages the
             # amount mutation, then verify_transition raises ValidationError.
-            result = _apply_shadow_update(
-                shadow, shadow.id,
+            result = _execute_transfer_update(
+                xfer,
                 {
-                    "estimated_amount": Decimal("999.00"),
+                    "amount": Decimal("999.00"),
                     "status_id": ref_cache.status_id(StatusEnum.CREDIT),
                 },
+                amount_authored=True,
             )
-            assert result[1] == 400
+            assert result is not None and result[1] == 400
             # The except branch must have rolled back the staged xfer +
             # shadow mutations.
             assert not db.session.dirty, (

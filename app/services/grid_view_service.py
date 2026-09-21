@@ -4,8 +4,15 @@ Shekel Budget App -- Grid View Service
 Pure template-data producer for the budget grid.  Builds the sorted
 row-key sequence (one entry per logical line item: a template-linked
 group or a standalone name) and the
-``(category_id, template_id, txn_name, period_id) -> [Transaction]``
-matching dict that drives every cell render.
+``(category_id, template_id, txn_name, period_id) -> [item]``
+matching dict that drives every cell render, where an item is a
+:class:`~app.models.transaction.Transaction` row or, since leaf
+``X-bi-6-1`` (ruling **R-BAL87**), a :class:`~app.services.transfer_legs
+.TransferLeg` -- one side of a transfer, drawn from the parent rather than
+from a shadow row.  Every predicate here asks an item the questions both
+shapes answer (``category_id``, ``status_id``, ``is_income``, ``recurs``,
+``name``, ``pay_period_id``, ``due_date``); :func:`cell_key` is the one
+place the two identities are told apart.
 
 Single source of truth shared by:
 
@@ -37,9 +44,23 @@ from datetime import date
 
 
 from app.models.category import Category
-from app.models.transaction import Transaction
 from app.services.pay_calendar import DerivedPeriod
+from app.services.transfer_legs import (
+    TRANSFER_FROM_PREFIX,
+    TRANSFER_TO_PREFIX,
+    PlanItem,
+    TransferLeg,
+    cell_key,
+)
 from app.utils.balance_predicates import is_cancelled
+
+#: A grid item is a :data:`~app.services.transfer_legs.PlanItem`: a plan
+#: row, or one side of a transfer read off its parent.  Named here for the
+#: signatures below; :func:`~app.services.transfer_legs.cell_key` -- the
+#: one place the two are told apart for identity -- moved down to that leaf
+#: at leaf ``X-bi-6-1b`` and is imported above for the Jinja global that
+#: still names it here.
+GridItem = PlanItem
 
 
 # Lightweight struct for a single row in the budget grid.  Rows of a
@@ -61,25 +82,89 @@ RowKey = namedtuple("RowKey", [
 
 
 def _short_display_name(name: str) -> str:
-    """Strip redundant prefixes from transaction names for row headers.
+    """Strip redundant prefixes from item names for row headers.
 
-    Transfer shadows are named "Transfer to X" / "Transfer from X" and
-    credit paybacks "CC Payback: X".  The grid cell already shows a
-    transfer icon or CC badge, so the prefix is visual noise in the
-    row label.  Strip it to show only the meaningful part.
+    A transfer's leg is labelled "Transfer to X" / "Transfer from X"
+    (:func:`~app.services.transfer_legs.leg_label`, whose two prefixes are
+    read here rather than re-spelled) and a credit payback "CC Payback: X".
+    The grid cell already shows a transfer icon or CC badge, so the prefix
+    is visual noise in the row label.  Strip it to show only the meaningful
+    part.
     """
     lower = name.lower()
-    if lower.startswith("transfer to "):
-        return name[len("Transfer to "):]
-    if lower.startswith("transfer from "):
-        return name[len("Transfer from "):]
+    if lower.startswith(TRANSFER_TO_PREFIX.lower()):
+        return name[len(TRANSFER_TO_PREFIX):]
+    if lower.startswith(TRANSFER_FROM_PREFIX.lower()):
+        return name[len(TRANSFER_FROM_PREFIX):]
     if lower.startswith("cc payback: "):
         return name[len("CC Payback: "):]
     return name
 
 
+def leg_dom_id(transfer_id: int, account_id: int) -> str:
+    """Return the DOM id of a transfer leg's grid cell wrapper.
+
+    ``xfer-leg-<transfer id>-<account id>``: the leg's :func:`cell_key`
+    spelled as an element id, so an HTMX response from a transfer door can
+    target the cell that asked (``routes/transfers``, which holds the
+    transfer and the leg's account and no item).  The row's twin is
+    ``txn-cell-<id>``; :func:`cell_dom_id` composes either from an item, and
+    every template reads one of the two rather than spelling the id.
+
+    Args:
+        transfer_id: The parent's ``budget.transfers.id``.
+        account_id: The account the leg is on.
+
+    Returns:
+        The wrapper id.
+    """
+    return f"xfer-leg-{transfer_id}-{account_id}"
+
+
+def cell_dom_id(item: GridItem) -> str:
+    """Return the DOM id of *item*'s desktop grid cell wrapper.
+
+    ``txn-cell-<id>`` for a row (the id every HTMX cell swap has always
+    targeted) and :func:`leg_dom_id` for a leg.  A Jinja global of the same
+    name, so the row macro, the cell partial and the doors' ``hx-target``
+    values compose it in one place and the JavaScript reads it off the
+    cell's ``data-cell`` attribute rather than composing a second spelling.
+
+    Args:
+        item: A row or a leg.
+
+    Returns:
+        The wrapper id.
+    """
+    if isinstance(item, TransferLeg):
+        return leg_dom_id(item.transfer.id, item.account_id)
+    return f"txn-cell-{item.id}"
+
+
+def card_dom_id(item: GridItem, prefix: str = "") -> str:
+    """Return the DOM id of *item*'s mobile card wrapper.
+
+    ``card-<prefix->-<id>`` for a row and ``card-<prefix->xfer-<transfer
+    id>-<account id>`` for a leg, where an empty *prefix* omits its segment
+    -- the per-tab namespace ``render_one_card`` has always applied so one
+    item can render in two visible tabs.  Composed here so the card macro,
+    the action bar's ``hx-target`` and the single-card response agree.
+
+    Args:
+        item: A row or a leg.
+        prefix: The tab namespace (``"tp"`` for This Period), or ``""``.
+
+    Returns:
+        The wrapper id.
+    """
+    namespace = f"{prefix}-" if prefix else ""
+    if isinstance(item, TransferLeg):
+        return f"card-{namespace}xfer-{item.transfer.id}-{item.account_id}"
+    return f"card-{namespace}{item.id}"
+
+
 def build_row_keys(
-    transactions: Iterable[Transaction],
+    transactions: Iterable[GridItem],
     categories: Iterable[Category],
     is_income_section: bool,
 ) -> list[RowKey]:
@@ -109,11 +194,13 @@ def build_row_keys(
     unaffected -- it still walks ``txn_by_period`` per visible period.
 
     Args:
-        transactions: iterable of Transaction objects to consider for
-            row-key generation.  Transactions with a non-null
-            ``template_id`` must have their ``template`` relationship
-            loaded (the grid route does this via ``selectinload``;
-            the companion route does it via the join in
+        transactions: iterable of grid items -- Transaction rows, or
+            :class:`~app.services.transfer_legs.TransferLeg` values (which
+            answer ``recurs`` ``False`` and file under their parent's
+            category and label) -- to consider for row-key generation.
+            Transactions with a non-null ``template_id`` must have their
+            ``template`` relationship loaded (the grid route does this via
+            ``selectinload``; the companion route does it via the join in
             ``companion_service.get_visible_transactions``) to avoid
             per-row lazy fetches; the rule ``recurs`` reads rides on the
             template's own joined load.
@@ -152,10 +239,10 @@ def build_row_keys(
         if not is_income_section and not txn.is_expense:
             continue
 
-        # Look up the category.  Transactions may have category_id=NULL
-        # (e.g. transfer shadow transactions when the user's default
-        # "Transfers: Incoming/Outgoing" categories are missing).
-        # These must still appear in the grid -- use a fallback group.
+        # Look up the category.  Items may have category_id=NULL (a
+        # transfer's leg when the user's default "Transfers:
+        # Incoming/Outgoing" categories are missing).  These must still
+        # appear in the grid -- use a fallback group.
         cat = cat_by_id.get(txn.category_id)
         group_name = cat.group_name if cat else "Uncategorized"
         item_name = cat.item_name if cat else ""
@@ -192,9 +279,9 @@ def build_row_keys(
 def _match_row_in_period(
     rk: RowKey,
     period: DerivedPeriod,
-    txn_by_period: dict[int, list[Transaction]],
+    txn_by_period: dict[int, list[GridItem]],
     is_income_section: bool,
-) -> list[Transaction]:
+) -> list[GridItem]:
     """Return the transactions matching ``rk`` in ``period``.
 
     Inner half of :func:`build_matched_by_row_period`, lifted to its
@@ -215,7 +302,7 @@ def _match_row_in_period(
     trace 5: one-off 2584 Mother's Day against template 24, one-off 2581
     Homeschool Curriculum against template 21).
     """
-    matched: list[Transaction] = []
+    matched: list[GridItem] = []
     for txn in txn_by_period.get(period.period_id, []):
         if txn.category_id != rk.category_id:
             continue
@@ -238,8 +325,8 @@ def build_matched_by_row_period(
     income_row_keys: list[RowKey],
     expense_row_keys: list[RowKey],
     periods: Iterable[DerivedPeriod],
-    transactions: Iterable[Transaction],
-) -> dict[tuple[int, int | None, str, int], list[Transaction]]:
+    transactions: Iterable[GridItem],
+) -> dict[tuple[int, int | None, str, int], list[GridItem]]:
     """Pre-compute the (row_key, period) -> matched transactions dict.
 
     Single source of truth for the grid's matching predicate: for each
@@ -282,28 +369,27 @@ def build_matched_by_row_period(
             PROJECTED period (``period_id`` ``None``) matches nothing here,
             which is correct rather than incidental: no transaction can
             point at a period that has no row.
-        transactions: iterable of Transaction objects (already filtered
-            for user / account / scenario / soft-delete).  The function
-            indexes these by ``pay_period_id`` internally so the caller
-            does not need to pre-group.
+        transactions: iterable of grid items -- Transaction rows or transfer
+            legs (already filtered for user / account / scenario /
+            soft-delete).  The function indexes these by ``pay_period_id``
+            internally so the caller does not need to pre-group.
 
     Returns:
         ``dict[(category_id, template_id, txn_name, period_id),
-        list[Transaction]]``.  Keys are 4-tuples uniquely identifying
-        the (row, period) cell; values are non-empty lists of
-        Transaction ORM objects in insertion order.  Cells with no
-        matched txns are omitted (the macro callers default to ``[]``
-        via ``dict.get``).
+        list[GridItem]]``.  Keys are 4-tuples uniquely identifying
+        the (row, period) cell; values are non-empty lists of items in
+        insertion order.  Cells with no matched items are omitted (the
+        macro callers default to ``[]`` via ``dict.get``).
     """
-    # Group transactions by pay_period_id once so the inner predicate
+    # Group items by pay_period_id once so the inner predicate
     # only iterates the period-relevant subset.  Mirrors the
     # ``txn_by_period`` produced by the grid route in v1.
-    txn_by_period: dict[int, list[Transaction]] = {}
+    txn_by_period: dict[int, list[GridItem]] = {}
     for txn in transactions:
         txn_by_period.setdefault(txn.pay_period_id, []).append(txn)
 
     matched_by_row_period: dict[
-        tuple[int, int | None, str, int], list[Transaction]
+        tuple[int, int | None, str, int], list[GridItem]
     ] = {}
     for row_keys, is_income_section in (
         (income_row_keys, True),
@@ -324,11 +410,11 @@ def build_matched_by_row_period(
     return matched_by_row_period
 
 
-def due_captions_by_id(
-    transactions: "Iterable[Transaction]",
+def due_captions_by_key(
+    transactions: "Iterable[GridItem]",
     payday_by_period_id: "dict[int, date]",
-) -> "dict[int, date | None]":
-    """Return ``{transaction_id: the due date to caption, or None}``.
+) -> "dict":
+    """Return ``{cell_key(item): the due date to caption, or None}``.
 
     **The grid cell's due-date caption, decided in PYTHON and indexed by the
     template** (pay-calendar plan step C4-a-1).  A row carries a ``due_date``
@@ -347,16 +433,17 @@ def due_captions_by_id(
     the rule :class:`~app.routes._render_helpers.RenderAmounts` states for the
     three amount maps, applied to the fourth thing a cell draws.
 
-    **Keyed by transaction id and INDEXED rather than guarded**, on this
+    **Keyed by :func:`cell_key` and INDEXED rather than guarded**, on this
     template's standing rule: Jinja's default ``Undefined`` compares unequal to
     a date without raising, so a caption read as a bare variable renders on
     EVERY dated row when a surface forgets to publish it -- silently.  A map
     subscript raises instead, which is why ``budgets`` is a map and why this
-    is one.
+    is one.  It was keyed by transaction id alone until leaf ``X-bi-6-1``
+    drew a transfer's legs beside the rows.
 
     Args:
-        transactions: The rows being drawn.  Each must carry a
-            ``pay_period_id`` present in *payday_by_period_id*.
+        transactions: The items being drawn -- rows or legs.  Each must
+            carry a ``pay_period_id`` present in *payday_by_period_id*.
         payday_by_period_id: ``{budget.pay_periods.id: the day it opened}`` for
             every paycheck those rows are filed in.  Taken rather than derived
             because each caller already holds it for free and by a different
@@ -369,7 +456,7 @@ def due_captions_by_id(
             two routes cannot disagree.
 
     Returns:
-        One entry per row: its ``due_date`` where that differs from its
+        One entry per item: its ``due_date`` where that differs from its
         paycheck's payday, else ``None``.
 
     Raises:
@@ -380,7 +467,7 @@ def due_captions_by_id(
             owes.
     """
     return {
-        txn.id: (
+        cell_key(txn): (
             txn.due_date
             if txn.due_date is not None
             and txn.due_date != payday_by_period_id[txn.pay_period_id]

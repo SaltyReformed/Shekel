@@ -83,6 +83,8 @@ from app.services.status_seam._record import (
     Settlement,
     correction_record,
     honoured_correction,
+    honoured_figure,
+    movement_settlement,
     recorded_settlement,
 )
 from app.services.status_seam._refusals import (
@@ -115,6 +117,8 @@ __all__ = [
     "figure_for_status",
     "correction_record",
     "honoured_correction",
+    "honoured_figure",
+    "movement_settlement",
     "recorded_settlement",
     "reject_figure_without_settled_status",
     "day_is_in_the_future",

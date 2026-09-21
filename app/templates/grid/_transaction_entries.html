@@ -261,7 +261,7 @@
          statement is exactly what a user does after the envelope closes.  The
          delete is withdrawn: removing a purchase would rewrite what the row
          cost after its money moved, which the service refuses. #}
-      <button class="btn btn-link btn-sm p-0 text-primary"
+      <button type="button" class="btn btn-link btn-sm p-0 text-primary"
               hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id, host=entry_list_host) }}"
               hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"
@@ -269,7 +269,7 @@
         <i class="bi bi-{% if purchases_closed %}calendar-check{% else %}pencil{% endif %}"></i>
       </button>
       {% if not purchases_closed %}
-      <button class="btn btn-link btn-sm p-0 text-danger"
+      <button type="button" class="btn btn-link btn-sm p-0 text-danger"
               hx-delete="{{ url_for('entries.delete_entry', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
               hx-target="#{{ entry_list_host_id }}"
               hx-swap="outerHTML"

@@ -120,11 +120,14 @@
             if (!name) return;
 
             var gotoCell = row.querySelector('td.cell.cur') || cells[0];
-            // Capture the goto cell's txn id (when it has one) so the runner
-            // can re-resolve the cell at run time after a pre-Enter swap.
+            // Capture the goto cell's wrapper id (when it has one) so the
+            // runner can re-resolve the cell at run time after a pre-Enter
+            // swap.  `data-cell` is the id the wrapper carries, for a
+            // transaction (txn-cell-<id>) and a transfer leg
+            // (xfer-leg-<transfer>-<account>) alike (balance:X-bi-6-1).
             var gotoOpen = gotoCell
-                ? gotoCell.querySelector('.txn-open[data-txn-id]') : null;
-            var gotoTxnId = gotoOpen ? gotoOpen.dataset.txnId : null;
+                ? gotoCell.querySelector('.txn-open[data-cell]') : null;
+            var gotoCellId = gotoOpen ? gotoOpen.dataset.cell : null;
             // Every row action carries the bare row name as `subject` so
             // filter() can score the query against the name alone.  The
             // verb-first labels greedily eat the leading letters of names
@@ -136,12 +139,12 @@
                 subject: name,
                 label: 'Go to row -- ' + name,
                 meta: 'grid',
-                run: makeGotoRunner(gotoCell, gotoTxnId),
+                run: makeGotoRunner(gotoCell, gotoCellId),
             });
 
             var envelopeOpen = null;
             Array.prototype.forEach.call(cells, function (td, idx) {
-                var open = td.querySelector('.txn-open[data-txn-id]');
+                var open = td.querySelector('.txn-open[data-cell]');
                 if (!open) return;
                 var period = headers[idx] || '';
                 var amount = amountText(open);
@@ -155,17 +158,20 @@
                         // gei") subsequence-matches from the start.
                         label: 'Pay -- ' + name + ' ' + amount,
                         meta: period,
-                        run: makePayRunner(td, open.dataset.txnId),
+                        run: makePayRunner(td, open.dataset.cell),
                     });
                 }
 
+                // Credit is a transaction-only affordance (a leg carries no
+                // data-can-credit), so the runner may read the txn id.
                 if (open.dataset.canCredit) {
                     actions.push({
                         kind: 'credit',
                         subject: name,
                         label: 'Credit -- ' + name + ' ' + amount,
                         meta: period,
-                        run: makeCreditRunner(td, open.dataset.txnId),
+                        run: makeCreditRunner(
+                            td, open.dataset.cell, open.dataset.txnId),
                     });
                 }
 
@@ -174,7 +180,7 @@
                     subject: name,
                     label: 'Open -- ' + name,
                     meta: period,
-                    run: makeOpenRunner(td, open.dataset.txnId),
+                    run: makeOpenRunner(td, open.dataset.cell),
                 });
 
                 // Prefer the current period's cell for the per-row
@@ -193,7 +199,7 @@
                     meta: 'envelope',
                     run: makeAddPurchaseRunner(
                         envelopeOpen.closest('td'),
-                        envelopeOpen.dataset.txnId),
+                        envelopeOpen.dataset.cell),
                 });
             }
         });
@@ -227,13 +233,15 @@
         Center alignment also lands the cell clear of the sticky
         header/footer/label-column chrome that overlays the scrollport
         edges. */
-    function revealCell(txnId, fallbackTd) {
+    function revealCell(cellId, fallbackTd) {
         // Re-resolve the cell wrapper at run time (JS-14): the node captured
         // when the palette opened detaches if a swap (mark-paid, OOB entries
         // re-render) lands before Enter, so scrolling the stale node reveals
-        // nothing.  #txn-cell-<id> survives every swap shape; empty/anchor
-        // cells have no txnId and keep the captured fallback node.
-        var target = (txnId && document.getElementById('txn-cell-' + txnId))
+        // nothing.  The wrapper id (`data-cell`: txn-cell-<id>, or
+        // xfer-leg-<transfer>-<account> for a transfer leg) survives every
+        // swap shape; empty/anchor cells have no id and keep the captured
+        // fallback node.
+        var target = (cellId && document.getElementById(cellId))
             || fallbackTd;
         if (target) target.scrollIntoView({ block: 'center', inline: 'center' });
     }
@@ -244,49 +252,48 @@
         entries OOB cell re-render) detaches them, and a click() on a
         detached node either no-ops silently (htmx guards on
         bodyContains) or never bubbles to the document-delegated
-        handlers.  #txn-cell-<id> survives every swap shape -- both the
+        handlers.  The wrapper id survives every swap shape -- both the
         innerHTML cell swaps and the OOB outerHTML re-render emit the
         same wrapper id. */
-    function freshControl(txnId, selector) {
-        var wrap = document.getElementById('txn-cell-' + txnId);
+    function freshControl(cellId, selector) {
+        var wrap = document.getElementById(cellId);
         return wrap ? wrap.querySelector(selector) : null;
     }
 
-    function makeGotoRunner(td, txnId) {
+    function makeGotoRunner(td, cellId) {
         return function () {
-            // Re-resolve the target cell when it carries a txn (JS-14): the
+            // Re-resolve the target cell when it carries an item (JS-14): the
             // node captured at palette-open detaches on a pre-Enter swap.
             // An empty goto cell has no stable id, but a mutation swap never
             // detaches an empty cell, so the captured node stays valid there.
-            var wrap = txnId
-                ? document.getElementById('txn-cell-' + txnId) : null;
+            var wrap = cellId ? document.getElementById(cellId) : null;
             var cell = wrap ? wrap.closest('td') : td;
-            revealCell(txnId, cell);
+            revealCell(cellId, cell);
             // A bubbled click on the td (not on .txn-open) sets the
             // app.js cell cursor without opening the card.
             cell.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         };
     }
 
-    function makePayRunner(td, txnId) {
+    function makePayRunner(td, cellId) {
         return function () {
-            revealCell(txnId, td);
-            var btn = freshControl(txnId, '.paybtn');
+            revealCell(cellId, td);
+            var btn = freshControl(cellId, '.paybtn');
             if (btn) btn.click();
         };
     }
 
-    function makeOpenRunner(td, txnId) {
+    function makeOpenRunner(td, cellId) {
         return function () {
-            revealCell(txnId, td);
-            var openEl = freshControl(txnId, '.txn-open[data-txn-id]');
+            revealCell(cellId, td);
+            var openEl = freshControl(cellId, '.txn-open[data-cell]');
             if (openEl) openEl.click();
         };
     }
 
-    function makeCreditRunner(td, txnId) {
+    function makeCreditRunner(td, cellId, txnId) {
         return function () {
-            revealCell(txnId, td);
+            revealCell(cellId, td);
             // Shared mark-credit helper (app.js) so the route path lives in
             // one place (JS-19).
             markTxnCredit(txnId);
@@ -296,10 +303,10 @@
     /** Open the card on an envelope cell, then focus the add-purchase
         amount input once the lazy entries list has loaded (the add
         form is the last amount input in the popover). */
-    function makeAddPurchaseRunner(td, txnId) {
+    function makeAddPurchaseRunner(td, cellId) {
         return function () {
-            revealCell(txnId, td);
-            var openEl = freshControl(txnId, '.txn-open[data-txn-id]');
+            revealCell(cellId, td);
+            var openEl = freshControl(cellId, '.txn-open[data-cell]');
             if (!openEl) return;
             openEl.click();
             var attempts = 0;

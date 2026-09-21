@@ -8,6 +8,7 @@ constructed once at import time so every handler reuses the same instance
 """
 
 import logging
+from dataclasses import dataclass
 
 from flask import request
 from flask_login import current_user
@@ -15,7 +16,6 @@ from flask_login import current_user
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.schemas.validation import (
     SAME_ACCOUNT_TRANSFER_MESSAGE,
@@ -25,8 +25,9 @@ from app.schemas.validation import (
     TransferUpdateSchema,
 )
 from app.routes._render_helpers import (
-    render_transaction_cell,
     render_transfer_cell,
+    render_transfer_leg_card,
+    render_transfer_leg_cell,
 )
 from app.utils.digit_strings import parse_row_id
 from app.utils.error_fragments import designed_error
@@ -179,68 +180,84 @@ def _get_owned_transfer(xfer_id):
     return xfer
 
 
-def _resolve_shadow_context(xfer):
-    """Check for a source_txn_id in the request indicating grid shadow context.
+@dataclass(frozen=True)
+class _LegRequest:
+    """Which grid surface a transfer door's request came from, if any.
 
-    When the transfer full edit popover is opened from a shadow transaction
-    cell in the budget grid, the form includes ``source_txn_id`` so the
-    handler can render ``_transaction_cell.html`` (the correct template
-    for grid cells) instead of ``_transfer_cell.html`` (which targets
-    non-existent ``#xfer-cell-`` IDs in the grid).
+    A transfer door is reached from three places: the transfers page (no
+    grid context), a transfer LEG's desktop grid cell, and a leg's mobile
+    card (leaf ``X-bi-6-1``, ruling **R-BAL87**).  The form says which by
+    ``leg_account_id`` -- the account the leg is on -- plus, for a card,
+    ``render=mobile_card`` and its ``card_prefix``, the same three-field
+    shape the transaction routes' ``_RenderTarget`` reads.
 
-    Validates that the shadow transaction exists, is a shadow of the
-    given transfer, and belongs to the current user.
+    Attributes:
+        account_id: The leg's account, validated against the parent's
+            endpoints.
+        render_mode: ``"mobile_card"`` for the card, else ``""``.
+        card_prefix: The card's per-tab namespace (``"tp"`` or ``""``).
+    """
+
+    account_id: int
+    render_mode: str
+    card_prefix: str
+
+
+def _resolve_leg_request(xfer) -> "_LegRequest | None":
+    """Return the leg a grid-origin request came from, or ``None``.
+
+    When the transfer full-edit popover, the cell's Mark Paid or the card's
+    action bar posts from a LEG's grid cell, the form carries
+    ``leg_account_id`` so the handler renders the leg's own cell (or card)
+    back -- ``grid/_transaction_cell.html`` drawing a
+    :class:`~app.services.transfer_legs.TransferLeg`, targeted by
+    ``leg_dom_id`` -- rather than ``_transfer_cell.html``, whose
+    ``#xfer-cell-`` target exists only on the transfers page.  Until leaf
+    ``X-bi-6-1`` the marker was ``source_txn_id``, the SHADOW row's id, and
+    the response was that row's cell; the leg has no row, so the marker is
+    the one fact that names it beside the transfer: its account.
+
+    Validates that the account is one of the transfer's two endpoints.  A
+    stale page whose transfer was re-pointed meanwhile can post an account
+    that no longer is one; the request then falls back to the transfer
+    cell, as a bad ``source_txn_id`` did -- the ``gridRefresh`` a status
+    change carries redraws the grid from the parent regardless.
 
     Args:
-        xfer: The Transfer object that was just updated.
+        xfer: The Transfer object the door acted on.
 
     Returns:
-        Transaction or None.  The validated shadow Transaction if the
-        request originated from a grid cell, or None if the request
-        came from the transfer management page (no source_txn_id).
+        The :class:`_LegRequest`, or ``None`` when the request came from the
+        transfer management page (no ``leg_account_id``).
     """
     # The shared rule, not ``type=int`` (plan step X-ae): Werkzeug catches the
     # ValueError so this never crashed, but the coercion is ``int()``, which
-    # read a shadow-transaction id spelled in any digit script, padded, or
-    # signed.  It was the only ``request.form`` one; the 34 that remain are all
-    # query-string and are N-142's, re-counted by AST at plan step C2-f3e.
-    source_txn_id = parse_row_id(request.form.get("source_txn_id"))
-    if source_txn_id is None:
+    # read an id spelled in any digit script, padded, or signed.
+    account_id = parse_row_id(request.form.get("leg_account_id"))
+    if account_id is None:
         return None
-
-    shadow = db.session.get(Transaction, source_txn_id)
-    if shadow is None:
+    if account_id not in (xfer.from_account_id, xfer.to_account_id):
         logger.warning(
-            "source_txn_id=%d not found for transfer %d; "
-            "falling back to transfer cell response.",
-            source_txn_id, xfer.id,
+            "leg_account_id=%d is neither endpoint of transfer %d "
+            "(from %d to %d); falling back to transfer cell response.",
+            account_id, xfer.id, xfer.from_account_id, xfer.to_account_id,
         )
         return None
+    return _LegRequest(
+        account_id=account_id,
+        render_mode=request.form.get("render", ""),
+        card_prefix=request.form.get("card_prefix", ""),
+    )
 
-    # Verify the transaction is actually a shadow of this transfer.
-    if shadow.transfer_id != xfer.id:
-        logger.warning(
-            "source_txn_id=%d has transfer_id=%s, expected %d; "
-            "falling back to transfer cell response.",
-            source_txn_id, shadow.transfer_id, xfer.id,
+
+def _render_leg_surface(xfer, leg: _LegRequest, **extra):
+    """Render the leg's cell or card, whichever the request came from."""
+    if leg.render_mode == "mobile_card":
+        return render_transfer_leg_card(
+            xfer, leg.account_id, card_prefix=leg.card_prefix,
+            error=extra.get("error"),
         )
-        return None
-
-    # Ownership check on the shadow's own owner column (same pattern as
-    # _get_owned_transaction in transactions.py).  It walked
-    # ``shadow.pay_period.user_id`` until plan step ``pay_calendar:C13-b``; a
-    # shadow states its parent transfer's owner directly since ``C13-a``
-    # (``transfer_service._create._build_shadow``), so the walk asked the
-    # paycheck for a value the row carries.
-    if shadow.user_id != current_user.id:
-        logger.warning(
-            "source_txn_id=%d belongs to another user; "
-            "falling back to transfer cell response.",
-            source_txn_id,
-        )
-        return None
-
-    return shadow
+    return render_transfer_leg_cell(xfer, leg.account_id, **extra)
 
 
 def _stale_transfer_response(xfer_id):
@@ -272,14 +289,13 @@ def _stale_transfer_response(xfer_id):
     if xfer is None:
         return "Not found"
 
-    # Render the shadow's transaction cell when the request came
-    # from the grid (source_txn_id present and validated), or the
-    # transfer cell otherwise.  Mirrors the shadow-context handling
-    # in :func:`update_transfer`.
-    shadow = _resolve_shadow_context(xfer)
-    if shadow is not None:
-        db.session.refresh(shadow)
-        return render_transaction_cell(shadow, conflict=True)
+    # Render the leg's cell or card when the request came from the grid
+    # (``leg_account_id`` present and validated), or the transfer cell
+    # otherwise.  Mirrors the leg-context handling in
+    # :func:`update_transfer`.
+    leg = _resolve_leg_request(xfer)
+    if leg is not None:
+        return _render_leg_surface(xfer, leg, conflict=True)
 
     return render_transfer_cell(xfer, conflict=True)
 
@@ -290,8 +306,8 @@ def _error_transfer_response(xfer_id, message, status=400):
     The rejected-mutation twin of :func:`_stale_transfer_response`
     (the marker-header convention, closeout plan session 4): every
     transfer-mutation 400/422 a user can reach re-renders the surface
-    the request targeted -- the shadow's grid transaction cell when
-    ``source_txn_id`` marks a grid-origin request, the transfer cell
+    the request targeted -- the leg's grid cell or mobile card when
+    ``leg_account_id`` marks a grid-origin request, the transfer cell
     otherwise -- with CURRENT data plus the rejection message, and
     stamps the designed-fragment header so the body swaps instead of
     being silently dropped by the app-wide htmx config.
@@ -315,43 +331,49 @@ def _error_transfer_response(xfer_id, message, status=400):
     if xfer is None:
         return "Not found", 404
 
-    shadow = _resolve_shadow_context(xfer)
-    if shadow is not None:
-        db.session.refresh(shadow)
+    leg = _resolve_leg_request(xfer)
+    if leg is not None:
         return designed_error(
-            render_transaction_cell(shadow, error=message),
-            status,
+            _render_leg_surface(xfer, leg, error=message), status,
         )
 
     return designed_error(render_transfer_cell(xfer, error=message), status)
 
 
-def _render_post_mutation_cell(xfer, *, shadow_trigger, cell_trigger):
+def _render_post_mutation_cell(xfer, *, leg_trigger, cell_trigger):
     """Render the grid cell for a transfer after a successful mutation.
 
     The transfer-mutating HTMX routes (:func:`update_transfer`,
     :func:`mark_done`, :func:`cancel_transfer`) share one response shape: when
-    the request originated from a shadow transaction cell in the budget grid
-    (``source_txn_id`` present and validated), the shadow's
-    ``grid/_transaction_cell.html`` is re-rendered so the cell stays
-    interactive; otherwise the transfer's own ``_transfer_cell.html`` is
-    returned.  The two paths can carry different HX-Trigger events (a status
-    change refreshes the grid but renders the transfer cell with a balance
-    recompute), so each trigger is supplied explicitly.
+    the request originated from a transfer LEG's grid cell or mobile card
+    (``leg_account_id`` present and validated), the leg's
+    ``grid/_transaction_cell.html`` -- or its card -- is re-rendered so the
+    surface stays interactive; otherwise the transfer's own
+    ``_transfer_cell.html`` is returned.  The two paths can carry different
+    HX-Trigger events (a status change refreshes the grid but renders the
+    transfer cell with a balance recompute), so each trigger is supplied
+    explicitly; a card's Mark Paid carries ``mobileCardSettled`` in place of
+    the leg trigger, the event the transaction twin emits, so the This Period
+    summary's self-refresh blocks on it and the page is not reloaded under
+    the swapped card.
 
     Args:
         xfer: The mutated Transfer.
-        shadow_trigger: HX-Trigger event for the shadow-cell response.
+        leg_trigger: HX-Trigger event for the leg-cell response.
         cell_trigger: HX-Trigger event for the transfer-cell response.
 
     Returns:
         A Flask response tuple ``(html, 200, {"HX-Trigger": ...})``.
     """
-    shadow = _resolve_shadow_context(xfer)
-    if shadow is not None:
-        db.session.refresh(shadow)
-        response = render_transaction_cell(shadow)
-        return response, 200, {"HX-Trigger": shadow_trigger}
+    leg = _resolve_leg_request(xfer)
+    if leg is not None:
+        db.session.refresh(xfer)
+        response = _render_leg_surface(xfer, leg)
+        trigger = (
+            "mobileCardSettled" if leg.render_mode == "mobile_card"
+            else leg_trigger
+        )
+        return response, 200, {"HX-Trigger": trigger}
 
     response = render_transfer_cell(xfer)
     return response, 200, {"HX-Trigger": cell_trigger}

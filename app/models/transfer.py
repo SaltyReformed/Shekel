@@ -452,11 +452,13 @@ class Transfer(
         X-au-f the same date is what resolves the row's PRICE through amount
         rule 3, so clearing it leaves a transfer no rule can answer.
 
-        Both doors refuse the field when this is true and each renders its own
-        message: the transfer PATCH
+        Both doors refused the field when this is true and each rendered its
+        own message: the transfer PATCH
         (``routes/transfers/mutations._reject_generated_due_date_edit``) and the
-        SHADOW PATCH, which answers a transfer by updating its parent
-        (``routes/transactions/_shadow_mutations``).  The second was missed by
+        SHADOW PATCH, which answered a transfer by updating its parent
+        (``routes/transactions/_shadow_mutations``, deleted at leaf
+        ``balance:X-bi-6-1``: a grid cell asks the transfer PATCH directly
+        now, so ONE door remains).  The second was missed by
         an adversarial review's own account of this step, which is why the
         predicate is a property rather than a line repeated at each door: the
         transaction twin's single gate reads ``txn.recurs`` (plan step

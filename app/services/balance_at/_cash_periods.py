@@ -40,7 +40,7 @@ from app.services.cash_ledger import (
     CashLedgerWalk,
     sum_projected,
 )
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
@@ -305,11 +305,12 @@ def paycheck_legs(
     **It takes the far legs and drops them** (ruling ``credit_card:R-CC23``):
     a transfer between two members shows on the paycheck grid ONCE, from the
     balance line's side, so a card's leg of a checking -> card payment is
-    neither a row the grid draws nor a figure this sums.  The exclusion is
-    the same ONE clause the row loads apply
-    (:func:`app.services.cash_flow_set.far_leg_clause`), answered once by
+    neither a leg the grid draws nor a figure this sums.  The exclusion is
+    the same ONE rule the readers' legs apply
+    (:func:`app.services.cash_flow_set.leg_accounts_shown`; its row spelling
+    ``far_leg_clause`` went at leaf ``balance:X-bi-6-1b``), answered once by
     :func:`app.services.cash_flow_set.far_legs_of` and threaded here, so the
-    cells and the subtotal cannot disagree about which rows are the
+    cells and the subtotal cannot disagree about which items are the
     paycheck's.
 
     Args:
@@ -405,7 +406,7 @@ def _budget_legs(
     of a cash-flow set, which the paycheck grid shows from the balance line's
     side and not from here.  A settled one is a fact keyed by its shadow's
     ``transaction_id``; a still-projected one is a
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` keyed by its
+    :class:`~app.services.transfer_legs.TransferLeg` keyed by its
     transfer's id.  The balance account itself passes
     :meth:`~app.services.cash_flow_set.FarLegs.none` -- every leg it holds is
     the near side by definition -- so :func:`period_view_of`'s columns are
@@ -463,16 +464,16 @@ def _budget_legs(
             # is the classification this function pins by TYPE.
             expense[fact.pay_period_id] -= fact.delta
     # A transfer LEG files under its PARENT's period (plan step X-bi-6a):
-    # ``PlannedTransferLeg.pay_period_id`` reads the parent's column, so the
+    # ``TransferLeg.pay_period_id`` reads the parent's column, so the
     # one attribute this grouping asks is answered by rows and legs alike.
-    by_period: "dict[int, list[Transaction | PlannedTransferLeg]]" = (
+    by_period: "dict[int, list[Transaction | TransferLeg]]" = (
         defaultdict(list)
     )
     for txn in plan.rows:
         if txn.pay_period_id not in income:
             continue
         if (
-            isinstance(txn, PlannedTransferLeg)
+            isinstance(txn, TransferLeg)
             and txn.transfer.id in far.transfer_ids
         ):
             continue

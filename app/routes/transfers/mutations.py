@@ -342,9 +342,9 @@ def update_transfer(xfer_id):
     if error_response is not None:
         return error_response
 
-    # When opened from a shadow transaction cell in the grid, render the
-    # transaction cell template so the cell remains interactive.  When
-    # opened from the transfer management page, render the transfer cell.
+    # When opened from a transfer leg's cell in the grid, render that leg's
+    # cell so it remains interactive.  When opened from the transfer
+    # management page, render the transfer cell.
     # A period move needs a full grid refresh so the relocated rows
     # appear under the new period; an in-place edit only needs balances
     # recomputed (gridRefresh reloads the page via app.js).  Both cell
@@ -352,7 +352,7 @@ def update_transfer(xfer_id):
     # kind, that decides between a refresh and a balance recompute.
     trigger = "gridRefresh" if period_changed else "balanceChanged"
     return _render_post_mutation_cell(
-        xfer, shadow_trigger=trigger, cell_trigger=trigger,
+        xfer, leg_trigger=trigger, cell_trigger=trigger,
     )
 
 
@@ -556,12 +556,12 @@ def mark_done(xfer_id):
         return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d marked transfer %d as done", current_user.id, xfer_id)
 
-    # Grid shadow context renders the transaction cell with gridRefresh;
-    # the transfer-management page renders the transfer cell with
-    # balanceChanged (matches the transaction route guard pattern for
-    # status changes).
+    # A grid leg's cell re-renders with gridRefresh; the
+    # transfer-management page renders the transfer cell with
+    # balanceChanged (matches the transaction route pattern for status
+    # changes).
     return _render_post_mutation_cell(
-        xfer, shadow_trigger="gridRefresh", cell_trigger="balanceChanged",
+        xfer, leg_trigger="gridRefresh", cell_trigger="balanceChanged",
     )
 
 
@@ -596,12 +596,12 @@ def cancel_transfer(xfer_id):
         return _error_transfer_response(xfer_id, INVALID_REFERENCE_MSG)
     logger.info("user_id=%d cancelled transfer %d", current_user.id, xfer_id)
 
-    # Grid shadow context renders the transaction cell with gridRefresh;
-    # the transfer-management page renders the transfer cell with
-    # balanceChanged (matches the transaction route guard pattern for
-    # status changes).
+    # A grid leg's cell re-renders with gridRefresh; the
+    # transfer-management page renders the transfer cell with
+    # balanceChanged (matches the transaction route pattern for status
+    # changes).
     return _render_post_mutation_cell(
-        xfer, shadow_trigger="gridRefresh", cell_trigger="balanceChanged",
+        xfer, leg_trigger="gridRefresh", cell_trigger="balanceChanged",
     )
 
 

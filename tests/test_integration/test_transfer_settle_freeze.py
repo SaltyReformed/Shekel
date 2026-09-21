@@ -412,20 +412,27 @@ class TestEveryDoorReachesTheSameFigure:
                 assert settled_contribution(shadow) == _LIVE_PITI
                 assert settled_figure(shadow) == _LIVE_PITI
 
-    def test_the_grid_shadow_mark_done_still_freezes(
+    def test_the_grid_leg_mark_done_still_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
     ):
-        """``POST /transactions/<id>/mark-done``, the door that always froze.
+        """The grid's Mark Paid on a transfer LEG, the door that always froze.
 
-        The control for the move: the rule left this route for the service, so
-        the figure it books must be unchanged.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        was ``POST /transactions/<shadow>/mark-done``, deleted with the shadow
+        branch; the grid's Mark Paid posts to the transfer's own door with
+        ``leg_account_id`` now.  The control for the move: the rule left the
+        route for the service, so the figure it books must be unchanged.
         """
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, shadow_id = xfer.id, shadow.id
+            xfer_id, leg_account_id = xfer.id, shadow.account_id
 
-        response = auth_client.post(f"/transactions/{shadow_id}/mark-done")
+        response = auth_client.post(
+            f"/transfers/instance/{xfer_id}/mark-done",
+            data={"leg_account_id": str(leg_account_id)},
+        )
         assert response.status_code == 200
+        assert f'data-leg-account-id="{leg_account_id}"' in response.data.decode()
 
         with app.app_context():
             for row in _shadows(xfer_id):
@@ -501,39 +508,36 @@ class TestEveryDoorReachesTheSameFigure:
                 assert settled_contribution(row) == _LIVE_PITI
                 assert settled_figure(row) == _LIVE_PITI
 
-    def test_a_transaction_PATCH_landing_on_a_shadow_freezes(
+    def test_a_transfer_PATCH_from_a_grid_leg_freezes(
         self, app, db, auth_client, seed_user, seed_periods,
     ):
-        """``PATCH /transactions/<shadow id>`` -- the FOURTH door.
+        """The transfer PATCH asked from a grid LEG -- the FOURTH door.
 
-        The one the census names and no test reached.  A shadow's PATCH is
-        branched to ``_shadow_mutations._apply_shadow_update``, which maps the
-        submitted transaction fields onto transfer-service kwargs -- so a
-        settling ``status_id`` arriving here is a settle that must freeze like
-        any other.  Without this case the census is a claim in a docstring:
-        three doors graded, one asserted.
-
-        No UI reaches it today -- the quick-edit cell PATCHes this route but
-        renders an amount only, and a shadow's full edit redirects to the
-        TRANSFER form -- so this grades the service dispatch behind a public
-        door rather than a live control.  That is the same ground
-        ``transaction_service.settle_transaction`` gives for owning its own
-        shadow refusal: a door with no caller today is a door the next feature
-        writes against.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        was ``PATCH /transactions/<shadow id>``, branched to
+        ``_shadow_mutations._apply_shadow_update``, which mapped the submitted
+        transaction fields onto transfer-service kwargs.  That module is
+        deleted; the leg's popover posts the transfer PATCH with
+        ``leg_account_id`` (its Status dropdown is how a grid user settles a
+        transfer from the form), so a settling ``status_id`` arriving here is
+        a settle that must freeze like any other.  Without this case the
+        census is a claim in a docstring: three doors graded, one asserted.
         """
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, shadow_id = xfer.id, shadow.id
-            version = shadow.version_id
+            xfer_id, leg_account_id = xfer.id, shadow.account_id
+            version = xfer.version_id
 
         response = auth_client.patch(
-            f"/transactions/{shadow_id}",
+            f"/transfers/instance/{xfer_id}",
             data={
                 "status_id": ref_cache.status_id(StatusEnum.DONE),
                 "version_id": version,
+                "leg_account_id": str(leg_account_id),
             },
         )
         assert response.status_code == 200, response.data
+        assert f'data-leg-account-id="{leg_account_id}"' in response.data.decode()
 
         with app.app_context():
             for row in _shadows(xfer_id):
