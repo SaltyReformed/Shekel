@@ -9,6 +9,7 @@ Supports both template-generated recurring transfers and ad-hoc one-time transfe
 from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.extensions import db
+from app.models._derived_flag import DerivedFlag
 from app.models.amount_ownership import from_columns
 from app.models.mixins import (
     OptimisticLockMixin,
@@ -100,9 +101,11 @@ class Transfer(
         # recurrence engine splats ``DerivedTransferFields`` (whose date is
         # ``compute_due_date``'s answer, never ``None``) and the one-time
         # branch of ``routes/transfers/_instances`` writes the chosen
-        # paycheck's start.  The two PATCH doors that could clear the date on
-        # a linked transfer refuse it first (``Transfer.due_date_is_its_definitions``);
-        # this is their backstop for a writer that is not the application.
+        # paycheck's start.  The one PATCH door left that could clear the date
+        # on a linked transfer refuses it first
+        # (``routes/transfers/mutations._reject_generated_due_date_edit``,
+        # reading ``recurs`` and ``is_placed`` since plan step X-ci-1); this is
+        # its backstop for a writer that is not the application.
         # An AD-HOC transfer is untouched: it owns its figure, nothing prices
         # it by its date, and the form still offers the field.  Measured
         # before binding: 0 of 177 linked transfers undated on production,
@@ -440,41 +443,72 @@ class Transfer(
         """
         return self._income_shadow_settle_pair()[0]
 
-    @property
-    def due_date_is_its_definitions(self) -> bool:
-        """Return whether this transfer's due date is stated by its DEFINITION.
+    @DerivedFlag
+    def recurs(self):
+        """True when this transfer's definition has a recurrence rule.
 
-        **The fact behind finding BAL-476, in ONE place because the transfer has
-        TWO edit doors where a transaction has one.**  Its due date is a member
-        of ``transfer_recurrence.DerivedTransferFields``: generation computes it
-        from the rule and the period and every regeneration rewrites it, so an
-        edit never survived a later template save -- and since plan step
-        X-au-f the same date is what resolves the row's PRICE through amount
-        rule 3, so clearing it leaves a transfer no rule can answer.
+        **The ONE accessor for "is there a cadence to derive this transfer
+        from"** (plan step ``balance:X-ci-1``, the twin of
+        :attr:`Transaction.recurs` under ruling **R-BAL20**): it delegates to
+        :attr:`TransferTemplate.recurs` and is what every site that used to
+        read ``transfer_template_id`` as *generated* reads instead -- the
+        override flip on a typed figure or a period move
+        (``routes/transfers/mutations``), carry-forward's transfer move, the
+        due-date gate and the discardable count.  A transfer of a RULE-LESS
+        definition -- a one-time transfer, or a cleared cadence's survivor --
+        answers ``False`` here while its link is set, so those sites treat it
+        as the one-time transfer it is (:attr:`is_placed`): it takes a due
+        date, moves without a flag, and is counted unrecoverable.  An ad-hoc
+        transfer (no definition at all, the shape ``X-ci-3`` makes
+        unrepresentable) answers ``False`` too, as it always did.
 
-        Both doors refused the field when this is true and each rendered its
-        own message: the transfer PATCH
-        (``routes/transfers/mutations._reject_generated_due_date_edit``) and the
-        SHADOW PATCH, which answered a transfer by updating its parent
-        (``routes/transactions/_shadow_mutations``, deleted at leaf
-        ``balance:X-bi-6-1``: a grid cell asks the transfer PATCH directly
-        now, so ONE door remains).  The second was missed by
-        an adversarial review's own account of this step, which is why the
-        predicate is a property rather than a line repeated at each door: the
-        transaction twin's single gate reads ``txn.recurs`` (plan step
-        balance:X-bi-7a; it read the link inline until then) and has no second
-        door to drift from.
+        Reads the template relationship only when ``transfer_template_id``
+        is set, so a link-less row costs no load; the rule rides on the
+        template's own joined load.  A :class:`DerivedFlag` for the reason
+        its neighbours are: the answer lives on the rule's table, and a
+        query keyed on the class-level name refuses to build rather than
+        restating that rule in SQL -- ``pay_period_gates
+        .count_discardable_items`` loads and asks (finding **BAL-492**).
 
-        **It is not a refusal the SERVICE can make**, and that is why it lives
-        at the doors: the recurrence engine's maintain pass writes this very
-        column through ``update_transfer`` whenever a definition re-dates its
-        rows, so a service-tier refusal would refuse the DEFINITION along with
-        the human.  What differs is who is speaking, which only a door knows.
-
-        Returns:
-            ``True`` when a recurring definition generated this transfer.
+        **Until this leaf the due-date gate read a property of its own,
+        ``due_date_is_its_definitions``**, kept on the row because the
+        transfer had TWO edit doors (finding BAL-476); leaf
+        ``balance:X-bi-6-1`` deleted the second, and a property that
+        returned another property for one caller was two spellings of one
+        rule, so the gate reads this directly as its transaction twin does.
         """
-        return self.transfer_template_id is not None
+        if self.transfer_template_id is None:
+            return False
+        return self.template.recurs
+
+    @DerivedFlag
+    def is_placed(self):
+        """True when this transfer was PLACED by a rule-less definition.
+
+        **The ONE accessor for "is this a one-time transfer"** (plan step
+        ``balance:X-ci-1``, the twin of :attr:`Transaction.is_placed`): a
+        definition with no recurrence rule PLACES its one transfer
+        (``routes/transfers/_instances._materialize_one_time_transfer``, in
+        the paycheck the owner chose, due on its start) where a definition
+        with a rule GENERATES them, and an ad-hoc transfer names no
+        definition at all.  Three doors fork on exactly this until ``X-ci-3``
+        deletes the ad-hoc shape: the PATCH's due-date gate lets such a
+        transfer's date MOVE but not CLEAR (an ad-hoc one may still clear it,
+        the developer-ratified behaviour the ad-hoc door keeps until it
+        goes), the same PATCH restates its definition's price on a typed
+        figure (**R-BAL92**) where an ad-hoc transfer takes the figure as its
+        own, and the full-edit form renders its date input ``required``.
+        The service door re-places its date on a period move (**R-BAL93**)
+        and keeps ``occurs_on`` equal to it (**R-BAL94**) by asking this.
+
+        Once ``transfer_template_id`` is NOT NULL (``X-ci-3``) this is
+        ``not recurs`` for every row; it stays named because the doors ask
+        *is this a one-time transfer*, not *is this not recurring*, and the
+        transaction twin keeps both names for the same reason.
+        """
+        if self.transfer_template_id is None:
+            return False
+        return not self.template.recurs
 
     @property
     def settle_day_columns(self):

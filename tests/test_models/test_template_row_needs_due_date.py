@@ -335,11 +335,13 @@ class TestATransferOfADefinitionIsDated:
     def test_clearing_the_date_on_a_transfer_of_a_definition_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """The UPDATE direction, the backstop of the transfer's two PATCH doors.
+        """The UPDATE direction, the backstop of the transfer's PATCH door.
 
-        Both doors refuse the field through
-        ``Transfer.due_date_is_its_definitions`` with a designed 400; this is
-        what a writer that is not the application meets instead.
+        The door refuses the field through
+        ``routes/transfers/mutations._reject_generated_due_date_edit`` with a
+        designed 400 (keyed on ``recurs`` and ``is_placed`` since plan step
+        balance:X-ci-1; the second door went at X-bi-6-1); this is what a
+        writer that is not the application meets instead.
         """
         with app.app_context():
             savings = _savings(seed_user)

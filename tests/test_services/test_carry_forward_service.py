@@ -854,13 +854,26 @@ class TestCarryForwardShadowTransactions:
             # Counted as 1 transfer, not 2 shadows.
             assert count == 1
 
-    def test_sets_is_override_on_transfer_and_shadows(
+    def test_sets_is_override_on_a_recurring_definitions_transfer_and_shadows(
         self, app, db, seed_user, seed_periods
     ):
-        """Carry forward sets is_override=True on transfer and both shadows."""
+        """Carry forward flags a RECURRING definition's transfer and both shadows.
+
+        The flag is what keeps the maintain and generate passes off a row the
+        owner placed elsewhere, so it is a recurring definition's transfer's
+        alone.  **This case flagged an AD-HOC transfer until plan step
+        ``balance:X-ci-1``** (ruling **R-BAL93**, the developer's explicit
+        re-ruling of the expected behaviour: carry-forward's transfer move
+        keys on ``recurs``, and a transfer no cadence generated takes no
+        flag); the transfer is the engine's now, and the ad-hoc arm is the
+        case below.
+        """
         with app.app_context():
-            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            savings = _create_savings(seed_user)
+            template = make_transfer_template(db.session, seed_user, savings)
+            xfer = generate_transfer_of(template, seed_periods[0])
             db.session.flush()
+            assert xfer.recurs is True
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
@@ -868,13 +881,47 @@ class TestCarryForwardShadowTransactions:
             )
 
             db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[1].id
             assert xfer.is_override is True
 
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=xfer.id
             ).all()
+            assert len(shadows) == 2
             for s in shadows:
                 assert s.is_override is True
+
+    def test_does_not_flag_a_transfer_no_cadence_generated(
+        self, app, db, seed_user, seed_periods
+    ):
+        """An ad-hoc transfer moves whole, and takes no flag (R-BAL93).
+
+        No pass will ever write over it, and a flag would only hide it from
+        a definition it might one day be given; this is the arm the
+        transaction twin's discrete branch already took for a row no rule
+        generated.  The one-time transfer's arm -- the same rule plus the
+        re-placing -- is pinned in ``tests/test_routes/test_one_time_transfer_doors``.
+        """
+        with app.app_context():
+            xfer = _create_transfer_in_period(seed_user, seed_periods, 0)
+            db.session.flush()
+            assert xfer.recurs is False
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+
+            db.session.refresh(xfer)
+            assert xfer.pay_period_id == seed_periods[1].id
+            assert xfer.is_override is False
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id
+            ).all()
+            assert len(shadows) == 2
+            for s in shadows:
+                assert s.pay_period_id == seed_periods[1].id
+                assert s.is_override is False
 
     def test_ignores_done_shadows(
         self, app, db, seed_user, seed_periods
@@ -2472,16 +2519,21 @@ class TestCarryForwardEnvelopeMixedBatch:
             assert adhoc.pay_period_id == seed_periods[1].id
             assert adhoc.is_override is False
 
-            # Transfer parent + both shadows moved, is_override=True.
+            # Transfer parent + both shadows moved; no flag, as the ad-hoc
+            # transaction above takes none: the transfer move keys on
+            # ``recurs`` since plan step balance:X-ci-1 (ruling R-BAL93), and
+            # this transfer names no definition.  It asserted ``True`` until
+            # that leaf.
             db.session.refresh(transfer)
             assert transfer.pay_period_id == seed_periods[1].id
-            assert transfer.is_override is True
+            assert transfer.is_override is False
             shadows = db.session.query(Transaction).filter_by(
                 transfer_id=transfer.id
             ).all()
             assert len(shadows) == 2
             for shadow in shadows:
                 assert shadow.pay_period_id == seed_periods[1].id
+                assert shadow.is_override is False
 
     def test_envelope_failure_rolls_back_other_branches(
         self, app, db, seed_user, seed_periods,

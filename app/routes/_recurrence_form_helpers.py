@@ -738,7 +738,7 @@ def _clear_recurrence_rule(template: Any) -> None:
             step salary:R15-c) ``PaycheckLine`` whose recurrence is being
             cleared.  Mutated in place; a no-op when it names no rule.
     """
-    if template.recurrence_rule is None:
+    if not template.recurs:
         return
     template.recurrence_rule = None
     db.session.flush()

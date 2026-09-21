@@ -253,9 +253,10 @@
              placeholder="Notes">
     </div>
 
-    {# Due Date -- an INPUT on an ad-hoc transfer, TEXT on a generated one.
-       The transaction twin in ``grid/_transaction_full_edit.html`` carries the
-       same split for the same reason.
+    {# Due Date -- an INPUT on a transfer no rule generated, TEXT on a
+       generated one.  The transaction twin in
+       ``grid/_transaction_full_edit.html`` carries the same split for the
+       same reason.
 
        **A generated transfer's due date is its DEFINITION's** (plan step
        balance:X-au-f, finding BAL-476).  ``due_date`` is a member of
@@ -271,18 +272,27 @@
        or a stale form; this is what stops the form offering the act at all.
 
        Where a transfer's due day genuinely moves, it moves on the TEMPLATE's
-       recurrence rule, which applies it to every instance.  An AD-HOC transfer
-       keeps the input: it owns its figure -- structurally, per
-       ``ck_transfers_adhoc_owns_amount`` -- so no rule reads its date and
-       clearing it prices nothing wrongly.  An empty submit there loads as an
+       recurrence rule, which applies it to every instance.  A transfer NO
+       RULE generated keeps the input -- keyed on ``xfer.recurs`` since plan
+       step balance:X-ci-1, not on the link: a ONE-TIME transfer (a rule-less
+       definition's placed transfer, or a cleared cadence's survivor) is due
+       when its owner says (ruling R-BAL93: its placed paycheck's start unless
+       the owner states a day, re-placed by a period move), no cadence derives
+       the day and no pass rewrites it.  **On such a transfer the input is
+       ``required``** (``xfer.is_placed``): the date prices it through its
+       definition's one-version series, so it may move and never clear, and
+       the browser refuses the clear first; the gate is the backstop.  An
+       AD-HOC transfer (no definition; the shape X-ci-3 deletes) keeps the
+       clearable input it always had: an empty submit there loads as an
        explicit None (TransferUpdateSchema strip_empty_strings maps "" to None
        for nullable fields) and clears the parent and both shadows. #}
     <div class="mb-2">
       <label class="form-label mb-0 small">Due Date</label>
-      {% if xfer.transfer_template_id is none %}
+      {% if not xfer.recurs %}
       <input type="date" name="due_date"
              value="{{ xfer.due_date.isoformat() if xfer.due_date is not none else '' }}"
              class="form-control form-control-sm"
+             {{ 'required' if xfer.is_placed else '' }}
              {{ 'disabled' if locked else '' }}>
       {% else %}
       <div class="form-control form-control-sm bg-body-secondary">
