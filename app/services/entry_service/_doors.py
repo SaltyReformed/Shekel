@@ -21,7 +21,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
@@ -29,9 +28,8 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, posting_service
-from app.services.account_resolver import resolve_owner_cash_flow_set
-from app.services.cash_flow_set import purchase_accounts
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.services.movement_account import admitted_movement_account_id
 from app.services.settle_day import (
     SettleDay,
     record_settle_day,
@@ -278,48 +276,21 @@ def _purchase_account_id(txn: Transaction, details: EntryDetails) -> int:
     owner has no card (ruling **R-CC34**: the picker renders only when there
     is a choice).
 
-    **What a purchase may name is ONE predicate, and it is the picker's**
-    (ruling **R-CC37**, developer 2026-09-20): the row's own account, or a
-    member of the ROW OWNER's cash-flow set -- the primary grid account plus
-    the active cards,
-    :func:`~app.services.account_resolver.resolve_owner_cash_flow_set`, with
-    no override.  It is spelled ONCE, as
-    :func:`~app.services.cash_flow_set.purchase_accounts` -- the tuple the
-    add-purchase form renders its dropdown from -- and this door tests
-    membership in that same tuple, so the door and the form cannot part: a
-    purchase on a 401(k), an IRA, a house, a loan, a savings account or a
-    checking account outside the set is UNWRITABLE rather than merely
-    unoffered, because a swipe filed on an account whose balance never folds
-    movements would drop the envelope's hold on checking by its figure and
-    land where no screen reads it.  A row that LIVES on an account outside
-    the set keeps its purchases there, because the row's own account is
-    always the tuple's first member.  The review of this leaf's first cut
-    found the door admitting every non-loan account under a docstring that
-    claimed this parity; the grid half (the second commit of CC-5-2) made
-    the predicate one function rather than two spellings that agreed.
-
-    **The gate is against the ROW's owner, never the caller** (design 3.2,
-    ruling **R-CC11**): a companion reaches the row through the owner's
-    accessible-transaction path and owns no account at all, so a gate on
-    ``user_id`` would refuse every companion swipe.  ``txn.user_id`` is the
-    owner, and ``fk_transaction_entries_owner_account`` holds the written row
-    to the same fact -- this gate is what turns the key's ``IntegrityError``
-    into the security response rule's 404, one answer for "no such account"
-    and "not the owner's" alike, raised before the account's name is read.
-
-    The two refusals below the 404 are the predicate's consequences, each
-    given the sentence that names its remedy: an ARCHIVED card is not an
-    active member (the row doors admit an archived account, a pre-existing
-    admission ruling **R-CC31**'s review named and a new door does not copy:
-    [[feedback_a_copied_write_inherits_no_refusal]]); an account that is
-    neither the row's nor a member -- a loan, a 401(k), savings -- is not one
-    a purchase can be paid from.
-
-    The books boundary on the card's OPENING is not asked here, and by
-    construction: a hand-typed purchase is born with no settle day, and the
-    day it later takes is written by ``settle_day.record_settle_day``, which
-    reads the ENTRY's ``account_id`` -- so a card purchase dated on or before
-    the card's opening is refused there, whatever account its row names.
+    **The gate itself is**
+    :func:`app.services.movement_account.admitted_movement_account_id`
+    **since plan step ``CC-5-3``**: the ONE spelling of which accounts a
+    movement under a row may name (rulings **R-CC37** / **R-CC39** -- the
+    row's own, or a member of the ROW OWNER's cash-flow set, the tuple every
+    picker renders from), shared with the settle verb's tender so the two
+    doors cannot part.  Its argument -- the owner gate over ``txn.user_id``
+    (ruling **R-CC11**), the 404, the two refusals and why the books boundary
+    is not asked there -- is that module's docstring; this door's own half is
+    the ``None`` arm.  The review of this leaf's first cut found the door
+    admitting every non-loan account under a docstring that claimed parity
+    with the picker; the grid half (the second commit of CC-5-2) made the
+    predicate one function rather than two spellings that agreed, and
+    ``CC-5-3`` moved it out of this module rather than copy it for the
+    second door.
 
     Args:
         txn: The parent row, already proven the caller's.
@@ -333,24 +304,11 @@ def _purchase_account_id(txn: Transaction, details: EntryDetails) -> int:
         ValidationError: The account is archived, or is neither the row's own
             nor a member of the owner's cash-flow set.
     """
-    if details.account_id is None or details.account_id == txn.account_id:
+    if details.account_id is None:
         return txn.account_id
-    account = db.session.get(Account, details.account_id)
-    if account is None or account.user_id != txn.user_id:
-        raise NotFoundError("Account not found.")
-    if not account.is_active:
-        raise ValidationError(
-            f"'{account.name}' is archived, so a purchase cannot be filed on "
-            "it. Unarchive the account first, or pick another."
-        )
-    cash_flow = resolve_owner_cash_flow_set(txn.user_id)
-    if account.id not in {a.id for a in purchase_accounts(cash_flow, txn)}:
-        raise ValidationError(
-            f"'{account.name}' is not an account a purchase can be paid from: "
-            "pick this row's own account, your checking account, or one of "
-            "your credit cards."
-        )
-    return account.id
+    return admitted_movement_account_id(
+        txn, details.account_id, movement="purchase",
+    )
 
 
 def create_entry(

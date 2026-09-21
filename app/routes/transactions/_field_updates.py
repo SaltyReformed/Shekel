@@ -66,10 +66,17 @@ from app.routes.transactions._helpers import _error_transaction_response
 #: on the model now, so a ``setattr`` that reached it raises ``AttributeError``
 #: rather than half-writing the amount-ownership pair.  It stays named here
 #: because the loop must SKIP it deliberately rather than crash, and because a
-#: reader asking which fields a seam owns should find all four in one place.
-_SEAM_OWNED_FIELDS = frozenset(
-    {"status_id", "settled_on", "settled_amount", "estimated_amount"}
-)
+#: reader asking which fields a seam owns should find all five in one place.
+#:
+#: ``tender_account_id`` joined at plan step ``credit_card:CC-5-3``: it names
+#: WHICH ACCOUNT the money moved through -- the covering movement's, never a
+#: column of the row -- so a ``setattr`` would land it nowhere the model
+#: declares, and it reaches the record only through
+#: ``apply_requested_status`` beside the figure it belongs with.
+_SEAM_OWNED_FIELDS = frozenset({
+    "status_id", "settled_on", "settled_amount", "estimated_amount",
+    "tender_account_id",
+})
 
 #: The PATCH fields that are a placed row's DEFINITION's (ruling **R-BAL23**):
 #: what the item is called, what it is, and its two flags.  Taken out of the
@@ -312,7 +319,12 @@ def _apply_field_updates(
     renders the input for such a row (``amount_correctable``), so this is the
     crafted-request and stale-form backstop.  Only a REAL figure is refused: an
     empty box loads as an explicit ``None`` (the field is ``allow_none``), which
-    states no amount at all.
+    states no amount at all.  **The "Paid from" account takes the same
+    refusal on the same row** (plan step ``credit_card:CC-5-3``): such a row
+    records its money as its purchases, each on its own account, so there is
+    no ONE payment to book elsewhere -- the settle verb's entries branch would
+    ignore the tender as it ignores the figure, and the popover renders no
+    picker for the row (the same ``amount_correctable`` gate).
 
     A refused call has already staged the ``setattr`` loop's mutations;
     ``_error_transaction_response`` rolls them back, exactly as the settle-day
@@ -403,5 +415,15 @@ def _apply_field_updates(
             "This row's actual comes from the purchases recorded against it, "
             "so an amount typed here would be discarded. Record the purchase "
             "instead, or correct one that is already there.",
+        )
+    if (
+        data.get("tender_account_id") is not None
+        and transaction_service.settles_from_entries(txn)
+    ):
+        return _error_transaction_response(
+            txn.id,
+            "This row's money is recorded as its purchases, each on its own "
+            "account, so a 'Paid from' account chosen here would be "
+            "discarded. Pick the account on the purchase instead.",
         )
     return None

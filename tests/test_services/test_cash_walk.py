@@ -858,7 +858,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
         db.session.commit()
 
         assert settled_cash_facts(account.id, scenario.id) == []
-        assert covered_cash_leg(txn) == Decimal("0.00")
+        assert covered_cash_leg(txn, txn.account_id) == Decimal("0.00")
         assert txn.entries, "the row must carry movements or this grades nothing"
         assert {movement_cash_leg(txn, entry) for entry in txn.entries} == {
             Decimal("0.00"),

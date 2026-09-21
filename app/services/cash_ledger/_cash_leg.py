@@ -202,9 +202,10 @@ def elsewhere_purchase_sum(txn: Transaction) -> Decimal:
     rests on a door alone is one refactor from resting on nothing.
 
     **It reads the row's PURCHASES, not its family** (ruling **R-BAL68**), as
-    its two siblings do.  The seam writes a covering movement on the row's own
-    account through ``CC-5-2`` (the tender account is ``CC-5-3``'s), and no
-    reconcile offer holds a settled row with a covering movement anyway.
+    its two siblings do.  The seam writes a covering movement on the TENDER
+    since ``CC-5-3`` (the row's own account unless the owner named another,
+    ruling **R-CC15**), which is never a purchase, and no reconcile offer
+    holds a settled row with a covering movement anyway.
 
     Args:
         txn: The transaction whose purchases to sum.

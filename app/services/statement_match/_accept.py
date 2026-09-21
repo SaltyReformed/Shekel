@@ -379,7 +379,8 @@ def _reject_drifted_under_the_act(
         ValidationError: When the members no longer come to the lines' total.
     """
     fresh = [
-        repriced(member, scope.calendar, scope.basis) for member in members
+        repriced(member, scope.calendar, scope.basis, scope.account_id)
+        for member in members
     ]
     if any(member is None for member in fresh):
         raise ValidationError(

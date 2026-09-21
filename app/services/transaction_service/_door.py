@@ -17,9 +17,12 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 ``request`` / ``session`` imports, no commit.
 """
 
+from dataclasses import replace
+
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
+from app.services.movement_account import admitted_movement_account_id
 from app.services.row_valuation import settled_figure
 from app.services.settle_day import SettleDay
 from app.services.stated_figure import StatedFigure
@@ -28,6 +31,9 @@ from app.services.status_seam import (
     apply_status_change,
     correction_record,
     figure_for_status,
+    recorded_settlement,
+    tender_account_id_of,
+    tender_for_status,
 )
 from app.services.transaction_service._row_rules import settles_from_entries
 from app.services.transaction_service._settle import settle_transaction
@@ -43,6 +49,7 @@ def apply_requested_status(
     *,
     settle_day: SettleDay | None = None,
     submitted: StatedFigure | None = None,
+    tender_account_id: int | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
 
@@ -111,10 +118,21 @@ def apply_requested_status(
             what it resolved instead.  Every other status change ignores it,
             because a figure records what MOVED and nothing else here moves
             money.
+        tender_account_id: The account the door named as the one the money
+            MOVED THROUGH (plan step ``credit_card:CC-5-3``): the popover's
+            "Paid from" picker, posted on every Save and preselected from
+            what the row records, or the statement matcher's own account.
+            Read by the SETTLE arm, which hands it to the verb, and by the
+            identity arm, which re-points a settled row's covering movement
+            when it names an account other than the recorded one -- the
+            same shape the figure takes one parameter up; ``None`` means
+            nobody named one.
 
     Raises:
-        ValidationError: From an illegal transition or the seam's settle-day
-            refusals.  A 400 at the route.
+        ValidationError: From an illegal transition, the seam's settle-day
+            refusals, or the tender gate.  A 400 at the route.
+        NotFoundError: When *tender_account_id* names no account of the row's
+            owner.  A 404 at the route.
         PostingError: From the reconcile, on a broken ledger invariant.
             Deliberately NOT a sibling of ``ValidationError`` -- it must fail
             loud rather than render as a designed refusal.
@@ -127,7 +145,10 @@ def apply_requested_status(
     # second reconcile of the same row.
     if enters_settled_band(txn, new_status_id):
         reject_mismatched_settled_status(txn, new_status_id)
-        settle_transaction(txn, submitted=submitted, settle_day=settle_day)
+        settle_transaction(
+            txn, submitted=submitted, settle_day=settle_day,
+            tender_account_id=tender_account_id,
+        )
         return
     # Everything else is ONE seam pass carrying every fact the door was given:
     # the status, the day, and what the row records as having moved.
@@ -172,7 +193,9 @@ def apply_requested_status(
     # column and only a predicate could tell them apart.  They no longer share
     # one, and the predicate went with the sharing: nothing here is released BY
     # KIND, because nothing here is released at all.
-    settlement = _correction_for_status(txn, new_status_id, submitted)
+    settlement = _correction_for_status(
+        txn, new_status_id, submitted, tender_account_id,
+    )
     apply_status_change(
         txn, new_status_id, settle_day=settle_day, settlement=settlement,
     )
@@ -180,16 +203,25 @@ def apply_requested_status(
 
 
 def _correction_for_status(
-    txn: Transaction, new_status_id: int, submitted: StatedFigure | None,
+    txn: Transaction,
+    new_status_id: int,
+    submitted: StatedFigure | None,
+    tender_account_id: int | None,
 ) -> Settlement | None:
-    """Return the record a submitted figure makes on *txn*, or ``None``.
+    """Return the record a submitted figure or tender makes on *txn*, or ``None``.
 
     **The Actual box's write rule for a plain row** (developer ruling,
     2026-08-17): a settled row's figure is an observation about the bank, and
     an observation gets corrected when the statement disagrees.  Its sibling
     for the other half of the same assertion is
     :func:`app.services.transfer_service._status.apply_settle_day_correction`,
-    which corrects the DAY on the identical argument.
+    which corrects the DAY on the identical argument.  **And the "Paid from"
+    picker's, since plan step ``credit_card:CC-5-3``**: which account the
+    money moved through is the record's third fact, observed the same way
+    and corrected in place on the same argument -- a tender naming an account
+    other than the recorded one re-points the covering movement (the seam's
+    ``_re_point``), and rides the same record the figure does, so the two are
+    written in ONE seam pass exactly as the status and the figure are.
 
     **It resolves rather than writes**, and that is what lets the caller hand
     the status and the record to the seam in ONE pass.  An earlier shape wrote
@@ -203,7 +235,9 @@ def _correction_for_status(
 
     The echo rule and the ``corrected`` basis are
     :func:`app.services.status_seam.correction_record`'s, stated once for both
-    tables; the two refusals below are this table's.
+    tables; the tender's echo rule is
+    :func:`app.services.status_seam.tender_for_status`'s; the refusals below
+    are this table's.
 
     Args:
         txn: The row the figure arrived for.
@@ -211,41 +245,74 @@ def _correction_for_status(
             SUBMITTED status when the form carried one, else the row's own.
         submitted: The figure the door stated and who wrote it, or ``None``
             when nobody stated one.
+        tender_account_id: The account the door named, or ``None`` when it
+            named none.
 
     Returns:
-        A ``corrected`` :class:`~app.services.status_seam.Settlement` carrying
-        the stated source, or ``None`` when no figure arrived or the one that
-        did is an echo of what the row already records.
+        A :class:`~app.services.status_seam.Settlement` -- ``corrected`` and
+        carrying the stated source when a figure arrived, else the row's own
+        record -- with the re-pointed tender when one arrived; or ``None``
+        when nothing arrived or everything that did is an echo of what the
+        row already records.
 
     Raises:
         ValidationError: When the status settles nothing (propagated from
-            :func:`~app.services.status_seam.reject_figure_without_settled_status`),
-            or when the row takes its figure from its own purchases.
+            :func:`~app.services.status_seam.reject_figure_without_settled_status`
+            / :func:`~app.services.status_seam.reject_tender_without_settled_status`),
+            when the row takes its figure from its own purchases, when a
+            tender arrives for a row recording no payment movement, or from
+            the tender gate.
+        NotFoundError: When *tender_account_id* names no account of the row's
+            owner (the gate's 404).
     """
     # The SUBMISSION's own reading, echo-aware: a figure counts where the row
     # settles or stays settled, an untouched box on the way OUT of the band is
     # dropped (ruling **R-EG**), and a figure the user CHANGED beside a revert
     # is refused rather than discarded.  It lives at the door rather than at the
     # route because only here is the row in hand, and the comparison is against
-    # what the row RECORDS -- which is what the box was prefilled from.
+    # what the row RECORDS -- which is what the box was prefilled from.  The
+    # tender's reading is the same shape against the same record.
     figure = figure_for_status(
         txn, new_status_id, submitted, settled_figure(txn),
     )
-    if figure is None:
+    tender = tender_for_status(
+        txn, new_status_id, tender_account_id, tender_account_id_of(txn),
+    )
+    if figure is None and tender is None:
         return None
-    submitted = figure
     # **The door owns its own precondition**, which is the rule
     # :func:`._row_rules.reject_unsettleable` states for the settle verbs: an
     # envelope's figure IS the sum of its purchases (ruling **R-FF**), so a
     # typed one would be written and then contradicted by the row's own
-    # children.  The PATCH handler refuses it first with a message naming the
-    # purchase list; this is the service-tier backstop, so a caller that skips
-    # the route cannot write a ``corrected`` record onto a row whose figure is
-    # derived.
+    # children -- and its purchases each carry their own account, so there is
+    # no ONE tender to re-point either.  The PATCH handler refuses both first
+    # (the figure with a message naming the purchase list, the account with
+    # one naming the purchase's own account); this is the service-tier
+    # backstop, so a caller that skips the route cannot write a ``corrected``
+    # record onto a row whose figure is derived.
     if settles_from_entries(txn):
         raise ValidationError(
             f"Transaction {txn.id} takes its figure from the purchases "
-            "recorded against it, so it has no separate actual to correct. "
-            "Record the purchase, or correct one that is already there.",
+            "recorded against it, so it has no separate actual to correct "
+            "and no single account its money moved through. Record the "
+            "purchase, or correct one that is already there.",
         )
-    return correction_record(txn, submitted)
+    record = correction_record(txn, figure) if figure is not None else None
+    if tender is None:
+        return record
+    tender = admitted_movement_account_id(txn, tender, movement="payment")
+    if record is None:
+        # A tender alone: the row's own record, whole, re-pointed.  A settled
+        # row records a figure and its source on its covering movement, or --
+        # a close of nothing (ruling **R-BAL82**) -- nothing at all, and a
+        # record with nothing to book names no tender (``Settlement`` refuses
+        # it); a crafted submission naming one for such a row meets this
+        # sentence rather than that constructor's ``ValueError``.
+        record = recorded_settlement(txn)
+        if record is None or record.source is None:
+            raise ValidationError(
+                f"Transaction {txn.id} records no payment movement, so there "
+                "is nothing to move to another account: it settled at "
+                "$0.00. Type the amount that moved to record a payment."
+            )
+    return replace(record, account_id=tender)

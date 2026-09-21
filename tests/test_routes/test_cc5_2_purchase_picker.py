@@ -181,19 +181,37 @@ class TestPurchaseAccountsIsTheDoorsOwnTuple:
             row = _envelope(seed_user, seed_periods_today[4])
             assert [a.id for a in purchase_accounts(None, row)] == [row.account_id]
 
-    def test_the_door_reads_the_pickers_function(self, app):
-        """Source gate for rule 14: the door tests membership in ``purchase_accounts``.
+    def test_the_doors_read_the_pickers_function(self, app):
+        """Source gate for rule 14: both doors test membership in ``purchase_accounts``.
 
         The door's inline spelling (``account.id == txn.account_id or account.id
         in cash_flow.member_ids``) and the picker's tuple AGREE today, which is
         exactly why no behavioural test can tell one function from two
-        spellings -- so the census is of the source.  Delete the call from
-        the door and this fails while every write still lands.
+        spellings -- so the census is of the source.  **The spelling moved at
+        plan step ``credit_card:CC-5-3``** (the census followed the leaf):
+        the ONE gate is ``movement_account.admitted_movement_account_id``,
+        which reads the tuple exactly once, and every writer of a movement
+        onto another account -- the purchase door, the settle verb's tender
+        and the settled row's "Paid from" correction -- calls it and spells
+        nothing of its own.  Delete the call from any of the three, or
+        re-spell the predicate in one, and this fails while every write
+        still lands.  The developer confirmed this re-expression on
+        2026-09-21 (rule 5): "The census follows the leaf: one shared gate,
+        both doors graded, no door spells the rule itself."
         """
-        door = Path(app.root_path) / "services/entry_service/_doors.py"
-        source = door.read_text(encoding="utf-8")
-        assert source.count("purchase_accounts(cash_flow, txn)") == 1
-        assert "cash_flow.member_ids" not in source
+        services = Path(app.root_path) / "services"
+        gate = (services / "movement_account.py").read_text(encoding="utf-8")
+        assert gate.count("purchase_accounts(cash_flow, txn)") == 1
+        writers = (
+            "entry_service/_doors.py",
+            "transaction_service/_settle.py",
+            "transaction_service/_door.py",
+        )
+        for door in writers:
+            source = (services / door).read_text(encoding="utf-8")
+            assert "admitted_movement_account_id(" in source, door
+            assert "purchase_accounts(" not in source, door
+            assert "cash_flow.member_ids" not in source, door
 
     def test_the_door_admits_exactly_the_tuple(
         self, app, seed_user, seed_periods_today,

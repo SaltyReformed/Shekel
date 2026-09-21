@@ -242,18 +242,23 @@ def unmatched_destinations(
     ]
 
 
-def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | None":
-    """Return *txn*'s signed cash effect, or ``None`` when no rule prices it.
+def _price(
+    txn: Transaction, basis: "cash_ledger.AmountBasis", account_id: int,
+) -> "Decimal | None":
+    """Return *txn*'s signed cash effect on *account_id*, or ``None`` when no rule prices it.
 
     The one branch in this module, and it is the settled / projected split
     rather than a money rule of its own (ruling **R-BAL81**, plan step
     ``balance:X-bi-4a``: a row candidate is worth what its covering movement
     moves):
 
-    * a SETTLED row is worth what its covering movement moves
-      (:func:`~app.services.status_seam.covered_cash_leg`) -- a covered bill
-      its figure, a ``purchases``-basis envelope ``0``, so it is not offered
-      and its purchases are;
+    * a SETTLED row is worth what its covering movement moves ON THIS
+      ACCOUNT (:func:`~app.services.status_seam.covered_cash_leg`; ruling
+      **R-CC40**'s first half, plan step ``credit_card:CC-5-3``) -- a
+      covered bill its figure, a ``purchases``-basis envelope ``0``, so it
+      is not offered and its purchases are, and a bill whose payment moved
+      on ANOTHER account (charged to the card) ``0`` too, so it is not
+      offered on a screen whose feed never shows that money;
     * a PROJECTED row that settles from its purchases
       (``transaction_service.settles_from_entries``, the verb's own
       predicate) is worth ``0`` to the offer for the same reason: the bank
@@ -308,6 +313,10 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
             derivations per row as finding **N-228**.  The same reason the
             calendar is a parameter one tier up, and the same shape a balance
             pass threads its ``BalanceContext`` for.
+        account_id: The account whose statement is asking -- the screen's,
+            which for a transaction candidate is the row's own (the offer
+            set is scoped by ``Transaction.account_id``) and is what its
+            settled arm prices ON.
 
     Returns:
         Its signed cash effect on this account, or ``None`` when the amount
@@ -318,14 +327,17 @@ def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | Non
         else transaction_service.settle_amount
     )
     if txn.status.is_settled:
-        # **A settled row is worth its covering movement** (ruling
-        # **R-BAL81**; the mirror since plan step **X-bi-3a**, ruling
-        # **R-BAL39**): the settle mirrors the figure as one movement, the
-        # bank sees one line for the pair, and the row is the subject the
-        # owner matches it to; its mirror is kept out of the purchase
-        # candidates by ``status_seam.covering_clause``.  An envelope closed
-        # from its purchases has none and is worth ``0`` here.
-        return status_seam.covered_cash_leg(txn)
+        # **A settled row is worth its covering movement ON THIS ACCOUNT**
+        # (ruling **R-BAL81**; the mirror since plan step **X-bi-3a**, ruling
+        # **R-BAL39**; the account since ``credit_card:CC-5-3``, **R-CC40**):
+        # the settle mirrors the figure as one movement, the bank sees one
+        # line for the pair, and the row is the subject the owner matches it
+        # to; its mirror is kept out of the purchase candidates by
+        # ``status_seam.covering_clause``.  An envelope closed from its
+        # purchases has none and is worth ``0`` here; so is a bill whose
+        # payment is on another account, whose subject on THAT account's
+        # screen is the movement (leaf ``CC-5-4``).
+        return status_seam.covered_cash_leg(txn, account_id)
     if transaction_service.settles_from_entries(txn):
         # Its purchases ARE the figure (ruling **R-BAL78**) and each is a
         # candidate of its own, so the row is worth nothing to the offer.
@@ -577,9 +589,9 @@ def transaction_candidate(
 
 def repriced(
     row: CandidateRow, calendar: "PayCalendar",
-    basis: "cash_ledger.AmountBasis",
+    basis: "cash_ledger.AmountBasis", account_id: int,
 ) -> "CandidateRow | None":
-    """Return *row* as it stands NOW, re-read and re-valued.
+    """Return *row* as it stands NOW, re-read and re-valued on *account_id*.
 
     **The scope answers WHICH rows an act may reach; this answers what one of
     them is WORTH, and the two must be asked at different moments.**  Plan step
@@ -622,6 +634,12 @@ def repriced(
             purchases -- writes a salary profile, a payday or a loan
             parameter, which is the same argument that lets the calendar
             beside it be shared across the pass.
+        account_id: The pass's account (:class:`~._scope.ReviewScope`), the
+            one a settled row is priced ON (:func:`_price`; ruling
+            **R-CC40**) -- so a row whose payment was re-pointed onto the
+            card since the screen offered it re-prices to ``0`` here and the
+            act naming it is refused rather than booked against money this
+            account never moved.
 
     Returns:
         The row as it stands now, or ``None`` when it has gone, cannot be
@@ -636,7 +654,7 @@ def repriced(
     txn = db.session.get(Transaction, row.row_id)
     if txn is None:
         return None
-    amount = _price(txn, basis)
+    amount = _price(txn, basis, account_id)
     if amount is None:
         return None
     return transaction_candidate(txn, calendar, amount)
@@ -748,7 +766,7 @@ def _transaction_candidates(
     candidates = []
     unpriceable = []
     for txn in rows:
-        amount = _price(txn, basis)
+        amount = _price(txn, basis, account_id)
         if amount is None:
             unpriceable.append(txn.id)
             continue
