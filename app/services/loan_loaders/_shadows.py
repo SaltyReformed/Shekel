@@ -44,7 +44,7 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services.transfer_legs import (
-    PlannedTransferLeg,
+    TransferLeg,
     planned_transfer_legs,
 )
 from app.utils.amount_relationships import (
@@ -79,7 +79,7 @@ class ShadowSets:
         settled: The payments whose cash has moved -- the settled income
             shadow rows -- ascending by ``(pay_period.start_date, id)``.
         projected: The payments still planned, as one
-            :class:`~app.services.transfer_legs.PlannedTransferLeg` per
+            :class:`~app.services.transfer_legs.TransferLeg` per
             still-projected transfer INTO the account, ascending by
             ``(pay_period.start_date, transfer id)``.  Disjoint from
             ``settled`` wherever Transfer Invariant 3 holds; under a STATUS
@@ -91,7 +91,7 @@ class ShadowSets:
     """
 
     settled: list[Transaction]
-    projected: list[PlannedTransferLeg]
+    projected: list[TransferLeg]
 
 
 def income_shadows(
@@ -295,12 +295,12 @@ def settled_income_shadows(
 
 def projected_income_legs(
     account_id: int, scenario_id: int, *, options: tuple,
-) -> list[PlannedTransferLeg]:
+) -> list[TransferLeg]:
     """Return a loan's PROJECTED payments as legs of their parents, in payment order.
 
     The forward analogue of :func:`settled_income_shadows`, and since plan
     step **balance:X-bi-6a** a different RELATION: one
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` per live
+    :class:`~app.services.transfer_legs.TransferLeg` per live
     still-projected transfer INTO the account, derived from the parent row in
     ``budget.transfers`` (ruling **R-BAL13**).  It was
     ``projected_income_shadows``, the shadow-income query narrowed to the

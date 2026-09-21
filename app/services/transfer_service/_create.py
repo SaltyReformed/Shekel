@@ -39,6 +39,7 @@ from app.services.amount_ownership import declare_derived
 from app.services import status_seam
 from app.services.settle_day import SettleDay
 from app.services.status_seam import reject_settle_day_without_settled_status
+from app.services.transfer_legs import leg_label
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
     _sync_loan_postings_if_loan,
@@ -69,9 +70,13 @@ def shadow_names(
 ) -> "tuple[str, str]":
     """Return the ``(expense, income)`` shadow display names for two endpoints.
 
-    **A shadow's name is DERIVED from the pair's endpoints, and this is the one
-    place it is COMPOSED** -- here, beside the constructor that first applies
-    it, and called again by
+    **A shadow's name is DERIVED from the pair's endpoints, and the
+    composition lives with the LEG** since leaf ``X-bi-6-1``
+    (:func:`app.services.transfer_legs.leg_label`): the grid draws a
+    transfer's leg from the parent and labels it from the endpoints' current
+    names, and the two shadow rows carry the same pair for as long as they
+    exist.  This is the one writer of that pair onto a row -- here, beside the
+    constructor that first applies it, and called again by
     :mod:`app.services.transfer_service._endpoints`, which re-derives both names
     when a transfer moves between accounts.  Until plan step R10-b there was no
     second writer, because there was no way to move a transfer's endpoints at
@@ -79,14 +84,10 @@ def shadow_names(
     every generated row and building replacements, which re-ran this rule by
     re-running the create.
 
-    **One reader PARSES the format back out, and it does not go through here**
-    (adversarial review of R10-b).  ``grid_view_service._short_display_name``
-    strips ``"Transfer to "`` / ``"Transfer from "`` by literal prefix and
-    length, so the grid's row label silently mis-renders if this format ever
-    moves -- and R10-b raises that stake rather than lowering it, by making a
-    shadow's name MUTABLE after creation.  Reported rather than fixed here: the
-    coupling is display-only, the fix is a shared prefix constant that arm reads,
-    and it is not this step's to change.
+    The reader that PARSES the format back out
+    (``grid_view_service._short_display_name``) strips the prefixes the
+    composition publishes rather than literals of its own -- the coupling an
+    adversarial review of R10-b reported, closed where the label moved.
 
     Leaving a moved pair's names alone would show "Transfer to Fidelity Money
     Market" on a row whose money now arrives at Emergency Fund -- a label that
@@ -110,10 +111,7 @@ def shadow_names(
         :class:`~app.services.transfer_service._validation.TransferRows`
         declares its legs.
     """
-    return (
-        f"Transfer to {to_account.name}",
-        f"Transfer from {from_account.name}",
-    )
+    return leg_label(from_account, to_account)
 
 
 def _build_shadow(

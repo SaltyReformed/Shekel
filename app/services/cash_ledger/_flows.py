@@ -56,7 +56,7 @@ in, plain data out; no Flask import.
 
 from decimal import Decimal
 
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.utils.balance_predicates import is_projected
 
 from ._amount_source import AmountBasis
@@ -74,7 +74,7 @@ def sum_projected(transactions, basis: AmountBasis):
     **The plan set holds three kinds since plan step ``balance:X-bi-4a``**,
     and all three are reduced here: an ordinary still-projected
     :class:`Transaction`, valued as below; a
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` -- one side of a
+    :class:`~app.services.transfer_legs.TransferLeg` -- one side of a
     still-projected transfer, derived from the parent row rather than read
     off a shadow row (ruling **R-BAL13**, plan step X-bi-6a) -- valued by
     :func:`~._amounts.planned_leg_contribution` and placed on the income or
@@ -164,7 +164,7 @@ def sum_projected(transactions, basis: AmountBasis):
     Args:
         transactions: The plan items for a single pay period or landing day:
             :class:`~app.models.transaction.Transaction` rows,
-            :class:`~app.services.transfer_legs.PlannedTransferLeg` values and
+            :class:`~app.services.transfer_legs.TransferLeg` values and
             :class:`~app.services.cash_ledger.InFlightMovement` values, in any
             mixture.
         basis: The account's
@@ -187,7 +187,7 @@ def sum_projected(transactions, basis: AmountBasis):
             else:
                 expenses -= txn.delta
             continue
-        if isinstance(txn, PlannedTransferLeg):
+        if isinstance(txn, TransferLeg):
             if not is_projected(txn.transfer):
                 continue
             if txn.is_income:

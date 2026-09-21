@@ -70,7 +70,8 @@
     //     ignored (otherwise a tap on [Mark Paid] or an entry-list
     //     button would re-toggle the panel shut as the bubble
     //     climbed past the card).
-    //   - `data-mobile-txn-id` scopes the selector to real txn
+    //   - `data-mobile-txn-id` (a transaction) or `data-mobile-leg` (a
+    //     transfer leg, balance:X-bi-6-1) scopes the selector to real
     //     cards so the group-header `<li>` (which carries no data
     //     attr) cannot accidentally trigger.  Both owner and
     //     companion cards carry the attribute: the companion needs
@@ -85,7 +86,8 @@
     document.addEventListener('click', function(e) {
         if (e.target.closest('.mobile-card-expansion')) return;
 
-        var card = e.target.closest('.mobile-txn-card[data-mobile-txn-id]');
+        var card = e.target.closest(
+            '.mobile-txn-card[data-mobile-txn-id], .mobile-txn-card[data-mobile-leg]');
         if (!card) return;
 
         var wrapper = card.closest('.mobile-card-wrapper');

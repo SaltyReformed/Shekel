@@ -2,10 +2,25 @@
 {# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
+   ONE partial for TWO item shapes (plan step balance:X-bi-6-1, ruling
+   R-BAL87): a plan row (a Transaction) and a transfer LEG (a TransferLeg --
+   one side of a transfer, read off its parent in budget.transfers rather
+   than off a shadow row).  Both answer the same display questions
+   (`name`, `status`, `status_id`, `is_override`, `notes`, `account`,
+   `account_id`, `due_date`), so the chip, the badges, the account chip and
+   the due caption below draw either without branching.  Where the item's
+   IDENTITY is spelled the partial asks the `transfer_leg` Jinja test: the
+   wrapper id and `data-cell` (`cell_dom_id`), the map subscripts
+   (`cell_key`: a row's `id`, a leg's `(transfer id, account id)`), the
+   popover opener's data attributes, and the Mark Paid door -- a leg's is
+   the TRANSFER's route, carrying `leg_account_id` so the response is this
+   cell.  The row-only affordances (purchases, the credit shortcut, the CC
+   payback badge) are behind the same test.
+
    Expected context:
-     found.txn (or txn) -- a Transaction object.
-     due_captions -- `{transaction_id: the due date to caption, or none}`,
-                 from `grid_view_service.due_captions_by_id`.  REQUIRED, and a
+     found.txn (or txn) -- a Transaction, or a TransferLeg.
+     due_captions -- `{cell_key(item): the due date to caption, or none}`,
+                 from `grid_view_service.due_captions_by_key`.  REQUIRED, and a
                  MAP so that the read RAISES: Jinja's default `Undefined`
                  compares unequal to a date without raising, so a caption read
                  as a bare variable renders on every dated row when a surface
@@ -19,7 +34,7 @@
                  account chip.  REQUIRED as a key, `none` allowed as a value;
                  read with `is not none` so a forgotten publish raises.
    Optional:
-     wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
+     wrap_div -- if true, wraps the cell in a <div id="{{ cell_dom_id(t) }}">.
      wrap_oob -- if true (requires wrap_div), the wrapper div also
                  carries hx-swap-oob="true" so the cell rides along as
                  an out-of-band fragment on a response whose primary
@@ -47,6 +62,9 @@
 #}
 {% set t = found.txn if found is defined and found.txn else txn %}
 {% if t %}
+{% set is_leg = t is transfer_leg %}
+{% set key = cell_key(t) %}
+{% set dom_id = cell_dom_id(t) %}
 {#- The row's amount comes off the render's ``budgets`` map (plan step
     X-au-c2b).  It was a transient ``t.live_estimated_amount`` the route
     annotated onto each row, read behind an ``is defined`` guard that fell back
@@ -57,18 +75,18 @@
     cannot read half of; every entry that renders this partial publishes one
     (``routes/_render_helpers.render_transaction_cell`` for the fragments, the
     grid and companion routes for the pages). -#}
-{% set est_display = budgets[t.id] %}
+{% set est_display = budgets[key] %}
 {# What the row RECORDED as having moved, or none when it has not settled
    (plan step X-au-c3).  A settled row shows what it booked; an unsettled one
    shows its plan. #}
-{% set recorded = settled[t.id] %}
+{% set recorded = settled[key] %}
 {% set display_amount = recorded if recorded is not none else est_display %}
 {# What a tick WOULD book, where that is neither the plan nor a recorded figure
    (plan step X-au-c3): a row reverted out of the settled band keeps what it
    recorded and a re-settle honours it.  ``none`` for every row without that
    gap -- the route decides, this template draws. #}
-{% set will_book = retained[t.id] %}
-{% set es = entry_sums.get(t.id) if entry_sums is defined else none %}
+{% set will_book = retained[key] %}
+{% set es = entry_sums.get(key) if entry_sums is defined else none %}
 {% set show_progress = es is not none and t.status_id == STATUS_PROJECTED %}
 {% if show_progress %}
   {% set remaining = es.remaining %}
@@ -86,27 +104,30 @@
    cell partial re-rendered plus a gridRefresh trigger. #}
 {% set chip_state = 'done' if (t.status and t.status.is_settled)
    else ('credit' if t.status_id == STATUS_CREDIT else 'projected') %}
-{% if wrap_div is defined and wrap_div %}<div id="txn-cell-{{ t.id }}"{% if wrap_oob is defined and wrap_oob %} hx-swap-oob="true"{% endif %}>{% endif %}
+{% if wrap_div is defined and wrap_div %}<div id="{{ dom_id }}"{% if wrap_oob is defined and wrap_oob %} hx-swap-oob="true"{% endif %}>{% endif %}
 <div class="txn-chip st-{{ chip_state }}{% if error_msg %} text-danger{% elif is_conflict %} text-warning{% endif %}">
   {# Clicking the amount opens the anchored action card (rebuild
      decision 2): grid_edit.js's delegated handler reads data-txn-id
-     and fetches the full-edit partial into #txn-popover, anchored to
-     this cell.  For transfer shadows the same endpoint returns the
-     transfer edit form, so one open path covers both. #}
+     and fetches the transaction full-edit partial into #txn-popover,
+     anchored to this cell -- or, for a LEG, reads data-xfer-id plus
+     data-leg-account-id and fetches the TRANSFER's full-edit partial,
+     whose form then targets this cell by the same id `data-cell`
+     carries. #}
   {# data-can-credit mirrors the card's Credit-button predicate so the
      keyboard C action (grid_keyboard.js) only fires where the button
-     would render -- expense, projected, not a transfer shadow, not an
-     envelope. #}
+     would render -- expense, projected, a row rather than a transfer
+     leg, not an envelope. #}
   {# aria-label and title share the same status/progress detail; build it
      ONCE (polyglot audit TPLB/TPL-10).  aria-label additionally prefixes
      the txn name for screen readers, and the two conflict prefixes differ
      only in punctuation, so those stay inline. #}
   {% set detail %}{% if show_progress %}{{ money(es.total) }} / {{ money(es.budget) }} -- {{ money(remaining|abs) }} {% if over_budget %}over{% else %}remaining{% endif %} -- {{ es.count }} entr{{ 'ies' if es.count != 1 else 'y' }}{% if es.credit > 0 %} -- includes {{ money(es.credit) }} on CC{% endif %}{% else %}{{ money(display_amount) }}{% if recorded is not none and recorded != est_display %} (est: {{ money(est_display) }}){% endif %}{% if will_book is not none %} -- marking paid records {{ money(will_book) }}{% endif %}{% if t.status %} -- {{ t.status.name }}{% endif %}{% if t.notes %} -- {{ t.notes }}{% endif %}{% endif %}{% endset %}
   <span class="txn-open"
-        data-txn-id="{{ t.id }}"
-        {% if t.is_expense and t.status_id == STATUS_PROJECTED
-           and not t.transfer_id and not t.tracks_purchases %}data-can-credit="1"{% endif %}
-        {% if t.tracks_purchases %}data-envelope="1"{% endif %}
+        data-cell="{{ dom_id }}"
+        {% if is_leg %}data-xfer-id="{{ t.transfer.id }}" data-leg-account-id="{{ t.account_id }}"{% else %}data-txn-id="{{ t.id }}"{% endif %}
+        {% if not is_leg and t.is_expense and t.status_id == STATUS_PROJECTED
+           and not t.tracks_purchases %}data-can-credit="1"{% endif %}
+        {% if not is_leg and t.tracks_purchases %}data-envelope="1"{% endif %}
         role="button"
         tabindex="0"
         aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transaction was changed by another action; click to retry. {% endif %}{{ t.name }}: {{ detail }}"
@@ -177,7 +198,7 @@
     {% endif %}
 
     {# Transfer indicator #}
-    {% if t.transfer_id %}
+    {% if is_leg %}
       <i class="bi bi-arrow-left-right text-muted ms-1 small" title="Transfer" aria-label="Transfer"></i>
     {% endif %}
 
@@ -187,7 +208,7 @@
     {% endif %}
 
     {# Credit payback indicator #}
-    {% if t.credit_payback_for_id %}
+    {% if not is_leg and t.credit_payback_for_id %}
       <span class="badge-credit ms-1" aria-label="Credit card payback" data-bs-toggle="tooltip" data-bs-trigger="click focus" data-bs-title="CC Payback">CC</span>
     {% endif %}
   </span>
@@ -195,11 +216,14 @@
   {# One-click mark-paid (rebuild decision 1, audit A1): revealed on
      cell hover via CSS for projected transactions only -- the exact
      precondition of the projected -> done|received transition.  The
-     response replaces this cell's wrapper content in place. #}
+     response replaces this cell's wrapper content in place.  A LEG's
+     door is the transfer's own (transfers.mark_done), told which cell
+     asked by `leg_account_id` so it renders this leg back. #}
   {% if t.status_id == STATUS_PROJECTED %}
   <button type="button" class="paybtn"
-          hx-post="{{ url_for('transactions.mark_done', txn_id=t.id) }}"
-          hx-target="#txn-cell-{{ t.id }}"
+          {% if is_leg %}hx-post="{{ url_for('transfers.mark_done', xfer_id=t.transfer.id) }}"
+          hx-vals='{"leg_account_id": "{{ t.account_id }}"}'{% else %}hx-post="{{ url_for('transactions.mark_done', txn_id=t.id) }}"{% endif %}
+          hx-target="#{{ dom_id }}"
           hx-swap="innerHTML"
           hx-disabled-elt="this"
           aria-label="Mark {{ t.name }} paid"
@@ -227,9 +251,9 @@
 {# Due date indicator.  The DECISION is the route's -- whether this row's due
    date says anything its paycheck's own payday does not -- so this draws the
    answer rather than computing it (pay-calendar plan step C4-a-1, see
-   `grid_view_service.due_captions_by_id`).  Indexed, not guarded: a missing
+   `grid_view_service.due_captions_by_key`).  Indexed, not guarded: a missing
    map raises where a missing variable would silently caption every row. #}
-{% set due_caption = due_captions[t.id] %}
+{% set due_caption = due_captions[key] %}
 {% if due_caption %}
   <small class="cell-caption d-block fs-mini">Due: {{ due_caption.strftime('%-m/%-d') }}</small>
 {% endif %}

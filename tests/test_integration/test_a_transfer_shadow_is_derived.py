@@ -608,61 +608,60 @@ class TestWhoOwnsTheFigureAfterAnEdit:
                     "a notes-only save must not revert the owner's figure"
                 )
 
-    def test_the_SHADOW_door_echo_leaves_the_parent_alone(
+    def test_the_LEG_door_echo_leaves_the_parent_alone(
         self, app, db, auth_client, seed_user, seed_periods,
     ):
-        """The THIRD door onto a transfer's amount, which had no coverage at all.
+        """The grid's door onto a transfer's amount, echoing what it rendered.
 
-        A PATCH addressed to a transfer SHADOW is answered by updating its
-        PARENT (``routes/transactions/_shadow_mutations``), so a figure
-        submitted there is a figure submitted for the transfer -- and neither
-        N-436 nor N-448 is written about that route.
-
-        **This door is the one where the old presence test cost real money**,
-        because it renders a DIFFERENT figure from the transfer popover: the
-        shadow's box is primed with the RESOLVED amount, while the transfer
-        popover renders the stored ``xfer.amount``.  On a derive-mode loan
-        payment those differ -- the contract's figure against a stale stored
-        one -- so an untouched save through this door rewrote the parent's
-        stored amount to the resolved figure and called it a human's.
-
-        The payload is read out of the rendered fragment rather than assembled,
-        which is the only way to grade a door whose rendered value is not the
-        column.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87).**  It
+        graded the SHADOW door -- ``/transactions/<shadow>/quick-edit`` priming
+        a box with the RESOLVED amount and ``PATCH /transactions/<shadow>``
+        re-expressed as a transfer update -- which is deleted: the grid draws
+        a transfer's LEG off its parent, and the leg's popover is the
+        TRANSFER form asked with ``?leg_account_id=``, whose box and companion
+        the transfer PATCH grades.  So the door the grid uses renders the SAME
+        figure the transfers page's popover renders, and an untouched save
+        through it -- the payload read out of the rendered fragment, which is
+        the only way to grade a door whose rendered value may not be the
+        column -- must leave the parent's stored amount and both legs'
+        derivation alone.  On a derive-mode loan payment the contract's figure
+        and the stored column differ, which is what made the old shadow door
+        cost real money (it rewrote the parent to the resolved figure and
+        called it a human's); the leg's door is graded on the same row.
         """
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
-            xfer_id, shadow_id = xfer.id, shadow.id
+            xfer_id, leg_account_id = xfer.id, shadow.account_id
             stored_before = xfer.amount
 
-            edit = auth_client.get(f"/transactions/{shadow_id}/quick-edit")
+            edit = auth_client.get(
+                f"/transfers/{xfer_id}/full-edit?leg_account_id={leg_account_id}",
+            )
             assert edit.status_code == 200
             body = edit.data.decode()
-            shown = re.search(
-                r'name="estimated_amount"[^>]*value="([^"]*)"', body,
-            )
+            shown = re.search(r'name="amount"[^>]*value="([^"]*)"', body)
             companion = re.search(
-                r'name="estimated_amount_as_rendered"[^>]*value="([^"]*)"', body,
+                r'name="amount_as_rendered"[^>]*value="([^"]*)"', body,
             )
-            assert shown is not None, "the shadow's box renders a figure"
+            assert shown is not None, "the leg's popover renders a figure"
             assert companion is not None, (
-                "the shadow door owes the companion like every other door"
+                "the leg's door owes the companion like every other door"
             )
             assert companion.group(1) == shown.group(1)
-            # The precondition that makes this door dangerous: what it SHOWS is
-            # not what the parent STORES.
-            assert Decimal(shown.group(1)) != stored_before
+            assert f'name="leg_account_id" value="{leg_account_id}"' in body
 
-            resp = auth_client.patch(f"/transactions/{shadow_id}", data={
-                "estimated_amount": shown.group(1),
-                "estimated_amount_as_rendered": companion.group(1),
-                "version_id": str(shadow.version_id),
+            resp = auth_client.patch(f"/transfers/instance/{xfer_id}", data={
+                "amount": shown.group(1),
+                "amount_as_rendered": companion.group(1),
+                "version_id": str(xfer.version_id),
+                "leg_account_id": str(leg_account_id),
             })
             assert resp.status_code == 200, resp.data
+            assert f'data-leg-account-id="{leg_account_id}"' in resp.data.decode()
 
             db.session.expire_all()
             assert db.session.get(Transfer, xfer_id).amount == stored_before, (
-                "an echo through the shadow door must not rewrite the parent"
+                "an echo through the leg door must not rewrite the parent"
             )
             for leg in _shadows(xfer_id):
                 assert owns_its_amount(leg) is False, "still the contract's"

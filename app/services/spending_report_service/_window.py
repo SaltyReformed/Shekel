@@ -18,9 +18,9 @@ Boundary discipline: no Flask import; DB reads only, ``Decimal`` out.
 
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.row_valuation import settled_contribution
+from app.services.cash_flow_set import PlanItems
+from app.services.transfer_legs import PlanItem
 from app.utils.money import ZERO
 
 from ._types import (
@@ -97,8 +97,8 @@ def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
 
 def _window_transactions(
     ids: _ScopeIds, resolved: _ResolvedWindow,
-) -> list[Transaction]:
-    """Load the settled expenses attributed to a resolved window.
+) -> PlanItems:
+    """Load the settled expense items attributed to a resolved window.
 
     A calendar window selects by the attribution rule itself --
     COALESCE(due_date, pay period start) inside the window span, across
@@ -114,7 +114,9 @@ def _window_transactions(
         resolved: The resolved window (period ids + optional span).
 
     Returns:
-        The window's settled expense :class:`Transaction` rows.
+        The window's :class:`~app.services.cash_flow_set.PlanItems`: its
+        settled expense rows and its settled transfers' expense legs (leaf
+        ``balance:X-bi-6-1b``).
     """
     if resolved.first_day is None:
         return spending_analysis.query_settled_expenses(
@@ -127,7 +129,7 @@ def _window_transactions(
 
 
 def _window_total(
-    resolved: _ResolvedWindow, txns: list[Transaction],
+    resolved: _ResolvedWindow, txns: list[PlanItem],
 ) -> Decimal | None:
     """Return a loaded window's spend total, or ``None`` when untracked.
 
@@ -140,7 +142,7 @@ def _window_total(
 
     Args:
         resolved: The resolved window (the tracked signal).
-        txns: The window's loaded settled expenses.
+        txns: The window's loaded settled expense items.
 
     Returns:
         The settled spend total, or ``None``.
@@ -152,19 +154,19 @@ def _window_total(
 
 def _load_window(
     ids: _ScopeIds, window: SpendingWindow,
-) -> tuple[list[Transaction], Decimal | None]:
-    """Resolve and load a window's settled expenses plus its spend total.
+) -> tuple[list[PlanItem], Decimal | None]:
+    """Resolve and load a window's settled expense items plus its spend total.
 
     Args:
         ids: The report's scope ids.
         window: The window to load.
 
     Returns:
-        ``(transactions, total)``; ``total`` per :func:`_window_total`.
+        ``(items, total)``; ``total`` per :func:`_window_total`.
     """
     resolved = _resolve_window(ids, window)
-    txns = _window_transactions(ids, resolved)
-    return txns, _window_total(resolved, txns)
+    items = _window_transactions(ids, resolved).items
+    return items, _window_total(resolved, items)
 
 
 # ── Trailing series ─────────────────────────────────────────────────
@@ -341,7 +343,7 @@ def _shift_month(year: int, month: int, steps: int) -> tuple[int, int]:
     return absolute // _MONTHS_PER_YEAR, absolute % _MONTHS_PER_YEAR + 1
 
 
-def _spent_total(txns: list[Transaction]) -> Decimal:
+def _spent_total(txns: list[PlanItem]) -> Decimal:
     """Return total settled spend, SIGNED.
 
     **It was ``abs()`` per row until plan step ``bank_import:X-gj-2b``, and
@@ -363,9 +365,11 @@ def _spent_total(txns: list[Transaction]) -> Decimal:
     category went negative.
 
     Args:
-        txns: Settled expense transactions.
+        txns: Settled expense items -- rows, and transfer legs since leaf
+            ``balance:X-bi-6-1b``.
 
     Returns:
-        The sum of ``settled_contribution(txn)`` over ``txns``.
+        The sum of :func:`~app.services.spending_analysis.recorded_spend`
+        over ``txns``.
     """
-    return sum((settled_contribution(txn) for txn in txns), ZERO)
+    return sum((spending_analysis.recorded_spend(txn) for txn in txns), ZERO)

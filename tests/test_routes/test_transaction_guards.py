@@ -1,13 +1,17 @@
 """
 Shekel Budget App -- Transaction Route Guard Tests
 
-Tests for transfer detection guards on every transaction mutation route.
-Verifies shadow transactions route through the transfer service, blocked
-operations return 400, and regular transactions are unaffected.
+Tests for the guards on every transaction mutation route: a transfer SHADOW
+row is "not found" at every door and moves nothing (plan step
+balance:X-bi-6-1, the interval fence until the rows are deleted), a
+soft-deleted row cannot be settled, a loan account admits no transaction,
+and regular transactions are unaffected.
 """
 
 from datetime import date
 from decimal import Decimal
+
+import pytest
 
 
 from app.extensions import db
@@ -95,270 +99,114 @@ def _create_regular_txn(seed_user, seed_periods_today):
 # ── Update Guards ──────────────────────────────────────────────────
 
 
-class TestUpdateShadowGuard:
-    """Tests for PATCH /transactions/<id> on shadow transactions."""
+class TestATransactionDoorRefusesAShadowRow:
+    """Every transaction door answers 404 for a transfer SHADOW row and moves nothing.
 
-    def test_update_shadow_routes_through_service(
-        self, app, db, auth_client, seed_user, seed_periods_today
+    **The interval fence of plan step balance:X-bi-6-1 (ruling R-BAL87).**
+    Until that leaf these eight classes graded the transfer-detection GUARDS:
+    a request landing on a shadow row was re-expressed as a transfer update
+    (``_shadow_mutations``), or refused with a 400 where the act had no
+    transfer meaning (credit, delete).  The grid draws a transfer as a LEG
+    read off its parent now, and the leg's cell calls the transfer's own
+    routes -- so no surface asks a transaction door about a shadow, the
+    re-expressing module is deleted, and a request that still names a shadow
+    (a stale page, a bookmark, a probe) is "not found" at the ownership
+    helper (``_get_owned_transaction`` / ``get_accessible_transaction``),
+    the answer every row a door does not serve gets.
+
+    **Why the fence, and why it is graded by state, not status.**  The shadow
+    rows still exist until ``X-bi-6``'s last leaf deletes them, and the
+    doors' regular paths would write PAST the transfer's invariants if they
+    admitted one: a PATCH would re-price one leg alone, a Mark Paid would
+    settle one leg without its pair, a DELETE would orphan the sibling.  So
+    each case asserts the 404 AND that the parent and both shadows are
+    exactly as created -- remove the fence and the PATCH, mark-done and
+    DELETE cases fire on the second assertion, which is what makes the
+    first one a claim rather than a reading.
+
+    The leg's own doors are graded in ``test_transfers.py``
+    (``TestLegContextResponse`` and the ``_LEG_`` cases).
+    """
+
+    @staticmethod
+    def _state(xfer_id):
+        """The pair's facts a door could move, read fresh."""
+        db.session.expire_all()
+        xfer = db.session.get(Transfer, xfer_id)
+        shadows = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id)
+            .order_by(Transaction.id)
+            .all()
+        )
+        return (
+            xfer.amount, xfer.status_id, xfer.is_deleted, xfer.due_date,
+            [(s.status_id, s.is_deleted, s.due_date, shadow_amount(s)) for s in shadows],
+        )
+
+    @pytest.mark.parametrize(
+        ("method", "url", "data"),
+        [
+            ("get", "/transactions/{id}/cell", None),
+            ("get", "/transactions/{id}/quick-edit", None),
+            ("get", "/transactions/{id}/full-edit", None),
+            (
+                "patch", "/transactions/{id}",
+                {"estimated_amount": "500.00", "estimated_amount_as_rendered": "300.00"},
+            ),
+            ("patch", "/transactions/{id}", {"due_date": "2026-01-20"}),
+            ("delete", "/transactions/{id}", None),
+            ("post", "/transactions/{id}/mark-done", None),
+            ("post", "/transactions/{id}/mark-credit", None),
+            ("delete", "/transactions/{id}/unmark-credit", None),
+            ("post", "/transactions/{id}/cancel", None),
+        ],
+        ids=[
+            "cell", "quick-edit", "full-edit", "patch-amount", "patch-due-date",
+            "delete", "mark-done", "mark-credit", "unmark-credit", "cancel",
+        ],
+    )
+    def test_the_door_is_not_found_and_the_pair_is_untouched(
+        self, app, auth_client, seed_user, seed_periods_today, method, url, data,
     ):
-        """Amount change on shadow updates transfer and both shadows."""
+        """404 for the shadow, and the parent and both legs exactly as created."""
         with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
+            xfer, expense, _income = _create_test_transfer(
+                seed_user, seed_periods_today,
+            )
+            xfer_id, shadow_id = xfer.id, expense.id
+            before = self._state(xfer_id)
 
-            resp = auth_client.patch(
-                f"/transactions/{expense.id}",
-                data={"estimated_amount": "500.00", "estimated_amount_as_rendered": "50.00"},
+            request = getattr(auth_client, method)
+            resp = request(url.format(id=shadow_id), data=data)
+
+            assert resp.status_code == 404, resp.get_data(as_text=True)[:200]
+            assert self._state(xfer_id) == before, (
+                "a transaction door moved a transfer's pair through a shadow row"
             )
 
-            assert resp.status_code == 200
-            assert resp.headers.get("HX-Trigger") == "balanceChanged"
-
-            db.session.expire_all()
-            xfer = db.session.get(Transfer, xfer.id)
-            expense = db.session.get(Transaction, expense.id)
-            income = db.session.get(Transaction, income.id)
-            assert xfer.amount == Decimal("500.00")
-            assert shadow_amount(expense) == Decimal("500.00")
-            assert shadow_amount(income) == Decimal("500.00")
-
-    def test_a_settled_figure_on_an_UNSETTLED_shadow_is_refused(
-        self, app, db, auth_client, seed_user, seed_periods_today
+    def test_the_companion_aware_door_refuses_a_shadow_too(
+        self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A figure records a settle, so an unsettled pair cannot be handed one.
+        """Mark Paid reaches rows through ``get_accessible_transaction``: same fence.
 
-        **This asserted the opposite until plan step X-au-c3** -- the PATCH
-        wrote ``actual_amount`` onto a PROJECTED shadow and mirrored it to its
-        sibling.  A figure now RECORDS what moved, and the seam keeps one off
-        a row whose money has not (``reject_settlement_without_settled_status``),
-        so the request is a designed 400 rather than a write.  No
-        form can reach it: the correction box renders only on a settled row.
-
-        To correct a transfer's figure, settle it -- the same act that records
-        one -- or correct an already-settled pair.
+        The mark-done route reads the companion-aware door rather than the
+        owner one, so the fence is stated in both; this pins the second.
         """
         with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
+            xfer, _expense, income = _create_test_transfer(
+                seed_user, seed_periods_today,
+            )
+            xfer_id, shadow_id = xfer.id, income.id
+            before = self._state(xfer_id)
 
-            resp = auth_client.patch(
-                f"/transactions/{expense.id}",
-                data={"settled_amount": "290.00"},
+            resp = auth_client.post(
+                f"/transactions/{shadow_id}/mark-done",
+                data={"render": "mobile_card", "card_prefix": "tp", "can_edit": "1"},
             )
 
-            assert resp.status_code == 400
-            db.session.expire_all()
-            expense = db.session.get(Transaction, expense.id)
-            income = db.session.get(Transaction, income.id)
-            assert status_seam.recorded_settlement(expense) is None
-            assert status_seam.recorded_settlement(income) is None
-
-    def test_update_shadow_status(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Status change on shadow propagates to transfer and both shadows."""
-        with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
-            done = db.session.query(Status).filter_by(name="Paid").one()
-
-            resp = auth_client.patch(
-                f"/transactions/{expense.id}",
-                data={"status_id": str(done.id)},
-            )
-
-            assert resp.status_code == 200
-            db.session.expire_all()
-            xfer = db.session.get(Transfer, xfer.id)
-            expense = db.session.get(Transaction, expense.id)
-            income = db.session.get(Transaction, income.id)
-            assert xfer.status_id == done.id
-            assert expense.status_id == done.id
-            assert income.status_id == done.id
-
-
-# ── Mark Done Guard ────────────────────────────────────────────────
-
-
-class TestMarkDoneShadowGuard:
-    """Tests for POST /transactions/<id>/mark-done on shadow transactions."""
-
-    def test_mark_done_shadow_routes_through_service(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Mark-done on shadow updates transfer and both shadows."""
-        with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.post(f"/transactions/{expense.id}/mark-done")
-
-            assert resp.status_code == 200
-            assert "gridRefresh" in resp.headers.get("HX-Trigger", "")
-
-            db.session.expire_all()
-            done = db.session.query(Status).filter_by(name="Paid").one()
-            xfer = db.session.get(Transfer, xfer.id)
-            expense = db.session.get(Transaction, expense.id)
-            income = db.session.get(Transaction, income.id)
-            assert xfer.status_id == done.id
-            assert expense.status_id == done.id
-            assert income.status_id == done.id
-
-
-# ── Mark Credit Guard (BLOCK) ─────────────────────────────────────
-
-
-class TestMarkCreditShadowGuard:
-    """Tests for POST /transactions/<id>/mark-credit on shadow transactions."""
-
-    def test_mark_credit_blocked_for_shadow(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Mark-credit returns 400 for shadow transactions."""
-        with app.app_context():
-            xfer, expense, _ = _create_test_transfer(seed_user, seed_periods_today)
-            original_status = expense.status_id
-
-            resp = auth_client.post(f"/transactions/{expense.id}/mark-credit")
-
-            assert resp.status_code == 400
-            db.session.expire_all()
-            expense = db.session.get(Transaction, expense.id)
-            assert expense.status_id == original_status
-
-            # No payback transaction was created.
-            paybacks = db.session.query(Transaction).filter_by(
-                credit_payback_for_id=expense.id
-            ).count()
-            assert paybacks == 0
-
-
-# ── Unmark Credit Guard (BLOCK) ───────────────────────────────────
-
-
-class TestUnmarkCreditShadowGuard:
-    """Tests for DELETE /transactions/<id>/unmark-credit on shadow transactions."""
-
-    def test_unmark_credit_blocked_for_shadow(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Unmark-credit returns 400 for shadow transactions."""
-        with app.app_context():
-            _, expense, _ = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.delete(f"/transactions/{expense.id}/unmark-credit")
-
-            assert resp.status_code == 400
-
-
-# ── Cancel Guard ───────────────────────────────────────────────────
-
-
-class TestCancelShadowGuard:
-    """Tests for POST /transactions/<id>/cancel on shadow transactions."""
-
-    def test_cancel_shadow_routes_through_service(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Cancel on shadow updates transfer and both shadows to cancelled."""
-        with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.post(f"/transactions/{expense.id}/cancel")
-
-            assert resp.status_code == 200
-            assert "gridRefresh" in resp.headers.get("HX-Trigger", "")
-
-            db.session.expire_all()
-            cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
-            xfer = db.session.get(Transfer, xfer.id)
-            expense = db.session.get(Transaction, expense.id)
-            income = db.session.get(Transaction, income.id)
-            assert xfer.status_id == cancelled.id
-            assert expense.status_id == cancelled.id
-            assert income.status_id == cancelled.id
-
-
-# ── Delete Guard (BLOCK) ──────────────────────────────────────────
-
-
-class TestDeleteShadowGuard:
-    """Tests for DELETE /transactions/<id> on shadow transactions."""
-
-    def test_delete_shadow_blocked(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Direct deletion of shadow transaction returns 400."""
-        with app.app_context():
-            xfer, expense, income = _create_test_transfer(seed_user, seed_periods_today)
-            expense_id = expense.id
-            income_id = income.id
-            xfer_id = xfer.id
-
-            resp = auth_client.delete(f"/transactions/{expense_id}")
-
-            assert resp.status_code == 400
-
-            # All records still exist.
-            db.session.expire_all()
-            assert db.session.get(Transfer, xfer_id) is not None
-            assert db.session.get(Transaction, expense_id) is not None
-            assert db.session.get(Transaction, income_id) is not None
-
-
-# ── Full Edit Guard ────────────────────────────────────────────────
-
-
-class TestFullEditShadowGuard:
-    """Tests for GET /transactions/<id>/full-edit on shadow transactions."""
-
-    def test_full_edit_shadow_returns_transfer_form(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Full edit for shadow returns transfer edit form, not transaction form."""
-        with app.app_context():
-            _, expense, _ = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.get(f"/transactions/{expense.id}/full-edit")
-
-            assert resp.status_code == 200
-            html = resp.data.decode()
-            # Transfer form has the transfer PATCH endpoint.
-            assert "/transfers/instance/" in html
-            # Has category dropdown (transfer-specific).
-            assert "category_id" in html
-
-    def test_full_edit_shadow_targets_transaction_cell(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Transfer form opened from shadow targets #txn-cell-<shadow_id>."""
-        with app.app_context():
-            _, expense, _ = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.get(f"/transactions/{expense.id}/full-edit")
-
-            html = resp.data.decode()
-            assert f"txn-cell-{expense.id}" in html
-
-
-# ── Quick Edit Guard ───────────────────────────────────────────────
-
-
-class TestQuickEditShadowGuard:
-    """Tests for GET /transactions/<id>/quick-edit on shadow transactions."""
-
-    def test_quick_edit_shadow_returns_normal_form(
-        self, app, db, auth_client, seed_user, seed_periods_today
-    ):
-        """Quick edit for shadow returns the standard amount input form."""
-        with app.app_context():
-            _, expense, _ = _create_test_transfer(seed_user, seed_periods_today)
-
-            resp = auth_client.get(f"/transactions/{expense.id}/quick-edit")
-
-            assert resp.status_code == 200
-            html = resp.data.decode()
-            assert "estimated_amount" in html
-
-
-# ── Regular Transaction Regression ─────────────────────────────────
+            assert resp.status_code == 404
+            assert self._state(xfer_id) == before
 
 
 class TestASoftDeletedRowCannotBeSettled:
@@ -520,8 +368,13 @@ class TestDueDatePatch:
             db.session.refresh(txn)
             assert txn.due_date == date(2026, 1, 20)
 
-    def test_patch_due_date_shadow_propagates(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH due_date on transfer shadow updates both shadows."""
+    def test_patch_due_date_from_a_leg_propagates(self, app, auth_client, seed_user, seed_periods_today):
+        """PATCH due_date on a transfer from its grid LEG updates both shadows.
+
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        PATCHed the SHADOW row through the transaction door; the grid's door
+        is the transfer PATCH carrying ``leg_account_id`` now.
+        """
         with app.app_context():
             from datetime import date
 
@@ -530,8 +383,11 @@ class TestDueDatePatch:
             )
 
             resp = auth_client.patch(
-                f"/transactions/{exp_shadow.id}",
-                data={"due_date": "2026-01-20"},
+                f"/transfers/instance/{transfer.id}",
+                data={
+                    "due_date": "2026-01-20",
+                    "leg_account_id": str(exp_shadow.account_id),
+                },
             )
             assert resp.status_code == 200
 

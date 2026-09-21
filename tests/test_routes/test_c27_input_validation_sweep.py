@@ -249,14 +249,17 @@ class TestTransactionsMarkDoneActualAmount:
                 "the 422 body must be the desktop cell fragment"
             )
 
-    def test_negative_actual_amount_rejected_on_transfer_shadow(
+    def test_negative_actual_amount_rejected_on_a_transfer_from_its_leg(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Negative actual_amount is rejected on the transfer-shadow branch.
+        """Negative settled_amount is rejected on the transfer door a grid leg uses.
 
-        Pre-C-27 the transfer-shadow branch had its own raw
-        ``Decimal(...)`` parse; the schema now runs once before the
-        branch and applies identical validation to both paths.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**: it
+        graded the transaction mark-done's transfer-shadow branch, whose own
+        raw ``Decimal(...)`` parse C-27 replaced with the schema; that branch
+        is deleted, and the grid's figure door for a transfer is the transfer
+        PATCH carrying ``leg_account_id``, whose schema refuses the same
+        figure with the same 422 and no transition.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -267,11 +270,15 @@ class TestTransactionsMarkDoneActualAmount:
                 .first()
             )
 
-            resp = auth_client.post(
-                f"/transactions/{shadow.id}/mark-done",
-                data={"settled_amount": "-25.00"},
+            resp = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_amount": "-25.00",
+                    "status_id": str(ref_cache.status_id(StatusEnum.DONE)),
+                    "leg_account_id": str(shadow.account_id),
+                },
             )
-            assert resp.status_code == 422
+            assert resp.status_code == 422, resp.get_data(as_text=True)[:200]
 
             db.session.expire_all()
             db.session.refresh(xfer)

@@ -17,9 +17,9 @@ answer -- and neither has a second home.
 Pure apart from :func:`badge_cadence`, which is the one function here that
 reads the database, and reads only the owner's cadence.
 """
-from app.models.transaction import Transaction
 from app.services.pay_calendar import PayCadence, PayCalendarError, cadence_for
 from app.services.recurrence import cadence_of
+from app.services.transfer_legs import PlanItem
 from app.utils.money import MONTHS_PER_YEAR
 
 # What "infrequent" MEANS: a definition that fires less often than once a
@@ -37,7 +37,7 @@ _INFREQUENT_BELOW_PER_YEAR = MONTHS_PER_YEAR
 
 
 def badge_cadence(
-    user_id: int, transactions: list[Transaction],
+    user_id: int, transactions: list[PlanItem],
 ) -> PayCadence | None:
     """Return the owner's pay cadence, or ``None`` when nothing can be badged.
 
@@ -61,7 +61,10 @@ def badge_cadence(
 
     Args:
         user_id: The owner whose calendar is being built.
-        transactions: The rows this build will badge.
+        transactions: The items this build will badge -- rows, and since
+            leaf ``balance:X-bi-6-1b`` transfer legs, which never repeat
+            (``TransferLeg.recurs`` is ``False``: a transfer's rule is its
+            own definition's, not a transaction rule).
 
     Returns:
         The owner's :class:`~app.services.pay_calendar.PayCadence`, or ``None``
@@ -88,7 +91,7 @@ def badge_cadence(
 
 
 def is_infrequent(
-    txn: Transaction, pay_cadence: PayCadence | None,
+    txn: PlanItem, pay_cadence: PayCadence | None,
 ) -> bool:
     """Check whether a transaction's recurrence fires less often than monthly.
 
@@ -102,7 +105,8 @@ def is_infrequent(
     function and :func:`badge_cadence` each spelled it inline.
 
     Args:
-        txn: The transaction whose definition is being classified.
+        txn: The row -- or transfer leg, which answers ``False`` at the
+            ``recurs`` gate -- whose definition is being classified.
         pay_cadence: How often the owner is paid
             (:class:`~app.services.pay_calendar.PayCadence`), or ``None`` when
             this build had nothing to badge (:func:`badge_cadence`).  Read

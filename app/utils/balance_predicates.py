@@ -585,7 +585,7 @@ def is_projected_clause(model_class):
     return model_class.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
 
-def balance_contributing_clause():
+def balance_contributing_clause(model_class=Transaction):
     """Return a SQLAlchemy boolean clause matching ``is_balance_contributing``.
 
     The Python predicate and this ORM filter are generated from the
@@ -596,20 +596,34 @@ def balance_contributing_clause():
     ``.join(Status)``: ``Transaction.status_id`` is the discriminator,
     and the excluded-ID set is the cached lookup.
 
+    **Polymorphic over the model class since leaf ``balance:X-bi-6-1b``, the
+    way :func:`is_projected_clause` has always been**: a display reader that
+    draws a transfer as a LEG read off its parent loads the parents from
+    ``budget.transfers`` under the SAME "still counts" rule it loads its rows
+    under, and ``Transfer`` carries the same two columns.  The default keeps
+    every ``Transaction`` caller unchanged.
+
+    Args:
+        model_class: ``app.models.transaction.Transaction`` (the default) or
+            ``app.models.transfer.Transfer`` -- any class carrying
+            ``is_deleted`` and a ``status_id`` against ``ref.statuses``.
+
     Returns:
         A SQLAlchemy ``and_`` clause equivalent to
-        ``Transaction.is_deleted IS FALSE AND
-        Transaction.status_id NOT IN (Credit.id, Cancelled.id)``.
+        ``model_class.is_deleted IS FALSE AND
+        model_class.status_id NOT IN (Credit.id, Cancelled.id)``.
         Suitable for ``query.filter(balance_contributing_clause())``
-        on any select rooted at ``Transaction``.
+        on any select rooted at ``Transaction``, or
+        ``balance_contributing_clause(Transfer)`` on one rooted at
+        ``Transfer``.
 
     Raises:
         RuntimeError: propagated from ``balance_excluded_status_ids``
             if the reference cache has not been initialized.
     """
     return and_(
-        Transaction.is_deleted.is_(False),
-        Transaction.status_id.notin_(balance_excluded_status_ids()),
+        model_class.is_deleted.is_(False),
+        model_class.status_id.notin_(balance_excluded_status_ids()),
     )
 
 

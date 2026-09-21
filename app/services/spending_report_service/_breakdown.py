@@ -13,9 +13,8 @@ module already loaded.  All money is ``Decimal``; the templates do no math.
 from collections import defaultdict
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.row_valuation import settled_contribution
+from app.services.transfer_legs import PlanItem
 from app.utils.money import ZERO
 
 from ._types import (
@@ -26,7 +25,7 @@ from ._types import (
 )
 
 
-def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
+def _totals_by_category(txns: list[PlanItem]) -> dict[int, _CategoryTotal]:
     """Sum settled spend per category id, carrying the display labels.
 
     Category id ``0`` is the Uncategorized bucket (rows with no category),
@@ -36,9 +35,10 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
     labels are fixed by :func:`spending_analysis.category_names`.
 
     Args:
-        txns: One window's settled expenses -- every row has SETTLED, which is
-            what :func:`~app.services.row_valuation.settled_contribution`
-            requires and, since plan step X-bx, refuses without.
+        txns: One window's settled expense items -- rows and transfer legs
+            (leaf ``balance:X-bi-6-1b``), every one SETTLED, which is what
+            :func:`~app.services.spending_analysis.recorded_spend` requires
+            and refuses without.
 
     Returns:
         ``category_id -> _CategoryTotal`` (labels + summed spend).  **A total
@@ -65,7 +65,7 @@ def _totals_by_category(txns: list[Transaction]) -> dict[int, _CategoryTotal]:
         # non-negative DISPLAY, if one is ever wanted, belongs at the render:
         # clamping here destroys the arithmetic the whole report is built on
         # (:func:`_share`'s denominator, every ``delta``, both group totals).
-        amounts[cat_id] += settled_contribution(txn)
+        amounts[cat_id] += spending_analysis.recorded_spend(txn)
         if cat_id not in labels:
             labels[cat_id] = spending_analysis.category_names(txn)
     return {

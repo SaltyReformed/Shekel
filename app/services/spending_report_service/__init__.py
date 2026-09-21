@@ -83,13 +83,13 @@ This module holds the ONE public entry point and re-exports the shapes a route
 or a template names, so no consumer reaches into a submodule.
 """
 
-from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import spending_analysis
 from app.services.account_resolver import resolve_cash_flow_set
 from app.services.cash_ledger import derived_amount_basis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.transfer_legs import PlanItem
 
 from ._breakdown import _build_breakdown, _build_changes, _totals_by_category
 from ._hero import _build_hero
@@ -202,7 +202,7 @@ def compute_spending_report(
         calendar=calendar_for(user_id),
     )
     resolved = _resolve_window(ids, window)
-    txns = _window_transactions(ids, resolved)
+    txns = _window_transactions(ids, resolved).items
 
     # The chart's twelve windows are DERIVED once, off the calendar the
     # scope already carries (plan step C2-f3d): the prior window is the
@@ -215,7 +215,7 @@ def compute_spending_report(
     # deltas AND its total feeds both the series' step-1 point and the
     # hero's vs-prior baseline (one load, three consumers that must agree).
     if prior_window is None:
-        prior_txns: list[Transaction] = []
+        prior_txns: list[PlanItem] = []
         prior_total = None
     else:
         prior_txns, prior_total = _load_window(ids, prior_window)

@@ -1,12 +1,14 @@
 """
 Shekel Budget App -- Dashboard: the shared bill query and bill dict.
 
-The ONE Projected-expense row query the dashboard's two bill surfaces
+The ONE Projected-expense item load the dashboard's two bill surfaces
 read (the still-due totals and the due-soon list, both in
-:func:`~._pulse.compute_pulse_section`), plus the render-ready bill dict
-those rows become -- with the E-21 single-base entry progress.  Defined
-here once rather than per producer, so the row set, the eager loads and
-the Projected / expense / not-deleted filter cannot drift apart.
+:func:`~._pulse.compute_pulse_section`) -- the set's own rows and the
+expense legs of its transfers since leaf ``balance:X-bi-6-1b`` -- plus the
+render-ready bill dict those items become, with the E-21 single-base entry
+progress.  Defined here once rather than per producer, so the item set, the
+eager loads and the Projected / expense / not-deleted filter cannot drift
+apart.
 
 Pure aggregation -- no Flask imports, no database writes.
 """
@@ -20,8 +22,20 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
+from app.models.transfer import Transfer
+from app.services.cash_flow_set import (
+    CashFlowSet,
+    PlanItems,
+    own_rows_clause,
+    set_transfer_legs_in_periods,
+)
 from app.services.entry_service import compute_entry_sums, compute_remaining
+from app.services.transfer_legs import (
+    PlanItem,
+    TransferLeg,
+    cell_key,
+    expense_legs,
+)
 from app.utils.balance_predicates import is_projected_clause
 
 
@@ -32,58 +46,72 @@ def _query_unpaid_expense_rows(
     cash_flow: CashFlowSet,
     scenario_id: int,
     period_ids: list[int],
-) -> list[Transaction]:
-    """Load the unpaid (Projected) expense rows for a set of periods.
+) -> PlanItems:
+    """Load the unpaid (Projected) expense items for a set of periods.
 
-    The single query the dashboard's bill surfaces share -- the still-due
+    The single load the dashboard's bill surfaces share -- the still-due
     totals and the due-soon list (both in
-    :func:`~._pulse.compute_pulse_section`) -- so the row set,
-    eager-loads, and the Projected / expense / not-deleted filter are
-    defined exactly once rather than copied per producer (DRY).
+    :func:`~._pulse.compute_pulse_section`) -- so the item set, the
+    eager-loads and the Projected / expense / not-deleted filter are defined
+    exactly once rather than copied per producer (DRY).
 
-    **The rows are the PAYCHECK's across the owner's cash-flow set -- checking
-    and its cards -- not one account's** (developer ruling
-    ``credit_card:R-CC16``, plan step CC-4-3), through the ONE clause every
-    plan-item reader appends,
-    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
-    rows, less the far leg of a transfer between two members (ruling
-    ``R-CC23``).  It was ``Transaction.account_id == account_id``, which
-    dropped the phone bill that lives on the card from the bills the paycheck
-    still owes; a set of one member is that filter, row for row.
+    **The items are the PAYCHECK's across the owner's cash-flow set --
+    checking and its cards -- not one account's** (developer ruling
+    ``credit_card:R-CC16``, plan step CC-4-3), and since leaf
+    ``balance:X-bi-6-1b`` (ruling **R-BAL86**) they are the set's OWN rows
+    plus one LEG per transfer, read off the parent in ``budget.transfers``
+    rather than off a shadow row: :func:`~app.services.cash_flow_set
+    .own_rows_clause` selects every member's plan rows and no shadow, and
+    :func:`~app.services.cash_flow_set.set_transfer_legs_in_periods` draws
+    each transfer the set touches in these periods from the side
+    :func:`~app.services.cash_flow_set.leg_accounts_shown` names (ruling
+    ``R-CC23``: once, from the balance line's side, when both endpoints are
+    members).  It was ``Transaction.account_id == account_id``, then the
+    paycheck-rows clause that carried the near-side shadow in as an expense
+    row; the two loads below keep both properties and neither selects a
+    shadow row of its own (a settled leg's RECORD is still reached through
+    the one join in ``transfer_legs``, which walks ``transactions.transfer_id``
+    until ``X-bi-6-4`` re-parents the movement).
 
-    Transfer-out shadows ARE included: they are expense-typed
-    transactions, so they satisfy the expense filter and are obligations
-    the paycheck still owes on the member they leave (the Gate B4b ruling,
-    which read "draw down checking" while the reader was one account's).
-    Income shadows are not (they are income-typed).  A payment from the
+    **A transfer's EXPENSE leg is a bill; its income leg is not**
+    (:func:`~app.services.transfer_legs.expense_legs`, the one spelling the
+    Spending report shares).  The Gate B4b ruling read "a transfer-out shadow
+    is an obligation the paycheck still owes on the member it leaves"; a leg
+    states the same thing from its side rather than from a row's type: the
+    from-side leg (money leaves) is kept, the to-side leg (money arrives)
+    dropped.  A payment from the
     balance account to a card is therefore one obligation, on the balance
-    line's side; the card's income shadow is both income-typed and the far
-    leg.  A transfer with one endpoint outside the set (card -> savings)
-    shows from its member endpoint, as a checking -> savings transfer
-    always has.
+    line's side; a card -> checking transfer is none (the set shows it from
+    the balance line, where it is an income leg); a transfer with one
+    endpoint outside the set (card -> savings) shows from its member
+    endpoint, as a checking -> savings transfer always has.
 
     selectinload(entries) + joinedload(template) avoid N+1 lookups when a
-    consumer checks ``is_envelope`` or iterates entries for the
-    entries-aware still-due / progress computation.  The Projected filter
-    routes through the centralized ``is_projected_clause`` (D6-09 /
-    MED-02) so every SQL filter over Projected shares one definition with
-    the Python ``is_projected`` predicate.
+    consumer checks ``tracks_purchases`` or iterates purchases for the
+    entries-aware still-due / progress computation; the transfer load
+    states its own (the pricing chain, which includes the period a bill's
+    ``period_start_date`` reads).  The Projected filter routes through the
+    centralized ``is_projected_clause`` (D6-09 / MED-02) over BOTH tables so
+    every SQL filter over Projected shares one definition with the Python
+    ``is_projected`` predicate.
 
     Args:
-        cash_flow: The owner's cash-flow set, whose members' rows to load.
-        scenario_id: The scenario the rows belong to.
-        period_ids: The pay period ids to load rows for.  An empty list
+        cash_flow: The owner's cash-flow set, whose members' items to load.
+        scenario_id: The scenario the items belong to.
+        period_ids: The pay period ids to load items for.  An empty list
             yields an empty result.
 
     Returns:
-        The matching :class:`Transaction` rows, with ``category``,
-        ``pay_period``, ``template``, and ``entries`` eager-loaded.
+        The :class:`~app.services.cash_flow_set.PlanItems`: the matching
+        :class:`Transaction` rows with ``category``, ``pay_period``,
+        ``template`` and ``entries`` eager-loaded, and the expense legs of
+        the matching transfers, records loaded.
     """
     if not period_ids:
-        return []
+        return PlanItems.of([], [])
 
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    return (
+    rows = (
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
@@ -92,7 +120,7 @@ def _query_unpaid_expense_rows(
             selectinload(Transaction.entries),
         )
         .filter(
-            paycheck_rows_clause(cash_flow),
+            own_rows_clause(cash_flow),
             Transaction.scenario_id == scenario_id,
             Transaction.pay_period_id.in_(period_ids),
             Transaction.is_deleted.is_(False),
@@ -101,6 +129,10 @@ def _query_unpaid_expense_rows(
         )
         .all()
     )
+    legs = expense_legs(set_transfer_legs_in_periods(
+        cash_flow, scenario_id, period_ids, is_projected_clause(Transfer),
+    ))
+    return PlanItems.of(rows, legs)
 
 
 # ``_is_entry_tracked`` used to live here and is DELETED (pay-calendar plan
@@ -118,12 +150,21 @@ def _query_unpaid_expense_rows(
 
 
 def txn_to_bill_dict(
-    txn: Transaction, today: date, contribution: Decimal, budget: Decimal,
+    txn: PlanItem, today: date, contribution: Decimal, budget: Decimal,
 ) -> dict:
-    """Build a bill dict for the dashboard bills template from a Transaction.
+    """Build a bill dict for the dashboard bills template from a plan item.
 
     Used by :func:`~._pulse._due_soon` to produce one
     render-ready dict per due-soon bill.
+
+    **The item is a row or a transfer leg** (leaf ``balance:X-bi-6-1b``),
+    and every question below is one both shapes answer -- a leg reads its
+    ``name``, ``due_date``, ``pay_period``, ``category`` and
+    ``tracks_purchases`` off its parent, the last as ``False`` -- so there
+    is no branch here on which it is.  Two keys are identity: ``id`` is
+    :func:`~app.services.transfer_legs.cell_key` (a row's id, a leg's
+    ``(transfer id, account id)``), and ``is_transfer`` says the item is a
+    leg where it used to say the row carried a ``transfer_id``.
 
     Expects txn.template and txn.entries to be accessible -- callers
     dealing with collections should eager-load them via selectinload
@@ -149,7 +190,7 @@ def txn_to_bill_dict(
     rather than once per bill (finding **N-228**).
 
     Args:
-        txn: The Transaction to convert.
+        txn: The row or transfer leg to convert.
         today: The reference date used to compute days_until_due.
         contribution: What this row contributes, from the caller's
             :func:`~app.services.cash_ledger.contributions_by_id` map --
@@ -180,7 +221,7 @@ def txn_to_bill_dict(
         amount = contribution
         amount_base = None
     bill = {
-        "id": txn.id,
+        "id": cell_key(txn),
         "name": txn.name,
         "amount": amount,
         "amount_base": amount_base,
@@ -188,14 +229,14 @@ def txn_to_bill_dict(
         "period_start_date": txn.pay_period.start_date,
         "category_group": txn.category.group_name if txn.category else None,
         "category_item": txn.category.item_name if txn.category else None,
-        "is_transfer": txn.transfer_id is not None,
+        "is_transfer": isinstance(txn, TransferLeg),
         "days_until_due": days_until,
     }
     bill.update(_entry_progress_fields(txn, budget))
     return bill
 
 
-def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
+def _entry_progress_fields(txn: PlanItem, budget: Decimal) -> dict:
     """Build entry progress fields for a bill dict from a Transaction.
 
     Returns a dict with keys is_tracked, entry_total, entry_count,
@@ -225,7 +266,7 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     closed at the door with no purchases read its own close as one.
 
     Args:
-        txn: The Transaction to inspect.
+        txn: The row or transfer leg to inspect; a leg tracks no purchases.
         budget: The row's resolved amount -- the E-21 base, resolved once for
             the whole row set by the caller (plan step X-au-c2b).  It was read
             here as ``txn.estimated_amount``, the COLUMN a derived row does not

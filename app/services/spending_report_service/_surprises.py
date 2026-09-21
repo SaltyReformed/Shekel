@@ -9,9 +9,9 @@ Boundary discipline: no Flask import, no query -- it reduces rows the window
 module already loaded.  All money is ``Decimal``.
 """
 
-from app.models.transaction import Transaction
 from app.services import spending_analysis
-from app.services.cash_ledger import AmountBasis, resolve_transaction_amount
+from app.services.cash_ledger import AmountBasis
+from app.services.transfer_legs import PlanItem, cell_key, key_order
 from app.utils.money import ZERO
 
 from ._types import Surprise, Surprises
@@ -21,7 +21,7 @@ _MAX_SURPRISES = 5
 
 
 def _build_surprises(
-    txns: list[Transaction], basis: AmountBasis,
+    txns: list[PlanItem], basis: AmountBasis,
 ) -> Surprises:
     """Build the estimate-surprises list and its net over the window.
 
@@ -32,7 +32,8 @@ def _build_surprises(
     headline reflects the whole window, not just the shown rows.
 
     Args:
-        txns: The window's settled expenses.
+        txns: The window's settled expense items -- rows and transfer legs
+            (leaf ``balance:X-bi-6-1b``).
         basis: The read pass's :class:`~app.services.cash_ledger.AmountBasis`,
             built once by the caller.  It is REQUIRED rather than optional
             because a row whose plan is derived cannot be priced without one,
@@ -108,17 +109,18 @@ def _build_surprises(
         # past date -- so this is a measurement of today's data, not an
         # invariant the schema holds.
         #
-        # It is deliberately not ``settled_contribution``: that answers what the
-        # row RECORDED as having moved, which is the ACTUAL half below, so
+        # It is deliberately not ``recorded_spend``: that answers what the
+        # item RECORDED as having moved, which is the ACTUAL half below, so
         # reading it here would make every surprise's delta zero by
-        # construction.
-        estimated = resolve_transaction_amount(txn, basis)
+        # construction.  ``planned_spend`` is the ONE place this package
+        # routes a row and a leg to their plan producers (leaf X-bi-6-1b).
+        estimated = spending_analysis.planned_spend(txn, basis)
         delta = actual - estimated
         if delta == ZERO:
             continue
         group_name, item_name = spending_analysis.category_names(txn)
         surprises.append(Surprise(
-            transaction_id=txn.id,
+            item_key=cell_key(txn),
             name=txn.name,
             group_name=group_name,
             item_name=item_name,
@@ -134,8 +136,10 @@ def _build_surprises(
     # separated only by the order ``query_settled_expenses`` happened to
     # return them in -- which carries no ``ORDER BY`` -- so at the boundary the
     # database decided WHICH ROW IS ON THE SCREEN, not merely in what order.
-    # ``transaction_id`` is the row's identity, so the five shown are now a
-    # function of the data.  ``net`` is unaffected either way: it sums every
-    # surprise, not the shown ones.
-    surprises.sort(key=lambda s: (-abs(s.delta), s.transaction_id))
+    # ``item_key`` is the item's identity, so the five shown are now a
+    # function of the data -- through ``key_order``, the one total order over
+    # a row's id and a leg's pair, since a leg joined the list (X-bi-6-1b).
+    # ``net`` is unaffected either way: it sums every surprise, not the shown
+    # ones.
+    surprises.sort(key=lambda s: (-abs(s.delta), key_order(s.item_key)))
     return Surprises(rows=surprises[:_MAX_SURPRISES], net=net)

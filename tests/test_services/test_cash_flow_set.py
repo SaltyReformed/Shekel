@@ -4,16 +4,19 @@ Shekel Budget App -- the cash-flow set: checking and its cards (plan step credit
 The predicate developer ruling ``credit_card:R-CC16`` names -- the owner's
 primary grid account plus their active revolving accounts, read as ONE SET by
 every plan-item reader with the balance line still ONE account's -- and the
-row rule ruling ``credit_card:R-CC23`` adds to it: a transfer between two
+rule ruling ``credit_card:R-CC23`` adds to it: a transfer between two
 members shows once, from the balance line's side.
 
 Three subjects, each its own class: the resolver
 (:func:`~app.services.account_resolver.resolve_cash_flow_set`), the ONE row
-clause (:func:`~app.services.cash_flow_set.paycheck_rows_clause`, with the
-far-leg query the balance seam reads beside it), and the orthogonal
-``revolving`` filter the set is built on.  The seam's composed subtotal and
-its "On other accounts" term are graded in ``test_balance_at.py``, beside the
-identity oracle they extend; the grid's render in ``test_routes/test_grid.py``.
+clause (:func:`~app.services.cash_flow_set.own_rows_clause`: every member's
+own rows and no shadow, since leaf ``balance:X-bi-6-1b`` the only row clause
+-- R-CC23's far leg is the LEG spelling's, ``leg_accounts_shown``, graded in
+``test_transfer_legs.py``; the far-leg query the balance seam reads is graded
+beside it here), and the orthogonal ``revolving`` filter the set is built on.
+The seam's composed subtotal and its "On other accounts" term are graded in
+``test_balance_at.py``, beside the identity oracle they extend; the grid's
+render in ``test_routes/test_grid.py``.
 """
 
 from decimal import Decimal
@@ -35,7 +38,7 @@ from app.services.cash_flow_set import (
     CashFlowSet,
     FarLegs,
     far_legs_of,
-    paycheck_rows_clause,
+    own_rows_clause,
 )
 from tests._test_helpers import (
     capture_sql_statements,
@@ -74,14 +77,14 @@ def _expense_row(seed_user, period, account, name, amount):
 
 
 def _loaded_ids(cash_flow, scenario_id):
-    """Return the ids the paycheck-row clause loads for *cash_flow*."""
+    """Return the ids the own-rows clause loads for *cash_flow*."""
     return {
         row.id for row in
         db.session.query(Transaction)
         .filter(
             Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
-            paycheck_rows_clause(cash_flow),
+            own_rows_clause(cash_flow),
         )
         .all()
     }
@@ -280,8 +283,19 @@ class TestResolveCashFlowSet:
                 CashFlowSet(balance=balance, members=(member,))
 
 
-class TestPaycheckRowsClause:
-    """The ONE clause every plan-item reader appends (R-CC16), with R-CC23's far leg."""
+class TestOwnRowsClause:
+    """The ONE clause every plan-item reader appends for its ROWS (R-CC16).
+
+    Every member's own rows and no shadow.  It was ``paycheck_rows_clause``
+    -- the same member filter, keeping the NEAR shadow of a transfer as a row
+    and dropping the far one (R-CC23) -- until leaf ``balance:X-bi-6-1b``
+    left that clause with no reader: every reader draws a transfer as a LEG
+    of its parent now, and R-CC23 is the leg spelling's
+    (``leg_accounts_shown``, graded case for case in ``test_transfer_legs.py``:
+    both endpoints members from either balance line, one endpoint in the set,
+    both in and the line on neither).  What is left to grade here is the row
+    half, and that no shadow is a row on either side.
+    """
 
     def test_every_members_rows_load_and_an_outsiders_do_not(
         self, app, db, seed_user, seed_periods_today,
@@ -310,7 +324,7 @@ class TestPaycheckRowsClause:
     def test_a_one_member_set_is_the_old_single_account_filter(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """No card: exactly ``account_id == checking``, the filter the grid always had."""
+        """No card: exactly ``account_id == checking`` over the own rows."""
         with app.app_context():
             checking = seed_user["account"]
             period = seed_periods_today[3]
@@ -326,28 +340,22 @@ class TestPaycheckRowsClause:
                     Transaction.scenario_id == seed_user["scenario"].id,
                     Transaction.is_deleted.is_(False),
                     Transaction.account_id == checking.id,
+                    Transaction.transfer_id.is_(None),
                 ).all()
             }
 
             assert grocery.id in loaded
             assert loaded == expected
 
-    def test_a_transfer_between_two_members_loads_once_from_the_balance_lines_side(
+    def test_no_shadow_is_a_row_on_either_side(
         self, app, db, seed_user, seed_periods_today,
     ):  # pylint: disable=unused-argument
-        """R-CC23: the card payment's checking leg is a row; its card leg is not.
+        """A transfer's two shadows are not rows on either member; the card bill beside them is.
 
-        Both projected and settled: the far leg is a shadow either way, and
-        the clause reads the shadow.
-
-        **The ordinary card row beside them is the NULL guard's control.**  A
-        row with ``transfer_id IS NULL`` on a NON-balance member, while an
-        intra-set transfer EXISTS: without the ``IS NULL`` arm the negated
-        far-leg clause is ``NOT (TRUE AND (NULL IN (<non-empty>)))`` = NULL
-        and the phone bill falls out of the load.  ``NULL IN (<empty>)`` is
-        FALSE, so a fixture with no transfer cannot see the trap -- measured
-        by mutation (the guard deleted, every other case green) before this
-        row was added.
+        Both projected and settled.  The clause it replaced kept the checking
+        shadow here (the near leg) and dropped the card's; the leg the set
+        draws for the same transfer is ``leg_accounts_shown``'s, graded in
+        ``test_transfer_legs.py``.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -372,95 +380,8 @@ class TestPaycheckRowsClause:
 
             assert phone.id in loaded
             for transfer in (payment, paid):
-                assert _shadow_on(transfer, checking).id in loaded
+                assert _shadow_on(transfer, checking).id not in loaded
                 assert _shadow_on(transfer, card).id not in loaded
-
-    def test_with_the_card_as_the_balance_line_the_card_leg_is_the_near_side(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
-        """``?account_id=<card>``: the same transfer, seen from the card."""
-        with app.app_context():
-            checking = seed_user["account"]
-            card = _card(seed_user)
-            payment = create_transfer(
-                seed_user, db.session, checking, card, seed_periods_today[3],
-                amount=Decimal("165.00"),
-            )
-            db.session.commit()
-
-            loaded = _loaded_ids(
-                resolve_cash_flow_set(seed_user["user"].id, None, card.id),
-                seed_user["scenario"].id,
-            )
-
-            assert _shadow_on(payment, card).id in loaded
-            assert _shadow_on(payment, checking).id not in loaded
-
-    def test_a_transfer_with_one_endpoint_in_the_set_shows_from_that_endpoint(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
-        """Savings -> card (an extra payment from savings) is a card row; checking -> savings a checking row.
-
-        The rejected option 3 would have hidden the first; R-CC23 hides only
-        the second view of an act the balance line already shows.
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            card = _card(seed_user)
-            savings = create_savings_account(
-                seed_user, db.session, "Savings", Decimal("5000.00"),
-            )
-            from_savings = create_transfer(
-                seed_user, db.session, savings, card, seed_periods_today[3],
-                amount=Decimal("300.00"),
-            )
-            to_savings = create_transfer(
-                seed_user, db.session, checking, savings, seed_periods_today[3],
-                amount=Decimal("250.00"),
-            )
-            db.session.commit()
-
-            loaded = _loaded_ids(
-                resolve_cash_flow_set(seed_user["user"].id),
-                seed_user["scenario"].id,
-            )
-
-            assert _shadow_on(from_savings, card).id in loaded
-            assert _shadow_on(from_savings, savings).id not in loaded
-            assert _shadow_on(to_savings, checking).id in loaded
-            assert _shadow_on(to_savings, savings).id not in loaded
-
-    def test_a_transfer_between_two_cards_is_not_a_paycheck_row_from_either_side(
-        self, app, db, seed_user, seed_periods_today,
-    ):  # pylint: disable=unused-argument
-        """Neither endpoint is the balance line, both are members: no row.
-
-        The transfer doors refuse a transfer OUT of a card (plan step CC-10),
-        so this is the representable-but-refused shape; stated so the rule is
-        total rather than defined by what the doors happen to admit.  The
-        state is therefore PLANTED, the way the loan-source legacy tests plant
-        theirs: the transfer is created INTO the second card (allowed) and its
-        source re-pointed onto the first card by assignment, past the door.
-        """
-        with app.app_context():
-            checking = seed_user["account"]
-            first = _card(seed_user, "First Card")
-            second = _card(seed_user, "Second Card")
-            between = create_transfer(
-                seed_user, db.session, checking, second, seed_periods_today[3],
-                amount=Decimal("50.00"),
-            )
-            db.session.flush()
-            between.from_account = first
-            _shadow_on(between, checking).account = first
-            db.session.commit()
-            cash_flow = resolve_cash_flow_set(seed_user["user"].id)
-            assert cash_flow.balance.id == checking.id
-
-            loaded = _loaded_ids(cash_flow, seed_user["scenario"].id)
-
-            assert _shadow_on(between, first).id not in loaded
-            assert _shadow_on(between, second).id not in loaded
 
 
 class TestFarLegsOf:

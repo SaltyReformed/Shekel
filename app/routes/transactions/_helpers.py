@@ -41,6 +41,7 @@ from app.services.entry_service import (
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.auth_helpers import (
     get_accessible_transaction,
+    is_transfer_shadow,
     log_refused_lookup,
 )
 from app.utils.dates import display_today
@@ -288,12 +289,13 @@ def _mark_done_success_response(txn, target):
         on the sticky ``<tfoot>`` balance row (grid/_balance_row.html)
         and the two summary subtotal ``<tbody>`` sections
         (grid/_subtotal_rows.html), so the daily desktop mark-paid feels
-        instant.  This is the REGULAR (non-transfer) mark_done path only:
-        the helper is reached solely from :func:`_mark_done_regular`.
-        The transfer-shadow path (:func:`_mark_done_shadow`) deliberately
-        keeps ``gridRefresh`` because the sibling shadow cell on the
-        other leg also changes and only a full reload re-renders it
-        today; ``mark_credit`` / ``cancel_transaction`` / ``unmark_credit``
+        instant.  The helper is reached solely from
+        :func:`_mark_done_regular`; a transfer LEG's Mark Paid is the
+        transfer's own door since leaf ``balance:X-bi-6-1``
+        (``routes/transfers/_helpers._render_post_mutation_cell``), which
+        keeps ``gridRefresh`` because the far leg's cell may change too and
+        only a full reload re-renders it today;
+        ``mark_credit`` / ``cancel_transaction`` / ``unmark_credit``
         likewise keep ``gridRefresh`` because they add or remove grid
         rows, which an in-place cell swap cannot express.
 
@@ -459,12 +461,13 @@ def _finalised_edit_response(txn, data):
     :class:`Status` BEFORE the caller's ``setattr`` loop dirties the
     session -- matching ``_resolve_status_change``'s autoflush-safe
     ordering -- and defers the policy decision to
-    :func:`finalised_edit_rejection`.  Applies to the regular edit path
-    (``mutations._apply_regular_update``) and the transfer-shadow path
-    (``_shadow_mutations._apply_shadow_update`` -- the shadow's status
-    mirrors its parent transfer's, Invariant 3), the two user edit entry
-    points; the system mutation paths (recurrence, carry-forward,
-    mark-done, cancel) deliberately bypass this lock.
+    :func:`finalised_edit_rejection`.  Applies to the edit path
+    (``mutations._apply_regular_update``), the one user edit entry point
+    since leaf ``balance:X-bi-6-1`` (the transfer-shadow path it shared
+    the guard with is gone; a transfer's PATCH has its own,
+    ``routes/transfers/mutations._reject_finalised_transfer_edit``); the
+    system mutation paths (recurrence, carry-forward, mark-done, cancel)
+    deliberately bypass this lock.
 
     It lives HERE rather than beside either caller because those two now
     sit in different modules (plan step X-f1c's split), and a route helper
@@ -537,13 +540,25 @@ def _get_owned_transaction(txn_id):
     :func:`app.routes._render_helpers.render_transaction_cell` is the one that
     names it -- see its own docstring, which this step re-measured.
 
+    **A transfer SHADOW row answers ``None`` too** (leaf ``balance:X-bi-6-1``,
+    ruling **R-BAL87**), through the one predicate
+    :func:`~app.utils.auth_helpers.is_transfer_shadow` states for both
+    ownership doors: the grid's leg cells call the transfer routes, so a
+    transaction door asked about a shadow is a stale page or a probe, and
+    admitting it would let a regular PATCH write past the transfer's
+    invariants.  The interval's fence; ``X-bi-6``'s last leaf deletes the
+    rows and the predicate with them.
+
     Returns:
-        Transaction if found and owned by current_user, else None.
+        Transaction if found, owned by current_user and not a transfer
+        shadow, else None.
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
         return None
     if txn.user_id != current_user.id:
+        return None
+    if is_transfer_shadow(txn):
         return None
     return txn
 

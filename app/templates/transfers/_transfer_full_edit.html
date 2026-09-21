@@ -8,8 +8,12 @@
    ``routes._render_helpers.transfer_budgets``; ``settled`` and ``retained``
    come from ``transfer_settlement_amounts``.  Two producers rather than one
    because the cell and the quick edit render a plan and no record.
-   Optional: source_txn_id -- when opened from a shadow transaction cell,
-   the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
+   Optional: leg_account_id -- when opened from a transfer LEG's grid cell
+   (plan step balance:X-bi-6-1, ruling R-BAL87: the account that leg is on),
+   the form and the quick buttons target that cell,
+   #xfer-leg-<xfer.id>-<leg_account_id> (`leg_dom_id`), instead of the
+   transfers page's #xfer-cell-<xfer.id>, and post the id back so the
+   route renders the leg's cell.
 
    Finalised transfers (is_immutable: Paid / Received /
    Cancelled) lock the BUDGET DECISIONS -- the amount, the period, the category,
@@ -25,6 +29,7 @@
    ruling, 2026-08-17).
 #}
 {% set locked = xfer.status and xfer.status.is_immutable %}
+{% set target_id = leg_dom_id(xfer.id, leg_account_id) if leg_account_id else "xfer-cell-" ~ xfer.id %}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center mb-2">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ xfer.name or 'Transfer' }}">
@@ -35,7 +40,7 @@
   </div>
 
   <form hx-patch="{{ url_for('transfers.update_transfer', xfer_id=xfer.id) }}"
-        hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}"
+        hx-target="#{{ target_id }}"
         hx-swap="innerHTML"
         hx-disabled-elt="find button[type=submit]">
 
@@ -44,11 +49,11 @@
        stale (commit C-18). #}
     <input type="hidden" name="version_id" value="{{ xfer.version_id }}">
 
-    {# Pass source_txn_id so the transfer route handler can render the
-       correct template (transaction cell for grid, transfer cell for
-       management page).  Only present when opened from a shadow cell. #}
-    {% if source_txn_id %}
-      <input type="hidden" name="source_txn_id" value="{{ source_txn_id }}">
+    {# Pass leg_account_id so the transfer route handler renders the
+       leg's grid cell rather than the transfers page's cell.  Only
+       present when opened from a grid cell. #}
+    {% if leg_account_id %}
+      <input type="hidden" name="leg_account_id" value="{{ leg_account_id }}">
     {% endif %}
 
     {# Finalised-row notice (#26): the amount / period / category / due-date
@@ -360,16 +365,16 @@
     {% if xfer.status_id == STATUS_PROJECTED %}
     <button type="button" class="btn btn-xs btn-success flex-grow-1"
             hx-post="{{ url_for('transfers.mark_done', xfer_id=xfer.id) }}"
-            hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}" hx-swap="innerHTML"
-            {% if source_txn_id %}hx-vals='{"source_txn_id": "{{ source_txn_id }}"}'{% endif %}
+            hx-target="#{{ target_id }}" hx-swap="innerHTML"
+            {% if leg_account_id %}hx-vals='{"leg_account_id": "{{ leg_account_id }}"}'{% endif %}
             hx-disabled-elt="this"
             aria-label="Mark as paid">
       <i class="bi bi-check-circle"></i> Paid
     </button>
     <button type="button" class="btn btn-xs btn-outline-danger flex-grow-1"
             hx-post="{{ url_for('transfers.cancel_transfer', xfer_id=xfer.id) }}"
-            hx-target="#{% if source_txn_id %}txn-cell-{{ source_txn_id }}{% else %}xfer-cell-{{ xfer.id }}{% endif %}" hx-swap="innerHTML"
-            {% if source_txn_id %}hx-vals='{"source_txn_id": "{{ source_txn_id }}"}'{% endif %}
+            hx-target="#{{ target_id }}" hx-swap="innerHTML"
+            {% if leg_account_id %}hx-vals='{"leg_account_id": "{{ leg_account_id }}"}'{% endif %}
             hx-disabled-elt="this"
             aria-label="Cancel transfer">
       <i class="bi bi-x-octagon"></i> Cancel

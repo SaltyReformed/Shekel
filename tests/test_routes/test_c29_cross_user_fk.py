@@ -372,30 +372,29 @@ class TestUpdateTransactionAtomicityWithCrossUserFk:
             )
 
 
-class TestUpdateTransactionTransferShadowFkOwnership:
-    """The cross-user FK probe runs BEFORE the transfer-shadow branch.
+class TestUpdateTransferFromALegFkOwnership:
+    """The cross-user FK probe on the transfer PATCH a grid LEG uses.
 
-    The transfer-shadow path silently drops ``pay_period_id`` in
-    normal flow (it is not forwarded to ``transfer_service.update_transfer``)
-    so a malicious request with a cross-user ``pay_period_id`` on a
-    shadow used to be ignored without 404.  After C-29 the route
-    must still 404 so the security boundary is enforced regardless
-    of whether the value would have been applied -- consistency
-    matters more than micro-optimisation when the difference is
-    "did the attacker's probe succeed."
+    **Was ``TestUpdateTransactionTransferShadowFkOwnership`` until plan step
+    balance:X-bi-6-1 (ruling R-BAL87)**: it probed ``PATCH /transactions/
+    <shadow>``, whose transfer-shadow branch silently dropped
+    ``pay_period_id`` and whose route-boundary probe (C-29) still had to
+    404.  That branch is deleted -- a shadow row is "not found" at the
+    transaction door outright -- and the grid's door for a transfer is the
+    transfer PATCH carrying ``leg_account_id``, which owns its own probe of
+    the same two references.  The boundary is graded THERE now: consistency
+    matters more than micro-optimisation when the difference is "did the
+    attacker's probe succeed."
     """
 
-    def test_cross_user_pay_period_on_transfer_shadow_returns_404(
+    def test_cross_user_pay_period_from_a_leg_returns_404(
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_periods,
     ):
-        """A cross-user pay_period_id on a transfer-shadow PATCH is rejected with 404.
+        """A cross-user pay_period_id on the transfer PATCH from a leg is rejected with 404.
 
-        Even though the transfer-shadow branch silently drops
-        ``pay_period_id``, the route-boundary probe runs first
-        and surfaces the 404.  The transfer's status, period, and
-        amount must all be unchanged after a fresh DB read --
-        nothing in the request was applied.
+        The transfer's status, period, and amount must all be unchanged
+        after a fresh DB read -- nothing in the request was applied.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -415,15 +414,16 @@ class TestUpdateTransactionTransferShadowFkOwnership:
             original_amount = xfer.amount
 
             resp = auth_client.patch(
-                f"/transactions/{shadow_id}",
+                f"/transfers/instance/{xfer.id}",
                 data={
                     "pay_period_id": str(seed_second_periods[0].id),
-                    "estimated_amount": "200.00",
-                    "estimated_amount_as_rendered": "123.45",
+                    "amount": "200.00",
+                    "amount_as_rendered": "123.45",
+                    "leg_account_id": str(shadow.account_id),
                 },
             )
             assert resp.status_code == 404
-            assert b"Pay period not found" in resp.data
+            assert b"Not found" in resp.data
 
             db.session.expire_all()
             xfer = db.session.get(Transfer, xfer.id)
@@ -434,11 +434,11 @@ class TestUpdateTransactionTransferShadowFkOwnership:
                 "probe rejected the request"
             )
 
-    def test_cross_user_category_on_transfer_shadow_returns_404(
+    def test_cross_user_category_from_a_leg_returns_404(
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user,
     ):
-        """A cross-user category_id on a transfer-shadow PATCH is rejected with 404.
+        """A cross-user category_id on the transfer PATCH from a leg is rejected with 404.
 
         Pre-C-29 the route forwarded ``category_id`` to
         ``transfer_service.update_transfer`` which raised
@@ -463,15 +463,16 @@ class TestUpdateTransactionTransferShadowFkOwnership:
             original_category_id = xfer.category_id
 
             resp = auth_client.patch(
-                f"/transactions/{shadow_id}",
+                f"/transfers/instance/{xfer.id}",
                 data={
                     "category_id": str(
                         seed_second_user["categories"]["Rent"].id
                     ),
+                    "leg_account_id": str(shadow.account_id),
                 },
             )
             assert resp.status_code == 404
-            assert b"Category not found" in resp.data
+            assert b"Not found" in resp.data
 
             db.session.expire_all()
             xfer = db.session.get(Transfer, xfer.id)

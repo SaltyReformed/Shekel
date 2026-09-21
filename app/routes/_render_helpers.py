@@ -20,20 +20,30 @@ from flask import render_template, request
 from flask_login import current_user
 from werkzeug.datastructures import MultiDict
 
+from app.exceptions import NotFoundError
+from app.extensions import db
 from app.models.account import Account
+from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.cash_ledger import (
     derived_amount_basis,
     amounts_by_id,
+    leg_amounts_by_key,
+    leg_settled_amounts_by_key,
     resolve_transfer_amount,
     settled_amounts_by_id,
 )
 from app.services.account_resolver import resolve_cash_flow_set
 from app.services.entry_service import build_entry_sums_dict
-from app.services.grid_view_service import due_captions_by_id
-from app.services.transaction_service import retained_settle_amounts_by_id
-from app.services.transfer_service import load_transfer_rows
+from app.services import grid_view_service
+from app.services.grid_view_service import due_captions_by_key
+from app.services.transaction_service import (
+    leg_retained_amounts_by_key,
+    retained_settle_amounts_by_id,
+)
+from app.services.transfer_legs import TransferLeg, grid_transfer_leg
+from app.utils.dates import display_today
 
 
 @dataclass(frozen=True)
@@ -180,14 +190,17 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
 
     **It is SEPARATE from :func:`transfer_settlement_amounts` rather than a
     third field on it, and the split is by what each surface renders.**  The
-    cell and the quick edit show a PLAN and nothing else, while that producer
-    loads the shadow pair and reads two settlement records to answer -- so
-    bundling them would make every cell swap pay for two figures it does not
-    display.  The popover, which shows all three, calls both.  *A first draft of
-    this paragraph cited finding N-296 for that cost and an adversarial review
-    opened the row: N-296 is a per-DEFINITION eager load in BATCH callers, whose
-    remedy is `pricing_load_options` and whose step is `X-bm`.  It says nothing
-    about this.  The argument above needs no citation.*
+    quick edit shows a PLAN and nothing else, while that producer loads the
+    shadow pair and reads two settlement records to answer -- so bundling them
+    would make the quick-edit swap pay for two figures it does not display.
+    The popover shows all three and calls both; so does the transfers page's
+    CELL since leaf ``X-bi-6-1`` closed finding **N-303** (it showed the plan
+    over a figure just corrected, because it was handed neither map).  *A
+    first draft of this paragraph cited finding N-296 for that cost and an
+    adversarial review opened the row: N-296 is a per-DEFINITION eager load in
+    BATCH callers, whose remedy is `pricing_load_options` and whose step is
+    `X-bm`.  It says nothing about this.  The argument above needs no
+    citation.*
 
     **SINGLE-ROW reads only**, the boundary :attr:`Transfer.settled_on`
     documents, and the leaf that stated that boundary in advance has arrived.
@@ -196,10 +209,12 @@ def transfer_budgets(xfer: Transfer) -> "dict[int, Decimal]":
     an N+1 would look like.  A transfer that owns its figure or reads its
     definition's series still costs no query -- the basis resolves nothing
     until a rule asks it -- and only a DERIVE-mode loan payment reaches the
-    loan.  No batch surface exists to be wrong about: the grid renders a
-    transfer's two SHADOWS as ordinary rows off its own ``budgets`` map
-    (Transfer Invariant 5), and all nine parent-transfer render sites are
-    one-row HTMX swaps.
+    loan.  The one batch surface -- the grid, which since leaf ``X-bi-6-1``
+    draws a transfer's LEGS off the parent -- prices them through
+    :func:`~app.services.cash_ledger.leg_amounts_by_key` with the page's
+    own basis (``routes/grid/_items.build_amount_maps``), the same resolver
+    this calls; every parent-transfer render site here is a one-row HTMX
+    swap.
 
     **The basis is BUILT here rather than threaded, exactly as the transaction
     twin builds one** (:func:`fragment_amounts`, whose comment carries the
@@ -282,15 +297,18 @@ def transfer_settlement_amounts(
     the transfers page and a grid SHADOW cell -- and a rule written at each is
     how one click shows a different figure from another.
 
-    **It asks the two published producers rather than reading the columns.**
-    :func:`~app.services.cash_ledger.settled_amounts_by_id` is what every other
-    surface shows a settled row's figure from, and
-    :func:`~app.services.transaction_service.retained_settle_amounts_by_id` is
-    built from the same function the settle verb honours
-    (``status_seam.honoured_correction``) -- so what this popover promises and
-    what a tick books cannot drift.  Neither is transaction-specific: both are
-    pure reads of a row's own settlement record, and a shadow carries one
-    exactly as a plain row does.
+    **It asks the LEG producers, the same two the grid prices a leg's cell
+    by** (leaf ``X-bi-6-1``, ruling **R-BAL87**; rule 14):
+    :func:`~app.services.cash_ledger.leg_settled_amounts_by_key` and
+    :func:`~app.services.transaction_service.leg_retained_amounts_by_key` over
+    ONE leg read through :func:`~app.services.transfer_legs.grid_transfer_leg`,
+    so what this popover promises, what the cell beside it shows and what a
+    tick books are one walk.  Until that leaf it loaded the shadow pair and
+    read the expense SHADOW's entries through the row producers -- a second
+    walk over the same record that agreed with the cell's only while Transfer
+    Invariant 3 held, which an adversarial review named.  Both leg producers
+    are built from the seam's own reads (``movement_settlement``,
+    ``honoured_figure``), the leaves the row producers read through too.
 
     **The EXPENSE leg answers**, which is the leg
     ``transfer_service._settle.settle`` resolves its figures from and the leg
@@ -302,24 +320,30 @@ def transfer_settlement_amounts(
     agree with is what keeps either from silently becoming "whichever row came
     back first".
 
+    **It answers for a SOFT-DELETED transfer**, where the pair loader it used
+    to call refused one: the transfers page's cell reaches here on the stale
+    response after a rival's delete won (``_stale_transfer_response``), and a
+    deleted transfer's leg simply carries no record.  The popover door refuses
+    a deleted transfer itself (``transfers.get_full_edit``).
+
     Args:
         xfer: The transfer the popover is rendering.
-        user_id: The owner, for the loader's defense-in-depth ownership check.
+        user_id: The owner, a defense-in-depth ownership check the loader used
+            to make and this keeps: a transfer that is not *user_id*'s is
+            refused as not found.
 
     Returns:
         A :class:`TransferSettlementAmounts` whose two maps hold one entry each.
 
     Raises:
-        NotFoundError: If *xfer* is not *user_id*'s or is soft-deleted.
-        ValidationError: If the shadow pair is corrupt -- fail loud, because a
-            popover drawn over a broken pair offers controls that cannot work.
+        NotFoundError: If *xfer* is not *user_id*'s.
     """
-    rows = load_transfer_rows(xfer.id, user_id)
-    settled = settled_amounts_by_id([rows.expense])
-    retained = retained_settle_amounts_by_id([rows.expense])
+    if xfer.user_id != user_id:
+        raise NotFoundError(f"Transfer {xfer.id} not found.")
+    leg = grid_transfer_leg(xfer, xfer.from_account_id)
     return TransferSettlementAmounts(
-        settled={xfer.id: settled[rows.expense.id]},
-        retained={xfer.id: retained[rows.expense.id]},
+        settled={xfer.id: leg_settled_amounts_by_key([leg])[leg.cell_key]},
+        retained={xfer.id: leg_retained_amounts_by_key([leg])[leg.cell_key]},
     )
 
 
@@ -457,6 +481,14 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
     three fragments cannot name the balance line three ways, nor one way the
     page does not.
 
+    **It publishes what the pair RECORDED and what a re-settle would RE-BOOK
+    beside the plan** (leaf ``X-bi-6-1``, closing finding **N-303**): the
+    cell was handed ``budgets`` alone and so painted the plan over a figure
+    the same click's popover had just corrected -- the "one row, two figures
+    on two surfaces" shape :class:`RenderAmounts` exists to prevent.  The
+    two maps come from :func:`transfer_settlement_amounts`, the popover's own
+    producer, so the cell and the popover cannot disagree about the pair.
+
     Args:
         xfer: The transfer to render.  Owner-established by the caller -- see
             :func:`transfer_budgets`, which states what that does and does not
@@ -473,11 +505,14 @@ def render_transfer_cell(xfer: Transfer, **extra: Any) -> str:
             rule cannot answer.  Unreachable while every transfer owns its
             figure; the leaves after this one are what give it a population.
     """
+    amounts = transfer_settlement_amounts(xfer, current_user.id)
     return render_template(
         "transfers/_transfer_cell.html",
         xfer=xfer,
         account=fragment_balance_line(xfer.user_id),
         budgets=transfer_budgets(xfer),
+        settled=amounts.settled,
+        retained=amounts.retained,
         **extra,
     )
 
@@ -496,7 +531,7 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     issued from inside the render, once per distinct paycheck on a page
     drawing N cells, and a template cannot be given a query budget.  Both
     surfaces that draw this cell now call the same producer
-    (:func:`~app.services.grid_view_service.due_captions_by_id`), so a row
+    (:func:`~app.services.grid_view_service.due_captions_by_key`), so a row
     cannot caption one way on the grid and another in the fragment the same
     click swaps in -- the rule :class:`RenderAmounts` above states for the
     three amount maps, applied to the fourth thing a cell draws.
@@ -560,8 +595,169 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
         settled=amounts.settled,
         retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], amounts.budgets),
-        due_captions=due_captions_by_id(
+        due_captions=due_captions_by_key(
             [txn], {txn.pay_period_id: txn.pay_period.start_date},
         ),
         **extra,
+    )
+
+
+@dataclass(frozen=True)
+class LegRenderAmounts:
+    """The three per-cell maps a transfer LEG's fragment must publish.
+
+    :class:`RenderAmounts`' twin for a leg (leaf ``X-bi-6-1``, ruling
+    **R-BAL87**), keyed by the leg's ``cell_key`` exactly as the grid page
+    keys its own maps (``routes/grid/_items.build_amount_maps``), so the
+    fragment an HTMX swap returns reads the same three keys the page did.
+
+    Attributes:
+        budgets: ``{cell_key: what the leg's amount IS}``.
+        settled: ``{cell_key: what its money DID}``, ``None`` until it has.
+        retained: ``{cell_key: what a tick WOULD book}``, ``None`` otherwise.
+    """
+
+    budgets: dict
+    settled: dict
+    retained: dict
+
+
+def leg_fragment_amounts(leg: TransferLeg) -> LegRenderAmounts:
+    """Return the three maps for ONE transfer leg's fragment.
+
+    The leg twin of :func:`fragment_amounts`: the same three producers the
+    grid page asks for its legs, over one leg, with a basis built off the
+    parent's own columns for the reason :func:`transfer_budgets` gives (a
+    fragment has no read pass to take one from).
+
+    Args:
+        leg: The leg being rendered, its record loaded.
+
+    Returns:
+        The :class:`LegRenderAmounts`.
+
+    Raises:
+        AmountUnresolvable: From the resolver, for a transfer whose rule
+            cannot answer.
+    """
+    xfer = leg.transfer
+    return LegRenderAmounts(
+        budgets=leg_amounts_by_key(
+            [leg], derived_amount_basis(xfer.user_id, xfer.scenario_id),
+        ),
+        settled=leg_settled_amounts_by_key([leg]),
+        retained=leg_retained_amounts_by_key([leg]),
+    )
+
+
+def render_transfer_leg_cell(xfer: Transfer, account_id: int, **extra: Any) -> str:
+    """Render a transfer LEG's grid cell with the context it must carry.
+
+    The leg twin of :func:`render_transaction_cell` (leaf ``X-bi-6-1``,
+    ruling **R-BAL87**): what every transfer door returns when the request
+    came from a leg's grid cell (``leg_account_id`` on the form), drawn by
+    the SAME partial the page draws it with, ``grid/_transaction_cell.html``,
+    which tells a leg from a row by the ``transfer_leg`` test.  The leg is
+    re-read here -- :func:`~app.services.transfer_legs.grid_transfer_leg`,
+    record included -- rather than handed in, because every caller has a
+    transfer and an account id and the leg's record may have just changed
+    (a settle wrote it).  ``entry_sums`` is empty by construction: a leg
+    holds no purchases.
+
+    Args:
+        xfer: The parent transfer, owner-established by the caller.
+        account_id: The account the leg is on -- one of the parent's two
+            endpoints (:func:`~app.services.transfer_legs.leg_of` refuses
+            any other).
+        **extra: Forwarded to ``render_template`` -- ``wrap_div=True``,
+            ``conflict=True``, ``error=<message>``.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: When *account_id* is neither endpoint (from ``leg_of``).
+        AmountUnresolvable: From the resolver.
+    """
+    leg = grid_transfer_leg(xfer, account_id)
+    amounts = leg_fragment_amounts(leg)
+    return render_template(
+        "grid/_transaction_cell.html",
+        txn=leg,
+        account=fragment_balance_line(xfer.user_id),
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
+        entry_sums={},
+        due_captions=due_captions_by_key(
+            [leg], {leg.pay_period_id: leg.pay_period.start_date},
+        ),
+        **extra,
+    )
+
+
+def render_transfer_leg_card(
+    xfer: Transfer, account_id: int, *, card_prefix: str, error: str | None = None,
+) -> str:
+    """Render a transfer LEG's mobile card for an HTMX outerHTML swap.
+
+    The leg twin of ``routes/transactions/_helpers._render_mobile_card``,
+    for the mobile action bar's Mark Paid on a leg (``render=mobile_card``
+    on the transfer door's form).  One card through the shared
+    ``render_one_card`` macro (``grid/_mobile_card_single.html``), so the
+    route and the page share one card producer.  ``can_edit`` is always
+    ``True``: a leg renders on the OWNER's grid alone -- a transfer names
+    no definition, so no companion sees one
+    (:attr:`~app.models.transaction.Transaction.visible_to_companion`'s
+    rule, ruling **R-BAL73**).
+
+    A leg whose parent is Cancelled yields no row key (the card lists filter
+    cancelled items out), so a rejected action on a stale card of one swaps
+    in the banner-only wrapper that keeps the card's id and says why, the
+    shape the transaction twin takes; a SUCCESS never lands there, because
+    a just-settled transfer is neither cancelled nor deleted.
+
+    Args:
+        xfer: The parent transfer, owner-established by the caller.
+        account_id: The account the leg is on.
+        card_prefix: The per-tab namespace the card was rendered under.
+        error: A rejection message for the danger banner, or ``None``.
+
+    Returns:
+        Rendered HTML string.
+
+    Raises:
+        ValueError: When *account_id* is neither endpoint (from ``leg_of``).
+        AmountUnresolvable: From the resolver.
+    """
+    leg = grid_transfer_leg(xfer, account_id)
+    categories = (
+        db.session.query(Category)
+        .filter_by(user_id=xfer.user_id)
+        .order_by(Category.group_name, Category.item_name)
+        .all()
+    )
+    row_keys = grid_view_service.build_row_keys(
+        [leg], categories, is_income_section=leg.is_income,
+    )
+    if not row_keys:
+        return render_template(
+            "grid/_mobile_card_error.html",
+            txn=leg, id_prefix=card_prefix, error=error,
+        )
+    amounts = leg_fragment_amounts(leg)
+    return render_template(
+        "grid/_mobile_card_single.html",
+        rk=row_keys[0],
+        txn=leg,
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
+        entry_sums={},
+        entry_lists={},
+        can_edit=True,
+        id_prefix=card_prefix,
+        account=fragment_balance_line(xfer.user_id),
+        today=display_today(),
+        error=error,
     )

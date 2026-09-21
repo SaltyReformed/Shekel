@@ -181,6 +181,22 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     return loan, escrow, scenario_id, template, rule, periods
 
 
+def _mark_done_from_leg(auth_client, shadow):
+    """Settle the transfer the way the grid does since plan step balance:X-bi-6-1.
+
+    The grid draws a transfer as a LEG read off its parent and the leg's
+    Mark Paid posts to the TRANSFER's door with ``leg_account_id`` (ruling
+    R-BAL87); these cases posted to the SHADOW row's transaction door until
+    that leaf deleted the shadow branch.  *shadow* is the leg's row on the
+    loan side, read for its transfer and its account; the response is the
+    leg's cell.
+    """
+    return auth_client.post(
+        f"/transfers/instance/{shadow.transfer_id}/mark-done",
+        data={"leg_account_id": str(shadow.account_id)},
+    )
+
+
 def _loan_transfer_shadows(loan_id, scenario_id):
     """Return the projected shadow transactions of the loan's transfers."""
     return (
@@ -451,7 +467,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         overrides = _derived_cash(seed_user, [income_shadow])
         assert overrides[income_shadow.id] == Decimal("1699.10")
 
-        resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
+        resp = _mark_done_from_leg(auth_client, income_shadow)
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
@@ -533,8 +549,8 @@ def test_settling_derived_loan_payment_captures_live_amount(
         income_shadow_id = income_shadow.id
         transfer_id = income_shadow.transfer_id
 
-        resp = auth_client.post(
-            f"/transactions/{income_shadow_id}/mark-done",
+        resp = _mark_done_from_leg(
+            auth_client, db.session.get(Transaction, income_shadow_id),
         )
         assert resp.status_code == 200, resp.data
 
@@ -614,8 +630,8 @@ def test_settled_loan_payment_freeze_is_one_shot(
             .id
         )
 
-        resp = auth_client.post(
-            f"/transactions/{income_shadow_id}/mark-done",
+        resp = _mark_done_from_leg(
+            auth_client, db.session.get(Transaction, income_shadow_id),
         )
         assert resp.status_code == 200, resp.data
         db.session.expire_all()
@@ -632,8 +648,8 @@ def test_settled_loan_payment_freeze_is_one_shot(
         assert settled_contribution(settled) == Decimal("1499.10")
 
         # A stale-tab re-settle leaves the frozen figure untouched.
-        resp2 = auth_client.post(
-            f"/transactions/{income_shadow_id}/mark-done",
+        resp2 = _mark_done_from_leg(
+            auth_client, db.session.get(Transaction, income_shadow_id),
         )
         assert resp2.status_code == 200, resp2.data
         db.session.expire_all()
@@ -935,7 +951,9 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         assert income_shadow is not None
         income_shadow_id = income_shadow.id
 
-        resp = auth_client.post(f"/transactions/{income_shadow_id}/mark-done")
+        resp = _mark_done_from_leg(
+            auth_client, db.session.get(Transaction, income_shadow_id),
+        )
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()
@@ -998,7 +1016,9 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         assert income_shadow is not None
         income_shadow_id = income_shadow.id
 
-        resp = auth_client.post(f"/transactions/{income_shadow_id}/mark-done")
+        resp = _mark_done_from_leg(
+            auth_client, db.session.get(Transaction, income_shadow_id),
+        )
         assert resp.status_code == 200, resp.data
 
         db.session.expire_all()

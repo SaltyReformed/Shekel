@@ -223,7 +223,7 @@ def build_entry_lists_dict(
     two single-row fragments from the calendar they derive for their row.
     Deriving a second answer here would be the redundant read this arc exists
     to remove -- the argument
-    :func:`~app.services.grid_view_service.due_captions_by_id` makes for the
+    :func:`~app.services.grid_view_service.due_captions_by_key` makes for the
     same shape one step earlier.
 
     Args:

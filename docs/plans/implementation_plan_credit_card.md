@@ -162,7 +162,9 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       LOAN source at the investment door now flashes where it was a 500.
 - [ ] **CC-11** `feat(cards): the cockpit and the grid affordances` -- design 3.9, through the
       design loop: each screen held to `docs/design/fable5-design-language.md` and verified on the
-      dev clone.
+      dev clone. A payment between two non-balance members of the set is drawn on a third member's
+      grid from its FROM side and counted once (**R-CC38**, amending R-CC23; the fourth arm of
+      `cash_flow_set.leg_accounts_shown` and `far_legs_of`). Closes **CC-355**.
 
 **The card on the feed is `bank_import:X-f6b`'s** (design 3.11): SimpleFIN serves a card's lines and
 balance (an external property nothing on the tree asserts, which `X-f6b` CONFIRMS); card lines are
