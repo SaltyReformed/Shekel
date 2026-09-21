@@ -449,7 +449,7 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         assert edges, "no step carries a blocker -- rule 13 grades nothing"
 
     def test_an_annotated_blocker_parses_to_its_key(self):
-        """``CC-5`` carries a real annotation, and the key is parsed OUT of it.
+        """A row with an annotated blocker has the key parsed OUT of the annotation.
 
         A naive reader would take the whole cell as the key and report the one
         row that documents WHY its blocker is already shipped as broken -- the
@@ -460,16 +460,15 @@ class TestTheBlockedByColumnIsTheDependencyGraph:
         credit-card arc's own gate was added beside it -- pinning data the
         registry is expected to grow is a test that fails on correct edits,
         which is the kind that gets weakened rather than believed. The claim
-        worth holding is that EVERY parsed key is bare.
+        worth holding is that EVERY parsed key is bare; the second version named
+        ``credit_card:CC-5`` as its specimen and lost it when that step became a
+        container (2026-09-21), so the specimen is FOUND: any row whose cell has a
+        parenthesis beside a key. The module sits at pylint's 1000-line ceiling.
         """
-        by_key = {row.key: row for row in registry.step_rows()}
-        annotated = by_key["credit_card:CC-5"]
-        assert "(" in annotated.blocked, (
-            "CC-5 no longer carries an annotated blocker, so this control has "
-            f"lost its subject: {annotated.blocked!r}"
-        )
-        assert "balance:X-bi-4" in annotated.blocked_keys()
-        for row in registry.step_rows():
+        rows = registry.step_rows()
+        annotated = [row for row in rows if "(" in row.blocked and row.blocked_keys()]
+        assert annotated, "no row carries an annotated blocker; the control has no subject"
+        for row in rows:
             for key in row.blocked_keys():
                 assert "(" not in key and " " not in key, (
                     f"{row.key}: blocker {key!r} kept its annotation"

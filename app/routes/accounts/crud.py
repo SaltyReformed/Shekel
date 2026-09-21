@@ -602,6 +602,53 @@ def _archive_instead_of_delete(account, account_id, reason):
     return redirect(url_for("savings.dashboard"))
 
 
+def _history_refusal(account, definitions) -> "str | None":
+    """Return why *account*'s history forbids a permanent delete, or ``None``.
+
+    Guard 4 of :func:`hard_delete_account`, its two arms asked in order and
+    each answering with the sentence the archive flash prints:
+
+    * **rows** -- any non-deleted transaction on the account or under one of
+      its definitions, and any SETTLED row under one of its definitions
+      whatever its ``is_deleted`` (the definition door's own refusal, ruling
+      **R-JE**; an adversarial review of plan step ``balance:X-bi-7a``
+      reproduced the disposal nulling such a row's link);
+    * **movements** (plan step ``credit_card:CC-5-2``) -- money that moved
+      through this account from rows that are NOT its own: a card holding
+      swipes recorded in checking envelopes (ruling **R-CC15**).  The row arm
+      cannot see them (the rows are checking's) and the door's cleanup
+      disposes of none, so ``fk_transaction_entries_account_id``'s RESTRICT
+      (ruling **R-CC32**) met the DELETE as a 500.  **A stated behaviour
+      change**: such an account ARCHIVES, as every other kind of history
+      does.  Exactly the set the cleanup cannot reach
+      (``archive_helpers.account_holds_other_rows_movements``), so a card
+      whose only movements sit under its own ghost rows still deletes.
+
+    Args:
+        account: The owned :class:`~app.models.account.Account`.
+        definitions: Its ``TransactionTemplate`` rows, already loaded by the
+            door for guard 3.
+
+    Returns:
+        The user-facing reason, or ``None`` when neither arm finds history.
+    """
+    if archive_helpers.account_has_history(account.id) or any(
+        archive_helpers.template_has_paid_history(definition.id)
+        for definition in definitions
+    ):
+        return (
+            f"'{account.name}' has transaction history and cannot be "
+            "permanently deleted. It has been archived instead."
+        )
+    if archive_helpers.account_holds_other_rows_movements(account.id):
+        return (
+            f"'{account.name}' has purchases recorded on it from other "
+            "accounts' rows and cannot be permanently deleted. It has been "
+            "archived instead."
+        )
+    return None
+
+
 @accounts_bp.route("/accounts/<int:account_id>/hard-delete", methods=["POST"])
 @require_owner
 @fresh_login_required()
@@ -628,7 +675,14 @@ def hard_delete_account(account_id):
          definition door's own refusal (``template_has_paid_history``,
          ruling **R-JE**): the disposal below would otherwise leave that
          row TEMPLATE-priced with its link nulled, the state finding
-         **N-440** names.
+         **N-440** names.  And so does a MOVEMENT on this account under a
+         row that is neither on it nor under one of its definitions
+         (``account_holds_other_rows_movements``, plan step
+         ``credit_card:CC-5-2``): a card holding swipes recorded in
+         checking envelopes is history the row arm cannot see, and the
+         cleanup below cannot dispose of, so ``fk_transaction_entries_
+         account_id``'s RESTRICT (ruling **R-CC32**) would refuse step 4
+         as a 500.
       5. Posting-ledger check -- any posting on ANY of this account's
          ledger accounts (a settled transfer's immutable entries, which
          survive a transfer delete, and its anchor corrections' counter
@@ -700,20 +754,10 @@ def hard_delete_account(account_id):
         )
         return redirect(url_for("savings.dashboard"))
 
-    # Guard 4: transaction history -- any non-deleted transaction on the
-    # account or under one of its definitions, and any SETTLED row under one
-    # of its definitions whatever its ``is_deleted`` (the definition door's
-    # own refusal, ruling R-JE; an adversarial review of plan step
-    # balance:X-bi-7a reproduced the disposal below nulling such a row's link).
-    if archive_helpers.account_has_history(account.id) or any(
-        archive_helpers.template_has_paid_history(definition.id)
-        for definition in definitions
-    ):
-        return _archive_instead_of_delete(
-            account, account_id,
-            f"'{account.name}' has transaction history and cannot be permanently "
-            "deleted. It has been archived instead.",
-        )
+    # Guard 4: transaction history, in its two arms (:func:`_history_refusal`).
+    history_refusal = _history_refusal(account, definitions)
+    if history_refusal is not None:
+        return _archive_instead_of_delete(account, account_id, history_refusal)
 
     # Guard 5: posting-ledger history (Build-Order Step 2).  A settled
     # transfer wrote balanced journal entries onto this account's linked

@@ -40,18 +40,22 @@ row dated a day the fold no longer read.  Those purchases are movements in
 flight now, the row books nothing, and the function is deleted.  What
 remains of the row-leg family here is :func:`cash_leg_of` -- the matcher's
 pricing of a PROJECTED row that holds no purchases, what the bank would see
-if the row it names settled -- and :func:`off_statement_sum` with its two
+if the row it names settled -- and :func:`off_statement_sum` with its three
 terms, the reconcile panel's cash figure beside the booked one and the
 matcher's corrected figure for a line, all ``bank_import``'s questions.
 
-**The two subtracted terms are why the row-leg family existed at all.**  A
+**The subtracted terms are why the row-leg family existed at all.**  A
 card purchase leaves later through its own CC Payback sibling, and a purchase
 carrying a recorded bank posting day is already a cash movement of its own on
 its own day (ruling **R-FM**, plan step ``balance:X-f3b``) -- so an
 envelope's close booked only the remainder, or the same dollars left the
 account twice.  That was measured: entry 89 (`$12.79`, taken by the bank on
 2026-08-12) was being taken a second time by its envelope's 08-13 close,
-reading the whole of that day `$12.79` low (finding **N-274**).
+reading the whole of that day `$12.79` low (finding **N-274**).  The third
+term arrived with the first door that files a purchase on another account
+than its row's (plan step ``credit_card:CC-5-2``): a card swipe in a
+checking envelope is a movement on the CARD, and checking's statement never
+shows it, flag or no flag.
 
 **Where ``gross`` comes from is the CALLER'S, and it must be.**  A projected
 row is worth what settling it would book, which is
@@ -151,39 +155,114 @@ def posted_purchase_sum(txn: Transaction) -> Decimal:
     screen the same evening).  That reader's term is deleted with the fix;
     this sum reads the purchases for the one reader it has left.
 
+    **And on the ROW's account** (plan step ``credit_card:CC-5-2``).  A
+    purchase whose money moved through another account is
+    :func:`elsewhere_purchase_sum`'s whatever its posting day says: dated or
+    not, its cash never crossed this account, and counting a posted card
+    swipe here as well would take it out of the reconcile panel's cash figure
+    twice.  The three terms of :func:`off_statement_sum` partition the row's
+    purchases by construction -- the flag, the account, then the day -- so
+    no purchase is in two of them.
+
     Args:
         txn: The transaction whose posted purchases to sum.
 
     Returns:
-        The sum of ``amount`` over the transaction's debit purchases carrying
-        a ``settled_on``, as a ``Decimal`` (``Decimal("0")`` when there are
-        none).
+        The sum of ``amount`` over the transaction's debit purchases on its
+        own account carrying a ``settled_on``, as a ``Decimal``
+        (``Decimal("0")`` when there are none).
     """
     return sum(
         (
             entry.amount for entry in txn.purchases
-            if not entry.is_credit and entry.settled_on is not None
+            if not _moves_elsewhere(txn, entry) and entry.settled_on is not None
         ),
         Decimal("0"),
     )
 
 
+def elsewhere_purchase_sum(txn: Transaction) -> Decimal:
+    """Return the sum of a transaction's purchases whose money moved ELSEWHERE.
+
+    The account-keyed arm beside the flag's (plan step ``credit_card:CC-5-2``,
+    rulings **R-CC15** and **R-BAL75**): a purchase naming an account other
+    than its row's -- a card swipe recorded in a checking envelope -- is a
+    movement on THAT account.  Its row's statement never shows it, exactly as
+    it never shows a flag-marked purchase, so the reconcile panel's cash
+    figure leaves it out for the same reason :func:`credit_entry_sum` leaves
+    the flagged ones out.  The flag is the CHEAT's spelling of this fact for
+    the legacy lines that carry it with no account of their own; ``CC-7``
+    converts those lines and deletes the flag, its arm, and the
+    ``not is_credit`` clause below, which then partitions nothing.
+
+    **A purchase carrying BOTH is unwritable at both purchase doors**
+    (``entry_service._refusals._reject_flag_beside_another_account``), and
+    this arm still excludes the flag so that :func:`off_statement_sum`'s
+    three terms partition the purchases whatever a row holds -- a rule that
+    rests on a door alone is one refactor from resting on nothing.
+
+    **It reads the row's PURCHASES, not its family** (ruling **R-BAL68**), as
+    its two siblings do.  The seam writes a covering movement on the row's own
+    account through ``CC-5-2`` (the tender account is ``CC-5-3``'s), and no
+    reconcile offer holds a settled row with a covering movement anyway.
+
+    Args:
+        txn: The transaction whose purchases to sum.
+
+    Returns:
+        The sum of ``amount`` over the transaction's unflagged purchases whose
+        ``account_id`` is not the row's, as a ``Decimal`` (``Decimal("0")``
+        when there are none).
+    """
+    return sum(
+        (
+            entry.amount for entry in txn.purchases
+            if not entry.is_credit and entry.account_id != txn.account_id
+        ),
+        Decimal("0"),
+    )
+
+
+def _moves_elsewhere(txn: Transaction, entry) -> bool:
+    """Return whether *entry*'s money is NOT on its row's account.
+
+    The ONE predicate the three off-statement terms partition on: the flag
+    (the cheat's spelling, until ``CC-7``) or an account of the purchase's
+    own that differs from the row's (plan step ``credit_card:CC-5-2``).
+    :func:`credit_entry_sum` and :func:`elsewhere_purchase_sum` are its two
+    halves stated separately, because the flag's half is deleted at ``CC-7``
+    and the account's half is what remains; :func:`posted_purchase_sum` reads
+    it whole so the third term is exactly the complement.
+    """
+    return entry.is_credit or entry.account_id != txn.account_id
+
+
 def off_statement_sum(txn) -> Decimal:
     """Return what *txn* BOOKS but does not move through its cash account.
 
-    The two terms a row can carry that never reach this account's statement,
-    stated once for the reconcile panel's cash figure beside the booked one
-    (``reconcile_service._transactions``), its one reader since the matcher's
-    corrected figure dropped it (finding **BAL-523**; the row-leg family read
-    it through ``X-bi-3e``):
+    The three terms a row can carry that never reach this account's
+    statement, stated once for the reconcile panel's cash figure beside the
+    booked one (``reconcile_service._transactions``), its one reader since
+    the matcher's corrected figure dropped it (finding **BAL-523**; the
+    row-leg family read it through ``X-bi-3e``):
 
-    * a CARD purchase, which leaves later through its own CC Payback sibling;
-    * a purchase whose bank posting day is already recorded, whose cash left on
-      its own day and is a movement of its own in the ledger (ruling **R-FM**,
-      plan step ``balance:X-f3b``).
+    * a CARD purchase marked by the flag, which leaves later through its own
+      CC Payback sibling;
+    * a purchase whose money moved through ANOTHER account than the row's
+      (plan step ``credit_card:CC-5-2``, ruling **R-CC15**) -- a card swipe
+      recorded in a checking envelope, which the card's statement shows and
+      checking's never will;
+    * a purchase on this account whose bank posting day is already recorded,
+      whose cash left on its own day and is a movement of its own in the
+      ledger (ruling **R-FM**, plan step ``balance:X-f3b``).
 
-    Both terms are read over the row's PURCHASES (ruling **R-BAL68**), so a
-    settled row's covering movement is in neither; and no row the statement
+    **The three PARTITION the row's purchases** (:func:`_moves_elsewhere`):
+    the flag, else the account, else the day -- so a posted card swipe is
+    counted once, by the account arm, and the sum cannot double a purchase
+    whatever combination a row holds.
+
+    All three are read over the row's PURCHASES (ruling **R-BAL68**), so a
+    settled row's covering movement is in none; and no row the statement
     matcher prices holds a purchase (ruling **R-BAL78** makes a stated figure
     beside purchases unrepresentable, and a row settling from its purchases
     is worth ``0`` to the offer under ruling **R-BAL81**), so for the
@@ -195,9 +274,13 @@ def off_statement_sum(txn) -> Decimal:
         txn: The row, with ``entries`` loaded.
 
     Returns:
-        Their sum, ``0.00`` for the ordinary row that carries neither.
+        Their sum, ``0.00`` for the ordinary row that carries none of the
+        three.
     """
-    return credit_entry_sum(txn) + posted_purchase_sum(txn)
+    return (
+        credit_entry_sum(txn) + elsewhere_purchase_sum(txn)
+        + posted_purchase_sum(txn)
+    )
 
 
 def cash_leg_of(txn, gross: Decimal) -> Decimal:
@@ -233,7 +316,7 @@ def cash_leg_of(txn, gross: Decimal) -> Decimal:
 
 
 def movement_cash_leg(txn: Transaction, entry) -> Decimal:
-    """Return the signed cash ONE movement moves through *txn*'s account.
+    """Return the signed cash ONE movement moves through its OWN account.
 
     The movement's twin of :func:`cash_leg_of` (plan step
     ``balance:X-bi-3b``, ruling **R-BAL35**): a purchase against an envelope
@@ -241,7 +324,11 @@ def movement_cash_leg(txn: Transaction, entry) -> Decimal:
     its PARENT's direction -- ``+`` under an income row, ``-`` under an
     expense -- through the ONE sign rule the parent's own leg reads.  A
     purchase has no type of its own, exactly as it has no category of its
-    own: both are the plan row's.
+    own: both are the plan row's.  WHICH account it moves through is the
+    movement's own ``account_id`` (ruling **R-BAL75**; the fold reads it
+    there since ``balance:X-bi-4``, and a door writes one other than the
+    row's since ``credit_card:CC-5-2``) -- this function answers how much
+    and which way, and takes no position on where.
 
     **TOTAL over the two facts that make a movement move nothing here**, so
     a caller that forgets to pre-filter still reads the right figure:

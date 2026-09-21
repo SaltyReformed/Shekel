@@ -34,9 +34,12 @@ def propagate_to_non_repeating_rows(template) -> None:
     """Push a RULE-LESS definition's edited fields onto the rows it holds, and say what stayed.
 
     :func:`app.services.definition_edit.propagate_to_unruled_rows` with this
-    door's report: the rows the engine RETAINED (a row whose account the
-    definition moved and which holds the owner's records) are named in a
-    flash, exactly as the maintain pass reports its own.
+    door's report: the rows the engine RETAINED are named in a flash, exactly
+    as the maintain pass reports its own.  For a TRANSACTION definition that
+    set is empty since plan step ``credit_card:CC-5-2`` (ruling **R-CC36**:
+    a row holding records follows its definition's account move and its
+    purchases stay on their own accounts); the report is kept in the shape
+    the transfer twin's door still fills.
 
     Args:
         template: The updated ``TransactionTemplate``, its new field values

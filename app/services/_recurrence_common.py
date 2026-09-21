@@ -505,12 +505,14 @@ def classify_unruled_work(rows, *, with_records, reattributed) -> UnruledWork:
     ``recurrence_engine.propagate_to_unruled_definition``) spelled this inline
     beside their own write until plan step ``balance:X-bi-7a``; it lives here
     so the two cannot part, for the reason the regular pass's decision does.
+    The TRANSFER twin is its one caller since ``credit_card:CC-5-2`` (ruling
+    **R-CC36**: a transaction row's account move re-files nothing).
 
     Args:
         rows: The definition's live, rule-owned rows, as the route selected
             them (Projected, not overridden, not soft-deleted).
         with_records: The ids among *rows* carrying the owner's own records.
-        reattributed: The ids among *rows* whose account the definition moved.
+        reattributed: The ids among *rows* an account move would re-file.
 
     Returns:
         The :class:`UnruledWork`, rows in the order given.
@@ -592,7 +594,7 @@ def classify_maintain_work(
     are finding **N-292**: the rule no longer fires for this row's occurrence,
     or the definition has moved the ACCOUNTS the row's records are attributed
     to.  Neither is safe to apply silently, so the pass leaves the row exactly
-    as it found it and asks.
+    as it found it and asks.  The second shape is the engine's to claim.
 
     **"Still names it" is asked of the row's OCCURRENCE since plan step R17**,
     where it was asked of the row's pay PERIOD.  That is the same re-keying
@@ -720,7 +722,7 @@ def classify_maintain_work(
         with_records: Ids of rows carrying the owner's own records, resolved by
             the engine from its own table -- purchases, a note, a settlement
             record or a statement link.
-        reattributed: Ids of rows whose ACCOUNTS the definition has moved.
+        reattributed: Ids of rows an ACCOUNT move would re-file (**R-CC36**).
 
     Returns:
         The :class:`MaintainWork` this pass should apply.

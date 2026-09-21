@@ -22,6 +22,7 @@ from app.enums import (
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
     StatusEnum,
+    TxnTypeEnum,
 )
 from app.exceptions import RequiredRecordMissing
 from app.extensions import db
@@ -50,6 +51,7 @@ from tests._test_helpers import (
     settle_instant_on,
     settlement_if_settling,
     strip_owner_schedule,
+    typed,
 )
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
@@ -57,13 +59,16 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import (
     account_service,
     balance_at,
     cash_ledger,
+    entry_service,
     pay_period_service,
     status_seam,
+    transaction_service,
 )
 from app.services.auth_service import hash_password
 from app.services.row_valuation import settled_contribution, settled_figure
@@ -1183,12 +1188,16 @@ class TestHardDeleteAndTheAccountsDefinitions:
     ):
         """The history predicate sees a row UNDER a definition, wherever it sits.
 
-        A retained row stays on the old account when its definition's account
-        moves (the maintain pass keeps a row holding the owner's records where
-        it is), so the definition's account can hold no row of its own.
-        Deleting that definition would ``SET NULL`` the row's link and leave a
+        A row can sit on another account than its definition's -- an
+        overridden, a settled or a soft-deleted row stays put when the
+        definition's account moves (the maintain pass rewrites only a
+        Projected, un-edited row; through ``credit_card:CC-5-1`` it also
+        retained a row holding records, an arm ruling **R-CC36** retired) --
+        so the definition's account can hold no row of its own.  Deleting
+        that definition would ``SET NULL`` the row's link and leave a
         TEMPLATE-priced row with nothing to price it; guard 4 sees the row
-        through the definition and archives instead.
+        through the definition and archives instead.  The state is planted
+        directly: which door produces it is not this case's subject.
         """
         with app.app_context():
             account = self._fresh_account(seed_user, "Definition Here")
@@ -1357,6 +1366,187 @@ class TestHardDeleteAndTheAccountsDefinitions:
             assert db.session.query(TemplateAmountVersion).filter_by(
                 transaction_template_id=template_id,
             ).count() == 0
+
+
+class TestHardDeleteAndTheMovementsOnAnAccount:
+    """Guard 4's MOVEMENT arm (plan step ``credit_card:CC-5-2``).
+
+    A purchase names the account its money moved through (ruling **R-CC15**),
+    so since ``CC-5-1`` dropped the parent-account key a card can hold swipes
+    recorded in checking envelopes.  The row arm sees none of them -- the rows
+    are checking's -- and the cleanup disposes of none, so the RESTRICT key
+    ``fk_transaction_entries_account_id`` (ruling **R-CC32**) met the door's
+    DELETE as a 500.  **A stated behaviour change**: such an account archives,
+    as every other kind of history does.  The arm counts exactly the movements
+    the cleanup cannot reach -- under a row neither on the account nor under
+    one of its definitions -- so a card whose only movements sit under its
+    OWN ghost row still deletes, as it did.
+    """
+
+    @staticmethod
+    def _card(seed_user, name="Rewards Card"):
+        """A card opened at `$0.00`, so it posts no anchor leg (guard 5)."""
+        card = create_account_of_type(
+            seed_user, db.session, "Credit Card", name,
+            anchor_balance=Decimal("0.00"),
+        )
+        db.session.commit()
+        return card
+
+    @staticmethod
+    def _checking_envelope(seed_user, period):
+        """A recurring Groceries envelope of the seed user's on CHECKING."""
+        template = make_expense_template(
+            db.session, seed_user, amount="500.00",
+            name="Groceries", category_key="Groceries", is_envelope=True,
+        )
+        return generate_row_of(template, period)
+
+    @staticmethod
+    def _swipe(row, seed_user, card):
+        """Record a `$60.00` purchase against *row* ON *card*, through the door."""
+        return entry_service.create_entry(
+            row.id, seed_user["user"].id,
+            entry_service.EntryDetails(
+                figure=typed(Decimal("60.00")),
+                description="Kroger",
+                purchased_on=display_today() - timedelta(days=1),
+                account_id=card.id,
+            ),
+        )
+
+    def test_a_card_holding_a_checking_envelopes_swipe_archives_instead(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The case that was a 500: real history on the card, under checking's row."""
+        with app.app_context():
+            card = self._card(seed_user)
+            row = self._checking_envelope(seed_user, seed_periods_today[0])
+            swipe = self._swipe(row, seed_user, card)
+            db.session.commit()
+            assert row.account_id == seed_user["account"].id
+
+            response = auth_client.post(
+                f"/accounts/{card.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"purchases recorded on it from other accounts" in response.data
+            archived = db.session.get(Account, card.id)
+            assert archived is not None and archived.is_active is False
+            db.session.expire_all()
+            assert db.session.get(TransactionEntry, swipe.id).account_id == card.id
+
+    def test_a_soft_deleted_envelopes_swipe_archives_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A ghost on CHECKING is not the card's to hard-delete; its swipe still names the card.
+
+        The row arm reads live rows only and the cleanup deletes ghosts ON
+        the account, so a movement under a soft-deleted row elsewhere is the
+        one shape neither reaches -- and the key would refuse the DELETE.
+        """
+        with app.app_context():
+            card = self._card(seed_user)
+            row = self._checking_envelope(seed_user, seed_periods_today[0])
+            swipe = self._swipe(row, seed_user, card)
+            db.session.commit()
+            transaction_service.delete_transaction(row, seed_user["user"].id)
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transaction, row.id).is_deleted is True
+
+            response = auth_client.post(
+                f"/accounts/{card.id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"purchases recorded on it from other accounts" in response.data
+            archived = db.session.get(Account, card.id)
+            assert archived is not None and archived.is_active is False
+            assert db.session.get(TransactionEntry, swipe.id) is not None
+
+    def test_a_ghost_ON_the_card_holding_its_own_swipe_still_deletes(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """CONTROL for the arm's first exclusion: a movement under the card's OWN row.
+
+        A recurring checking definition's row moved onto the card, a swipe on
+        the card under it, then soft-deleted (a recurring row's delete is a
+        tombstone).  The row arm reads live rows only; step 2 deletes every
+        row ON the card and the movement cascades with it
+        (``fk_transaction_entries_owner_transaction``), so the arm must not
+        count it -- deleting ``Transaction.account_id != account_id`` from the
+        arm makes this case ARCHIVE, which is the mutation this exists to catch.
+        """
+        with app.app_context():
+            card = self._card(seed_user)
+            row = self._checking_envelope(seed_user, seed_periods_today[0])
+            row.account_id = card.id
+            db.session.commit()
+            swipe = self._swipe(row, seed_user, card)
+            db.session.commit()
+            transaction_service.delete_transaction(row, seed_user["user"].id)
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transaction, row.id).is_deleted is True
+            assert db.session.get(TransactionEntry, swipe.id) is not None
+            # Ids read BEFORE the delete: afterwards the identity map holds
+            # expired instances whose refresh raises rather than answering.
+            card_id, swipe_id = card.id, swipe.id
+
+            response = auth_client.post(
+                f"/accounts/{card_id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert db.session.query(Account).filter_by(id=card_id).count() == 0
+            assert db.session.query(TransactionEntry).filter_by(
+                id=swipe_id,
+            ).count() == 0
+
+    def test_a_ghost_under_the_cards_rule_less_definition_still_deletes(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """CONTROL for the arm's second exclusion: a movement under a row of the card's OWN definition.
+
+        A checking row, soft-deleted while its definition still recurred,
+        holding a swipe on the card; then the definition's rule is cleared and
+        the definition itself moves onto the card.  Guard 3 lets a rule-less
+        definition through and step 2b disposes of it with every non-settled
+        row it names, the ghost on checking included, so the movement cascades
+        and the arm must not count it -- deleting the ``TransactionTemplate``
+        clause from the arm makes this case ARCHIVE.
+        """
+        with app.app_context():
+            card = self._card(seed_user)
+            row = self._checking_envelope(seed_user, seed_periods_today[0])
+            db.session.commit()
+            swipe = self._swipe(row, seed_user, card)
+            db.session.commit()
+            transaction_service.delete_transaction(row, seed_user["user"].id)
+            db.session.commit()
+            template = row.template
+            template.recurrence_rule = None
+            template.account_id = card.id
+            db.session.commit()
+            db.session.expire_all()
+            ghost = db.session.get(Transaction, row.id)
+            assert ghost.is_deleted is True
+            assert ghost.account_id == seed_user["account"].id
+            assert ghost.template.account_id == card.id
+            card_id, swipe_id, row_id = card.id, swipe.id, row.id
+
+            response = auth_client.post(
+                f"/accounts/{card_id}/hard-delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert db.session.query(Account).filter_by(id=card_id).count() == 0
+            assert db.session.query(TransactionEntry).filter_by(
+                id=swipe_id,
+            ).count() == 0
+            assert db.session.query(Transaction).filter_by(id=row_id).count() == 0
 
 
 # ── Anchor Balance (Inline + True-up) ─────────────────────────────
@@ -2047,7 +2237,7 @@ class TestTheReconcileRoute:
         for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
                 description="Test purchase",
@@ -5826,7 +6016,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
 
     db_session.add(TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",

@@ -1051,7 +1051,7 @@ class TestEverySettledTransactionPosts:
             )
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=all_credit.id, account_id=all_credit.account_id, user_id=user_id,
+                transaction_id=all_credit.id, account_id=all_credit.account_id, owner_id=all_credit.user_id, user_id=user_id,
                 amount=Decimal("75.00"), description="cc purchase",
                 purchased_on=period.start_date, is_credit=True,
             ))
@@ -1552,7 +1552,7 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
             txn.category_id = seed_user["categories"]["Groceries"].id
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user_id,
                 amount=Decimal("40.00"),
                 description="Kroger",
@@ -1632,7 +1632,7 @@ class TestACancelledEnvelopesDatedPurchaseReconcilesAtZero:
             )
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user_id,
                 amount=Decimal("40.00"), description="Kroger",
                 purchased_on=posted_on, **settle_day_columns(posted_on),
@@ -1722,7 +1722,7 @@ class TestASettledEnvelopesUndatedPurchasePostsNothing:
             )
             db.session.add(TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=user_id,
                 amount=Decimal("65.00"), description="Kroger",
                 purchased_on=period.start_date, is_credit=False,

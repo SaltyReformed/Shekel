@@ -34,7 +34,7 @@ def _make_entry(txn, user, amount, description, **kwargs):
     """Create and flush a TransactionEntry with the given fields."""
     entry = TransactionEntry(
         **figure_source_columns(),
-        transaction_id=txn.id, account_id=txn.account_id,
+        transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
         user_id=user.id,
         amount=amount,
         description=description,
@@ -120,7 +120,7 @@ class TestTransactionEntryAmountCheck:
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("0.00"),
                 description="Zero amount",
@@ -147,7 +147,7 @@ class TestTransactionEntryAmountCheck:
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("-28.29"),
                 description="Amazon refund",
@@ -543,7 +543,7 @@ class TestTransactionEntryEdgeCases:
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("5.00"),
                 description="A" * 201,
@@ -606,7 +606,7 @@ class TestTransactionEntryEdgeCases:
             txn = _make_txn(seed_user, seed_periods)
             entry = TransactionEntry(
                 **figure_source_columns(),
-                transaction_id=txn.id, account_id=txn.account_id,
+                transaction_id=txn.id, account_id=txn.account_id, owner_id=txn.user_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("12.50"),
                 description="No date specified",

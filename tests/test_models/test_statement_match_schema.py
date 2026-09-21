@@ -663,6 +663,7 @@ def _an_entry(db, seed_user, transaction, amount="25.00"):
         **figure_source_columns(),
         transaction_id=transaction.id,
         account_id=transaction.account_id,
+        owner_id=transaction.user_id,
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Kroger",
