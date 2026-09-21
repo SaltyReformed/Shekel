@@ -296,10 +296,35 @@ def recorded_settlement(row: Transaction) -> Optional[Settlement]:
                 "movements; a settle writes exactly one, so a second can only "
                 "have reached the table around the status seam."
             )
-        return Settlement(amount=movement.amount, source=_source_of(movement))
+        return movement_settlement(movement)
     if row.status_id in settled_status_ids():
         return Settlement(amount=None, source=None)
     return None
+
+
+def movement_settlement(movement) -> Settlement:
+    """Return the :class:`Settlement` a covering movement states.
+
+    **The leaf :func:`recorded_settlement` reads through, published for the
+    reader that holds a MOVEMENT and no row** (leaf ``X-bi-6-1``): a
+    transfer's leg on a grid carries its covering movement
+    (:attr:`app.services.transfer_legs.TransferLeg.record`) and no
+    ``Transaction`` of its own, so its retained figure is read off the
+    movement the way a row's is -- one decoding of ``figure_source_id``, one
+    meaning of ``stated``.
+
+    Args:
+        movement: A :class:`~app.models.transaction_entry.TransactionEntry`
+            with ``covers_settlement`` set.
+
+    Returns:
+        Its figure and who wrote it.
+
+    Raises:
+        KeyError: When the movement's ``figure_source_id`` names no member of
+            its enum (:func:`_source_of`).
+    """
+    return Settlement(amount=movement.amount, source=_source_of(movement))
 
 
 def honoured_correction(row: Transaction) -> Optional[Decimal]:
@@ -340,7 +365,7 @@ def honoured_correction(row: Transaction) -> Optional[Decimal]:
     and is that read's one-line projection** (plan step ``balance:X-bi-4b-1``)
     -- it read the row's two columns through ``X-bi-4a`` "so a whole grid
     costs no ``entries`` load", and the grid loads them
-    (``routes/grid/page._load_grid_transactions`` through
+    (``routes/grid/_items.load_grid_items`` through
     ``valuation_load_options``; ``companion_service`` likewise), as every
     batch reader of :func:`~app.services.row_valuation.settled_figure` does
     since the same step.  A whole grid asks it per unsettled row
@@ -353,7 +378,25 @@ def honoured_correction(row: Transaction) -> Optional[Decimal]:
         The retained correction's figure, or ``None`` when the row holds no
         stated record.
     """
-    recorded = recorded_settlement(row)
+    return honoured_figure(recorded_settlement(row))
+
+
+def honoured_figure(recorded: Optional[Settlement]) -> Optional[Decimal]:
+    """Return the figure *recorded* still states, or ``None``.
+
+    :func:`honoured_correction`'s rule over a record already read, so a
+    reader holding a movement rather than a row (a transfer leg's grid cell,
+    leaf ``X-bi-6-1``) applies the SAME rule to
+    :func:`movement_settlement` rather than restating it: only a STATED
+    record is honoured, for the reason the row-shaped reader gives.
+
+    Args:
+        recorded: What :func:`recorded_settlement` or
+            :func:`movement_settlement` answered, or ``None``.
+
+    Returns:
+        The retained correction's figure, or ``None``.
+    """
     if recorded is None or not recorded.stated:
         return None
     return recorded.amount

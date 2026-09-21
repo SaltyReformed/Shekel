@@ -30,10 +30,12 @@ transfer pushed into Credit would be balance-excluded on both
 accounts with no compensating payback -- it would silently vanish
 from both projections.  Received is excluded because it is a display
 convention for regular income transactions; the transfer service
-settles both shadows with Done (see ``_mark_done_shadow``).  Before
-the split, the shared map let a crafted PATCH (the shadow path or
-the direct transfer PATCH -- both schemas accept any integer
-``status_id``) move a transfer into either state.
+settles both shadows with Done (``transfer_service.settle_transfer``,
+the verb the grid's leg and the transfers page both call since plan
+step balance:X-bi-6-1 deleted the shadow branch).  Before the split,
+the shared map let a crafted PATCH (the shadow path or the direct
+transfer PATCH -- both schemas accept any integer ``status_id``) move a
+transfer into either state.
 
 NO STATE IS BOTH REACHABLE AND ABSORBING
 ----------------------------------------

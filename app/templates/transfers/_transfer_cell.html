@@ -1,4 +1,4 @@
-{% from "_money_macros.html" import money %}
+{% from "_money_macros.html" import money, retained_badge %}
 {# Transfer cell -- displays amount with direction arrow and status badge.
    Clicking opens the inline edit form via HTMX.
 
@@ -8,6 +8,15 @@
    amount model rather than read off ``xfer.amount`` because a generated
    transfer stores no figure (plan step X-au-f); the transaction cell takes its
    own ``budgets`` map for the same reason.
+   settled / retained -- ``{transfer_id: what the pair's money DID}`` and
+   ``{transfer_id: what a re-settle WOULD re-book}``, from
+   ``transfer_settlement_amounts`` (plan step balance:X-bi-6-1, closing
+   finding N-303: the cell was handed neither and painted the plan over a
+   figure the same click's popover had just corrected).  A settled transfer
+   shows what it recorded, struck through against its plan where the two
+   differ, exactly as the grid's cell draws a row; every figure goes through
+   ``money`` (gate B7, ruling bank_import:R-IM; finding N-420 was this file's
+   raw format string).
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="xfer-cell-{{ xfer.id }}">.
      conflict -- if true, surfaces a warning indicator hint that the
@@ -20,6 +29,10 @@
                  marker-header convention, closeout plan session 4).
 #}
 {% if xfer %}
+{% set est_display = budgets[xfer.id] %}
+{% set recorded = settled[xfer.id] %}
+{% set display_amount = recorded if recorded is not none else est_display %}
+{% set will_book = retained[xfer.id] %}
 {% set is_conflict = conflict is defined and conflict %}
 {% set error_msg = error if error is defined and error else none %}
 {% if wrap_div is defined and wrap_div %}<div id="xfer-cell-{{ xfer.id }}">{% endif %}
@@ -30,7 +43,7 @@
      hx-swap="innerHTML"
      role="button"
      tabindex="0"
-     aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(budgets[xfer.id], cents=false) }}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
+     aria-label="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action; click to retry. {% endif %}{{ xfer.name or 'Transfer' }}: {{ money(display_amount) }}{% if recorded is not none and recorded != est_display %} (est: {{ money(est_display) }}){% endif %}{% if will_book is not none %} -- marking paid records {{ money(will_book) }}{% endif %}{% if xfer.status %} ({{ xfer.status.name }}){% endif %}"
      title="{% if error_msg %}{{ error_msg }} {% elif is_conflict %}This transfer was changed by another action -- click to retry. {% endif %}{{ xfer.name or 'Transfer' }}{% if xfer.notes %} -- {{ xfer.notes }}{% endif %}">
   {% if error_msg %}
   <i class="bi bi-exclamation-octagon text-danger small me-1"
@@ -58,7 +71,15 @@
       NO figure at all, so if it ever had become live it would have hidden money
       rather than shown a zero -- an unreachable branch whose reachable
       behaviour is a defect.  The two CHECKs are what make it unnecessary. -#}
-  <span class="font-mono">{{ "{:,.0f}".format(budgets[xfer.id]) }}</span>
+  {% if recorded is not none and recorded != est_display %}
+    <span class="text-decoration-line-through small text-muted-shekel">
+      {{ money(est_display, cents=false) }}
+    </span>
+    <span class="fw-semibold font-mono">{{ money(recorded, cents=false) }}</span>
+  {% else %}
+    <span class="font-mono">{{ money(est_display, cents=false) }}</span>
+  {% endif %}
+  {{ retained_badge(will_book) }}
 
   {# Status badge #}
   {% if xfer.status %}

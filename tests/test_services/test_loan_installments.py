@@ -39,7 +39,7 @@ from app.services.loan_ledger import payment_installments
 from app.services.loan_loaders import _shadows, query_shadow_income
 from app.services.loan_payment_service import get_payment_history, load_loan_context
 from app.services.cash_ledger import derived_amount_basis
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.services.transfer_service import TransferSpec, create_transfer
 from tests._test_helpers import (
     an_entered_day,
@@ -112,7 +112,7 @@ def _shadow_id_of(installment, loan):
     shadow is looked up off its parent.
     """
     source = installment.source
-    if isinstance(source, PlannedTransferLeg):
+    if isinstance(source, TransferLeg):
         return _income_shadow(source.transfer, loan).id
     return source.id
 
@@ -411,7 +411,7 @@ class TestPaymentInstallments:
                 "the bypass did not land -- this case would pass over a "
                 "producer that reads the day and reports it"
             )
-            assert isinstance(installments[0].source, PlannedTransferLeg), (
+            assert isinstance(installments[0].source, TransferLeg), (
                 "the projected payment arrived as a shadow row, not as the "
                 "leg of its parent -- the day below would be READ, not "
                 "structurally unreachable"
@@ -712,7 +712,7 @@ class TestTheCallerStatesItsOwnEagerLoad:
             assert len({
                 i.source.transfer.transfer_template_id
                 for i in installments
-                if isinstance(i.source, PlannedTransferLeg)
+                if isinstance(i.source, TransferLeg)
             }) == _SEAM_PROJECTED, (
                 "the projected payments do not carry distinct definitions -- "
                 "the count below could not tell a lazy walk from an eager load"

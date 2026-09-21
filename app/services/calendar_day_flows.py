@@ -35,9 +35,9 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services.calendar_infrequency import is_infrequent
 from app.services.pay_calendar import PayCadence
+from app.services.transfer_legs import PlanItem, cell_key
 
 # Day cells show at most this many named flow lines; any beyond collapse to
 # a single "+N more" line whose residual net is computed in the service
@@ -48,10 +48,10 @@ MAX_VISIBLE_DAY_FLOWS = 3
 
 @dataclass(frozen=True)
 class DayEntry:  # pylint: disable=too-many-instance-attributes
-    """A single transaction's representation on a calendar day.
+    """A single plan item's representation on a calendar day.
 
     Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed
-    because this is a cohesive value record -- one transaction's row on a
+    because this is a cohesive value record -- one item's row on a
     calendar day -- consumed verbatim by the calendar surface: the CSV
     month export reads the display fields as adjacent columns (folding the
     booleans into single Income/Expense, Status, Large, and Infrequent
@@ -63,13 +63,18 @@ class DayEntry:  # pylint: disable=too-many-instance-attributes
     break every consumer for no design gain.
 
     Attributes:
-        amount: What the row is WORTH, SIGNED.  **It can be negative for an
+        item_key: The item's identity, :func:`~app.services.transfer_legs
+            .cell_key` -- a row's id, or a transfer leg's ``(transfer id,
+            account id)`` since leaf ``balance:X-bi-6-1b``, where the
+            calendar draws a transfer as a leg of its parent rather than as
+            the shadow row whose id this carried (as ``transaction_id``).
+        amount: What the item is WORTH, SIGNED.  **It can be negative for an
             expense** since ruling **bank_import:R-II**: a settled envelope is
             worth the sum of its entries, and a merchant refund is a negative
             one.  Every reader here states which way it takes that sign.
     """
 
-    transaction_id: int
+    item_key: int | tuple[int, int]
     name: str
     amount: Decimal
     is_income: bool
@@ -97,23 +102,29 @@ class DayOverflow:
 
 
 def build_day_entry(
-    txn: Transaction,
+    txn: PlanItem,
     amount: Decimal,
-    income_type_id: int,
     threshold: Decimal,
     pay_cadence: PayCadence | None,
 ) -> DayEntry:
-    """Create a DayEntry from a transaction.
+    """Create a DayEntry from a plan item -- a row, or a transfer's leg.
+
+    **Every question below is one both shapes answer** (leaf
+    ``balance:X-bi-6-1b``): ``is_income`` is the row's type or the leg's
+    side, read through the one accessor each carries rather than through a
+    type id compared here (the ``income_type_id`` argument this took), and
+    ``name``, ``status``, ``recurs``, ``category`` and ``due_date`` are a
+    leg's parent's columns read through the leg.
 
     Args:
-        txn: The transaction to convert.
-        amount: What the row is WORTH, from the build's one
-            :func:`~app.services.cash_ledger.contributions_by_id` call.
+        txn: The row or leg to convert.
+        amount: What the item is WORTH, from the build's one
+            :func:`~app.services.cash_ledger.contributions_by_id` call (a
+            leg's from its twin, ``leg_contributions_by_key``).
             It replaced ``txn.effective_amount`` at plan step X-au-c2: that
             model property could not answer for a row whose amount is DERIVED,
             because such a row stores no figure and resolving one needs a
             database -- and, for a paycheck, the owner's whole pay-period set.
-        income_type_id: Ref ID for the Income transaction type.
         threshold: Amount at or above which a transaction is large.
         pay_cadence: The owner's pay cadence for the infrequent badge, or
             ``None`` when no row in this build repeats
@@ -123,10 +134,10 @@ def build_day_entry(
         A frozen DayEntry dataclass.
     """
     return DayEntry(
-        transaction_id=txn.id,
+        item_key=cell_key(txn),
         name=txn.name,
         amount=amount,
-        is_income=txn.transaction_type_id == income_type_id,
+        is_income=txn.is_income,
         is_paid=bool(txn.status and txn.status.is_settled),
         # **A MAGNITUDE, deliberately**: "large" asks how big the movement is,
         # so a refund of $500 is as large as a charge of $500.  The same

@@ -316,15 +316,18 @@ class TestTheRenderedSelect:
                 in html
             )
 
-    def test_the_shadow_branch_of_the_transaction_popover_agrees(
+    def test_the_transfer_popover_opened_from_a_grid_leg_agrees(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """A grid SHADOW cell renders the transfer form, from the third call site.
+        """A grid LEG's cell renders the transfer form, from the leg's own ask.
 
-        ``routes/transactions/forms.get_full_edit`` has two branches and both
-        offer periods; the transfer branch is reached by asking for the SHADOW
-        transaction's id rather than the transfer's, and it is the site an
-        edit to the other branch alone would leave behind.
+        **Re-expressed at plan step balance:X-bi-6-1 (ruling R-BAL87)**:
+        ``routes/transactions/forms.get_full_edit`` had two branches and both
+        offered periods, the transfer one reached by asking for the SHADOW
+        row's id.  That branch is deleted; a leg's cell asks the transfer's
+        own door with ``?leg_account_id=``, one door with one period offer,
+        and this pins that the grid-origin ask offers the same periods the
+        transfers page's does.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -334,7 +337,9 @@ class TestTheRenderedSelect:
             ).first()
             assert shadow is not None
 
-            resp = auth_client.get(f"/transactions/{shadow.id}/full-edit")
+            resp = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit?leg_account_id={shadow.account_id}",
+            )
             assert resp.status_code == 200
             html = resp.data.decode()
 

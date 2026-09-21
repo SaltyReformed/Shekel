@@ -232,6 +232,21 @@ def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positi
     return xfer
 
 
+def _mark_done_from_the_loan_leg(auth_client, transfer_id: int, loan_account_id: int):
+    """Settle the transfer the way the grid does since plan step balance:X-bi-6-1.
+
+    The grid draws a transfer as a LEG read off its parent and the leg's Mark
+    Paid posts to the TRANSFER's door with ``leg_account_id`` (ruling
+    R-BAL87); these cases posted to the loan-side SHADOW row's transaction
+    door until that leaf deleted the shadow branch.  The response is the
+    loan-side leg's cell.
+    """
+    return auth_client.post(
+        f"/transfers/instance/{transfer_id}/mark-done",
+        data={"leg_account_id": str(loan_account_id)},
+    )
+
+
 def _income_shadow(transfer_id: int, loan_account_id: int) -> Transaction:
     """Return the income shadow on the loan account for a given transfer.
 
@@ -327,9 +342,10 @@ class TestLoanPrincipalSettles:
         Setup: fresh $300k / 6% / 360mo fixed-rate mortgage with the
         Commit-12-shaped origination anchor at 2026-01-01.  One PITI
         transfer of $1,798.65 in pay period 3 (start 2026-02-13).
-        The grid issues a POST to ``/transactions/<id>/mark-done``
-        on the loan-side income shadow; the route routes through
-        ``transfer_service.update_transfer`` so both shadows reach
+        The grid posts the loan-side LEG's Mark Paid to the transfer's
+        door (``/transfers/instance/<id>/mark-done`` with
+        ``leg_account_id``, plan step balance:X-bi-6-1); the route settles
+        through ``transfer_service.settle_transfer`` so both shadows reach
         the DONE status (``is_settled = True``) and the
         loan-payment feed picks the transfer up as a confirmed
         :class:`PaymentRecord`.
@@ -370,8 +386,8 @@ class TestLoanPrincipalSettles:
 
             income_shadow_id = _income_shadow(xfer.id, ctx["mortgage_id"]).id
 
-            resp = auth_client.post(
-                f"/transactions/{income_shadow_id}/mark-done",
+            resp = _mark_done_from_the_loan_leg(
+                auth_client, xfer.id, ctx["mortgage_id"],
             )
             assert resp.status_code == 200, (
                 f"mark_done returned {resp.status_code}; body={resp.data!r}"
@@ -449,8 +465,8 @@ class TestLoanPrincipalSettles:
 
             shadow_id = _income_shadow(xfer.id, ctx["mortgage_id"]).id
 
-            resp = auth_client.post(
-                f"/transactions/{shadow_id}/mark-done",
+            resp = _mark_done_from_the_loan_leg(
+                auth_client, xfer.id, ctx["mortgage_id"],
             )
             assert resp.status_code == 200, (
                 f"mark_done returned {resp.status_code}; body={resp.data!r}"
@@ -596,8 +612,8 @@ class TestLoanPrincipalSettles:
                 shadow_id = _income_shadow(
                     xfer.id, ctx["mortgage_id"],
                 ).id
-                resp = auth_client.post(
-                    f"/transactions/{shadow_id}/mark-done",
+                resp = _mark_done_from_the_loan_leg(
+                    auth_client, xfer.id, ctx["mortgage_id"],
                 )
                 assert resp.status_code == 200, (
                     f"mark_done returned {resp.status_code}; "
@@ -664,7 +680,7 @@ def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
         db.session.commit()
 
         shadow_id = _income_shadow(xfer.id, mortgage.id).id
-        resp = auth_client.post(f"/transactions/{shadow_id}/mark-done")
+        resp = _mark_done_from_the_loan_leg(auth_client, xfer.id, mortgage.id)
         assert resp.status_code == 200
 
         db.session.expire_all()
@@ -721,7 +737,7 @@ def test_the_replay_and_the_balance_seam_agree_on_what_has_happened(
         db.session.commit()
 
         shadow_id = _income_shadow(xfer.id, mortgage.id).id
-        resp = auth_client.post(f"/transactions/{shadow_id}/mark-done")
+        resp = _mark_done_from_the_loan_leg(auth_client, xfer.id, mortgage.id)
         assert resp.status_code == 200
         db.session.expire_all()
 

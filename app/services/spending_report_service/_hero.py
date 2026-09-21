@@ -10,8 +10,8 @@ Boundary discipline: no Flask import, no query.  All money is ``Decimal``.
 
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.services import spending_analysis
+from app.services.transfer_legs import PlanItem
 from app.utils.money import ZERO, round_money
 
 from ._breakdown import _share_base
@@ -27,7 +27,7 @@ _TRAILING_WINDOW_COUNT = 6
 
 
 def _build_hero(
-    txns: list[Transaction],
+    txns: list[PlanItem],
     series: list[SeriesPoint],
     current_by_cat: dict,
 ) -> HeroFigures:
@@ -42,9 +42,10 @@ def _build_hero(
     comparison when no baseline exists.
 
     Args:
-        txns: The chosen window's settled expenses (the spent-total and
+        txns: The chosen window's settled expense items -- rows and transfer
+            legs (leaf ``balance:X-bi-6-1b``) -- the spent-total and
             payment-timing source, reused so the hero and the breakdown
-            agree by construction).
+            agree by construction.
         series: The trailing window series (chosen window last).
         current_by_cat: The window's per-category totals, for
             :attr:`~._types.HeroFigures.moved_total`.  **The SAME map the

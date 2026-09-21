@@ -4,9 +4,10 @@ Shekel Budget App -- A figure out of a FORM is a person's statement
 One translation, made identically by every route that collects a money figure
 from a form and hands it to a service door: the transaction popover's Actual
 box and Mark Paid's optional amount (``routes/transactions/mutations.py``),
-the shadow popover (``routes/transactions/_shadow_mutations.py``), the
-transfer popover (``routes/transfers/mutations.py``) and the add-purchase
-form and entry PATCH (``routes/entries.py``).
+the transfer popover (``routes/transfers/mutations.py``) and the add-purchase
+form and entry PATCH (``routes/entries.py``).  (The shadow popover,
+``routes/transactions/_shadow_mutations.py``, was a fourth until leaf
+``balance:X-bi-6-1`` deleted it.)
 
 **The service takes the figure and WHO WROTE it as one value** (plan step
 **balance:X-bi-3e-1**, rulings **R-BAL61** and **R-BAL69**):

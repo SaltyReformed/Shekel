@@ -168,7 +168,10 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 # never name this package.  Re-exported here so a consumer asking what a row's
 # money DID names the same module it asks what the row's amount IS -- the same
 # reason ``_amounts`` re-exports ``settled_contribution``.
-from app.services.row_valuation import settled_amounts_by_id
+from app.services.row_valuation import (
+    leg_settled_amounts_by_key,
+    settled_amounts_by_id,
+)
 # Re-exported so a caller ABOVE the amount model asks the MODEL for the
 # model's own eager load and never has to know the relationship graph (plan
 # step X-au-g-2c-2).  It is DEFINED a tier down, in ``app.utils``, because
@@ -203,6 +206,7 @@ from ._amount_rule import (
 from ._definition_cash import DefinitionRow, definition_cash
 from ._amount_source import (
     amounts_by_id,
+    leg_amounts_by_key,
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
@@ -211,6 +215,8 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
+    leg_contribution_of,
+    leg_contributions_by_key,
     planned_leg_contribution,
     settled_contribution,
 )
@@ -292,12 +298,15 @@ __all__ = [
     "is_loan_payment_definition",
     "transfer_amount_rule",
     "amounts_by_id",
+    "leg_amounts_by_key",
     "account_opening_fact",
     "cash_anchor_facts",
     "coverage_for",
     "contributed_amount",
     "contribution_of",
     "contributions_by_id",
+    "leg_contribution_of",
+    "leg_contributions_by_key",
     "credit_entry_sum",
     "dated_deltas",
     "earliest_assertion_day",
@@ -325,6 +334,7 @@ __all__ = [
     "valuation_load_options",
     "reject_line_before_books_open",
     "reject_movement_before_books_open",
+    "leg_settled_amounts_by_key",
     "settled_amounts_by_id",
     "settled_cash_facts",
     "statement_coverage",

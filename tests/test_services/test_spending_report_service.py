@@ -20,18 +20,18 @@ from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy import event
 
 from app import ref_cache
+from app.exceptions import AmountUnresolvable
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
-    pay_period_write,
     spending_analysis,
-    spending_report_service,
     status_seam,
     transfer_service,
 )
@@ -40,6 +40,7 @@ from app.services.pay_calendar import PayCalendar
 from app.utils.dates import display_today
 from app.services.cash_ledger import derived_amount_basis
 from app.services.row_valuation import settled_contribution
+from app.services.transfer_legs import grid_transfer_leg
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
@@ -842,6 +843,13 @@ class TestTheChartReadsTheDerivedOrdinal:
     ):
         """A report reads one ``budget.pay_periods`` row set and hydrates none.
 
+        **Over ROWS.**  Since leaf ``balance:X-bi-6-1b`` a window's transfers
+        load beside its rows, and a transfer's pricing chain carries its
+        period (``transfer_pricing_load_options``: rule 4's derive arm reads
+        it), so a fixture seeding a settled transfer would read one more
+        statement and hydrate its period; this fixture seeds none and the
+        claim is the row path's.
+
         **Measured on the merge base at TWELVE statements for this fixture and
         TWENTY-THREE on a clone of production**, and the difference is the
         point: the retired walk's eleven ``db.session.get`` calls issued no
@@ -890,12 +898,15 @@ class TestTheChartReadsTheDerivedOrdinal:
                 f"holds, which is loaded as a column tuple"
             )
 
-    def test_no_settled_expense_query_loads_a_pay_period(
+    def test_no_settled_expense_row_query_loads_a_pay_period(
         self, app, seed_user, seed_periods, db,
     ):
-        """Neither window query hydrates ``Transaction.pay_period``.
+        """Neither window's ROW query hydrates ``Transaction.pay_period``.
 
-        The other half of the guard above, and it needs its own case because
+        The legs half (leaf ``balance:X-bi-6-1b``) loads the parent's period
+        by design; no transfer is seeded here, so this grades the row query
+        alone (the body says so where it counts).  The other half of the
+        guard above, and it needs its own case because
         the statement counter cannot see this one: an eager load rides INSIDE
         the transactions query as a ``JOIN budget.pay_periods``, so re-adding
         one emits no statement of its own and moves no count.  What it does
@@ -926,9 +937,13 @@ class TestTheChartReadsTheDerivedOrdinal:
                     seed_periods[0].start_date, last_covered_day(seed_periods[1]),
                 )
 
-            # Both queries must actually return rows, or "nothing was
-            # hydrated" is true of a query that loaded nothing at all.
-            assert len(by_period) == 2 and len(by_span) == 2
+            # Both loads must actually return rows, or "nothing was
+            # hydrated" is true of a query that loaded nothing at all.  Each
+            # answers a PlanItems since leaf balance:X-bi-6-1b; no transfer
+            # is seeded, so the legs half loads nothing and the claim below
+            # is about the ROW query (a leg's parent carries its period by
+            # design: rule 4's derive arm reads it).
+            assert len(by_period.items) == 2 and len(by_span.items) == 2
             assert hydrated == [], (
                 "a settled-expense query hydrated a PayPeriod.  This asserts "
                 "the QUERY's loader, not that nothing downstream reads the "
@@ -1266,7 +1281,7 @@ class TestDeltas:
                 ),
             )
 
-            ids = [row.transaction_id for row in surprises.rows]
+            ids = [row.item_key for row in surprises.rows]
             assert len(ids) == _MAX_SURPRISES, "the cap is five"
             assert ids == sorted(ids), (
                 "tied surprises must rank by a total key: fed in reverse, an "
@@ -1371,7 +1386,9 @@ class TestTheReportReadsTheCashFlowSet:
     paid by card is a row ON the card, so a report that read one account's
     settled rows left it out of where the money went.  Both window queries
     read the owner's cash-flow set now, through the one clause
-    (:func:`~app.services.cash_flow_set.paycheck_rows_clause`) -- graded
+    (:func:`~app.services.cash_flow_set.own_rows_clause` for the rows and
+    :func:`~app.services.cash_flow_set.leg_accounts_shown` for a transfer's leg,
+    since leaf ``balance:X-bi-6-1b``; it was ``paycheck_rows_clause``) -- graded
     once per query, a pay-period window and a month window -- and the scope
     names the BALANCE account, the primary.  Every case plants a card,
     because an owner with none is a set of one and cannot tell the clause
@@ -1536,6 +1553,244 @@ class TestTheReportReadsTheCashFlowSet:
             )
             assert with_layer.scope.account_name == "Rainy Day"
             assert without.scope.account_name == "Checking"
+
+
+class TestATransferIsALegOfItsParent:
+    """The report draws a settled transfer as a LEG read off its parent (leaf X-bi-6-1b).
+
+    Both window loads answer the set's OWN rows -- no shadow -- beside the
+    EXPENSE leg of every settled transfer the set touches, and the package's
+    kernels (``recorded_spend``, ``planned_spend``, ``resolved_actual_amount``)
+    route a leg to its producers.  The money case above (R-CC23) already
+    grades what a transfer is WORTH here; these grade what it IS, and every
+    figure the report derives from a leg.
+    """
+
+    def test_both_loaders_answer_own_rows_and_settled_expense_legs_and_no_shadow(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            _txn(db, seed_user, seed_periods[0], "Rent", "Rent", "100.00")
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"),
+            )
+            # A still-planned transfer is not spend; a settled transfer INTO
+            # checking is its income leg on this set, not spend either.
+            create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("75.00"),
+            )
+            create_settled_transfer(
+                seed_user, db.session, savings, checking, seed_periods[0],
+                amount=Decimal("60.00"),
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+
+            by_period = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [seed_periods[0].id], cash_flow,
+            )
+            by_span = spending_analysis.query_settled_expenses_in_span(
+                seed_user["scenario"].id, cash_flow, seed_user["user"].id,
+                seed_periods[0].start_date, last_covered_day(seed_periods[0]),
+            )
+            for items in (by_period, by_span):
+                assert [row.name for row in items.rows] == ["Rent"]
+                assert all(row.transfer_id is None for row in items.rows)
+                assert [
+                    (leg.transfer.id, leg.account_id, leg.is_expense)
+                    for leg in items.legs
+                ] == [(settled.id, checking.id, True)]
+
+    def test_every_figure_the_report_derives_from_a_leg(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """$250.00 planned, $240.00 moved, due the day after it settled.
+
+        spent_total 240.00 (the record, not the plan); the Uncategorized
+        bucket holds it; the surprise is keyed by the pair with delta
+        -10.00; timing counts one bill paid 1 day early.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+                settled_on=period.start_date,
+                due_date=period.start_date + timedelta(days=1),
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("240.00")
+            [group] = report.breakdown
+            assert group.group_name == "Uncategorized"
+            assert group.amount == Decimal("240.00")
+            [surprise] = report.surprises.rows
+            assert surprise.item_key == (settled.id, checking.id)
+            assert surprise.name == "Transfer to Savings"
+            assert (surprise.estimated, surprise.actual, surprise.delta) == (
+                Decimal("250.00"), Decimal("240.00"), Decimal("-10.00"),
+            )
+            assert report.hero.payment_timing == {
+                "total_bills_paid": 1,
+                "paid_on_time": 1,
+                "paid_late": 0,
+                "avg_days_before_due": Decimal("1.00"),
+            }
+
+    def test_the_kernels_route_a_leg_to_its_producers(
+        self, app, seed_user, seed_periods, db,
+    ):
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[0],
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+            )
+            planned = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[1],
+                amount=Decimal("75.00"),
+            )
+            db.session.commit()
+            basis = derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            settled_leg = grid_transfer_leg(settled, checking.id)
+            planned_leg = grid_transfer_leg(planned, checking.id)
+
+            assert spending_analysis.recorded_spend(settled_leg) == Decimal("240.00")
+            assert spending_analysis.planned_spend(settled_leg, basis) == Decimal("250.00")
+            assert spending_analysis.resolved_actual_amount(settled_leg, basis) == Decimal("240.00")
+            # An unsettled leg reads back its plan, so its variance is zero
+            # by construction -- and it recorded nothing to spend.
+            assert spending_analysis.resolved_actual_amount(planned_leg, basis) == Decimal("75.00")
+            with pytest.raises(AmountUnresolvable):
+                spending_analysis.recorded_spend(planned_leg)
+
+    def test_a_soft_deleted_settled_transfer_is_no_spend_on_either_arm(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Both loaders' ``Transfer.is_deleted`` term (the review of leaf
+        X-bi-6-1b): nothing here re-checks in Python, and a deleted settled
+        transfer's leg would otherwise publish as a $0.00-versus-plan surprise
+        with its name on the list (its shadow's movement is excluded by the
+        record join, so the leg would read the $0.00 record)."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            deleted = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+            )
+            db.session.commit()
+            transfer_service.delete_transfer(
+                deleted.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            cash_flow = CashFlowSet.single(checking)
+
+            by_period = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [period.id], cash_flow,
+            )
+            by_span = spending_analysis.query_settled_expenses_in_span(
+                seed_user["scenario"].id, cash_flow, seed_user["user"].id,
+                period.start_date, last_covered_day(period),
+            )
+            assert by_period.legs == [] and by_span.legs == []
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("0")
+            assert report.surprises.rows == []
+
+    def test_a_zero_record_transfer_is_spend_of_nothing_and_not_a_timed_bill_on_this_tree(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A transfer settled at $0.00 (ruling R-BAL82: a close with no
+        movement) is $0.00 of spend on both shapes, and on THIS tree its leg
+        has no settle DAY -- ``TransferLeg.settled_on`` is its movement's and
+        it has none -- where a $0.00-closed ROW keeps its own column and is
+        timed.  That divergence is the interval's (the review of leaf
+        X-bi-6-1b, finding M1): the day's home for a transfer is what plan
+        step X-bi-6-4's Fork B decides, and this pins the tree's answer until
+        it does rather than inventing one."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            zero = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("0.00"),
+                settled_on=period.start_date,
+                due_date=period.start_date + timedelta(days=1),
+            )
+            db.session.commit()
+
+            [leg] = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [period.id], CashFlowSet.single(checking),
+            ).legs
+            assert leg.transfer.id == zero.id and leg.record is None
+            assert spending_analysis.recorded_spend(leg) == Decimal("0")
+            assert leg.settled_on is None and leg.days_paid_before_due is None
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.spent_total == Decimal("0")
+            assert report.hero.payment_timing is None
+
+    def test_tied_surprises_rank_rows_before_legs_by_a_total_order(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """P74's total key over both shapes: a row's id and a leg's pair
+        cannot be compared, so the tiebreak is ``key_order``."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            period = seed_periods[0]
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, period,
+                amount=Decimal("250.00"), settled_amount=Decimal("240.00"),
+            )
+            row = _txn(
+                db, seed_user, period, "Rent", "Rent", "100.00", actual="90.00",
+            )
+            db.session.commit()
+            items = spending_analysis.query_settled_expenses(
+                seed_user["scenario"].id, [period.id], CashFlowSet.single(checking),
+            ).items
+            basis = derived_amount_basis(
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+
+            surprises = _build_surprises(list(reversed(items)), basis)
+            assert [s.delta for s in surprises.rows] == [
+                Decimal("-10.00"), Decimal("-10.00"),
+            ]
+            assert [s.item_key for s in surprises.rows] == [
+                row.id, (settled.id, checking.id),
+            ]
 
 
 class TestComparison:

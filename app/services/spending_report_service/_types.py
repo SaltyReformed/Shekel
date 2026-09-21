@@ -281,11 +281,15 @@ class ChangeRow:
 
 @dataclass(frozen=True)
 class Surprise:
-    """A settled row whose entered actual differed from its estimate.
+    """A settled item whose recorded actual differed from its estimate.
 
     Attributes:
-        transaction_id: The settled transaction's id.
-        name: The transaction name.
+        item_key: The settled item's identity --
+            :func:`~app.services.transfer_legs.cell_key`: a row's id, or a
+            transfer leg's ``(transfer id, account id)`` since leaf
+            ``balance:X-bi-6-1b`` (it carried a shadow row's id, as
+            ``transaction_id``).
+        name: The item's name.
         group_name: Its category group label.
         item_name: Its category item label.
         estimated: The estimate at entry.
@@ -293,7 +297,7 @@ class Surprise:
         delta: ``actual - estimated`` (signed; positive = over estimate).
     """
 
-    transaction_id: int
+    item_key: int | tuple[int, int]
     name: str
     group_name: str
     item_name: str

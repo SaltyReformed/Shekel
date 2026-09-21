@@ -775,7 +775,7 @@ def _leftover_due_date(template, target_period) -> date:
     period's start; ``balance_at._cash_fold`` steps the intra-period daily ramp
     on that day; ``dashboard_service._pulse`` gives it a day on the street axis
     instead of the "anytime this period" shelf; and
-    ``grid_view_service.due_captions_by_id`` renders a caption where it
+    ``grid_view_service.due_captions_by_key`` renders a caption where it
     rendered none.
 
     **It reads the definition's rule with no ``None`` arm since plan step
