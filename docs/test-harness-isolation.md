@@ -92,7 +92,7 @@ correct; they just have nowhere isolated to run locally.
 | Containers driven via the **`docker` CLI** (`subprocess.run(["docker", *args])`) | `test_proxy_trust_and_headers.py:849` (`_docker()` helper) |
 | PID-namespaced names → 12 workers × their own stack | `test_proxy_trust_and_headers.py:835` (`suffix = f"c33-{os.getpid()}"`) |
 | Creates network + stub + nginx, `class`-scoped fixture | `test_proxy_trust_and_headers.py:820` (`running_stack`) |
-| Images pulled onto the daemon | `NGINX_TEST_IMAGE = "nginx:1.27-alpine"` (:83); stub `python:3.14-alpine` (:891) |
+| Images pulled onto the daemon | `NGINX_TEST_IMAGE` = the compose's bundled nginx tag, read by `tests/test_deploy/_compose.py`; stub `python:3.14-alpine` (:891) |
 | Publishes port, curls host loopback | `-p 0:443` (:909) → `docker port` (:925) → `curl https://localhost:<port>` (:947, :980) |
 | Teardown = `docker rm -f` (→ exit 137) | `test_proxy_trust_and_headers.py:966-968` (`finally`) |
 | Skips when docker absent (`docker info`) | `_docker_available()` :87 (and `test_container_hardening.py:56`) |

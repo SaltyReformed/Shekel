@@ -21,9 +21,15 @@ hash-mismatched requests keep conditional caching, and neither may
 ever carry no-store.
 """
 
+import base64
+import hashlib
+from pathlib import Path
+
 from flask import url_for
 
 from app.routes.static_pass import static_file_version
+
+VENDOR_DIR = Path(__file__).resolve().parents[2] / "app" / "static" / "vendor"
 
 
 def test_logged_out_pages_have_no_store(auth_client, client):
@@ -93,6 +99,46 @@ def test_static_asset_path_resolves(client):
         assert resp.status_code == 200, (
             f"Static asset missing or unreachable: {path}"
         )
+
+
+def test_vendor_manifest_matches_the_bytes_served(client):
+    """Every line of ``app/static/vendor/VERSIONS.txt`` names the SHA-384
+    of the file the app serves at that path, and every vendored file
+    under a manifest section has a line.
+
+    The manifest header calls the hash "the source of truth for which
+    exact bytes are served"; until 2026-09-20 nothing recomputed it, so
+    a refresh that replaced a file and forgot its line (or edited the
+    line and not the file) shipped green.  The hash is read from the
+    served response, not the file on disk, so a static route that
+    served something else would fail here too.
+    """
+    manifest = VENDOR_DIR / "VERSIONS.txt"
+    listed: dict[str, str] = {}
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or "|" not in line:
+            continue
+        rel_path, _url, digest = (part.strip() for part in line.split("|"))
+        listed[rel_path] = digest
+    assert listed, "the manifest lists no files"
+
+    for rel_path, digest in listed.items():
+        resp = client.get(f"/static/vendor/{rel_path}")
+        assert resp.status_code == 200, f"manifest names an unservable file: {rel_path}"
+        served = "sha384-" + base64.b64encode(hashlib.sha384(resp.data).digest()).decode()
+        assert served == digest, (
+            f"{rel_path}: manifest says {digest}, the served bytes hash to {served}"
+        )
+
+    on_disk = {
+        str(p.relative_to(VENDOR_DIR))
+        for p in VENDOR_DIR.rglob("*")
+        if p.is_file() and p.name not in ("VERSIONS.txt", "LICENSE.txt")
+    }
+    assert on_disk == set(listed), (
+        f"vendored files with no manifest line: {sorted(on_disk - set(listed))}; "
+        f"manifest lines with no file: {sorted(set(listed) - on_disk)}"
+    )
 
 
 def test_url_for_static_appends_content_hash(app):

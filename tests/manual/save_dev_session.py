@@ -31,7 +31,7 @@ import getpass
 import pathlib
 import sys
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeout, sync_playwright
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -64,7 +64,7 @@ def main() -> int:
                 lambda url: "/login" not in url,
                 timeout=10000,
             )
-        except Exception as e:  # pylint: disable=broad-except
+        except PlaywrightTimeout:
             # Re-read the page to see what came back.  Capture the
             # body so the operator can diagnose (often an MFA prompt
             # or a validation error).
@@ -82,7 +82,13 @@ def main() -> int:
         # script will need.
         page.goto(f"{DEV_BASE_URL}/grid", wait_until="domcontentloaded")
         assert page.url.endswith("/grid"), (
-            f"Expected to land on /grid, got {page.url}"
+            f"Expected to land on /grid, got {page.url}.  If the login "
+            "went to /mfa/verify, the account has MFA and this script "
+            "does not answer it; on a PRODUCTION CLONE under the dev "
+            "checkout's TOTP key the secret cannot be decrypted either, "
+            "so remove MFA from the clone's copy of the user first: "
+            "DELETE FROM auth.mfa_configs WHERE user_id = <id> "
+            "(the clone only, never the shared or production database)."
         )
 
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)

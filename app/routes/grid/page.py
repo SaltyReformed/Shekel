@@ -33,16 +33,10 @@ from app.services.account_resolver import (
     serves_cash_detail,
 )
 from app.services.balance_at import BalanceContext
-from app.utils.amount_relationships import valuation_load_options
-from app.services.cash_flow_set import CashFlowSet, paycheck_rows_clause
-from app.services.cash_ledger import (
-    amounts_by_id,
-    settled_amounts_by_id,
-)
+from app.services.cash_flow_set import CashFlowSet
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.statement_match import awaiting_review_count
-from app.services.transaction_service import retained_settle_amounts_by_id
 from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
@@ -55,6 +49,7 @@ from app.utils.period_projections import (
 
 from app.routes._period_population import populate_new_periods
 from app.routes.grid._bp import grid_bp
+from app.routes.grid._items import build_amount_maps, load_grid_items
 from app.routes.grid._shared import (
     _accrual_row_label,
     _build_grid_view,
@@ -236,7 +231,7 @@ def _resolve_grid_context(user_id, request_args, settings):
     ruling R-BW).  This route used to render ``errors/no_baseline.html`` itself
     and was the only surface in the app that did, while `/savings` fabricated a
     ``$0.00`` hero and three other pages returned a 500.  The raise comes from
-    the caller's :func:`_load_grid_transactions`, which asks the context for
+    the caller's :func:`~app.routes.grid._items.load_grid_items`, which asks the context for
     the scenario id it scopes its query with; ONE application-level handler
     renders that same card, so every surface answers the state identically and
     this route states no policy about it.
@@ -310,54 +305,6 @@ def _resolve_grid_context(user_id, request_args, settings):
     )
 
 
-def _load_grid_transactions(cash_flow, balance_ctx, all_periods):
-    """Load all transactions for the owner's cash-flow set and scenario.
-
-    **The rows are the PAYCHECK's across the set -- checking and its cards --
-    not one account's** (developer ruling ``credit_card:R-CC16``, plan step
-    CC-4-1), through the ONE clause every plan-item reader appends,
-    :func:`~app.services.cash_flow_set.paycheck_rows_clause`: every member's
-    rows, less the far leg of a transfer between two members, which the grid
-    shows once from the balance line's side (ruling ``credit_card:R-CC23``).
-    It was ``Transaction.account_id == account.id``, the filter that kept
-    checking's rows off the savings grid; the clause keeps that property (a
-    balance line outside the set is a set of one) and adds the cards.
-    ``cash_flow=None`` (the user-with-zero-accounts edge case) omits the
-    account filter so the resulting list is naturally empty.
-
-    ``all_periods`` is the pass's reported window, every member of which is
-    MATERIALISED -- so ``period_id`` is never ``None`` and the ``IN`` clause
-    cannot be silently scoped by a null.
-
-    Eager-loads ``entries`` (for entry-sum rendering) and ``template``
-    (for row-key generation) -- these are read in the row-data helper
-    and the cell template, so the eager-load avoids per-row N+1
-    queries in the grid render loop.
-
-    Returns the list of matching :class:`Transaction` rows.
-    """
-    period_ids = [p.period_id for p in all_periods]
-    txn_filters = [
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.scenario_id == balance_ctx.scenario_id,
-        Transaction.is_deleted.is_(False),
-    ]
-    if cash_flow is not None:
-        txn_filters.append(paycheck_rows_clause(cash_flow))
-    return (
-        db.session.query(Transaction)
-        # What a CONTRIBUTION pass reads, stated by the valuation rather than
-        # copied here (plan step X-au-g-2c-2).  It subsumes the bare
-        # ``selectinload(Transaction.template)`` this replaces and adds the
-        # ``transfer -> template -> settings`` chain every SHADOW in the window
-        # now walks: a shadow is DERIVED, so ``budgets`` below prices it
-        # through its parent rather than off its own column.
-        .options(*valuation_load_options())
-        .filter(*txn_filters)
-        .all()
-    )
-
-
 class _GridRowData(NamedTuple):
     """Row-render values produced by :func:`_build_grid_row_data`.
 
@@ -383,7 +330,7 @@ class _GridRowData(NamedTuple):
             template.
         due_captions: ``{txn_id -> the due date to caption, or None}``
             for the cell template's "Due:" line
-            (:func:`~app.services.grid_view_service.due_captions_by_id`,
+            (:func:`~app.services.grid_view_service.due_captions_by_key`,
             pay-calendar plan step C4-a-1).  The template decided it
             itself off ``t.pay_period.start_date`` until then, which is
             a lazy relationship load issued from inside the render.
@@ -445,7 +392,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     # carries rows outside the visible window.  That is what makes the payday
     # lookup total: every key it needs is a period being drawn, and a row it
     # cannot cover would raise rather than caption silently.
-    due_captions = grid_view_service.due_captions_by_id(
+    due_captions = grid_view_service.due_captions_by_key(
         [txn for cell in matched_by_row_period.values() for txn in cell],
         {period.period_id: period.start_date for period in periods},
     )
@@ -504,7 +451,7 @@ def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
             rejected list).
         budgets: The page's ONE ``{transaction_id: amount}`` map.
         all_periods: The window *transactions* was LOADED by --
-            ``ctx.all_periods``, the same value :func:`_load_grid_transactions`
+            ``ctx.all_periods``, the same value :func:`~app.routes.grid._items.load_grid_items`
             scopes its ``pay_period_id IN (...)`` with, read one field by both
             so the span map below cannot cover fewer paychecks than the rows
             it is handed.  Passing the visible slice instead would be a
@@ -561,8 +508,8 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
             ``balance_ctx``, the pass's own pay calendar -- the same memoized
             derivation the visible window was cut from, so Plan and This Period
             are two views of one schedule rather than two reads of the table.
-        all_transactions: The list already loaded by
-            :func:`_load_grid_transactions`.  Re-used here instead of
+        all_transactions: The items (rows and legs) already loaded by
+            :func:`~app.routes.grid._items.load_grid_items`.  Re-used here instead of
             re-querying; ``_build_grid_row_data`` filters by visible
             window internally so the same list works for the wider
             Plan window.
@@ -716,7 +663,7 @@ def index():
     periods extending to the right.  The number of visible periods is
     controlled by query params or user settings.  Orchestrates
     :func:`_resolve_grid_context` (period range + early returns),
-    :func:`_load_grid_transactions`, :func:`_build_grid_balances`,
+    :func:`~app.routes.grid._items.load_grid_items`, :func:`_build_grid_balances`,
     :func:`_build_grid_subtotals`, :func:`_build_grid_row_data` and
     :func:`_build_entry_maps`, then dispatches to ``grid/grid.html``.
 
@@ -754,7 +701,7 @@ def index():
     if isinstance(ctx, str):
         return ctx
 
-    all_transactions = _load_grid_transactions(
+    items = load_grid_items(
         ctx.cash_flow, ctx.balance_ctx, ctx.all_periods,
     )
     grid_view, anchor = _build_grid_view(ctx.cash_flow, ctx.balance_ctx)
@@ -782,23 +729,22 @@ def index():
     # silently, so a render path that forgot to set the attribute showed the
     # stale column with nothing to say it had.  A published MAP is what a
     # template cannot read half of.
-    budgets = amounts_by_id(
-        all_transactions, ctx.balance_ctx.amounts(),
-    )
-    # What each row's money DID, beside what its amount IS (plan step X-au-c3).
-    # A settled row shows the figure it RECORDED and an unsettled one shows its
-    # plan, and the two questions have two maps because they are two questions:
-    # merging them would put "has this settled" back inside a figure, which is
-    # the overload ``actual_amount`` carried.
-    settled = settled_amounts_by_id(all_transactions)
-    # What each row WILL book if it is marked paid, where that differs from
-    # both maps above (plan step X-au-c3, developer 2026-08-17).  A row reverted
-    # out of the settled band KEEPS what it recorded and a re-settle honours it,
-    # so its plan is what the balance counts and its retained figure is what a
-    # tick books -- two numbers, and the second was visible on no surface but
-    # the reconcile panel.  Non-``None`` for exactly the rows where that gap is
-    # real, so a template draws a marker rather than deciding anything.
-    retained = retained_settle_amounts_by_id(all_transactions)
+    #
+    # What each item's money DID sits beside what its amount IS (plan step
+    # X-au-c3).  A settled row shows the figure it RECORDED and an unsettled
+    # one shows its plan, and the two questions have two maps because they are
+    # two questions: merging them would put "has this settled" back inside a
+    # figure, which is the overload ``actual_amount`` carried.  The third map
+    # is what each item WILL book if it is marked paid, where that differs
+    # from both (plan step X-au-c3, developer 2026-08-17): a row reverted out
+    # of the settled band KEEPS what it recorded and a re-settle honours it,
+    # so its plan is what the balance counts and its retained figure is what
+    # a tick books -- two numbers, and the second was visible on no surface
+    # but the reconcile panel.  Non-``None`` for exactly the items where that
+    # gap is real, so a template draws a marker rather than deciding anything.
+    # Since leaf X-bi-6-1 each map holds the transfer LEGS too, by the same
+    # three rules over the leg's shape (``_items.build_amount_maps``).
+    amounts = build_amount_maps(items, ctx.balance_ctx.amounts())
 
     # Load ALL categories (including archived) for row-key building so
     # transactions with archived categories still render correctly;
@@ -812,18 +758,18 @@ def index():
     show_all = request.args.get("show_all", type=int) == 1
 
     row_data = _build_grid_row_data(
-        all_transactions, ctx.periods, show_all, all_categories,
+        items.items, ctx.periods, show_all, all_categories,
     )
 
     # Build the parallel context for the mobile "Plan" tab.  Decoupled
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        ctx, all_transactions, grid_view, all_categories,
+        ctx, items.items, grid_view, all_categories,
     )
 
     # The envelope cards' two maps (pay-calendar plan step C4-a-3).  It takes
-    # ``ctx.all_periods`` -- the SAME field ``_load_grid_transactions`` scoped
+    # ``ctx.all_periods`` -- the SAME field ``_items.load_grid_items`` scoped
     # its ``pay_period_id IN (...)`` with, eleven lines up -- so the paycheck
     # spans it derives cannot cover fewer rows than it is handed.
     #
@@ -834,7 +780,9 @@ def index():
     # docstring makes for a precondition carried by the QUERY.  The rolling
     # top-up above commits BEFORE ``_resolve_grid_context`` opens the pass that
     # window comes from, which is what makes it hold the paydays just appended.
-    entry_maps = _build_entry_maps(all_transactions, budgets, ctx.all_periods)
+    # Over the ROWS alone: a leg holds no purchases, and the card macro reads
+    # both maps with ``.get``.
+    entry_maps = _build_entry_maps(items.rows, amounts.budgets, ctx.all_periods)
 
     return render_template(
         "grid/grid.html",
@@ -843,9 +791,9 @@ def index():
         # and what a tick WOULD book where that differs from both.  Published as
         # context rather than annotated onto each row, so a template cannot read
         # a stale column when a render path forgets.
-        budgets=budgets,
-        settled=settled,
-        retained=retained,
+        budgets=amounts.budgets,
+        settled=amounts.settled,
+        retained=amounts.retained,
         # The ID, not the Scenario ROW (plan step X-v2): the template needs
         # exactly the id for its hidden create-form field, and the two sibling
         # create fragments already take ``scenario_id``.  Passing the nullable

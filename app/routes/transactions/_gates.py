@@ -10,10 +10,10 @@ pylint's return-count limit as the arc adds refusals to it.
 
 **It holds TWO of the chain's three guards, and says which and why rather
 than claiming the set.**  The third, ``_helpers._finalised_edit_response``,
-stays where it is because :mod:`._shadow_mutations` calls it too -- moving it
-here would make one route module import another's private leaf, which is the
-cycle the split exists to avoid.  A first draft of this docstring said "in one
-place", which an adversarial review measured as false.
+stays where it is: it was shared with ``._shadow_mutations`` until leaf
+``balance:X-bi-6-1`` deleted that module, and moving it here now would be a
+change with no caller asking for it.  A first draft of this docstring said
+"in one place", which an adversarial review measured as false.
 
 Every guard here answers the same shape -- ``(txn, data) -> response | None``,
 where ``None`` means *this gate passes*.  A route-tier guard is the

@@ -22,9 +22,11 @@ from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services.cash_flow_set import CashFlowSet
+from app.services.grid_view_service import leg_dom_id
 from app import ref_cache
 from app.services import template_amount_service
 from app.enums import (
@@ -10686,35 +10688,45 @@ class TestTheChipMarksARowOnAnotherAccount:
         """CC-4-1's worked example, plus the ids of every row it planted.
 
         Returns ``(checking_id, card_id, paycheck_id, rows)`` where ``rows``
-        maps ``"phone"`` / ``"grocery"`` to the two one-offs and
-        ``"checking_leg"`` / ``"card_leg"`` to the payment's two shadows.
+        maps ``"phone"`` / ``"grocery"`` to the two one-offs' transaction ids
+        and ``"checking_leg"`` / ``"card_leg"`` to the payment's two LEGS'
+        CELL ids (``xfer-leg-<transfer>-<account>``, plan step
+        balance:X-bi-6-1: the grid draws a transfer's leg off its parent, so
+        the leg's cell is keyed by the transfer and the account rather than
+        by a shadow row, and a leg has no transaction id to name).
         Ids, not rows: the request that follows closes the session.
         """
         checking, card, paycheck, phone = (
             TestTheGridReadsCheckingAndItsCards._world(seed_user, periods)
         )
-        legs = {
-            row.account_id: row.id
-            for row in db.session.query(Transaction).filter(
-                Transaction.pay_period_id == paycheck.id,
-                Transaction.transfer_id.isnot(None),
-                Transaction.is_deleted.is_(False),
-            )
-        }
+        payment = (
+            db.session.query(Transfer)
+            .filter_by(pay_period_id=paycheck.id, is_deleted=False).one()
+        )
         grocery = (
             db.session.query(Transaction)
             .filter_by(pay_period_id=paycheck.id, name="Grocery").one().id
         )
         return checking, card, paycheck.id, {
             "phone": phone, "grocery": grocery,
-            "checking_leg": legs[checking], "card_leg": legs[card],
+            "checking_leg": leg_dom_id(payment.id, checking),
+            "card_leg": leg_dom_id(payment.id, card),
         }
 
     @staticmethod
-    def _cell(html, txn_id):
-        """Return the desktop cell block for one row, to its ``</td>``."""
-        start = html.index(f'id="txn-cell-{txn_id}"')
+    def _cell(html, cell_id):
+        """Return the desktop cell block for one item, to its ``</td>``.
+
+        *cell_id* is the wrapper's id: ``txn-cell-<id>`` for a row (pass the
+        transaction id through :meth:`_txn_cell`), the leg's own for a leg.
+        """
+        start = html.index(f'id="{cell_id}"')
         return html[start:html.index("</td>", start)]
+
+    @staticmethod
+    def _txn_cell(txn_id):
+        """The wrapper id of a plain row's desktop cell."""
+        return f"txn-cell-{txn_id}"
 
     @staticmethod
     def _card_header(html, prefix, txn_id):
@@ -10750,13 +10762,13 @@ class TestTheChipMarksARowOnAnotherAccount:
             response = auth_client.get("/grid?periods=1&offset=2")
         html = response.get_data(as_text=True)
         assert response.status_code == 200
-        phone = self._cell(html, rows["phone"])
+        phone = self._cell(html, self._txn_cell(rows["phone"]))
         self._assert_chip(phone, "Rewards Card")
         assert phone.index("</div>") < phone.index(self._CHIP)
-        assert self._CHIP not in self._cell(html, rows["grocery"])
+        assert self._CHIP not in self._cell(html, self._txn_cell(rows["grocery"]))
         assert self._CHIP not in self._cell(html, rows["checking_leg"])
         # R-CC23: the far leg is not a row on this side at all.
-        assert f'id="txn-cell-{rows["card_leg"]}"' not in html
+        assert f'id="{rows["card_leg"]}"' not in html
 
     def test_from_the_cards_side_the_chips_move_to_checking_rows(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -10768,10 +10780,10 @@ class TestTheChipMarksARowOnAnotherAccount:
             response = auth_client.get(f"/grid?periods=1&offset=2&account_id={card}")
         html = response.get_data(as_text=True)
         assert response.status_code == 200
-        self._assert_chip(self._cell(html, rows["grocery"]), "Checking")
-        assert self._CHIP not in self._cell(html, rows["phone"])
+        self._assert_chip(self._cell(html, self._txn_cell(rows["grocery"])), "Checking")
+        assert self._CHIP not in self._cell(html, self._txn_cell(rows["phone"]))
         assert self._CHIP not in self._cell(html, rows["card_leg"])
-        assert f'id="txn-cell-{rows["checking_leg"]}"' not in html
+        assert f'id="{rows["checking_leg"]}"' not in html
 
     def test_the_cell_fragment_draws_the_same_chip_the_page_does(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -10792,7 +10804,7 @@ class TestTheChipMarksARowOnAnotherAccount:
         fragment = phone.get_data(as_text=True)
         self._assert_chip(fragment, "Rewards Card")
         chip_line = re.search(r"<div class=\"mt-1\">.*?</div>", fragment).group(0)
-        assert chip_line in self._cell(page, rows["phone"])
+        assert chip_line in self._cell(page, self._txn_cell(rows["phone"]))
         assert self._CHIP not in grocery.get_data(as_text=True)
 
     def test_the_fragment_reads_the_pages_own_side_off_the_current_url(
@@ -10807,19 +10819,26 @@ class TestTheChipMarksARowOnAnotherAccount:
         Paid on the card's view cannot flip the chips until a reload.  The
         transfer cell's direction arrow rides the same resolution: from the
         card's side the payment is INCOMING.
+
+        The card LEG's re-drawn cell is the TRANSFER door's response since
+        plan step balance:X-bi-6-1 (a leg has no transaction cell to GET):
+        the Mark Paid its cell posts, carrying ``leg_account_id``, returns
+        the leg's cell drawn against the same balance line.
         """
         with app.app_context():
             checking, card, paycheck, rows = self._world(seed_user, seed_periods_today)
-            del checking, paycheck
+            del checking
             xfer_id = (
-                db.session.get(Transaction, rows["card_leg"]).transfer_id
+                db.session.query(Transfer)
+                .filter_by(pay_period_id=paycheck, is_deleted=False).one().id
             )
             page_url = f"http://localhost/grid?periods=1&offset=2&account_id={card}"
             headers = {"HX-Request": "true", "HX-Current-URL": page_url}
             phone = auth_client.get(f"/transactions/{rows['phone']}/cell", headers=headers)
             grocery = auth_client.get(f"/transactions/{rows['grocery']}/cell", headers=headers)
-            card_leg = auth_client.get(
-                f"/transactions/{rows['card_leg']}/cell", headers=headers,
+            card_leg = auth_client.post(
+                f"/transfers/instance/{xfer_id}/mark-done",
+                data={"leg_account_id": str(card)}, headers=headers,
             )
             mobile = auth_client.post(
                 f"/transactions/{rows['grocery']}/mark-done",
@@ -10830,6 +10849,8 @@ class TestTheChipMarksARowOnAnotherAccount:
         assert phone.status_code == 200 and grocery.status_code == 200
         assert self._CHIP not in phone.get_data(as_text=True)
         self._assert_chip(grocery.get_data(as_text=True), "Checking")
+        assert card_leg.status_code == 200, card_leg.get_data(as_text=True)
+        assert f'data-leg-account-id="{card}"' in card_leg.get_data(as_text=True)
         assert self._CHIP not in card_leg.get_data(as_text=True)
         assert mobile.status_code == 200, mobile.get_data(as_text=True)
         self._assert_chip(

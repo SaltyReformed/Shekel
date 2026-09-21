@@ -6,7 +6,7 @@ quick-edit, or full-edit mode.  Every URL and endpoint name is preserved
 verbatim from the pre-split ``app/routes/transfers.py``.
 """
 
-from flask import render_template
+from flask import render_template, request
 from flask_login import current_user
 
 from app.extensions import db
@@ -24,6 +24,7 @@ from app.routes._render_helpers import (
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
+from app.utils.digit_strings import parse_row_id
 
 
 @transfers_bp.route("/transfers/cell/<int:xfer_id>", methods=["GET"])
@@ -52,9 +53,26 @@ def get_quick_edit(xfer_id):
 @transfers_bp.route("/transfers/<int:xfer_id>/full-edit", methods=["GET"])
 @require_owner
 def get_full_edit(xfer_id):
-    """HTMX partial: return the full edit popover form for a transfer."""
+    """HTMX partial: return the full edit popover form for a transfer.
+
+    **Reached from two surfaces, and the form says which** (leaf
+    ``X-bi-6-1``, ruling **R-BAL87**): the transfers page, and a transfer
+    LEG's grid cell, which asks with ``?leg_account_id=<the account the leg
+    is on>`` so the popover's form and quick buttons target that cell and
+    post the id back for the leg's re-render.  Until this leaf the grid
+    reached the same popover through ``transactions.get_full_edit`` on the
+    SHADOW row, which returned this template with ``source_txn_id``; the leg
+    has no row, so the cell asks the transfer's own door.  A ``leg_account_id``
+    that is neither endpoint names a leg that does not exist: 404, the
+    "not found" every missing surface answers.
+    """
     xfer = _get_owned_transfer(xfer_id)
     if xfer is None:
+        return "Not found", 404
+    leg_account_id = parse_row_id(request.args.get("leg_account_id"))
+    if leg_account_id is not None and leg_account_id not in (
+        xfer.from_account_id, xfer.to_account_id,
+    ):
         return "Not found", 404
     # A soft-deleted transfer has no edit surface, and since plan step X-au-c3
     # it has no popover either: this form now resolves the pair's recorded and
@@ -79,13 +97,14 @@ def get_full_edit(xfer_id):
         calendar_for(current_user.id), xfer.pay_period_id,
     )
     # What the pair RECORDED and what a re-settle would RE-BOOK (plan step
-    # X-au-c3).  Both render sites for this template call the one helper, so the
-    # popover opened from the transfers page and the one opened from a grid
-    # shadow cell cannot show different figures for the same transfer.
+    # X-au-c3), through the one helper, so the popover opened from the
+    # transfers page and the one opened from a grid leg's cell cannot show
+    # different figures for the same transfer.
     amounts = transfer_settlement_amounts(xfer, current_user.id)
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
+        leg_account_id=leg_account_id,
         budgets=transfer_budgets(xfer),
         settled=amounts.settled, retained=amounts.retained,
         # The settle-day correction's bounds -- ``max`` from ruling R-EJ,

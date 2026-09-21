@@ -15,7 +15,6 @@ from flask_login import current_user
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
-from app.models.transfer import Transfer
 from app.models.ref import Status
 from app.models.category import Category
 from app.models.account import Account
@@ -29,15 +28,12 @@ from app.services.account_resolver import resolve_cash_flow_set
 from app.services.cash_flow_set import CashFlowSet
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
-from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
 from app.routes._render_helpers import (
     fragment_amounts,
     render_transaction_cell,
-    transfer_budgets,
-    transfer_settlement_amounts,
 )
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
@@ -101,64 +97,16 @@ def get_quick_edit(txn_id):
 def get_full_edit(txn_id):
     """HTMX partial: return the full edit popover form.
 
-    For shadow transactions (transfer_id IS NOT NULL), returns the
-    transfer edit form instead of the transaction edit form so the
-    user edits the parent transfer and both shadows stay in sync.
+    A transfer's popover is the TRANSFER's door (``transfers.get_full_edit``)
+    since leaf ``X-bi-6-1``: the grid draws a transfer as a leg read off its
+    parent and the leg's cell asks that door with its ``leg_account_id``.
+    This door answered the transfer form for a SHADOW row until then; a
+    shadow is no row this blueprint admits now
+    (:func:`~app.routes.transactions._helpers._get_owned_transaction`).
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
-
-    # --- Transfer detection: return transfer edit form for shadows ---
-    if txn.transfer_id is not None:
-        xfer = db.session.get(Transfer, txn.transfer_id)
-        if xfer is None or xfer.is_deleted:
-            # A deleted parent has no edit surface -- see the transfers
-            # blueprint's own full-edit door for the whole argument, and for why
-            # the refusal is scoped to the edit doors rather than to
-            # ``_get_owned_transfer``.
-            return "Not found", 404
-        statuses = db.session.query(Status).all()
-        categories = (
-            db.session.query(Category)
-            .filter_by(user_id=current_user.id)
-            .order_by(Category.group_name, Category.item_name)
-            .all()
-        )
-        # Current + future periods (plus the transfer's own) power the
-        # period-move selector when a transfer is edited from a grid
-        # shadow cell -- same set the transfers blueprint supplies.
-        periods = period_move_options(
-            calendar_for(current_user.id), xfer.pay_period_id,
-        )
-        # The pair's recorded and retained figures -- see the transfers
-        # blueprint's own render site: ONE helper answers for both, so the two
-        # doors onto this popover cannot show different figures.
-        xfer_amounts = transfer_settlement_amounts(xfer, current_user.id)
-        return render_template(
-            "transfers/_transfer_full_edit.html",
-            xfer=xfer,
-            statuses=statuses,
-            categories=categories,
-            source_txn_id=txn.id,
-            periods=periods,
-            budgets=transfer_budgets(xfer),
-            settled=xfer_amounts.settled,
-            retained=xfer_amounts.retained,
-            # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
-            # ``min`` from ruling R-EL.  The USER's today, never
-            # ``date.today()``: the process clock is pinned to the display zone
-            # in the deployed container but not in CI or a script, and the input
-            # must not refuse a day the seam would accept.  The floor is the
-            # SAME function the seam refuses below, not a second rule.
-            today=display_today(),
-            settle_day_min=pay_period_service.earliest_recordable_day(
-                current_user.id,
-            ),
-            # Pre-hint (grid audit D2): the status dropdown disables
-            # transitions the state machine would reject.
-            allowed_status_ids=allowed_transitions(xfer),
-        )
 
     statuses = db.session.query(Status).all()
     # Pay periods power the in-popover period-move selector.  Only the

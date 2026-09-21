@@ -45,7 +45,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.services.transfer_legs import (
-    PlannedTransferLeg,
+    TransferLeg,
     planned_transfer_legs,
 )
 from app.utils.amount_relationships import (
@@ -387,7 +387,7 @@ def reconciled_through(account_id: int) -> ReconciledThrough:
 
 def planned_cash_rows(
     account_id: int, scenario_id: int,
-) -> list[Transaction | PlannedTransferLeg | InFlightMovement]:
+) -> list[Transaction | TransferLeg | InFlightMovement]:
     """Return an account's plan: its projected rows, transfer legs and movements in flight.
 
     The PLAN half of the cash event stream, and the structural twin of
@@ -421,7 +421,7 @@ def planned_cash_rows(
     ``transfer_id``, and the narrowing plan step ``X-bi-6`` deletes with the
     rows -- and the leg half is
     :func:`app.services.transfer_legs.planned_transfer_legs` over
-    ``budget.transfers``: one :class:`~app.services.transfer_legs.PlannedTransferLeg`
+    ``budget.transfers``: one :class:`~app.services.transfer_legs.TransferLeg`
     per live still-projected transfer the account is on either side of, worth
     the parent's resolved amount -- **and only for a side whose DATED
     movement does not yet exist** (ruling **R-BAL79**, plan step
@@ -478,7 +478,7 @@ def planned_cash_rows(
     Returns:
         Every still-Projected contributing row of the account's OWN (no
         shadow), with ``entries`` populated, followed by one
-        :class:`~app.services.transfer_legs.PlannedTransferLeg` per live
+        :class:`~app.services.transfer_legs.TransferLeg` per live
         still-projected transfer the account is on whose leg here is not yet
         a dated movement, its parent's pricing relationships populated,
         followed by one
@@ -486,7 +486,7 @@ def planned_cash_rows(
         un-dated purchase on the account.  Unordered: the fold groups them by
         day.
     """
-    rows: list[Transaction | PlannedTransferLeg | InFlightMovement] = (
+    rows: list[Transaction | TransferLeg | InFlightMovement] = (
         _unwindowed_contributing_rows(
             account_id, scenario_id,
             and_(

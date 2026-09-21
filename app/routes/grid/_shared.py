@@ -147,7 +147,7 @@ def _build_grid_view(cash_flow: CashFlowSet | None, balance_ctx):
     override build this route no longer does.
 
     The grid keeps its own ``all_transactions`` query (in
-    :func:`_load_grid_transactions`) for display purposes: the route needs the
+    :func:`~app.routes.grid._items.load_grid_items`) for display purposes: the route needs the
     ``template`` eager-load for row-key generation and the same entries for
     ``entry_sums`` / cell rendering, neither of which is in the producer's
     remit.  It no longer builds its own live override map -- the view carries

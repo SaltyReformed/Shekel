@@ -122,9 +122,8 @@ Both adversarial reviews of 2026-09-01 reached this independently, and the branc
 satisfiability control demonstrates it without modification:
 `test_a_reconciling_span_with_a_DIFFERENCE_is_offerable` builds an import stating `$425.00` for
 2026-03-04, books that produce `$425.00`, every day's residue `$0.00`, a corroborated opening -- and
-an owner declaring `$400.00`. `is_offerable` is `True`, and **the act would book a
-`$25.00` expense on a day the imported, line-by-line-reconciled statement says the account closed at
-`$425.00`**.
+an owner declaring `$400.00`. `is_offerable` is `True`, and **the act would book a `$25.00` expense
+on a day the imported, line-by-line-reconciled statement says the account closed at `$425.00`**.
 
 ---
 

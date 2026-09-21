@@ -36,7 +36,7 @@ from app.models.loan_params import LoanParams
 from app.models.transaction import Transaction
 from app.services.amortization_engine import RateChangeRecord
 from app.services.rate_period_engine import due_after_anchor, monthly_due_date
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 from app.utils.dates import anchor_chronology_key
 
 from ._shadows import settled_income_shadows
@@ -561,7 +561,7 @@ def precedes_origination(params: LoanParams, installment: date) -> bool:
 
 
 def loan_payment_due_date(
-    shadow: Transaction | PlannedTransferLeg, payment_day: int,
+    shadow: Transaction | TransferLeg, payment_day: int,
 ) -> date:
     """Return the monthly installment a loan payment satisfies.
 
@@ -575,7 +575,7 @@ def loan_payment_due_date(
 
     **It takes a settled SHADOW or a projected LEG** (plan step
     balance:X-bi-6a).  A still-projected payment is a
-    :class:`~app.services.transfer_legs.PlannedTransferLeg` derived from its
+    :class:`~app.services.transfer_legs.TransferLeg` derived from its
     parent transfer, and the two facts this reads -- the row's own ``due_date``
     and its pay period's start -- are the PARENT's columns, which a leg
     exposes under the same two names.  A transfer carries both facts a shadow

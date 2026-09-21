@@ -123,14 +123,14 @@ from app.services.cash_ledger import (
     walk_cash_ledger,
 )
 from app.services.pay_calendar import FiledRow, PayCalendar, PeriodWindow
-from app.services.transfer_legs import PlannedTransferLeg
+from app.services.transfer_legs import TransferLeg
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext
 from ._memoize import _memoize_once
 from ._fold import sample_cumulative
 
-_PlanItem = Transaction | PlannedTransferLeg | InFlightMovement  # one plan item
+_PlanItem = Transaction | TransferLeg | InFlightMovement  # one plan item
 
 _ZERO_MONEY = Decimal("0.00")
 # Ruling R-G's clamp floor: the earliest day a plan can still happen is the day
@@ -809,7 +809,7 @@ class _CashPlan:
         rows: What :func:`~app.services.cash_ledger.planned_cash_rows` loads,
             unwindowed: every still-Projected contributing row of the
             account's OWN, one
-            :class:`~app.services.transfer_legs.PlannedTransferLeg` per
+            :class:`~app.services.transfer_legs.TransferLeg` per
             still-projected transfer whose leg here is not yet a dated
             movement (rulings **R-BAL13**, **R-BAL79**), and one
             :class:`~app.services.cash_ledger.InFlightMovement` per un-dated
@@ -866,7 +866,7 @@ def _cash_plan(
     from before it was made.  Its BUDGET column stays its parent's.
 
     **A transfer LEG lands where its PARENT is filed** (plan step **X-bi-6a**).
-    The plan holds one :class:`~app.services.transfer_legs.PlannedTransferLeg`
+    The plan holds one :class:`~app.services.transfer_legs.TransferLeg`
     per still-projected transfer the account is on, and the row the calendar
     is asked to place is the parent ``Transfer`` -- its ``pay_period_id`` and
     ``due_date`` are the leg's, and
@@ -948,7 +948,7 @@ def _cash_plan(
             # no earlier than the day it happened (ruling **R-BAL77**).
             by_day[max(item.purchased_on, not_before)].append(item)
             continue
-        filed = item.transfer if isinstance(item, PlannedTransferLeg) else item
+        filed = item.transfer if isinstance(item, TransferLeg) else item
         period = calendar.require_period(FiledRow.for_row(filed))
         nominal = period.attribution_day(item.due_date)
         by_day[max(nominal, not_before)].append(item)

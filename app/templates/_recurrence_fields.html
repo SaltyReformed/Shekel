@@ -44,7 +44,6 @@
    recurrence_form.js drives the linked controls, the show / hide and the live
    preview off the element ids emitted here. #}
 
-
 {# The CADENCE controls (plan step R7b-2): a unit select, an interval control
    and a placement select, replacing the single pattern <select>.
 
@@ -207,7 +206,6 @@
 </div>
 {% endmacro %}
 
-
 {# The one remaining cadence-dependent detail inside #recurrence-fields: the
    bill's real DUE day, when it differs from the day the cadence is scheduled
    on.  recurrence_form.js toggles it by id from the facts the chosen offer
@@ -249,7 +247,6 @@
 </div>
 {% endif %}
 {% endmacro %}
-
 
 {# The "Ends" control (plan step R7b-3): ONE control for a bound that has
    THREE shapes -- never, on a date, after N occurrences.  It replaced a bare
@@ -367,7 +364,6 @@
 </div>
 {% endmacro %}
 
-
 {# The live occurrence preview.  recurrence_form.js fetches ``preview_url``
    (the kind-agnostic templates.preview_recurrence endpoint, which reads the
    rule params, the transfer form's destination when it states one, and the
@@ -381,7 +377,6 @@
   <small class="text-muted">Choose how often this repeats to see upcoming dates</small>
 </div>
 {% endmacro %}
-
 
 {# The rule's FIRST OCCURRENCE (plan step R7c-b, ruling R-R16): "Starts on",
    a DATE, plus the one control that says what a clamped date MEANT.
@@ -538,7 +533,6 @@
   </div>
 </div>
 {% endmacro %}
-
 
 {# The pay-period selector, and since plan step R7b-4 it has ONE job: which
    pay period a NON-REPEATING transfer lands in.  It used to have two -- the
