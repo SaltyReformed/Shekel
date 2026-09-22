@@ -677,9 +677,10 @@ class TestReleasingAnActDoesNotWithdrawTwice:
     """``_remove``'s claim that the shared verb is a no-op on its own path.
 
     :func:`release_match` deletes and FLUSHES the act before removing the rows
-    it created, and a subject belongs to at most one act
-    (``uq_statement_match_members_transaction``), so the verb's own withdrawal
-    finds nothing.
+    it created, and a subject belongs to at most one act -- a row through its
+    one payment, a movement by ``uq_statement_match_members_entry`` (the row
+    column's own index went at plan step ``credit_card:CC-5-4a-2``) -- so the
+    verb's own withdrawal finds nothing.
 
     **The first version of this class did not reach the code it named**: it
     released an act built through the FORM door, which creates nothing, so

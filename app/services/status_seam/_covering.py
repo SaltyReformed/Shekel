@@ -33,11 +33,13 @@ the seam's refusals.
 **R-BAL80**).  The fold's fact producer reads every dated movement and no row
 (``cash_ledger._events.settled_cash_facts``), the posting writer posts each
 one and nothing for the row (``posting_service.sync_transaction_postings``
-walks ``txn.entries``), and the statement matcher prices a settled ROW at
-what its covering movement moves (``_candidates._price`` reads
-:func:`covered_cash_leg`, ruling **R-BAL81**; the mirror itself is kept out
-of the purchase candidates by :func:`covering_clause`, and a row worth
-nothing is dropped from the offer by ``_candidates.transaction_candidate``).
+walks ``txn.entries``), and the statement matcher offers a settled row AS
+its covering movement, priced when dated at what it moves
+(``statement_match._valuation.settlement_price``, rulings **R-BAL81** and
+**R-CC43**), and values an accepted payment member at :func:`covered_cash_leg`
+on the act's account (``statement_match._accepted_view._accepted_row``); the
+mirror itself is kept out of the purchase candidates by
+:func:`covering_clause`.
 Through ``X-bi-3e`` the first two also read the row's own leg,
 ``cash_ledger.settled_cash_leg`` -- the recorded figure MINUS its posted
 purchases, exactly zero for a covered bill by ruling **R-FM**'s identity --
@@ -205,8 +207,9 @@ def covered_cash_leg(row: Transaction, account_id: int) -> Decimal:
 
     **The one valuation of a settled row**, for every reader that asks what
     the row moves rather than what its movements do: the statement matcher's
-    accepted register (``_accepted_view``, for a member naming the row and
-    for one naming the row's payment alike) and its undo dialog
+    accepted register (``_accepted_view``, for a member naming the row's
+    payment -- the one app-side member shape since plan step
+    ``credit_card:CC-5-4a-2``) and its undo dialog
     (``_release``, for a row an act created).  Ruling **R-BAL81** (plan step
     ``balance:X-bi-4a``): a row is worth what its covering movement moves,
     so a covered bill, paycheck or transfer leg is worth its figure and a

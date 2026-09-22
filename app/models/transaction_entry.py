@@ -229,7 +229,8 @@ class TransactionEntry(
             name="ck_transaction_entries_settled_not_before_purchase",
         ),
         # The SUPERKEY ``statement_match_members`` names to prove its own
-        # ``account_id`` is this purchase's (plan step ``bank_import:X-f6a-2``).
+        # ``account_id`` is this movement's -- a purchase's, or a row's payment
+        # (plan steps ``bank_import:X-f6a-2``, ``credit_card:CC-5-4a-2``).
         # It constrains nothing -- ``id`` is already the primary key -- and
         # exists only because PostgreSQL requires a UNIQUE over exactly the
         # referenced columns before a composite foreign key may target them.

@@ -624,13 +624,20 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     placed row since leaf 7b-3 of ``balance:X-bi-7b``), so the verb's hard
     delete runs, disposing of the definition with its LAST row (step 5).
 
-    **Its match WITHDRAWAL is provably a no-op on this path, which is why
-    calling the shared verb is safe here.**  A subject belongs to at most one
-    act (``uq_statement_match_members_transaction``), and :func:`release_match`
-    has already deleted and flushed the only act that could name this row, so
-    the withdrawal's own query finds nothing.  Asserted rather than assumed at
-    ``TestReleasingAnActDoesNotWithdrawTwice``, whose first version released an
-    act that had CREATED nothing and so never reached this function at all.
+    **Its match WITHDRAWAL finds nothing of THIS act's on this path, which is
+    why calling the shared verb is safe here.**  A row is named through its
+    one payment (``uq_transaction_entries_one_settlement_record``), a movement
+    belongs to at most one act (``uq_statement_match_members_entry``), and
+    :func:`release_match` has already deleted and flushed the only act that
+    could name this row's payment.  **What it does NOT show** is that no OTHER
+    act names a purchase under the row: the withdrawal scans every entry of
+    the row it removes, so a created row that later gained a purchase another
+    act matched would take that act with it, unless
+    :func:`planned_removals` refuses the row as edited since.  Unverified;
+    ledger row **CC-359**, owned by plan step ``credit_card:CC-5-4a-3``.
+    Asserted rather than assumed at ``TestReleasingAnActDoesNotWithdrawTwice``,
+    whose first version released an act that had CREATED nothing and so never
+    reached this function at all.
 
     **It removes the row it was HANDED, and does not look one up** (finding
     **N-371**, plan step ``bank_import:X-gf-3a``).  The transaction arm did

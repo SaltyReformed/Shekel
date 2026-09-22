@@ -173,22 +173,25 @@ class MatchWithdrawal:
         return bool(self.lines)
 
 
-def _acts_emptied_by(
-    transaction_ids: "set[int]",
-    entry_ids: "set[int]",
-) -> "list[StatementMatch]":
-    """Return the acts these subjects are the LAST app rows of.
+def _acts_emptied_by(entry_ids: "set[int]") -> "list[StatementMatch]":
+    """Return the acts these movements are the LAST app rows of.
 
     Two statements.  The first finds every act naming any of the going
-    subjects; the second loads those acts whole, and an act is kept only when
-    every app-side member it holds is in the going set -- so a group that keeps
-    a row keeps its act, and the ``agrees`` flag is what re-reviews it.
+    movements; the second loads those acts whole, and an act is kept only
+    when every app-side member it holds is in the going set -- so a group that
+    keeps a row keeps its act, and the ``agrees`` flag is what re-reviews it.
+
+    **A member names a MOVEMENT, so the going MOVEMENTS are the whole
+    question** (plan step ``credit_card:CC-5-4a-2``, ruling **R-CC45**): a
+    row leaving the table takes its purchases and its payment with it
+    (:func:`_subject_ids`), and those are what an act names.  The going ROW
+    ids still matter to :func:`_summarise`, whose creations may name a row.
 
     **Scoped by the SUBJECTS, and by nothing else** (plan step
-    ``credit_card:CC-5-4a-1``).  A member is held to its subject's account by
-    a composite key (``fk_statement_match_members_transaction_account``,
-    ``_entry_account``) and to its act's by another, so an act naming one of
-    these ids is on that subject's account and its owner's by construction;
+    ``credit_card:CC-5-4a-1``).  A member is held to its movement's account
+    by a composite key (``fk_statement_match_members_entry_account``) and to
+    its act's by another, so an act naming one of these ids is on that
+    movement's account and its owner's by construction;
     a second clause on ONE account -- this took the going rows' account
     through ``CC-5-3`` -- is then either redundant or wrong, and since the
     tender (``CC-5-3``) it is wrong: a bill's payment can sit on ANOTHER
@@ -201,7 +204,6 @@ def _acts_emptied_by(
     and the freed card line undisclosed by the dialog.
 
     Args:
-        transaction_ids: Row ids about to leave the table.
         entry_ids: Entry ids about to leave the table -- a purchase's, or a
             row's payment record, which goes with its row.
 
@@ -209,19 +211,12 @@ def _acts_emptied_by(
         The acts to withdraw, each with ``members`` and ``creations`` loaded.
         Empty for an ordinary delete, which is nearly every delete.
     """
-    if not transaction_ids and not entry_ids:
+    if not entry_ids:
         return []
     match_ids = {
         row[0]
         for row in db.session.query(StatementMatchMember.match_id)
-        .filter(
-            db.or_(
-                StatementMatchMember.transaction_id.in_(transaction_ids)
-                if transaction_ids else db.false(),
-                StatementMatchMember.transaction_entry_id.in_(entry_ids)
-                if entry_ids else db.false(),
-            ),
-        )
+        .filter(StatementMatchMember.transaction_entry_id.in_(entry_ids))
         .all()
     }
     if not match_ids:
@@ -235,20 +230,15 @@ def _acts_emptied_by(
         )
         .all()
     )
-    return [act for act in acts if _loses_every_row(act, transaction_ids, entry_ids)]
+    return [act for act in acts if _loses_every_row(act, entry_ids)]
 
 
-def _loses_every_row(
-    act: StatementMatch,
-    transaction_ids: "set[int]",
-    entry_ids: "set[int]",
-) -> bool:
-    """Return whether *act* would name no app row once these subjects go.
+def _loses_every_row(act: StatementMatch, entry_ids: "set[int]") -> bool:
+    """Return whether *act* would name no app row once these movements go.
 
     Args:
         act: The act, with ``members`` loaded.
-        transaction_ids: Row ids about to leave the table.
-        entry_ids: Purchase ids about to leave the table.
+        entry_ids: Movement ids about to leave the table.
 
     Returns:
         ``True`` when every app-side member is in the going set.  An act
@@ -256,9 +246,7 @@ def _loses_every_row(
         asserts nothing, and taking it is the repair rather than a surprise.
     """
     return all(
-        member.transaction_id in transaction_ids
-        if member.transaction_id is not None
-        else member.transaction_entry_id in entry_ids
+        member.transaction_entry_id in entry_ids
         for member in act.members
         if member.bank_statement_line_id is None
     )
@@ -321,9 +309,11 @@ def _subject_ids(rows) -> "tuple[set[int], set[int]]":
     ``transaction_entries.transaction_id`` is ``ON DELETE CASCADE``, so a hard
     delete takes every entry under the row and a match naming one loses that
     member with the parent -- a purchase's member, or the covering movement's
-    that every act names for a settled row since plan step
-    ``credit_card:CC-5-4a-1`` (ruling **R-CC43**); ``row.entries`` holds
-    both.
+    that every act names for a settled row (ruling **R-CC43**: every act
+    since plan step ``credit_card:CC-5-4a-1``, and every older one since
+    migration ``2eabfa596ee0`` re-keyed it, ruling **R-CC45**);
+    ``row.entries`` holds both.  The ROW ids are returned too, for
+    :func:`_summarise`: an act's creations may name a row.
 
     Args:
         rows: The transactions about to be deleted, each with ``entries``
@@ -406,8 +396,7 @@ def pending_for_rows(rows) -> MatchWithdrawal:
     """
     transaction_ids, entry_ids = _subject_ids(rows)
     return _summarise(
-        _acts_emptied_by(transaction_ids, entry_ids),
-        transaction_ids, entry_ids,
+        _acts_emptied_by(entry_ids), transaction_ids, entry_ids,
     )
 
 
@@ -429,7 +418,7 @@ def withdraw_for_rows(rows, owner_id: int) -> MatchWithdrawal:
         What was withdrawn, as the dialog would have printed it.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
-    acts = _acts_emptied_by(transaction_ids, entry_ids)
+    acts = _acts_emptied_by(entry_ids)
     if not acts:
         return MatchWithdrawal(matches=0, lines=(), kept_rows=0)
     planned = _summarise(acts, transaction_ids, entry_ids)
@@ -453,10 +442,7 @@ def pending_for_purchase(entry) -> MatchWithdrawal:
         Its :class:`MatchWithdrawal`.
     """
     entry_ids = {entry.id}
-    return _summarise(
-        _acts_emptied_by(set(), entry_ids),
-        set(), entry_ids,
-    )
+    return _summarise(_acts_emptied_by(entry_ids), set(), entry_ids)
 
 
 def withdraw_for_purchase(entry, owner_id: int) -> MatchWithdrawal:
@@ -544,7 +530,7 @@ def _withdraw_for_entry(
 ) -> MatchWithdrawal:
     """Withdraw every act *entry* is the last app row of; the two entry doors' body."""
     entry_ids = {entry.id}
-    acts = _acts_emptied_by(set(), entry_ids)
+    acts = _acts_emptied_by(entry_ids)
     if not acts:
         return MatchWithdrawal(matches=0, lines=(), kept_rows=0)
     planned = _summarise(acts, set(), entry_ids)

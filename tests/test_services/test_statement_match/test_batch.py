@@ -390,8 +390,10 @@ class TestOneDerivationStAYSCorrectAcrossThePass:
 
         ``propose`` partitions its rows, so the screen cannot produce this --
         but a crafted submission can, and ``uq_statement_match_members_
-        transaction`` would answer it with an ``IntegrityError`` after the
-        first item had already moved a day.
+        entry`` -- the row's one payment, since plan step
+        ``credit_card:CC-5-4a-2`` dropped the row column's own index -- would
+        answer it with an ``IntegrityError`` after the first item had already
+        moved a day.
         """
         with app.app_context():
             statement = an_import(seed_user)
