@@ -136,13 +136,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             showed *and would have shown separately* is a payment the records
             claim happened and the bank did not make.  **That qualifier is
             load-bearing and was missing until plan step ``bank_import:X-gc``**;
-            :attr:`~._offers.CandidateRow.not_shown_alone` is where the screen
+            :attr:`~._subjects.CandidateRow.not_shown_alone` is where the screen
             withdraws the claim for a row whose money the bank accounts for
             through some other row, and the membership of this list is
             deliberately unchanged by it -- it is also the hand-build form's
             row-picker, and ruling **R-GJ** leaves the group match as a parked
             card payment's only arm.  They are
-            :class:`~._offers.CandidateRow` values rather than a type of their
+            :class:`~._subjects.CandidateRow` values rather than a type of their
             own; a second record carrying the same five fields was reported by
             pylint's cross-file ``duplicate-code`` and was exactly rule 13's
             speculative shape.
@@ -452,7 +452,7 @@ def _could_have_been_shown(
     """Return whether the statement could have shown *row*'s movement.
 
     **It asks the row's own WINDOW** -- the days the app believes that money
-    moved between (:attr:`~._offers.CandidateRow.expected_window`) -- and the
+    moved between (:attr:`~._subjects.CandidateRow.expected_window`) -- and the
     two overlap or they do not.  It used to test one day, ``settled_on or
     expected_on``, which is that accessor's own rule written a second time and
     one end short: a bill budgeted across the statement's opening day was
@@ -532,7 +532,7 @@ def _rows_the_bank_never_showed(
     stay in this list, because it is the hand-build form's row-picker and those
     paybacks are what a parked Capital One line is grouped against.  The screen
     withdraws the inference per row through
-    :attr:`~._offers.CandidateRow.not_shown_alone`; withdrawing MEMBERSHIP
+    :attr:`~._subjects.CandidateRow.not_shown_alone`; withdrawing MEMBERSHIP
     would have closed ruling **R-GJ**'s only remaining arm.
 
     **The span is every RECORDED line's, not the unmatched ones'.**  Taking it

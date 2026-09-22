@@ -56,7 +56,7 @@ class MatchSides:
         bank: What the statement lines come to, signed, positive INTO the
             account -- the convention ``bank_statement_lines.amount`` uses.
         app: What the owner's own rows come to, on the same convention
-            (:attr:`~._offers.CandidateRow.cash_amount`).
+            (:attr:`~._subjects.CandidateRow.cash_amount`).
     """
 
     bank: Decimal

@@ -65,7 +65,7 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 
 from ._candidates import matched_subjects
-from ._offers import CandidateRow
+from ._subjects import CandidateRow
 from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, ReviewedDifference, as_reviewed
@@ -161,7 +161,7 @@ class DifferenceOption:
     def corrects_to(self) -> "Decimal | None":
         """Return what the bank says :attr:`corrects` is worth.
 
-        On :attr:`~._offers.CandidateRow.cash_amount`'s own convention, so the
+        On :attr:`~._subjects.CandidateRow.cash_amount`'s own convention, so the
         sentence quotes the ROW's two figures rather than the match's two sums
         -- which for a lone row are the same two numbers and for a group are
         not (plan step ``bank_import:X-gj-3a``).

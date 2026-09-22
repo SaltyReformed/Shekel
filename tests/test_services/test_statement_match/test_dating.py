@@ -28,11 +28,8 @@ from app.services.statement_match._dating import (
     DayFact,
     row_days,
 )
-from app.services.statement_match._offers import (
-    BankLine,
-    CandidateRow,
-    RowKind,
-)
+from app.services.statement_match._offers import BankLine
+from app.services.statement_match._subjects import CandidateRow, RowKind
 from app.services.statement_match._pairing import (
     days_outside,
     signed_days_outside,

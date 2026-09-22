@@ -36,6 +36,39 @@
    2026-08-17).
 #}
 {% set locked = txn.status and txn.status.is_immutable %}
+{# Whether the settle verb would HONOUR a figure or an account typed here
+   (ruling R-FF, the same sentence the reconcile panel's tick obeys): a row
+   carrying purchase entries settles at their sum, so a figure typed here
+   would be written, overwritten by the settle, and never mentioned -- and
+   its purchases each carry their own account, so there is no ONE payment to
+   book anywhere.  ``amount_correctable`` is
+   ``not transaction_service.settles_from_entries(txn)``, resolved in the
+   route -- the template displays it, it does not compute it.  The PATCH
+   handler refuses a submitted actual or account on such a row as the
+   stale-form backstop.  The default keeps legacy render sites without the
+   context permissive.  Set ONCE, up here, for its two readers: the Actual
+   box below and the "Paid from" picker's predicate next. #}
+{% set correctable = amount_correctable if amount_correctable is defined else true %}
+{# **The "Paid from" picker's ONE render predicate** (plan step
+   credit_card:CC-5-3, rulings R-CC15 / R-CC39): WHICH ACCOUNT a payment under
+   this row moved through -- the row's own, or a member of the owner's
+   cash-flow set (the add-purchase form's tuple, the one every door gates on),
+   PLUS the account the row RECORDS when that is no longer nameable (a card
+   since archived), so the preselected option always exists and an untouched
+   Save is the echo the door drops (`tender_accounts`, the route's
+   `_tender_picker`).  Drawn only when
+   there is a choice (ruling R-CC34: a one-account owner's card is
+   byte-identical), only where the row can settle or has settled (a Cancelled
+   or Credit row books no payment), and only where the settle verb would
+   HONOUR it -- `correctable`, the Actual box's own gate: a row whose record
+   is its purchases has no ONE payment to book anywhere.  Stated once here
+   because two controls read it: the picker itself and the Paid / Received
+   buttons, which `hx-include` it so a one-click settle from this card names
+   the account shown.  The default keeps legacy render sites without the
+   context picker-less. #}
+{% set tender_picker = tender_accounts is defined and tender_accounts|length > 1
+   and correctable
+   and (txn.status_id == STATUS_PROJECTED or (txn.status and txn.status.is_settled)) %}
 <div class="txn-full-edit-content">
   <div class="d-flex justify-content-between align-items-center">
     <small class="fw-semibold text-truncate mw-px-200" title="{{ txn.name }}">
@@ -66,6 +99,7 @@
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
+            {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
             aria-label="Mark as paid">
       <i class="bi bi-check-circle"></i> Paid
     </button>
@@ -105,6 +139,7 @@
             hx-post="{{ url_for('transactions.mark_done', txn_id=txn.id) }}"
             hx-target="#txn-cell-{{ txn.id }}" hx-swap="innerHTML"
             hx-disabled-elt="this"
+            {%- if tender_picker %} hx-include="#tender-{{ txn.id }}"{% endif %}
             aria-label="Mark as received">
       <i class="bi bi-check-circle"></i> Received
     </button>
@@ -140,18 +175,8 @@
     {% endif %}
 
     {# Amounts side by side -- the everyday edit stays one glance tall.
-
-       The Actual box renders only when the settle verb would HONOUR one
-       (ruling R-FF, the same sentence the reconcile panel's tick obeys):
-       a row carrying purchase entries settles at their sum, so a figure
-       typed here would be written, overwritten by the settle, and never
-       mentioned.  ``amount_correctable`` is
-       ``not transaction_service.settles_from_entries(txn)``, resolved in
-       the route -- the template displays it, it does not compute it.  The
-       PATCH handler refuses a submitted actual on such a row as the
-       stale-form backstop.  The default keeps legacy render sites without
-       the context permissive. #}
-    {% set correctable = amount_correctable if amount_correctable is defined else true %}
+       The Actual box renders only when the settle verb would HONOUR one:
+       ``correctable``, set once at the top of this card. #}
     {# **The ESTIMATE is withdrawn on a CC PAYBACK.**  A payback is worth the
        card spend of the row it repays, so a figure typed here is not a
        correction the app can honour -- on an entry-backed payback it is
@@ -267,6 +292,47 @@
                title="What your bank actually took. Correct it if your statement shows a different amount -- you do not need to set the row back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">
       </div>
       {% endif %}
+      {# **PAID FROM: which account the money moved through** (plan step
+         credit_card:CC-5-3, ruling R-CC15) -- the record's third fact beside
+         the figure and the day, corrected in place on the same argument: an
+         observation about the bank, not a budget decision, so it is NOT
+         disabled on a finalised row.  Preselected from what the row RECORDS
+         (`tender_account_id`: the kept payment's account, else the row's own
+         -- the seam's one default, ruling R-CC42), so an untouched Save posts
+         an echo the door drops, and a bill reverted out of a card-tendered
+         settle shows the card.  On a Projected row the value rides the Paid /
+         Received buttons (`hx-include`) and a Save that sets Status to Paid;
+         on a settled row a different pick re-points the payment.  The render
+         predicate is `tender_picker`, stated once at the top of this card. #}
+      {%- if tender_picker %}
+      <div class="col">
+        <label class="form-label mb-0 small" for="tender-{{ txn.id }}">
+          {{ 'Received into' if txn.is_income else 'Paid from' }}
+        </label>
+        <select name="tender_account_id" id="tender-{{ txn.id }}"
+                class="form-select form-select-sm"
+                title="The account this money moved through -- your checking account, or a credit card. Change it if it moved through a different account than the row expects.">
+          {% for acct in tender_accounts %}
+          <option value="{{ acct.id }}"{% if acct.id == tender_account_id %} selected{% endif %}>{{ acct.name }}</option>
+          {% endfor %}
+        </select>
+        {#- **What a different pick WITHDRAWS** (plan step credit_card:CC-5-4a-1,
+            ruling R-CC46).  Every accepted match names this row's payment on
+            the account it moved through, so re-pointing the payment withdraws
+            the match and its bank line is unexplained again -- said here,
+            beside the control, before the pick, as the delete dialog says it
+            before the press.  `tender_withdraws` is the route's read of the
+            same derivation the door acts on (`_tender_withdrawal`); it renders
+            nothing when no match names the payment -- and nothing for a GROUP
+            act the pick only shrinks (the register flags it), the silence the
+            delete dialog keeps over the same case. -#}
+        {%- if tender_withdraws and tender_withdraws.frees_a_line %}
+        <div class="form-text" id="tender-withdraws-{{ txn.id }}">
+          Picking another account withdraws {{ tender_withdraws.matches }} accepted match{{ '' if tender_withdraws.matches == 1 else 'es' }}, so {{ tender_withdraws.lines | length }} bank line{{ '' if tender_withdraws.lines | length == 1 else 's' }} {{ 'is' if tender_withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in tender_withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.
+        </div>
+        {%- endif %}
+      </div>
+      {%- endif %}
     </div>
     {# The figure a re-settle will RE-BOOK, on the surface that tells the user to
        revert (plan step X-au-c3, developer 2026-08-17).  This card's own hint

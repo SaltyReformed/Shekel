@@ -57,7 +57,7 @@ and the bank line that proposal explained stays unexplained until the purchase
 is undone.  That is the sentence both registers carry now.
 
 **The same trace REFUTED this module's first stated backstop.**  It claimed the
-create-then-accept order is refused because :func:`~._candidates.repriced`
+create-then-accept order is refused because :func:`~._valuation.repriced`
 re-prices every named row and finding **N-336** rejects an item whose row has
 moved.  N-336 cannot fire here: the price is invariant by the arithmetic above,
 and ``_container._close_day`` returns ``None`` on the existing-envelope arm so
@@ -83,7 +83,7 @@ from ._already_held import ArrivalsAlreadyHeld
 from ._creations import PurchaseCreation
 from ._gaps import search_gap
 from ._leftovers import CreatableLine
-from ._offers import MatchProposal, RowKind
+from ._offers import MatchProposal
 
 #: What the screen and the receipt both say about a rule whose destination this
 #: statement already explains on its own.  One spelling, because the door that
@@ -196,7 +196,10 @@ def _proposed_destinations(
     Auto-apply files BEFORE the proposal is ticked, so the same answer has to be
     reached by withholding rather than by ordering.
 
-    **Only rows the proposal names WHOLE.**  A proposal naming a PURCHASE
+    **Only rows the proposal names WHOLE** -- a TRANSACTION, or a
+    SETTLEMENT, which is a row's payment and so a claim on the row it pays
+    (:attr:`~._subjects.CandidateRow.transaction_id`, plan step
+    ``credit_card:CC-5-4a-1``).  A proposal naming a PURCHASE
     inside an envelope is not a claim on the envelope: the two acts name
     disjoint subjects, each match's members still sum to its own lines, and
     ``_accept._reject_parent_and_its_own_purchase`` refuses only the pairing
@@ -220,10 +223,10 @@ def _proposed_destinations(
         The transaction ids, empty when this pass proposes no whole-row match.
     """
     return frozenset(
-        row.row_id
+        row.transaction_id
         for proposal in proposals
         for row in proposal.rows
-        if row.kind is RowKind.TRANSACTION
+        if row.transaction_id is not None
     )
 
 

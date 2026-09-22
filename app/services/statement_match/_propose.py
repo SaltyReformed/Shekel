@@ -64,7 +64,7 @@ because the number of subsets that hit a given cent is large and every one of
 them would be a proposal a human has to refute.
 
 **Every row carries the WINDOW the app believes its money moved in**
-(:attr:`~._offers.CandidateRow.expected_window`), and that one accessor is what
+(:attr:`~._subjects.CandidateRow.expected_window`), and that one accessor is what
 bounds both passes: a settled row is a point at its settle day -- unless it is
 a PURCHASE the reconcile panel ticked, which spans back to the day it was made
 because that settle day is a bound rather than an observation -- an unsettled
@@ -86,7 +86,8 @@ from decimal import Decimal
 from itertools import combinations
 
 from ._near import near_misses
-from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
+from ._offers import BankLine, MatchProposal
+from ._subjects import CandidateRow, RowKind
 from ._pairing import (
     DAY_WINDOW,
     day_distance,
@@ -221,7 +222,7 @@ def _assign(
     one; that is the arm which settles a row the app never marked as having
     happened.  **It is no longer unbounded, and it is no longer greedy**: since
     plan step X-f6a-3c every such row carries the WINDOW the app believes the
-    money moved in (:attr:`~._offers.CandidateRow.expected_window`), so it has
+    money moved in (:attr:`~._subjects.CandidateRow.expected_window`), so it has
     a position, a distance and a legality test exactly as a dated row does --
     which is what lets one table serve both and stops this arm reaching a
     projection eighteen months out (finding **N-312**).
@@ -453,7 +454,7 @@ def _day_buckets(
 
     **A day's bucket is the rows the app believes could have moved on it**:
     the rows it recorded as settling that day, plus every unsettled row whose
-    own window (:attr:`~._offers.CandidateRow.expected_window`) reaches it --
+    own window (:attr:`~._subjects.CandidateRow.expected_window`) reaches it --
     a purchase around the day it was made, a bill around its pay period.
 
     **The window is widened by :data:`~._pairing.DAY_WINDOW` here, exactly as
@@ -531,7 +532,7 @@ def _day_buckets(
         # **A row whose window is a POINT at its own settle day is already
         # wholly represented by the loop above.**  Every settled row was one
         # until a reconciled PURCHASE started spanning back to ``purchased_on``
-        # (:attr:`~._offers.CandidateRow.expected_window`), and this arm went on
+        # (:attr:`~._subjects.CandidateRow.expected_window`), and this arm went on
         # skipping all of them -- so the span was honoured by ``_within_window``
         # and invisible here, which is precisely the disagreement this
         # function's own docstring says is not a bound.  The skip is now about

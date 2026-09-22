@@ -367,8 +367,16 @@ def _apply_regular_update(txn, txn_id, data, *, target_period):
                 txn, current_user.id,
             )
         db.session.commit()
-    except ValidationError as exc:
-        return _error_transaction_response(txn_id, str(exc))
+    except (NotFoundError, ValidationError) as exc:
+        # A "Paid from" account that is not the ROW's owner's (plan step
+        # ``credit_card:CC-5-3``) is the security response rule's 404, as the
+        # designed fragment -- see ``_mark_done_regular``'s arm; a domain
+        # refusal is the 400 it always was.  One arm, because this handler
+        # is at pylint's return ceiling and the two differ only in status.
+        return _error_transaction_response(
+            txn_id, str(exc),
+            status=404 if isinstance(exc, NotFoundError) else 400,
+        )
     except StaleDataError:
         logger.info(
             "Stale-data conflict on update_transaction id=%d", txn_id,
@@ -435,14 +443,21 @@ def _apply_status_or_postings(txn, data, new_status_id):
     # the door takes the amount and who wrote it as one value, and this is
     # the full-edit popover, never the bank.
     submitted_figure = typed_figure(data.get("settled_amount"))
+    # **A submitted TENDER is a fourth reason** (plan step
+    # ``credit_card:CC-5-3``), for the reason the figure is a third: the
+    # popover posts its "Paid from" picker on every Save, and the door -- not
+    # the route -- decides what it MEANS (an echo dropped, a re-point on a
+    # settled row, a refusal beside a revert), which needs the row.
+    tender_account_id = data.get("tender_account_id")
     if (
         "status_id" in data
         or settle_day is not None
         or submitted_figure is not None
+        or tender_account_id is not None
     ):
         transaction_service.apply_requested_status(
             txn, new_status_id, settle_day=settle_day,
-            submitted=submitted_figure,
+            submitted=submitted_figure, tender_account_id=tender_account_id,
         )
     elif _POSTING_RELEVANT_FIELDS & data.keys():
         # Posting ledger reconcile (Build-Order Step 3) for the edit that
@@ -664,7 +679,7 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "gridRefresh"}
 
 
-def _mark_done_regular(txn, txn_id, submitted, target):
+def _mark_done_regular(txn, txn_id, submitted, tender_account_id, target):
     """Settle a transaction.
 
     **The rule this used to hold is now a SERVICE verb** --
@@ -711,19 +726,33 @@ def _mark_done_regular(txn, txn_id, submitted, target):
             settle then RECORDS what it resolved on the ``derived`` basis.  The
             verb ignores it for an envelope-tracked row with entries, whose
             entries ARE the record of what it cost.
+        tender_account_id: The account the form named as the one the money
+            moved through (the popover's "Paid from" picker, plan step
+            ``credit_card:CC-5-3``), or ``None`` when the surface carried
+            none -- the cell's checkmark, the mobile card -- and the verb's
+            seam books on its default (ruling **R-CC42**).
         target: The :class:`_RenderTarget` describing the response
             surface (mobile card vs desktop cell).
 
     Returns:
         A Flask response tuple: the success surface on commit, a 409
-        conflict surface on a concurrent commit, or a 400 on a bad FK or
-        a rejected transition.
+        conflict surface on a concurrent commit, a 404 fragment for a tender
+        that is not the row owner's, or a 400 on a bad FK or a rejected
+        transition.
     """
     try:
         transaction_service.settle_transaction(
-            txn, submitted=submitted,
+            txn, submitted=submitted, tender_account_id=tender_account_id,
         )
         db.session.commit()
+    except NotFoundError as exc:
+        # A submitted tender that is not the ROW's owner's -- or does not
+        # exist -- is the verb's 404 (plan step ``credit_card:CC-5-3``; the
+        # security response rule: one answer for "not found" and "not
+        # yours"), rendered as the same designed fragment a domain refusal
+        # is, at the status the rule names -- the shape ``routes/entries.py``
+        # gave the purchase door's tender at CC-5-2.
+        return _error_transaction_response(txn_id, str(exc), target, status=404)
     except ValidationError as exc:
         # The envelope branch's preconditions, and the illegal-transition case
         # a stale surface can still reach (e.g. a Mark Paid tap on a card
@@ -820,7 +849,15 @@ def mark_done(txn_id):
     # spellings of one rule that agreed by reading.  It is now
     # ``transaction_service.settled_status_id``, inside the verb.
 
-    return _mark_done_regular(txn, txn_id, submitted, target)
+    return _mark_done_regular(
+        txn, txn_id, submitted,
+        # WHICH ACCOUNT the money moved through, when the surface said (the
+        # popover's "Paid from" picker, plan step ``credit_card:CC-5-3``);
+        # gated by the verb against the ROW's owner, never ``current_user``
+        # (ruling **R-CC11**: a companion settles the owner's row).
+        mark_done_data.get("tender_account_id"),
+        target,
+    )
 
 
 @transactions_bp.route("/transactions/<int:txn_id>/mark-credit", methods=["POST"])

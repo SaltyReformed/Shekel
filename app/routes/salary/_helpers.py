@@ -325,7 +325,7 @@ def _line_cadence_phrases(profile) -> dict[int, str]:
     """
     calendar = (
         calendar_for(profile.user_id)
-        if any(d.recurrence_rule is not None for d in profile.lines)
+        if any(d.recurs for d in profile.lines)
         else None
     )
     return payroll_line_cadence.cadence_phrases(profile.lines, calendar)

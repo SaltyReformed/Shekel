@@ -8,6 +8,7 @@ rows into future pay periods.
 """
 
 from app.extensions import db
+from app.models._derived_flag import DerivedFlag
 from app.models.mixins import (
     IsActiveMixin,
     OptimisticLockMixin,
@@ -119,6 +120,33 @@ class TransferTemplate(
         cascade="all, delete-orphan",
         lazy="select",
     )
+
+    @DerivedFlag
+    def recurs(self):
+        """True when this definition has a recurrence rule.
+
+        **The ONE accessor for "does this transfer definition repeat"**
+        (plan step ``balance:X-ci-1``, ruling **R-BAL20** applied to the
+        transfer twin; the body is :attr:`TransactionTemplate.recurs`'s,
+        stated on the definition because that is where the fact lives -- the
+        0-or-1 cadence ``recurrence:R-F6`` put on the RULE's side -- and
+        delegated to by :attr:`Transfer.recurs` for every row it holds).  A
+        definition with no rule is a ONE-TIME transfer's: it moves money
+        exactly once, its single Transfer is PLACED by
+        ``routes/transfers/_instances._materialize_one_time_transfer`` rather
+        than generated, no pass ever regenerates it, and
+        ``transfer_recurrence.propagate_to_unruled_template`` is how its edits
+        reach it (a cleared cadence's survivors are the same shape).  Every
+        site that read ``recurrence_rule is None`` to ask this reads here
+        since X-ci-1; the discardable count, the override flip and the
+        due-date gate ask the row, which asks here.
+
+        A :class:`DerivedFlag` for the reason its twin is: the question is
+        one a query would want to ask, a plain property at class level
+        compares ``False`` to everything, and spelling it in SQL would be a
+        second body of one rule (ruling **R-IZ**).  The readers load and ask.
+        """
+        return self.recurrence_rule is not None
 
     def __repr__(self):
         return f"<TransferTemplate '{self.name}' ${self.default_amount}>"

@@ -214,10 +214,11 @@ def record_settle_day(
         row: The transaction or purchase to write.  Its ``account_id`` is what
             the boundary above is asked about -- present on both tables, and
             on a MOVEMENT it is the account the money moved through (plan
-            step ``credit_card:CC-5-1``, ruling **R-BAL75**), so once the
-            card's doors write a movement on the card (``CC-5-2``,
-            ``CC-5-3``) it is graded against the CARD's opening whatever
-            account its parent row names.
+            step ``credit_card:CC-5-1``, ruling **R-BAL75**), so a movement
+            the card's doors write on the card (the purchase door since
+            ``CC-5-2``, the settle verb's tender since ``CC-5-3``) is graded
+            against the CARD's opening whatever account its parent row
+            names.
         settle_day: What it now records, or ``None`` to clear both columns --
             which is what a revert, a cancel and an emptied date box each mean.
 

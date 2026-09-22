@@ -45,10 +45,27 @@ shipped once already (finding **N-336**).  A first build counted every creation
 of every withdrawn act, and both reviews measured it promising a `-$21.68`
 residual would stay while the press destroyed it.
 
+**A MOVEMENT that LEAVES ITS ACCOUNT leaves the acts naming it too** (plan
+step ``credit_card:CC-5-4a-1``, ruling **R-CC46**, developer 2026-09-21).
+Every accepted act names movements since ruling **R-CC43**, and a member is
+held to its movement's account by ``fk_statement_match_members_entry_account``
+-- a key the database will not let the movement's ``account_id`` walk out
+from under (``NO ACTION`` on update).  A match asserts that THIS account's
+bank line IS this movement; money that moved on another account was shown by
+no such line, so the assertion is false the moment the movement is re-pointed
+(a "Paid from" correction, ``status_seam._covering._re_point``), exactly as
+it is false the moment the movement is destroyed.  So the member goes as a
+DELETE would have taken it, and an act left naming no app row is withdrawn on
+the same narrowest condition -- :func:`withdraw_for_moved_movement`, with
+:func:`pending_for_moved_movement` for the screen that offers the move.  The
+refused alternative kept the owner's correction from happening while a match
+stood, naming the register's Undo as the remedy.
+
 **The claim "every door" is NOT made here, because it was measured false.**
-Five doors call this rule: the transaction delete verb, the purchase door, both
-CC-payback teardowns and the transfer delete.  At least four more can leave an
-act with no app row and do NOT call it -- ``routes/templates/crud``'s
+Six doors call this rule: the transaction delete verb, the purchase door, both
+CC-payback teardowns, the transfer delete, and the seam's tender re-point.  At
+least four more can leave an act with no app row and do NOT call it --
+``routes/templates/crud``'s
 hard-delete and archive bulk statements, ``pay_period_write.retire_paydays``'
 cascade, and ``recurrence_engine``'s retire sweep (held today only by its
 retention of a row holding an entry).  A rule enforced by ENUMERATION is a
@@ -157,7 +174,6 @@ class MatchWithdrawal:
 
 
 def _acts_emptied_by(
-    account_id: int,
     transaction_ids: "set[int]",
     entry_ids: "set[int]",
 ) -> "list[StatementMatch]":
@@ -168,14 +184,26 @@ def _acts_emptied_by(
     every app-side member it holds is in the going set -- so a group that keeps
     a row keeps its act, and the ``agrees`` flag is what re-reviews it.
 
+    **Scoped by the SUBJECTS, and by nothing else** (plan step
+    ``credit_card:CC-5-4a-1``).  A member is held to its subject's account by
+    a composite key (``fk_statement_match_members_transaction_account``,
+    ``_entry_account``) and to its act's by another, so an act naming one of
+    these ids is on that subject's account and its owner's by construction;
+    a second clause on ONE account -- this took the going rows' account
+    through ``CC-5-3`` -- is then either redundant or wrong, and since the
+    tender (``CC-5-3``) it is wrong: a bill's payment can sit on ANOTHER
+    account than the bill (a checking bill paid from the card), and the act
+    that names that payment (ruling **R-CC43**) is on the CARD's account.
+    Deleting the bill takes the payment with it, and an act lookup scoped to
+    checking would have left that act standing while its member cascaded
+    away -- the false record :func:`~app.services.statement_match
+    .act_still_names_a_row` stops counting but this module exists to remove,
+    and the freed card line undisclosed by the dialog.
+
     Args:
-        account_id: The account the subjects belong to.  A member is held to
-            its subject's account by a composite key
-            (``fk_statement_match_members_transaction_account``) and to its
-            act's by another, so this scope is exact rather than conventional
-            and no act of another owner is reachable.
         transaction_ids: Row ids about to leave the table.
-        entry_ids: Purchase ids about to leave the table.
+        entry_ids: Entry ids about to leave the table -- a purchase's, or a
+            row's payment record, which goes with its row.
 
     Returns:
         The acts to withdraw, each with ``members`` and ``creations`` loaded.
@@ -187,7 +215,6 @@ def _acts_emptied_by(
         row[0]
         for row in db.session.query(StatementMatchMember.match_id)
         .filter(
-            StatementMatchMember.account_id == account_id,
             db.or_(
                 StatementMatchMember.transaction_id.in_(transaction_ids)
                 if transaction_ids else db.false(),
@@ -290,9 +317,13 @@ def _summarise(
 def _subject_ids(rows) -> "tuple[set[int], set[int]]":
     """Return every row and purchase id that leaves the table with *rows*.
 
-    **Its purchases go with it**: ``transaction_entries.transaction_id`` is
-    ``ON DELETE CASCADE``, so a hard delete takes them and a match naming one
-    loses that member with the parent.
+    **Its purchases go with it, and so does its PAYMENT**:
+    ``transaction_entries.transaction_id`` is ``ON DELETE CASCADE``, so a hard
+    delete takes every entry under the row and a match naming one loses that
+    member with the parent -- a purchase's member, or the covering movement's
+    that every act names for a settled row since plan step
+    ``credit_card:CC-5-4a-1`` (ruling **R-CC43**); ``row.entries`` holds
+    both.
 
     Args:
         rows: The transactions about to be deleted, each with ``entries``
@@ -309,7 +340,24 @@ def _subject_ids(rows) -> "tuple[set[int], set[int]]":
     )
 
 
-def _withdraw(acts, planned: MatchWithdrawal, owner_id: int, **fields) -> None:
+#: What the delete doors' event says happened.
+_LEFT_THE_BOOKS = (
+    "Rows left the books and took the last app row of the matches naming "
+    "them; those bank lines are unexplained again."
+)
+
+#: What the re-point door's event says happened (ruling **R-CC46**).  Its own
+#: sentence because the rows STAY on the books, and production is observed
+#: through these lines.
+_MOVED_ACCOUNTS = (
+    "A payment moved to another account and took the last app row of the "
+    "matches naming it; those bank lines are unexplained again."
+)
+
+
+def _withdraw(
+    acts, planned: MatchWithdrawal, owner_id: int, *, because: str, **fields,
+) -> None:
     """Delete the acts and record what that freed.
 
     The members go with each act through the ORM cascade and the composite
@@ -322,6 +370,8 @@ def _withdraw(acts, planned: MatchWithdrawal, owner_id: int, **fields) -> None:
         planned: What :func:`_summarise` said they come to, so the event
             records the same figures the dialog printed.
         owner_id: The user the caller proved owns the account.
+        because: The event's sentence -- the DOOR's, since a delete and a
+            re-point withdraw for different reasons and the log is read.
         **fields: Subject coordinates for the event (``transaction_ids`` or
             ``transaction_entry_id``).
     """
@@ -330,8 +380,7 @@ def _withdraw(acts, planned: MatchWithdrawal, owner_id: int, **fields) -> None:
     db.session.flush()
     log_event(
         logger, logging.INFO, EVT_STATEMENT_MATCH_WITHDRAWN, BUSINESS,
-        "Rows left the books and took the last app row of the matches naming "
-        "them; those bank lines are unexplained again.",
+        because,
         user_id=owner_id,
         match_count=planned.matches,
         freed_line_count=len(planned.lines),
@@ -357,24 +406,9 @@ def pending_for_rows(rows) -> MatchWithdrawal:
     """
     transaction_ids, entry_ids = _subject_ids(rows)
     return _summarise(
-        _acts_emptied_by(_account_of(rows), transaction_ids, entry_ids),
+        _acts_emptied_by(transaction_ids, entry_ids),
         transaction_ids, entry_ids,
     )
-
-
-def _account_of(rows) -> "int | None":
-    """Return the one account these rows belong to.
-
-    Args:
-        rows: The transactions going.  Every row that goes down with a source
-            is on its account -- a CC payback is created on the source's
-            (``credit_workflow.create_cc_payback_transaction``) -- so one scope
-            covers the set.
-
-    Returns:
-        The account id, or ``None`` for an empty set.
-    """
-    return rows[0].account_id if rows else None
 
 
 def withdraw_for_rows(rows, owner_id: int) -> MatchWithdrawal:
@@ -395,12 +429,12 @@ def withdraw_for_rows(rows, owner_id: int) -> MatchWithdrawal:
         What was withdrawn, as the dialog would have printed it.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
-    acts = _acts_emptied_by(_account_of(rows), transaction_ids, entry_ids)
+    acts = _acts_emptied_by(transaction_ids, entry_ids)
     if not acts:
         return MatchWithdrawal(matches=0, lines=(), kept_rows=0)
     planned = _summarise(acts, transaction_ids, entry_ids)
     _withdraw(
-        acts, planned, owner_id,
+        acts, planned, owner_id, because=_LEFT_THE_BOOKS,
         transaction_ids=sorted(transaction_ids),
     )
     return planned
@@ -420,7 +454,7 @@ def pending_for_purchase(entry) -> MatchWithdrawal:
     """
     entry_ids = {entry.id}
     return _summarise(
-        _acts_emptied_by(entry.account_id, set(), entry_ids),
+        _acts_emptied_by(set(), entry_ids),
         set(), entry_ids,
     )
 
@@ -444,10 +478,78 @@ def withdraw_for_purchase(entry, owner_id: int) -> MatchWithdrawal:
     Returns:
         What was withdrawn.
     """
+    return _withdraw_for_entry(entry, owner_id, because=_LEFT_THE_BOOKS)
+
+
+def pending_for_moved_movement(entry) -> MatchWithdrawal:
+    """Return what moving *entry* onto another account would withdraw, without doing it.
+
+    The read twin of :func:`withdraw_for_moved_movement`, for the screen that
+    offers the move -- the full-edit popover's "Paid from" picker -- so the
+    owner is told what the correction frees before they make it, as the
+    delete dialog tells them (module docstring).  Like that dialog it names
+    the ACTS the move empties and the lines those free; a GROUP act that
+    keeps another row is not named here, and the pick still takes this
+    member out of it and turns its ``agrees`` flag amber on the register --
+    the same silence the purchase-delete dialog keeps over a group, stated
+    so it reads as a choice and not a fact.
+
+    Args:
+        entry: The covering movement a screen is offering to re-point.
+
+    Returns:
+        Its :class:`MatchWithdrawal`.
+    """
+    return pending_for_purchase(entry)
+
+
+def withdraw_for_moved_movement(entry, owner_id: int) -> MatchWithdrawal:
+    """Take *entry* out of every act naming it; withdraw the acts that empties.
+
+    The door a movement's ACCOUNT change calls BEFORE the account is
+    assigned (``status_seam._covering._re_point``; module docstring, ruling
+    **R-CC46**).  A destroyed movement leaves its acts through the member
+    key's cascade; a moved one has no cascade to leave through and the same
+    key would refuse the move while the member stands, so the member is
+    deleted here and FLUSHED -- the unit of work orders a DELETE after an
+    UPDATE, so a member left to the same flush as the account assignment
+    would be checked against it and refuse it.  The acts are then withdrawn
+    on the condition every other door uses: only one left naming no app row.
+    A group act that keeps another row keeps standing, its ``agrees`` flag
+    the re-review, exactly as after a purchase's delete.
+
+    Does NOT commit -- the caller owns the session boundary.
+
+    Args:
+        entry: The covering movement about to be re-pointed.
+        owner_id: The row's owner, under whose books the act is filed.
+
+    Returns:
+        What was withdrawn.
+    """
+    planned = _withdraw_for_entry(entry, owner_id, because=_MOVED_ACCOUNTS)
+    # The member of an act that STAYS (a group keeping another row) goes
+    # too: the key holds it to the account the movement is leaving.
+    # ``_withdraw`` deleted the emptied acts with their members already; this
+    # reaches the one a surviving act still holds.
+    db.session.query(StatementMatchMember).filter(
+        StatementMatchMember.transaction_entry_id == entry.id,
+    ).delete(synchronize_session=False)
+    db.session.flush()
+    return planned
+
+
+def _withdraw_for_entry(
+    entry, owner_id: int, *, because: str,
+) -> MatchWithdrawal:
+    """Withdraw every act *entry* is the last app row of; the two entry doors' body."""
     entry_ids = {entry.id}
-    acts = _acts_emptied_by(entry.account_id, set(), entry_ids)
+    acts = _acts_emptied_by(set(), entry_ids)
     if not acts:
         return MatchWithdrawal(matches=0, lines=(), kept_rows=0)
     planned = _summarise(acts, set(), entry_ids)
-    _withdraw(acts, planned, owner_id, transaction_entry_id=entry.id)
+    _withdraw(
+        acts, planned, owner_id, because=because,
+        transaction_entry_id=entry.id,
+    )
     return planned

@@ -80,6 +80,23 @@ from tests.oracles.recurrence_baseline import (
 )
 
 
+class _Definition(SimpleNamespace):
+    """A definition's stand-in, answering ``recurs`` off its own rule.
+
+    The refusals and the dispatcher read ``recurs`` since plan step
+    ``balance:X-ci-1`` -- the one accessor for "does this definition repeat",
+    a ``DerivedFlag`` over ``recurrence_rule`` on all three definition models
+    -- so a stand-in carrying a bare ``recurrence_rule`` no longer answers
+    what they ask.  A PROPERTY rather than a frozen attribute, because the
+    dispatcher re-points and clears the rule it is handed and a value fixed at
+    construction would answer for the rule the stand-in used to hold.
+    """
+
+    @property
+    def recurs(self):
+        return self.recurrence_rule is not None
+
+
 class TestBuildRecurrenceRuleFromForm:
     """Helper :func:`recurrence_spec_from_form` contract tests."""
 
@@ -466,7 +483,7 @@ class TestAnEditCannotRePhaseARule:
                 interval_n=4,
                 starts_on=seed_periods[2].start_date,
             )
-            template = SimpleNamespace(
+            template = _Definition(
                 recurrence_rule=rule,
                 user_id=seed_user["user"].id,
             )
@@ -976,11 +993,12 @@ class TestAnUpdateMayNotInvertTheWindow:
             user_id: The owner the stand-in claims.
 
         Returns:
-            A ``SimpleNamespace`` carrying the three attributes the refusal
-            touches.  A real ``TransactionTemplate`` would drag its own FK
-            graph in for a question about two dates.
+            A :class:`_Definition` carrying the three attributes the refusal
+            touches, and answering ``recurs`` off the first.  A real
+            ``TransactionTemplate`` would drag its own FK graph in for a
+            question about two dates.
         """
-        return SimpleNamespace(
+        return _Definition(
             recurrence_rule=rule,
             to_account_id=None,
             user_id=user_id,

@@ -577,7 +577,7 @@ def regenerate_or_conflict_chooser(
     ctx = BalanceContext.build(current_user.id)
     if ctx.scenario is None:
         return None
-    if template.recurrence_rule is None and not before.had_recurrence_rule:
+    if not template.recurs and not before.had_recurrence_rule:
         return None
     schedule = GenerationSchedule.for_pass(ctx)
     decisions = parse_conflict_decisions(request.form)

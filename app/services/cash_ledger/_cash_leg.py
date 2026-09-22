@@ -202,9 +202,10 @@ def elsewhere_purchase_sum(txn: Transaction) -> Decimal:
     rests on a door alone is one refactor from resting on nothing.
 
     **It reads the row's PURCHASES, not its family** (ruling **R-BAL68**), as
-    its two siblings do.  The seam writes a covering movement on the row's own
-    account through ``CC-5-2`` (the tender account is ``CC-5-3``'s), and no
-    reconcile offer holds a settled row with a covering movement anyway.
+    its two siblings do.  The seam writes a covering movement on the TENDER
+    since ``CC-5-3`` (the row's own account unless the owner named another,
+    ruling **R-CC15**), which is never a purchase, and no reconcile offer
+    holds a settled row with a covering movement anyway.
 
     Args:
         txn: The transaction whose purchases to sum.
@@ -290,7 +291,8 @@ def cash_leg_of(txn, gross: Decimal) -> Decimal:
     (``+`` income, ``-`` expense) -- behind the same TOTAL contributing gate
     :func:`movement_cash_leg` applies to a movement: a non-contributing row is
     worth ``0.00`` whatever *gross* says.  Its one caller is the statement
-    matcher (``_candidates._price``, plan step ``bank_import:X-f6a-2``),
+    matcher (``statement_match._valuation.transaction_price``, plan step
+    ``bank_import:X-f6a-2``),
     which must compare a bank line against what the app would move if the
     Projected row it names settled -- and which asks this ONLY of a row that
     does not settle from its purchases (``transaction_service.

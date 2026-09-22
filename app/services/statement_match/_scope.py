@@ -14,7 +14,7 @@ rule for what this holds:
 
 * the owner's pay CALENDAR -- nothing here writes a payday;
 * the account's governing OPENING -- nothing here restates one;
-* every row the account could offer, PRICED (:class:`~._offers.Candidates`);
+* every row the account could offer, PRICED (:class:`~._subjects.Candidates`);
 * every budget line a bank line could become a purchase against.
 
 **What is deliberately NOT here is what the pass DOES change**: which subjects
@@ -36,7 +36,7 @@ Payback's ``estimated_amount``, which that guard cannot see.
 
 **So a price is never taken off this scope.**  What the scope holds is WHICH
 rows may be offered, which no act changes;
-:func:`~._candidates.repriced` re-reads and re-values every row an act names,
+:func:`~._valuation.repriced` re-reads and re-values every row an act names,
 and :func:`~._resolve.resolve_rows` then refuses one that has moved since the
 screen described it (finding **N-336**, plan step ``bank_import:X-f6d-3``).
 The 3.593 s this step exists to save belongs to the 827-row SCAN, which is
@@ -65,7 +65,8 @@ from app.services.cash_ledger import (
 from ._candidates import candidates_for
 from ._destinations import destinations_for
 from ._creations import PurchaseDestination
-from ._offers import BankLine, Candidates
+from ._offers import BankLine
+from ._subjects import Candidates
 
 
 def impossible_days_refusal(line: BankLine) -> str:
@@ -241,7 +242,7 @@ class ReviewScope:
             owner's salary derivation and the scenario's loan derivation, and
             no act this package performs writes a salary profile, a payday, a
             loan parameter or an escrow line.  It holds no per-row answer, so
-            :func:`~._candidates.repriced` still re-reads every row it values.
+            :func:`~._valuation.repriced` still re-reads every row it values.
         opening: The account's governing
             :class:`~app.services.cash_ledger.CashOpeningFact` -- the day its
             books open and the equity they open holding (plan step
@@ -428,7 +429,7 @@ class ReviewScope:
         # filtering the candidate scan on ``scenario_id``.
         #
         # A foreign-scenario row is REPORTED rather than raised in this
-        # package: ``_candidates._price`` catches ``AmountUnresolvable`` and
+        # package: ``_valuation.transaction_price`` catches ``AmountUnresolvable`` and
         # the row leaves the candidate set into ``unpriceable``, which the
         # screen counts.  Unreachable today, and NOT the same answer the
         # reconcile panel gives -- said here because a first draft of this

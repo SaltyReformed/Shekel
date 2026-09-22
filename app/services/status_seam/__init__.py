@@ -82,10 +82,12 @@ Architecture:
 from app.services.status_seam._record import (
     Settlement,
     correction_record,
+    covering_movement_of,
     honoured_correction,
     honoured_figure,
     movement_settlement,
     recorded_settlement,
+    tender_account_id_of,
 )
 from app.services.status_seam._refusals import (
     StatusBearingRow,
@@ -95,6 +97,7 @@ from app.services.status_seam._refusals import (
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
     reject_stated_figure_over_purchases,
+    reject_tender_without_settled_status,
 )
 from app.services.status_seam._covering import (
     covered_cash_leg,
@@ -105,6 +108,7 @@ from app.services.status_seam._seam import (
     apply_status_change,
     settle_day_for_status,
     figure_for_status,
+    tender_for_status,
 )
 
 __all__ = [
@@ -115,12 +119,16 @@ __all__ = [
     "covering_clause",
     "record_clearing",
     "figure_for_status",
+    "tender_for_status",
     "correction_record",
+    "covering_movement_of",
     "honoured_correction",
     "honoured_figure",
     "movement_settlement",
     "recorded_settlement",
+    "tender_account_id_of",
     "reject_figure_without_settled_status",
+    "reject_tender_without_settled_status",
     "day_is_in_the_future",
     "reject_future_settle_day",
     "reject_settle_day_without_settled_status",

@@ -67,7 +67,6 @@ from ._builders import (
 )
 from app.services.settle_day import (
     SettleDay,
-    record_settle_day,
     recorded_settle_day,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -224,7 +223,20 @@ class TestABalancedMatchIsRecorded:
     def test_the_match_is_recorded_with_one_member_per_subject(
         self, app, db, seed_user,
     ):
-        """The relation is what makes a re-import stop re-proposing it."""
+        """The relation is what makes a re-import stop re-proposing it.
+
+        **The app-side member names the row's PAYMENT, not the row** (plan
+        step ``credit_card:CC-5-4a-1``, ruling **R-CC43**, developer
+        2026-09-21: *the MOVEMENT is the subject of every settled match on
+        every screen; a row is a candidate only while Projected*).  The
+        owner ticked a Projected bill; the accept settled it through its own
+        door, which wrote its covering movement, and that movement -- the
+        money the bank showed -- is what the act records.  Through
+        ``CC-5-3`` this asserted ``transaction_id == txn.id``.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
+        """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
         txn = a_transaction(seed_user, amount="180.00")
@@ -238,7 +250,10 @@ class TestABalancedMatchIsRecorded:
         )
         assert len(members) == 2
         assert {m.bank_statement_line_id for m in members} == {line.id, None}
-        assert {m.transaction_id for m in members} == {txn.id, None}
+        assert {m.transaction_id for m in members} == {None}
+        (movement,) = txn.covering_movements
+        assert {m.transaction_entry_id for m in members} == {movement.id, None}
+        assert movement.settled_on == line.posted_on
 
     def test_a_reviewed_act_is_recorded_as_a_TICK_and_not_as_a_rule(
         self, app, db, seed_user,
@@ -430,6 +445,11 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
         scope = a_scope(seed_user)
         submission = a_submission(scope, lines=[line], transactions=[txn])
 
+        # A raw write around the seam, on the ROW alone: the subject the
+        # screen offered is the row's PAYMENT (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC43**), and this edit never
+        # touches the movement -- so it is the ROW's counter, carried in the
+        # payment's token beside the movement's, that has to catch it.
         txn.settled_on = line.posted_on - timedelta(days=2)
         db.session.flush()
 
@@ -1167,9 +1187,21 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
         assert groups[0].agrees is True
 
     def test_a_hand_moved_day_stops_it_agreeing(self, app, db, seed_user):
-        """The owner contradicted the bank, and the screen says so."""
+        """The owner contradicted the bank, and the screen says so.
+
+        Moved through the row's own door, which mirrors the day onto the
+        covering movement the act names (plan step ``credit_card:CC-5-4a-1``,
+        ruling **R-CC43**); this wrote the row's day pair directly through
+        ``CC-5-3``, when the act named the row.
+        Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
+        a settled row is ticked as its payment."
+        """
         salary, _ = self._accepted_pair(db, seed_user)
-        record_settle_day(salary, an_entered_day(salary.settled_on + timedelta(days=1)))
+        transaction_service.apply_requested_status(
+            salary, salary.status_id,
+            settle_day=an_entered_day(salary.settled_on + timedelta(days=1)),
+        )
         db.session.flush()
 
         assert self._groups(seed_user)[0].agrees is False
@@ -2259,7 +2291,7 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         assert [m.amount for m in paycheck.covering_movements] == [
             Decimal("2473.43"),
         ]
-        assert status_seam.covered_cash_leg(paycheck) == Decimal("2473.43")
+        assert status_seam.covered_cash_leg(paycheck, paycheck.account_id) == Decimal("2473.43")
 
     def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
         """The control, and it is what makes the test above mean anything.

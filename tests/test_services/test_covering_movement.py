@@ -287,7 +287,7 @@ class TestTheMovementIsTheBalance:
 
             # The row is worth its covering movement (R-BAL81) and the fold
             # reads that movement.
-            assert status_seam.covered_cash_leg(txn) == Decimal("-148.32")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("-148.32")
             with_movement = _per_day(settled_cash_facts(account_id, scenario_id))
             assert with_movement[txn.settled_on] == Decimal("-148.32")
 
@@ -297,7 +297,7 @@ class TestTheMovementIsTheBalance:
             txn.entries.remove(movement)
             db.session.flush()
             db.session.expire(txn)
-            assert status_seam.covered_cash_leg(txn) == Decimal("0")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("0")
             without = _per_day(settled_cash_facts(account_id, scenario_id))
             assert txn.settled_on not in without
             assert without == {}
@@ -444,22 +444,40 @@ class TestARevertUnDatesAndAReSettleReDates:
             assert movement.settled_day_basis_id == txn.settled_day_basis_id
             assert booked_a_human_figure is False
 
-    def test_a_re_settle_re_points_the_kept_movement_onto_the_rows_account(
+    def test_a_re_settle_keeps_the_kept_movement_where_the_money_moved(
         self, app, seed_user, seed_periods,
     ):
-        """Revert, move the row's account, re-settle: the record books where the plan is.
+        """Revert, move the row's account, re-settle: the record stays where it was.
 
-        Plan step ``credit_card:CC-5-2``, ruling **R-CC36**.  The recurrence
-        maintain pass no longer retains a row holding a kept payment record
-        when its definition's account moves, so the row can sit on Second
-        Checking while its un-dated record still names Checking.  A settle
-        with no tender named books on the row's account, so the re-settle
-        re-points the SAME movement (its id survives, as ``X-bi-3e-2`` pinned)
-        and the fold reads `-148.32` on Second Checking and nothing on
-        Checking.  Without the re-point the old account carried the payment
-        while the plan sat on the new one, `$148.32` apart on each.  The
-        row's account is moved directly here: the maintain pass is the door
-        that moves it in production, and its own suite pins that it now does.
+        Plan step ``credit_card:CC-5-3``, ruling **R-CC42** (developer
+        2026-09-21), which AMENDS ruling **R-CC36**'s re-point clause -- and
+        this test, which pinned that clause as
+        ``test_a_re_settle_re_points_the_kept_movement_onto_the_rows_account``
+        under CC-5-2, is RE-EXPRESSED under CLAUDE.md rule 5 with the
+        developer's confirmation, his option text as picked: *"Retained across
+        a revert (Recommended)": "From scratch: where the money moved is part
+        of the record and survives a revert exactly as a stated figure does.
+        A re-settle that names no account keeps the kept payment's account;
+        naming one re-points it; every door reads the record: the popover's
+        'Paid from' shows the kept account selected, and the one-click
+        checkmark and mobile Mark Paid pass nothing, so the seam keeps it.
+        One default, spelled once in the seam. AMENDS R-CC36's re-point
+        clause: a Projected row whose definition moved keeps its kept record
+        where the money moved, and only a named tender moves it (that test is
+        re-expressed to say so)."*
+
+        The maintain pass no longer retains a row holding a kept payment
+        record when its definition's account moves (R-CC36's clause that
+        STANDS), so the row can sit on Second Checking while its un-dated
+        record still names Checking.  Under R-CC42 the same columns cannot
+        tell that row from a bill the owner charged to the card and reverted
+        to edit, and the one-click re-settle of the latter must not move its
+        money back onto checking -- so a re-settle naming no tender keeps the
+        SAME movement (its id survives, as ``X-bi-3e-2`` pinned) on Checking,
+        and the fold reads `-148.32` there and nothing on Second Checking;
+        a re-settle NAMING Second Checking is what moves it.  The row's
+        account is moved directly here: the maintain pass is the door that
+        moves it in production, and its own suite pins that it now does.
         """
         with app.app_context():
             txn = _bill(seed_user, seed_periods[0])
@@ -485,8 +503,24 @@ class TestARevertUnDatesAndAReSettleReDates:
 
             movement = _only_movement(txn)
             assert movement.id == first_id
-            assert movement.account_id == moved_to.id
+            assert movement.account_id == old_account_id
             assert movement.settled_on == txn.settled_on
+            on_the_new = _per_day(settled_cash_facts(moved_to.id, scenario_id))
+            on_the_old = _per_day(settled_cash_facts(old_account_id, scenario_id))
+            assert on_the_old[txn.settled_on] == Decimal("-148.32")
+            assert txn.settled_on not in on_the_new
+
+            # Only a NAMED tender moves it: revert and re-settle naming the
+            # row's new account, and the same movement books there.
+            _revert(txn)
+            db.session.flush()
+            transaction_service.settle_transaction(
+                txn, tender_account_id=moved_to.id,
+            )
+            db.session.flush()
+            movement = _only_movement(txn)
+            assert movement.id == first_id
+            assert movement.account_id == moved_to.id
             on_the_new = _per_day(settled_cash_facts(moved_to.id, scenario_id))
             on_the_old = _per_day(settled_cash_facts(old_account_id, scenario_id))
             assert on_the_new[txn.settled_on] == Decimal("-148.32")
@@ -1003,7 +1037,7 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             assert len(facts) == 1
             assert facts[0].is_income is True
             assert facts[0].delta == Decimal("2572.78")
-            assert status_seam.covered_cash_leg(txn) == Decimal("2572.78")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("2572.78")
 
     def test_the_fold_reads_the_movement_and_nothing_without_it(
         self, app, seed_user, seed_periods,
@@ -1021,7 +1055,7 @@ class TestAPaycheckIsCoveredInItsOwnDirection:
             db.session.flush()
             db.session.expire(txn)
             # Worth nothing without its movement (R-BAL81), as the fold reads.
-            assert status_seam.covered_cash_leg(txn) == Decimal("0")
+            assert status_seam.covered_cash_leg(txn, txn.account_id) == Decimal("0")
             assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
     def test_the_posted_ledger_books_the_family_as_INCOME(
@@ -1153,7 +1187,7 @@ class TestATransferIsCoveredOnBothLegs:
                 assert movement.settled_on == leg.settled_on
                 assert movement.account_id == leg.account_id
                 # The leg is worth what its movement moves (R-BAL81).
-                assert status_seam.covered_cash_leg(leg) == (
+                assert status_seam.covered_cash_leg(leg, leg.account_id) == (
                     cash_ledger.movement_cash_leg(leg, movement)
                 )
             facts = {
@@ -1183,7 +1217,7 @@ class TestATransferIsCoveredOnBothLegs:
                 leg.entries.remove(movement)
                 db.session.flush()
                 db.session.expire(leg)
-                assert status_seam.covered_cash_leg(leg) == Decimal("0")
+                assert status_seam.covered_cash_leg(leg, leg.account_id) == Decimal("0")
                 assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
     def test_the_ledger_books_the_pair_whole_and_the_movements_nowhere(
@@ -1339,8 +1373,8 @@ class TestATransferIsCoveredOnBothLegs:
                 movement = _only_movement(leg)
                 assert movement.amount == Decimal("500.00")
                 assert movement.settled_on == leg.settled_on
-            assert status_seam.covered_cash_leg(expense) == Decimal("-500.00")
-            assert status_seam.covered_cash_leg(income) == Decimal("500.00")
+            assert status_seam.covered_cash_leg(expense, expense.account_id) == Decimal("-500.00")
+            assert status_seam.covered_cash_leg(income, income.account_id) == Decimal("500.00")
 
 
 class TestATransfersMovementsFollowItsLifecycle:
@@ -1893,7 +1927,7 @@ class TestAKeptMovementIsNotAPurchase:
             # purchases, has no covering movement and is worth nothing of its
             # own (ruling R-BAL81).
             assert envelope.covering_movements == []
-            assert status_seam.covered_cash_leg(envelope) == Decimal("0")
+            assert status_seam.covered_cash_leg(envelope, envelope.account_id) == Decimal("0")
             assert [
                 cash_ledger.movement_cash_leg(envelope, entry)
                 for entry in envelope.entries

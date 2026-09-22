@@ -113,10 +113,11 @@ from ._submission import MatchSubmission, as_reviewed
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._dating import RowDays
-    from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
+    from ._offers import BankLine, MatchProposal
     from ._preview import HandTotals
     from ._reads import CardSubject, ReviewSet
     from ._scope import ReviewScope
+    from ._subjects import CandidateRow, RowKind
     from ._submission import ReviewedDifference
 
 

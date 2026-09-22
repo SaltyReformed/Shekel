@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from ._offers import BankLine, CandidateRow, RowKind
+from ._offers import BankLine
+from ._subjects import CandidateRow, RowKind
 
 
 #: How far a recorded settle day may sit from the bank's posted day and still
@@ -58,7 +59,7 @@ def within_window(row: CandidateRow, line: BankLine) -> bool:
     actually carry out.
 
     **The distance is measured from the row's WINDOW**
-    (:attr:`~._offers.CandidateRow.expected_window`) -- the days the app
+    (:attr:`~._subjects.CandidateRow.expected_window`) -- the days the app
     believes that money moved between -- widened by :data:`DAY_WINDOW` at each
     end.  A row with no window at all is refused rather than admitted: see the
     comment on that branch.  For most settled rows and for an unsettled purchase
@@ -236,7 +237,7 @@ def signed_days_outside(window: "tuple[date, date]", day: date) -> int:
 
     Args:
         window: A ``(first, last)`` span of days, both ends inclusive -- a
-            row's :attr:`~._offers.CandidateRow.expected_window`, or the
+            row's :attr:`~._subjects.CandidateRow.expected_window`, or the
             budget clock the pane prints.
         day: The day the bank posted the line.
 
@@ -260,7 +261,7 @@ def days_outside(window: "tuple[date, date]", day: date) -> int:
     :func:`signed_days_outside`, which holds the arithmetic.
 
     Args:
-        window: The row's :attr:`~._offers.CandidateRow.expected_window`.
+        window: The row's :attr:`~._subjects.CandidateRow.expected_window`.
         day: The day the bank posted the line.
 
     Returns:

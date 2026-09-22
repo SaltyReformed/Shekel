@@ -169,7 +169,17 @@ def _settle_one(
             records the money as having moved on, rather than the seam's
             default of the user's today -- and on the ``asserted`` basis, because
             what the owner asserted is a BALANCE for that day and the money was
-            inside it (plan step **X-az**).
+            inside it (plan step **X-az**).  **Its ACCOUNT is the tender**
+            (plan step ``credit_card:CC-5-3``, ruling **R-CC15**: a
+            statement-driven settle forces the statement's own account): the
+            owner ticking a row on this account's panel says this account's
+            statement showed the money, so the covering movement books here
+            -- named rather than left to the seam's default, because a row
+            reverted out of a card-tendered settle keeps that record and the
+            default would keep it on the card (ruling **R-CC42**).  The scope
+            offers this account's own rows (:func:`~._rows.outstanding_scope`),
+            so the named tender is the row's own account and passes the verb's
+            gate by its first member.
 
     Returns:
         Whether the verb booked *submitted* as a correction -- **answered by the
@@ -183,6 +193,7 @@ def _settle_one(
     """
     corrected = transaction_service.settle_transaction(
         txn, submitted=submitted, settle_day=statement.settle_day,
+        tender_account_id=statement.account_id,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

@@ -329,6 +329,28 @@ class TestAProposalOverTheRuleSDestination:
         assert "makes that match impossible to accept" in verdict.withheld
         assert "count that money twice" not in verdict.withheld
 
+    def test_a_proposal_naming_the_envelopes_PAYMENT_withholds_it_too(self):
+        """A SETTLEMENT is the row named WHOLE, through its payment.
+
+        Plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**: a settled row
+        is offered as its covering movement, so a proposal naming that
+        movement claims the row exactly as one naming the row did -- read
+        through :attr:`~app.services.statement_match.CandidateRow
+        .transaction_id`, which is the movement's ROW for this kind and the
+        movement's id for nothing.
+        """
+        verdict = _verdicts(
+            (_creatable(_records_in()),),
+            proposals=(
+                _proposal(_row(
+                    kind=RowKind.SETTLEMENT, row_id=99, parent_id=ENVELOPE_ID,
+                )),
+            ),
+        )[7]
+
+        assert verdict.withheld is not None
+        assert "makes that match impossible to accept" in verdict.withheld
+
     def test_a_proposal_naming_a_PURCHASE_INSIDE_it_does_not(self):
         """Two acts naming neither a parent nor its own child."""
         verdict = _verdicts(

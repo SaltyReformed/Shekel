@@ -1232,7 +1232,7 @@ class TestACaptionCountsOnlyWhatItsTabCanDraw:
     deliver.  Measured on a planted act 2026-08-31 before the fix: caption
     ``1``, rendered ``0``, withheld ``0``.
 
-    :data:`~app.services.statement_match._release.NAMES_A_BANK_LINE` is that
+    :data:`~app.services.statement_match._acts.NAMES_A_BANK_LINE` is that
     invariant stated once, in SQL, and both readers narrow on it.
 
     **The state needs a code defect to reach**, which is why it is planted

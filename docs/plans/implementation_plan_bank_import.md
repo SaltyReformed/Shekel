@@ -205,6 +205,12 @@ is on that step's own entry.
       this ships); its first act is the census of the doors it refuses at. After `balance:X-bi-4`
       (shipped `32c65cf1`; the figure's home is the covering movement), beside `X-gl-2`. Closes
       **N-372**.
+- [ ] **X-hf** `feat(import): the card on the feed` -- design 3.11 of `credit_card_from_scratch.md`:
+      map the card account once `X-f6b-2` confirms SimpleFIN serves it (the mapping form must admit
+      a Credit Card, as `serves_cash_detail` does), land its lines in the one inbox on the card
+      (purchase lines matching card movements or minting them, the closing balance a level; payment
+      lines wait for `X-gl`'s TRANSFER door), the Capital One CSV adapter the fallback. After
+      `X-f6b-2` and `credit_card:CC-5-4a-2`; `credit_card:CC-7o` waits on it. Closes **BI-506**.
 - [ ] **X-gl** `feat(import): a bank line's disposition is one row` -- the DECOMPOSED parent of the
       ACT-MODEL rebuild the developer ruled from scratch on 2026-09-04 (**R-JY**). The argument,
       what it deletes, the limit it does NOT reach and the forks still open are
