@@ -56,6 +56,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.services.balance_at import owed
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
@@ -229,7 +230,7 @@ def loan_payoff_outlook(
 def debt_without_payoff_model(
     account_data: list[AccountProjection],
 ) -> Decimal:
-    """Return the owed magnitude of the debt no payoff date can cover.
+    """Return what is owed on the debt no payoff date can cover.
 
     The figure that makes the caption HONEST rather than merely narrow
     (developer ruling on finding N-99, plan step X-q3).  Every liability that
@@ -240,25 +241,55 @@ def debt_without_payoff_model(
     revolving card balance would otherwise read "Loans paid off Jun 2056" on a
     page whose own liability band never touches zero, with nothing saying why.
 
-    The magnitude is ``abs()``, matching the net-worth reducer's convention
-    (:func:`~.._net_worth.compute_net_worth_today` accumulates ``abs(balance)``
-    into its liability total): a Credit Card is anchored owed-as-NEGATIVE, and
-    this reports what is owed, not a signed balance.  (The name this sentence
-    carried until plan step X-t5 -- ``_net_worth._sum_net_worth_totals`` -- has
-    never existed in this tree, in any commit: an invented citation, written
-    into the record by the same step that renamed the caption above it.)
+    **Each account's OWED amount, floored at zero, then summed** (developer
+    ruling **R-CC49**, plan step credit_card:CC-5-5a): "A credit on one card is
+    not debt and does not pay down another card; the footer counts the debt a
+    payoff date leaves out."  A Credit Card is anchored owed-as-NEGATIVE, so
+    what it owes is :func:`app.services.balance_at.owed` of its balance, the
+    seam's one flip.  With a Visa owing ``$1,000.00``, an Amex holding a
+    ``$50.00`` credit, an auto loan with no terms owing ``$5,000.00`` and a
+    family loan owing ``$2,000.00``, this is ``1,000.00 + 0.00 + 5,000.00 +
+    2,000.00 = $8,000.00``.  It was ``abs()`` of each balance, which booked
+    the Amex credit as ``$50.00`` of debt (``$8,050.00``, ledger row
+    **CC-354**); a plain net sum would have let it pay the Visa down
+    (``$7,950.00``), which the ruling refused.
+
+    **The flip is safe on every account summed here WITHOUT the configured-loan
+    re-sign plan step CC-5-5c owes** (ruling R-CC47): the filter keeps only a
+    liability with no :attr:`~.._types.AccountProjection.loan`, and none of
+    those is a configured loan, so each one's ``current_balance`` is the
+    seam's HELD figure -- the precondition :func:`~app.services.balance_at.owed`
+    states.  ``loan`` is set exactly when the seam's configured-loan test
+    holds: the params map it is built from carries amortizing types only
+    (``_data._load_loan_params_and_escrow``), and the projection fills it only
+    when :func:`~app.services.balance_at.loan_figures` resolves -- the two
+    halves ``balance_at._resolution.configured_loan`` tests.
+
+    **Held in the seam's arithmetic, which is not yet what the owner TYPED.**
+    A liability with no loan terms carries whatever sign its balance was
+    entered with: the create form asks for "The account's real-world balance."
+    with no sign, the grid's anchor editor carries no help text, and only the
+    books-opening door says "Negative for something you owe." -- so an auto
+    loan typed as ``+5,000.00`` reads here as a ``$5,000.00`` CREDIT and adds
+    nothing, and the caveat hides.  The developer ruled the remedy after
+    CC-5-5a's review (ruling **R-CC52**, plan step credit_card:CC-5-5b): every
+    door that takes a liability's balance asks for the amount OWED and stores
+    the held sign through the one flip, so the sign this reads is true by
+    construction.  No such account existed on production at the 2026-09-21
+    10:33 dump (measured on its clone at CC-5-5a: its two liabilities are both
+    configured loans, excluded here).
 
     Args:
         account_data: The per-account projections (each answering
             ``is_liability`` and carrying a ``current_balance``).
 
     Returns:
-        The total owed on liabilities with no payoff model, ``0.00`` when
-        there are none.
+        The total owed on liabilities with no payoff model, each floored at
+        ``0.00``; ``0.00`` when there are none.
     """
     return sum(
         (
-            abs(ad.current_balance) for ad in account_data
+            max(owed(ad.current_balance), ZERO) for ad in account_data
             if ad.is_liability and ad.loan is None
         ),
         ZERO,

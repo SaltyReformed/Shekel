@@ -23,6 +23,10 @@ from decimal import Decimal
 
 import pytest
 
+# The one flip moved from ``card_statement`` into the balance seam at plan step
+# credit_card:CC-5-5a (ruling R-CC47); ``TestTheSignIsFixedOnce`` pins the same
+# three R-CC29 answers at its new home, assertions unchanged.
+from app.services.balance_at import owed
 from app.services.card_statement import (
     CycleWindow,
     cycle_containing,
@@ -30,7 +34,6 @@ from app.services.card_statement import (
     due_date_for,
     grace_kept,
     minimum_payment,
-    owed,
     statement_sequence,
 )
 from app.utils.dates import month_ordinal

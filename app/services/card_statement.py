@@ -25,12 +25,19 @@ so prices the cycle before it, by this same rule.
 `recurrence:R-R3`): a close day of 31 is the 31st in January and the 28th in
 February, and never decays to the 30th for good.
 
-**The sign is fixed HERE, once** (developer ruling **R-CC29**, 2026-09-18).
-The seam reports a card's cash balance NEGATIVE when money is owed (the card
-is a plain liability riding the cash fold, **R-CC14**), and every statement
-figure is stated as an OWED amount: positive when the owner owes, negative
-when the card holds a credit.  :func:`owed` is the one flip; a consumer that
-flipped the sign itself would be a second home for it.
+**Every statement figure is an OWED amount** (developer ruling **R-CC29**,
+2026-09-18): positive when the owner owes, negative when the card holds a
+credit.  The seam reports a card's cash balance NEGATIVE when money is owed
+(the card is a plain liability riding the cash fold, **R-CC14**), and the ONE
+flip from that held balance to an owed figure is the seam's
+:func:`app.services.balance_at.owed` -- it lived here as ``owed`` until plan
+step credit_card:CC-5-5a moved it into the balance seam (ruling **R-CC47**),
+so the net-worth surfaces and the statement read ONE flip.  The statement
+balance is ``owed(cash_balance_at(account, ctx, window.valuation_date))`` for
+the producer that will state it (no ``app/`` module calls this one yet); a
+payday row's base under **R-CC22** is the same flip of the fold at the end of
+the day before its day.  A consumer that flipped the sign itself would be a
+second home for it.
 
 **The due date** (developer ruling **R-CC26**, 2026-09-18) is the first
 occurrence of the due day strictly AFTER the close date -- the same month when
@@ -192,31 +199,6 @@ def due_date_for(closes: date, due_day: int) -> date:
     return due
 
 
-def owed(fold_balance: Decimal) -> Decimal:
-    """Return the card's OWED figure for a cash-fold balance (**R-CC29**).
-
-    The one sign flip: the seam reports a card's balance negative when money
-    is owed, and every statement figure is stated as an amount owed.  The
-    statement balance is ``owed(cash_balance_at(account, ctx,
-    window.valuation_date))``; a payday row's base under **R-CC22** is the
-    same flip of the fold at the end of the day before its day.  The
-    net-worth band flips with ``abs()`` instead
-    (:func:`app.services.balance_at.liability_owed_at_dates`), so a card in
-    CREDIT reads as owed there: ledger row **CC-354**, owned by plan step
-    CC-5, not this module's to fix.
-
-    Args:
-        fold_balance: The seam's cash-flow balance (negative = owed).
-
-    Returns:
-        ``-fold_balance``: positive when the owner owes, negative when the
-        card holds a credit, and an unsigned ``0.00`` at zero (``decimal``
-        negates a zero to a positive zero outside ``ROUND_FLOOR``, which
-        nothing here sets).
-    """
-    return -fold_balance
-
-
 def minimum_payment(
     balance: Decimal, percent: Decimal, floor: Decimal,
 ) -> Decimal:
@@ -227,7 +209,8 @@ def minimum_payment(
     the floor is due whole, and a zero or credit balance has nothing due.
 
     Args:
-        balance: The statement balance as an OWED figure (:func:`owed`).
+        balance: The statement balance as an OWED figure
+            (:func:`app.services.balance_at.owed`).
         percent: The minimum's fraction of the balance
             (:attr:`~app.models.credit_card_params.CreditCardParams.min_payment_percent`,
             ``Decimal("0.0250")`` for 2.5%).
