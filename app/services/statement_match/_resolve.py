@@ -57,11 +57,12 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 
-from ._candidates import MatchedSubjects, repriced, unmatched_rows
-from ._offers import CandidateRow, RowKind
+from ._candidates import MatchedSubjects, unmatched_rows
+from ._subjects import CandidateRow, RowKind
 from ._scope import ReviewScope
 from ._submission import MatchSubmission, ReviewedRow
 from ._undisposed import skipped_among
+from ._valuation import repriced
 
 
 def locked_for_write(query):
@@ -472,7 +473,7 @@ def resolve_rows(
     * WHICH of them are already spoken for changes with every item, so that is
       the *matched* argument, re-read by every act;
     * WHAT one is WORTH can be moved by a SIBLING act, so it is re-derived here
-      through :func:`~._candidates.repriced`.
+      through :func:`~._valuation.repriced`.
 
     **That third bullet replaces an argument adversarial financial review
     measured FALSE on 2026-08-19.**  The claim was that only a parent/child
@@ -579,7 +580,7 @@ def _reject_moved_since_review(
     **``$321.71``** correction under that caption.
 
     **It runs AFTER the re-pricing rather than instead of it.**  The two answer
-    different questions and both are needed: :func:`~._candidates.repriced`
+    different questions and both are needed: :func:`~._valuation.repriced`
     makes the write correct against the database as it stands NOW (finding
     **N-309**), and this makes the write one the owner agreed to.  A door with
     only the first writes a correct number nobody saw; a door with only the

@@ -21,6 +21,7 @@ from app.models.account import Account
 from app.services import (
     category_service,
     definition_delete,
+    match_withdrawal,
     pay_period_service,
     status_seam,
     transaction_service,
@@ -177,6 +178,16 @@ def get_full_edit(txn_id):
     tender_accounts, tender_account_id = _tender_picker(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
+        # **What a different pick would WITHDRAW** (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC46**): every accepted match
+        # names the row's payment, and a payment re-pointed onto another
+        # account leaves the match it was matched in (the seam withdraws it
+        # at ``_re_point``), so the picker says what that frees BEFORE the
+        # pick -- the disclosure a delete makes through its dialog, read
+        # through the same twin (``match_withdrawal``'s pending read) the
+        # door's own write uses.  ``None`` for a row holding no payment; a
+        # withdrawal freeing nothing renders nothing.
+        tender_withdraws=_tender_withdrawal(txn),
         txn=txn,
         categories=categories,
         # The row's OWN paycheck, as the DERIVED value (plan step C4-a-5).  The
@@ -279,6 +290,27 @@ def get_full_edit(txn_id):
         tender_accounts=tender_accounts,
         tender_account_id=tender_account_id,
     )
+
+
+def _tender_withdrawal(txn):
+    """Return what re-pointing *txn*'s kept payment would withdraw, or ``None``.
+
+    The read twin of the seam's write (``status_seam._covering._re_point``
+    calls ``match_withdrawal.withdraw_for_moved_movement``), so the caption
+    under the "Paid from" picker and the act itself come from one derivation
+    -- the shape the delete dialog has over ``preview_deletion``.
+
+    Args:
+        txn: The row the popover is drawn for, with ``entries`` loaded.
+
+    Returns:
+        A :class:`~app.services.match_withdrawal.MatchWithdrawal`, or
+        ``None`` when the row holds no payment to re-point.
+    """
+    movement = status_seam.covering_movement_of(txn)
+    if movement is None:
+        return None
+    return match_withdrawal.pending_for_moved_movement(movement)
 
 
 def _tender_picker(txn):

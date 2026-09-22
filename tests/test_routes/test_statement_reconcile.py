@@ -1193,7 +1193,12 @@ class TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn:
             "the payback was not offered at all, so the tag assertions below "
             "would be quantified over a pane that lists nothing"
         )
-        assert f'id="row-{line.id}-transaction-{payback.id}"' in pane, (
+        # A settled row renders as its PAYMENT (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC43**): the candidate's id
+        # carries the covering movement's kind and id, where through
+        # ``CC-5-3`` it carried ``transaction-<row id>``.
+        (payment,) = payback.covering_movements
+        assert f'id="row-{line.id}-settlement-{payment.id}"' in pane, (
             "the payback did not render in the CANDIDATE list, so this case "
             "is not exercising the block that carries the caveat"
         )
@@ -1230,7 +1235,9 @@ class TestThePaneTagsARowTheBankNeverShowsAloneOnItsOwn:
             data={"csrf_token": "x"},
         ).get_data(as_text=True)
 
-        assert f'id="row-{line.id}-transaction-{ghost.id}"' in pane, (
+        # As its payment (ruling **R-CC43**; the case above says why).
+        (payment,) = ghost.covering_movements
+        assert f'id="row-{line.id}-settlement-{payment.id}"' in pane, (
             "the row was not offered in the CANDIDATE list, so the absence "
             "assertions below would pass over a block that never ran"
         )

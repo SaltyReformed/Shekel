@@ -760,13 +760,15 @@ def _rows_on(
     (:attr:`~app.services.cash_ledger.CashSourceFact.entry_id`), which is why
     the match state is asked of the entry when there is one and of the
     transaction otherwise -- the same two-subject split
-    ``statement_match_members`` stores.  **A COVERING MOVEMENT is the
-    exception, and it is asked of its PARENT** (plan steps X-bi-3a / 3b,
-    ruling **R-BAL39**): a settled bill's or paycheck's money walks as its
-    movement's fact while the ROW is what the matcher offers and a match
-    names (the mirror is kept out of the purchase candidates), so asking the
-    entry's claim read every matched bill as unexplained on this screen
-    (adversarial review of X-bi-3b, 2026-09-16).
+    ``statement_match_members`` stores.  **A COVERING MOVEMENT is asked of
+    BOTH its homes** (plan step ``credit_card:CC-5-4a-1``, ruling
+    **R-CC43**): a settled bill's or paycheck's money walks as its movement's
+    fact; a match recorded since that step names the movement itself, and one
+    recorded before names its ROW (the shape plan steps X-bi-3a / 3b set,
+    ruling **R-BAL39**, under which asking the entry alone read every matched
+    bill as unexplained on this screen -- adversarial review of X-bi-3b,
+    2026-09-16).  The row half goes with the column at plan step
+    ``credit_card:CC-5-4a-2``.
     """
     facts = [
         fact
@@ -793,8 +795,10 @@ def _rows_on(
                 fact.delta,
                 names.get((fact.transaction_id, fact.entry_id), "(unnamed)"),
                 fact.entry_id in claimed_entries
-                if fact.entry_id is not None and fact.entry_id not in covering
-                else fact.transaction_id in claimed_txns,
+                or (
+                    (fact.entry_id is None or fact.entry_id in covering)
+                    and fact.transaction_id in claimed_txns
+                ),
             )
             for fact in facts
         ),
@@ -814,9 +818,9 @@ def _row_names(
     Returns:
         ``({(transaction_id, entry_id): name}, covering)`` -- the names, and
         the ids of the entry facts that are a row's COVERING MOVEMENT, whose
-        match state :func:`_rows_on` asks of the parent.  Read in the same
-        query as the entry's name, so a day costs two queries at most and
-        none when nothing is on it.
+        match state :func:`_rows_on` asks of the parent as well as of the
+        entry.  Read in the same query as the entry's name, so a day costs two
+        queries at most and none when nothing is on it.
     """
     names: "dict[tuple[int, int | None], str]" = {}
     covering: set[int] = set()

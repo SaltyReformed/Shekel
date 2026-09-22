@@ -226,11 +226,8 @@ from ._income import record_income_from_line
 from ._leftovers import CreatableLine, RecordableInflow
 from ._offers import (
     BankLine,
-    CandidateRow,
-    Candidates,
     MatchDays,
     MatchProposal,
-    RowKind,
     corrected_purchase_day,
     merchant_label,
 )
@@ -241,6 +238,7 @@ from ._offered_rules import (
     rules_worth_offering,
 )
 from ._outcome import BatchOutcome
+from ._subjects import CandidateRow, Candidates, RowKind
 from ._submission import (
     MatchSubmission,
     ReviewedDifference,

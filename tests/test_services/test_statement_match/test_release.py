@@ -72,7 +72,7 @@ from app.services.statement_match._release import (  # pylint: disable=protected
     planned_removals,
 )
 
-from tests._test_helpers import typed
+from tests._test_helpers import an_entered_day, typed
 
 from ._builders import (
     a_bank_line,
@@ -740,7 +740,7 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
     collected before the fold reached it and the per-row queries came straight
     back.  Plan step ``bank_import:X-gf-2`` deleted both halves of that
     discipline: every subject arrives on its creation through
-    ``_release._WHOLE_ACT``, so it is loaded with the act and held by the act.
+    ``_acts._WHOLE_ACT``, so it is loaded with the act and held by the act.
     A caller can no longer forget either step, because there is no step.
     Found by adversarial security review 2026-08-24.
     """
@@ -801,7 +801,7 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
         reach them inside one call -- and cost 478 statements against 9 on the
         developer's own 230-act database.  There is no warm and no reference to
         drop since plan step ``bank_import:X-gf-2``; what would reintroduce the
-        cost is removing a chain from ``_release._WHOLE_ACT``, which THIS
+        cost is removing a chain from ``_acts._WHOLE_ACT``, which THIS
         control sees, because the subjects would then be fetched per act.
         """
         few = self._statements_for(seed_user, 2)
@@ -821,7 +821,7 @@ class TestTheAcceptedFoldDoesNotScaleWithTheAccount:
     looked cheap only because 218 of the developer's 221 acts pre-date the
     creations relation and short-circuit, so the per-act cost was paid by
     nobody's data yet.  Both are now flat by construction
-    (``_release._WHOLE_ACT``) rather than by a discipline, and this is the
+    (``_acts._WHOLE_ACT``) rather than by a discipline, and this is the
     control that says so for the reader the REGISTER renders.
 
     It grades the SHAPE, not a constant: a count asserted against a number
@@ -1178,13 +1178,23 @@ class TestTheRegisterBoundsWhatItRenders:
         for ordinal in (1, 2):
             self._an_act(seed_user, ordinal)
         # ...and the OLDEST act stops holding, by the hand edit the accepted
-        # list is re-reviewable for.
+        # list is re-reviewable for -- through the row's own door, which
+        # mirrors the day onto the covering movement the act names (plan
+        # step ``credit_card:CC-5-4a-1``, ruling **R-CC43**; through
+        # ``CC-5-3`` the act named the row and this wrote its column).
+        # Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
+        # under R-CC43 -- the member names the payment; a day moves through the seam that mirrors
+        # it; a settled row is ticked as its payment."
         member = db.session.query(StatementMatchMember).filter(
             StatementMatchMember.match_id == doomed.match_id,
-            StatementMatchMember.transaction_id.isnot(None),
+            StatementMatchMember.transaction_entry_id.isnot(None),
         ).one()
-        db.session.get(Transaction, member.transaction_id).settled_on = (
-            seed_user["bootstrap_period"].start_date + timedelta(days=4)
+        row = member.entry.transaction
+        transaction_service.apply_requested_status(
+            row, row.status_id,
+            settle_day=an_entered_day(
+                seed_user["bootstrap_period"].start_date + timedelta(days=4),
+            ),
         )
         db.session.flush()
 

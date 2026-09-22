@@ -755,7 +755,7 @@ class Leftovers:
     """What this pass could not explain, placed against the owner's rule.
 
     Six facts one derivation produces that travel together, which is the
-    argument :class:`~._offers.Candidates` and
+    argument :class:`~._subjects.Candidates` and
     :class:`~._propose.ProposedMatches` already make in this package: a caller
     holding the offerable lines without the count of the ones declined would
     render a list that reads as complete.  *It said FOUR over five fields until

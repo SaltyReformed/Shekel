@@ -22,6 +22,21 @@ created to sit in is created and never named, because naming an envelope
 beside its own purchase counts the same money twice.  :mod:`._release` is what
 reads the second relation.
 
+**Every MEMBER an act records is a MOVEMENT** (plan step
+``credit_card:CC-5-4a-1``, ruling **R-CC43**, developer 2026-09-21): a
+purchase, or a row's covering movement -- the one the settle wrote for the
+Projected row the owner ticked, read back after :func:`~._moving.move_members`
+has run (:func:`_as_recorded`), or the one the screen offered as a
+SETTLEMENT because the row was settled already.  A settled row's money IS its
+movement (ruling **R-BAL80**), on whichever account it moved through, and
+naming the movement is what lets a bill charged to the card be matched on the
+card's statement at all: the member key holds a row member to the ROW's
+account.  The rows an act CREATES are still recorded as rows (a residual, a
+minted envelope): what the act made and what it names are two relations, and
+the second names the money.  Acts recorded before that step name rows; the
+readers carry both shapes until plan step ``credit_card:CC-5-4a-2`` re-keys
+them.
+
 **It does NOT write ``reconciled_by_id``, and that is ruling R-FV.**  That
 column names an ``account_anchor_history`` row -- a balance the owner asserted
 by hand -- and a bank line is not one.  What it records, *which declared
@@ -131,14 +146,16 @@ from app.models.statement_match import (
     StatementMatchCreation,
     StatementMatchMember,
 )
+from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services import status_seam
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCHED,
     log_event,
 )
 
-from ._candidates import MatchedSubjects, matched_subjects, repriced
+from ._candidates import MatchedSubjects, matched_subjects
 from ._creations import CreatedSubject
 from ._moving import move_members
 from ._offers import (
@@ -155,6 +172,7 @@ from ._variance import (
 from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
 from ._submission import MatchSubmission
+from ._valuation import repriced, settlement_price, settlement_candidate
 
 _logger = logging.getLogger(__name__)
 
@@ -288,7 +306,7 @@ def _reject_parent_and_its_own_purchase(
     another item names is by adding to or posting a purchase under it* -- was
     measured false by adversarial financial review 2026-08-19 on a SIBLING
     write (``sync_entry_payback``); the answer is that every act re-prices the
-    rows it names (:func:`~._candidates.repriced`), and this guard is left to
+    rows it names (:func:`~._valuation.repriced`), and this guard is left to
     do the one job it can actually do.
 
     Args:
@@ -370,9 +388,11 @@ def _reject_drifted_under_the_act(
     Args:
         scope: The pass, for the calendar and basis the re-pricing needs.
         lines: The bank lines the match explains.
-        members: Every row the match will record, INCLUDING one this act
-            minted -- the minted row is exactly what is supposed to close the
-            gap, so a check that left it out would grade the wrong set.
+        members: Every subject the match will record, AS IT WILL RECORD
+            THEM (:func:`_as_recorded`: the movements, a ticked row's read
+            back after its settle) and INCLUDING one this act minted -- the
+            minted row is exactly what is supposed to close the gap, so a
+            check that left it out would grade the wrong set.
         sides: What the two halves came to before the act ran.
 
     Raises:
@@ -460,15 +480,19 @@ def _record(
             bank_statement_line_id=line.id,
         ))
     for row in rows:
+        # A MOVEMENT, always (module docstring; ruling **R-CC43**): the
+        # caller has already read a ticked row back as the covering movement
+        # its settle wrote (:func:`_as_recorded`), so a TRANSACTION reaching
+        # this loop is a programming error and not a member shape.
+        if not row.kind.names_an_entry:
+            raise RuntimeError(
+                f"A match member must be a movement; {row.kind.value} "
+                f"{row.row_id} reached the writer unconverted."
+            )
         db.session.add(StatementMatchMember(
             match_id=match.id,
             account_id=account_id,
-            transaction_id=(
-                row.row_id if row.kind is RowKind.TRANSACTION else None
-            ),
-            transaction_entry_id=(
-                row.row_id if row.kind is RowKind.PURCHASE else None
-            ),
+            transaction_entry_id=row.row_id,
         ))
     for subject in created:
         db.session.add(StatementMatchCreation(
@@ -484,6 +508,72 @@ def _record(
         ))
     db.session.flush()
     return match
+
+
+def _as_recorded(row: CandidateRow, scope: ReviewScope) -> CandidateRow:
+    """Return *row* as the act will RECORD it: a ticked row as its movement.
+
+    Plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**.  A PURCHASE and
+    a SETTLEMENT are movements already and pass through.  A TRANSACTION was
+    a Projected row when the screen offered it and
+    :func:`~._moving.move_members` has since settled it through its own
+    door, so it now holds exactly one covering movement carrying what the
+    settle booked (``status_seam._covering``); that movement is the subject
+    the act names, priced as :func:`~._valuation.settlement_candidate`
+    prices every settled record -- the same constructor the offer set would
+    have used had the row been settled when the screen was drawn.
+
+    **It reads back rather than assumes**, and it cannot fail to find the
+    movement on any path this door admits: a row the offer set prices at
+    ``0`` (one that settles from its purchases, or whose settle books
+    nothing) is never a candidate, the bank's figure for a member is refused
+    at ``0`` before any settle runs (:func:`~._variance.reject_unrecordable`),
+    and a transfer shadow's settle covers both legs.  A row settled with no
+    movement would be a broken seam invariant, so it raises rather than
+    records a member that names nothing.
+
+    Args:
+        row: A member :func:`~._moving.move_members` has just moved.
+        scope: The pass, for the calendar and basis the candidate is built
+            with and the account whose screen it is on.
+
+    Returns:
+        The member to record.
+
+    Raises:
+        RuntimeError: When a settled row holds no covering movement, or its
+            movement is not a candidate of this screen -- both broken
+            invariants rather than owner-reachable states.
+    """
+    if row.kind is not RowKind.TRANSACTION:
+        return row
+    # The movements a settle wrote are staged and need their ids: the member
+    # names one by id, and the drift check re-reads it by id.
+    db.session.flush()
+    txn = db.session.get(Transaction, row.row_id)
+    movement = status_seam.covering_movement_of(txn)
+    if movement is None:
+        raise RuntimeError(
+            f"Transaction {txn.id} settled through the matcher and holds no "
+            "covering movement: the status seam writes one for every settle "
+            "that books a figure, and the offer set never names a row whose "
+            "settle books nothing."
+        )
+    amount = settlement_price(movement, scope.basis)
+    recorded = (
+        None if amount is None
+        else settlement_candidate(
+            movement, scope.calendar, amount, scope.account_id,
+        )
+    )
+    if recorded is None:
+        raise RuntimeError(
+            f"Transaction {txn.id}'s covering movement {movement.id} is not "
+            f"a candidate on account {scope.account_id} after its own settle "
+            "on this screen: the row was offered here and its record must be "
+            "here too."
+        )
+    return recorded
 
 
 @dataclass(frozen=True)
@@ -516,9 +606,11 @@ class MatchContent:
             because :func:`record_match` mints one and hands its writer a
             :func:`~dataclasses.replace`d copy -- so the field there is what
             the ACT made.  ``rows`` moves the same way, from what the caller
-            resolved to what the act asserts.  Found by adversarial review
-            2026-08-26, which is also why :func:`_record`'s own docstring no
-            longer claims it receives what the caller passed.
+            resolved to what the act asserts -- and, since plan step
+            ``credit_card:CC-5-4a-1``, from the rows the caller NAMED to the
+            movements the act RECORDS (:func:`_as_recorded`).  Found by
+            adversarial review 2026-08-26, which is also why :func:`_record`'s
+            own docstring no longer claims it receives what the caller passed.
         residual: The difference the owner reviewed and agreed to record, or
             ``None`` -- which is what every caller but the form door passes,
             because a door that BUILT its row built it at the bank's own figure
@@ -724,7 +816,15 @@ def record_match(
         if residual_period is not None
         else None
     )
-    members = rows if minted is None else [*rows, minted]
+    # **What the act RECORDS is the MOVEMENTS** (ruling **R-CC43**): every
+    # ticked row has settled by now and holds the covering movement its
+    # settle wrote, and that movement -- not the row -- is the member.  Read
+    # back here, BEFORE the drift check, so the check grades the subjects
+    # that will be written at the figures they will be written with.
+    members = [
+        _as_recorded(row, scope)
+        for row in (rows if minted is None else [*rows, minted])
+    ]
     _reject_drifted_under_the_act(scope, lines, members, sides)
     match = _record(
         scope,

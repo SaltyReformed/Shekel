@@ -114,7 +114,8 @@ from app.utils.log_events import (
 from app.utils.money import MONEY_COLUMN_MAX
 
 from ._landing import DifferenceLanding
-from ._offers import CandidateRow, MatchDays, RowKind, merchant_label
+from ._offers import MatchDays, merchant_label
+from ._subjects import CandidateRow, RowKind
 from ._sides import MatchSides
 from ._scope import ReviewScope
 from ._uncategorized import MovementToRecord, mint_uncategorized
@@ -251,7 +252,7 @@ def _reject_uncorrectable_row(
     rather than a tolerance:
 
     * a row whose FIGURE IS NOT ITS OWN TO STATE, which the row now SAYS
-      (:attr:`~._offers.CandidateRow.states_own_figure`) rather than this door
+      (:attr:`~._subjects.CandidateRow.states_own_figure`) rather than this door
       re-deriving.  A difference on one says a CARD PURCHASE is missing or
       wrong, which is a different repair on a different row.  **The census
       that answers it is TWO published predicates and it moved to the
@@ -278,6 +279,12 @@ def _reject_uncorrectable_row(
     is about; what a GROUP adds is only that nothing says WHICH member the
     remainder belongs to (:func:`_reject_unaccepted_difference`).
 
+    **Both are asked of a SETTLEMENT as of a TRANSACTION** (plan step
+    ``credit_card:CC-5-4a-1``): a row's payment matched on the row's terms
+    carries the row's own answer to both -- the door that writes the figure
+    is the row's -- so the one kind exempt here is the PURCHASE, which
+    states its own figure and belongs to no transfer.
+
     Args:
         row: One app row the match names, already priced.
         sides: What the two halves come to.
@@ -286,7 +293,7 @@ def _reject_uncorrectable_row(
         ValidationError: With the figures in the message, and naming which of
             the two it is, so the sentence says what to do next.
     """
-    if row.kind is not RowKind.TRANSACTION:
+    if row.kind is RowKind.PURCHASE:
         return
     if row.transfer_id is not None:
         raise ValidationError(
@@ -712,7 +719,7 @@ def mint(
         days: The days the match writes, derived once for the whole act.
 
     Returns:
-        The new row as a :class:`~._offers.CandidateRow`, so the caller can
+        The new row as a :class:`~._subjects.CandidateRow`, so the caller can
         record it as a member exactly like every other one.
 
     Raises:

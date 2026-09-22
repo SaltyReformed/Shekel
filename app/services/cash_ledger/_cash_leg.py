@@ -291,7 +291,8 @@ def cash_leg_of(txn, gross: Decimal) -> Decimal:
     (``+`` income, ``-`` expense) -- behind the same TOTAL contributing gate
     :func:`movement_cash_leg` applies to a movement: a non-contributing row is
     worth ``0.00`` whatever *gross* says.  Its one caller is the statement
-    matcher (``_candidates._price``, plan step ``bank_import:X-f6a-2``),
+    matcher (``statement_match._valuation.transaction_price``, plan step
+    ``bank_import:X-f6a-2``),
     which must compare a bank line against what the app would move if the
     Projected row it names settled -- and which asks this ONLY of a row that
     does not settle from its purchases (``transaction_service.

@@ -44,12 +44,12 @@ from decimal import Decimal, InvalidOperation
 
 from app.utils.digit_strings import parse_row_id
 
-from ._offers import CandidateRow, RowKind
+from ._subjects import CandidateRow, RowKind
 
 
 #: What separates a reviewed row's four fields on the wire.  A colon cannot
 #: occur inside any of them: two are digit runs, one is a signed decimal, and
-#: the fourth is a :class:`~._offers.RowKind` VALUE rather than a label.
+#: the fourth is a :class:`~._subjects.RowKind` VALUE rather than a label.
 _SEPARATOR: str = ":"
 
 #: How many fields a token carries.  Named so :meth:`ReviewedRow.from_token`
@@ -342,7 +342,7 @@ class ReviewedRow:
 
         Args:
             row: The same row as it stands NOW
-                (:func:`~._candidates.repriced`).
+                (:func:`~._valuation.repriced`).
 
         Returns:
             One sentence naming what moved, or ``None`` when the row still
@@ -364,7 +364,7 @@ def as_reviewed(row: CandidateRow) -> ReviewedRow:
     **The one place an offer becomes a reviewed state**, so the screen that
     emits the token and the door that checks it cannot describe a row
     differently.  It is a function here rather than a property on
-    :class:`~._offers.CandidateRow` because the dependency runs one way: this
+    :class:`~._subjects.CandidateRow` because the dependency runs one way: this
     module knows what an offer is, and :mod:`._offers` must not have to know
     what a submission is.
 
@@ -385,7 +385,7 @@ def as_reviewed(row: CandidateRow) -> ReviewedRow:
 #: What separates the figure from the member it lands on in a
 #: :class:`ReviewedDifference` token.  It cannot occur inside either half: the
 #: figure is :data:`_FIGURE`'s alphabet, and a :attr:`ReviewedRow.token` is
-#: two digit runs, a figure and a :class:`~._offers.RowKind` value joined by
+#: two digit runs, a figure and a :class:`~._subjects.RowKind` value joined by
 #: :data:`_SEPARATOR`.  **A second character rather than a second use of the
 #: colon**, so the two halves read as two halves: ``-50.00@transaction:12:...``
 #: is a figure AT a row, where ``-50.00:transaction:12:...`` would read as a
@@ -446,7 +446,7 @@ class ReviewedDifference:
     value says which; what keeps one body's consent from meaning the other act
     is that adding or removing ANY row moves the difference, so the gate
     refuses the stale figure.  That holds only because no candidate is worth
-    nothing: :func:`~._candidates.transaction_candidate` answers ``None`` at
+    nothing: :func:`~._valuation.transaction_candidate` answers ``None`` at
     zero, and ``ck_transaction_entries_positive_amount`` is ``amount <> 0``.
     A zero-cash candidate would let a row join or leave a set under a consent
     that still compares equal.
