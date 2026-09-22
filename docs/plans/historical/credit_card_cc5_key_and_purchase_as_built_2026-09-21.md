@@ -521,3 +521,28 @@ CC-357 folded in) -> CC-5-5c (the one-commit flip, formerly "5b"). R-CC50's "5b"
 CC-5-5c. OPEN for CC-5-5b's first question (not asked here): the EXISTING positive-typed liability
 entries (production: only the configured Mortgage's own cash-ledger opening and anchor, which feed no
 net-worth surface because the loan reads its schedule) -- re-sign in a migration, or leave.
+
+## CC-5-5a's tick review (2026-09-22, FIX-THEN-SHIP): the developer's two answers VERBATIM, as the coordinator relayed them
+
+The questions were asked by the coordinator after the fresh review of the tick and `aa29d977`; their text is the coordinator's record. The picked option's description is the ruling; the options' labels are as asked.
+
+### M1 -- the positive-typed liability and 5a's floored footer (R-CC49)
+
+The finding: 5a's floored footer TRUSTS the typed sign, so until CC-5-5b makes the doors enforce it, a non-loan liability typed POSITIVE (e.g. an 'Auto Loan' with no terms typed +$5,000) reads owed -5,000, floors to $0 and HIDES the caveat; at HEAD `abs()` would have counted it. The coordinator measured the 2026-09-22 17:06 pre-deploy dump: 9 accounts; the only 2 liabilities, Mortgage and Van Loan, both have LoanParams.
+
+PICKED: **"Ship 5a now, disclose (Recommended)"**:
+
+> Merge 5a now; the PR and the R-CC49 ruling row name the positive-typed case. The window is real only if you
+> create a card, a loan without terms, or a custom liability before 5b ships; I'll warn you until it does. No
+> production figure changes today.
+
+REFUSED: "Hold 5a until 5b"; "Revert the footer to abs until 5b".
+
+### L1 -- the recurrence:R16-c-2 wait over both new leaves (R-CC50, R-CC52)
+
+PICKED: **"Keep: after 5b and 5c (Recommended)"**:
+
+> R16-c-2 starts only after the flip ships, so its loan tests are written once, against the final sign. It's
+> unstaffed, so nothing waits today; I'll raise it again if a session frees up before 5c lands.
+
+REFUSED: "Only after 5c's design"; "Drop the wait".
