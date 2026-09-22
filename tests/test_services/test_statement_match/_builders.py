@@ -1062,11 +1062,25 @@ def a_submission(
     cannot change the outcome, and a helper that raised here would make the
     refusal untestable.
 
+    **A transaction is ticked AS THE SCREEN OFFERS IT** (plan step
+    ``credit_card:CC-5-4a-1``, ruling **R-CC43**, developer 2026-09-21: *the
+    MOVEMENT is the subject of every settled match; a row is a candidate only
+    while Projected*).  A Projected row is offered as itself and ticked as a
+    TRANSACTION; a settled row is offered as its covering movement and ticked
+    as a SETTLEMENT, so a case that settles a bill and then matches it names
+    what the owner would tick -- the payment -- and its assertions about the
+    day, the figure and the ledger grade the same act they always did.  A
+    row offered neither way falls back to the not-offerable token above.
+    Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions under
+    R-CC43 -- the member names the payment; a day moves through the seam that mirrors it; a settled
+    row is ticked as its payment."
+
     Args:
         scope: The pass being submitted against
             (:func:`a_scope`).
         lines: Bank line rows.
-        transactions: Transaction rows.
+        transactions: Transaction rows, each resolved to the subject the
+            screen offers for it.
         entries: Purchase rows.
         residual: The difference the screen showed and the owner ticked, as a
             string or a ``Decimal``; ``None`` for the ordinary case where they
@@ -1113,6 +1127,17 @@ def a_submission(
     rows = set()
     for kind, orm_row in wanted:
         candidate = offered.get((kind, orm_row.id))
+        if candidate is None and kind is RowKind.TRANSACTION:
+            # The row's payment, where the screen offers that instead
+            # (ruling **R-CC43**; the docstring's second paragraph).
+            candidate = next(
+                (
+                    offered[(RowKind.SETTLEMENT, movement.id)]
+                    for movement in orm_row.covering_movements
+                    if (RowKind.SETTLEMENT, movement.id) in offered
+                ),
+                None,
+            )
         if candidate is not None:
             rows.add(as_reviewed(candidate))
             continue

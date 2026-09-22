@@ -117,8 +117,8 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       DECOMPOSED parent, split 2026-09-20 (the card lane's trace) into 5-1 (the key), 5-2 (the
       purchase door, its readers and the picker) and 5-3 (the settle-with-tender door), 5-1 and 5-2
       in ONE PR (`R-CC33`), and 2026-09-21 (at 5-3's entry) into 5-4 (the matcher's card-screen
-      half, `R-CC40`) and 5-5 (the net-worth sign fix, `R-CC41`); ticks with 5-5. The flag survives
-      to CC-7.
+      half, `R-CC40`) and 5-5 (the net-worth sign fix, `R-CC41`); ticks with its last leaf. The flag
+      survives to CC-7.
   - [x] **CC-5-1** `4045a9b1` -- the key: `fk_transaction_entries_parent_account` and its
         `ON UPDATE CASCADE` dropped, `owner_id` NOT NULL backfilled, three keys holding a movement
         to its own account and to its row's owner (`R-BAL76`'s letter; `R-CC32`: the owner key
@@ -138,12 +138,38 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         `_re_point` moves a kept movement only for a NAMED tender; the "Paid from" picker
         (`R-CC39`); `covered_cash_leg` takes the account (`R-CC40` half 1).
 - [ ] **CC-5-4** `feat(cards): the card's line meets the bill it paid` -- design 3.2 and `R-CC40`'s
-      HALF 2: the payment movement is the CARD screen's candidate for the bill (`statement_match`
-      candidates, moving, accept, the accepted register, undo -- bank-import's files,
-      announce-first; the card's reconcile panel's purchases arm gets the same admission), matched
-      as a MOVEMENT member and dated through the bill's own door because the movement follows the
-      row; accept dates the bill by the card's line, the card's actual equals the bank, nothing is
-      counted twice. Must land before any card import exists.
+      HALF 2: the DECOMPOSED parent, split 2026-09-21 by the developer (`R-CC45`) into 4a-1 (the
+      writer), 4a-2 (the re-key migration; the member table's bill column dropped) and 4b (the card
+      panel's settlements arm, `R-CC44`); ticks with its last leaf. Must land before any card import
+      exists.
+  - [x] **CC-5-4a-1** `079524b0` -- the payment MOVEMENT is the matcher's subject on every screen
+        (`R-CC43`): `RowKind.SETTLEMENT` (the movement's identity, the row's record: priced as a
+        movement when dated, the row's paycheck as its window, dated through the row's own door with
+        the screen's account as tender); a settled row offered as its payment; a settling match
+        records the payment its settle wrote; a re-pointed payment withdraws the matches naming it,
+        disclosed (`R-CC46`); both member shapes still read until 4a-2.
+- [ ] **CC-5-4a-2** `feat(cards): a member is a bank line or a movement` -- `R-CC45`'s second half:
+      a migration re-keys every accepted act's row member (103 row members on the 2026-09-21 dump;
+      221 acts at the 08-27 count) onto that bill's payment after a census on the newest production
+      dump and an ASSERT of one act per row; a member with no payment to re-key onto (a bill closed
+      from its purchases, a `$0.00` close, a Credit or Cancelled bill matched before today's
+      refusals) REFUSES the migration and the developer rules it; then
+      `statement_match_members.transaction_id` goes with its key and unique index, and the six
+      bill-member readers (`_candidates.matched_subjects`, `_candidates._is_claimed`,
+      `_accepted_view._accepted_row`, `_acts.named_rows`, `match_withdrawal`,
+      `bank_agreement._rows_on`) lose that arm; with the row-member shape gone a definition's
+      account move touches no member's subject (closes **CC-356**), and
+      `status_seam/_covering.py:36-40`'s stale module docstring (it names `_candidates._price`,
+      gone) is this leaf's to correct (announce-first, balance's region). Its own PR and release,
+      graded byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
+      2026-09-21 10:33 dump at `9900b309f0b0`).
+- [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
+      of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
+      another, listed under the bill's name in its paycheck block, ticked through the bill's own
+      door (settle on the asserted day, tender = this account); the PAYMENT takes the statement's
+      link and the bill does not, so `status_seam.record_clearing` learns which account's statement
+      it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
+      package, announce-first.
 - [ ] **CC-5-5** `fix(cards): a card in credit is the issuer owing` -- `R-CC41`: the five `abs()`
       sites (`balance_at/_liability.py` `_spliced_owed_series` and `liability_owed_at_dates`,
       `savings_dashboard_service/_net_worth.py`'s hero and trend series, `_debt_line.py`'s

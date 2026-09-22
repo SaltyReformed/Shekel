@@ -753,7 +753,7 @@ class SettledDayBasisEnum(enum.Enum):
     because the column now says which is which.
 
     **Its whole reason for existing is that the difference decides a WINDOW.**
-    ``statement_match._offers.CandidateRow.expected_window`` bounds a purchase
+    ``statement_match._subjects.CandidateRow.expected_window`` bounds a purchase
     by ``(purchased_on, settled_on)`` when the day is a bound and pins it to a
     point when it is not, and it used to tell the two apart by testing whether
     ``reconciled_by_id`` was populated.  That inference was exact over the three

@@ -78,8 +78,8 @@ from app.services.pay_calendar import DerivedPeriod
 from app.services.scenario_resolver import require_baseline_scenario
 from app.services.settle_day import SettleDay
 
-from ._candidates import transaction_candidate
-from ._offers import CandidateRow
+from ._subjects import CandidateRow
+from ._valuation import transaction_candidate
 from ._scope import ReviewScope
 
 #: How long ``budget.transactions.name`` is.  A caller composes the name from
@@ -112,7 +112,7 @@ class MovementToRecord:
             picks the transaction TYPE** and the magnitude is what is stored,
             because the column is non-negative by check constraint.  It must
             not be zero: a row worth nothing is not offerable and
-            :func:`~._candidates.transaction_candidate` answers ``None`` for
+            :func:`~._valuation.transaction_candidate` answers ``None`` for
             one, which the writer treats as a broken contract rather than an
             outcome.
         period: The paycheck this movement belongs to, resolved by the
@@ -161,7 +161,7 @@ def mint_uncategorized(
             baseline scenario this row belongs to.
 
     Returns:
-        The new row as a :class:`~._offers.CandidateRow`, so the caller can
+        The new row as a :class:`~._subjects.CandidateRow`, so the caller can
         record it as a match member exactly like every other one.
 
     Raises:

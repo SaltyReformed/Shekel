@@ -58,6 +58,21 @@ def _candidate(seed_user, row_id, kind):
     )
 
 
+def _settled_candidate(seed_user, txn):
+    """Return what the matcher offers for a SETTLED row: its payment.
+
+    Plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43** (developer
+    2026-09-21): *the MOVEMENT is the subject of every settled match; a row
+    is a candidate only while Projected.*  A settled row's candidate is a
+    SETTLEMENT keyed by its covering movement, on the row's terms -- the
+    row's window, the row's day basis -- so the window cases below ask the
+    same questions of the same rows they asked through ``CC-5-3``, when the
+    row itself was the candidate.
+    """
+    (movement,) = txn.covering_movements
+    return _candidate(seed_user, movement.id, RowKind.SETTLEMENT)
+
+
 class TestEachRowSaysWhetherItsFigureIsItsOwn:
     """``states_own_figure``, read off the row that produced it.
 
@@ -325,7 +340,7 @@ class TestTheWindowEachRowCarries:
             )
             db.session.commit()
 
-            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+            row = _settled_candidate(seed_user, txn)
 
             assert row is not None
             assert row.expected_window == (settled_on, settled_on)
@@ -498,7 +513,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             )
             db.session.commit()
 
-            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+            row = _settled_candidate(seed_user, txn)
 
             assert row is not None
             # The FACT still travels -- it is the window rule that declines to
@@ -536,7 +551,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             )
             db.session.commit()
 
-            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+            row = _settled_candidate(seed_user, txn)
 
             assert row is not None
             assert row.settle_day_basis is SettledDayBasisEnum.OBSERVED
@@ -565,7 +580,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             )
             db.session.commit()
 
-            row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+            row = _settled_candidate(seed_user, txn)
 
             assert row is not None
             assert row.settle_day_basis is SettledDayBasisEnum.ASSERTED
@@ -608,6 +623,14 @@ class TestEveryOFFEREDRowCanCarryItsOwnTokenBack:
         a_purchase(seed_user, envelope, amount="0.01")
         a_transaction(seed_user, name="Paycheck", amount="2473.38",
                       income=True)
+        # The third kind (plan step ``credit_card:CC-5-4a-1``): a settled
+        # row is offered as its payment, whose token carries the MOVEMENT's
+        # id and revision.
+        a_transaction(
+            seed_user, name="Electricity", amount="148.32",
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
         db.session.flush()
         calendar = pay_calendar.calendar_for(seed_user["user"].id)
 

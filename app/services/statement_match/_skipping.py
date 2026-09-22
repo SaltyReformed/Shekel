@@ -486,7 +486,7 @@ def _mine(owner_id: int, account_id: int):
     lesson applied before it can happen again: the accepted set had a caption
     derived by one reader and cards by another, they disagreed by one, and the
     remedy was a single clause both compose on
-    (:data:`~._release.NAMES_A_BANK_LINE`).
+    (:data:`~._acts.NAMES_A_BANK_LINE`).
 
     **It filters the OWNER as well as the account**, which is
     :func:`~._accepted_view.accepted_counts`' own narrowing and

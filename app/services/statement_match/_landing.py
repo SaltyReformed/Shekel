@@ -44,7 +44,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.services.cash_ledger import movement_figure_for
 from app.utils.money import round_money
 
-from ._offers import CandidateRow, RowKind
+from ._subjects import CandidateRow, RowKind
 from ._sides import MatchSides
 
 
@@ -146,7 +146,7 @@ class DifferenceLanding:
             the very rows handed to :meth:`of`, so the caller cannot be given
             a row the act does not name.
         bank_cash: What the bank states :attr:`on_row` is worth, signed on
-            :attr:`~._offers.CandidateRow.cash_amount`'s own convention, or
+            :attr:`~._subjects.CandidateRow.cash_amount`'s own convention, or
             ``None`` beside a ``None`` row.  **The CASH figure and not the
             figure to store**: :func:`corrected_figure` is what inverts it into
             what the row's own column holds, which differs on a purchase and on
@@ -344,7 +344,7 @@ def corrected_figure(
     **A PURCHASE stores its figure directly** -- its cash is its stored
     amount in its PARENT's direction
     (:func:`~app.services.cash_ledger.movement_cash_leg`, read by
-    :func:`~._candidates.purchase_candidate`) -- so its correction is that
+    :func:`~._valuation.purchase_candidate`) -- so its correction is that
     rule INVERTED, :func:`~app.services.cash_ledger.movement_figure_for`:
     ``-bank_cash`` under an expense row, which every purchase this arm can
     reach today sits under.
@@ -376,10 +376,12 @@ def corrected_figure(
     if row.kind is RowKind.PURCHASE:
         entry = db.session.get(TransactionEntry, row.row_id)
         return round_money(movement_figure_for(entry.transaction, bank_cash))
-    # **The TRANSACTION arm keeps ``abs()`` and that is not an oversight.**  A
-    # transaction states a GROSS, non-negative figure (``estimated_amount >=
-    # 0``; ``status_seam.Settlement`` refuses a negative record) whose
-    # direction comes from the transaction TYPE rather than from the figure,
-    # so the magnitude really is what it should book.  Only a PURCHASE stores
-    # a signed amount.
+    # **The row's arm keeps ``abs()`` and that is not an oversight.**  A
+    # transaction -- and a SETTLEMENT, which is a row's record written through
+    # the row's door (plan step ``credit_card:CC-5-4a-1``) -- states a GROSS,
+    # non-negative figure (``estimated_amount >= 0``;
+    # ``status_seam.Settlement`` refuses a negative record) whose direction
+    # comes from the transaction TYPE rather than from the figure, so the
+    # magnitude really is what it should book.  Only a PURCHASE stores a
+    # signed amount.
     return round_money(abs(bank_cash))

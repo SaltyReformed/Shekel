@@ -10,7 +10,7 @@ to August 17).  Offered a `$47.61` BJ's fuel purchase made 07-13 against the
 07-14 bank line, the pane said "2026-08-18"; the developer nearly refused a
 correct match, could no longer verify any proposal by date, and stopped the
 first production matching session at 22 of 172 lines.  The matcher was right
-on that pairing: :attr:`~._offers.CandidateRow.expected_window` reads an
+on that pairing: :attr:`~._subjects.CandidateRow.expected_window` reads an
 asserted stamp as a purchase's UPPER bound and never as its floor, so the
 07-14 line sat inside ``07-13 .. 08-18`` -- and only the label was wrong.
 
@@ -33,7 +33,7 @@ the owner has just unlinked.  A settled row and an unsettled one therefore
 print alike here.
 
 **The distance is measured from the budget clock and never from the window.**
-:attr:`~._offers.CandidateRow.expected_window` folds the asserted stamp in as a
+:attr:`~._subjects.CandidateRow.expected_window` folds the asserted stamp in as a
 purchase's upper bound, which is right for BOUNDING a pairing and wrong for
 this sentence: a bank line inside ``07-13 .. 08-18`` is "0 days outside" the
 window and 1 day after the purchase, and the second is what the reviewer asked
@@ -49,7 +49,7 @@ one accessor that names a paycheck, and a single day through
 ``07/16 - 07/29`` and not against ``2026-07-16 - 2026-07-29``.
 
 **Composed here and not in Jinja**, for the reason every labelled sentence in
-this package is: the kind of a row is :class:`~._offers.RowKind` and a
+this package is: the kind of a row is :class:`~._subjects.RowKind` and a
 template may not branch on an enum's name, and a partition restated in a
 template is a second place for it to be wrong on a screen about money.
 
@@ -64,7 +64,8 @@ from datetime import date
 
 from app.utils.dates import day_label
 
-from ._offers import BankLine, CandidateRow, RowKind
+from ._offers import BankLine
+from ._subjects import CandidateRow, RowKind
 from ._pairing import signed_days_outside
 
 #: The KIND of each date the pane prints, as the word printed before it.

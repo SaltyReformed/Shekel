@@ -101,22 +101,20 @@ from ._container import (
     ActReads,
 )
 from ._resolve import load_lines
-from ._candidates import (
-    MatchedSubjects,
-    matched_subjects,
-    purchase_candidate,
-)
+from ._candidates import MatchedSubjects, matched_subjects
 from ._creations import (
     CreatedPurchase,
     CreatedSubject,
     PurchaseCreation,
 )
-from ._offers import CandidateRow, RowKind, merchant_label
+from ._offers import merchant_label
+from ._subjects import CandidateRow, RowKind
 from ._outcome import FiledMerchant
 from ._reads import as_bank_line
 from ._naming import name_the_filed_definition
 from ._rules import LinePipeline, is_inflow, pipeline_for
 from ._scope import ReviewScope, reject_impossible_days
+from ._valuation import purchase_candidate
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.pay_calendar import PayCalendar
@@ -389,7 +387,7 @@ def _match_content(
 
     **Two relations, built together because they are decided together** (plan
     step ``bank_import:X-f6f``, ruling **R-GG**), and read from ONE candidate:
-    :func:`~._candidates.purchase_candidate` prices the row this act just made,
+    :func:`~._valuation.purchase_candidate` prices the row this act just made,
     and both the membership and the creation record are that same value rather
     than two derivations of it.
 
@@ -450,7 +448,7 @@ def create_purchase_from_line(
     against one derivation refused **all 91** of these lines as "no longer
     available to match".  A door that created a row does not need to prove that
     row is offerable, so it states the candidate itself, through the same
-    :func:`~._candidates.purchase_candidate` the offer set is built from.
+    :func:`~._valuation.purchase_candidate` the offer set is built from.
 
     **The purchase is BORN carrying both of its days** (ruling **R-FW**): the
     day the bank says it was made, and the day the bank took the money.

@@ -40,7 +40,7 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.services.pay_calendar import calendar_for
-from app.services.statement_match._candidates import purchase_candidate
+from app.services.statement_match._valuation import purchase_candidate
 
 # The three days the derived reconciled indicator turns on.  FIXED rather
 # than today-relative: the indicator compares two STORED days, so nothing

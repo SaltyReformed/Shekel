@@ -37,12 +37,8 @@ from app.services.statement_match._creations import (
     NewEnvelope,
     PurchaseDestination,
 )
-from app.services.statement_match._offers import (
-    BankLine,
-    CandidateRow,
-    MatchProposal,
-    RowKind,
-)
+from app.services.statement_match._offers import BankLine, MatchProposal
+from app.services.statement_match._subjects import CandidateRow, RowKind
 from app.services.statement_match._placement import (
     Placement,
     PlacementKind,

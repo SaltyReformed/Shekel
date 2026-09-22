@@ -208,7 +208,7 @@ class ReviewBounds:
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
             could not price, so they could not be offered
-            (:class:`~._offers.Candidates`).
+            (:class:`~._subjects.Candidates`).
 
     **The near tier's bound is NOT here, and that is plan step
     ``bank_import:X-f6d-3``'s one deliberate exception to the paragraph above.**
@@ -482,7 +482,7 @@ def search_gap(
         crowded_days: The days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
-            could not price (:attr:`~._offers.Candidates.unpriceable_ids`).
+            could not price (:attr:`~._subjects.Candidates.unpriceable_ids`).
 
     Returns:
         One sentence naming the gap, for the receipt that has to say what it

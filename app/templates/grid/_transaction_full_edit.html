@@ -316,6 +316,21 @@
           <option value="{{ acct.id }}"{% if acct.id == tender_account_id %} selected{% endif %}>{{ acct.name }}</option>
           {% endfor %}
         </select>
+        {#- **What a different pick WITHDRAWS** (plan step credit_card:CC-5-4a-1,
+            ruling R-CC46).  Every accepted match names this row's payment on
+            the account it moved through, so re-pointing the payment withdraws
+            the match and its bank line is unexplained again -- said here,
+            beside the control, before the pick, as the delete dialog says it
+            before the press.  `tender_withdraws` is the route's read of the
+            same derivation the door acts on (`_tender_withdrawal`); it renders
+            nothing when no match names the payment -- and nothing for a GROUP
+            act the pick only shrinks (the register flags it), the silence the
+            delete dialog keeps over the same case. -#}
+        {%- if tender_withdraws and tender_withdraws.frees_a_line %}
+        <div class="form-text" id="tender-withdraws-{{ txn.id }}">
+          Picking another account withdraws {{ tender_withdraws.matches }} accepted match{{ '' if tender_withdraws.matches == 1 else 'es' }}, so {{ tender_withdraws.lines | length }} bank line{{ '' if tender_withdraws.lines | length == 1 else 's' }} {{ 'is' if tender_withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in tender_withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.
+        </div>
+        {%- endif %}
       </div>
       {%- endif %}
     </div>

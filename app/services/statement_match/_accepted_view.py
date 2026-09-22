@@ -46,12 +46,8 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._release import (
-    NAMES_A_BANK_LINE,
-    PlannedRemovals,
-    acts_of,
-    planned_removals,
-)
+from ._acts import NAMES_A_BANK_LINE, acts_of, named_rows
+from ._release import PlannedRemovals, planned_removals
 from ._sides import MatchSides
 
 _logger = logging.getLogger(__name__)
@@ -101,7 +97,7 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
     grouping -- :attr:`agrees` beside :attr:`removes` beside this -- is three
     facts a template reads separately and one condition each, so a nested value
     would be the speculative shape ``CLAUDE.md`` rule 13 forbids.
-    :class:`~._creations.PurchaseDestination`, :class:`~._offers.CandidateRow`,
+    :class:`~._creations.PurchaseDestination`, :class:`~._subjects.CandidateRow`,
     :class:`~._creations.CreatedPurchase` and
     :class:`~._outcome.BatchOutcome` carry the same disable for the same reason.
 
@@ -192,10 +188,10 @@ def accepted_groups(
         applied_by_rule: Which half of the accepted set to describe --
             ``True`` for the acts a standing rule performed (**R-GT**),
             ``False`` for the acts a person ticked, ``None`` for both.
-            Threaded into :func:`~._release.acts_of`'s own query, so a caller
+            Threaded into :func:`~._acts.acts_of`'s own query, so a caller
             asking for one half never loads or prices the other.
         match_ids: The acts to describe, or ``None`` for all of this
-            account's.  **It is :func:`~._release.acts_of`'s own parameter,
+            account's.  **It is :func:`~._acts.acts_of`'s own parameter,
             surfaced rather than reimplemented** (plan step
             ``bank_import:X-ge``): the import receipt names a SUBSET -- the
             acts a standing rule performed -- and a caller filtering this
@@ -212,13 +208,13 @@ def accepted_groups(
         later hand edit produces, and the screen is where it can be re-reviewed.
     """
     # ONE loader, shared with the import page's delete preview
-    # (:func:`~._release.acts_of`): an act is only readable with BOTH its
+    # (:func:`~._acts.acts_of`): an act is only readable with BOTH its
     # relations AND the row each of them names -- what it names decides
     # whether it still holds, and what it created decides what the Undo
     # control would take back.  It narrows by the owner as well as the
     # account, which is the pair the write door itself uses, and every subject
     # below arrives through a join carrying that account
-    # (:data:`~._release._WHOLE_ACT`, finding **bank_import:N-358**).
+    # (:data:`~._acts._WHOLE_ACT`, finding **bank_import:N-358**).
     #
     # **That replaced three by-id reads and a warm** (plan step
     # ``bank_import:X-gf-2``).  This fold collected the member ids and selected
@@ -246,7 +242,7 @@ def accepted_groups(
         # :func:`accepted_counts` could not share -- so the caption came from
         # the table and the cards from this loop, and one lineless act made the
         # Explained tab promise a card it could not draw.
-        # :data:`~._release.NAMES_A_BANK_LINE` is that invariant stated once;
+        # :data:`~._acts.NAMES_A_BANK_LINE` is that invariant stated once;
         # ``acts_of`` narrows on it and the counts read narrows and ALARMS on
         # it, so there is nothing left for this loop to defend against.
         #
@@ -285,17 +281,22 @@ def accepted_groups(
         # **Asked where both relations are loaded**, which is only here: what
         # an act NAMES and what it MADE are two tables
         # (:class:`~app.models.statement_match.StatementMatchCreation`), and
-        # every reader downstream has the labels rather than the ids.
+        # every reader downstream has the labels rather than the ids.  What
+        # it names is read through :func:`~._acts.named_rows` (plan step
+        # ``credit_card:CC-5-4a-1``): a member naming a row's covering
+        # movement names THAT ROW and not a purchase, so a residual the act
+        # minted -- created as a row, named as its payment -- still meets
+        # its creation here, and a payment member is never mistaken for a
+        # purchase the act would have had to create.
         created_keys = {
             (creation.transaction_id, creation.transaction_entry_id)
             for creation in match.creations
         }
-        member_keys = {
-            (member.transaction_id, member.transaction_entry_id)
-            for member in match.members
-            if member.transaction_id is not None
-            or member.transaction_entry_id is not None
-        }
+        named_transactions, named_purchases = named_rows(match)
+        member_keys = (
+            {(row_id, None) for row_id in named_transactions}
+            | {(None, entry_id) for entry_id in named_purchases}
+        )
         groups.append(AcceptedGroup(
             match_id=match.id,
             posts_on=posts_on,
@@ -353,7 +354,7 @@ class AcceptedCounts:
     Attributes:
         total: Every accepted act on this account that a tab can render --
             which is every act it holds, the state these exclude being one the
-            app's writers cannot produce (:data:`~._release.NAMES_A_BANK_LINE`).
+            app's writers cannot produce (:data:`~._acts.NAMES_A_BANK_LINE`).
         by_rule: Those a standing rule performed (**R-GT**).
     """
 
@@ -377,12 +378,12 @@ def accepted_counts(owner_id: int, account_id: int) -> AcceptedCounts:
     valued for its length.
 
     **It filters on the OWNER as well as the account**, which is the narrowing
-    :func:`~._release.acts_of` already applies for the reason recorded there:
+    :func:`~._acts.acts_of` already applies for the reason recorded there:
     the account implies the owner, and a reader feeding a screen narrows by
     the same columns the write door does.
 
     **It counts what a TAB CAN DRAW, through the loader's own clause**
-    (:data:`~._release.NAMES_A_BANK_LINE`, plan step ``bank_import:X-gj-1c``,
+    (:data:`~._acts.NAMES_A_BANK_LINE`, plan step ``bank_import:X-gj-1c``,
     finding **N-389**).  It counted the table until then, while
     :func:`accepted_groups` skipped an act naming no bank line in Python -- so
     a caption derived here and cards derived there disagreed by one for every
@@ -506,7 +507,7 @@ def accepted_register(
     groups = accepted_groups(
         owner_id, account_id, applied_by_rule=applied_by_rule,
     )
-    # **Stable, so the second key is the order** :func:`~._release.acts_of`
+    # **Stable, so the second key is the order** :func:`~._acts.acts_of`
     # **already returned** (newest first) rather than a second sort restating
     # it -- and so an act that stops agreeing moves to the top without
     # disturbing anything else's order.
@@ -546,13 +547,26 @@ def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
     correction onto the card since the match was accepted reads ``0.00`` by
     the same arithmetic, and the match stops holding.
 
+    **A member that names a row's PAYMENT is the same subject read from the
+    other home** (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**):
+    every act recorded since that step names the covering movement rather
+    than the row, and the member key holds the MOVEMENT to the act's account.
+    It is valued exactly as the row member is -- the row's payment on this
+    account, ``covered_cash_leg`` -- which for a member on this account is
+    this movement while it is dated and ``0.00`` once a revert un-dates it
+    (a "Paid from" correction cannot leave it here: the member goes with
+    the re-point, ruling **R-CC46**); and it is labelled by the row it pays,
+    as the row member was.  The row arm goes with the column at plan step
+    ``credit_card:CC-5-4a-2``; the payment arm is the register's shape from
+    then on.
+
     Args:
         row: The :class:`~app.models.transaction.Transaction` or
             :class:`~app.models.transaction_entry.TransactionEntry` the member
             names.
         posts_on: The day the match asserted.
         account_id: The match's account -- the statement the member was
-            matched on, and the account a transaction member is valued ON.
+            matched on, and the account a row's payment is valued ON.
 
     Returns:
         Its :class:`AcceptedRow`.
@@ -564,6 +578,14 @@ def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
             # **R-BAL81**, **R-CC40**) -- the same valuation the offer and
             # the post-apply check use.
             cash_amount=status_seam.covered_cash_leg(row, account_id),
+            agrees=row.settled_on == posts_on,
+        )
+    if row.covers_settlement:
+        return AcceptedRow(
+            label=row.transaction.name, settled_on=row.settled_on,
+            cash_amount=status_seam.covered_cash_leg(
+                row.transaction, account_id,
+            ),
             agrees=row.settled_on == posts_on,
         )
     # **A CARD purchase moves no cash through THIS account at all** -- it

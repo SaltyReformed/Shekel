@@ -93,14 +93,11 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_match import (
     StatementMatch,
     StatementMatchCreation,
-    StatementMatchMember,
 )
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -116,13 +113,14 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._acts import acts_of, named_rows
 from ._naming import unname_the_disposed_definition
-from ._offers import RowKind
+from ._subjects import RowKind
 
 _logger = logging.getLogger(__name__)
 
 #: How to load an act WHOLE -- its two relations and the row each of them
-#: names -- in one option list both readers of :func:`acts_of` share.
+#: names -- in one option list both readers of :func:`~._acts.acts_of` share.
 #:
 #: **The subjects are loaded through the act rather than fetched back by id**
 #: (finding **bank_import:N-358**, plan step ``bank_import:X-gf-2``).  Two
@@ -142,61 +140,6 @@ _logger = logging.getLogger(__name__)
 #: its label, its balance contribution and ``entry_service``'s refusal) and a
 #: transaction's own purchases (for what a container still holds, and for the
 #: settled figure the amount model derives from them).
-_WHOLE_ACT = (
-    selectinload(StatementMatch.members).selectinload(
-        StatementMatchMember.line,
-    ),
-    selectinload(StatementMatch.members).selectinload(
-        StatementMatchMember.transaction,
-    ).selectinload(Transaction.entries),
-    selectinload(StatementMatch.members).selectinload(
-        StatementMatchMember.entry,
-    ).joinedload(TransactionEntry.transaction),
-    selectinload(StatementMatch.creations).selectinload(
-        StatementMatchCreation.transaction,
-    ).selectinload(Transaction.entries),
-    selectinload(StatementMatch.creations).selectinload(
-        StatementMatchCreation.entry,
-    ).joinedload(TransactionEntry.transaction).selectinload(
-        Transaction.entries,
-    ),
-)
-
-#: An accepted act NAMES AT LEAST ONE BANK LINE, as a clause a query can carry.
-#:
-#: **The invariant, stated once where SQL can apply it** (plan step
-#: ``bank_import:X-gj-1c``, finding **bank_import:N-389**).  It was asked in
-#: two languages: :func:`acts_of` handed every act to
-#: :func:`~._accepted_view.accepted_groups`, which skipped a lineless one in
-#: Python, while :func:`~._accepted_view.accepted_counts` counted the table
-#: and skipped nothing.  A caption is derived from the second and a tab from
-#: the first, so one such act made the Reconcile screen's Explained caption
-#: one higher than the tab could draw -- measured on a planted act 2026-08-31:
-#: caption ``1``, rendered ``0``, withheld ``0``.
-#:
-#: **It narrows the LOADER rather than guarding the fold**, which is what
-#: deletes the Python guard instead of adding a second one beside it: an act
-#: with no line has no day (``max()`` over an empty side), no amount and no
-#: wording, so it is not a card and never was -- and a reader that cannot
-#: receive one needs no arm for it.  The three guarantees that make the state
-#: unreachable in the first place are ``record_match``'s refusal at the one
-#: writer, ``fk_statement_match_members_line_account`` no longer cascading,
-#: and migration ``e4a7c0f13b92`` having deleted the acts that already held
-#: none.  This is the fourth and the only one a reader can apply: a foreign
-#: key cannot see an absence.
-#:
-#: **Reaching one is still an ALARM rather than a silence**, and skipping
-#: silently was the original defect (two adversarial reviews, 2026-08-20): the
-#: act goes on claiming its transactions in ``matched_subjects``, so those rows
-#: can never be matched again and no release control exists to free them.
-#: :func:`~._accepted_view.accepted_counts` counts the acts this clause
-#: EXCLUDES in the same aggregate it counts the ones it admits, and logs them
-#: at ERROR -- one query, on the page that reads both numbers.
-NAMES_A_BANK_LINE = StatementMatch.members.any(
-    StatementMatchMember.bank_statement_line_id.isnot(None),
-)
-
-
 @dataclass(frozen=True)
 class PlannedRemoval:
     """One row an undo would take back, as the screen and the door see it.
@@ -354,7 +297,7 @@ def _entry_cash(entry: TransactionEntry) -> Decimal:
     purchase, whose money leaves through its envelope's CC Payback sibling
     rather than through this row, and one under a row that no longer
     contributes to the balance at all.  It is the same producer
-    :func:`~._candidates.purchase_candidate` offers with and
+    :func:`~._valuation.purchase_candidate` offers with and
     :func:`~._accepted_view._accepted_row` grades a member by; this spelled
     the three-clause rule for itself until plan step ``balance:X-bi-3b``.
 
@@ -378,7 +321,7 @@ def _subject_of(creation: StatementMatchCreation):
     relationship not loading on a pending parent by default, where the
     ``session.get`` this replaced would have found the row.  No caller can be
     in that state: all three hold persistent acts read back by
-    :func:`acts_of` or by :func:`release_match`'s own scoped query, and the
+    :func:`~._acts.acts_of` or by :func:`release_match`'s own scoped query, and the
     door that WRITES a creation flushes before anything reads one.  It is
     stated because it is the one behaviour the change did not preserve
     exactly, and a caller that ever builds a creation and asks for its
@@ -441,38 +384,12 @@ def _container_survives(
     # loaded collection cannot be behind the database for the row this asks
     # about.  A per-container SELECT was the first spelling and it made the
     # bulk fold pay one query per container -- measured, 8 acts cost 18
-    # statements where 2 cost 12, which is the per-act cost :data:`_WHOLE_ACT`
+    # statements where 2 cost 12, which is the per-act cost :data:`~._acts._WHOLE_ACT`
     # exists to remove.  The PURCHASES, never the family (ruling R-BAL68):
     # what a container still HOLDS is what people recorded against it, and a
     # covering movement -- its own close, or a reverted close kept un-dated
     # -- is not a reason to keep the line.
     return any(entry.id not in going for entry in container.purchases)
-
-
-def _names_of(match: StatementMatch) -> "tuple[set[int], set[int]]":
-    """Return the transaction ids and purchase ids this act NAMES.
-
-    A creation in one of these sets is a SUBJECT -- what the act is about --
-    and one in neither is a CONTAINER.  Derived from the members rather than
-    stored, because they are the one statement of what an act names and a
-    second copy could disagree with them.
-
-    Args:
-        match: The act, with its members loaded.
-
-    Returns:
-        ``(transaction_ids, transaction_entry_ids)``.
-    """
-    return (
-        {
-            member.transaction_id for member in match.members
-            if member.transaction_id is not None
-        },
-        {
-            member.transaction_entry_id for member in match.members
-            if member.transaction_entry_id is not None
-        },
-    )
 
 
 def _subject_removal(
@@ -623,7 +540,7 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
             rows=(), refusal=None, cash_amount=Decimal("0.00"),
             kept_containers=0,
         )
-    named_transactions, named_entries = _names_of(match)
+    named_transactions, named_purchases = named_rows(match)
     subjects: "list[PlannedRemoval]" = []
     containers: "list[tuple[Transaction, StatementMatchCreation]]" = []
     refusal: "str | None" = None
@@ -632,7 +549,7 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
         if subject is None:
             continue
         named = (
-            creation.transaction_entry_id in named_entries
+            creation.transaction_entry_id in named_purchases
             if creation.transaction_entry_id is not None
             else creation.transaction_id in named_transactions
         )
@@ -845,96 +762,6 @@ def release_match(
     )
 
 
-def acts_of(
-    owner_id: int, account_id: int, match_ids: "set[int] | None" = None,
-    *, applied_by_rule: "bool | None" = None,
-) -> "list[StatementMatch]":
-    """Return match acts WHOLE, newest first, in one read.
-
-    **The ONE loader, because an act is only readable with both of its
-    relations** (plan step ``bank_import:X-f6f``): what it NAMES decides
-    whether it still holds, and what it CREATED decides what an undo would take
-    back.  Two callers need exactly that -- the register's accepted list and
-    the import page's delete preview -- and they spelled the same query with the
-    same two eager loads until pylint's ``duplicate-code`` said so.  A third
-    relation added later would otherwise be loaded by one reader and lazily
-    fetched per row by the other; it is stated once, in :data:`_WHOLE_ACT`.
-
-    **It filters on the OWNER as well as the account**, which the write door
-    :func:`release_match` already does.  The account implies the owner
-    (``fk_statement_matches_owner``), so the second column can only ever be
-    redundant -- and a reader feeding a destructive control's confirmation
-    narrows by the same two columns the control itself does rather than by one
-    of them.  Named by adversarial security review 2026-08-24.
-
-    The ORDER is the panel's (newest first) and costs the other caller nothing,
-    where an unordered read would have to be sorted twice.
-
-    **It returns only acts that NAME A BANK LINE** (:data:`NAMES_A_BANK_LINE`,
-    plan step ``bank_import:X-gj-1c``).  That is a narrowing rather than a
-    filter over the result, and it is what makes an act with no day, no amount
-    and no wording unreachable by every reader instead of skipped by one of
-    them; :func:`~._accepted_view.accepted_counts` shares the clause, so a tab
-    caption and the cards under it are one set.  Such an act is still an ALARM
-    -- see that clause for where the ERROR is raised and why it is not silent.
-
-    Args:
-        owner_id: The user the route proved owns the account.
-        account_id: The account whose acts to read.
-        match_ids: The acts to consider, or ``None`` for all of this account's.
-            **The import page passes a set**, because it renders at most 20
-            imports and every act outside them is a row it will never show --
-            an unbounded read of an account's every act is work a page that
-            renders 20 imports never uses.
-
-        applied_by_rule: Which half of the account's acts to load -- ``True``
-            for the acts a standing rule performed (**R-GT**), ``False`` for
-            the acts a person ticked, ``None`` for both.  **A second narrowing
-            beside** *match_ids* **rather than a filter over the result**, for
-            that parameter's own reason: an act the caller will never render
-            is work it never uses.
-
-    Returns:
-        Its :class:`~app.models.statement_match.StatementMatch` rows that name
-        a bank line, newest first, loaded WHOLE (:data:`_WHOLE_ACT`) -- both
-        relations and the row each of them names, so a caller folding many
-        acts issues no further statement and reaches no subject by id.
-    """
-    if match_ids is not None and not match_ids:
-        return []
-    query = (
-        db.session.query(StatementMatch)
-        .options(*_WHOLE_ACT)
-        .filter(
-            StatementMatch.account_id == account_id,
-            StatementMatch.user_id == owner_id,
-            # **The invariant, applied where a caption can share it**
-            # (:data:`NAMES_A_BANK_LINE`, plan step ``bank_import:X-gj-1c``).
-            # An act naming no bank line has no day, no amount and no wording,
-            # so no reader of this function can render one; excluding it HERE
-            # is what lets :func:`~._accepted_view.accepted_counts` count the
-            # same set from one clause instead of a second spelling in Python.
-            NAMES_A_BANK_LINE,
-        )
-    )
-    if match_ids is not None:
-        query = query.filter(StatementMatch.id.in_(match_ids))
-    if applied_by_rule is not None:
-        # **Narrowed in SQL, before anything is LOADED** (plan step
-        # ``bank_import:X-gj-1a``).  The Reconcile screen renders the two
-        # halves as two tabs (**R-GT**), and a caller filtering this
-        # function's RESULT would load and price every act on the account to
-        # render one half -- 221 of the developer's own to draw a tab holding
-        # none of them, which is exactly the cost ruling **R-GX** split the
-        # register off the review screen to stop paying.
-        query = query.filter(
-            StatementMatch.applied_by_rule.is_(applied_by_rule),
-        )
-    return query.order_by(
-        StatementMatch.created_at.desc(), StatementMatch.id.desc(),
-    ).all()
-
-
 def removals_by_match(
     owner_id: int, account_id: int, match_ids: "set[int]",
 ) -> "dict[int, PlannedRemovals]":
@@ -963,7 +790,7 @@ def removals_by_match(
         owner_id: The user the route proved owns the account.
         account_id: The account whose acts to read.
         match_ids: The acts to consider -- the caller's own bound on the work,
-            for the reason :func:`acts_of` states.
+            for the reason :func:`~._acts.acts_of` states.
 
     Returns:
         ``{match_id: PlannedRemovals}`` for the acts that would remove a row or
@@ -975,7 +802,7 @@ def removals_by_match(
     ]
     # **No warm, and nothing to hold** (finding **bank_import:N-358**, plan
     # step ``bank_import:X-gf-2``).  Every subject arrives on its creation
-    # through :data:`_WHOLE_ACT`, so it is reachable for as long as ``matches``
+    # through :data:`~._acts._WHOLE_ACT`, so it is reachable for as long as ``matches``
     # is -- where the previous shape warmed the identity map and then had to
     # keep the returned list alive against its WEAK references, a rule two
     # callers had to know and one of them did not.

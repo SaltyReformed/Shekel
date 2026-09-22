@@ -50,7 +50,7 @@ from app.services.cash_ledger import (
 from app.services.row_valuation import settled_figure
 from app.services.settle_day import SettleDay
 from app.services.statement_match import candidates_for
-from app.services.statement_match import _accepted_view, _candidates
+from app.services.statement_match import RowKind, _accepted_view, _valuation
 from app.services.transaction_service import settle_transaction
 from tests._test_helpers import (
     create_account_of_type,
@@ -868,12 +868,19 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
     """Ruling **R-CC40**, half 1: a settled row is worth its movement's cash ON THE ACCOUNT ASKED."""
 
     @staticmethod
-    def _offered_on(seed_user, account_id, row_id):
+    def _offered_for(seed_user, account_id, txn):
+        """Return what *account_id*'s screen offers FOR *txn*, by either subject.
+
+        A Projected row is offered as itself and a settled row as its
+        payment (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**);
+        :attr:`~app.services.statement_match.CandidateRow.transaction_id`
+        names the row under both kinds.
+        """
         rows = candidates_for(
             account_id, pay_calendar.calendar_for(seed_user["user"].id),
             derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id),
         ).rows
-        return [row for row in rows if row.row_id == row_id]
+        return [row for row in rows if row.transaction_id == txn.id]
 
     def test_covered_cash_leg_is_the_movements_account_alone(
         self, app, seed_user, seed_periods,
@@ -890,14 +897,16 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
     def test_a_card_tendered_bill_leaves_the_checking_offer(
         self, app, seed_user, seed_periods,
     ):
-        """Checking's feed never shows the money, so checking's screen does not offer the row.
+        """Checking's feed never shows the money, so checking's screen does not offer it.
 
-        Before this leaf the row was offered there at `-120.00` and a stray
-        `$120` line could be paired with it in one click.  The CARD's screen
-        offers nothing for it EITHER yet: the row is on checking and its
-        movement is excluded as the row's own payment record -- half 2 of
-        the ruling, leaf ``CC-5-4``, makes the movement the card screen's
-        candidate; this pins the interim so that change is explicit.
+        Before ``CC-5-3`` the row was offered there at `-120.00` and a stray
+        `$120` line could be paired with it in one click.  **The CARD's
+        screen offers the PAYMENT** (plan step ``credit_card:CC-5-4a-1``,
+        ruling **R-CC43**, half 2 of **R-CC40**): the covering movement, as a
+        SETTLEMENT on the row's terms -- the bill's figure, the bill's
+        paycheck, labelled with the account the bill is budgeted on.  This
+        pinned the interim (nothing on the card's screen either) through
+        ``CC-5-3``, saying the change would be explicit; this is it.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -905,28 +914,47 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
             txn = _hotel_bill(seed_user, seed_periods[0])
             settle_transaction(txn)
             db.session.commit()
-            offered_before = self._offered_on(seed_user, checking.id, txn.id)
+            offered_before = self._offered_for(seed_user, checking.id, txn)
             assert [row.cash_amount for row in offered_before] == [-_HOTEL]
+            assert [row.kind for row in offered_before] == [RowKind.SETTLEMENT]
 
             _correct_tender(txn, card.id)
 
-            assert self._offered_on(seed_user, checking.id, txn.id) == []
-            assert self._offered_on(seed_user, card.id, txn.id) == []
+            assert self._offered_for(seed_user, checking.id, txn) == []
+            (on_card,) = self._offered_for(seed_user, card.id, txn)
+            (movement,) = txn.covering_movements
+            assert on_card.kind is RowKind.SETTLEMENT
+            assert on_card.row_id == movement.id
+            assert on_card.cash_amount == -_HOTEL
+            assert on_card.is_settled is True
+            assert on_card.settled_on == txn.settled_on
+            assert on_card.label == f"{txn.name} (budgeted on {checking.name})"
+            period = pay_calendar.calendar_for(
+                seed_user["user"].id,
+            ).period_by_id(txn.pay_period_id)
+            assert on_card.period == period
 
     def test_the_matchers_price_asks_the_screens_account_not_the_rows(
         self, app, seed_user, seed_periods,
     ):
         """The producer's contract, graded where the offer set cannot reach it.
 
-        Every transaction candidate the offer set prices is on the screen's
-        account by the scope's own clause, so ``_price`` reading the ROW's
-        account would agree with reading the screen's on every reachable
-        path -- two spellings that agree by a clause elsewhere, which is
-        rule 14's tell and one refactor of the scope from parting.  So the
-        contract is pinned directly: asked about the CARD, a checking row
-        whose payment moved on the card is worth its payment; asked about
-        checking, nothing.  The accepted register's row reader carries the
-        same parameter for the same reason.
+        Every candidate the offer set builds is on the screen's account by
+        the scope's own clause, so a constructor that never asked would
+        agree with one that did on every reachable path -- two spellings
+        that agree by a clause elsewhere, which is rule 14's tell and one
+        refactor of the scope from parting.  So the contract is pinned
+        directly on the SETTLEMENT constructor (plan step
+        ``credit_card:CC-5-4a-1``, ruling **R-CC43**: the payment is the
+        candidate, priced as a movement): asked for the CARD's screen, a
+        checking bill's payment on the card is a candidate worth its figure;
+        asked for checking's, nothing -- which is also what the accept
+        door's re-price answers for a payment re-pointed elsewhere since the
+        screen offered it, so that act is refused rather than written
+        against the member key.  The accepted register's readers carry the
+        account for the same reason, for a member naming the row and for
+        one naming its payment alike.  Through ``CC-5-3`` this pinned the
+        row-pricer's settled arm, which R-CC43 deleted.
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -934,38 +962,54 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
             txn = _hotel_bill(seed_user, seed_periods[0])
             settle_transaction(txn, tender_account_id=card.id)
             db.session.commit()
+            (movement,) = txn.covering_movements
             basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
-            price = _candidates._price  # pylint: disable=protected-access
-            assert price(txn, basis, card.id) == -_HOTEL
-            assert price(txn, basis, checking.id) == Decimal("0")
+            calendar = pay_calendar.calendar_for(seed_user["user"].id)
+            assert _valuation.settlement_price(movement, basis) == -_HOTEL
+            on_card = _valuation.settlement_candidate(
+                movement, calendar, -_HOTEL, card.id,
+            )
+            assert on_card is not None and on_card.cash_amount == -_HOTEL
+            assert _valuation.settlement_candidate(
+                movement, calendar, -_HOTEL, checking.id,
+            ) is None
+            assert _valuation.repriced(on_card, calendar, basis, card.id) == on_card
+            assert _valuation.repriced(on_card, calendar, basis, checking.id) is None
             register = _accepted_view._accepted_row  # pylint: disable=protected-access
             assert register(txn, txn.settled_on, card.id).cash_amount == -_HOTEL
             assert register(txn, txn.settled_on, checking.id).cash_amount == Decimal("0")
-            calendar = pay_calendar.calendar_for(seed_user["user"].id)
-            candidate = _candidates.transaction_candidate(txn, calendar, -_HOTEL)
-            assert _candidates.repriced(candidate, calendar, basis, card.id) is not None
-            assert _candidates.repriced(candidate, calendar, basis, checking.id) is None
+            assert register(movement, txn.settled_on, card.id).cash_amount == -_HOTEL
+            assert register(movement, txn.settled_on, checking.id).cash_amount == Decimal("0")
 
     def test_a_member_whose_tender_moved_reads_zero_on_the_register_and_at_re_pricing(
         self, app, seed_user, seed_periods,
     ):
-        """The accepted register and the accept door's re-price agree: the match stops holding."""
+        """The accepted register and the accept door's re-price agree: the match stops holding.
+
+        Graded on the member shape every act records since plan step
+        ``credit_card:CC-5-4a-1`` (ruling **R-CC43**: the payment), beside the
+        row member the acts before it hold.
+        """
         with app.app_context():
             checking = seed_user["account"]
             card = _card(seed_user)
             txn = _hotel_bill(seed_user, seed_periods[0])
             settle_transaction(txn)
             db.session.commit()
+            (movement,) = txn.covering_movements
             calendar = pay_calendar.calendar_for(seed_user["user"].id)
             basis = derived_amount_basis(seed_user["user"].id, seed_user["scenario"].id)
-            candidate = _candidates.transaction_candidate(txn, calendar, -_HOTEL)
+            candidate = _valuation.settlement_candidate(
+                movement, calendar, -_HOTEL, checking.id,
+            )
             assert candidate is not None
-            assert _accepted_view._accepted_row(  # pylint: disable=protected-access
-                txn, txn.settled_on, checking.id).cash_amount == -_HOTEL
-            assert _candidates.repriced(candidate, calendar, basis, checking.id) is not None
+            register = _accepted_view._accepted_row  # pylint: disable=protected-access
+            assert register(txn, txn.settled_on, checking.id).cash_amount == -_HOTEL
+            assert register(movement, txn.settled_on, checking.id).cash_amount == -_HOTEL
+            assert _valuation.repriced(candidate, calendar, basis, checking.id) is not None
 
             _correct_tender(txn, card.id)
 
-            assert _accepted_view._accepted_row(  # pylint: disable=protected-access
-                txn, txn.settled_on, checking.id).cash_amount == Decimal("0")
-            assert _candidates.repriced(candidate, calendar, basis, checking.id) is None
+            assert register(txn, txn.settled_on, checking.id).cash_amount == Decimal("0")
+            assert register(movement, txn.settled_on, checking.id).cash_amount == Decimal("0")
+            assert _valuation.repriced(candidate, calendar, basis, checking.id) is None

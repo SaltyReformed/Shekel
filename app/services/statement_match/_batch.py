@@ -81,7 +81,7 @@ saying so was measured FALSE on 2026-08-19.**  Settling a matched purchase runs
 ``entry_service.update_entry``, which re-derives the envelope's CC Payback and
 writes its ``estimated_amount`` -- a SIBLING rather than a child, invisible to
 that guard.  What actually keeps a pass honest is that
-:func:`~._candidates.repriced` re-prices every named row per act, and, since
+:func:`~._valuation.repriced` re-prices every named row per act, and, since
 plan step ``bank_import:X-f6d-3``, that an item whose row has moved since the
 screen described it is REFUSED rather than written (finding **N-336**).  This
 paragraph asserted the refuted reason until an adversarial review found it
