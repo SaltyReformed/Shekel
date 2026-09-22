@@ -170,11 +170,56 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       link and the bill does not, so `status_seam.record_clearing` learns which account's statement
       it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
       package, announce-first.
-- [ ] **CC-5-5** `fix(cards): a card in credit is the issuer owing` -- `R-CC41`: the five `abs()`
-      sites (`balance_at/_liability.py` `_spliced_owed_series` and `liability_owed_at_dates`,
-      `savings_dashboard_service/_net_worth.py`'s hero and trend series, `_debt_line.py`'s
-      no-payoff-model debt total) as ONE subject, the trend's index 0 still reconciling to the hero
-      by construction; `$0.00` on production (no card). Closes **CC-354**.
+- [ ] **CC-5-5** `fix(cards): one sign for every balance` -- `R-CC47` (re-scoping `R-CC41`; the
+      sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
+      minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
+      `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
+      flip); ticks with its last leaf. `$0.00` on production's net-worth figures (both liabilities
+      are configured loans).
+  - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
+        into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
+        non-loan liability's owed amount floored at zero, summed (`R-CC49`);
+        `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
+        `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
+        shape.
+- [ ] **CC-5-5b** `fix(accounts): a liability's balance is asked as owed` -- `R-CC52`: every door
+      that takes a LIABILITY's balance asks for the amount OWED (positive = you owe; a card's credit
+      a negative amount owed) and stores the held sign through `balance_at.owed`, one crossing per
+      door (the form speaks owed, the service stores held; the schema tier may not branch on account
+      class, as `schemas/validation/accounts.py` states): the account create form's opening balance
+      (`templates/accounts/form.html`, its route, `AccountCreateSchema`,
+      `account_service.create_account`), the anchor editor (`routes/accounts/anchor.py`
+      `anchor_form` and its PATCH, `grid/_anchor_edit.html`; amortizing accounts stay refused) and
+      the books-opening door (`routes/accounts/opening.py`, `opening_service`,
+      `accounts/_books_opening.html`), each entered and shown as owed, the pre-fill and a 422
+      redisplay included; the tile editor's held pre-fill (**CC-357**) closes with it. FIRST, a
+      census of every STORED liability balance on the newest production dump
+      (`account_openings.opening_equity`, `account_anchor_history.anchor_balance`, any other
+      books-opening or assertion row), each read under `R-CC47`, and of what reads them: the
+      Mortgage's `+174,281.51` opening and `+178,103.41` anchor were typed as owed, so wrong-signed
+      (both a configured loan's, feeding no net-worth figure; its cash fold and the posted ledger's
+      Balance Sheet are what to trace). A wrong-signed stored value is a MONEY question to the
+      developer, with worked dollars, BEFORE 5c; any backfill is an Alembic migration, which makes
+      this leaf migration-bearing and its own release. Graded by 5a's instrument: every ASSET screen
+      byte-identical, a liability form's label change a declared change. Closes **CC-357**.
+- [ ] **CC-5-5c** `fix(cards): a card in credit is the issuer owing` -- `R-CC47` and `R-CC48`, ONE
+      commit: the seam's two configured-loan arms report the HELD sign (`positions()` and the loan
+      domain's producers stay owed); the hero and trend read the plain sum of balances with
+      liabilities as `owed`, the band drops its `abs` and the liability subtotal
+      (`_display._compute_group_subtotals`, `R-CC48`) reads `owed`; the seven loan-balance readers
+      move onto `owed` (debt strategy; the loan pages' `current_balance` property feeding the
+      dashboard, the payoff and refinance calculators and the true-up pre-fill; home equity; on
+      /savings the liability tile's figure, its sparkline and two debt-summary figures) and
+      liability tiles show owed. The flip also decides what a savings goal backed by a LIABILITY
+      reads (**CC-360**: `_goal_form_context` offers any active account, a loan included, and
+      `_goals._goal_account_balance` reads the held balance once the loan arm is re-signed): 5c
+      either gains that reader, the goal reading `owed()`, or refuses a liability as a goal's
+      account, a design question the lane puts to the developer with worked dollars before building;
+      and the footer's "revolving" caption, whose sum also counts an amortizing account with no loan
+      terms and a custom liability, is corrected (**CC-361**). Every loan test figure that flips
+      sign is a rule-5 re-expression the developer confirms, its classes with counts, before the
+      commit. Graded by 5a's `tests/manual/verify_liability_screens.py` per its docstring's
+      procedure: production's screens byte-identical. Closes **CC-354**, **CC-360**, **CC-361**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
