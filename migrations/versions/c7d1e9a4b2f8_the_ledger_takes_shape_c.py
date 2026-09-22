@@ -15,10 +15,11 @@ split is a derivation keyed by its period and day, linking no row; it re-ruled
 **What this migration does, and what it deliberately does NOT.**  It is the
 step's DATA BOUNDARY: it gives the schema and the reference catalogue what the
 new posting writer needs, and it owns the downgrade teardown.  It does NOT
-re-book a single posting.  The 19 settled transfers' one-entry-per-transfer
+re-book a single posting.  Every settled transfer's one-entry-per-transfer
 postings are reversed and re-posted per movement by the deploy's existing
-first hook, ``scripts/init_database.py::resync_all_cash_postings_after_
-migration``, which drives the go-forward ``posting_service.sync_transfer_
+first hook (which prints how many transfers it re-posted),
+``scripts/init_database.py::resync_all_cash_postings_after_migration``, which
+drives the re-book half of the go-forward ``posting_service.sync_transfer_
 postings`` -- ONE producer, the same code every future settle runs, and no
 SQL restatement of the sign rule, the contributing gate, the (period,
 movement-day) key, the kinds, the link or the description (ruling **R-BAL98**;
@@ -103,7 +104,10 @@ the old one-entry shape from the transfer rows through ITS
 ``sync_transfer_postings`` (the legacy entries this release reversed net to
 zero, so that reconcile posts each transfer's effect afresh at the income
 shadow's day -- byte-identical per (real account, day) by the measurement
-above), which is ``e2a9f1c7b4d6``'s downgrade doctrine.  Raw SQL throughout,
+above), which is ``e2a9f1c7b4d6``'s downgrade doctrine.  That old resync
+re-checks the anchors after EACH transfer (ruling **R-BAL103** is this
+release's), so a rollback also appends cancelling true-up pairs: 40 entries on
+the 2026-09-22 rehearsal, every net exact.  Raw SQL throughout,
 so the ORM's append-only guards (ORM-mediated only) do not interfere and the
 balanced trigger (INSERT / UPDATE only) does not fire on the deletes.  The
 counts are printed as the migration's own measurement in both directions.
@@ -239,8 +243,9 @@ def upgrade():
     print(
         "X-bi-6-3: is_fallback -> is_owner_bucket, keyed (user, class, kind); "
         f"{buckets} owner bucket(s) carried over; 'transit' kind and "
-        "'transfer_movement' source seeded.  The 19 settled transfers are "
-        "re-booked per movement by the deploy's cash resync (R-BAL98).  "
+        "'transfer_movement' source seeded.  Every settled transfer is "
+        "re-booked per movement by the deploy's cash resync, which prints "
+        "its own count (R-BAL98).  "
         f"{unlinked} loan_payment split entr(y/ies) unlinked from their "
         "shadow (R-BAL102), 0 left linked; the deploy's loan hook computes "
         "zero deltas over them."

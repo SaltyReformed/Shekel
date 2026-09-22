@@ -237,7 +237,8 @@ def self_heal_anchor_corrections(
     ``posting_service.sync_transfer_postings`` /
     ``sync_transaction_postings`` (which
     ``reverse_postings_before_delete`` routes through) call this after
-    emitting source delta entries.
+    emitting source delta entries, and ``resync_all_cash_postings`` calls it
+    ONCE per scenario after re-booking every source (ruling **R-BAL103**).
 
     **What it decides is whether the reconcile can be SKIPPED, and that is
     the honest way round.**  :func:`sync_account_anchor_postings` is
@@ -348,8 +349,10 @@ def self_heal_anchor_corrections(
     # fires.
     #
     # The owner comes off the entries rather than from a query: every journal
-    # entry a source emits carries its ``user_id``, and one source's deltas are
-    # one owner's by construction.
+    # entry a source emits carries its ``user_id``, and one call's deltas are
+    # one owner's by construction -- a source's are its owner's, and the deploy
+    # resync's one call per SCENARIO (ruling **R-BAL103**) holds only that
+    # scenario's sources, a scenario being one owner's.
     lock_user_writes(delta_entries[0].user_id)
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):

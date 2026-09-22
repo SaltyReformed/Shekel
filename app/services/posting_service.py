@@ -152,8 +152,10 @@ def _self_heal_account_anchor_corrections(
     :func:`sync_transfer_postings` and :func:`sync_transaction_postings`
     (which every settle / revert / delete path routes through, including
     :func:`reverse_postings_before_delete` and
-    :func:`reverse_transfer_postings_before_delete`): when the emitted deltas
-    touch a
+    :func:`reverse_transfer_postings_before_delete`), and called ONCE per
+    scenario by :func:`resync_all_cash_postings` after its whole loop with
+    every entry that loop emitted (ruling **R-BAL103**): when the emitted
+    deltas touch a
     non-loan account whose latest anchor assertion sits at-or-after the
     earliest emitted ``entry_date``, that account's opening / true-up
     corrections are reconciled again in the same transaction -- see
@@ -230,8 +232,9 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
     **The legacy arm.**  Whatever the one-entry ``transfer`` source posted for
     *xfer* is reconciled to ZERO here, at its own ``(period, entry date)``, on
     every call (:func:`_reverse_legacy_transfer_entry`): the deploy's first
-    resync after this step reverses the 19 production entries once, and every
-    later sync finds nothing to do.  The reversal and the two per-movement
+    resync after this step reverses every production legacy entry once (19
+    transfers on the 2026-09-22 17:06 dump), and every later sync finds
+    nothing to do.  The reversal and the two per-movement
     entries land on the same day for every one of them (measured on the
     2026-09-20 restore: every movement's day equals its old entry's), so each
     real account's net per day is unchanged and the loan checked-projection
@@ -313,6 +316,21 @@ def _reconcile_transfer_family(xfer: Transfer, posts) -> "list[JournalEntry]":
     Returns:
         The emitted delta entries, in emission order; ``[]`` at target.
     """
+    entries, accounts = _rebook_transfer_family(xfer, posts)
+    _self_heal_account_anchor_corrections(accounts, xfer.scenario_id, entries)
+    return entries
+
+
+def _rebook_transfer_family(xfer: Transfer, posts) -> "tuple[list[JournalEntry], tuple]":
+    """Bring *xfer*'s family to target; re-check no anchor correction.
+
+    :func:`_reconcile_transfer_family`'s first half.  The deploy resync runs it
+    for every transfer and re-checks the anchors ONCE after its loop (ruling
+    **R-BAL103**; :func:`resync_all_cash_postings` says why).  *posts* is
+    ``(shadow, movement) -> bool``; returns ``(entries, accounts)``, the
+    emitted deltas (``[]`` at target) and every real account their linked
+    legs can touch.
+    """
     movements = _transfer_family_movements(xfer)
     entries = _reverse_legacy_transfer_entry(xfer)
     for movement in movements:
@@ -322,10 +340,7 @@ def _reconcile_transfer_family(xfer: Transfer, posts) -> "list[JournalEntry]":
                 movement, shadow, posted=posts(shadow, movement),
             )
         )
-    _self_heal_account_anchor_corrections(
-        _transfer_family_accounts(xfer, movements), xfer.scenario_id, entries,
-    )
-    return entries
+    return entries, _transfer_family_accounts(xfer, movements)
 
 
 def _transfer_family_movements(xfer: Transfer) -> "list[TransactionEntry]":
@@ -534,6 +549,20 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
         PostingError: If a movement's account (or its resolved category
             account) has no ledger account.
     """
+    entries = _rebook_transaction_family(txn)
+    _self_heal_account_anchor_corrections(
+        _family_accounts(txn), txn.scenario_id, entries,
+    )
+    return entries
+
+
+def _rebook_transaction_family(txn: Transaction) -> "list[JournalEntry]":
+    """Bring *txn*'s family to target; re-check no anchor correction.
+
+    :func:`sync_transaction_postings`' first half, run by the deploy resync
+    for every row before its one anchor re-check (ruling **R-BAL103**).
+    Returns the emitted deltas, ``[]`` at target.
+    """
     entries = _emit_transaction_deltas(txn)
     for purchase in txn.entries:
         entries.extend(
@@ -541,9 +570,6 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
                 purchase, txn, posted=purchase_posts(txn, purchase),
             )
         )
-    _self_heal_account_anchor_corrections(
-        _family_accounts(txn), txn.scenario_id, entries,
-    )
     return entries
 
 
@@ -681,6 +707,16 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     )
 
 
+def _hold_for_the_re_check(held: dict, scenario_id: int, accounts, entries) -> None:
+    """Add one source's re-book to :func:`resync_all_cash_postings`' one re-check.
+
+    *held* maps a scenario id to (accounts touched, entries emitted).
+    """
+    held_accounts, held_entries = held.setdefault(scenario_id, (set(), []))
+    held_accounts.update(accounts)
+    held_entries.extend(entries)
+
+
 def resync_all_cash_postings() -> tuple[int, int]:
     """Re-reconcile every settled cash source's postings (deploy resync).
 
@@ -719,10 +755,26 @@ def resync_all_cash_postings() -> tuple[int, int]:
     transfer into its ruled shape** (rulings **R-BAL45**, **R-BAL98**): the
     one-entry ``transfer`` source is reversed to zero and the two per-movement
     entries are posted against the owner's transit account, by
-    :func:`sync_transfer_postings` -- the same code every future settle runs,
+    :func:`sync_transfer_postings`' re-book half -- the code every settle runs,
     so the re-book is the go-forward posting by construction and no SQL
-    restates it.  The first deploy of that tree logs the 19 production
-    transfers as changed; every later one logs zero.
+    restates it.  The first deploy of that tree logs every settled transfer
+    as changed (19 on the 2026-09-22 17:06 production dump); every later one
+    logs zero.
+
+    **It re-books EVERY source first and re-checks the anchor corrections
+    ONCE, after both arms** (ruling **R-BAL103**, developer 2026-09-22).  The
+    per-source doors re-check at once, right for one settle and wrong for a
+    batch: a transfer not yet reached still holds its legacy one-entry
+    posting, which the account walk does not read (the ``transfer_id IS
+    NULL`` exclusion ``X-bi-6-5`` deletes), so a walk inside the loop books a
+    true-up for money only waiting its turn and that transfer's own re-check
+    reverses it -- both permanent in an append-only ledger, 40 of the 97
+    entries the first 6-3 deploy wrote on its rehearsal over the 2026-09-22
+    production dump.  So both arms run the doors' re-book halves
+    (:func:`_rebook_transaction_family`, :func:`_rebook_transfer_family`) and
+    the one re-check per scenario (one owner; the self-heal locks the owner
+    off the entries) reads the finished ledger.  The union's earliest day can
+    only make the re-check run where one source alone would skip it.
 
     It stays wired on every deploy rather than being deleted after one run, for
     the same reason its two siblings are: reconcile-to-target makes it a no-op
@@ -732,7 +784,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     Idempotent and self-healing.  A settled row already at target posts nothing;
     a row whose target DATE moved gets its old-date legs reversed and its new
-    -date legs posted in one balanced pair by
+    -date legs posted in one balanced pair by the re-book halves of
     :func:`sync_transaction_postings` / :func:`sync_transfer_postings`, which
     reconcile over the ``(period, entry_date)`` keys already in the ledger
     unioned with the target (plan step E1a's per-date attribution) -- so a
@@ -741,8 +793,8 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     Loan payment transfers are re-synced here too and that is deliberate
     duplication of effort, not of RULE: the loan package would reach the same
-    ones through its own detector, and both paths call this module's
-    :func:`sync_transfer_postings`, so whichever runs first leaves the other at
+    ones through its own detector, and both paths reach this module's
+    :func:`_rebook_transfer_family`, so whichever runs first leaves the other at
     target.  **Its transfer half is total over the family the ledger holds
     for the same reason its transaction half is** (below): it walks every
     live transfer that is settled OR holds a dated covering movement on a
@@ -844,9 +896,17 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .order_by(Transaction.id)
         .all()
     )
-    transactions_changed = sum(
-        1 for txn in transactions if sync_transaction_postings(txn)
-    )
+    # Every source's re-book is HELD for the one anchor re-check after both
+    # arms (ruling **R-BAL103**): scenario -> (accounts touched, entries).
+    held: dict[int, tuple[set[int], list[JournalEntry]]] = {}
+    transactions_changed = 0
+    for txn in transactions:
+        entries = _rebook_transaction_family(txn)
+        if entries:
+            transactions_changed += 1
+            _hold_for_the_re_check(
+                held, txn.scenario_id, _family_accounts(txn), entries,
+            )
 
     transfers = (
         db.session.query(Transfer)
@@ -909,12 +969,25 @@ def resync_all_cash_postings() -> tuple[int, int]:
     for xfer in transfers:
         try:
             with db.session.begin_nested():
-                changed = bool(sync_transfer_postings(xfer))
+                entries, accounts = _rebook_transfer_family(xfer, purchase_posts)
         except PostingError:
             skipped.append(xfer.id)
             continue
-        if changed:
+        if entries:
             transfers_changed += 1
+            _hold_for_the_re_check(held, xfer.scenario_id, accounts, entries)
+    # The ONE anchor re-check, after every source is re-booked (ruling
+    # **R-BAL103**; the docstring says why).  Outside the per-transfer
+    # SAVEPOINT on purpose: the walk refuses only for the ACCOUNT
+    # (anchor history with no linked ledger, or a posted net whose source it
+    # cannot resolve), never for one transfer's re-book, and the deploy's third
+    # hook walks every non-loan account with no skip
+    # (``account_posting_service.backfill_all_account_anchor_postings``), so
+    # such an account aborts the deploy there regardless.
+    for scenario_id, (accounts, entries) in sorted(held.items()):
+        _self_heal_account_anchor_corrections(
+            tuple(sorted(accounts)), scenario_id, entries,
+        )
     if skipped:
         logger.warning(
             "Cash posting resync skipped %d transfer(s) whose family could not "
