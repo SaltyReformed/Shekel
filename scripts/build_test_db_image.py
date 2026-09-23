@@ -807,6 +807,13 @@ def build(tag: str) -> None:
                 "PATH": "/usr/bin:/bin",
                 "HOME": str(Path.home()),
                 "TEST_ADMIN_DATABASE_URL": admin,
+                # The builder calls ``create_app``, which refuses without the
+                # pinned locale (ruling recurrence:R-R92).  The parent's value
+                # is passed ONLY when it has one: an empty string would stop
+                # the child's ``load_dotenv()`` supplying it from a host
+                # ``.env`` (dotenv never overrides a variable already set).
+                **({"LC_ALL": os.environ["LC_ALL"]}
+                   if "LC_ALL" in os.environ else {}),
             },
             capture_output=True,
             text=True,

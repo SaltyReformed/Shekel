@@ -524,17 +524,18 @@ def months_between(start: date, end: date) -> int:
 #: instead would put two spellings of one list in the codebase, so it moved
 #: down here and both readers take it from one place.
 #:
-#: **It is not yet the only month-name producer in the application**, and
-#: saying so would be a claim nobody had measured: ``routes/analytics.py``,
-#: ``routes/analytics_view.py`` and
-#: ``services/ledger_report_service/_income_statement.py`` still name months
-#: through :mod:`calendar` and ``strftime``.  Converting them is its own task
-#: (recurrence plan finding F-15); this table does not pretend they are gone.
+#: **It is not the only month-name producer in the application**: sites across
+#: ``app/`` and the templates still name months through :mod:`calendar` and
+#: ``strftime``, and they are NOT owed a conversion.  Ruling
+#: ``recurrence:R-R54`` answered finding F-15 with the process locale pinned in
+#: the image and asserted at startup (:data:`app.PINNED_LOCALE`, ruling
+#: ``R-R92``), which covers every such site, present and future, where
+#: converting them one at a time covers only the ones someone remembers.
 #:
-#: Spelled out rather than read from :mod:`calendar`, deliberately: that
-#: module's names follow the process LOCALE, so a container started under a
-#: non-English locale would render a different month name than the one every
-#: test asserts -- which is exactly what those three surfaces do today.
+#: Spelled out rather than read from :mod:`calendar` all the same, because a
+#: table needs no pin to read English.  The sites that do read the locale read
+#: English too: CPython never calls ``setlocale`` for ``LC_TIME``, and a
+#: ``setlocale(LC_ALL, "")`` would adopt the pinned ``C.UTF-8``.
 _MONTH_NAMES_FULL: tuple[str, ...] = (
     "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -547,13 +548,16 @@ _MONTH_NAMES_ABBR: tuple[str, ...] = (
 
 #: English weekday names, indexed by :meth:`datetime.date.weekday` (0 = Monday).
 #:
-#: Spelled out for the same reason as the month names above, and the reason is
-#: not hypothetical here: ``f"{a_date:%A}"`` delegates to the platform
-#: ``strftime`` and follows ``LC_TIME``, which ``deploy/`` pins nowhere -- it
-#: pins ``TZ`` only.  A container started with ``LANG=de_DE.UTF-8`` would render
-#: a weekly recurrence as ``Weekly (Donnerstags)`` beside months still in
-#: English, and the test asserting ``Weekly (Thursdays)`` would fail on the
-#: environment rather than on the code.
+#: Spelled out for the same reason as the month names above:
+#: ``f"{a_date:%A}"`` delegates to the platform ``strftime`` and follows
+#: ``LC_TIME``.  That is a HAZARD rather than a live failure, and this note once
+#: claimed a container started with ``LANG=de_DE.UTF-8`` would render
+#: ``Weekly (Donnerstags)``.  It would not, twice over: CPython never calls
+#: ``setlocale`` for ``LC_TIME``, and the production image holds no locale but
+#: ``C``, ``C.utf8`` and ``POSIX`` (measured in the running container
+#: 2026-09-23).  Since ruling ``recurrence:R-R92`` the
+#: process locale is also pinned in the image and asserted at startup, so no
+#: environment the app can start under names a German weekday.
 _WEEKDAY_NAMES: tuple[str, ...] = (
     "Monday", "Tuesday", "Wednesday", "Thursday",
     "Friday", "Saturday", "Sunday",
@@ -744,8 +748,9 @@ def pay_period_range_label(start_date: date, end_date: date) -> str:
     03/06"`` for one inside a single year.  Two registers was always the
     deliberate part; two RULES would be the drift.
 
-    The month name comes from ``strftime`` and is therefore LC_TIME-dependent,
-    which is finding **F-15**'s subject rather than this function's.
+    The month name comes from ``strftime`` and so follows ``LC_TIME``; the
+    process locale pinned at startup (ruling ``recurrence:R-R92``, closing
+    finding **F-15**) is what keeps it English, not anything in this function.
 
     Args:
         start_date: The payday that opens the period.

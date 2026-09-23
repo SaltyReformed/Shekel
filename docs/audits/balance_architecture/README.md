@@ -803,8 +803,9 @@ section 4, under their unchanged ids.*
     `8d812662`: the fabricated `$0.00` in four producers, and `build_trend_periods`'
     `current_index = 0` into an empty list, still live at `routes/accounts/detail.py:228` and
     `analytics_view.py:485`.
-  * [ ] **X-x3 THE ONE PREDICATE** (R-DA) -- `onboarding.has_periods` asks Q2 rather than Q1, so the
-    checklist and the page it renders on cannot disagree.
+  * [x] **X-x3** `b7d513ff` -- the pay-period row and its two locks RETIRED (**R-BAL116**,
+    superseding R-DA); the banner complete on `has_salary and has_templates`, the second ANY
+    template (**BAL-537**); its four facts asked when read (**R-BAL117**). Closed `balance:N-328`.
   * [ ] **X-x4 THE STATES SPLIT** (R-CZ) -- an empty requested window stops answering with the
     absence card, and the card's copy stops naming two states.
   * [ ] **X-x5 THE HARNESS** -- delete `verify_savings_producers.py`'s dict-or-attribute `_get`
@@ -1038,9 +1039,9 @@ section 4, under their unchanged ids.*
 * [ ] **X-ck** `fix(seam): the delete dialog counts purchases; a movement's name is written once` --
   closes **BAL-504**, **BAL-505**: the popover counts `txn.entries` where it means purchases, and
   `_record_onto` rewrites the movement's name on every re-record where R-BAL39 says once.
-* [ ] **X-cl** `chore(tests): delete the dead reconcile-rules harness` -- closes **BAL-510**:
-  `tests/manual/measure_entry_reconcile_rules.py` reads and writes two deleted columns, so it
-  cannot run against any current schema; a proof instrument that cannot compile claims nothing.
+* [x] **X-cl** `457135d9` -- deleted `tests/manual/measure_entry_reconcile_rules.py`, born dead in
+  `b305b7b5` (S1-c), whose migration `d7c1f4a9e603` dropped `is_cleared` and renamed `entry_date`:
+  it could never RUN, though pylint E/F passes it (**BAL-533**). Closed **BAL-510**.
 * [ ] **X-cm** `fix(cash): the constant-offset signature reads per run` -- closes **BAL-512**:
   `BankAgreement.constant_offset` is account-wide while the walk anchors per run (**R-BAL63**), so
   one run's wrong starting figure goes unreported beside a run whose is right; per `RecordedRun`,
@@ -1082,6 +1083,8 @@ section 4, under their unchanged ids.*
   **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
   the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
   leaves the laundering untested with its witnesses gone, which is strictly worse than today.
+  **Also owns BAL-509, N-408, N-510** (developer 2026-09-23): the deploy tests' flakes, suspected
+  cause the fake-docker shim's 12-character digest-substring match under `-n` workers.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
   PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists
