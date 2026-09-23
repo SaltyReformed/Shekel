@@ -140,29 +140,39 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
 - [ ] **CC-5-4** `feat(cards): the card's line meets the bill it paid` -- design 3.2 and `R-CC40`'s
       HALF 2: the DECOMPOSED parent, split 2026-09-21 by the developer (`R-CC45`) into 4a-1 (the
       writer), 4a-2 (the re-key migration; the member table's bill column dropped) and 4b (the card
-      panel's settlements arm, `R-CC44`); ticks with its last leaf. Must land before any card import
-      exists.
+      panel's settlements arm, `R-CC44`), and on 2026-09-22 given 4a-3 (one act takes a movement off
+      the books; the popovers' captions; `R-CC51`) and 4a-4 (a row holding a movement is history;
+      neither match key cascades; `R-CC55`); ticks with its last leaf. Must land before any card
+      import exists.
   - [x] **CC-5-4a-1** `079524b0` -- the payment MOVEMENT is the matcher's subject on every screen
         (`R-CC43`): `RowKind.SETTLEMENT` (the movement's identity, the row's record: priced as a
         movement when dated, the row's paycheck as its window, dated through the row's own door with
         the screen's account as tender); a settled row offered as its payment; a settling match
         records the payment its settle wrote; a re-pointed payment withdraws the matches naming it,
         disclosed (`R-CC46`); both member shapes still read until 4a-2.
-- [ ] **CC-5-4a-2** `feat(cards): a member is a bank line or a movement` -- `R-CC45`'s second half:
-      a migration re-keys every accepted act's row member (103 row members on the 2026-09-21 dump;
-      221 acts at the 08-27 count) onto that bill's payment after a census on the newest production
-      dump and an ASSERT of one act per row; a member with no payment to re-key onto (a bill closed
-      from its purchases, a `$0.00` close, a Credit or Cancelled bill matched before today's
-      refusals) REFUSES the migration and the developer rules it; then
-      `statement_match_members.transaction_id` goes with its key and unique index, and the six
-      bill-member readers (`_candidates.matched_subjects`, `_candidates._is_claimed`,
-      `_accepted_view._accepted_row`, `_acts.named_rows`, `match_withdrawal`,
-      `bank_agreement._rows_on`) lose that arm; with the row-member shape gone a definition's
-      account move touches no member's subject (closes **CC-356**), and
-      `status_seam/_covering.py:36-40`'s stale module docstring (it names `_candidates._price`,
-      gone) is this leaf's to correct (announce-first, balance's region). Its own PR and release,
-      graded byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
-      2026-09-21 10:33 dump at `9900b309f0b0`).
+  - [x] **CC-5-4a-2** `550cc9ce` -- migration `2eabfa596ee0` (re-parented onto `c7d1e9a4b2f8` at
+        `62bf0e35`) re-keyed the 103 row members onto their payments, refusing a member with no
+        payment, one on another account or one another member names, and dropped
+        `statement_match_members.transaction_id` with its key and unique index; its readers lost
+        that arm (`R-CC45`), closing **CC-356**. Deploys with 4a-3 (`R-CC51`); suite 15144/0.
+  - [x] **CC-5-4a-3** `175b192d` -- `movement_removal.remove_movements`, ONE act taking a payment or
+        purchase off the books (reversed, out of every match, deleted; `R-CC54` part 1), called by
+        the six doors that removed a movement one by one, the status seam's `$0.00` / purchases
+        record among them (**CC-358**'s popover path); the bill popover's two captions (`R-CC56`)
+        and the transfer popover's (`R-CC59`) read `match_withdrawal.pending_for_movements`.
+        **CC-359** measured not a defect. No migration; suite 15167/0.
+- [ ] **CC-5-4a-4** `fix(cards): a row holding a payment or purchase is history` -- `R-CC54` parts
+      (2) and (3), its own leaf by `R-CC55`: a row's delete stops cascading to its payments and
+      purchases, so a row holding one is history -- the template and account permanent deletes
+      archive instead, the archive keeps such a row where today it hides it and its purchase leaves
+      the fold (**CC-363**: template 19 'Clothes' holds movement 343, `$107.57`, which either door
+      drops on production's copy), and truncate / regenerate lock its period; a match's key to its
+      payment or purchase stops cascading, like its key to the bank line, and the leftover-match
+      check `_candidates.act_still_names_a_row` (read by `matched_subjects` and `_undisposed`) is
+      deleted, which makes `bank_agreement._lines_on`'s membership read exact (**CC-358**). A
+      migration on `2eabfa596ee0`, its own release after the 4a-2 + 4a-3 release; its entry's own
+      design questions (2026-09-22, extending part (2) to the archive, the object layer and the
+      reset and transfer doors) are filed at its tick. Closes **CC-358**, **CC-363**.
 - [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
       of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
       another, listed under the bill's name in its paycheck block, ticked through the bill's own
