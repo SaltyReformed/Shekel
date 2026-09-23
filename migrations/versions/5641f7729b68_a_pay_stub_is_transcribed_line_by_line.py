@@ -375,9 +375,11 @@ def upgrade():
     _create_pay_stub_withholdings()
     _create_pay_stub_one_offs()
 
-    # Trigger name ``audit_<table>`` matches the convention the entrypoint
-    # trigger-count health check enumerates (``tgname LIKE 'audit_%'``).  The
-    # shared ``system.audit_trigger_func`` already exists.
+    # Trigger name ``audit_<table>``: the name the deploy's check
+    # (``app.audit_infrastructure.require_audit_triggers``) counts by prefix
+    # and, when the count is short, looks up per table to name the table
+    # missing its trigger (``_audit_trigger_name``).  The shared
+    # ``system.audit_trigger_func`` already exists.
     for table in _AUDITED_NEW_TABLES:
         op.execute(f"DROP TRIGGER IF EXISTS audit_{table} ON {_SCHEMA}.{table}")
         op.execute(

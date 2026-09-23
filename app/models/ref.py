@@ -97,7 +97,7 @@ class AccountType(db.Model):
 
         user_id           -- Owning user (nullable).  ``NULL`` denotes
                              a seeded built-in type managed by
-                             ``scripts/seed_ref_tables.py`` and is
+                             ``app.ref_seeds.seed_reference_data`` and is
                              read-only to every owner.  A non-NULL
                              value means the row was created by that
                              user via the ``/accounts/types`` route;

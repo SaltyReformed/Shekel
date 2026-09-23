@@ -177,6 +177,9 @@ KEY_INPUTS = key_inputs()
 _READY_TIMEOUT_SECONDS = 60
 _BUILD_USER = "shekel_user"
 _BUILD_PASSWORD = "shekel_pass"
+# How much of the template builder's own log a failure report quotes: enough to
+# show the last migration revision it ran and whatever it logged after that.
+_FAILED_BUILD_LOG_LINES = 40
 
 
 class BuildError(RuntimeError):
@@ -500,9 +503,10 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
     """Return the SQL that counts one trigger family, and the count it must find.
 
     One attachment per entry in the named ``(trigger name, table)`` constant:
-    ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``)
-    and ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
-    ``bank_import:X-f6b-1``).  BOTH halves come from that one constant -- the
+    ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``),
+    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
+    ``bank_import:X-f6b-1``) and ``app.pay_stub_infrastructure.PAY_STUB_TRIGGERS``
+    (plan step ``salary:S11-a``).  BOTH halves come from that one constant -- the
     names the query looks for and the number it must find -- so the check
     cannot count a trigger the module renamed, nor accept a template missing
     one.
@@ -561,6 +565,66 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
             "otherwise compare against a number nobody owns"
         ) from exc
     return len(value) if length else int(value)
+
+
+def template_checks() -> tuple[tuple[str, str, int], ...]:
+    """Return every ``(label, sql, expected)`` a database built at head must answer.
+
+    ONE list for both ways a database is built at head: :func:`_verify_image`
+    asks each of the baked template, and
+    ``tests/test_scripts/test_init_database_one_transaction.py`` of a first
+    boot (``init_fresh_database``, which applies each family itself).  A
+    family added here is graded on both paths (review L1 of the
+    ``salary:S11-a`` carry-merge).  Counts are EXACT, from each producer's
+    own constant.
+
+    Raises:
+        BuildError: When a producer's constant cannot be read.
+    """
+    return (
+        ("account types", "SELECT count(*) FROM ref.account_types",
+         _expected_account_types()),
+        ("audit triggers",
+         "SELECT count(*) FROM pg_trigger "
+         "WHERE tgname LIKE 'audit\\_%' AND NOT tgisinternal",
+         _expected_audit_triggers()),
+        ("append-only triggers",
+         "SELECT count(*) FROM pg_trigger "
+         "WHERE tgname LIKE 'ck\\_append\\_only%' AND NOT tgisinternal",
+         _expected_append_only_triggers()),
+        ("level-within-file triggers",
+         *_trigger_family_check("app.level_infrastructure", "LEVEL_TRIGGERS")),
+        ("last-sighting triggers",
+         *_trigger_family_check("app.sighting_infrastructure", "SIGHTING_TRIGGERS")),
+        ("pay-stub refusal triggers",
+         *_trigger_family_check("app.pay_stub_infrastructure", "PAY_STUB_TRIGGERS")),
+    )
+
+
+def _builder_failure(stdout: str, stderr: str) -> str:
+    """Return the report for a failed ``build_test_template.py`` run.
+
+    BOTH streams (ruling **R-BAL121**).  The builder runs the chain through the
+    deploy's own runner, so ``migrations/env.py`` leaves its logging to the
+    app: each migration revision is logged as the app's JSON on STDOUT, and
+    the traceback goes to stderr.  Quoting only stderr would drop the line
+    that names the revision that was running when the build failed.
+
+    Args:
+        stdout: The builder's standard output.
+        stderr: Its standard error.
+
+    Returns:
+        The last :data:`_FAILED_BUILD_LOG_LINES` lines of stdout, then stderr.
+    """
+    log_tail = stdout.strip().splitlines()[-_FAILED_BUILD_LOG_LINES:]
+    return (
+        "build_test_template.py failed.\n"
+        f"Its log (stdout, last {_FAILED_BUILD_LOG_LINES} lines):\n"
+        + "\n".join(log_tail)
+        + "\nIts error (stderr):\n"
+        + stderr.strip()
+    )
 
 
 def _verify_image(tag: str) -> None:
@@ -687,44 +751,9 @@ def _verify_image(tag: str) -> None:
         # a threshold weaker than the builder's own assertions defeats it:
         # a template missing an entire trigger family would sail through.
         # The counts are IMPORTED rather than restated, so there is one home
-        # for each of them.
-        for label, sql, expected in (
-            (
-                "account types",
-                "SELECT count(*) FROM ref.account_types",
-                _expected_account_types(),
-            ),
-            (
-                "audit triggers",
-                "SELECT count(*) FROM pg_trigger "
-                "WHERE tgname LIKE 'audit\\_%' AND NOT tgisinternal",
-                _expected_audit_triggers(),
-            ),
-            (
-                "append-only triggers",
-                "SELECT count(*) FROM pg_trigger "
-                "WHERE tgname LIKE 'ck\\_append\\_only%' AND NOT tgisinternal",
-                _expected_append_only_triggers(),
-            ),
-            (
-                "level-within-file triggers",
-                *_trigger_family_check(
-                    "app.level_infrastructure", "LEVEL_TRIGGERS",
-                ),
-            ),
-            (
-                "last-sighting triggers",
-                *_trigger_family_check(
-                    "app.sighting_infrastructure", "SIGHTING_TRIGGERS",
-                ),
-            ),
-            (
-                "pay-stub refusal triggers",
-                *_trigger_family_check(
-                    "app.pay_stub_infrastructure", "PAY_STUB_TRIGGERS",
-                ),
-            ),
-        ):
+        # for each of them, and the list itself has one home too
+        # (:func:`template_checks`), which a first boot is graded by as well.
+        for label, sql, expected in template_checks():
             answer = ask(_TEMPLATE_DATABASE, sql)
             if answer != str(expected):
                 raise BuildError(
@@ -826,10 +855,7 @@ def build(tag: str) -> None:
             check=False,
         )
         if builder.returncode != 0:
-            raise BuildError(
-                "build_test_template.py failed:\n"
-                + (builder.stderr or builder.stdout).strip()
-            )
+            raise BuildError(_builder_failure(builder.stdout, builder.stderr))
         # Quote the builder's own verification line rather than inferring
         # success from a zero exit.  It prints the counts it checked; a
         # build that somehow produced nothing would still exit 0 if its

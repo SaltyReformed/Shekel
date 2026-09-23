@@ -6,12 +6,12 @@ migrations.  The tag is a hash of the inputs, and the tempting version of
 that hash -- "the migrations" -- is WRONG in a way that corrupts results
 rather than merely slowing them.
 
-``build_test_template._populate_template`` runs seven steps, and four of them
-re-apply IN-CODE definitions *after* ``alembic upgrade``, deliberately, so
-the latest trigger definition wins over the migration-frozen one.  So editing
-``app/audit_infrastructure.py``, ``app/posting_infrastructure.py`` or
-``app/opening_infrastructure/`` changes the template while ``migrations/``
-stays byte-identical.  A migrations-only key would hand back a stale image
+``build_test_template._populate_template`` re-applies IN-CODE definitions
+*after* ``alembic upgrade`` -- every ``apply_*`` block in it -- deliberately,
+so the latest trigger definition wins over the migration-frozen one.  So
+editing ``app/audit_infrastructure.py``, ``app/posting_infrastructure.py``,
+``app/opening_infrastructure/`` or any other module one of those blocks
+imports changes the template while ``migrations/`` stays byte-identical.  A migrations-only key would hand back a stale image
 and every suite thereafter would run against the wrong triggers, green.
 
 These tests pin that: each derived input must move the key, and every
@@ -428,6 +428,31 @@ class TestTheFaultVerdictLineHoldsAtEverySite:
         assert "raise BuildError(" in body, (
             "ask() does not re-raise a failed query as a verdict"
         )
+
+
+class TestAFailedTemplateBuildReportsBothStreams:
+    """Ruling R-BAL121: the failure report quotes the builder's log AND its error.
+
+    The template builder runs the migration chain through the deploy's own
+    runner (``app.migration_runner``), so ``migrations/env.py`` leaves its
+    logging to the app: each revision is logged as JSON on STDOUT and the
+    traceback goes to stderr.  A report quoting stderr alone would drop the
+    line naming the revision that was running.
+    """
+
+    def test_the_report_quotes_the_log_tail_and_the_error(self):
+        """The last revisions logged and the traceback both appear; older lines do not."""
+        log = "\n".join(
+            f'{{"message": "Running upgrade r{i} -> r{i + 1}"}}'
+            for i in range(100)
+        )
+        report = _MODULE._builder_failure(log, "Traceback: forged failure\n")
+
+        tail = _MODULE._FAILED_BUILD_LOG_LINES
+        assert "Running upgrade r99 -> r100" in report
+        assert f"Running upgrade r{100 - tail} -> r{101 - tail}" in report
+        assert f"Running upgrade r{99 - tail} -> r{100 - tail}" not in report
+        assert report.rstrip().endswith("Traceback: forged failure")
 
 
 class TestTheTemplateBuilderStartsUnderThePinnedLocale:

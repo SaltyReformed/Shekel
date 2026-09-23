@@ -81,8 +81,8 @@ from typing import Callable
 
 # Name of the trigger function and the constraint trigger.  The trigger name
 # intentionally uses the ``ck_`` prefix (not ``audit_``) so the audit
-# trigger-count health check, which enumerates ``tgname LIKE 'audit_%'``,
-# never counts it.
+# trigger-count check, which counts triggers whose name starts ``audit_``
+# (``app.audit_infrastructure.AUDIT_TRIGGER_COUNT_SQL``), never counts it.
 _TRIGGER_FUNCTION_NAME = "budget.assert_journal_entry_balanced"
 _TRIGGER_NAME = "ck_account_postings_balanced"
 _POSTINGS_TABLE = "budget.account_postings"

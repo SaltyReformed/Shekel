@@ -533,10 +533,10 @@ def backfill_all_loan_postings() -> list[int]:
     never double-posts, and a re-run at the same state writes nothing.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary: the
-    deploy hook
-    (``scripts.init_database.backfill_loan_payment_postings_after_migration``,
-    which initialises ``ref_cache`` first because the migration host does not),
-    the backfill suite, or the reconciliation oracle.
+    deploy (``scripts.init_database.initialise_database``, whose ONE commit
+    covers the migrations and all three deploy hooks, and which initialises
+    ``ref_cache`` first because the migration host does not; plan step
+    ``balance:X-cv``), the backfill suite, or the reconciliation oracle.
 
     **One of the two transactions in the app that reconcile more than one
     OWNER** (the cash twin ``backfill_all_account_anchor_postings`` is the

@@ -371,9 +371,11 @@ class TestAuditTriggerAllTables:
     def test_trigger_count_matches_expected(self, app, db):
         """Total ``audit_*`` trigger count equals EXPECTED_TRIGGER_COUNT.
 
-        Mirrors the assertion that ``entrypoint.sh`` runs at
-        container start.  A miscount here means the test environment
-        and the production health check would diverge -- either an
+        Mirrors the count the deploy's check
+        (``app.audit_infrastructure.require_audit_triggers``, entrypoint
+        step 3) asks for, spelled independently of it.  A miscount here
+        means the test environment and the production check would
+        diverge -- either an
         extra trigger was attached to an un-audited table or the
         canonical list grew without the test fixture catching up.
         """
