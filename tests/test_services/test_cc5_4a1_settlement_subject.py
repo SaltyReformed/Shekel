@@ -875,7 +875,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             _accept(seed_user, checking, [line], [txn])
             movement = _movement(txn)
 
-            pending = match_withdrawal.pending_for_moved_movement(movement)
+            pending = match_withdrawal.pending_for_movements([movement])
             assert pending.matches == 1
             assert [freed.line_id for freed in pending.lines] == [line.id]
             assert pending.lines[0].description == "GROCERIES"
@@ -920,7 +920,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             accepted = _accept(seed_user, checking, [line], [hotel, other])
             assert len(_members_of(accepted.match_id)) == 3
 
-            pending = match_withdrawal.pending_for_moved_movement(_movement(hotel))
+            pending = match_withdrawal.pending_for_movements([_movement(hotel)])
             assert pending.matches == 0 and pending.lines == ()
 
             _correct_tender(hotel, card.id)
@@ -944,7 +944,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             settle_transaction(txn, settle_day=_entered(_first_day(seed_user)))
             db.session.commit()
 
-            pending = match_withdrawal.pending_for_moved_movement(_movement(txn))
+            pending = match_withdrawal.pending_for_movements([_movement(txn)])
             assert pending.matches == 0 and not pending.frees_a_line
             _correct_tender(txn, card.id)
 

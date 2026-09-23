@@ -156,16 +156,21 @@ def act_still_names_a_row():
     nothing else.  It could then never be offered or matched again, whatever
     the review screen showed.
 
-    **This is the invariant, and the writer beside it is the cleanup.**
-    :mod:`app.services.match_withdrawal` deletes such an act at the five doors
-    an owner presses, so the false record goes and the press can say which
-    lines it freed.  It cannot cover them all: ``routes/templates/crud``
-    hard-deletes and archives in BULK SQL, ``pay_period_write.retire_paydays``
-    removes transactions through a database cascade, and a sixth door written
-    next year will not know to call it.  A rule enforced by enumeration is a
-    rule the next door forgets; a predicate in the one query that decides is
-    not (adversarial review, 2026-08-25, which measured the template
-    hard-delete reaching the state from a shipped button).
+    **This is the invariant, and the writer beside it is the cleanup.**  The
+    one act that takes a movement off the books
+    (:mod:`app.services.movement_removal`, plan step ``credit_card:CC-5-4a-3``)
+    withdraws such an act at every door that removes a movement THROUGH it,
+    so the false record goes and the press can say which lines it freed.
+    Three doors remove movements without it: ``routes/templates/crud``'s
+    permanent delete and the account delete remove rows in BULK SQL, and
+    ``pay_period_write.retire_paydays`` through a database cascade (finding
+    **CC-363**; adversarial review, 2026-08-25, measured the template
+    hard-delete reaching the state from a shipped button).  A rule enforced
+    by enumeration is a rule the next door forgets, so until plan step
+    ``credit_card:CC-5-4a-4`` this predicate in the one query that decides is
+    what holds; that step ends it at the root (ruling **R-CC54**: a row
+    holding a movement is history those doors keep, and neither of a match's
+    keys cascades) and deletes it.
 
     **Applying it to the WHOLE member scan is exact rather than convenient.**
     The EXISTS is true for every member of an act that holds an app row, so

@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "_withdrawal_macros.html" import frees_lines %}
 {# Transfer full edit popover -- renders inside #txn-popover container.
    Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
@@ -158,6 +159,18 @@
                min="0" max="10000000"
                class="form-control form-control-sm"
                title="What your bank actually moved. Correct it if your statement shows a different amount -- you do not need to set the transfer back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">
+        {#- **What $0.00 here WITHDRAWS** (plan step credit_card:CC-5-4a-3,
+            ruling R-CC59, extending R-CC56 to this popover).  A transfer of
+            nothing moves nothing, so the status seam takes BOTH legs'
+            payments off the books, and every match naming either is
+            withdrawn -- said here, under the box, before the Save.
+            `payment_withdraws` is the route's one read of what the two
+            payments' leaving frees. -#}
+        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        <div class="form-text" id="zero-withdraws-{{ xfer.id }}">
+          Recording $0.00 {{ frees_lines(payment_withdraws) }}.
+        </div>
+        {%- endif %}
       </div>
       {% endif %}
     </div>

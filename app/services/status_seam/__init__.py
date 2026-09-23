@@ -52,9 +52,12 @@ to ``transfer_service`` at plan step X-f2-c3.  Neither of the other two leaves
 writes ``status_id`` at all.
 
 Architecture:
-  - A LOW-LEVEL primitive: it depends only on the state machine, the
-    settled-status predicate, the session, and the models -- never on the
-    higher-level services that call it (``transaction_service``,
+  - A LOW-LEVEL primitive: it depends on the state machine, the
+    settled-status predicate, the session, the models and LEAF services --
+    the settle-day and cash-ledger readers, and the one act that takes a
+    movement off the books (``movement_removal``, which reaches the ledger
+    writer and ``match_withdrawal``) -- never on the higher-level services
+    that call it (``transaction_service``,
     ``credit_workflow``, ``transfer_service``, the route layer, and the loan /
     paycheck settle paths).  Living below its callers is what keeps it free of
     the ``transaction_service <- entry_service <- entry_credit_workflow <-
@@ -75,8 +78,10 @@ Architecture:
     rule and the fail-loud service rule are read together.
   - The dependency claim above is unchanged by that: the function is pure, and
     reads only the settled-status predicate.
-  - No Flask imports.  Mutates the passed row in place; does NOT flush or
-    commit -- the caller owns the session boundary.
+  - No Flask imports.  Mutates the passed row in place and does NOT commit
+    -- the caller owns the session boundary; it flushes explicitly only in
+    the covering movement's own teardown and re-point
+    (:func:`apply_status_change`'s docstring says which).
 """
 
 from app.services.status_seam._record import (

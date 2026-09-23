@@ -76,7 +76,10 @@ entries less the mark, and the family readers named above keep ``entries``.
 Two records still WITHDRAW the mirror outright (``_withdraw``): a ``$0.00``
 figure, which ``ck_transaction_entries_positive_amount`` lets no movement
 carry, and a ``purchases`` record, whose figure the row's own purchases
-state.
+state -- through the ONE act that takes a movement off the books
+(``movement_removal.remove_movements``, ruling **R-CC54**), which reverses
+the payment's legs and takes it out of every match naming it before it
+deletes it (finding **CC-358**).
 
 **Which entry is the covering movement is a STORED fact of the movement**
 (``transaction_entries.covers_settlement``), never a derivation over the
@@ -173,7 +176,7 @@ from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import match_withdrawal, posting_service
+from app.services import match_withdrawal, movement_removal
 from app.services.cash_ledger import (
     movement_cash_leg,
     reject_movement_before_books_open,
@@ -476,9 +479,9 @@ def _re_point(
       and FLUSHES before the assignment below -- the unit of work orders a
       DELETE after an UPDATE, and the key is checked at the flush.  The
       screen that offers the move discloses it first
-      (``pending_for_moved_movement``, the popover's "Paid from" caption);
-      the refused alternative kept the correction from happening while a
-      match stood;
+      (``match_withdrawal.pending_for_movements``, the popover's "Paid from"
+      caption); the refused alternative kept the correction from happening
+      while a match stood;
     * the account is assigned;
     * **the day the movement will END with is graded against the new
       account's books boundary FIRST** (``cash_ledger.
@@ -601,7 +604,7 @@ def _cover(row: Transaction, settlement: Settlement) -> None:
 
 
 def _withdraw(row: Transaction) -> None:
-    """Delete *row*'s covering movements: a record that carries nothing.
+    """Take *row*'s covering movements off the books: a record that carries nothing.
 
     The two records that WITHDRAW a mirror rather than un-date it (module
     docstring): a ``$0.00`` figure, which
@@ -610,16 +613,29 @@ def _withdraw(row: Transaction) -> None:
     -- a mirror kept beside them would be a second statement of that money.
     Leaving the band is NOT one of these; that arm keeps the movement
     (``_follow_assertion``).
+
+    **Through the ONE act that takes a movement off the books** (plan step
+    ``credit_card:CC-5-4a-3``, ruling **R-CC54**;
+    ``movement_removal.remove_movements``): its ledger reversed, out of
+    every match naming it, taken out of ``row.entries`` -- the collection the
+    verbs' ledger reconcile walks after the seam returns, whose
+    ``delete-orphan`` issues the DELETE.  Until that step this deleted the
+    payment itself and asked no match (finding **CC-358**): the act naming it
+    kept its bank line alone, and matching that line again raised on
+    ``uq_statement_match_members_line``.  The screen that offers either
+    record says what it frees first (ruling **R-CC56**: the full-edit
+    popover's Actual box and its Paid button, reading
+    ``match_withdrawal.pending_for_movements``); every other door that
+    reaches the seam with either record -- the grid's one-click Mark Paid
+    among them -- withdraws and logs it all the same.
     """
-    for movement in row.covering_movements:
-        # Reverse FIRST: ``journal_entries.transaction_entry_id`` is SET NULL
-        # on delete, so legs left behind could never be reversed.
-        posting_service.reverse_purchase_postings_before_delete(movement)
-        # Removed from the collection, not only marked deleted: the verbs'
-        # ledger reconcile walks ``txn.entries`` after the seam returns, and
-        # ``delete-orphan`` on the relationship is what issues the DELETE.
-        row.entries.remove(movement)
-        _record_moved(row)
+    movements = list(row.covering_movements)
+    if not movements:
+        return
+    movement_removal.remove_movements(
+        movements, row.user_id, because=match_withdrawal.RE_RECORDED,
+    )
+    _record_moved(row)
 
 
 def _follow_assertion(row: Transaction) -> None:

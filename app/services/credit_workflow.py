@@ -15,7 +15,12 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import match_withdrawal, posting_service, status_seam
+from app.services import (
+    match_withdrawal,
+    movement_removal,
+    posting_service,
+    status_seam,
+)
 from app.services.cash_ledger import (
     derived_amount_basis,
     resolve_transaction_amount,
@@ -170,20 +175,25 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
-        # A payback a bank line was matched to stops existing here, so an act
-        # it was the last app row of is withdrawn and that line is unexplained
-        # again (developer ruling 2026-08-25, plan step ``bank_import:X-gb``).
-        # FIRST, while the member rows still exist to be read: their foreign
-        # keys CASCADE.  Measured on the developer's own dev database at 4
-        # matched paybacks, every one of them reachable from the Undo CC button
-        # on the grid card -- which is why that button now asks first.
-        match_withdrawal.withdraw_for_rows([payback], user_id)
         # Reverse the payback's own ledger postings before it is deleted
         # (Build-Order Step 3 reverse-before-delete): a payback that was settled
         # -- and therefore posted -- before its source's Credit status is
         # reverted must not leave its double-entry legs stranded on the ledger.
-        # Idempotent no-op for the usual still-Projected payback.
+        # Its WHOLE family at once, one anchor re-check.  Idempotent no-op for
+        # the usual still-Projected payback.
         posting_service.reverse_postings_before_delete(payback)
+        # Its movements off the books through the ONE act (plan step
+        # ``credit_card:CC-5-4a-3``, ruling **R-CC54**): a payback a bank line
+        # was matched to stops existing here, so an act it was the last app row
+        # of is withdrawn and that line is unexplained again (developer ruling
+        # 2026-08-25, plan step ``bank_import:X-gb``).  Measured on the
+        # developer's own dev database at 4 matched paybacks, every one of them
+        # reachable from the Undo CC button on the grid card -- which is why
+        # that button now asks first.
+        movement_removal.remove_movements(
+            list(payback.entries), user_id,
+            because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=[payback],
+        )
         db.session.delete(payback)
 
     log_event(
@@ -266,9 +276,11 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
 
     **It does NOT withdraw the statement matches naming the chain**, and
     that is the caller's job on purpose: ``transaction_service
-    .delete_transaction`` withdraws for the source AND its whole chain in
-    ONE act, so the figure its confirm dialog printed and the figure its
-    receipt reports are one derivation.  Withdrawing here as well would
+    .delete_transaction`` takes the movements of the source AND its whole
+    chain off the books in ONE act (``movement_removal.remove_movements``,
+    plan step ``credit_card:CC-5-4a-3``) before it calls this, so the figure
+    its confirm dialog printed and the figure its receipt reports are one
+    derivation, and the rows this takes down hold no movement.  Withdrawing here as well would
     make the verb's own report exclude the chain it took down -- measured
     at a ``$200.00`` card payment silently un-explained while the dialog
     said nothing and the log line read ``matches_withdrawn=0`` (adversarial

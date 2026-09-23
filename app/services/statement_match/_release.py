@@ -629,14 +629,32 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     one payment (``uq_transaction_entries_one_settlement_record``), a movement
     belongs to at most one act (``uq_statement_match_members_entry``), and
     :func:`release_match` has already deleted and flushed the only act that
-    could name this row's payment.  **What it does NOT show** is that no OTHER
-    act names a purchase under the row: the withdrawal scans every entry of
-    the row it removes, so a created row that later gained a purchase another
-    act matched would take that act with it, unless
-    :func:`planned_removals` refuses the row as edited since.  Unverified;
-    ledger row **CC-359**, owned by plan step ``credit_card:CC-5-4a-3``.
-    Asserted rather than assumed at ``TestReleasingAnActDoesNotWithdrawTwice``,
-    whose first version released an act that had CREATED nothing and so never
+    could name this row's payment.  **Nor can it take ANOTHER act**, though
+    the verb takes every movement of the row it removes off the books and a
+    purchase under a created row could be named by a second act -- measured
+    through the doors for ledger row **CC-359** (plan step
+    ``credit_card:CC-5-4a-3``, 2026-09-22), and NOT by the row's revision
+    counter, which a purchase added underneath does not move (``2 -> 2`` on a
+    minted envelope, ``3 -> 3`` on a reverted residual):
+
+    * a created CONTAINER holding a purchase this undo is not removing is
+      never removed at all (:func:`_container_survives`' content arm), so the
+      verb never reaches it -- the undo takes back its own purchase and the
+      other act stands;
+    * a created SUBJECT row -- a group's residual -- cannot take a purchase
+      while it stands as created: its definition tracks none, and settled
+      over its covering movement it is refused
+      (``entry_service._refusals._reject_settled_addition``).  A purchase
+      reaches it only after a revert, and the revert moves its revision, so
+      the undo refuses it as edited since; and a second act could not name
+      that purchase anyway, the double-count refusal
+      (:func:`~._accept._reject_parent_and_its_own_purchase`) holding it
+      while this act names the row;
+    * a created INCOME row takes no purchase at all (``create_entry``'s
+      expense-only guard).
+
+    ``TestReleasingAnActDoesNotWithdrawTwice`` grades the container case, and
+    its first version released an act that had CREATED nothing and so never
     reached this function at all.
 
     **It removes the row it was HANDED, and does not look one up** (finding

@@ -20,13 +20,22 @@ because every fixture it needs -- an account, an import, a line, an accepted
 act -- is :mod:`._builders`, and the SUBJECT under test is what a match means
 once its subject has gone.
 
-**Five doors call the rule and all five are exercised here.**  The rule does NOT
-claim to be every door and a first draft did: an adversarial review measured
-``routes/templates/crud``'s hard-delete reaching the same state from a shipped
-button, and three more bulk paths beside it.  So the INVARIANT is a predicate
-in the reader (``_candidates.act_still_names_a_row``) which every door obeys
-without knowing it exists, and :class:`TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule`
-grades that; what the five doors add is the CLEANUP and the DISCLOSURE.
+**Five presses are exercised here**: the delete verb, the purchase delete,
+Undo CC's payback teardown, a Credit source's delete taking its payback chain
+down, and the transfer delete -- each reaching the rule through the ONE act
+that takes a movement off the books since plan step ``credit_card:CC-5-4a-3``
+(``movement_removal``).  Most assert only that the LINE is unclaimed, which
+the reader's predicate answers whether or not the act ran;
+``test_cc5_4a3_movement_removal`` grades the ACT gone at Undo CC, the transfer
+delete and the entry-level payback's delete, and the status seam's ``$0.00`` /
+``purchases`` record.
+The rule does NOT claim to be every door and a first draft did: an adversarial
+review measured ``routes/templates/crud``'s hard-delete reaching the same state
+from a shipped button, and more bulk paths beside it (finding **CC-363**).  So
+the INVARIANT is a predicate in the reader (``_candidates.act_still_names_a_row``)
+which every door obeys without knowing it exists, and
+:class:`TestTheInvariantHoldsThroughADoorThatDoesNotCallTheRule` grades that;
+what the doors add is the CLEANUP and the DISCLOSURE.
 """
 
 from decimal import Decimal
@@ -64,7 +73,7 @@ from app.services import (
 # here takes (see ``test_release.py``).
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
-from tests._test_helpers import open_books_before_the_first_assertion
+from tests._test_helpers import open_books_before_the_first_assertion, typed
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -619,7 +628,7 @@ class TestKeptRowsCountsWhatSURVIVES:
         preview = match_withdrawal.pending_for_rows([])
         assert preview.kept_rows == 0
 
-        pending = match_withdrawal.pending_for_purchase(purchase)
+        pending = match_withdrawal.pending_for_movements([purchase])
         assert pending.kept_rows == 1, (
             "the envelope is not in the going set, so it STAYS"
         )
@@ -726,6 +735,71 @@ class TestReleasingAnActDoesNotWithdrawTwice:
         )
         assert db.session.query(StatementMatch).count() == 0
         assert line.id not in _matched_line_ids(seed_user)
+
+    def test_a_purchase_ANOTHER_act_matched_keeps_the_container_and_that_act(
+        self, app, db, seed_user,
+    ):
+        """Ledger row CC-359, measured (plan step ``credit_card:CC-5-4a-3``).
+
+        The act mints an envelope and records its -$25.00 purchase in it; the
+        owner then adds a $7.00 purchase to that envelope by hand, and a
+        second act matches it to its own -$7.00 line.  Releasing the FIRST act
+        takes back its own purchase and nothing else: the envelope still holds
+        the hand purchase, so it is not removed (``_container_survives``'
+        content arm) and the shared delete verb -- which takes every movement
+        of a row it removes off the books -- never reaches the second act.
+        **The revision is not what holds it**: adding a purchase underneath
+        does not move the envelope's ``version_id``, asserted below as the
+        measurement the release docstring states.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(seed_user, statement, amount="-25.00", posted_on=day)
+        created = statement_match.create_purchase_from_line(
+            PurchaseCreation(
+                line_id=line.id,
+                new_envelope=NewEnvelope(
+                    name="Public Library",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                ),
+            ),
+            a_scope(seed_user),
+            _create.MintedEnvelopes.none_yet(),
+            an_answers(seed_user),
+            applied_by_rule=False,
+        )
+        db.session.flush()
+        envelope = db.session.get(Transaction, created.transaction_id)
+        version_before = envelope.version_id
+        hand = entry_service.create_entry(
+            envelope.id, seed_user["user"].id, entry_service.EntryDetails(
+                figure=typed(Decimal("7.00")), description="Hand purchase",
+                purchased_on=day,
+            ),
+        )
+        db.session.flush()
+        assert envelope.version_id == version_before
+        second_line = a_bank_line(
+            seed_user, statement, amount="-7.00", posted_on=day,
+        )
+        second = _submit(seed_user, lines=[second_line], entries=[hand])
+
+        released = statement_match.release_match(
+            created.match_id, seed_user["user"].id, seed_user["account"].id,
+        )
+        db.session.flush()
+
+        assert db.session.get(StatementMatch, second.match_id) is not None, (
+            "releasing one act took another with it"
+        )
+        assert released.removed_rows == 1
+        assert released.kept_containers == 1
+        assert db.session.get(TransactionEntry, created.entry_id) is None
+        assert db.session.get(Transaction, envelope.id) is not None
+        assert db.session.get(TransactionEntry, hand.id) is not None
+        matched = _matched_line_ids(seed_user)
+        assert second_line.id in matched
+        assert line.id not in matched
 
     def test_a_release_removes_exactly_its_own_act(
         self, app, db, seed_user,
