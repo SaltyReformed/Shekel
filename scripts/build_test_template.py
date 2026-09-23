@@ -206,9 +206,14 @@ def _populate_template(app) -> None:
        :data:`_REQUIRED_SCHEMAS`.  Migrations expect the four
        user-facing schemas to exist; the rebuild migration creates
        the ``system`` schema conditionally but the others are assumed.
-    2. ``alembic.command.upgrade(..., 'head')``: same migration
-       runner ``scripts/init_database.py::migrate_existing_database``
-       uses.  Running against an empty database validates the
+    2. ``alembic.command.upgrade(..., 'head')``: the same chain
+       ``scripts/init_database.py::migrate_existing_database`` runs,
+       but through ``migrations/env.py``'s OWN-connection branch --
+       since plan step ``balance:X-cv`` the deploy runs it on a
+       connection it hands over, inside one transaction with the
+       deploy hooks, a path this build does not exercise (the
+       developer ruled one runner for both, a later X-cv leaf).
+       Running against an empty database validates the
        chain end-to-end on every template rebuild -- any model-
        vs-migration drift surfaces here, not at test time.
     3. ``apply_audit_infrastructure``: idempotent re-application so

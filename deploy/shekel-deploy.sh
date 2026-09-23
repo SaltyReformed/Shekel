@@ -55,6 +55,18 @@
 #     leaves the stamp untouched, so it still rolls back automatically -- 6 of
 #     the last 10 releases were pure digest reverts.
 #
+# Since plan step balance:X-cv, entrypoint step 3 is ONE transaction: the
+# migrations and the three deploy hooks in `scripts/init_database.py` commit
+# together or not at all.  So a failure INSIDE step 3 -- a migration that
+# errors, a hook that refuses -- leaves the stamp where it was, and this script
+# re-pins the previous image even for a migration-bearing release.  Only a
+# failure AFTER step 3 has committed (a later entrypoint step, or the health
+# check) leaves the new stamp, and that is the case the refusal still meets.
+# Nothing here changed for it: the re-read stamp was already the only question.
+# Before re-pinning, the failed container's log is saved beside the dump,
+# because re-pinning recreates the container and `docker logs` then shows the
+# previous image instead (`save_failed_container_log`).
+#
 # Shekel's prod image is pinned in /opt/docker/shekel/.env via
 # SHEKEL_IMAGE_DIGEST (the compose override consumes it as
 # `ghcr.io/saltyreformed/shekel@${SHEKEL_IMAGE_DIGEST:?...}`).
@@ -314,9 +326,10 @@ repin_is_safe() {
     # database is stamped at NOW.  Asked AFTER a failure rather than before:
     # the deploy may have migrated before falling over, and this is the only
     # question whose answer decides whether re-pinning recovers or kills.
-    # It also distinguishes the two compose-failure cases for free -- a
-    # container that never started migrated nothing, so the stamp is unchanged
-    # and the ordinary rollback still applies.
+    # It also distinguishes the failure cases for free -- a container that
+    # never started, or whose entrypoint step 3 failed (one transaction since
+    # plan step balance:X-cv), migrated nothing that stuck, so the stamp is
+    # unchanged and the ordinary rollback still applies.
     local stamped
     # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
     if ! stamped=$(db_stamped_revisions) || [ -z "$stamped" ]; then
@@ -394,6 +407,41 @@ ${reason}"
     log "dump OK: $DUMP_PATH (${bytes} bytes, decoded end to end)"
 }
 
+save_failed_container_log() {
+    # Write the failed container's log beside the pre-deploy dump, BEFORE a
+    # re-pin recreates the container.  Sets FAILED_LOG_PATH.
+    #
+    # Re-pinning runs `docker compose up -d` with the previous digest, which
+    # REPLACES the container, and `docker logs` then shows the previous image
+    # booting.  The failed run's own log is the one that says why it failed --
+    # an init_database refusal names what to repair (plan step balance:X-cv made
+    # such a refusal an automatic rollback) -- so it is kept as a file the
+    # output and the ntfy alert can name.  Loki holds it too, but the operator
+    # holding this script's output should not need to know that.
+    #
+    # Best effort, and deliberately so: the rollback does not wait on it past
+    # the timeout.  A failure to save is logged and leaves FAILED_LOG_PATH
+    # empty.
+    FAILED_LOG_PATH="${DUMP_PATH%.dump}.failed-container.log"
+    # The file's first line names the image the container ran: on the compose
+    # path `compose up` may have failed before recreating it, and then this is
+    # the PREVIOUS image's log, which the header makes visible.  Bounded, so a
+    # hung daemon cannot hold the rollback.
+    local image
+    image=$(docker inspect --format '{{.Config.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)
+    if {
+        printf '# docker logs %s (image: %s)\n' "$CONTAINER_NAME" "${image:-unknown}"
+        timeout 30 docker logs "$CONTAINER_NAME" 2>&1
+    } >"$FAILED_LOG_PATH"; then
+        log "failed container's log saved: ${FAILED_LOG_PATH}"
+    else
+        rm -f "$FAILED_LOG_PATH"
+        FAILED_LOG_PATH=""
+        log "WARN: could not save ${CONTAINER_NAME}'s log before re-pinning;"
+        log "      it is in Loki (Grafana) only."
+    fi
+}
+
 refuse_to_repin() {
     # The F-8 failure path: the previously-pinned image cannot resolve the
     # revision the database is stamped at NOW, so re-pinning it produces a
@@ -409,10 +457,12 @@ refuse_to_repin() {
     log "REFUSING to roll back."
     log "  ${why}"
     log ""
-    log "  ${old_short} does not contain a migration script for the revision"
-    log "  the database is stamped at, so it would die at entrypoint step 3"
-    log "  exactly as ${new_short} just did.  The pin is left at ${new_short}"
-    log "  deliberately; change it only after the database is restored."
+    log "  ${new_short}'s entrypoint step 3 COMMITTED its migrations and the"
+    log "  container then failed later (a later entrypoint step, or the health"
+    log "  check).  ${old_short} does not contain a migration script for the"
+    log "  revision the database is now stamped at, so it would die at step 3."
+    log "  The pin is left at ${new_short} deliberately; change it only after"
+    log "  the database is restored."
     log ""
     local stamped_line
     stamped_line=$(printf '%s' "$STAMPED_REVISIONS" | tr '\n' ' ')
@@ -449,12 +499,11 @@ refuse_to_repin() {
     log "    docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} \\"
     log "        -c '\\dt budget.*'"
     log ""
-    log "  Read the container's logs first -- a failure that never reached the"
-    log "  migration step needs no restore at all, only the pin:"
+    log "  Read the container's logs first -- they say which later step failed:"
     log "    docker logs ${CONTAINER_NAME}"
 
     ntfy_notify 5 "Shekel deploy FAILED, rollback REFUSED" \
-        "${new_short} did not come up and ${old_short} cannot resolve the schema the database is now at, so re-pinning cannot work. Pin left at ${new_short}. FIRST run: docker compose stop ${COMPOSE_SERVICE} (it re-migrates on every restart). Dump: ${DUMP_PATH}"
+        "${new_short} committed its migrations, then did not come up, and ${old_short} cannot resolve the schema the database is now at, so re-pinning cannot work. Pin left at ${new_short}. FIRST run: docker compose stop ${COMPOSE_SERVICE} (it re-migrates on every restart). Dump: ${DUMP_PATH}"
     exit 1
 }
 
@@ -496,6 +545,7 @@ ADDED_REVISIONS=""
 STAMPED_REVISIONS=""
 DUMP_PATH=""
 DUMP_PART=""
+FAILED_LOG_PATH=""
 
 # shellcheck disable=SC2329 ## invoked indirectly, by the `trap ... EXIT`
 # immediately below; shellcheck does not follow trap handlers.
@@ -617,10 +667,12 @@ preflight_migrations "$old_digest" "$new_digest"
 if [ -n "$ADDED_REVISIONS" ]; then
     log "MIGRATION-BEARING release: the target adds these revisions --"
     printf '%s\n' "$ADDED_REVISIONS" | sed 's/^/    /'
-    log "  If it runs them and then fails the health check, re-pinning"
-    log "  ${old_short} will NOT work -- migrations run at entrypoint step 3,"
-    log "  before the health check.  This script re-reads the stamp after a"
-    log "  failure and refuses rather than making a second dead container."
+    log "  Entrypoint step 3 runs them and the deploy hooks in ONE transaction,"
+    log "  so a failure there leaves the stamp where ${old_short} can resolve"
+    log "  it and the rollback applies.  If step 3 COMMITS and a later step or"
+    log "  the health check then fails, re-pinning ${old_short} will NOT work."
+    log "  This script re-reads the stamp after a failure and refuses rather"
+    log "  than making a second dead container."
 else
     log "the target adds no migrations, so a failure leaves the schema where"
     log "${old_short} can still resolve it and the rollback applies as usual."
@@ -659,11 +711,12 @@ if ! compose_up; then
         refuse_to_repin "docker compose up rejected ${new_short}."
     fi
     log "compose up failed; reverting .env to $old_digest."
+    save_failed_container_log
     write_env_digest "$old_digest"
     # shellcheck disable=SC2310 ## deliberate: the WARN is the handling.
     compose_up || log "WARN: revert compose up also failed; container state unknown."
     ntfy_notify 5 "Shekel deploy FAILED (compose)" \
-        "compose up rejected ${new_short}; reverted to ${old_short}. Check: docker logs $CONTAINER_NAME"
+        "compose up rejected ${new_short}; reverted to ${old_short}. Failed container's log: ${FAILED_LOG_PATH:-in Loki only}"
     exit 1
 fi
 
@@ -679,22 +732,27 @@ if wait_healthy; then
 fi
 
 # ── Rollback ───────────────────────────────────────────────────────
-# The F-8 fork.  A migration-bearing release has no working rollback, so it
-# gets the refusal instead of a second dead container.
+# The F-8 fork.  A stamp the previous image cannot resolve -- a release whose
+# entrypoint step 3 COMMITTED its migrations before something later failed --
+# has no working rollback, so it gets the refusal instead of a second dead
+# container.  A step-3 failure left the stamp unmoved (plan step X-cv) and
+# re-pins below.
 # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
 if ! repin_is_safe; then
     refuse_to_repin "${new_short} did not report healthy within ${HEALTH_TIMEOUT_S}s."
 fi
 
 log "rolling back to $old_digest ..."
+save_failed_container_log
 write_env_digest "$old_digest"
 # shellcheck disable=SC2310 ## deliberate: a boolean predicate, and its
 # own failure is the branch being taken -- not an error to propagate.
 if compose_up && wait_healthy; then
     log "rollback healthy. Failed digest: $new_digest"
     log "pre-deploy dump kept at: ${DUMP_PATH}"
+    log "failed container's log: ${FAILED_LOG_PATH:-in Loki only}"
     ntfy_notify 5 "Shekel deploy FAILED, rolled back" \
-        "${new_short} did not become healthy. Reverted to ${old_short}. Investigate: docker logs $CONTAINER_NAME"
+        "${new_short} did not become healthy. Reverted to ${old_short}. Failed container's log: ${FAILED_LOG_PATH:-in Loki only}"
     exit 1
 fi
 
@@ -702,6 +760,7 @@ fi
 # the previous image CAN resolve the current stamp, so the schema is not the
 # suspect; the dump is a starting point rather than the recovery.
 log "pre-deploy dump kept at: ${DUMP_PATH}"
+log "failed container's log: ${FAILED_LOG_PATH:-in Loki only}"
 ntfy_notify 5 "Shekel deploy FAILED, rollback UNHEALTHY" \
-    "Neither ${new_short} nor rollback ${old_short} is healthy. Container needs manual attention. Dump: ${DUMP_PATH}"
+    "Neither ${new_short} nor rollback ${old_short} is healthy. Container needs manual attention. Dump: ${DUMP_PATH}. Failed container's log: ${FAILED_LOG_PATH:-in Loki only}"
 die "rollback container also unhealthy; manual intervention required."

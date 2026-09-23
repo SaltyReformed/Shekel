@@ -255,6 +255,12 @@ echo "Role ready."
 # load_dotenv re-population) so it always runs as the owner role
 # (DATABASE_URL).  Migrations need DDL privileges; the app role has
 # DML only.
+#
+# ONE transaction, committed once (plan step balance:X-cv): the fresh
+# build, or the migrations and the three deploy hooks, commit together
+# or not at all.  A failure here leaves alembic_version unmoved, so
+# deploy/shekel-deploy.sh can re-pin the previous image; a failure in a
+# LATER step lands after this commit.
 echo "Initializing database..."
 python scripts/init_database.py
 

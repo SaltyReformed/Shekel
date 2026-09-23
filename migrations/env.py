@@ -15,10 +15,27 @@ from alembic import context
 # Alembic Config object -- access to .ini file values.
 config = context.config
 
-# Set up Python logging from alembic.ini if it exists.
-# Flask-Migrate may pass a path like "migrations/alembic.ini" that
+# The deploy's ONE connection, when a caller hands one over (plan step
+# balance:X-cv).  ``scripts/init_database.py`` runs the migrations, ref_cache and
+# the three deploy hooks in one transaction on it, so a hook that refuses leaves
+# the stamp where it was.  ``None`` for ``flask db`` and
+# ``scripts/build_test_template.py``, which let this file open its own.
+shared_connection = config.attributes.get("connection")
+
+# Set up Python logging from alembic.ini if it exists -- only when Alembic owns
+# the process.  Flask-Migrate may pass a path like "migrations/alembic.ini" that
 # doesn't exist -- logging is already configured by Flask in that case.
-if config.config_file_name is not None:
+#
+# A caller that hands over its connection is an APPLICATION process whose
+# logging the app factory configured, and ``fileConfig`` would take it over:
+# ``disable_existing_loggers`` defaults to True, so every logger that exists
+# when it runs -- every ``app.*`` module logger the caller imported -- is
+# switched off, and the root logger drops to alembic.ini's WARNING console.
+# Measured 2026-09-22 (stdlib semantics): a logger created before
+# ``fileConfig("alembic.ini")`` reads ``disabled=True`` after it.  Before X-cv
+# the deploy host lost every warning its hooks log that way, the cash resync's
+# skipped-transfer warning among them.
+if config.config_file_name is not None and shared_connection is None:
     import os
     if os.path.exists(config.config_file_name):
         fileConfig(config.config_file_name)
@@ -148,9 +165,8 @@ def run_migrations_online():
                 directives[:] = []
                 logger.info("No changes detected -- skipping autogenerate.")
 
-    connectable = current_app.extensions["migrate"].db.engine
-
-    with connectable.connect() as connection:
+    def run_on(connection):
+        """Configure the migration context on *connection* and run the chain."""
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -163,6 +179,20 @@ def run_migrations_online():
 
         with context.begin_transaction():
             context.run_migrations()
+
+    if shared_connection is not None:
+        # Alembic's shared-connection recipe.  The caller's transaction is
+        # already open, so Alembic treats it as EXTERNAL
+        # (``MigrationContext._in_external_transaction``): ``begin_transaction``
+        # neither begins nor commits it, and every migration and the stamp
+        # commit or roll back with the caller's own work.
+        run_on(shared_connection)
+        return
+
+    connectable = current_app.extensions["migrate"].db.engine
+
+    with connectable.connect() as connection:
+        run_on(connection)
 
 
 if context.is_offline_mode():

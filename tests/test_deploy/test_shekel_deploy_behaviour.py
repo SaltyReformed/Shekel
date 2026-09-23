@@ -149,6 +149,14 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
             done
             exit 0
             ;;
+        logs)
+            # The failed container's log, which the script saves beside the
+            # dump before a re-pin recreates the container (plan step
+            # balance:X-cv).  FAKE_LOGS_RC models a container with none.
+            [ "$FAKE_LOGS_RC" != "0" ] && exit "$FAKE_LOGS_RC"
+            printf '%s\\n' "$FAKE_CONTAINER_LOG"
+            exit 0
+            ;;
         compose)
             # Record whether a dump already existed when the deploy ran.
             if compgen -G "$FAKE_BACKUP_DIR/*.dump" >/dev/null; then
@@ -224,7 +232,9 @@ class _Stack:
             pgdump_err: str = "no space left on device",
             dump_truncated: str = "0", stamped: str = "0001",
             stamped_after: str | None = None, dry_run: bool = False,
-            compose_rc: str = "0") -> subprocess.CompletedProcess:
+            compose_rc: str = "0",
+            container_log: str = "fake container log",
+            logs_rc: str = "0") -> subprocess.CompletedProcess:
         """Run the real deploy script against this stack.
 
         Args:
@@ -242,6 +252,8 @@ class _Stack:
                 (defaults to *stamped*, i.e. nothing migrated).
             dry_run: Pass ``--dry-run``.
             compose_rc: Exit status for ``docker compose``.
+            container_log: What ``docker logs`` prints for the container.
+            logs_rc: Exit status for ``docker logs`` (non-zero: no log).
 
         Returns:
             The completed process, with stdout and stderr captured together.
@@ -271,6 +283,8 @@ class _Stack:
                 stamped if stamped_after is None else stamped_after
             ),
             "FAKE_COMPOSE_RC": compose_rc,
+            "FAKE_CONTAINER_LOG": container_log,
+            "FAKE_LOGS_RC": logs_rc,
         })
         argv = ["bash", str(_DEPLOY_SCRIPT), "--no-verify"]
         if dry_run:
@@ -332,6 +346,18 @@ _DOWNGRADE = {
     "new_migrations": "0001_a.py\n",
     "stamped": "0003",
 }
+#: A migration-bearing release whose entrypoint step 3 ROLLED BACK (plan step
+#: balance:X-cv): the target adds revisions, but its migrations and deploy
+#: hooks are one transaction, so a refusal there leaves the stamp unmoved.
+_STEP_3_ROLLED_BACK = {
+    "old_migrations": "0001_a.py\n",
+    "new_migrations": "0001_a.py\n0002_b.py\n",
+    "stamped": "0001",
+    "stamped_after": "0001",
+}
+#: What ``init_database.py`` prints when a hook refuses: the operator's pointer
+#: to the repair, which only the failed container's log carries.
+_REFUSAL_LINE = "Cash posting resync refused (ruling R-BAL104): transfer(s) [7]"
 
 
 class TestTheScriptIsInTheRepository:
@@ -517,6 +543,90 @@ class TestThePreflightIsHonest:
         assert not any(
             i.startswith("compose") for i in stack.invocations
         ), "--dry-run started a container"
+
+
+class TestAStep3RefusalRollsBack:
+    """Plan step balance:X-cv: a step-3 refusal re-pins, and its log is kept.
+
+    Entrypoint step 3 is one transaction, so a migration-bearing release whose
+    deploy hook refuses leaves the stamp where the previous image can resolve
+    it.  The script's direction-free question then answers "re-pin" with no
+    change of its own -- and re-pinning RECREATES the container, so the failed
+    run's log, which names what to repair, is saved beside the dump first.
+    """
+
+    def test_a_migration_bearing_release_with_an_unmoved_stamp_re_pins(
+        self, stack,
+    ):
+        """The target added a migration, the stamp never moved: roll back.
+
+        A PIN, not evidence for X-cv: the script's re-pin question is unchanged
+        (it passes on the pre-X-cv script too).  What X-cv changed is that a
+        step-3 failure now PRODUCES this unmoved stamp; the one-transaction
+        tests and the clone rehearsal grade that half.
+        """
+        result = stack.run(
+            health="unhealthy", container_log=_REFUSAL_LINE,
+            **_STEP_3_ROLLED_BACK,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 1
+        assert "MIGRATION-BEARING release" in output
+        assert "REFUSING to roll back" not in output
+        assert stack.pin == _OLD
+
+    def test_the_failed_log_is_saved_beside_the_dump_before_the_re_pin(
+        self, stack,
+    ):
+        """The file holds the refusal, is named, and was read before recreation."""
+        result = stack.run(
+            health="unhealthy", container_log=_REFUSAL_LINE,
+            **_STEP_3_ROLLED_BACK,
+        )
+        output = result.stdout + result.stderr
+        saved = sorted(stack.backup_dir.glob("*.failed-container.log"))
+        assert len(saved) == 1, (
+            f"no failed-container log beside the dump.  The script said:\n"
+            f"{output}"
+        )
+        assert saved[0].name == stack.dumps[0].name.replace(
+            ".dump", ".failed-container.log",
+        )
+        assert _REFUSAL_LINE in saved[0].read_text(encoding="utf-8")
+        assert str(saved[0]) in output
+        # Read BEFORE the re-pin's `compose up` replaced the container.
+        calls = stack.invocations
+        read_at = calls.index("logs probe-app")
+        compose_ups = [
+            i for i, call in enumerate(calls) if call.startswith("compose up")
+        ]
+        assert len(compose_ups) == 2, calls
+        assert compose_ups[0] < read_at < compose_ups[1], calls
+
+    def test_a_compose_failure_saves_the_log_too(self, stack):
+        """The other re-pin path keeps the log as well."""
+        result = stack.run(
+            compose_rc="1", container_log=_REFUSAL_LINE,
+            **_STEP_3_ROLLED_BACK,
+        )
+        assert result.returncode == 1
+        assert stack.pin == _OLD
+        saved = sorted(stack.backup_dir.glob("*.failed-container.log"))
+        assert len(saved) == 1
+        assert _REFUSAL_LINE in saved[0].read_text(encoding="utf-8")
+
+    def test_a_log_that_cannot_be_read_does_not_stop_the_rollback(
+        self, stack,
+    ):
+        """No log to save: the re-pin still happens, and says where the log is."""
+        result = stack.run(
+            health="unhealthy", logs_rc="1", **_STEP_3_ROLLED_BACK,
+        )
+        output = result.stdout + result.stderr
+        assert stack.pin == _OLD
+        assert "could not save probe-app's log" in output
+        assert "failed container's log: in Loki only" in output
+        assert list(stack.backup_dir.glob("*.failed-container.log")) == []
 
 
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:
