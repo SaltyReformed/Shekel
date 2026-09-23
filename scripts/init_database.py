@@ -146,11 +146,10 @@ def init_fresh_database(connection):
     last-sighting and pay-stub blocks between 4 and 5, each documented where
     it runs -- every one on the deploy's ONE connection and none of them
     committing (plan step balance:X-cv): :func:`initialise_database` commits
-    them together.  A
-    failure part-way therefore leaves the database as empty as it found it,
-    instead of a half-built schema that the next boot reads as "existing"
-    (:func:`is_fresh_database` asks only for ``auth.users``) and tries to
-    migrate from no stamp.
+    them together.  A failure part-way therefore leaves the database as
+    empty as it found it, instead of a half-built schema that the next boot
+    reads as "existing" (:func:`is_fresh_database` asks only for
+    ``auth.users``) and tries to migrate from no stamp.
 
     1. ``db.metadata.create_all`` on that connection -- materialise every
        SQLAlchemy-modeled table.  This covers the ``ref``, ``auth``,
@@ -174,12 +173,14 @@ def init_fresh_database(connection):
        registry, so ``db.create_all`` (which made the
        ``budget.account_postings`` table) does not create them.
     4. ``apply_opening_infrastructure`` -- materialise
-       ``budget.account_books_opened_on`` and the two deferred
-       constraint triggers that make a cash movement dated on or
-       before its account's ``opened_on`` unstorable (plan step
-       X-f3c-2b).  Raw SQL outside the model registry, exactly like
-       the two above, so ``db.create_all`` does not produce it.  There
-       is nothing to legalise on this path: the database is empty.
+       ``budget.account_books_opened_on`` and the five deferred
+       constraint triggers of every arm in ``ALL_ARMS`` that make a
+       settled movement (plan step X-f3c-2b) or a matched bank line dated
+       on or before its account's books open unstorable, graded from the
+       row's side and from the opening's.  Raw SQL outside the model
+       registry, exactly like the two above, so ``db.create_all`` does not
+       produce it.  There is nothing to legalise on this path: the
+       database is empty.
     5. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
        on the two ledger tables from ``shekel_app`` (review M1/R4).
        Required on this path specifically: ``init_db_role.sql`` ran
@@ -382,9 +383,8 @@ def backfill_loan_payment_postings_after_migration():
     Runs only on the existing-database path (the fresh-database branch stamps
     Alembic without running migrations and has no loan payments to post).
     Idempotent and self-healing (reconcile-to-target), so it is safe on every
-    deploy -- a
-    payment already carrying a go-forward correction is at target and nothing is
-    re-posted.  Commits nothing itself: the corrections commit in the deploy's
+    deploy -- a payment already carrying a go-forward correction is at target
+    and nothing is re-posted.  Commits nothing itself: the corrections commit in the deploy's
     ONE transaction (plan step balance:X-cv), where the deferred
     balanced-journal trigger validates every entry, so an unbalanced correction
     aborts the deploy loud.
@@ -633,9 +633,9 @@ def initialise_database():
     reference seed reads every table the cache reads before it does (measured
     2026-09-23, again at salary:S11-a's merge: the cache's 28 tables are all
     among the seed's 29), so a missing table fails the seed first; the cache's
-    rollback is unreachable
-    from the deploy while that holds.  None of the three hooks' services, and
-    neither seed, commits or rolls back (census re-run 2026-09-23: the two
+    rollback is unreachable from the deploy while that holds.  None of the
+    three hooks' services, and neither seed, commits or rolls back (census
+    re-run 2026-09-23: the two
     ``rollback()`` calls a hook's module holds --
     ``loan_posting_service._sync.sync_all_scenarios_or_duplicate`` and
     ``ref_cache._state._load_rows`` -- are the rate-history door's and the

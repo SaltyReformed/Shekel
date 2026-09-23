@@ -568,7 +568,7 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
 
 
 def template_checks() -> tuple[tuple[str, str, int], ...]:
-    """Return every ``(label, sql, expected)`` a database built at head must answer.
+    """Return the ``(label, sql, expected)`` checks both head-build paths are graded by.
 
     ONE list for both ways a database is built at head: :func:`_verify_image`
     asks each of the baked template, and
@@ -576,7 +576,11 @@ def template_checks() -> tuple[tuple[str, str, int], ...]:
     boot (``init_fresh_database``, which applies each family itself).  A
     family added here is graded on both paths (review L1 of the
     ``salary:S11-a`` carry-merge).  Counts are EXACT, from each producer's
-    own constant.
+    own constant.  Not listed: the posting and opening triggers, whose
+    modules export no constant naming their triggers (finding BAL-542).
+
+    Returns:
+        One ``(label, sql, expected)`` per check.
 
     Raises:
         BuildError: When a producer's constant cannot be read.

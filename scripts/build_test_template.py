@@ -202,7 +202,7 @@ def _recreate_template_database() -> None:
 
 
 def _populate_template(app) -> None:
-    """Materialise the schema, run migrations, apply audit + posting infra, seed.
+    """Materialise the schema, run migrations, re-apply the infrastructure, seed.
 
     Steps, in order:
 
@@ -256,8 +256,9 @@ def _populate_template(app) -> None:
        sighting (plan step bank_import:X-f6b-1), the same contract.
     9. ``apply_pay_stub_infrastructure``: a transcribed pay stub is never
        deleted and never moved (plan step salary:S11-a), the same
-       contract.  Steps 5-9 are each a constraint a FIXTURE can trip, so
-       the suite runs against the refusals the app has.
+       contract.  Steps 4-9 are each a rule a FIXTURE can trip -- steps 4-7
+       and 9 refuse a write, step 8 deletes the line its last sighting
+       leaves behind -- so the suite runs against the rules the app has.
     10. ``apply_ledger_append_only_privileges``: idempotent
         re-application of the ledger append-only posture (review
         M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
@@ -276,7 +277,10 @@ def _populate_template(app) -> None:
     are counted by one list,
     :func:`scripts.build_test_db_image.template_checks`: in the baked image,
     and on a first boot by
-    ``tests/test_scripts/test_init_database_one_transaction.py``.
+    ``tests/test_scripts/test_init_database_one_transaction.py``.  The
+    posting (step 4) and opening (step 5) triggers are counted by neither:
+    their modules export no constant naming their triggers (finding
+    BAL-542).
 
     Args:
         app: Flask application built by ``create_app('testing')``.
@@ -304,11 +308,12 @@ def _populate_template(app) -> None:
         db.session.commit()
 
         # The account-books boundary (plan step X-f3c-2b): idempotent
-        # re-application, same contract as the two above.  It matters more
-        # here than for the other two, because this constraint is the only one
-        # a FIXTURE can trip: a test that settles a row on or before its
-        # account's opening day is building a state production cannot hold,
-        # and this is what makes the suite say so.
+        # re-application, same contract as the two above.  Like the
+        # balanced-journal trigger (and unlike the audit trigger, which
+        # refuses nothing) it is a rule a FIXTURE can trip: a test that
+        # settles a row on or before its account's opening day is building a
+        # state production cannot hold, and this is what makes the suite say
+        # so.
         # ``ALL_ARMS``: this builds a database at HEAD, which is the one
         # caller shape that wants whatever arms the module currently has.  A
         # MIGRATION names its arms literally instead -- see that constant.
@@ -367,10 +372,9 @@ def _populate_template(app) -> None:
         seed_reference_data(db.session)
         db.session.commit()
 
-        # Clear the 18 seed-time audit rows so the template ships
-        # with a zeroed log.  Same ordering as
-        # ``tests/conftest.py::db`` lines 244-245: TRUNCATE after the
-        # reseed commits, then commit the truncate separately.
+        # Clear the seed-time audit rows so the template ships with a
+        # zeroed log: TRUNCATE after the reseed commits, then commit the
+        # truncate separately.
         db.session.execute(db.text("TRUNCATE system.audit_log"))
         db.session.commit()
 
@@ -391,8 +395,8 @@ def _verify_template_state() -> None:
       (or, less likely, a stray trigger left over from a previous
       template that the DROP did not wipe).
     * ``system.audit_log`` row count equals 0.  Catches a missing
-      TRUNCATE -- the template must ship with a clean log so per-
-      session clones start from a known zero.
+      TRUNCATE -- the template must ship with a clean log so every
+      per-test clone starts from a known zero.
 
     Raises:
         RuntimeError: When any assertion fails.  The message names
