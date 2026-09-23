@@ -546,3 +546,294 @@ PICKED: **"Keep: after 5b and 5c (Recommended)"**:
 > unstaffed, so nothing waits today; I'll raise it again if a session frees up before 5c lands.
 
 REFUSED: "Only after 5c's design"; "Drop the wait".
+
+## CC-5-4a-2 `550cc9ce` and CC-5-4a-3 `175b192d`, ticked 2026-09-22: 4a-2's specification and `steps.md` row as they stood, the ledger rows closed, then both leaves' rulings VERBATIM (the card lane's records `rulings_cc5_4a2.md` and `rulings_cc5_4a3.md`)
+
+4a-2 carries migration `2eabfa596ee0`, cut on `9900b309f0b0` and RE-PARENTED onto `balance:X-bi-6-3`'s `c7d1e9a4b2f8` at `62bf0e35` when 6-3 merged to dev first (#448; the two touch disjoint tables). 4a-3 carries none. Under **R-CC51** and **R-CC55** the two ship in ONE release, and CC-5-4a-4 (**R-CC54** parts 2 and 3) follows in its own. The commits are the record; the build logs, probes and adversarial reviews are `~/projects/shekel-handoffs/HANDOFF-credit-card-CC-5.md` and `credit_card-2026-09-22/`.
+
+### CC-5-4a-2's specification as it stood, verbatim
+
+- [ ] **CC-5-4a-2** `feat(cards): a member is a bank line or a movement` -- `R-CC45`'s second half:
+      a migration re-keys every accepted act's row member (103 row members on the 2026-09-21 dump;
+      221 acts at the 08-27 count) onto that bill's payment after a census on the newest production
+      dump and an ASSERT of one act per row; a member with no payment to re-key onto (a bill closed
+      from its purchases, a `$0.00` close, a Credit or Cancelled bill matched before today's
+      refusals) REFUSES the migration and the developer rules it; then
+      `statement_match_members.transaction_id` goes with its key and unique index, and the six
+      bill-member readers (`_candidates.matched_subjects`, `_candidates._is_claimed`,
+      `_accepted_view._accepted_row`, `_acts.named_rows`, `match_withdrawal`,
+      `bank_agreement._rows_on`) lose that arm; with the row-member shape gone a definition's
+      account move touches no member's subject (closes **CC-356**), and
+      `status_seam/_covering.py:36-40`'s stale module docstring (it names `_candidates._price`,
+      gone) is this leaf's to correct (announce-first, balance's region). Its own PR and release,
+      graded byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
+      2026-09-21 10:33 dump at `9900b309f0b0`).
+
+### The `steps.md` row as it stood, verbatim
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| credit_card | CC-5-4a-2 | -- | Re-key every accepted act's row member onto its payment by migration after a census on the newest dump (103 row members on 2026-09-21; one with no payment to re-key onto REFUSES the migration), assert one act per row first, then drop `statement_match_members.transaction_id` with its key and unique index and the six bill-member readers' arm (**R-CC45**); OWN PR, OWN RELEASE. Closes **CC-356**. | #2 | -- | NOW / credit_card:CC-5-4a-1 (shipped; the writer whose stored past it re-keys) |
+
+### Ledger rows CLOSED at this tick
+
+**CC-356** CLOSED at `credit_card:CC-5-4a-2` `550cc9ce`: with the row-member shape gone a definition's account move touches no member's subject. Pinned through its own door by `tests/test_models/test_cc5_4a2_member_rekey.py::TestADefinitionsAccountMoveNoLongerMeetsTheMemberKey::test_the_definition_door_moves_the_row_once_the_act_names_its_payment` (on the old-shape member the door raises on `fk_statement_match_members_transaction_account`; re-keyed, the same door commits and the act is unchanged). The row as it stood:
+
+| arc | id | also | finding (one line) | worst measured | status | owner |
+|---|---|---|---|---|---|---|
+| credit_card | CC-356 (`credit_card:CC-5-4a-1`'s tick review 2026-09-21, M3; the developer's R-CC46 text "the row/definition doors reported, not fixed") | -- | **A DEFINITION'S ACCOUNT MOVE RE-ATTRIBUTES A PROJECTED ROW THAT A PRE-4a-1 ROW MEMBER STILL NAMES, AND THE MEMBER KEY 500s.** Since **R-CC36** `recurrence_engine/_maintain.py` (`propagate_to_unruled_definition`, :404-447; :225-240) moves every Projected row's `account_id` with its definition; a ROW member recorded before CC-5-4a-1 (103 on the 2026-09-21 10:33 dump, the reverted acts shown as "no longer holding" among them) is held to the row's account by `fk_statement_match_members_transaction_account` (NO ACTION on update, `app/models/statement_match.py:281-286`), so the move raises `IntegrityError` where R-CC46 owes a withdrawal and a disclosure | `$0.00`; a 500 on a definition move over a matched Projected row (0 cards; 103 row members on production's shape) | **OPEN, born with an owner**: the re-key deletes the row-member shape whole, after which a definition move touches no member's subject (the payment stays where the money moved, **R-CC42**); sequenced there by the developer's R-CC46 text | CC-5-4a-2 |
+
+**CC-359** CLOSED at `credit_card:CC-5-4a-3` `175b192d` as NOT A DEFECT; it was never a row. Granted at CC-5-4a-2's review (L6) for `_release._remove`'s claim that the shared delete verb's withdrawal is a no-op, unverified for a row an act CREATED that later gained a purchase another act matched. Measured at 4a-3: adding a purchase does NOT move the row's `version_id` (2 -> 2 on a minted envelope, 3 -> 3 on a reverted residual), so the revision is not what holds it; `_release._container_survives`' content arm keeps a container that still holds a purchase, so releasing the first act never reaches the second. Pinned for the CONTAINER case by `tests/test_services/test_statement_match/test_withdrawal.py::TestReleasingAnActDoesNotWithdrawTwice::test_a_purchase_ANOTHER_act_matched_keeps_the_container_and_that_act`, which failed when that content arm was deleted (4a-3's mutation log); the residual and income cases are held by the refusals `_release._remove` names (`entry_service._refusals._reject_settled_addition`; after a revert the undo's revision check and `_accept._reject_parent_and_its_own_purchase`; `create_entry`'s expense-only guard), with no pin of their own.
+
+### CC-5-4a-2's rulings and confirmations, VERBATIM as picked (AskUserQuestion in the CC-5-4a-2 session shekel-0d, 2026-09-22)
+
+For the CC-5-4a-2 tick (the coordinator's). Each block: the option label + description as picked (his option text
+IS the ruling), the refused options, and what the question stated. Ids are the coordinator's: CC-358 (the finding),
+CC-5-4a-3 (the fix leaf), R-CC51 (the disposition, NOT FILED until the sequencing question below resolves).
+
+#### Confirmation 8 (asked 17:3x-17:5x EDT 2026-09-22, recorded 17:56, header "Rule 5") -- the re-expressed tests, under R-CC45 (no id)
+
+Picked: **"Confirm all four groups (Recommended)"**
+
+> All four are rule-5 re-expressions under R-CC45. Each changed docstring quotes this confirmation, and the leaf
+> commits.
+
+The groups as stated in the question: Group 1, DELETE: the 2 tests of the old row-member shape
+(`test_cc5_4a1_settlement_subject.py::TestAnActRecordedBeforeThisStepStillClaimsItsRow`) and 2 parametrize rows for
+the dropped relationship (`test_statement_match_schema.py::TestASubjectIsReachedThroughTheAccountToo`, the
+`StatementMatchMember.transaction` rows); their behaviour stays graded on the payment shape by existing tests and the
+new migration test. Group 2, DELETE ONE LINE in 6 tests: the assertion "no member names the row", which the schema now
+guarantees; each keeps its "the member names the payment" assertions (test_accept, test_income, test_residual,
+test_cc5_4a1's card-member case, test_cc5_3's two register cases). Group 3, RE-POINT 8 tests from a row member to the
+row's payment member, same assertions (schema: two subjects refused; one movement in two matches, now asserting
+`uq_statement_match_members_entry`; the partial index; the three `e4a7c0f13b92` repair cases; bank_agreement: the
+matched case and the covered bill and paycheck case). Group 4: the schema test helper stops naming the dropped column.
+"No money assertion changes in any group."
+
+Refused: *"Confirm 2-4; re-express group 1"* (rewrite the two old-shape tests onto an act naming the payment);
+*"Refuse: re-open R-CC45"*.
+
+NOT asked, reported instead (a harness change, no assertion moved): `tests/test_models/test_settle_day_basis.py`
+`TestTheBackfillArmsAreExactOverTheirOwnPredicates._unpair` now also re-adds `statement_match_members.transaction_id`
+for the duration of each (rolled-back) case, so migration `c7d31f9a45e8`'s frozen `classify_settle_days` runs against
+the schema of its own revision; the four cases stage no member.
+
+#### Ruling (asked 17:3x-17:5x EDT 2026-09-22, recorded 17:56, header "$0 re-record") -- the finding CC-358's disposition (R-CC51 when filed)
+
+Picked: **"Own leaf next; 4a-2 not held (Recommended)"**
+
+> New card leaf right after CC-5-4a-2, before CC-5-4b. It designs the fix with you (withdraw and disclose at the
+> popover, as R-CC46 does, plus a structural end for the leftover match). CC-5-4a-2 ships as ruled. The defect is live
+> for every new match either way; the register's Undo repairs any case.
+
+Refused: *"Own leaf; hold 4a-2's release"* ("Same new leaf, but CC-5-4a-2's release waits until the fix ships, so the
+103 older matches never meet the defect. CC-356 stays open on them meanwhile."); *"Fold the fix into CC-5-4a-2"*
+("CC-5-4a-2 grows: the fix's design questions come first, then the build, in one PR and one release.").
+
+The question as stated: "A defect found while tracing this leaf. It's live since today's 17:06 release, which shipped
+CC-5-4a-1 (acts name the payment). Example: a Hotel bill, $120 on Checking, marked Paid 9/22; Checking's 9/24 bank
+line "HOTEL -$120" matched to it. Later you type $0.00 as the paid amount on its popover (or switch it to 'from its
+purchases'). NOW: the $120 payment is deleted and the match silently keeps only the bank line. The register shows it
+as no longer holding, with 0 rows (its Undo still works). The 9/24 line shows as unexplained again, and matching it
+to any other row gives an error page, because the old match still holds the line. BEFORE today's release, and still
+today for the 103 older matches: the match stays, reads amber ($0 vs -$120) with its Undo, and the line stays
+explained. CC-5-4a-2's migration moves those 103 older matches onto the new behaviour. CC-5-4a-2 also closes CC-356,
+another error page on the same 103."
+
+#### The SEQUENCING conflict -- RESOLVED (the coordinator's final question, quoting all four answers, 2026-09-22)
+
+**RESOLVED.** Josh picked **"Wait for the fix (Recommended)"**, verbatim: "CC-5-4a-2 commits and its PR merges to dev
+now, but it deploys only together with or after CC-5-4a-3 (the CC-358 fix). The 103 older matches keep CC-356's
+milder exposure (an error, nothing changed) until then and never meet CC-358's silent withdrawal. I cut other
+releases around 4a-2's unreleased migration on dev. Answers (2) and (3) are withdrawn." Refused: "Release 4a-2 when
+ready". **R-CC51** = the disposition as it now stands: CC-5-4a-3 its own leaf right after CC-5-4a-2, and CC-5-4a-2's
+RELEASE waits for it (with or after). The history below is kept for the record.
+
+The disposition above conflicted with the coordinator-session ruling on production ("Keep it, fix forward": "... The
+fix goes out before or with CC-5-4a-2's release, never after."). Both sessions then asked Josh to reconcile, in
+parallel, each tagging the OPPOSITE option "(Recommended)", and he took the recommended one both times:
+
+- In THIS session (header "Sequencing"), picked **"Fix before or with 4a-2 (Recommended)"**: "The coordinator-session
+  answer stands. CC-358's own leaf is built next, and CC-5-4a-2's release goes out after it or together with it.
+  CC-5-4a-2 still commits and opens its PR now. This session's "not held" is withdrawn." Refused: *"4a-2 not held"*
+  ("This session's answer stands. CC-5-4a-2 releases when ready, and the fix follows as the next leaf. "Never after"
+  is withdrawn; you avoid a $0 re-record of a matched bill until the fix ships.")
+- In the COORDINATOR's session, per the coordinator: picked "4a-2 not held (Recommended)".
+
+The coordinator took the ONE final question (quoting all four answers; the lane's recommendation, which the
+coordinator shares: fix before or with 4a-2 -- CC-358 silently withdraws a match AND 500s on re-match, where CC-356,
+which 4a-2 closes, only refuses). Whatever it returns is the sequencing; CC-5-4a-3 as minted and CC-358's owner
+= CC-5-4a-3 hold either way.
+
+#### Measured for CC-358's row (2026-09-22, scratch probes on the CC-5-4a-2 tree, deleted after)
+
+1. THE SEAM PATH (new since CC-5-4a-1): settle a bill, accept a match naming its payment, re-record it at $0.00 on the
+   popover door (`apply_requested_status(..., submitted=typed(0.00))`): `status_seam._covering._withdraw` deleted the
+   payment; the member cascaded; the act stood with its line member only; `matched_subjects` no longer claimed the
+   line; the register listed the act `agrees=False` with 0 rows; accepting the line against another row raised
+   `IntegrityError` on `uq_statement_match_members_line`.
+2. A BULK DOOR (pre-existing since the purchase member): `test_withdrawal`'s template hard-delete shape (a matched
+   PURCHASE's envelope removed by one bulk statement) leaves the same act; re-matching its line raised the same
+   `IntegrityError` on `uq_statement_match_members_line`. So the re-accept 500 predates CC-5-4a-1 at the bulk doors
+   `match_withdrawal`'s docstring names; CC-5-4a-1 added the seam's `$0.00` / purchases re-record as a new door into
+   it, and CC-5-4a-2's re-key extends that door to the 103 older acts.
+
+#### Confirmation 8a (asked after the review's L7, 2026-09-22, header "Rule 5 fix") -- a correction to Confirmation 8
+
+The review found Confirmation 8's group-2 description exact for 4 of its 6 tests only. Asked: "... In the other 2
+(test_cc5_3_settle_tender: "the matcher's price asks the screen's account" and "a member whose tender moved reads
+zero") I deleted a different kind of line: 4 lines that valued a ROW member on the register, e.g. register(txn, day,
+card) == -$120.00 and register(txn, day, checking) == $0.00. Each sits beside an identical line valuing the PAYMENT
+member (register(movement, ...)) with the same expected figure, and those stay. ... (Group 3 was also tightened to
+match its description: the schema tests now stage the row's PAYMENT, not a purchase.) Confirm deleting those 4
+row-valuation lines under R-CC45?"
+
+Picked: **"Confirm the 4 row-valuation lines (Recommended)"**
+
+> Deleting the 4 register(txn, ...) lines is a rule-5 re-expression under R-CC45. The paired register(movement, ...)
+> lines, with the same -$120.00 / $0.00 figures, carry the assertion. The docstrings quote this.
+
+Refused: *"Refuse: keep an equivalent"* (add a test that the register still values a row's payment the same as the
+old row arm did, asserted through covered_cash_leg on the row).
+
+#### CC-358's clause (the coordinator, 2026-09-22): the day drill-down
+
+`bank_agreement._lines_on` reads a line's claim off the member table WITHOUT `act_still_names_a_row()`, so an act left
+holding only its line (CC-358's end state; the bulk doors' leftovers) shows that line "matched" on the day drill-down
+while the review screen lists it unexplained. Pre-existing; rides CC-358 as a clause; CC-5-4a-3 fixes it with the rest.
+CC-359 (granted): `_release._remove`'s "the withdrawal is a no-op" claim is unverified for a created row that later
+gained a purchase another act matched; CC-5-4a-3 probes it first (does adding a purchase bump the row's version_id so
+`planned_removals` refuses it?) and closes it as not-a-defect with the measurement if so.
+
+### CC-5-4a-3's rulings, VERBATIM as picked (AskUserQuestion in the CC-5-4a-3 session shekel-0d, 2026-09-22)
+
+For the CC-5-4a-3 tick (the coordinator's). Each block: the option label + description as picked (his option
+text IS the ruling), the refused options, and what the question stated. **IDS GRANTED by the coordinator
+(shekel-d1) 2026-09-22 ~19:5x: R-CC54 = Round 2 Q1 (the design), R-CC55 = Round 2 Q2 (the sequencing), R-CC56 =
+Round 1 Q2 (the disclosure); step credit_card:CC-5-4a-4 minted (parts (2)+(3), the migration, the check
+deleted; after CC-5-4a-3, blocked by it; migration-bearing, its own release after the 4a-2 + 4a-3 release);
+ledger CC-363 (MONEY) = the side-effect destruction, owner CC-5-4a-4; CC-358's `_lines_on` clause moves to
+CC-5-4a-4. Next free card R-CC57 / CC-364.**
+
+#### Round 1 (asked 19:28 EDT, answered ~19:3x EDT 2026-09-22)
+
+##### Q1 "Leftover" -- REFUSED, the premise rejected
+
+The question offered four ways to make a match that outlives its payment impossible: B (a database rule
+deletes the match when its last payment or purchase goes, R-BI10's shape), A (the database refuses the delete),
+C (refuse at commit), D (keep today's shape and wire the doors). Josh's answer, verbatim: **"Are these options
+the best from scratch design? They seem like fences trying to avoid the root cause."** No option picked; the
+design was re-opened (see Round 2).
+
+##### Q2 "Disclosure" -- PICKED (**R-CC56**): **"Both popover paths (Recommended)"**
+
+> A caption under the Actual box ('Recording $0.00 withdraws 1 accepted match, so 1 bank line is unexplained
+> again: 9/24 HOTEL -$120.00'). A second caption beside Paid/Received on a reverted row whose purchases would
+> replace its payment. Both captions come from the one read the door acts on. The grid's one-click Mark Paid
+> withdraws and logs it without a caption, as the Paid-from change does today.
+
+Refused: *"Actual box only"* (only the $0.00 caption; the purchases path withdraws and logs without saying so
+first); *"A confirm step"* (a second click, 'Save and withdraw the match', a control shape the Paid-from picker
+does not use).
+
+The question as stated: "R-CC51 already rules that the popover withdraws the match and says so first, as the
+'Paid from' picker does ('Picking another account withdraws 1 accepted match, so 1 bank line is unexplained
+again: 9/24 HOTEL -$120.00'). Two popover paths remove a matched payment: typing $0.00 in Actual on the Hotel
+bill, and pressing Paid on a reverted bill that now has purchases (its purchases replace the payment). Grid
+quick-actions have no popover in either case. Where does the popover say it?"
+
+##### Q3 "Bulk doors" -- REFUSED, the premise rejected
+
+The question (conditional on Q1's B) asked what the template / account / pay-period doors say when a match
+goes with them. Josh's answer, verbatim: **"I want root cause solutions and the best from scratch design that
+avoids this problem"**.
+
+#### Round 2 (asked 19:4x EDT, answered ~19:4x EDT 2026-09-22) -- the re-opened design
+
+Measured before asking (scratch probes on 550cc9ce, deleted after; outputs in the session scratchpad):
+P5 -- a Projected one-off envelope 'Home Improvement' holding a $25.00 purchase recorded from Checking's 1/5
+bank line (`create_purchase_from_line` into the existing envelope): `template_has_paid_history` = False;
+`definition_delete.permanently_delete_definition` erased the purchase; Checking's `settled_cash_facts` sum
+moved -25.00 -> 0 (the balance $25.00 higher than the bank); the act was left holding its line alone.
+P6 -- a matched Paid $120 Hotel bill reverted to Projected, then its template permanently deleted: the kept
+payment destroyed, the act left holding its line alone. Production census (17:06 dump `shekel_cc54a2_base`):
+284 acts, 0 stranded, 0 lineless; 1 non-settled row holds a movement (an un-dated purchase under template 19
+'Clothes', already refused permanent delete by its merchant rule) [FALSE, measured at CC-5-4a-4's entry: template 19 has no merchant rule and its permanent delete is permitted; see CC-363]; 0 future periods hold one; 0 matched
+movements under a non-settled row.
+
+##### Q1 "Root cause" -- PICKED (**R-CC54**): **"Root-cause design (Recommended)"**
+
+> (1) ONE act takes a payment or purchase off the books: it reverses its ledger, takes it out of any match
+> (withdrawing a match left with nothing and saying which bank line that freed), then deletes it. Every door
+> calls it, including the popover's two paths. (2) The database stops cascading a row's delete to its payments
+> and purchases. A row holding one is history, so the template and account permanent deletes archive instead,
+> and truncate/regenerate lock its period. Home Improvement: archived, the $25 stays spent, the match stands.
+> (3) A match's key to its payment or purchase stops cascading, like its key to the bank line. The screens'
+> leftover-match check is deleted.
+
+Refused: *"Same, bulk doors disclose"* ((1) and (3), but the template, account and pay-period doors take the
+payments and purchases off through the one act and say so in their confirmation; the bank-confirmed purchase
+destroyed on his say-so, Checking $25.00 higher than the bank until the line is recorded again); *"(1)+(2),
+keep the check"* (the match's key keeps cascading; the screens' leftover-match check stays as the guard for a
+door written later).
+
+The question's stem: "Root causes found for CC-358. (1) Taking a payment or purchase off the books is written
+separately in several doors, and the popover's $0.00 path forgot the match. (2) The template, account and
+pay-period deletes destroy payments and purchases as a side effect, judging safety by 'never Paid' instead of
+by what a row holds. Measured: permanently deleting the one-off 'Home Improvement', whose $25.00 purchase was
+recorded from Checking's 1/5 bank line, erases the purchase, so Checking reads $25.00 higher than the bank, and
+the match is stranded. A matched $120 Hotel bill, reverted then template-deleted, loses its kept payment the
+same way. On production's 17:06 copy the rule changes nothing deletable today. [FALSE, measured at CC-5-4a-4's entry: template 19 'Clothes' (no merchant rule, no settled row) holds movement 343, $107.57, under a row its permanent delete may erase, and its archive drops that purchase from the fold; see CC-363] Which design?"
+
+##### Q2 "Sequencing" -- PICKED (**R-CC55**): **"Two leaves (Recommended)"**
+
+> CC-5-4a-3 builds part (1). CC-5-4a-2 then deploys with it, as R-CC51 requires, because the popover path is
+> the one R-CC51 is about. A next leaf (id from the coordinator) builds parts (2)+(3) with their migration and
+> deletes the check. Until that leaf ships, the bulk doors behave as today (the Home Improvement case stays
+> live, with 0 instances on production). [FALSE, measured at CC-5-4a-4's entry: template 19 'Clothes' is one live instance; see CC-363]
+
+Refused: *"One leaf, all three"* (CC-5-4a-3 builds (1), (2) and (3) with the migration, announced to the
+template, account and pay-period owners; CC-5-4a-2's release waits for all of it).
+
+#### Round 3 (asked ~20:2x EDT 2026-09-22, after the neutral review's M1) -- the transfer popover (**R-CC59**, granted by the coordinator; R-CC56 gains "extended to the transfer popover by R-CC59" at the tick)
+
+Measured before asking (scratch probe on the 4a-3 tree, deleted after): a $500 Checking-to-Savings transfer
+marked Paid, its Checking leg's payment matched to a -$500 line; `transfer_service.update_transfer(...,
+figure=typed(0.00))` (the transfer popover's Actual box) -> acts 1 -> 0, the line unclaimed, both legs'
+covering movements gone. The transfer popover rendered no caption. Census: only two templates post
+`settled_amount` (grid/_transaction_full_edit.html, transfers/_transfer_full_edit.html). [INCOMPLETE as a census of the doors that take $0.00, read at the CC-5-4a-2 / 4a-3 tick: `accounts/_reconcile_panel.html:71` posts a per-row `settled_amount-<id>` (`min="0"`) that settles through `transaction_service.settle_transaction`, a door neither R-CC56 nor R-CC59 names]
+
+##### Q1 "Transfer $0" -- PICKED: **"Same caption, this leaf (Recommended)"**
+
+> The transfer popover's Actual box gets the bill popover's caption: 'Recording $0.00 withdraws 1 accepted
+> match, so 1 bank line is unexplained again on your statement screen: 1/6 TRANSFER -$500.00'. It reads what
+> taking BOTH legs' payments off frees, from the same read the door acts on. Built in CC-5-4a-3 (the transfer
+> popover's route and template, cleared with the coordinator; balance's 6-3 does not touch them).
+
+Refused: *"No caption; file it"* (this leaf states the transfer popover as a door that withdraws and logs
+without a caption, like the grid's one-click Mark Paid; a ledger row files the transfer caption for a later
+step).
+
+#### Measured for BAL-530 (granted by the coordinator 2026-09-22 ~21:3x, owner balance:X-bi-6-4; filed at the 4a-3 tick)
+
+The transfer full-edit popover (`GET /transfers/<id>/full-edit`, `app/routes/transfers/forms.py:get_full_edit`) calls
+`transfer_legs.covering_movements_by_leg([xfer.id])` TWICE per render, on the CC-5-4a-3 tree:
+(1) its figures -- `forms.py:108` `transfer_settlement_amounts(xfer, current_user.id)` -> `app/routes/_render_helpers.py:347`
+`grid_transfer_leg(xfer, xfer.from_account_id)` -> `app/services/transfer_legs.py:631` `covering_movements_by_leg([transfer.id])`;
+(2) R-CC59's caption -- `forms.py:131` `_payment_withdrawal(xfer)` -> `forms.py:160`
+`transfer_legs.covering_movements_by_leg([xfer.id])`. One indexed query each (`_covering_movements_query` narrowed to
+one transfer). Left in 4a-3 because resolving it once and threading it through both reads changes the signatures of
+`transfer_settlement_amounts` (`_render_helpers.py`, where balance:X-bi-6-3 carries a docstring hunk) and
+`grid_transfer_leg` (X-bi-6's leg producers, the join X-bi-6-4 moves onto the link); `_payment_withdrawal`'s docstring
+states the second call honestly (round-3 review L5).
+
+#### Consequences for the registries (the coordinator's to cut at the tick; ids not yet granted)
+
+- A ruling for the disclosure (Round 1 Q2), one for the root-cause design (Round 2 Q1), one for the sequencing
+  (Round 2 Q2) -- or fewer if the coordinator folds them.
+- A NEW STEP: the leaf that builds parts (2)+(3) + migration + deletes the check (`act_still_names_a_row`),
+  ranked after CC-5-4a-3.
+- A NEW LEDGER ROW (money): the template / account / pay-period doors destroy payments and purchases as a side
+  effect (P5's +$25.00; P6's kept payment), owned by that new step. CC-358's `_lines_on` clause moves to the new
+  step (it dies with the check); CC-358 itself (the popover path) closes at CC-5-4a-3.
+- CC-359 closes at CC-5-4a-3 as NOT A DEFECT (measured 19:21; the coordinator acked).

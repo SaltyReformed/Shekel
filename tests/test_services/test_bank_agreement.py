@@ -835,9 +835,16 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
         """Both flags, against a real accepted match.
 
         A FIRING control: with the flag hardcoded ``False`` the whole
-        ``_claimed_app_rows`` lookup, both template branches and their copy are
-        dead, and the screen tells the owner nothing is explained when
+        ``matched_subjects`` claim read, both template branches and their copy
+        are dead, and the screen tells the owner nothing is explained when
         everything is.  The axis no other test in this file varies.
+
+        The app-side member names the row's PAYMENT, its covering movement
+        (rulings **R-CC43**, **R-CC45**): since plan step
+        ``credit_card:CC-5-4a-2`` the member table has no row column, and
+        this case named the row through it until then.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
         """
         with app.app_context():
             _seed_import(
@@ -863,9 +870,10 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
                 match_id=match.id, account_id=seed_user["account"].id,
                 bank_statement_line_id=line.id,
             ))
+            (payment,) = txn.covering_movements
             db.session.add(StatementMatchMember(
                 match_id=match.id, account_id=seed_user["account"].id,
-                transaction_id=txn.id,
+                transaction_entry_id=payment.id,
             ))
             db.session.commit()
 
@@ -883,18 +891,23 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
         [(False, "40.00", "-40.00"), (True, "2572.78", "2572.78")],
         ids=["a covered bill", "a covered paycheck"],
     )
-    def test_a_COVERED_row_matched_by_ROW_reads_matched(
+    def test_a_COVERED_row_matched_by_its_PAYMENT_reads_matched(
         self, app, seed_user, seed_periods, db, is_income, amount, line_amount,
     ):
-        """The mirror's match state is its PARENT's.
+        """The mirror's match state is its own: the act names the payment.
 
         Settled through the seam, a bill's (X-bi-3a) or a paycheck's
-        (X-bi-3b) money walks as its covering movement's fact, while the
-        match names the ROW -- the matcher's subject, its mirror kept out of
-        the purchase candidates.  The case above builds its row around the
-        seam and so never met this; with the entry's own claim asked, every
-        matched bill and paycheck read as unexplained here (adversarial review
-        of X-bi-3b, 2026-09-16).
+        (X-bi-3b) money walks as its covering movement's fact, and the match
+        names that movement (rulings **R-CC43**, **R-CC45**), in either
+        direction.  Until plan step ``credit_card:CC-5-4a-2`` this case named
+        the ROW -- the shape the acts before ``CC-5-4a-1`` held, under which
+        asking the entry's own claim alone read every matched bill and
+        paycheck as unexplained here (adversarial review of X-bi-3b,
+        2026-09-16); that migration re-keyed each such member onto the
+        payment and dropped the row column, so the case now grades the one
+        shape there is.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
         """
         with app.app_context():
             _seed_import(
@@ -928,7 +941,7 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
             ))
             db.session.add(StatementMatchMember(
                 match_id=match.id, account_id=seed_user["account"].id,
-                transaction_id=txn.id,
+                transaction_entry_id=txn.covering_movements[0].id,
             ))
             db.session.commit()
 

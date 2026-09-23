@@ -33,14 +33,11 @@ _WHOLE_ACT = (
     selectinload(StatementMatch.members).selectinload(
         StatementMatchMember.line,
     ),
-    selectinload(StatementMatch.members).selectinload(
-        StatementMatchMember.transaction,
-    ).selectinload(Transaction.entries),
     # An entry member's parent and ITS entries: a payment member is valued
     # as its row's payment on the act's account (``covered_cash_leg`` walks
     # the row's covering movements, plan step ``credit_card:CC-5-4a-1``),
     # and a fold over 221 acts must not lazy-load one row's entries per
-    # member -- the shape the transaction chain above already takes.
+    # member -- the shape the creations' transaction chain below takes.
     selectinload(StatementMatch.members).selectinload(
         StatementMatchMember.entry,
     ).joinedload(TransactionEntry.transaction).selectinload(
@@ -101,21 +98,19 @@ def named_rows(match: StatementMatch) -> "tuple[set[int], set[int]]":
     stored, because they are the one statement of what an act names and a
     second copy could disagree with them.
 
-    **A row is named through either of its two homes** (plan step
-    ``credit_card:CC-5-4a-1``, ruling **R-CC43**): an act recorded before
-    that step names the row itself, and one recorded since names the row's
-    covering movement -- the residual a group minted, the bill the owner
-    ticked -- so the row it is the payment OF is a named row, and the
+    **A row is named through its PAYMENT** (plan steps
+    ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``, rulings **R-CC43**,
+    **R-CC45**): every member on the app's side names a movement, and a
+    member naming a row's covering movement -- the residual a group minted,
+    the bill the owner ticked -- names the row it is the payment OF, so the
     creation record for a minted residual still meets its member.  A
     PURCHASE member names the purchase and not its envelope (the envelope is
     a container, ruling **R-GG**); the ``covers_settlement`` mark is what
     tells the two entry members apart, read off the entry the loader joined
     (:data:`_WHOLE_ACT`), so a payment member is a row named and never a
-    purchase named.  The same two-home rule
-    :func:`~._candidates.matched_subjects` applies in SQL to an account's
-    claims; the row half of both goes with the column at plan step
-    ``credit_card:CC-5-4a-2``.  Public because :mod:`._accepted_view` asks
-    the same question of the same act.
+    purchase named.  The same rule :func:`~._candidates.matched_subjects`
+    applies in SQL to an owner's claims.  Public because
+    :mod:`._accepted_view` asks the same question of the same act.
 
     Args:
         match: The act, with its members and their subjects loaded.
@@ -128,13 +123,12 @@ def named_rows(match: StatementMatch) -> "tuple[set[int], set[int]]":
     transactions = set()
     purchases = set()
     for member in match.members:
-        if member.transaction_id is not None:
-            transactions.add(member.transaction_id)
-        elif member.transaction_entry_id is not None:
-            if member.entry.covers_settlement:
-                transactions.add(member.entry.transaction_id)
-            else:
-                purchases.add(member.transaction_entry_id)
+        if member.transaction_entry_id is None:
+            continue
+        if member.entry.covers_settlement:
+            transactions.add(member.entry.transaction_id)
+        else:
+            purchases.add(member.transaction_entry_id)
     return transactions, purchases
 
 

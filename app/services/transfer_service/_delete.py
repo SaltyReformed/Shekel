@@ -18,7 +18,7 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import match_withdrawal, posting_service
+from app.services import match_withdrawal, movement_removal, posting_service
 from app.services.transfer_service._loan_posting import (
     _pays_a_loan,
     _resync_loan_after_payment_left,
@@ -87,14 +87,23 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # ── Statement matches (developer ruling 2026-08-25, bank_import:X-gb) ──
     # A shadow a bank line was matched to stops existing on the HARD path, so
     # an act it was the last app row of is withdrawn and that line is
-    # unexplained again.  Read BEFORE the branch: the member foreign keys are
-    # ON DELETE CASCADE, so after the delete nothing says which lines were
-    # freed.  Measured on the developer's own dev database at 16 matched
-    # shadows.
+    # unexplained again.  Through the ONE act that takes a movement off the
+    # books (plan step ``credit_card:CC-5-4a-3``, ruling **R-CC54**): both
+    # shadows' movements out of their matches and deleted -- the pair's posted
+    # effect is the reconcile above's to reverse, so the act's per-movement
+    # reversal has nothing of its own to do -- and FLUSHED before the
+    # transfer goes: the shadows go by the database's cascade, so their
+    # movements' DELETEs must land first.  The unit of work orders them so
+    # today without this line (measured 2026-09-22: removing it passes every
+    # transfer and withdrawal test), through a mapper-level dependency the
+    # self-referential ``Transaction`` mapper sorts row by row -- so the order
+    # is stated here rather than left to that sort.  Measured on the
+    # developer's own dev database at 16 matched shadows.
     #
-    # **A SOFT delete withdraws nothing, and that falls out of the rule rather
-    # than being excepted from it**: the member survives a flag change, so the
-    # act still names its row and there is nothing to withdraw.  It is also the
+    # **A SOFT delete withdraws nothing, and the ``if not soft`` below is what
+    # says so** (the rule's own docstring: "the CALLER is what says so"): the
+    # member survives a flag change, so the act still names its row and there
+    # is nothing to withdraw.  It is also the
     # answer this path needs -- ``routes/transfers/templates`` archives with
     # ``soft=True`` and UN-archives with ``restore_transfer``, and
     # ``transfer_recurrence`` restores soft-deleted shadows during a maintain
@@ -106,7 +115,12 @@ def delete_transfer(transfer_id, user_id, soft=False):
         .all()
     )
     if not soft:
-        match_withdrawal.withdraw_for_rows(shadows, user_id)
+        movement_removal.remove_movements(
+            [movement for shadow in shadows for movement in shadow.entries],
+            user_id, because=match_withdrawal.LEFT_THE_BOOKS,
+            rows_leaving=shadows,
+        )
+        db.session.flush()
 
     if soft:
         xfer.is_deleted = True
