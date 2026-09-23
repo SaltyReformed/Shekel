@@ -31,6 +31,7 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.amount_ownership import AmountOwnership
 from app.models.transfer import Transfer
 from app.services.balance_at._asset_contributions import (
@@ -73,12 +74,16 @@ from app.services.transfer_legs import (
     TransferLeg,
     cell_key,
     covering_movements_by_leg,
+    dated_leg_exists_clause,
     grid_transfer_leg,
     grid_transfer_legs,
     leg_label,
     leg_of,
+    movement_parent,
     planned_transfer_legs,
     recorded_transfer_legs,
+    transfer_family_movements,
+    transfer_movement_rows,
 )
 from app.services.transfer_service import (
     TransferSpec,
@@ -88,15 +93,19 @@ from app.services.transfer_service import (
 )
 from app.utils.balance_predicates import is_projected_clause
 from app.services.account_resolver import resolve_cash_flow_set
+from app.services.settle_day import record_settle_day
 from tests._test_helpers import (
+    an_entered_day,
     cover_bare_settled_row,
     basis_for,
     capture_sql_statements,
     create_account_of_type,
     create_loan_account,
     create_savings_account,
+    create_settled_cash_transaction,
     create_settled_transfer,
     create_transfer,
+    figure_source_columns,
     make_investment_account,
     read_pass,
     settle_day_columns,
@@ -1541,3 +1550,219 @@ class TestTheSettledHalfReadsTheLegOffItsTransfer:
 
             assert fact.pay_period_id == seed_periods[2].id
             assert fact.transfer_id == settled.id
+
+
+class TestTheWritersParentIsTheLeg:
+    """Leaf ``balance:X-bi-6-4a``'s second half: the ledger writer's parent resolution.
+
+    The writer asks ONE function what a movement's parent is
+    (``movement_parent``) and walks a transfer's family through ONE loader
+    (``transfer_family_movements``).  Through the interval the answer reads
+    the shadow the movement hangs off -- the Python twin of the join's
+    expressions -- so these cases pin the twin to the join, live and dead
+    shadows alike, and the one dated-leg clause the plan half and the deploy
+    resync now share.
+    """
+
+    def test_a_rows_movement_answers_its_row_and_a_transfers_its_leg(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A plan row's movement is booked under the row; a transfer's under its LEG."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            row = create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[2], Decimal("30.00"),
+                account=checking, name="a row",
+            )
+            db.session.commit()
+            [row_movement] = row.entries
+            out_movement = covering_movements_by_leg([settled.id])[
+                (settled.id, checking.id)
+            ]
+
+            assert movement_parent(row_movement) is row
+            leg = movement_parent(out_movement)
+            assert leg == TransferLeg(
+                transfer=settled, account_id=checking.id, is_income=False,
+                record=out_movement,
+            )
+            assert leg.record is out_movement
+            assert leg.user_id == seed_user["user"].id
+
+    def test_the_python_twin_agrees_with_the_join_live_and_dead_shadows_alike(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """``movement_parent`` against ``transfer_movement_rows`` over a whole family.
+
+        Two settled ``$250.00`` Checking -> Savings transfers; the second's
+        CHECKING shadow is soft-deleted by SQL (Transfer Invariant 4 drift).
+        The family loader returns all four movements; the three it gives a
+        record are exactly the three the ONE join returns, each on the side
+        the join says, and the fourth -- the dead shadow's -- is recordless on
+        the from-side.  MUTATION: drop the twin's ``not row.is_deleted`` term
+        and the dead movement becomes a record the join never returns.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            first = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            second = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT, settled_on=date(2026, 2, 17),
+            )
+            db.session.commit()
+            dead_shadow_id = _shadow_on(second, checking).id
+            db.session.execute(
+                sa_text(
+                    "UPDATE budget.transactions SET is_deleted = TRUE "
+                    "WHERE id = :id"
+                ),
+                {"id": dead_shadow_id},
+            )
+            db.session.commit()
+            db.session.expire_all()
+            transfers = [db.session.get(Transfer, t.id) for t in (first, second)]
+
+            joined = {
+                movement.id: is_income
+                for movement, _transfer, is_income in transfer_movement_rows(
+                    Transfer.id.in_([first.id, second.id]),
+                )
+            }
+            family = [
+                pair for transfer in transfers
+                for pair in transfer_family_movements(transfer)
+            ]
+
+            assert (len(family), len(joined)) == (4, 3)
+            assert {
+                movement.id for movement, leg in family
+                if leg.record is movement
+            } == set(joined)
+            assert all(
+                leg.is_income == joined[movement.id]
+                for movement, leg in family if movement.id in joined
+            )
+            [(dead_movement, dead_leg)] = [
+                (movement, leg) for movement, leg in family
+                if movement.id not in joined
+            ]
+            assert dead_movement.transaction_id == dead_shadow_id
+            assert (dead_leg.record, dead_leg.is_income, dead_leg.account_id) == (
+                None, False, checking.id,
+            )
+            for transfer in transfers:
+                ids = [m.id for m, _leg in transfer_family_movements(transfer)]
+                assert ids == sorted(ids), "a family is walked in movement order"
+
+    def test_a_non_covering_entry_under_a_live_shadow_is_no_record(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The twin's ``covers_settlement`` term: the join reads covering movements alone.
+
+        A settled ``$250.00`` Checking -> Savings transfer, and a ``$5.00``
+        purchase-shaped entry written under its LIVE Savings shadow (no door
+        writes one: ``entry_service`` refuses a shadow).  ``movement_parent``
+        books it under the Savings leg with NO record -- so the writer posts
+        nothing for it -- and the join does not return it.  MUTATION: drop
+        the twin's ``covers_settlement`` term and the entry becomes a record
+        the join never returns.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            shadow = _shadow_on(settled, savings)
+            stray = TransactionEntry(
+                **figure_source_columns(),
+                transaction_id=shadow.id, account_id=savings.id,
+                owner_id=shadow.user_id, user_id=seed_user["user"].id,
+                amount=Decimal("5.00"), description="stray",
+                purchased_on=date(2026, 2, 3), is_credit=False,
+            )
+            db.session.add(stray)
+            db.session.flush()
+
+            leg = movement_parent(stray)
+
+            assert (leg.transfer, leg.account_id, leg.is_income, leg.record) == (
+                settled, savings.id, True, None,
+            )
+            assert stray.id not in {
+                movement.id for movement, _transfer, _is_income
+                in transfer_movement_rows(Transfer.id == settled.id)
+            }
+
+    def test_the_dated_leg_clause_reads_records_alone(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """One clause, two readers: the resync asks it bare, the plan half per account.
+
+        Three ``$250.00`` Checking -> Savings transfers: settled (both sides
+        dated), projected (no covering movement, but a DATED ``$5.00`` entry
+        that covers no settlement written under its live Savings shadow --
+        no door writes one), and settled with its CHECKING shadow
+        soft-deleted by SQL.  Bare, the clause holds for the first and the
+        third -- the third's Savings side is still a dated record -- and not
+        for the projected one: the stray is no record.  The resync's clause
+        before leaf ``X-bi-6-4a`` read every dated entry under a live shadow
+        and held for it.  Narrowed to Checking it holds for the first alone:
+        the third's Checking movement hangs off a dead shadow and is no record.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            projected = create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT,
+            )
+            drifted = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[4],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            db.session.execute(
+                sa_text(
+                    "UPDATE budget.transactions SET is_deleted = TRUE "
+                    "WHERE id = :id"
+                ),
+                {"id": _shadow_on(drifted, checking).id},
+            )
+            shadow = _shadow_on(projected, savings)
+            stray = TransactionEntry(
+                **figure_source_columns(),
+                transaction_id=shadow.id, account_id=savings.id,
+                owner_id=shadow.user_id, user_id=seed_user["user"].id,
+                amount=Decimal("5.00"), description="stray",
+                purchased_on=date(2026, 2, 17), is_credit=False,
+            )
+            record_settle_day(stray, an_entered_day(date(2026, 2, 17)))
+            db.session.add(stray)
+            db.session.commit()
+
+            def holding(*filters):
+                return {
+                    row.id for row in db.session.query(Transfer.id)
+                    .filter(dated_leg_exists_clause(*filters))
+                }
+
+            assert holding() == {settled.id, drifted.id}
+            assert holding(TransactionEntry.account_id == checking.id) == {
+                settled.id,
+            }

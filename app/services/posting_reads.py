@@ -37,10 +37,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import ledger_account_service
 from app.services.transfer_legs import transfer_movement_rows
-from app.utils.balance_predicates import (
-    balance_excluded_status_ids,
-    settled_status_ids,
-)
+from app.utils.balance_predicates import balance_excluded_status_ids
 
 
 def settled_figure_clause():
@@ -195,31 +192,51 @@ def account_posting_total(account_id: int, scenario_id: int) -> Decimal:
 
 
 def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
-    """Return an account's net effect from its settled transfers' legs.
+    """Return an account's net effect from its settled transfer legs.
 
     The balance-side expectation the Commit-6 oracle reconciles the ledger
-    against: over every covering movement ON the account (its own
-    ``account_id``, ruling **R-BAL75**) of a live transfer in *scenario_id*
-    whose status is settled (``status.is_settled``), ``+amount`` on the
+    against: over every DATED, debit covering movement ON the account (its
+    own ``account_id``, ruling **R-BAL75**) that is a leg's record of a live,
+    balance-contributing transfer in *scenario_id*, ``+amount`` on the
     to-side (money in) and ``-amount`` on the from-side (money out) --
     exactly the debit-positive net :func:`account_posting_total`
-    accumulates.  A transfer closed at ``$0.00`` holds no movement and adds
-    nothing (ruling **R-BAL82**).  Settled statuses are non-excluded by
-    construction (``settled_status_ids`` is disjoint from the
-    balance-excluded set), so no excluded-status guard is needed.
+    accumulates.  A settled leg's money IS its dated movement (rulings
+    **R-BAL79** / **R-BAL80**), so "settled" here is the leg's, not the
+    status's.  A transfer closed at ``$0.00`` holds no movement and adds
+    nothing (ruling **R-BAL82**).
+
+    **The narrowings are the writer's posting rule, restated** (leaf
+    ``X-bi-6-4a``): ``_posting_purchases.purchase_posts`` books a movement
+    iff it is dated, a debit, and its parent contributes, whatever the
+    parent's status (ruling **R-BAL101**) -- and, for a transfer leg, iff it
+    is the leg's RECORD, which the join this reads returns alone.  Through
+    that leaf's first half
+    this filtered on the transfer's settled STATUS instead, which agrees on
+    every door-written state -- a settle dates both sides and a revert
+    un-dates them (ruling **R-BAL61**), so a movement is dated exactly while
+    its transfer is settled (all 38 covering movements on the 2026-09-22
+    17:06 production dump are dated and under a settled transfer, none
+    un-dated under one) -- and parted from the ledger only in a status
+    drift, where it graded the writer against a rule the writer does not
+    state.
 
     **The legs come off their TRANSFER since leaf ``X-bi-6-4a``** (ruling
     **R-BAL106**): the movement, its parent and its side through
-    :func:`app.services.transfer_legs.transfer_movement_rows`, so status,
+    :func:`app.services.transfer_legs.transfer_movement_rows`, so gate,
     scope and direction are the transfer's.  Through ``X-bi-6-3`` this summed
     the settled SHADOW rows' records (``settled_figure_clause``) signed by the
     shadow's type -- the same movements under Transfer Invariant 3, read
-    through the row ``X-bi-6-4d`` detaches them from.  The SIGN is restated
-    here rather than shared with the writer (``cash_ledger.movement_cash_leg``):
-    an oracle that imported the rule it grades could not grade it.  The JOIN,
-    scope and side are shared with the writer once 6-4a's leaf 2 moves it onto
-    the same loader, so from then this is independent in its sign alone; the
-    integration suites keep a raw-table restatement for the rest.
+    through the row ``X-bi-6-4d`` detaches them from.  The SIGN and the
+    narrowings are restated here rather than shared with the writer
+    (``cash_ledger.movement_cash_leg``, ``purchase_posts``): an oracle that
+    imported the rule it grades could not grade it.  What IS shared is the
+    base join and the transfer link: this reads a movement's record-ness
+    and side as the join's SQL (``transfer_legs._leg_is_record``,
+    ``_leg_is_income``), the writer as their Python twin over one loaded
+    movement (``transfer_legs.movement_parent``, the two pinned by a parity
+    test), so this is independent in its sign, its narrowings and the tier
+    that states record-ness and side; the integration suites keep a
+    raw-table restatement for the rest.
 
     Args:
         account_id: The real account whose settled transfer legs to sum.
@@ -241,7 +258,9 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
         TransactionEntry.account_id == account_id,
         Transfer.scenario_id == scenario_id,
         Transfer.is_deleted.is_(False),
-        Transfer.status_id.in_(settled_status_ids()),
+        Transfer.status_id.notin_(balance_excluded_status_ids()),
+        TransactionEntry.settled_on.isnot(None),
+        TransactionEntry.is_credit.is_(False),
     ).all()
     return sum(
         (

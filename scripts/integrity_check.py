@@ -680,13 +680,13 @@ def check_data_consistency(session):
     # DC-10: An UN-DATED movement holding a live journal leg (critical).
     #
     # ``_posting_purchases.purchase_posts`` is the write side's one statement
-    # of "this movement is in the ledger": a contributing parent, a debit,
-    # and a RECORDED posting day.  So a movement with no ``settled_on`` owes
-    # the ledger nothing, and a non-zero net of postings linked to it is
-    # money booked for a day nobody has stated.  Reachable since plan step
-    # ``balance:X-bi-3e-2``, when a revert began KEEPING the status seam's
-    # covering movement un-dated (ruling **R-BAL61**): the seam releases the
-    # day and the DOOR's family reconcile reverses the legs
+    # of "this movement is in the ledger": a contributing parent, a debit, a
+    # RECORDED posting day, and for a transfer leg its record.  So a movement
+    # with no ``settled_on`` owes the ledger nothing, and a non-zero net of
+    # postings linked to it is money booked for a day nobody has stated.
+    # Reachable since plan step ``balance:X-bi-3e-2``, when a revert began
+    # KEEPING the status seam's covering movement un-dated (ruling **R-BAL61**):
+    # the seam releases the day and the DOOR's family reconcile reverses the legs
     # (``transaction_service.apply_requested_status`` ->
     # ``posting_service.sync_transaction_postings``), so a caller that
     # reached the bare seam and never reconciled would leave exactly this

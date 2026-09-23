@@ -98,14 +98,15 @@ predicates, the reference cache and the date arithmetic, and no service.
 **The SETTLED half reads its legs here too since leaf ``X-bi-6-4a``** (ruling
 **R-BAL106**): :func:`transfer_movement_rows` / :func:`recorded_transfer_legs`
 hand the cash fold, the ledger oracle and the savings metric each paid
-transfer's covering movement with its transfer and side.  For THOSE readers
-this module is the one place a movement is reached through a shadow row.
+transfer's covering movement with its transfer and side, and since that
+leaf's second half the posting WRITER books every transfer movement under its
+LEG (:func:`movement_parent`, :func:`transfer_family_movements`,
+:func:`dated_leg_exists_clause`).  For THOSE readers and the writer this
+module is the one place a movement is reached through a shadow row.
 **Other readers still reach it themselves until their leaf moves them** and
-``X-bi-6-4d`` must find each: the posting writer
-(``posting_service._transfer_family_movements``,
-``_posting_purchases.dated_transfer_movement_exists_clause``: 6-4a leaf 2),
-the loan family and contributions (6-4b), statement match and the reconcile
-panel (6-4c), and DC-11's raw-SQL leg arm (``scripts/integrity_check.py``).
+``X-bi-6-4d`` must find each: the loan family and contributions (6-4b),
+statement match and the reconcile panel (6-4c), and DC-11's raw-SQL leg arm
+(``scripts/integrity_check.py``).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -122,6 +123,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import or_
+from sqlalchemy.orm import contains_eager
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -168,8 +170,16 @@ def leg_label(from_account: Account, to_account: Account) -> tuple[str, str]:
 
 
 @dataclass(frozen=True)
-class TransferLeg:
+class TransferLeg:  # pylint: disable=too-many-public-methods
     """One side of a transfer, as the account on that side sees it.
+
+    Pylint: ``too-many-public-methods`` (21/20) -- each answers a question a
+    plan ROW answers (the grid's, the dashboard's, the fold's, and since
+    leaf ``X-bi-6-4a`` the ledger writer's ``user_id``), derived from the
+    parent, its endpoints or the leg's record, so every reader asks a row
+    and a leg the same question.  Fewer would put a shape branch back at
+    each reader's site, the thing :attr:`tracks_purchases` says this class
+    exists to stop.
 
     The value every plan reader folds in place of the shadow row it used to
     load, and since leaf ``X-bi-6-1`` the value the grid draws in a
@@ -202,7 +212,11 @@ class TransferLeg:
             movement does not exist and never loads one (ruling **R-BAL79**
             decides the relation by the movement in SQL), while the grid's
             :func:`grid_transfer_legs` loads every leg's through
-            :func:`covering_movements_by_leg`.
+            :func:`covering_movements_by_leg`.  Also ``None`` on the leg
+            :func:`movement_parent` gives a movement that is NOT its leg's
+            record -- through the interval, one under a DEAD shadow, or an
+            entry under a live shadow that covers no settlement -- which is
+            how the ledger writer knows to post nothing for it.
     """
 
     transfer: Transfer
@@ -266,6 +280,17 @@ class TransferLeg:
     def scenario_id(self) -> int:
         """The parent's scenario."""
         return self.transfer.scenario_id
+
+    @property
+    def user_id(self) -> int:
+        """The parent's owner: whose ledger a leg's money is booked in.
+
+        The ledger writer's header owner and transit account
+        (``_posting_write.emit_typed_source_deltas``,
+        ``_posting_purchases._purchase_target``), read off the transfer, the
+        one home a transfer's owner has.
+        """
+        return self.transfer.user_id
 
     @property
     def is_deleted(self) -> bool:
@@ -548,19 +573,10 @@ def planned_transfer_legs(
         transfer touches.
     """
     # The leg's RECORD, when it exists: a dated covering movement on this
-    # account under one of the transfer's shadows (ruling **R-BAL79**).  A
-    # correlated EXISTS rather than a join, so a transfer is one row here
-    # whatever its shadows hold.
-    dated_leg = (
-        _covering_movements_query()
-        .filter(
-            _leg_transfer_id() == Transfer.id,
-            TransactionEntry.account_id == account_id,
-            TransactionEntry.settled_on.isnot(None),
-        )
-        .with_entities(TransactionEntry.id)
-        .correlate(Transfer)
-        .exists()
+    # account (ruling **R-BAL79**).  A correlated EXISTS rather than a join,
+    # so a transfer is one row here whatever its shadows hold.
+    dated_leg = dated_leg_exists_clause(
+        TransactionEntry.account_id == account_id,
     )
     transfers = (
         db.session.query(Transfer)
@@ -588,31 +604,62 @@ def _covering_movements_query():
     row on that account (``transaction_entries.transaction_id``), so reaching
     it from the parent walks ``transactions.transfer_id``.  Every reader of a
     leg's record builds on this with :func:`_leg_transfer_id` and
-    :func:`_leg_is_income` -- the fold's ``dated_leg`` predicate above, the
-    grid's :func:`covering_movements_by_leg`, and since leaf ``X-bi-6-4a``
-    (ruling **R-BAL106**) every settled-half reader through
-    :func:`transfer_movement_rows` -- so when the movement re-parents onto
+    :func:`_leg_is_income` -- the plan half's and the resync's
+    :func:`dated_leg_exists_clause`, the grid's
+    :func:`covering_movements_by_leg`, and since leaf ``X-bi-6-4a`` (ruling
+    **R-BAL106**) every settled-half reader through
+    :func:`transfer_movement_rows` and the posting writer through
+    :func:`transfer_family_movements` -- so when the movement re-parents onto
     ``budget.transfers`` (``X-bi-6-4d``, ruling **R-BAL88**) the join and
-    those two expressions move HERE for every reader built on them; the
-    readers not yet on them are named in the module docstring.
+    those expressions move HERE for every reader built on them; the readers
+    not yet on them are named in the module docstring.
 
-    A deleted shadow's movement is not a leg's record: a transfer whose pair
-    was soft-deleted and rebuilt holds the live pair's, and the query says so
-    rather than leaving it to the caller.
+    A deleted shadow's movement is not a leg's record (:func:`_leg_is_record`),
+    and the query says so rather than leaving it to the caller.
 
     Returns:
         A query rooted at :class:`~app.models.transaction_entry.TransactionEntry`
         with the shadow joined -- built, not executed, and not yet narrowed
         to any transfer.
     """
+    return _movements_under_shadows().filter(_leg_is_record())
+
+
+def _movements_under_shadows():
+    """Return the ONE join WITHOUT its record test: covering movements under any row, live or dead.
+
+    :func:`_covering_movements_query` is this narrowed to leg RECORDS; the
+    ledger writer's family (:func:`transfer_family_movements`) needs the
+    rest too, because a movement that is no leg's record may still hold
+    postings the writer must reverse.  The caller narrows it to a transfer
+    (:func:`_leg_transfer_id`), which is what makes the row a shadow.
+    Interval-only: from ``X-bi-6-4d`` every movement a side links is that
+    side's record and the two queries are one.
+
+    Returns:
+        The unexecuted query of covering movements with their parent row
+        joined, not yet narrowed to any transfer.
+    """
     return (
         db.session.query(TransactionEntry)
         .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .filter(
-            Transaction.is_deleted.is_(False),
-            TransactionEntry.covers_settlement.is_(True),
-        )
+        .filter(TransactionEntry.covers_settlement.is_(True))
     )
+
+
+def _leg_is_record():
+    """Return the SQL truth of "this covering movement IS its leg's record".
+
+    The third thing the join is for.  Through the interval a movement is its
+    leg's record while the shadow it hangs off is LIVE: a shadow soft-deleted
+    around the service (Transfer Invariant 4 drift; no door writes it) leaves
+    its movement no leg's, which the fold and the writer both read as worth
+    nothing (``tests/test_services/test_transfer_legs.py``'s drift class).
+    At ``X-bi-6-4d`` every linked movement is its side's record and this is
+    deleted.  :func:`movement_parent` states the same test over a loaded
+    movement.
+    """
+    return Transaction.is_deleted.is_(False)
 
 
 def _leg_transfer_id():
@@ -702,6 +749,125 @@ def recorded_transfer_legs(*filters) -> list[TransferLeg]:
         _leg_on_side(transfer, is_income=is_income, record=movement)
         for movement, transfer, is_income in transfer_movement_rows(*filters)
     ]
+
+
+def dated_leg_exists_clause(*filters):
+    """Return the SQL form of "this transfer has a leg whose record is DATED".
+
+    A correlated ``EXISTS`` over :func:`_covering_movements_query`, rooted at
+    ``Transfer``: one of the transfer's legs has a covering movement carrying
+    a ``settled_on``.  Its two readers ask one question two ways -- the plan
+    half's :func:`planned_transfer_legs` narrows it to ONE account (that
+    side's money moved, so its leg is no longer planned, ruling
+    **R-BAL79**), and the posting writer's deploy resync asks it bare (the
+    transfer may hold a posted leg whatever its status, the totality
+    argument of ``posting_service.resync_all_cash_postings``).  Stated once
+    since leaf ``X-bi-6-4a``: the resync's copy lived in
+    ``_posting_purchases`` and walked the shadow itself, and it read every
+    entry under a live shadow where this reads the covering movements the
+    writer's family holds (0 of 38 entries under a shadow were anything else
+    on the 2026-09-22 17:06 production dump).
+
+    Args:
+        *filters: Further clauses over ``TransactionEntry``, e.g. the
+            account.
+
+    Returns:
+        A SQLAlchemy ``EXISTS`` clause, correlated to ``Transfer``.
+    """
+    return (
+        _covering_movements_query()
+        .filter(
+            _leg_transfer_id() == Transfer.id,
+            TransactionEntry.settled_on.isnot(None),
+            *filters,
+        )
+        .with_entities(TransactionEntry.id)
+        .correlate(Transfer)
+        .exists()
+    )
+
+
+def movement_parent(movement: TransactionEntry) -> PlanItem:
+    """Return what *movement* records money FOR: its plan row, or its transfer's LEG.
+
+    **The ledger writer's ONE resolution of a loaded movement's parent**
+    (leaf ``X-bi-6-4a``, its second half, ruling **R-BAL106**).  Every door
+    that books a movement -- the pair door, a row's family reconcile, the
+    teardowns and the one removal act -- asks this, and the writer takes
+    what it answers as the parent that types the movement's legs: a plan
+    row's category and owner, or for a transfer movement the LEG, whose
+    period, owner, scenario, contributing gate and side are its TRANSFER's
+    (:class:`TransferLeg`), never the shadow row's.  So the ledger and the
+    cash fold read a transfer's money off the same parent.
+
+    **Through the interval the answer is read off the shadow the movement
+    hangs off**, which is the Python twin of this module's join expressions
+    over one loaded movement: :func:`_leg_transfer_id` (the shadow's
+    ``transfer_id``), :func:`_leg_is_income` (its type) and
+    :func:`_leg_is_record` with the join's ``covers_settlement`` term (the
+    leg carries the movement as its :attr:`~TransferLeg.record` only when it
+    is one).  A movement under a DEAD shadow of its transfer is no leg's
+    record, so its leg carries none and the writer posts nothing for it
+    (``_posting_purchases.purchase_posts``) -- what the fold answers too.
+    ``tests/test_services/test_transfer_legs.py`` pins the twin against
+    :func:`transfer_movement_rows`.  At ``X-bi-6-4d`` both read the
+    movement's side links and this stops naming the shadow.
+
+    Args:
+        movement: A ``budget.transaction_entries`` row with its parent
+            reachable (``movement.transaction``); a transfer movement's
+            ``transaction.transfer`` is read too.
+
+    Returns:
+        The movement's plan row, or the :class:`TransferLeg` it is booked
+        under.
+    """
+    row = movement.transaction
+    if row.transfer_id is None:
+        return row
+    is_record = movement.covers_settlement and not row.is_deleted
+    return _leg_on_side(
+        row.transfer, is_income=row.is_income,
+        record=movement if is_record else None,
+    )
+
+
+def transfer_family_movements(
+    transfer: Transfer,
+) -> list[tuple[TransactionEntry, TransferLeg]]:
+    """Return every covering movement *transfer*'s family holds, each with its leg.
+
+    The posting writer's pair door walks this
+    (``posting_service.sync_transfer_postings`` and its teardown twin): every
+    movement ANY shadow of the transfer holds, dead shadows included, each
+    paired with the leg :func:`movement_parent` books it under.  Not
+    :func:`recorded_transfer_legs`, deliberately: the ledger must reverse
+    what a movement that is no leg's record still holds (an idempotent hard
+    delete of an already soft-deleted pair must find nothing left, and a
+    shadow deleted around the service must not strand its legs when the hard
+    delete SET-NULLs its movement's link).  Each movement's shadow rides the
+    same statement (``contains_eager``) and its transfer is *transfer*, so
+    the walk reads no relationship lazily.  Moved here from
+    ``posting_service._transfer_family_movements`` at leaf ``X-bi-6-4a``,
+    whose join it now shares; it goes with the shadows at ``X-bi-6-4d``,
+    where a transfer's family is its sides' movements.
+
+    Args:
+        transfer: The transfer, loaded.
+
+    Returns:
+        ``(movement, leg)`` pairs, ascending by movement id so a run's
+        entries are deterministic.
+    """
+    movements = (
+        _movements_under_shadows()
+        .options(contains_eager(TransactionEntry.transaction))
+        .filter(_leg_transfer_id() == transfer.id)
+        .order_by(TransactionEntry.id)
+        .all()
+    )
+    return [(movement, movement_parent(movement)) for movement in movements]
 
 
 def covering_movements_by_leg(

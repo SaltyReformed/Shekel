@@ -204,8 +204,10 @@ def _reconcile_lineage_transfer_entries(
     the steady-state cost is the ONE probe query; each stale movement's
     TRANSFER runs :func:`app.services.posting_service.sync_transfer_postings`
     -- the one date-aware reconcile for those entries, which reads each
-    movement's own state (a soft-deleted shadow is non-contributing, so its
-    leg reverses) and brings the legacy one-entry source to zero besides.  A
+    movement's own state under its transfer LEG (a soft-deleted payment's
+    legs are non-contributing, the transfer's gate read through the leg since
+    leaf ``balance:X-bi-6-4a``, so they reverse) and brings the legacy
+    one-entry source to zero besides.  A
     pre-guard legacy transfer OUT of the loan (the R6 KEEP arm) never matches
     its walk expectation and re-syncs as a no-op each pass -- bounded, and
     such a loan is already assert-blocked as an N-11-class F1 item.

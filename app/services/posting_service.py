@@ -51,7 +51,9 @@ a settled transfer as ONE entry ``{from -figure, to +figure}`` off the income
 shadow's record and settle day, which was sufficient only because the
 transfer service mirrored one day onto both shadows (Transfer Invariant 3);
 the ruled shape lets each side post when ITS bank shows it.  So a transfer's
-legs are its shadows' covering movements, and they post through the same
+legs are its covering movements, each booked under its transfer LEG
+(:func:`app.services.transfer_legs.movement_parent`, leaf ``X-bi-6-4a``:
+period, owner and gate the transfer's), and they post through the same
 movement writer every purchase and covering movement posts through
 (:mod:`app.services._posting_purchases`, the counter leg dispatched by the
 parent's shape) -- :func:`sync_transfer_postings` is the pair's door, not a
@@ -60,7 +62,7 @@ first resync reverses whatever it posted, once, and every later sync leaves
 it at zero (the shape ``balance:X-bi-4a`` gave the transaction source); its
 arm is the leaf :mod:`app.services._posting_legacy`, which ``X-bi-6-5``
 deletes whole with the source.  The
-amount is still what the shadow RECORDED and never ``transfers.amount``: a
+amount is still what the leg RECORDED and never ``transfers.amount``: a
 movement's figure is the record, and ``cash_ledger.movement_cash_leg`` is
 the one producer of its signed cash.
 """
@@ -73,11 +75,14 @@ from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_reads
-from app.services.cash_ledger import movements_with_parents
 from app.services.posting_reads import PostingError
+from app.services.transfer_legs import (
+    dated_leg_exists_clause,
+    movement_parent,
+    transfer_family_movements,
+)
 from app.services.user_write_lock import lock_every_user_writes
 from app.services._posting_legacy import (
     legacy_transfer_entry_exists_clause,
@@ -85,7 +90,6 @@ from app.services._posting_legacy import (
     transfers_holding_a_legacy_net,
 )
 from app.services._posting_purchases import (
-    dated_transfer_movement_exists_clause,
     emit_purchase_deltas,
     posted_purchase_exists_clause,
     purchase_posts,
@@ -198,7 +202,7 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
     done -> projected (revert)                  both un-dated: reverse to zero
     done -> settled (archive)                   no-op (at target)
     projected -> cancelled                      no-op (nothing posted)
-    restore of a settled, soft-deleted xfer     re-post (shadows contributing)
+    restore of a settled, soft-deleted xfer     re-post (legs contributing)
     settled ``settled_on`` edit (N-13)          reverse at the old day, post at
                                                 the new (two keys, one pass)
     ==========================================  ==============================
@@ -221,13 +225,15 @@ def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
     real account's net per day is unchanged and the loan checked-projection
     assert holds through the move.
 
-    **It reads every shadow of the transfer, deleted or not**
-    (:func:`_transfer_family_movements`).  A soft-deleted shadow is a
-    non-contributing parent, so its movement's target is empty and any leg
-    it still holds reverses -- which is what lets the loan lineage probe hand
-    a soft-deleted payment here and get its cash reversed (the E1a review's
-    H2 case), and what a pair soft-deleted and rebuilt needs: the dead pair's
-    legs go, the live pair's post.
+    **It reads every movement of the transfer's family, a dead shadow's
+    included** (:func:`app.services.transfer_legs.transfer_family_movements`),
+    each booked under its LEG.  A soft-deleted transfer's legs are
+    non-contributing, so their targets are empty and any leg they still hold
+    reverses -- which is what lets the loan lineage probe hand a soft-deleted
+    payment here and get its cash reversed (the E1a review's H2 case); and a
+    movement under a DEAD shadow is no leg's record, so it posts nothing
+    (``purchase_posts``): a shadow deleted around the service (a drift no
+    door writes) has its side's legs reversed while the live side's stay.
 
     Flushes but does not commit (the caller owns the transaction).
 
@@ -259,8 +265,9 @@ def reverse_transfer_postings_before_delete(xfer: Transfer) -> None:
     postings already at zero, and a pair whose shadows were flagged without
     this reversal (Transfer Invariant 4 drift) must still be reversed rather
     than stranded when the hard delete SET-NULLs the movement link.  So it
-    reads every covering movement of EVERY shadow of *xfer*, deleted or not,
-    and reverses each (``posted=False``), plus the legacy one-entry source.
+    reads every covering movement of *xfer*'s family, a dead shadow's
+    included, and reverses each (``posted=False``), plus the legacy
+    one-entry source.
 
     Idempotent no-op for a transfer that never posted.  Flushes but does not
     commit (the caller owns the transaction).
@@ -272,13 +279,13 @@ def reverse_transfer_postings_before_delete(xfer: Transfer) -> None:
     _reconcile_transfer_family(xfer, _never_posts)
 
 
-def _never_posts(_shadow: Transaction, _movement) -> bool:
+def _never_posts(_leg, _movement) -> bool:
     """Return ``False``: the teardown's answer to "does this movement post"."""
     return False
 
 
 def _reconcile_transfer_family(xfer: Transfer, posts) -> "list[JournalEntry]":
-    """Reconcile every movement of every shadow of *xfer*, plus the legacy source.
+    """Reconcile every movement of *xfer*'s family, plus the legacy source.
 
     The one body :func:`sync_transfer_postings` and
     :func:`reverse_transfer_postings_before_delete` share; they differ in
@@ -291,7 +298,7 @@ def _reconcile_transfer_family(xfer: Transfer, posts) -> "list[JournalEntry]":
 
     Args:
         xfer: The transfer whose family to reconcile.
-        posts: ``(shadow, movement) -> bool``, whether the ledger should hold
+        posts: ``(leg, movement) -> bool``, whether the ledger should hold
             the movement's leg.
 
     Returns:
@@ -308,51 +315,20 @@ def _rebook_transfer_family(xfer: Transfer, posts) -> "tuple[list[JournalEntry],
     :func:`_reconcile_transfer_family`'s first half.  The deploy resync runs it
     for every transfer and re-checks the anchors ONCE after its loop (ruling
     **R-BAL103**; :func:`resync_all_cash_postings` says why).  *posts* is
-    ``(shadow, movement) -> bool``; returns ``(entries, accounts)``, the
+    ``(leg, movement) -> bool``; returns ``(entries, accounts)``, the
     emitted deltas (``[]`` at target) and every real account their linked
-    legs can touch.
+    legs can touch.  The family and each movement's LEG are
+    :func:`~app.services.transfer_legs.transfer_family_movements`' (leaf
+    ``X-bi-6-4a``), so no line here reads a shadow row.
     """
-    movements = _transfer_family_movements(xfer)
+    family = transfer_family_movements(xfer)
     entries = reverse_legacy_transfer_entry(xfer)
-    for movement in movements:
-        shadow = movement.transaction
+    for movement, leg in family:
         entries.extend(
-            emit_purchase_deltas(
-                movement, shadow, posted=posts(shadow, movement),
-            )
+            emit_purchase_deltas(movement, leg, posted=posts(leg, movement))
         )
-    return entries, _transfer_family_accounts(xfer, movements)
-
-
-def _transfer_family_movements(xfer: Transfer) -> "list[TransactionEntry]":
-    """Return every covering movement of EVERY shadow of *xfer*, parent loaded.
-
-    Deleted shadows included, deliberately, and that is why this is not the
-    grid's :func:`~app.services.transfer_legs.covering_movements_by_leg`
-    (which answers a LEG's record and so reads live shadows alone): the
-    ledger must reverse what a dead pair still holds -- an idempotent hard
-    delete of an already soft-deleted pair must find nothing left, a pair
-    whose shadows were flagged without the reversal (Transfer Invariant 4
-    drift) must still reverse rather than strand its legs when the hard
-    delete SET-NULLs the movement link, and a pair soft-deleted and rebuilt
-    holds a dead pair beside the live one.  Each movement's parent is loaded
-    in the same statement (:func:`~app.services.cash_ledger.movements_with_parents`,
-    the ONE join of a movement to its parent), so the loop reads no
-    relationship lazily.  Ordered by id so a run's entries are deterministic.
-
-    Args:
-        xfer: The transfer.
-
-    Returns:
-        The movements, ascending by id.
-    """
-    return (
-        movements_with_parents(
-            Transaction.transfer_id == xfer.id,
-            TransactionEntry.covers_settlement.is_(True),
-        )
-        .order_by(TransactionEntry.id)
-        .all()
+    return entries, _transfer_family_accounts(
+        xfer, [movement for movement, _leg in family],
     )
 
 
@@ -441,7 +417,9 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
     A transfer shadow (``transfer_id`` set) is a row like any other here since
     plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**): its own TRANSACTION
     source target is empty as every row's is, and its covering movement posts
-    through the movement writer against the owner's transit account.  The
+    through the movement writer against the owner's transit account, under
+    its transfer LEG since leaf ``X-bi-6-4a`` -- every movement's parent is
+    :func:`~app.services.transfer_legs.movement_parent`'s answer.  The
     guard that returned ``[]`` for a shadow (ruling **R-BAL45**'s interval)
     is gone with the interval, so a door that reaches a shadow's family
     reconciles it rather than skipping it; the pair's own door,
@@ -484,9 +462,10 @@ def _rebook_transaction_family(txn: Transaction) -> "list[JournalEntry]":
     """
     entries = _emit_transaction_deltas(txn)
     for purchase in txn.entries:
+        parent = movement_parent(purchase)
         entries.extend(
             emit_purchase_deltas(
-                purchase, txn, posted=purchase_posts(txn, purchase),
+                purchase, parent, posted=purchase_posts(parent, purchase),
             )
         )
     return entries
@@ -528,7 +507,14 @@ def _emit_transaction_deltas(txn: Transaction) -> "list[JournalEntry]":
     touched, or one already brought to zero, emits nothing.
 
     Args:
-        txn: The transaction (already known not to be a transfer shadow).
+        txn: The transaction, a transfer shadow included (whose TRANSACTION
+            source the sync skipped from its first version to plan step
+            ``balance:X-bi-6-3`` and whose target is empty since: 0 such
+            entries on the 2026-09-22 17:06 production dump).  The kind a
+            reversal would stamp is the ROW's type since leaf ``X-bi-6-4a``
+            (``transfer`` before, when the dispatch read the shadow's
+            column); with nothing ever posted to this source for a shadow,
+            no entry can carry either.
 
     Returns:
         The emitted reversal entries; ``[]`` when the ledger holds nothing
@@ -563,15 +549,16 @@ def reverse_purchase_postings_before_delete(entry) -> None:
             movement the seam withdraws.  Must still be flushed
             (``entry.id`` set) so the reversal can read its posted legs back.
     """
-    txn = entry.transaction
-    # A shadow's covering movement posts against the transit account since
+    # A transfer's covering movement posts against the transit account since
     # plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**), so its withdrawal
-    # -- a ``$0.00`` record landing on a settled leg, the seam's delete arm --
-    # reverses here like any movement's; the guard that returned for a shadow
+    # -- a ``$0.00`` record landing on a settled leg, the seam's delete arm,
+    # or the pair's hard delete -- reverses here like any movement's, typed
+    # by its LEG (leaf ``X-bi-6-4a``); the guard that returned for a shadow
     # (ruling **R-BAL45**'s interval) is gone with the interval.
-    entries = emit_purchase_deltas(entry, txn, posted=False)
+    parent = movement_parent(entry)
+    entries = emit_purchase_deltas(entry, parent, posted=False)
     _self_heal_account_anchor_corrections(
-        (entry.account_id,), txn.scenario_id, entries,
+        (entry.account_id,), parent.scenario_id, entries,
     )
 
 
@@ -593,8 +580,10 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     :func:`reverse_transfer_postings_before_delete`, which
     ``transfer_service.delete_transfer`` runs first for the same reason.  A
     transfer shadow reaching here (``transfer_id`` set) is reversed like any
-    row since plan step ``balance:X-bi-6-3``; the guard that returned for one
-    (ruling **R-BAL45**'s interval) is gone with the interval.
+    row since plan step ``balance:X-bi-6-3``, its movement typed by its
+    transfer LEG since leaf ``X-bi-6-4a`` (``transfer_legs.movement_parent``);
+    the guard that returned for one (ruling **R-BAL45**'s interval) is gone
+    with the interval.
 
     **It is NOT :func:`sync_transaction_postings`, and since plan step X-f3b
     it cannot be.**  That reconcile leaves a DATED movement posted whatever
@@ -620,7 +609,11 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     """
     entries = _emit_transaction_deltas(txn)
     for purchase in txn.entries:
-        entries.extend(emit_purchase_deltas(purchase, txn, posted=False))
+        entries.extend(
+            emit_purchase_deltas(
+                purchase, movement_parent(purchase), posted=False,
+            )
+        )
     _self_heal_account_anchor_corrections(
         _family_accounts(txn), txn.scenario_id, entries,
     )
@@ -884,7 +877,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
                     Transfer.is_deleted.is_(False),
                     db.or_(
                         Transfer.status_id.in_(settled_ids),
-                        dated_transfer_movement_exists_clause(),
+                        dated_leg_exists_clause(),
                     ),
                 ),
                 # Or carrying ANY entry of the legacy one-entry ``transfer``

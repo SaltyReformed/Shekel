@@ -682,39 +682,6 @@ def coverage_for(account_id: int) -> StatementCoverage:
     return statement_coverage(cash_anchor_facts(account_id))
 
 
-def movements_with_parents(*filters):
-    """Return the query of movements joined to their parent rows, unexecuted.
-
-    **The ONE join of a movement to the row it records money for**, with the
-    parent riding along through ``contains_eager`` on the join that already
-    scopes the query, so no movement costs a second SELECT for its direction,
-    budget column, type or (for a transfer shadow) its transfer.  Two
-    readers build on it since plan step ``balance:X-bi-6-3``: the fold's
-    account-scoped stream (:func:`_movements_of`) and the posting writer's
-    transfer-family loader (``posting_service._transfer_family_movements``),
-    which the cross-file ``duplicate-code`` gate measured as the same five
-    lines when the second arrived -- the shape is the join, and a join stated
-    twice is two places a movement's parent could come to be reached
-    differently.  A LOADER, not a producer: it selects rows and returns them
-    unchanged (the fence ruling ``settled_cash_facts`` carries).
-
-    Args:
-        *filters: The caller's clauses over ``TransactionEntry`` and the
-            joined ``Transaction``.
-
-    Returns:
-        A SQLAlchemy ``Query`` over :class:`~app.models.transaction_entry.
-        TransactionEntry`, each row's ``.transaction`` populated -- built,
-        not executed, so the caller orders and runs it.
-    """
-    return (
-        db.session.query(TransactionEntry)
-        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
-        .options(contains_eager(TransactionEntry.transaction))
-        .filter(*filters)
-    )
-
-
 def _movements_of(account_id: int, scenario_id: int, *narrowing):
     """Return the account's PLAN-ROW movements WITH their parents, scoped once.
 
@@ -753,9 +720,13 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
     envelope is in flight exactly as one against an open envelope is
     (ruling **R-BAL77**).
 
-    The parent rides along through the one join
-    (:func:`movements_with_parents`), so no movement costs a second SELECT
-    for its direction, budget column or type.
+    The parent rides along through ``contains_eager`` on the join that
+    already scopes the query, so no movement costs a second SELECT for its
+    direction, budget column or type.  (It was ``movements_with_parents``,
+    public, from plan step ``balance:X-bi-6-3`` -- the posting writer's
+    transfer-family loader shared the join -- until leaf ``X-bi-6-4a`` moved
+    that loader onto ``transfer_legs``' join, where a transfer movement's
+    parent is its LEG, not its shadow row.)
 
     Args:
         account_id: The account the movements are ON.
@@ -766,14 +737,20 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
         The matching ``TransactionEntry`` rows, each with ``.transaction``
         populated, unordered.
     """
-    return movements_with_parents(
-        TransactionEntry.account_id == account_id,
-        Transaction.scenario_id == scenario_id,
-        balance_contributing_clause(),
-        Transaction.transfer_id.is_(None),
-        TransactionEntry.is_credit.is_(False),
-        *narrowing,
-    ).all()
+    return (
+        db.session.query(TransactionEntry)
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .options(contains_eager(TransactionEntry.transaction))
+        .filter(
+            TransactionEntry.account_id == account_id,
+            Transaction.scenario_id == scenario_id,
+            balance_contributing_clause(),
+            Transaction.transfer_id.is_(None),
+            TransactionEntry.is_credit.is_(False),
+            *narrowing,
+        )
+        .all()
+    )
 
 
 def settled_cash_facts(
