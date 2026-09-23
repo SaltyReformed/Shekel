@@ -171,9 +171,11 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       payment or purchase stops cascading, like its key to the bank line, and the leftover-match
       check `_candidates.act_still_names_a_row` (read by `matched_subjects` and `_undisposed`) is
       deleted, which makes `bank_agreement._lines_on`'s membership read exact (**CC-358**). A
-      migration on `2eabfa596ee0`, its own release after the 4a-2 + 4a-3 release; its entry's own
-      design questions (2026-09-22, extending part (2) to the archive, the object layer and the
-      reset and transfer doors) are filed at its tick. Closes **CC-358**, **CC-363**.
+      migration, `c4a4e7d1b9f2`, written on `2eabfa596ee0` and re-parented at its merge behind the
+      chain as it stands (`764461215480`, 5d's, and `5641f7729b68`, S11-a's), its own release after
+      the 4a-2 + 4a-3 release; its entry's own design questions (2026-09-22, extending part (2) to
+      the archive, the object layer and the reset and transfer doors) are filed at its tick. Closes
+      **CC-358**, **CC-363**.
 - [ ] **CC-5-4a-5** `fix(cards): the panel and carry-forward say what they free first` -- `R-CC76`:
       the two doors that reach the status seam's `$0.00` / purchases withdrawal and undo a statement
       match with no caption (**CC-364**) name the bank lines they would free BEFORE the press, from
@@ -219,8 +221,8 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
   - [x] **CC-5-5d** `8f8b056d` -- a goal on a DEBT is a milestone to get under (`R-CC69`..`R-CC73`):
         ONE goal door, `savings_goal_door.judge_goal_save` (`R-CC87`, `R-CC90`, `R-CC93`); every
-        debt figure by the tile's one rule, `_tile.tile_balance_on` (`R-CC88`, `R-CC95`), a
-        card-style goal's start recorded as `start_owed` (`R-CC91`); a Delete goal button
+        debt figure by the tile's one rule, `_tile.tile_balance_on` (`R-CC88`, `R-CC95`, `R-CC97`),
+        a card-style goal's start recorded as `start_owed` (`R-CC91`); a Delete goal button
         (`R-CC94`); migration `764461215480`. Rule-5 re-expressions confirmed; closed **CC-360**,
         **CC-371**; suite 15368/0.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
