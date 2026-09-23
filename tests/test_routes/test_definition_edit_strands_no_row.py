@@ -261,6 +261,46 @@ class TestATransactionDefinitionsEditIsRefused:
             assert _live_row_answering(saved, scheduled).name == "Water"
 
 
+    def test_a_DAY_change_whose_new_occurrence_falls_inside_the_books_is_saved(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling R-PC92, and the key the refusal pairs a row by (round 2's M-A).
+
+        A monthly bill two days into the current paycheck, on books opening
+        that paycheck's first day: its row is outside them.  Moving its day
+        ONTO the opening makes a new occurrence (R-R49 / R-R19): the save
+        retires the old row, and the books stop the replacement -- "Allow it,
+        as today".  The refusal matches a row to the occurrence it ANSWERS
+        (``occurs_on``); pairing by paycheck instead, the inference R-PC92
+        rejected, would read the old row as the dropped occurrence's and
+        refuse the save.
+        """
+        with app.app_context():
+            books = seed_periods_today[4].start_date
+            scheduled = books + 2 * _ONE_DAY
+            account = _account_opened_on(seed_user, "Rent account", books)
+            template = _transaction_template_with_rows(
+                seed_user, "Rent", account_id=account.id, cadence=MONTHLY,
+                starts_on=scheduled,
+            )
+            old_row = _live_row_answering(template, scheduled)
+            assert old_row.pay_period_id == seed_periods_today[4].id, (
+                "precondition: the row sits in the paycheck the books open in"
+            )
+            payload = _transaction_update_payload(
+                template, unit=RecurrenceUnitEnum.MONTH,
+            )
+            payload.update(cadence_payload(
+                unit=RecurrenceUnitEnum.MONTH, starts_on=books,
+            ))
+
+            resp = auth_client.post(f"/templates/{template.id}", data=payload)
+
+            assert resp.status_code == 302
+            saved = _reload(TransactionTemplate, template.id)
+            assert saved.recurrence_rule.starts_on == books
+
+
 @pytest.mark.usefixtures("seed_periods_today")
 class TestATransferDefinitionsEditIsRefused:
     """The transfer-template edit door: the later of its two books binds."""

@@ -12,7 +12,9 @@ collapsed -- and it is not restated here.  ``_occurrence`` keeps the WALK
 it yields onto the period a row lives in: the two searches a placement names
 (:func:`_searches`), :func:`place`, and the two compositions every reader
 takes (:func:`occurrence_placements` over the SAVED schedule,
-:func:`projected_occurrence_placements` over the owner's projected rhythm).
+:func:`projected_occurrence_placements` over the owner's projected rhythm),
+beside the saved walk split by the definition's books
+(:func:`occurrence_walk`, plan step ``pay_calendar:C18-a``).
 
 **The dependency runs ONE way**: this module imports the walk and nothing in
 :mod:`._occurrence` imports this.
@@ -20,7 +22,7 @@ takes (:func:`occurrence_placements` over the SAVED schedule,
 Pure: no Flask, no ORM, no clock, no database.
 """
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 
 from app.enums import PeriodPlacementEnum
@@ -62,6 +64,33 @@ class OccurrencePlacement:
 
     occurrence: date
     period: DerivedPeriod | None
+
+
+@dataclass(frozen=True)
+class BooksWalk:
+    """One saved walk of a recurrence, split by where its definition's books open.
+
+    **The books decide which occurrences become rows, never when the rule
+    ends** (plan step ``pay_calendar:C18-a``, ruling **R-PC94**).  The walk
+    spends a count bound on every occurrence it names, one on or before the
+    books included, because that occurrence HAPPENED -- its money is inside
+    the opening balance.  So a closing judged on :attr:`kept` alone never saw
+    an "after N times" rule finish once the books dropped one of its N, and
+    the rule stayed in the monthly totals for good.  The closing reads both
+    halves (:meth:`~._reading.RuleReading.bound_reading`), which together
+    are every occurrence the rule names through the horizon -- the set it
+    read before the books bound existed.
+
+    Attributes:
+        kept: The occurrences whose rows land where the app keeps books,
+            what :func:`occurrence_placements` answers.
+        below_the_books: The ones the books drop, what
+            :func:`placements_below_the_books` answers.  Both halves are
+            ascending by date and disjoint.
+    """
+
+    kept: tuple[OccurrencePlacement, ...]
+    below_the_books: tuple[OccurrencePlacement, ...]
 
 
 def _searches(
@@ -215,16 +244,14 @@ def _placements(
     *,
     through: date | None,
 ) -> tuple[OccurrencePlacement, ...]:
-    """Walk *resolved* through *through* and place each occurrence with *search*.
+    """Walk *resolved* through *through*, place each occurrence, keep the books' half.
 
     The one composition behind :func:`occurrence_placements` and
     :func:`projected_occurrence_placements`, which differ only in the search
-    they hand in.  Refuses before the empty-schedule short-circuit, so both
-    callers refuse exactly what :func:`occurrences` and :func:`place` refuse.
-    **The books bound is applied HERE and only here** (plan step
-    ``pay_calendar:C18-a``, ruling **R-PC85**), so the two walks -- the saved
-    one generation and the screens read, the projected one the loan estimate
-    prices -- cannot disagree about which occurrences precede the books.
+    they hand in: :func:`_by_the_books`' ``kept`` half of :func:`_walk`, so
+    the two walks -- the saved one generation and the screens read, the
+    projected one the loan estimate prices -- cannot disagree about which
+    occurrences precede the books.
 
     Args:
         resolved: The recurrence's two-axis meaning.
@@ -237,19 +264,71 @@ def _placements(
         One :class:`OccurrencePlacement` per occurrence the books admit,
         ascending by date.
     """
+    return _by_the_books(
+        resolved, _walk(resolved, calendar, search, through=through),
+    ).kept
+
+
+def _walk(
+    resolved: ResolvedRecurrence,
+    calendar: PayCalendar,
+    search: "Callable[[date], DerivedPeriod | None]",
+    *,
+    through: date | None,
+) -> tuple[OccurrencePlacement, ...]:
+    """Return every occurrence *resolved* NAMES through *through*, placed with *search*.
+
+    Before the books: the closing and a count bound are applied by
+    :func:`occurrences`, the books by :func:`_by_the_books` over this.
+    Refuses before the empty-schedule short-circuit, so every caller refuses
+    exactly what :func:`occurrences` and :func:`place` refuse.
+
+    Args:
+        resolved: The recurrence's two-axis meaning.
+        calendar: The owner's pay-period schedule.
+        search: The placement search, saved or projecting.
+        through: The last day to generate through; ``None`` means the saved
+            schedule's horizon.
+
+    Returns:
+        One :class:`OccurrencePlacement` per named occurrence, ascending by
+        date; empty for a schedule with no periods.
+    """
     _require_generable(resolved)
     horizon = calendar.horizon()
     if horizon is None:
         return ()
     window_end = horizon if through is None else through
-    placed = (
+    return tuple(
         OccurrencePlacement(occurrence=occurrence, period=search(occurrence))
         for occurrence in occurrences(resolved, calendar, through=window_end)
     )
-    return tuple(
-        placement for placement in placed
-        if _lands_inside_the_books(resolved, placement)
-    )
+
+
+def _by_the_books(
+    resolved: ResolvedRecurrence, named: tuple[OccurrencePlacement, ...],
+) -> BooksWalk:
+    """Split *named* by :func:`_lands_inside_the_books`.
+
+    **The books bound is applied HERE and only here** (plan step
+    ``pay_calendar:C18-a``, ruling **R-PC85**): every walk that keeps rows
+    and every question about what the books drop is one of these two halves.
+
+    Args:
+        resolved: The recurrence, carrying its books floor.
+        named: Every occurrence it names, placed (:func:`_walk`).
+
+    Returns:
+        The :class:`BooksWalk`, each half in *named*'s order.
+    """
+    kept = []
+    below_the_books = []
+    for placement in named:
+        if _lands_inside_the_books(resolved, placement):
+            kept.append(placement)
+        else:
+            below_the_books.append(placement)
+    return BooksWalk(kept=tuple(kept), below_the_books=tuple(below_the_books))
 
 
 def _lands_inside_the_books(
@@ -257,16 +336,17 @@ def _lands_inside_the_books(
 ) -> bool:
     """Return whether *placement*'s row would land where the app keeps books.
 
-    **The books bound, applied in the ONE composition both walks share**
-    (plan step ``pay_calendar:C18-a``, rulings **R-PC85** and **R-PC86**).  A
-    rule says when it fires; the ACCOUNT says where the app keeps books, and
-    money on or before an account's opening day is already inside its opening
-    equity (ruling **R-HG**).  So an occurrence whose row would land on or
-    before :attr:`~._resolution.ResolvedRecurrence.books_opened_on` -- the
-    latest opening across every account the definition moves money in -- is
-    not an occurrence the app models, and neither walk names it: generation
-    cannot write it, the loan estimate cannot price it, and a screen cannot
-    list it.  Until this bound, the owner's first payday stood in for it,
+    **The books bound, applied by :func:`_by_the_books` alone** (plan step
+    ``pay_calendar:C18-a``, rulings **R-PC85** and **R-PC86**).  A rule says
+    when it fires; the ACCOUNT says where the app keeps books, and money on
+    or before an account's opening day is already inside its opening equity
+    (ruling **R-HG**).  So an occurrence whose row would land on or before
+    :attr:`~._resolution.ResolvedRecurrence.books_opened_on` -- the latest
+    opening across every account the definition moves money in -- is not a
+    ROW the app models, and neither walk keeps it: generation cannot write
+    it, the loan estimate cannot price it, and a screen cannot list it.  The
+    rule's CLOSING still counts it (ruling **R-PC94**, :class:`BooksWalk`):
+    it happened.  Until this bound, the owner's first payday stood in for it,
     because an occurrence with no paycheck is skipped; a paycheck recorded
     below the books let the rules fill it, measured on a production clone at
     ``$531.94`` + ``$100.00`` dated before Checking's opening.
@@ -283,8 +363,8 @@ def _lands_inside_the_books(
     :func:`~app.utils.books_boundary.books_hold`.  The doors that refuse to
     strand a still-projected row below the books
     (``app.services.planned_rows_books``) ask :func:`placements_below_the_books`,
-    which is THIS predicate's complement over the same walk with the floor
-    lifted -- so each refuses exactly the occurrences this stops naming.
+    the other half of the same split -- so each refuses exactly the
+    occurrences this stops keeping.
 
     **An UNPLACED occurrence is kept**, because it has no row day to compare
     and no row: ``period`` is ``None`` only below the owner's first payday
@@ -314,12 +394,11 @@ def placements_below_the_books(
     """Return the occurrences the books drop from *resolved*'s saved walk.
 
     **What the books bound removes, asked of the walk itself** (plan step
-    ``pay_calendar:C18-a``, rulings **R-PC88**, **R-PC90** and **R-PC91**).
-    :func:`occurrence_placements` over the same value with its floor lifted,
-    less every placement :func:`_lands_inside_the_books` keeps: so these are
-    exactly the occurrences the rule still names that the walk stops naming
-    because of the books -- ONE walk, ONE comparison, and no second spelling
-    of either.  The maintain pass matches a row to the occurrence it answers
+    ``pay_calendar:C18-a``, rulings **R-PC88**, **R-PC90** and **R-PC91**):
+    :func:`occurrence_walk`'s ``below_the_books`` half, so these are exactly
+    the occurrences the rule still names that the walk stops keeping because
+    of the books -- ONE walk, ONE comparison, and no second spelling of
+    either.  The maintain pass matches a row to the occurrence it answers
     (``occurs_on``), so a live row answering one of these is a row the next
     pass to reach it retires, and the doors that refuse to strand an unpaid
     row ask this rather than reading the row's stored due day, which the
@@ -327,8 +406,7 @@ def placements_below_the_books(
     bill's cash day onto its scheduled day, inside the books).
 
     The closing is kept as *resolved* carries it, so an occurrence the
-    closing stops is in neither walk and never reported here: the books are
-    the only thing the two walks differ by.
+    closing stops is named by neither half and never reported here.
 
     Args:
         resolved: The recurrence, carrying its books floor
@@ -346,12 +424,38 @@ def placements_below_the_books(
     """
     if resolved.books_opened_on is None:
         return ()
-    unbounded = occurrence_placements(
-        replace(resolved, books_opened_on=None), calendar,
-    )
-    return tuple(
-        placement for placement in unbounded
-        if not _lands_inside_the_books(resolved, placement)
+    return occurrence_walk(resolved, calendar).below_the_books
+
+
+def occurrence_walk(
+    resolved: ResolvedRecurrence, calendar: PayCalendar,
+) -> BooksWalk:
+    """Return *resolved*'s SAVED walk through the horizon, split by its books.
+
+    One walk for a reader that needs both halves: the read pass's memo
+    (``BalanceContext.placements_of``), whose rule reading keeps the rows'
+    half and hands the closing both (ruling **R-PC94**, :class:`BooksWalk`).
+    Its ``kept`` half is :func:`occurrence_placements`' answer for the same
+    inputs, and its ``below_the_books`` half
+    :func:`placements_below_the_books`'.
+
+    Args:
+        resolved: The recurrence, carrying its books floor.
+        calendar: The owner's pay-period schedule.
+
+    Returns:
+        The :class:`BooksWalk`; both halves empty for a schedule with no
+        periods.
+
+    Raises:
+        RecurrenceGenerationError: See :func:`occurrence_placements`.
+    """
+    return _by_the_books(
+        resolved,
+        _walk(
+            resolved, calendar, _placement_search(calendar, resolved.placement),
+            through=None,
+        ),
     )
 
 
@@ -411,8 +515,10 @@ def projected_occurrence_placements(
 
 
 __all__ = [
+    "BooksWalk",
     "OccurrencePlacement",
     "occurrence_placements",
+    "occurrence_walk",
     "place",
     "placements_below_the_books",
     "projected_occurrence_placements",

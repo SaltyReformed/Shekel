@@ -112,8 +112,15 @@ class RuleReading:
             owner has no pay periods -- see :func:`resolved_recurrence` for why
             that one refusal is answered rather than raised.
         placements: Every ``(occurrence, pay period)`` pair the rule names
-            through the schedule's horizon; empty when *resolved* is ``None``,
-            because a schedule with no periods can host nothing.
+            through the schedule's horizon whose row lands where the app keeps
+            books (plan step ``pay_calendar:C18-a``); empty when *resolved* is
+            ``None``, because a schedule with no periods can host nothing.
+        below_the_books: The pairs the rule names that its books drop
+            (:attr:`~app.services.recurrence.BooksWalk.below_the_books`) --
+            never rows, read by :meth:`bound_reading` alone, because an
+            occurrence inside the opening still HAPPENED and a count bound
+            spends it (ruling **R-PC94**).  Empty by default: a reading with
+            no books floor drops nothing.
         horizon: The last day the schedule the walk ran against reaches
             (:meth:`~app.services.pay_calendar.PayCalendar.horizon`), or
             ``None`` when it holds no pay periods.  **The fact that tells a
@@ -134,6 +141,7 @@ class RuleReading:
     resolved: ResolvedRecurrence | None
     placements: tuple[OccurrencePlacement, ...]
     horizon: date | None
+    below_the_books: tuple[OccurrencePlacement, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a value whose halves disagree.
@@ -142,27 +150,30 @@ class RuleReading:
         without a meaning is a value that contradicts itself; and a walk that
         placed anything ran against a schedule that reaches somewhere, so
         placements with no horizon is one too
-        (``_placement._placements`` answers ``()`` before it walks when the
-        horizon is ``None``).  Checks rather than docstring guarantees, for
-        the reason :class:`~app.services.recurrence.OccurrencePlacement`
-        records in its own: this project has been burned by an invariant the
-        generated ``__init__`` did not enforce.
+        (``_placement._walk`` answers ``()`` before it walks when the
+        horizon is ``None``).  Both counts are over EVERY placement the
+        reading carries, the books' dropped half included.  Checks rather
+        than docstring guarantees, for the reason
+        :class:`~app.services.recurrence.OccurrencePlacement` records in its
+        own: this project has been burned by an invariant the generated
+        ``__init__`` did not enforce.
 
         Raises:
             RecurrenceResolutionError: When there are placements but no
                 resolved meaning, or placements but no horizon.
         """
-        if self.resolved is None and self.placements:
+        named = len(self.placements) + len(self.below_the_books)
+        if self.resolved is None and named:
             raise RecurrenceResolutionError(
-                f"a rule reading carries {len(self.placements)} placement(s) "
+                f"a rule reading carries {named} placement(s) "
                 f"with no resolved meaning.  A recurrence that could not be "
                 f"resolved names no occurrence, so the pair disagrees with "
                 f"itself and a caller filtering on one field would read the "
                 f"other."
             )
-        if self.horizon is None and self.placements:
+        if self.horizon is None and named:
             raise RecurrenceResolutionError(
-                f"a rule reading carries {len(self.placements)} placement(s) "
+                f"a rule reading carries {named} placement(s) "
                 f"with no horizon.  A walk places nothing on a schedule that "
                 f"reaches nowhere, so the placements were walked against some "
                 f"other schedule than the one this value claims."
@@ -178,6 +189,11 @@ class RuleReading:
         so the two facts a :class:`~app.services.recurrence.BoundReading`
         pairs are read off ONE value and cannot be paired from two.
 
+        **Every occurrence the rule names, the ones its books drop included**
+        (ruling **R-PC94**): the books decide which occurrences become rows,
+        never when the rule ends, so an "after N times" rule whose first
+        occurrence falls inside the opening still finishes on its Nth.
+
         Returns:
             The :class:`~app.services.recurrence.BoundReading` -- empty
             occurrences and a ``None`` horizon for a reading of an owner with
@@ -185,9 +201,10 @@ class RuleReading:
             (see :class:`~app.services.recurrence.BoundReading`).
         """
         return BoundReading(
-            occurrences=tuple(
-                placement.occurrence for placement in self.placements
-            ),
+            occurrences=tuple(sorted(
+                placement.occurrence
+                for placement in (*self.placements, *self.below_the_books)
+            )),
             horizon=self.horizon,
         )
 
@@ -802,7 +819,8 @@ def has_ended(
     door (measured on dev ``950f661a``: a loan payment with a synced column
     resolved twice per render, once with the column NULL).  The caller's
     placements ARE the walk the shapes need (every occurrence through the
-    schedule's horizon, emitted under the composed closing), so the
+    schedule's horizon, emitted under the composed closing -- the half its
+    books keep beside the half they drop, ruling **R-PC94**), so the
     :class:`~app.services.recurrence.BoundReading` is built from them and a
     definition read once is walked once (``CLAUDE.md`` rule 14, ONE WALK).
     *Read once* was the caller's part until plan step R7d-f-2: the Recurring
@@ -838,9 +856,11 @@ def has_ended(
             (:func:`~app.services.recurrence.end_bound_from_columns`), reached
             directly because there is no resolved value to carry it.
         reading: The definition read through the composed door.  Its
-            ``resolved`` carries the closing; its ``placements`` are every
-            occurrence the definition names through the schedule's horizon,
-            and its ``horizon`` is that horizon -- the fact that tells a
+            ``resolved`` carries the closing; its ``placements`` and
+            ``below_the_books`` are every occurrence the definition names
+            through the schedule's horizon, the books' dropped half included
+            (ruling **R-PC94**), and its ``horizon`` is that horizon -- the
+            fact that tells a
             finished definition from an unextended schedule, read off the
             reading through :meth:`RuleReading.bound_reading`.
         on: The day being asked about, normally today.

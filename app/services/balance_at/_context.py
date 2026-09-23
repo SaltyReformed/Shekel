@@ -70,10 +70,10 @@ from app.services.loan_ledger import (
 )
 from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.recurrence import (
-    OccurrencePlacement,
+    BooksWalk,
     RecurrenceSpec,
     ResolvedRecurrence,
-    occurrence_placements,
+    occurrence_walk,
     recurrence_spec,
 )
 from app.services.scenario_resolver import get_baseline_scenario
@@ -290,7 +290,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         _placements: The pass's occurrence-walk memo, keyed by the COMPOSED
             resolved recurrence the walk is a function of (see
             :meth:`placements_of`).  Private for the reason ``_recurrences``
-            is; every stored value is a tuple, and an empty one is a
+            is; every stored value is a ``BooksWalk``, and empty halves are a
             legitimate answer (a definition its destination closed before it
             ever fires), so membership rather than truthiness is the test.
         _books_opened_on: ``account_id -> governing opened_on`` (plan step
@@ -331,8 +331,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     _recurrences: (
         "dict[tuple[RecurrenceSpec, DefinitionBooks], ResolvedRecurrence | None]"
     ) = field(default_factory=dict, repr=False, compare=False)
-    _placements: "dict[ResolvedRecurrence, tuple[OccurrencePlacement, ...]]" = (
-        field(default_factory=dict, repr=False, compare=False)
+    _placements: "dict[ResolvedRecurrence, BooksWalk]" = field(
+        default_factory=dict, repr=False, compare=False,
     )
     _paycheck_pricing: "dict[int, PaycheckPricing]" = field(
         default_factory=dict, repr=False, compare=False,
@@ -771,10 +771,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             )
         return self._recurrences[key]
 
-    def placements_of(
-        self, resolved: ResolvedRecurrence,
-    ) -> tuple[OccurrencePlacement, ...]:
-        """Return every occurrence *resolved* names on this owner's calendar, walking once.
+    def placements_of(self, resolved: ResolvedRecurrence) -> BooksWalk:
+        """Return every occurrence *resolved* names, split by its books, walking once.
 
         The memo that collapses a read pass's N walks of one resolved
         recurrence to one, and the other half of what
@@ -801,8 +799,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         measured one memo over.
 
         **Through the saved horizon and no further**: this is
-        :func:`~app.services.recurrence.occurrence_placements` with its
-        default window, the walk the display readers and generation take.
+        :func:`~app.services.recurrence.occurrence_walk`, whose ``kept`` half
+        is the walk the display readers and generation take and whose other
+        half the closing also counts (plan step ``pay_calendar:C18-a``, ruling
+        **R-PC94**: the books decide which occurrences become rows, never when
+        the rule ends).
         The seam's ESTIMATED loan tier walks PAST the horizon
         (``projected_occurrence_placements``, ``through=``) and is a different
         function of different inputs; it is not memoised here.
@@ -816,8 +817,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 :meth:`resolved_for`, never the bare ``resolved_spec``.
 
         Returns:
-            One :class:`~app.services.recurrence.OccurrencePlacement` per
-            occurrence through the calendar's horizon, ascending; empty for a
+            The :class:`~app.services.recurrence.BooksWalk` through the
+            calendar's horizon, each half ascending; both empty for a
             definition its composed closing admits nothing of.
 
         Raises:
@@ -827,7 +828,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 call rather than being swallowed after the first.
         """
         if resolved not in self._placements:
-            self._placements[resolved] = occurrence_placements(
+            self._placements[resolved] = occurrence_walk(
                 resolved, self.calendar(),
             )
         return self._placements[resolved]

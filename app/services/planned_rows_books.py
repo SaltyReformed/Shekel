@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- A still-projected recurring row is never stranded below the books
+Shekel Budget App -- No books move or definition edit strands an unpaid recurring row
 
 Plan step ``pay_calendar:C18-a``.  A recurring definition's occurrences start
 above the books of every account it moves money in (ruling **R-PC85**), and
@@ -25,6 +25,21 @@ stays owed -- and the doors refuse the save until they have:
   :func:`definition_edit_refusal`, asked by the transaction- and
   transfer-template edit routes AFTER the edit is applied, so it reads the
   state the save would leave.
+
+**An ARCHIVED definition's hidden rows count** (ruling **R-PC93**, developer
+2026-09-23).  Archiving hides a definition's still-Projected rows and
+unarchiving brings them back, so a books move made while it was archived used
+to see nothing to strand -- and the unarchive then restored rows inside the
+opening, a transfer's deleting the current paycheck's row in its maintain
+pass (the round-2 review's H-B).  Both doors now count, for an archived
+definition, the rows its unarchive would restore
+(:func:`~app.services.definition_unarchive.rows_an_unarchive_restores`, the
+scope the unarchive routes restore by), and the refusal names such a row as
+the archived definition's with the remedy that reaches it: unarchive it first,
+or delete the definition for good.  So no unarchive can restore a row below
+the books, and it needs no check of its own.  **One way back is not covered**:
+the conflict chooser's "use the template" un-deletes a row its owner deleted
+without asking the walk (ledger row **REC-535**, the recurrence arc's).
 
 **The WALK decides, never a stored day** (the adversarial review of this
 step, finding H1).  :func:`first_row_below_the_books` asks
@@ -57,7 +72,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
@@ -65,7 +80,12 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services.balance_at import definition_books, resolved_with_books
+from app.services.balance_at import (
+    definition_books,
+    money_account_columns,
+    resolved_with_books,
+)
+from app.services.definition_unarchive import rows_an_unarchive_restores
 from app.services.pay_calendar import PayCalendar
 from app.services.recurrence import (
     ResolvedRecurrence,
@@ -78,7 +98,7 @@ from app.utils.balance_predicates import is_projected_clause
 
 @dataclass(frozen=True)
 class StrandedRow:
-    """A live, still-projected recurring row a save would leave below the books.
+    """A still-projected recurring row a save would leave below the books.
 
     Attributes:
         name: The row's name, for the refusal.
@@ -88,11 +108,15 @@ class StrandedRow:
         is_envelope: Whether *books_day* is the row's paycheck's last day
             (an envelope) rather than its due day, which is what the refusal
             has to say to be true.
+        is_hidden: Whether the row is hidden by its definition's archive --
+            one its unarchive would bring back (ruling **R-PC93**) -- which
+            the owner cannot see, let alone mark paid, until they unarchive.
     """
 
     name: str
     books_day: date
     is_envelope: bool
+    is_hidden: bool = False
 
     def described(self) -> str:
         """Return the row as the refusals name it: its name and the day compared.
@@ -101,50 +125,77 @@ class StrandedRow:
             ``"Rent" is still projected and due 2026-01-01`` for a bill, or
             ``"Groceries" is still projected in the paycheck ending
             2026-09-23`` for an envelope -- the day the owner has to move
-            the row past, in the words ruling **R-PC91** gave it.
+            the row past, in the words ruling **R-PC91** gave it.  A hidden
+            row reads ``"Rent" is archived and still holds an unpaid item due
+            2026-01-01 that unarchiving would bring back``, R-PC93's words.
         """
         where = (
             f"in the paycheck ending {self.books_day.isoformat()}"
             if self.is_envelope
-            else f"and due {self.books_day.isoformat()}"
+            else f"due {self.books_day.isoformat()}"
         )
+        if self.is_hidden:
+            return (
+                f'"{self.name}" is archived and still holds an unpaid item '
+                f"{where} that unarchiving would bring back"
+            )
+        if not self.is_envelope:
+            where = f"and {where}"
         return f'"{self.name}" is still projected {where}'
+
+    def remedy(self) -> str:
+        """Return what the owner does first, the clause every refusal ends on.
+
+        Returns:
+            ``Mark it paid, cancel it or move it later first`` for a live row;
+            for a hidden one, ``Unarchive it and mark it paid, cancel it or
+            move it later, or delete "Rent" for good`` -- the only doors that
+            reach a row the owner cannot see (ruling **R-PC93**).
+        """
+        if self.is_hidden:
+            return (
+                "Unarchive it and mark it paid, cancel it or move it later, "
+                f'or delete "{self.name}" for good'
+            )
+        return "Mark it paid, cancel it or move it later first"
 
 
 @dataclass(frozen=True)
 class DefinitionWalk:
-    """One recurring definition as a save would leave it, and where its rows are.
+    """One recurring definition as a save would leave it.
 
     Attributes:
         resolved: The definition's recurrence, carrying the books floor and
             the envelope flag the save would leave.
-        transactions: SQL criteria selecting the definition's transactions;
-            empty asks none.
-        transfers: The same for its transfers; empty asks none.
+        definition: The
+            :class:`~app.models.transaction_template.TransactionTemplate` or
+            :class:`~app.models.transfer_template.TransferTemplate` itself --
+            whose rows are asked after (:func:`_planned_rows`), whose name a
+            hidden row's refusal gives, and whether it is archived.
     """
 
     resolved: ResolvedRecurrence
-    transactions: tuple = ()
-    transfers: tuple = ()
+    definition: TransactionTemplate | TransferTemplate
 
 
 def first_row_below_the_books(
     calendar: PayCalendar, walks: Iterable[DefinitionWalk],
 ) -> StrandedRow | None:
-    """Return the earliest live, still-projected row whose occurrence the books drop.
+    """Return the earliest planned row whose occurrence the books drop.
 
     **The one question every door refusing to strand a row asks**, over one
     definition (an edit) or every definition moving money in an account (an
     opening restatement): of the occurrences
     :func:`~app.services.recurrence.placements_below_the_books` reports for a
     walk -- those its rule names that its books floor drops -- which does a
-    live row still answer?  A row answers the occurrence in its
+    planned row still answer?  A row answers the occurrence in its
     ``occurs_on``, the key the maintain pass matches by, so the rows found
-    are exactly the ones the pass would stop naming.  Live means not
-    soft-deleted and still Projected, in any scenario (one definition's rule
-    walks the same in every scenario, and an opening is scenario-free,
-    ruling **R-GX**); a settled row is a movement, and the movement rules
-    speak for it.
+    are exactly the ones the pass would stop naming.  Planned means still
+    Projected and either live or, for an archived definition, one its
+    unarchive would bring back (:func:`_planned_rows`, ruling **R-PC93**),
+    in any scenario (one definition's rule walks the same in every scenario,
+    and an opening is scenario-free, ruling **R-GX**); a settled row is a
+    movement, and the movement rules speak for it.
 
     Args:
         calendar: The owner's pay calendar, which every walk places on.
@@ -164,28 +215,83 @@ def first_row_below_the_books(
         }
         if not compared:
             continue
-        for table_order, model, criteria in (
-            (0, Transaction, walk.transactions), (1, Transfer, walk.transfers),
-        ):
-            if not criteria:
-                continue
-            candidates.extend(
-                (compared[occurs_on], table_order, row_id, name, walk.resolved.is_envelope)
-                for row_id, name, occurs_on in (
-                    db.session.query(model.id, model.name, model.occurs_on)
-                    .filter(
-                        *criteria,
-                        model.occurs_on.in_(list(compared)),
-                        model.is_deleted.is_(False),
-                        is_projected_clause(model),
-                    )
-                    .all()
-                )
+        table_order, model, template_fk = _rows_of(walk.definition)
+        candidates.extend(
+            (
+                compared[occurs_on], table_order, row_id, name,
+                walk.resolved.is_envelope, is_deleted, walk.definition.name,
             )
+            for row_id, name, occurs_on, is_deleted in (
+                db.session.query(
+                    model.id, model.name, model.occurs_on, model.is_deleted,
+                )
+                .filter(
+                    *_planned_rows(model, template_fk, walk.definition),
+                    model.occurs_on.in_(list(compared)),
+                )
+                .all()
+            )
+        )
     if not candidates:
         return None
-    books_day, _table_order, _row_id, name, is_envelope = min(candidates)
-    return StrandedRow(name=name, books_day=books_day, is_envelope=is_envelope)
+    (
+        books_day, _table_order, _row_id, name, is_envelope, is_hidden,
+        definition_name,
+    ) = min(candidates)
+    return StrandedRow(
+        name=definition_name if is_hidden else name,
+        books_day=books_day,
+        is_envelope=is_envelope,
+        is_hidden=is_hidden,
+    )
+
+
+def _rows_of(definition) -> tuple:
+    """Return ``(table_order, model, template_fk)`` for *definition*'s rows.
+
+    Args:
+        definition: A transaction or transfer template.
+
+    Returns:
+        ``(0, Transaction, Transaction.template_id)`` or ``(1, Transfer,
+        Transfer.transfer_template_id)`` -- the order ties break in, the row
+        model, and the column naming the row's definition.
+    """
+    if isinstance(definition, TransferTemplate):
+        return 1, Transfer, Transfer.transfer_template_id
+    return 0, Transaction, Transaction.template_id
+
+
+def _planned_rows(model, template_fk, definition) -> tuple:
+    """Return the SQL criteria for *definition*'s rows a books move must not strand.
+
+    Its live, still-Projected rows; and, while it is ARCHIVED, the rows its
+    unarchive would bring back as well (ruling **R-PC93**), read through
+    :func:`~app.services.definition_unarchive.rows_an_unarchive_restores` --
+    the scope both unarchive routes restore by, so this counts exactly what
+    an unarchive could put back below the books.  An ACTIVE definition's
+    soft-deleted rows are its owner's own deletions, which nothing restores
+    but the conflict chooser (ledger row **REC-535**).
+
+    Args:
+        model: ``Transaction`` or ``Transfer``.
+        template_fk: The column naming the row's definition.
+        definition: The definition, whose ``is_active`` says whether it is
+            archived.
+
+    Returns:
+        The criteria, for ``query.filter(*criteria)``.
+    """
+    live = and_(
+        template_fk == definition.id,
+        is_projected_clause(model),
+        model.is_deleted.is_(False),
+    )
+    if definition.is_active:
+        return (live,)
+    return (or_(live, and_(*rows_an_unarchive_restores(
+        model, template_fk, definition.id,
+    ))),)
 
 
 def first_row_an_opening_strands(
@@ -197,10 +303,12 @@ def first_row_an_opening_strands(
     (``opening_service._reject_books_open_on_or_after_planned_rows``) and by
     the books-opening card's date ceiling (``routes/accounts/opening``), so
     the day the card stops at and the row the door names cannot come from two
-    answers.  Every RECURRING definition that moves money in the account is
-    walked with the books it would have if the account opened on *opened_on*
-    -- the later of that day and the definition's OTHER accounts' governing
-    openings (:func:`~app.services.balance_at.definition_books`, the candidate
+    answers.  Every RECURRING definition that moves money in the account --
+    an archived one included, whose hidden rows its unarchive would bring
+    back (ruling **R-PC93**) -- is walked with the books it would have if the
+    account opened on *opened_on*: the later of that day and the
+    definition's OTHER accounts' governing openings
+    (:func:`~app.services.balance_at.definition_books`, the candidate
     standing in for this account's own), composed by the ONE composition
     (:func:`~app.services.balance_at.resolved_with_books`).  Each walk asks
     after the definition's OWN rows, wherever they sit: a row left on an
@@ -223,78 +331,70 @@ def first_row_an_opening_strands(
     Raises:
         RecurrenceResolutionError: A definition's stored rule cannot be
             resolved (:func:`~app.services.recurrence.resolved_spec`).
+        RecurrenceGenerationError: Its resolved value names something the
+            walk cannot place (:func:`~app.services.recurrence
+            .placements_below_the_books`).
     """
-    candidate = {account_id: opened_on}
+    # ONE memo for every definition, holding the candidate: the definitions'
+    # other accounts are read once each, as they stand, and this one as it
+    # would.
+    memo = {account_id: opened_on}
     walks = []
-    for definition, criteria in _recurring_definitions_moving_money_in(account_id):
+    for definition in _recurring_definitions_moving_money_in(account_id):
         resolved = resolved_with_books(
             recurrence_spec(definition.recurrence_rule), calendar,
-            # A fresh memo holding the candidate: the definition's other
-            # accounts are read as they stand, this one as it would.
-            definition_books(definition, dict(candidate)),
+            definition_books(definition, memo),
         )
         if resolved is not None:
-            walks.append(DefinitionWalk(resolved, **criteria))
+            walks.append(DefinitionWalk(resolved, definition))
     return first_row_below_the_books(calendar, walks)
 
 
 def _recurring_definitions_moving_money_in(account_id: int) -> list:
-    """Return ``(definition, criteria)`` for every recurring definition touching *account_id*.
+    """Return every recurring definition moving money in *account_id*.
 
-    A transaction template whose account it is, and a transfer template it is
-    either end of, each carrying a recurrence rule; *criteria* selects that
-    definition's own rows for :class:`DefinitionWalk`.
+    A transaction or transfer template naming the account in any of its
+    money-account columns (:func:`~app.services.balance_at
+    .money_account_columns`, the names the books floor reads off a
+    definition), each carrying a recurrence rule, archived or not.
 
     Args:
         account_id: The account.
 
     Returns:
-        The pairs, transaction templates first, each table by id.
+        The definitions, transaction templates first, each table by id.
     """
-    transaction_definitions = (
-        db.session.query(TransactionTemplate)
-        .join(
-            RecurrenceRule,
-            RecurrenceRule.transaction_template_id == TransactionTemplate.id,
+    definitions = []
+    for model, rule_fk in (
+        (TransactionTemplate, RecurrenceRule.transaction_template_id),
+        (TransferTemplate, RecurrenceRule.transfer_template_id),
+    ):
+        definitions.extend(
+            db.session.query(model)
+            .join(RecurrenceRule, rule_fk == model.id)
+            .filter(or_(*(
+                column == account_id
+                for column in money_account_columns(model)
+            )))
+            .order_by(model.id)
+            .all()
         )
-        .filter(TransactionTemplate.account_id == account_id)
-        .order_by(TransactionTemplate.id)
-        .all()
-    )
-    transfer_definitions = (
-        db.session.query(TransferTemplate)
-        .join(
-            RecurrenceRule,
-            RecurrenceRule.transfer_template_id == TransferTemplate.id,
-        )
-        .filter(or_(
-            TransferTemplate.from_account_id == account_id,
-            TransferTemplate.to_account_id == account_id,
-        ))
-        .order_by(TransferTemplate.id)
-        .all()
-    )
-    return [
-        (definition, {"transactions": (Transaction.template_id == definition.id,)})
-        for definition in transaction_definitions
-    ] + [
-        (definition, {"transfers": (Transfer.transfer_template_id == definition.id,)})
-        for definition in transfer_definitions
-    ]
+    return definitions
 
 
 def definition_edit_refusal(template, ctx) -> str | None:
     """Return why saving *template*'s edit would strand a row, or ``None``.
 
     Rulings **R-PC90** and **R-PC91** (developer, 2026-09-22): a recurring
-    definition's edit is refused when the state it would SAVE leaves a live,
+    definition's edit is refused when the state it would SAVE leaves a
     still-projected row of that definition answering an occurrence the books
     drop -- whatever field changed.  An account moved onto one whose books
     open later, an envelope box unticked (its rows then compare on their due
     day, not their paycheck's last day), a due day cleared (the row's cash
     day moves back onto its scheduled day), or a row that already sat below
     its books: one check, on the saved state, so no field has to be
-    remembered.
+    remembered.  An ARCHIVED definition's edit counts the rows its unarchive
+    would bring back too (ruling **R-PC93**).
 
     **Asked after the edit is applied and before regeneration**, so the
     rule, the floor and the envelope flag are the save's own, all through
@@ -319,12 +419,8 @@ def definition_edit_refusal(template, ctx) -> str | None:
     resolved = resolved_rule_of(template, ctx)
     if resolved is None:
         return None
-    if isinstance(template, TransferTemplate):
-        scope = {"transfers": (Transfer.transfer_template_id == template.id,)}
-    else:
-        scope = {"transactions": (Transaction.template_id == template.id,)}
     row = first_row_below_the_books(
-        ctx.calendar(), (DefinitionWalk(resolved, **scope),),
+        ctx.calendar(), (DefinitionWalk(resolved, template),),
     )
     if row is None:
         return None
@@ -332,8 +428,8 @@ def definition_edit_refusal(template, ctx) -> str | None:
         f"This change cannot be saved: {row.described()}, and the books it "
         f"would move money in open {resolved.books_opened_on.isoformat()}.  "
         "An opening is the balance at the END of its day, so that unpaid item "
-        "would sit inside it and stop being planned.  Mark it paid, cancel it "
-        "or move it later first, then make the change."
+        f"would sit inside it and stop being planned.  {row.remedy()}, then "
+        "make the change."
     )
 
 

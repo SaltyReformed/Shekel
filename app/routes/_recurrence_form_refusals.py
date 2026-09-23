@@ -672,12 +672,14 @@ def refuse_stranding_save(
 
     Rulings **R-PC90** / **R-PC91** (developer, 2026-09-22; plan step
     ``pay_calendar:C18-a``): a recurring definition's edit is refused when
-    the state it would save leaves a live, still-projected row of that
-    definition answering an occurrence its books drop, WHATEVER field
-    changed -- an account moved onto books that open later, the envelope box
-    unticked, a due day cleared -- because a maintain pass reaching that row
-    retires it (the save's own regeneration, for a paycheck ending on or
-    after the edit's effective date; a later pass for an older one).  The
+    the state it would save leaves a still-projected row of that definition
+    answering an occurrence its books drop, WHATEVER field changed -- an
+    account moved onto books that open later, the envelope box unticked, a
+    due day cleared -- because a maintain pass reaching that row retires it
+    (the save's own regeneration, for a paycheck ending on or after the
+    edit's effective date; a later pass for an older one).  An ARCHIVED
+    definition's hidden rows count, since its unarchive brings them back
+    (ruling **R-PC93**).  The
     predicate is :func:`app.services.planned_rows_books
     .definition_edit_refusal`'s; this is the door half both edit doors share
     (``routes/templates/crud.update_template``, and

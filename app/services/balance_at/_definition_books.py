@@ -178,6 +178,29 @@ def definition_money_accounts(definition: object | None) -> tuple[int, ...]:
     )
 
 
+def money_account_columns(model) -> tuple:
+    """Return *model*'s columns naming an account it moves money in.
+
+    The SQL face of :data:`_MONEY_ACCOUNT_ATTRIBUTES`, for a query that finds
+    every definition moving money in an account
+    (``planned_rows_books``): it and :func:`definition_money_accounts`, which
+    reads the same names off one definition, cannot come to disagree about
+    which columns those are (the C18-a round-2 review's L-g).
+
+    Args:
+        model: ``TransactionTemplate`` or ``TransferTemplate``.
+
+    Returns:
+        The columns among the three names *model* carries, in attribute
+        order.
+    """
+    return tuple(
+        getattr(model, name)
+        for name in _MONEY_ACCOUNT_ATTRIBUTES
+        if hasattr(model, name)
+    )
+
+
 def definition_books_opened_on(
     account_ids: tuple[int, ...], memo: "dict[int, date | None]",
 ) -> date | None:

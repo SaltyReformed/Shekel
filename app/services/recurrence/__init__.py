@@ -134,7 +134,9 @@ What lives where
 * ``_placement`` -- the placement half of that model: :class:`OccurrencePlacement`,
   :func:`place` and the two compositions every reader takes, plus
   :func:`placements_below_the_books` (plan step ``pay_calendar:C18-a``), what
-  the books bound drops from the saved one.  Split out of
+  the books bound drops from the saved one, and :func:`occurrence_walk`, the
+  saved walk as its two halves (:class:`BooksWalk`, ruling **R-PC94**: the
+  closing counts both).  Split out of
   ``_occurrence`` at plan step salary:R15-a as a pure move when the ceiling
   took that module past pylint's line ceiling; the model's argument stays in
   ``_occurrence``'s docstring.
@@ -236,8 +238,10 @@ from app.services.recurrence._occurrence import (
     occurrences,
 )
 from app.services.recurrence._placement import (
+    BooksWalk,
     OccurrencePlacement,
     occurrence_placements,
+    occurrence_walk,
     place,
     placements_below_the_books,
     projected_occurrence_placements,
@@ -286,6 +290,7 @@ __all__ = [
     "NEVER_ENDS",
     "UNREADABLE_CADENCE_MESSAGE",
     "AuthorableCadence",
+    "BooksWalk",
     "BoundReading",
     "Cadence",
     "CadenceOption",
@@ -337,6 +342,7 @@ __all__ = [
     "modelled_placement",
     "modelled_unit",
     "occurrence_placements",
+    "occurrence_walk",
     "offerable_nominal_days",
     "occurrences",
     "picker_model",

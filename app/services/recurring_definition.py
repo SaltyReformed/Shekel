@@ -434,7 +434,9 @@ def read_definition(
     hits end to end -- the resolution, the destination's loan state, the
     identity behind ruling R-R56, and the walk.  The reading also carries the
     horizon the walk reached (plan ledger row **N-514**), read off the same
-    calendar the memo walked against.
+    calendar the memo walked against, and the occurrences the definition's
+    books drop, which its closing counts and no row answers (plan step
+    ``pay_calendar:C18-a``, ruling **R-PC94**).
 
     Args:
         template: The recurring definition.  See :func:`resolved_definition`
@@ -456,10 +458,16 @@ def read_definition(
         BaselineMissingError: See :func:`resolved_definition`.
     """
     resolved = resolved_definition(template, ctx)
+    if resolved is None:
+        return RuleReading(
+            resolved=None, placements=(), horizon=ctx.calendar().horizon(),
+        )
+    walk = ctx.placements_of(resolved)
     return RuleReading(
         resolved=resolved,
-        placements=() if resolved is None else ctx.placements_of(resolved),
+        placements=walk.kept,
         horizon=ctx.calendar().horizon(),
+        below_the_books=walk.below_the_books,
     )
 
 

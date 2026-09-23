@@ -33,6 +33,9 @@ What each class covers:
   it empty.
 * :class:`TestGenerationStopsAtTheBooks` -- the regression PC-500 named: a
   pay period below an account's books is filled with nothing for it.
+* :class:`TestTheBooksNeverEndTheRule` -- ruling **R-PC94**: an occurrence the
+  books drop still spends a count bound, so an "after N times" rule ends
+  where it did before the books bound (the round-2 review's H-A).
 """
 from dataclasses import replace
 from datetime import date, timedelta
@@ -43,18 +46,25 @@ from app.enums import RecurrenceUnitEnum, TxnTypeEnum
 from app.extensions import db as _db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import account_service
+from app.services import account_service, obligations_aggregator
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
+    EndsAfterOccurrences,
     RecurrenceSpec,
+    RuleReading,
+    author_rule,
     compute_due_date,
+    has_ended,
     occurrence_placements,
+    occurrence_walk,
     placements_below_the_books,
     projected_occurrence_placements,
     resolve,
 )
 from app.services import recurrence_engine
+from app.services.recurring_definition import read_definition
 from tests._test_helpers import make_cadence_rule, state_template_price
 from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 from tests.test_services.test_recurrence_resolution import build_calendar
@@ -66,16 +76,23 @@ _USER_ID = 1
 _PREPENDED = date(2026, 3, 12)
 
 
-def _monthly(day: date, *, due_day_of_month: int | None = None):
-    """Return a monthly rule's resolved value on the prepended calendar."""
+def _monthly(
+    day: date, *, due_day_of_month: int | None = None, times: int | None = None,
+):
+    """Return a monthly rule's resolved value on the prepended calendar.
+
+    *times* bounds it to that many occurrences; ``None`` never ends.
+    """
+    spec = RecurrenceSpec(
+        user_id=_USER_ID,
+        unit=RecurrenceUnitEnum.MONTH,
+        starts_on=day,
+        due_day_of_month=due_day_of_month,
+    )
+    if times is not None:
+        spec = replace(spec, end_bound=EndsAfterOccurrences(count=times))
     return resolve(
-        RecurrenceSpec(
-            user_id=_USER_ID,
-            unit=RecurrenceUnitEnum.MONTH,
-            starts_on=day,
-            due_day_of_month=due_day_of_month,
-        ),
-        build_calendar(first_payday=_PREPENDED, cadence_days=14, count=12),
+        spec, build_calendar(first_payday=_PREPENDED, cadence_days=14, count=12),
     )
 
 
@@ -669,6 +686,112 @@ class TestTheEnvelopeFlagIsTheDefinitions:
             assert first_due(bill) == seed_periods[4].start_date
 
 
+class TestTheBooksNeverEndTheRule:
+    """Ruling R-PC94: the books decide which occurrences become rows, never when the rule ends.
+
+    The round-2 review's H-A, measured before the fix: a monthly rule "2
+    times" from 2026-01-02 on an account whose books open 2026-01-16 walked
+    only 02-02, and the Recurring screen counted it at ``$120.00`` a month
+    for good where dev counted ``$0.00`` -- the walk spent its count on 01-02
+    while the closing counted only the rows' half.
+    """
+
+    def test_the_split_IS_the_two_public_answers(self):
+        """One walk: its halves are what both public walks answer, and together all of it."""
+        calendar = build_calendar(
+            first_payday=_PREPENDED, cadence_days=14, count=12,
+        )
+        bounded = replace(
+            _monthly(date(2026, 3, 22)), books_opened_on=date(2026, 3, 26),
+        )
+
+        walk = occurrence_walk(bounded, calendar)
+
+        assert walk.kept == occurrence_placements(bounded, calendar)
+        assert walk.below_the_books == placements_below_the_books(
+            bounded, calendar,
+        )
+        assert _dates(walk.below_the_books) == [date(2026, 3, 22)]
+        assert sorted(_dates(walk.kept) + _dates(walk.below_the_books)) == (
+            _dates(occurrence_placements(
+                replace(bounded, books_opened_on=None), calendar,
+            ))
+        )
+
+    def test_a_count_spent_below_the_books_still_ends_the_rule(self):
+        """Twice from 03-22 over books opening 03-26: 03-22 happened, 04-22 is the second.
+
+        The firing control is the same reading with the books' half left
+        off -- the shape the closing read before this ruling -- which never
+        ends.
+        """
+        calendar = build_calendar(
+            first_payday=_PREPENDED, cadence_days=14, count=12,
+        )
+        bounded = replace(
+            _monthly(date(2026, 3, 22), times=2),
+            books_opened_on=date(2026, 3, 26),
+        )
+        walk = occurrence_walk(bounded, calendar)
+        reading = RuleReading(
+            resolved=bounded,
+            placements=walk.kept,
+            horizon=calendar.horizon(),
+            below_the_books=walk.below_the_books,
+        )
+        after_the_second = date(2026, 4, 23)
+
+        assert _dates(reading.placements) == [date(2026, 4, 22)]
+        assert reading.bound_reading().occurrences == (
+            date(2026, 3, 22), date(2026, 4, 22),
+        )
+        assert bounded.closing.has_closed(
+            on=after_the_second, reading=reading.bound_reading,
+        )
+        rows_only = replace(reading, below_the_books=())
+        assert not bounded.closing.has_closed(
+            on=after_the_second, reading=rows_only.bound_reading,
+        )
+
+    def test_the_recurring_totals_drop_a_rule_spent_below_the_books(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The review's probe, through the read pass and the Recurring screen's reader.
+
+        Both templates sit on an account whose books open at the second
+        paycheck and start on the first paycheck's first day, so the books
+        drop each one's first occurrence.  "Twice" has spent its count by
+        the pass's today and leaves the monthly totals; "twelve times" has
+        not, and still counts its $10.00 -- the control that the same account
+        and start are not simply dropped.
+        """
+        with app.app_context():
+            later = _account_opened_on(
+                seed_user, "Later books", seed_periods[1].start_date,
+            )
+            start = seed_periods[0].start_date
+            spent = _transaction_template(seed_user, "Twice", account_id=later.id)
+            _count_bounded_monthly_rule(spent, start, times=2)
+            ongoing = _transaction_template(
+                seed_user, "Twelve times", account_id=later.id,
+            )
+            _count_bounded_monthly_rule(ongoing, start, times=12)
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            reading = read_definition(spent, ctx)
+
+            assert _dates(reading.below_the_books) == [start]
+            assert len(reading.placements) == 1
+            assert reading.placements[0].occurrence < ctx.as_of
+            assert has_ended(spent.recurrence_rule, reading, on=ctx.as_of)
+            assert obligations_aggregator.template_monthly_or_none(
+                spent, ctx,
+            ) is None
+            assert obligations_aggregator.template_monthly_or_none(
+                ongoing, ctx,
+            ) == Decimal("10.00")
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -712,6 +835,23 @@ def _monthly_rule(template, starts_on, *, due_day_of_month=None):
         template, MONTHLY, starts_on=starts_on,
         due_day_of_month=due_day_of_month,
     )
+    _db.session.refresh(template)
+    return rule
+
+
+def _count_bounded_monthly_rule(template, starts_on, *, times):
+    """Author a monthly rule ending after *times* occurrences onto *template*."""
+    rule = author_rule(
+        RecurrenceSpec(
+            user_id=template.user_id,
+            unit=RecurrenceUnitEnum.MONTH,
+            starts_on=starts_on,
+            end_bound=EndsAfterOccurrences(count=times),
+        ),
+        calendar_for(template.user_id),
+        template,
+    )
+    _db.session.flush()
     _db.session.refresh(template)
     return rule
 

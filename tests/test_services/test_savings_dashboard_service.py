@@ -902,13 +902,13 @@ class TestARenderWalksAGoalTransferOnce:
             db.session.commit()
 
             calls = []
-            real = _context.occurrence_placements
+            real = _context.occurrence_walk
 
             def counting(resolved, calendar, **kwargs):
                 calls.append(resolved)
                 return real(resolved, calendar, **kwargs)
 
-            monkeypatch.setattr(_context, "occurrence_placements", counting)
+            monkeypatch.setattr(_context, "occurrence_walk", counting)
 
             result = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(seed_user["user"].id),

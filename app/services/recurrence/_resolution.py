@@ -319,11 +319,15 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
 
             **:func:`resolve` leaves it ``None``**, for the reason it leaves
             the closing's derived half empty: it is pure, and the day is a
-            fact about ACCOUNTS read from the database.  The read pass
-            attaches it (``BalanceContext.resolved_for``), the ONE place every
-            reader of a definition's occurrences takes its value from -- row
-            creation, the forecast's loan estimate, the Recurring screens and
-            the form's live preview.  **It is not a copy of the rule's start
+            fact about ACCOUNTS read from the database.  ONE composition
+            attaches it (``balance_at.resolved_with_books``), with two
+            callers: the read pass's memo (``BalanceContext.resolved_for``),
+            which every reader of a STORED or unsaved definition's
+            occurrences takes it from -- row creation, the forecast's loan
+            estimate, the Recurring screens and the form's live preview --
+            and the opening restatement's refusal, which asks it of books no
+            account has yet (``planned_rows_books``).  **It is not a copy of
+            the rule's start
             and must not become one**: an opening is restated (the owner's
             Van Loan moved 05-21 -> 04-22 on the data this was measured on),
             and a stored copy would need a reconciler (``CLAUDE.md`` rule 14).
@@ -333,7 +337,7 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             with the books rather than its due day (ruling **R-PC89**, plan
             step ``pay_calendar:C18-a``; :meth:`books_day`).  Attached beside
             :attr:`books_opened_on` by the same composition
-            (``BalanceContext.resolved_for``) and for the same reason
+            (``balance_at.resolved_with_books``) and for the same reason
             :func:`resolve` leaves it ``False``: it is a fact about the
             DEFINITION, not the rule.  A transfer is never one.
     """

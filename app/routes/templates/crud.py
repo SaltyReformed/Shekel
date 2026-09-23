@@ -33,6 +33,7 @@ from app.services import (
     category_service,
     definition_delete,
     definition_edit,
+    definition_unarchive,
     posting_service,
     recurrence_engine,
     template_amount_service,
@@ -612,12 +613,10 @@ def unarchive_template(template_id):
 
     template.is_active = True
 
-    # Restore soft-deleted projected transactions.  Routed through
-    # ``is_projected_clause`` (D6-09 / MED-02); see ``archive_template``.
-    restore_scope = (
-        Transaction.template_id == template.id,
-        is_projected_clause(Transaction),
-        Transaction.is_deleted.is_(True),
+    # Restore soft-deleted projected transactions: the ONE scope the books
+    # refusals count too (ruling R-PC93, ``definition_unarchive``).
+    restore_scope = definition_unarchive.rows_an_unarchive_restores(
+        Transaction, Transaction.template_id, template.id,
     )
     restored = definition_delete.rows_holding_purchase_postings(*restore_scope)
     restored_count = db.session.query(Transaction).filter(

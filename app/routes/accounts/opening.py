@@ -65,6 +65,7 @@ from app.services.account_projection import (
 from app.services.opening_service import OpeningRestatementOutcome
 from app.services.pay_calendar import calendar_for
 from app.services.planned_rows_books import StrandedRow, first_row_an_opening_strands
+from app.services.recurrence import RecurrenceGenerationError, RecurrenceResolutionError
 from app.utils.account_validation import _opening_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
@@ -196,9 +197,9 @@ def _opening_ceilings(
             day=first_planned_row.books_day - timedelta(days=1),
             said=(
                 f"The recurring {first_planned_row.described()}, so the "
-                "books have to open before that day -- mark it paid, cancel "
-                "it or move it later first if your records really do start "
-                "later."
+                "books have to open before that day.  "
+                f"{first_planned_row.remedy()} if your records really do "
+                "start later."
             ),
         ))
     return ceilings
@@ -298,7 +299,9 @@ def books_opening_context(account: Account) -> "dict | None":
         migration derived it) and ``ceiling``, the binding
         :class:`OpeningCeiling` carrying the date box's ``max`` and the
         sentence naming which of the FIVE bounds set it -- or ``None`` for
-        an AMORTIZING account, whose opening is its loan's original principal.
+        an AMORTIZING account, whose opening is its loan's original principal,
+        and where a broken invariant costs the card (no opening row, or a
+        recurring rule that cannot be walked).
         ``None`` rather than a flag the template branches on: a card that must
         not be offered is absent, not disabled, which is the dead-end
         affordance rule ``anchor.anchor_form`` states.
@@ -326,10 +329,22 @@ def books_opening_context(account: Account) -> "dict | None":
     # question once, and the ceiling and the sentence explaining it come from
     # the same answer.
     first_matched = cash_ledger.earliest_matched_line_day(account.id)
-    # The fifth (ruling R-PC88), from the one producer the door refuses by.
-    first_planned = first_row_an_opening_strands(
-        account.id, display_today(), calendar_for(account.user_id),
-    )
+    # The fifth (ruling R-PC88), from the one producer the door refuses by --
+    # and, like the opening above, a broken invariant costs the card and not
+    # the page: a stored rule the recurrence package cannot resolve or walk
+    # (none a door writes) raises there, for ANY definition touching the
+    # account, archived ones included.
+    try:
+        first_planned = first_row_an_opening_strands(
+            account.id, display_today(), calendar_for(account.user_id),
+        )
+    except (RecurrenceResolutionError, RecurrenceGenerationError):
+        logger.warning(
+            "account %d's books-opening card is hidden: a recurring "
+            "definition moving money in it has a rule that cannot be walked",
+            account.id, exc_info=True,
+        )
+        return None
     return {
         "opened_on": opening.opened_on,
         "equity": opening.opening_equity,

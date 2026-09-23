@@ -294,17 +294,19 @@ def _reject_books_open_on_or_after_planned_rows(
     maintain pass that reaches such a row retires it, silently raising the
     forecast.  The owner decides instead: marked paid it becomes a movement
     (and the movement rule speaks), cancelled it holds nothing, moved later
-    it stays owed.
+    it stays owed.  An ARCHIVED definition's hidden rows count, since its
+    unarchive would bring them back (ruling **R-PC93**); the refusal names
+    such a row as the archived definition's, with the remedy that reaches it.
 
     **Which rows, which day, and the comparison are the WALK's**
     (:func:`app.services.planned_rows_books.first_row_an_opening_strands`,
     the one producer the books-opening card's date ceiling reads too): every
     recurring definition moving money in the account is walked with the books
-    it would have if the account opened on *opened_on*, and a live,
-    still-Projected row answering an occurrence that walk drops is stranded
-    -- named by the day the walk compares for it, a bill's due day or an
-    envelope's paycheck's last day (rulings **R-PC86**, **R-PC89**), under the
-    strict :func:`~app.utils.books_boundary.books_hold`.  It read each row's
+    it would have if the account opened on *opened_on*, and a still-Projected
+    row answering an occurrence that walk drops -- live, or hidden by an
+    archive -- is stranded, named by the day the walk compares for it, a
+    bill's due day or an envelope's paycheck's last day (rulings **R-PC86**,
+    **R-PC89**), under the strict :func:`~app.utils.books_boundary.books_hold`.  It read each row's
     STORED due day and its own account until the step's adversarial review
     (H1, L1): the walk re-dates a row by its rule and bounds it by its
     DEFINITION's accounts, and a door that asked anything else could pass a
@@ -320,7 +322,7 @@ def _reject_books_open_on_or_after_planned_rows(
 
     Raises:
         ValidationError: When books opening on *opened_on* would strand a
-            live, still-projected recurring row.
+            still-projected recurring row, live or hidden by an archive.
     """
     stranded = planned_rows_books.first_row_an_opening_strands(
         account_id, opened_on, calendar_for(user_id),
@@ -330,9 +332,8 @@ def _reject_books_open_on_or_after_planned_rows(
     raise ValidationError(
         f"These books cannot open on {opened_on.isoformat()}: the recurring "
         f"{stranded.described()}.  An opening is the balance at the END of "
-        "its day, so moving it there would put that unpaid item inside it.  "
-        "Mark it paid, cancel it or move it later first, then restate the "
-        "books."
+        "its day, so that unpaid item would sit inside it.  "
+        f"{stranded.remedy()}, then restate the books."
     )
 
 

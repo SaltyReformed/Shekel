@@ -35,6 +35,7 @@ from app.services.opening_service import (
     OpeningRestatementOutcome,
     apply_opening_restatement,
 )
+from app.services.planned_rows_books import StrandedRow
 from tests._test_helpers import (
     account_never_asserted,
     make_cadence_rule,
@@ -209,6 +210,80 @@ class TestAProjectedRecurringRowBoundsTheRestatement:
                     account=account,
                     opening=BooksOpening(first_due, Decimal("0.00")),
                 )
+
+
+class TestWhichRowsTheRefusalIsOver:
+    """Which rows the refusal is over (the C18-a round-2 review's L-a).
+
+    A mutation skipping overridden rows passed every test this module had.
+    The review's M-A -- pairing rows by paycheck rather than by the
+    occurrence they answer -- is killed by ruling R-PC92's day change
+    (``tests/test_routes/test_definition_edit_strands_no_row.py``); two
+    occurrences in one paycheck need a cadence no owner can author yet
+    (the WEEK unit waits on plan step R5).
+    """
+
+    def test_an_OVERRIDDEN_row_is_refused_over(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """An owner-repriced row is still owed, and the chooser's "use" hands it back.
+
+        The maintain pass keeps it as a conflict rather than retiring it, but
+        choosing "use the template" returns it to its definition and the next
+        pass retires it -- so it is refused over like any planned row.
+        """
+        with app.app_context():
+            account, rows = _account_with_projected_rows(seed_user, seed_periods)
+            first = min(rows, key=lambda row: row.due_date)
+            first.is_override = True
+            _db.session.flush()
+
+            with pytest.raises(ValidationError, match=r"Recurring rent"):
+                apply_opening_restatement(
+                    account=account,
+                    opening=BooksOpening(first.due_date, Decimal("0.00")),
+                )
+
+
+class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
+    """Ruling R-PC93's wording: the owner cannot see a hidden row, so the remedy reaches it."""
+
+    def test_a_hidden_BILL_names_the_definition_and_the_unarchive(self):
+        """The row is the ARCHIVED definition's, and unarchiving is the way to it."""
+        row = StrandedRow(
+            name="Rent", books_day=date(2026, 3, 1), is_envelope=False,
+            is_hidden=True,
+        )
+
+        assert row.described() == (
+            '"Rent" is archived and still holds an unpaid item due 2026-03-01 '
+            "that unarchiving would bring back"
+        )
+        assert row.remedy() == (
+            "Unarchive it and mark it paid, cancel it or move it later, or "
+            'delete "Rent" for good'
+        )
+
+    def test_a_hidden_ENVELOPE_names_its_paychecks_last_day(self):
+        """An envelope compares its paycheck's last day, hidden or not (R-PC89)."""
+        row = StrandedRow(
+            name="Groceries", books_day=date(2026, 3, 8), is_envelope=True,
+            is_hidden=True,
+        )
+
+        assert row.described() == (
+            '"Groceries" is archived and still holds an unpaid item in the '
+            "paycheck ending 2026-03-08 that unarchiving would bring back"
+        )
+
+    def test_a_LIVE_row_keeps_R_PC91s_words(self):
+        """The live wording is the one ruled at R-PC91; R-PC93 adds, never rewrites."""
+        row = StrandedRow(
+            name="Rent", books_day=date(2026, 3, 1), is_envelope=False,
+        )
+
+        assert row.described() == '"Rent" is still projected and due 2026-03-01'
+        assert row.remedy() == "Mark it paid, cancel it or move it later first"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

@@ -258,25 +258,28 @@ class TestTheReviewPassStopsOfferingIt:
         assert review.proposals == ()
         assert line.id not in {other.line_id for other in review.unmatched}
 
-    def test_the_same_line_the_day_AFTER_IS_proposed_against_that_row(
+    def test_the_same_line_past_EARLIER_books_IS_proposed_against_that_row(
         self, app, db, seed_user,
     ):
         """POSITIVE CONTROL for the case above (C18-a adversarial review, L3).
 
         That case's row is filed a paycheck on, so its line sits at the very
         edge of the proposer's day window; ``proposals == ()`` would pass
-        there for a window that merely shrank.  The same row and the same
-        figure, the line a day later -- past the books -- IS proposed, so the
-        empty answer above is the books' and not the window's.
+        there for a window that merely shrank.  The same row, the same figure
+        and the line on the SAME day -- the same distance from the row -- with
+        only the books moved a day earlier, so the line falls past them: it
+        IS proposed, so the empty answer above is the books' and not the
+        window's.  (Round 2's L-f: this control used to move the LINE a day
+        later instead, one day nearer the row, so a window shrunk by one day
+        would have emptied the case above and still passed here.)
         """
-        day = _the_calendars_first_day(db, seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        _books_open_on(db, seed_user, day - timedelta(days=1))
         a_transaction(
             seed_user, name="Duke Energy", amount="180.00",
             period=a_later_period(seed_user),
         )
-        line = a_bank_line(
-            seed_user, an_import(seed_user), posted_on=day + timedelta(days=1),
-        )
+        line = a_bank_line(seed_user, an_import(seed_user), posted_on=day)
 
         review = review_set(a_scope(seed_user))
 

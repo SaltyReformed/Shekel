@@ -68,7 +68,7 @@ from app.routes._standing_payment import (
     sync_loan_payment_start_or_refuse,
 )
 from app.routes.transfers._bp import transfers_bp
-from app.services import transfer_service
+from app.services import definition_unarchive, transfer_service
 from app.utils import archive_helpers
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.balance_predicates import is_projected_clause
@@ -230,16 +230,13 @@ def unarchive_transfer_template(template_id):
     if stale is not None:
         return stale
 
-    # Find soft-deleted projected transfers to restore.  Routed
-    # through ``is_projected_clause(Transfer)`` (D6-09 / MED-02);
-    # see ``_archive`` above.
+    # Find soft-deleted projected transfers to restore: the ONE scope the
+    # books refusals count too (ruling R-PC93, ``definition_unarchive``).
     transfers_to_restore = (
         db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            is_projected_clause(Transfer),
-            Transfer.is_deleted.is_(True),
-        )
+        .filter(*definition_unarchive.rows_an_unarchive_restores(
+            Transfer, Transfer.transfer_template_id, template.id,
+        ))
         .all()
     )
 

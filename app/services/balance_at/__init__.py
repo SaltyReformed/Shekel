@@ -247,7 +247,11 @@ from ._cash_flow import (
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext
-from ._definition_books import definition_books, resolved_with_books
+from ._definition_books import (
+    definition_books,
+    money_account_columns,
+    resolved_with_books,
+)
 from ._memoize import require_scenario
 from ._grid import (
     GridBalanceView,
@@ -389,6 +393,7 @@ __all__ = [
     "loan_required_extra",
     "loan_what_if_owed_at_dates",
     "loan_principal_paid_in_year",
+    "money_account_columns",
     "positions",
     "records_balance_at",
     "resolved_with_books",
