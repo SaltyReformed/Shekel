@@ -245,6 +245,15 @@ passed with every refusal accepted.
 (`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
 exactly what made the mismatch invisible.
 
+**The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
+cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this
+document's own rulings table, so the lift that read the tables would have left it behind.
+
+**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
+completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
+when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
+record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+
 - [x] **R17** `4e8b40b3` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
@@ -539,49 +548,11 @@ guarded on the deferring placement precisely so a LEAD cannot silently inherit i
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
-- [ ] **R12 -- the image pins its locale.**
-**It also takes F-15** (**R-R54**, 2026-09-03): month names would follow the process locale if
-anything ever called `setlocale` -- nothing does, `$0.00` -- and ONE line, `LC_ALL` pinned in the
-image with a startup assertion, covers every site and every future one. The site COUNT is
-**R-R54**'s and is stated there, not restated here; it is not reproducible by any pattern this row
-could name, which rule 6 says is a reason to state no total.
-**Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
-`deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
-that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
-re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one-release drop of
-`ref.recurrence_patterns` on the second of those, and R9 deleted `TestDeliberateRefSeedSurplus`,
-which was the last EXECUTABLE statement of the hazard that refusal now covers. **That sentence USED
-to end "an executable guard was replaced by an unexercised one", and it was already false when
-written**: `repin_is_safe` is exercised by `test_it_refuses_and_leaves_the_pin_at_the_new_digest`
-and `test_a_compose_failure_also_refuses`, both of which observe the refusal AND the pin.
-
-**THE SCRIPT IS DRIVEN, and this paragraph said otherwise for 25 days.**
-`tests/test_deploy/test_shekel_deploy_behaviour.py` shells out to the real `deploy/shekel-deploy.sh`
-with a stubbed `docker` on `PATH` and observes OUTCOMES; it landed at `398c332c` on 2026-08-08, nine
-days BEFORE `D41` was filed against its absence, and it is not `@pytest.mark.docker`, so CI runs it.
-Re-check with `grep -rln 'shekel-deploy.sh' tests/` rather than re-reading this sentence.
-
-**That decision was TAKEN and all four arms EXIST**: a `tests/` module shelling out to `bash` was
-the answer, and it already covers every arm this step listed as its minimum -- a stamp the target
-cannot resolve is refused (`test_a_target_older_than_the_database_is_refused_up_front`); a stamp the
-OLD image cannot resolve refuses the re-pin
-(`test_it_refuses_and_leaves_the_pin_at_the_new_digest`); an unchanged stamp after a container that
-never started still re-pins (`test_a_release_with_no_new_migrations_reverts_the_pin`); and an
-unreadable `alembic_version` is unsafe (`test_an_empty_listing_aborts_rather_than_assuming`), plus
-`TestThePreflightIsHonest` on `preflight_migrations` directly.
-**So `D41` is DISCHARGED and what remains of this step is `F-15`**: `LC_ALL` pinned in the image
-with a startup assertion, which is one line and no harness at all. The step is kept rather than
-withdrawn because that half is real and unbuilt; its deploy-predicate half is not work anybody still
-owes.
-
-**The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
-cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this
-document's own rulings table, so the lift that read the tables would have left it behind.
-
-**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
-completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
-when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
-record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+- [x] **R12 -- the image pins its locale.** `cde86066` -- `LC_ALL=C.UTF-8` set in the Dockerfile's
+      runtime stage, `scripts/test.sh` and `.env.example`, and `create_app`'s first statement
+      refuses any other value under every configuration (**R-R92**, extending **R-R54**); a test
+      holds the Dockerfile's line to `PINNED_LOCALE`. Closed **F-15**. `D41` was DISCHARGED before
+      it, not closed here: the deploy script's test landed at `398c332c`.
 
 ### Carried steps -- scheduled here so they are not merely remembered
 
@@ -649,6 +620,43 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       stated; generation still needs a saved period. `$0.00` today; graded by re-pricing a stated
       owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-09-11
       schedule bound (**R-R64**) for stated owners only.
+
+- [ ] **R22 -- the plan is computed, only the owner's acts are stored** (a DESIGN step: an audit,
+      then forks to the developer with worked dollars, BEFORE any build; asked for by the developer
+      at `pay_calendar:C18-a` round 9, 2026-09-23: "The from scratch design needs to be a step in
+      the plan"). **Today** every occurrence a recurring schedule names inside the saved paychecks
+      is a STORED row (Projected until settled), so an unpaid copy can be stranded, revived or
+      re-dated by any door that writes rows, and each such door has grown its own fence: the books
+      refusals (**R-PC88**, **R-PC90**, **R-PC91**, **R-PC93**), the unarchive guard (**R-PC95**,
+      refined by **R-PC96**), the revert stopgap (**R-PC97**), and three open rows -- **REC-534** (a
+      day change deletes an unpaid row with only "updated"), **REC-535** (the conflict chooser
+      revives a deleted row the schedule no longer names), **REC-536** (a hand delete and the
+      archive share `is_deleted`). **The from-scratch model**: the schedule's occurrences are
+      COMPUTED on every read (the balance seam already projects them past the saved paychecks for
+      the loan estimates), and only what the owner DID is stored -- a payment (the record half), a
+      skipped or cancelled occurrence (an exception on the rule, REC-536's own remedy), a price or
+      paycheck change to one occurrence. A revert then deletes a record and the schedule says
+      whether anything is still owed; an occurrence inside the books is owed nothing
+      (**R-PC85**/**R-PC86**), so there is no unpaid copy to strand. **What the audit must map**:
+      every reader and writer of a template-linked Projected row (the census at C18 round 9 is a
+      start: generation, the maintain pass, the status seam, carry-forward, statement match's
+      container rows, the grid, envelopes and the purchases an envelope row carries, card paybacks,
+      the forecast and `/savings`); where an envelope's purchases attach when its occurrence is not
+      a row; how the balance arc's transfer work (`balance:X-bi-6`, status in one row) meets it.
+      **HYPOTHESES FOR THE AUDIT, NOT RULINGS** (the lane's option text asserted more than was
+      measured): (1) it deletes R-PC97's stopgap and R-PC95's guard for rows a schedule names --
+      plausible, because no unpaid copy exists to revert or restore; (2) it deletes what
+      R-PC88/R-PC90/R-PC91/R-PC93 police -- DOUBTFUL as stated: moving the books past an UNRECORDED
+      occurrence would drop it from the plan at once, which is R-PC88's REJECTED "delete it with the
+      move" (the forecast rising at once), so R-PC88's refuse-first question may survive, COMPUTED
+      from the schedule rather than read off rows; (3) R-PC96 judges rows NO schedule names (a
+      rule-less item's rows, a carried-forward leftover) by their own day, and those stay stored
+      under this model, so R-PC96 may survive too. Hand-added rows' own books gap is **PC-519**, a
+      separate row. Closes **REC-534**, **REC-535**, **REC-536** (each re-owned here at
+      `pay_calendar:C18-a`'s tick). Those ids, and **R-PC85**, **R-PC86**, **R-PC88**, **R-PC90**,
+      **R-PC91**, **R-PC93**, **R-PC95**, **R-PC96**, **R-PC97** and **PC-519**, are
+      `pay_calendar:C18-a`'s and file at its tick, and this step waits on `pay_calendar:C18` until
+      they do.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
       leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR
@@ -748,16 +756,40 @@ backfill does not guess. **The card's finance charge is priced by this same prod
 consumes it per constant-balance segment), and `credit_card:R-CC19` ranks that leaf AFTER this
 one -- no loan step is pulled forward for the card.
 
-- [ ] **R16-e -- walk 3 is DELETED** (ruling **R-R53**; finding **D60**).
-      `rate_period_engine.replay_schedule` is the THIRD walk over a loan: it charges a month per
-      payment RECORD and applies the CONTRACTUAL P&I rather than the actual cash, and its balance
-      has exactly ONE consumption site -- `loan_resolver._payoff._build_forward_inputs`'s
+- [ ] **R16-e -- walk 3 and the payment list that feeds it are DELETED** (rulings **R-R53**,
+      **R-R93**; findings **D60**, **N-409**). `rate_period_engine.replay_schedule` is the THIRD
+      walk over a loan: it charges a month per payment RECORD and applies the CONTRACTUAL P&I rather
+      than the actual cash, and its balance has exactly ONE consumption site --
+      `loan_resolver._payoff._build_forward_inputs`'s
       `replay.balance_as_of if confirmed_view is None` -- which every production read bypasses since
       plan step E1d-b. On a due-month collision it differs from walks 1 and 2 by one month's
       interest, pinned by mechanism in
       `test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ`. What survives its
       balance is two CALENDAR scalars that need no walk; the walk goes, after `R16-c` has made the
       past and the future one stream. Deletion; `$0.00` on production, which never reads it.
+      **Widened 2026-09-23 by R-R93, when `balance:X-au-g-2c-3b-3` was WITHDRAWN into it:** in the
+      same act the step deletes the whole list that exists only to feed walk 3 --
+      `LoanContext.payments`, `LoanInputs.payments`, `get_payment_history`,
+      `prepare_payments_for_engine` (the escrow-subtraction FLOOR, **N-409**:
+      `amount - min(escrow, amount - contractual_pi)`, a SECOND allocation rule that reports a short
+      payment as exactly on schedule where the fold's `apply_payment_cash` takes the full escrow),
+      `compute_contractual_pi`, `LoanContext.contractual_pi` and `PaymentRecord` -- and the list's
+      two yes/no readers re-read the one stream: a retired loan with a confirmed payment
+      (`balance_at/_loan_figures.py`) and the payoff calculator's `has_plan`
+      (`routes/loan/calculators.py`). Measured at the withdrawal on `6de21895`: `project_forward`
+      has taken no payments since `R7d-g-3`, the feed's AMOUNTS have had no reader in `app/` since
+      `a1c5082f` deleted `_build_monthly_override`, and a full suite with the amounts stripped
+      failed only the one test known to read them; until this step ships the floor stays in the
+      code, read by nothing. `compute_contractual_pi` has one call site (`_context.py`), which
+      passes `date.today()`, so its deletion takes a process-clock read off the loan context
+      (**R-IJ**'s direction). `$0.00`. **Unruled, for this step's session** (the balance lane's
+      trace): (a) with the list gone, `amortization_engine.slotted_dates` and `schedule_dates` have
+      no production caller (today only `_engine_prep.py` calls `slotted_dates`), which bears on
+      **BAL-472** and `balance:X-cb`; (b) **R-BAL7**'s refusal of a dates-only feed lost its stated
+      reason, the forward override, at `R7d-g-3`; (c) `loan_payment_service/_context.py` names
+      **N-409**'s owner as `balance:X-au-g-2c-3` twice, in the docstring at :79-80 and the comment
+      at :222 -- both false since `R-R93`, and both go with this step's deletion of
+      `contractual_pi`.
 - [ ] **R16-f -- walk 4 is re-expressed over the ONE replay** (ruling **R-R53**; finding **D60**).
       `amortization_engine.project_forward` is the FOURTH walk, the contractual schedule the payoff
       and what-if surfaces read. It becomes the one replay (`loan_ledger.replay_loan_events`,

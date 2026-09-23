@@ -37,19 +37,29 @@ def create_app(config_name=None, *, init_ref_cache=True):
         init_ref_cache: When True (the default -- used by Gunicorn and the
                      dev/test server), eagerly populate ``ref_cache`` and
                      register the ref-id Jinja globals at app creation.  Set
-                     False ONLY by the deploy-time migration host
-                     (``scripts/init_database.py``), which builds the app
-                     solely to obtain an Alembic context and runs BEFORE the
-                     migrations that seed new ref rows.  ``ref_cache.init``
-                     treats a missing row in an existing ref table as fatal
-                     (a genuine seed/data drift), so eager-initing it on a
-                     pre-migration database would raise -- exactly the
-                     bootstrap window the migration host must run through.
+                     False ONLY by the two hosts that write ref rows before
+                     reading them: the deploy (``scripts/init_database.py``),
+                     which runs BEFORE the migrations and the seed that bring
+                     new ref rows, and the manual repair seed
+                     (``scripts/seed_ref_tables.py``, ruling R-BAL123).
+                     ``ref_cache.init`` treats a missing row in an existing
+                     ref table as fatal (a genuine seed/data drift), so
+                     eager-initing it before the seed would raise -- exactly
+                     the window both hosts must run through.
                      The runtime guard is unchanged: Gunicorn always inits.
 
     Returns:
         A fully configured Flask app instance.
+
+    Raises:
+        ValueError: When ``LC_ALL`` is not :data:`PINNED_LOCALE` (see
+            :func:`_require_pinned_locale`), or ``config_name`` names no
+            configuration.
     """
+    # FIRST, before anything is built: the dev/test arm below writes schemas
+    # and reference rows, so a refusal placed after it would refuse after
+    # side effects.
+    _require_pinned_locale()
     app = Flask(__name__)
 
     # --- Configuration ---------------------------------------------------
@@ -177,12 +187,13 @@ def create_app(config_name=None, *, init_ref_cache=True):
     # database IDs.  Then expose cached status IDs as Jinja globals so
     # templates can compare status_id without querying the database.
     #
-    # Skipped entirely when ``init_ref_cache`` is False: the deploy-time
-    # migration host (``scripts/init_database.py``) builds the app only to
-    # obtain an Alembic context and runs BEFORE the migrations that seed new
-    # ref rows.  ``ref_cache.init`` treats a missing row in an existing ref
-    # table as fatal, so eager-initing it on a pre-migration database would
-    # raise and abort the deploy (see the create_app docstring).  Gunicorn,
+    # Skipped entirely when ``init_ref_cache`` is False: the deploy
+    # (``scripts/init_database.py``) and the manual ref seed
+    # (``scripts/seed_ref_tables.py``) run BEFORE the rows they seed exist,
+    # and read the cache only after seeding, if at all.  ``ref_cache.init``
+    # treats a missing row in an existing ref table as fatal, so
+    # eager-initing it on a pre-migration database would raise and abort
+    # the deploy (see the create_app docstring).  Gunicorn,
     # the dev server, and the test app always init (the default).
     #
     # ``ref_cache.init`` is resilient to missing ref tables during the
@@ -229,6 +240,52 @@ def create_app(config_name=None, *, init_ref_cache=True):
 
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
+
+
+#: The process locale every Shekel process runs under (ruling
+#: ``recurrence:R-R92``, extending ``R-R54``; closes finding F-15).
+#:
+#: The same literal is set where each kind of process starts, because an
+#: environment variable can only be set there: the image (``Dockerfile``),
+#: the suite (``scripts/test.sh``, which CI runs through) and a host run
+#: (``.env``, from ``.env.example``).  :func:`_require_pinned_locale` makes
+#: any of them disagreeing with this one fail every start rather than drift.
+PINNED_LOCALE = "C.UTF-8"
+
+
+def _require_pinned_locale():
+    """Refuse to build the application unless ``LC_ALL`` is :data:`PINNED_LOCALE`.
+
+    Month and weekday names from ``strftime`` and :mod:`calendar` follow the
+    process locale, at every site finding F-15 counted in ``app/`` and the
+    templates and at every one added since.  They read English today
+    because CPython never calls ``setlocale`` for ``LC_TIME``, which stays
+    ``C`` whatever the environment says; so the
+    NAMES cannot be the thing checked, because they would pass while
+    measuring nothing.  What this checks is what ``setlocale(LC_ALL, "")``
+    would adopt the day anything calls it -- a library or a future edit --
+    and ``LC_ALL`` outranks every other locale variable, so pinning it pins
+    that answer for every category at once.
+
+    The comparison is exact: the pin sets the string ``C.UTF-8``, and a
+    near-miss such as ``C.utf8`` means the process was started somewhere the
+    pin was not.
+
+    Raises:
+        ValueError: When ``LC_ALL`` is unset or names any other locale.  The
+            message names each place the pin is set.
+    """
+    actual = os.environ.get("LC_ALL")
+    if actual != PINNED_LOCALE:
+        seen = "unset" if actual is None else f"{actual!r}"
+        raise ValueError(
+            f"LC_ALL is {seen}; Shekel requires LC_ALL={PINNED_LOCALE} "
+            "(ruling recurrence:R-R92).  The Dockerfile sets it, so a "
+            "container whose image was built before that line must be "
+            "rebuilt; ./scripts/test.sh exports it; for a host "
+            f"'flask run' or script, add LC_ALL={PINNED_LOCALE} to .env "
+            "(see .env.example)."
+        )
 
 
 def _bind_extensions(app):
@@ -281,7 +338,14 @@ def _register_context_processors(app):
 
     @app.context_processor
     def inject_onboarding():
-        """Inject onboarding status so base.html can show/hide the welcome banner."""
+        """Inject the welcome checklist so base.html can show/hide the banner.
+
+        Hands the template an
+        :class:`~app.services.onboarding_service.OnboardingChecklist`, which
+        queries nothing until the template reads a fact (ruling
+        ``balance:R-BAL117``, ledger row balance:N-328): a fragment that never draws
+        the layout asks none of them.
+        """
         # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
         # context processor (app-factory pattern), kept out of ``app``-package
         # import.
@@ -293,9 +357,9 @@ def _register_context_processors(app):
         # Onboarding is meaningless for companion users -- they share the
         # linked owner's budget data via linked_owner_id and cannot create
         # their own accounts, categories, pay periods, salary profiles, or
-        # templates.  Omit the dict entirely so the banner's `onboarding is
-        # defined` guard in base.html evaluates False, and skip the five
-        # exists() queries that would otherwise run on every companion page.
+        # templates.  Omit the checklist entirely so the banner's `onboarding
+        # is defined` guard in base.html evaluates False, and no checklist
+        # fact is ever asked on a companion page.
         #
         # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
         # context processor (app-factory pattern), kept out of ``app``-package
@@ -309,59 +373,20 @@ def _register_context_processors(app):
                 return {}
         except (RuntimeError, KeyError):
             # ref_cache not yet initialized (e.g. during migration).  Fall
-            # through to the existing query path; owner users are the common
-            # case during those windows and the queries still give the right
+            # through to the checklist; owner users are the common case
+            # during those windows and its queries still give the right
             # answer.
             pass
 
-        # Pylint: ``import-outside-toplevel`` -- the onboarding-exists() lookups
-        # are imported inside the request-time context processor (app-factory
-        # pattern); the models below pull in the ``app.models`` graph, kept out of
-        # ``app``-package import.
-        from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- Account imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- Category imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.category import Category  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- PayPeriod imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- SalaryProfile imported lazily here
-        # for the same app-factory deferral as the imports above.
-        from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- TransactionTemplate imported lazily
-        # here for the same app-factory deferral as the imports above.
-        from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- the checklist's service pulls in
+        # the ``app.models`` graph, so it is imported inside the request-time
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import.
+        from app.services.onboarding_service import (  # pylint: disable=import-outside-toplevel
+            OnboardingChecklist,
+        )
 
-        uid = current_user.id
-        has_account = db.session.query(
-            exists().where(Account.user_id == uid, Account.is_active.is_(True))
-        ).scalar()
-        has_categories = db.session.query(
-            exists().where(Category.user_id == uid)
-        ).scalar()
-        has_periods = db.session.query(
-            exists().where(PayPeriod.user_id == uid)
-        ).scalar()
-        has_salary = db.session.query(
-            exists().where(SalaryProfile.user_id == uid)
-        ).scalar()
-        has_templates = db.session.query(
-            exists().where(TransactionTemplate.user_id == uid)
-        ).scalar()
-
-        return {
-            "onboarding": {
-                "has_account": has_account,
-                "has_categories": has_categories,
-                "has_periods": has_periods,
-                "has_salary": has_salary,
-                "has_templates": has_templates,
-                "complete": has_periods and has_salary and has_templates,
-            }
-        }
+        return {"onboarding": OnboardingChecklist(current_user.id)}
 
     @app.context_processor
     def inject_role_ids():
@@ -870,8 +895,8 @@ def _ensure_schemas():
 def _seed_ref_tables():
     """Seed reference lookup tables if empty (dev/test only).
 
-    In production, this is handled by the Docker entrypoint via
-    ``scripts/seed_ref_tables.py``.  Idempotent -- skips rows that
+    In production the deploy seeds inside entrypoint step 3's one
+    transaction (``scripts/init_database.py``).  Idempotent -- skips rows that
     already exist.  Silently skips the entire seed if the tables
     haven't been created yet (e.g. first test-session run before
     ``create_all()``).

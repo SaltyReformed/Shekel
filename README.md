@@ -78,17 +78,17 @@ above).
 
 ### 6. First-Time Setup in the App
 
-After logging in you will see a **Welcome to Shekel!** banner with a setup checklist. Your account
-and budget categories are already created. Complete the remaining steps:
+After logging in you will see a **Welcome to Shekel!** banner with a setup checklist. Your account,
+budget categories and pay periods are already created: the pay periods come from the payday and
+cadence given at registration (`SEED_USER_LAST_PAYDAY` and `SEED_USER_CADENCE_DAYS` for the seeded
+owner). Complete the remaining steps:
 
-1. **Generate Pay Periods** -- Navigate to Pay Periods and enter your next payday, then generate.
-   This creates ~2 years of biweekly periods.
-2. **Set Up a Salary Profile** -- Go to Salary and create your income profile with deductions and
+1. **Set Up a Salary Profile** -- Go to Salary and create your income profile with deductions and
    tax info.
-3. **Create Recurring Transactions** -- Go to Templates and add your regular income and expenses
+2. **Create Recurring Transactions** -- Go to Templates and add your regular income and expenses
    with their recurrence patterns.
 
-Once all three steps are done, the welcome banner dismisses and the budget grid populates with your
+Once both steps are done, the welcome banner dismisses and the budget grid populates with your
 projected transactions. You can then set your **anchor balance** (click the balance display on the
 grid) to calibrate projections against your real checking account balance.
 

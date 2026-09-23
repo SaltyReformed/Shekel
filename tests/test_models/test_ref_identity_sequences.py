@@ -10,8 +10,9 @@ advance the table's identity sequence, so the sequence still offers id 1 while
 the table already holds it.  Nothing exercises that until a value is ADDED to
 the enum: ``ref_seeds.seed_reference_data`` then emits an id-less INSERT, asks
 the sequence for an id, gets one that exists, and fails on the primary key --
-at entrypoint step 4, mid-deploy, with the migrations of step 3 already
-applied.
+mid-deploy, inside entrypoint step 3's one transaction since ruling R-BAL122,
+so the release rolls back and the previous image is re-pinned (before it, at
+entrypoint step 4, with the migrations of step 3 already committed).
 
 **Why the gate is over EVERY ref sequence, discovered by query.**  Five tables
 were in that state before ``c7f3a9d1e864``, but naming them here would make
@@ -444,8 +445,8 @@ class TestEveryRefSequenceCanHandOutAFreshId:
             assert offenders == [], (
                 "these ref sequences would hand out an id the table already "
                 "holds, so the next id-less INSERT (ref_seeds adding a "
-                "missing row, at entrypoint step 4) fails on the primary key "
-                "mid-deploy: "
+                "missing row, inside entrypoint step 3) fails on the primary "
+                "key mid-deploy: "
                 + "; ".join(
                     f"ref.{t} offers id {n} but holds id {m}"
                     for t, n, m in offenders

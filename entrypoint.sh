@@ -255,12 +255,17 @@ echo "Role ready."
 # load_dotenv re-population) so it always runs as the owner role
 # (DATABASE_URL).  Migrations need DDL privileges; the app role has
 # DML only.
+#
+# ONE transaction, committed once (plan step balance:X-cv): the fresh
+# build or the migrations, the reference-data seed, the three deploy
+# hooks, the tax seed and the audit-trigger check commit together or not
+# at all (rulings R-BAL105, R-BAL122).  Those seeds and that check were
+# steps 4, 6 and 7, run after this commit; the numbers below are kept.
+# A failure here leaves alembic_version unmoved, so
+# deploy/shekel-deploy.sh can re-pin the previous image; a failure in a
+# LATER step lands after this commit.
 echo "Initializing database..."
 python scripts/init_database.py
-
-# ── 4. Seed reference data ─────────────────────────────────────
-echo "Seeding reference data..."
-python scripts/seed_ref_tables.py
 
 # ── 5. Seed initial user (optional, first run only) ────────────
 # Only runs if SEED_USER_EMAIL is set and non-empty AND the seed
@@ -284,9 +289,9 @@ python scripts/seed_ref_tables.py
 # /register web route uses -- so both create the identical shape in
 # one transaction: user, settings, the pay-period schedule, checking
 # account, baseline scenario, default categories, AND default tax
-# data.  seed_tax_brackets.py in the next step then finds the new
-# user's tax rows already present and skips them; it remains the
-# idempotent repair tool for pre-existing users with missing rows.
+# data.  Step 3 seeds the tax rows every EXISTING user lacks, on every
+# start; on a first boot it finds no user yet, so this registration is
+# what writes the owner's.
 #
 # SEED_USER_LAST_PAYDAY is REQUIRED when this step runs (plan step
 # X-ad-a): registration no longer invents a pay period, so the seeded
@@ -336,33 +341,6 @@ fi
 # credential to a Docker secret or first-run env_file -- planned for
 # Commit C-38.
 unset SEED_USER_PASSWORD SEED_USER_EMAIL SEED_USER_DISPLAY_NAME
-
-# ── 6. Seed tax brackets ──────────────────────────────────────
-echo "Seeding tax configuration..."
-python scripts/seed_tax_brackets.py
-echo "Seeding complete."
-
-# ── 7. Verify audit triggers exist ───────────────────────────────
-# Refuse to start Gunicorn if the rebuild migration did not
-# materialise the expected number of audit triggers.  The expected
-# count is sourced from app.audit_infrastructure.EXPECTED_TRIGGER_COUNT
-# so an additional audited table only needs an edit there -- no
-# parallel constant in shell.  See audit finding F-028 / Commit C-13.
-EXPECTED_TRIGGERS=$(python -c \
-    "from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT; \
-print(EXPECTED_TRIGGER_COUNT)")
-ACTUAL_TRIGGERS=$(PGPASSWORD="${DB_PASSWORD}" psql \
-    -h "${DB_HOST:-db}" -p "${DB_PORT:-5432}" \
-    -U "${DB_USER:-shekel_user}" -d "${DB_NAME:-shekel}" \
-    -tAc "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'audit_%' AND NOT tgisinternal")
-if [ "${ACTUAL_TRIGGERS}" -lt "${EXPECTED_TRIGGERS}" ]; then
-    echo "ERROR: Audit trigger health check failed." >&2
-    echo "       Expected at least ${EXPECTED_TRIGGERS} triggers, found ${ACTUAL_TRIGGERS}." >&2
-    echo "       Run 'flask db upgrade' to apply the audit rebuild migration," >&2
-    echo "       or check that scripts/init_database.py completed cleanly." >&2
-    exit 1
-fi
-echo "Audit trigger health OK: ${ACTUAL_TRIGGERS} triggers (expected >= ${EXPECTED_TRIGGERS})."
 
 # ── 8. Copy static files to shared volume ────────────────────────
 # When a static_files volume is MOUNTED (bundled mode, where the

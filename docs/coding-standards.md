@@ -209,11 +209,12 @@ canonical table list lives in `app/audit_infrastructure.py:AUDITED_TABLES`.
 
 - **Every new table in `auth`, `budget`, or `salary` MUST be added to `AUDITED_TABLES`.** Adding a
   table without auditing it leaves a gap in the forensic trail. Reference tables in the `ref` schema
-  are the only schema-level exception (read-only seed data managed by `scripts/seed_ref_tables.py`).
+  are the only schema-level exception (read-only seed data managed by `app/ref_seeds.py`).
 - **Add the table to `AUDITED_TABLES`, then re-run `flask db upgrade`.** The rebuild migration's
   idempotent `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER` pair attaches the audit trigger on the next
-  upgrade. The entrypoint trigger-count health check (`entrypoint.sh`) refuses to start Gunicorn if
-  the count is short of `EXPECTED_TRIGGER_COUNT`.
+  upgrade. The deploy's trigger-count check (`app.audit_infrastructure.require_audit_triggers`,
+  inside entrypoint step 3's one transaction) refuses the deploy, committing nothing, if the count
+  is short of `EXPECTED_TRIGGER_COUNT`.
 - **Never write directly to `system.audit_log`.** All rows must come through
   `system.audit_trigger_func`, which captures `app.current_user_id`, `db_user`, and `executed_at`
   via session-local state. Direct INSERTs from application code would bypass the user-id capture and

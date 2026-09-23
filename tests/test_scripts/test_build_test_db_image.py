@@ -231,6 +231,10 @@ class TestADockerFaultIsNotAVerdictAboutTheImage:
         assertion is about the raise TYPE and holds where no daemon exists.
         """
         with pytest.raises(_MODULE.DockerError):
+            # Pylint: ``protected-access`` -- ``_run`` is the builder's private
+            # helper and the unit under test here: its raise TYPE is the
+            # property, and no public entry point reaches it without docker.
+            # pylint: disable=protected-access
             _MODULE._run([sys.executable, "-c", "raise SystemExit(3)"])
 
     def test_the_fault_class_is_still_a_build_error(self) -> None:
@@ -244,7 +248,7 @@ class TestADockerFaultIsNotAVerdictAboutTheImage:
         rebuilt: list[str] = []
         monkeypatch.setattr(_MODULE, "image_tag", lambda: "shekel-test-db:deadbeef")
         monkeypatch.setattr(_MODULE, "image_exists", lambda tag: True)
-        monkeypatch.setattr(_MODULE, "build", lambda tag: rebuilt.append(tag))
+        monkeypatch.setattr(_MODULE, "build", rebuilt.append)
 
         def _no_start(tag: str) -> None:
             """Fail the way a refused container start does."""
@@ -270,7 +274,7 @@ class TestADockerFaultIsNotAVerdictAboutTheImage:
         rebuilt: list[str] = []
         monkeypatch.setattr(_MODULE, "image_tag", lambda: "shekel-test-db:deadbeef")
         monkeypatch.setattr(_MODULE, "image_exists", lambda tag: True)
-        monkeypatch.setattr(_MODULE, "build", lambda tag: rebuilt.append(tag))
+        monkeypatch.setattr(_MODULE, "build", rebuilt.append)
         monkeypatch.setattr(_MODULE, "_run", lambda *a, **k: None)
 
         def _stale(tag: str) -> None:
@@ -424,3 +428,100 @@ class TestTheFaultVerdictLineHoldsAtEverySite:
         assert "raise BuildError(" in body, (
             "ask() does not re-raise a failed query as a verdict"
         )
+
+
+class TestAFailedTemplateBuildReportsBothStreams:
+    """Ruling R-BAL121: the failure report quotes the builder's log AND its error.
+
+    The template builder runs the migration chain through the deploy's own
+    runner (``app.migration_runner``), so ``migrations/env.py`` leaves its
+    logging to the app: each revision is logged as JSON on STDOUT and the
+    traceback goes to stderr.  A report quoting stderr alone would drop the
+    line naming the revision that was running.
+    """
+
+    def test_the_report_quotes_the_log_tail_and_the_error(self):
+        """The last revisions logged and the traceback both appear; older lines do not."""
+        log = "\n".join(
+            f'{{"message": "Running upgrade r{i} -> r{i + 1}"}}'
+            for i in range(100)
+        )
+        report = _MODULE._builder_failure(log, "Traceback: forged failure\n")
+
+        tail = _MODULE._FAILED_BUILD_LOG_LINES
+        assert "Running upgrade r99 -> r100" in report
+        assert f"Running upgrade r{100 - tail} -> r{101 - tail}" in report
+        assert f"Running upgrade r{99 - tail} -> r{100 - tail}" not in report
+        assert report.rstrip().endswith("Traceback: forged failure")
+
+
+class TestTheTemplateBuilderStartsUnderThePinnedLocale:
+    """The scrubbed environment carries ``LC_ALL`` -- when there is one.
+
+    ``build`` runs ``build_test_template.py`` with only ``PATH``, ``HOME`` and
+    the admin DSN, and that builder calls ``create_app``, which refuses to
+    start without the pinned locale (plan step ``recurrence:R12``, ruling
+    ``R-R92``).  ``scripts/test.sh`` exports it, so a suite run that bakes the
+    image proves the pass-through arm -- every CI run does, since its runner
+    caches no image -- while a local run whose image is already built never
+    reaches ``build``.  No run proves the OTHER arm: a hand run from a shell
+    without ``LC_ALL`` must leave the variable ABSENT, not empty, because an
+    empty value stops the child's ``load_dotenv()`` taking it from a host
+    ``.env`` (dotenv never overrides a variable that is already set).
+    """
+
+    @staticmethod
+    def _builder_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+        """Run ``build`` with docker stubbed out; return the builder's env.
+
+        The builder is made to fail, which stops ``build`` right after the
+        one call under test.
+
+        Args:
+            monkeypatch: Used to stub docker and capture the subprocess call.
+
+        Returns:
+            The environment ``build`` handed ``build_test_template.py``.
+        """
+        seen: dict[str, str] = {}
+
+        def _capture(*_args: object, **kwargs: object) -> object:
+            """Record the builder's environment, then fail the build."""
+            seen.update(kwargs["env"])
+            return type(
+                "P", (), {"returncode": 1, "stdout": "", "stderr": "stopped"}
+            )()
+
+        monkeypatch.setattr(
+            _MODULE,
+            "_run",
+            lambda *a, **k: type(
+                "R", (), {"returncode": 0, "stdout": "", "stderr": ""}
+            )(),
+        )
+        monkeypatch.setattr(_MODULE, "_wait_ready", lambda container: None)
+        monkeypatch.setattr(_MODULE, "_mapped_port", lambda container: 5432)
+        monkeypatch.setattr(_MODULE.subprocess, "run", _capture)
+        with pytest.raises(
+            _MODULE.BuildError, match="build_test_template.py failed"
+        ):
+            _MODULE.build("shekel-test-db:deadbeef")
+        return seen
+
+    def test_the_parent_s_value_is_passed_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The parent's own value reaches the builder, whatever it is.
+
+        A sentinel rather than the pin, so a builder that wrote the pin
+        itself whenever the parent had any value would fail here.
+        """
+        monkeypatch.setenv("LC_ALL", "xx_XX.sentinel")
+        assert self._builder_env(monkeypatch)["LC_ALL"] == "xx_XX.sentinel"
+
+    def test_an_absent_value_stays_absent_rather_than_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shell with no ``LC_ALL`` leaves the child free to read ``.env``."""
+        monkeypatch.delenv("LC_ALL", raising=False)
+        assert "LC_ALL" not in self._builder_env(monkeypatch)

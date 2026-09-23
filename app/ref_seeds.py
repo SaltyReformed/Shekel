@@ -12,7 +12,8 @@ Two exports:
   upsert routine that populates every ref-schema table to a
   byte-identical state on every call.  Used by the application
   factory's dev/test convenience seed (``app/__init__.py``), the
-  standalone production seed script (``scripts/seed_ref_tables.py``),
+  deploy (``scripts/init_database.py``, inside entrypoint step 3's one
+  transaction), the manual repair script (``scripts/seed_ref_tables.py``),
   the pytest fixture stack (``tests/conftest.py``), and the test
   template builder (``scripts/build_test_template.py``).
 
@@ -377,12 +378,13 @@ def seed_reference_data(session: Session, *, verbose: bool = False) -> None:
             category PKs are visible to the AccountType inserts;
             it does NOT commit -- callers own the transaction
             boundary so they can wrap the seed in their own
-            commit / rollback contract (the production script
+            commit / rollback contract (the deploy commits it with
+            the rest of its one transaction; the repair script
             commits; conftest commits inside ``_seed_ref_tables``;
             the template builder commits after seeding).
         verbose: When True, prints one line per inserted row.  Used
-            by ``scripts/seed_ref_tables.py`` to give the operator
-            an audit trail during deploy.  Default False so test
+            by the deploy and ``scripts/seed_ref_tables.py`` to give
+            the operator an audit trail.  Default False so test
             paths run silently.
 
     Returns:
@@ -445,7 +447,7 @@ def _seed_account_types(
     Missing rows are INSERTed; existing rows have their metadata
     columns refreshed in place so a column-shape change in a future
     migration propagates correctly on the next seed (the canonical
-    behaviour shared by the conftest, ``app/__init__.py`` and
+    behaviour shared by the conftest, ``app/__init__.py``, deploy and
     ``scripts/seed_ref_tables.py`` seed paths).  Requires the
     ``AccountTypeCategory`` rows to already be flushed -- their PKs back
     the ``category_id`` FK.
