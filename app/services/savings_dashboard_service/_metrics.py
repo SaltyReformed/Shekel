@@ -207,9 +207,11 @@ class DebtSummary:
         payoff_outlook: The seam-derived
             :class:`~.._debt_line.LoanPayoffOutlook`, carried WHOLE -- the one
             derivation the Horizon chart's flag and axis read as well.
-        revolving_debt: The owed magnitude of every liability with no payoff
-            model (today, a revolving card), which the payoff date cannot
-            speak for and the caption therefore names (plan step X-q3).
+        revolving_debt: What is owed on every liability with no payoff model
+            (a revolving card, a loan with no terms, a custom liability), each
+            account's owed amount floored at zero and summed (ruling R-CC49),
+            which the payoff date cannot speak for and the caption therefore
+            names (plan step X-q3).
         principal_paid_fraction: The aggregate fraction of ORIGINAL principal
             repaid across every loan that has originated, a ``Decimal`` in
             ``[0, 1]`` -- the budget dashboard's debt-rail position.  ``None``
