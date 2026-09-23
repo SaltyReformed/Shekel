@@ -314,11 +314,13 @@ def reject_unsettleable(txn: Transaction) -> None:
     books nothing while stamping the row Paid and dated: a row that reads
     settled and is worth nothing.  The envelope branch refused this from the
     beginning and the MANUAL branch never did, and the gap was REACHABLE --
-    ``get_accessible_transaction`` does not filter ``is_deleted``, so
+    ``get_accessible_transaction`` did not filter ``is_deleted``, so
     ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
     flipped it into the settled band.  Measured on production: 102 soft-deleted
     rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
-    cost is to the data.
+    cost is to the data.  (The ownership doors answer a deleted row "not
+    found" since plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89**, so a
+    route no longer reaches this arm; a service caller still can.)
 
     Ordered shadow-then-deleted so a row that is both reports the rule that
     routes it somewhere else rather than the one that refuses it outright.  Both

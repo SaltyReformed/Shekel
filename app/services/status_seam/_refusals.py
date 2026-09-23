@@ -4,7 +4,7 @@ Shekel Budget App -- Status Seam: the refusals
 The invariants of a settlement stated as GUARDS, so every caller of the seam
 inherits them rather than each door remembering one.  They are gathered here
 because they are one subject -- what a row may and may not assert about its own
-money -- and because :func:`._seam.apply_status_change` runs four of them
+money -- and because :func:`._seam.apply_status_change` runs five of them
 ahead of any mutation, so a refused call leaves the row untouched; the two
 form readings beside it (``figure_for_status``, ``tender_for_status``) run
 the other two for the edit doors, ahead of the seam.
@@ -12,12 +12,14 @@ the other two for the edit doors, ahead of the seam.
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Five of the six are this project's answer to a rule that cannot be a CHECK
+Five of the seven are this project's answer to a rule that cannot be a CHECK
 constraint, and each says so in its own docstring: the settled-status
 questions need ``ref.statuses.is_settled``, which a constraint on
 ``budget.transactions`` cannot see, and the ref convention keeps status ids out
 of a schema; the stated-figure-over-purchases question is a count over
-another table (:func:`reject_stated_figure_over_purchases`).  (A seventh,
+another table (:func:`reject_stated_figure_over_purchases`).  One is the
+WORDS of a trigger: :func:`reject_settlement_on_a_deleted_row` says what
+:mod:`app.deleted_row_infrastructure` refuses.  (An eighth,
 ``reject_settle_day_without_a_record``, was the one that MIRRORED a CHECK --
 ``ck_transactions_settle_day_needs_a_record`` said in words -- and went with
 that CHECK and the row's figure columns at plan step ``balance:X-bi-4b-2``.)
@@ -274,6 +276,47 @@ def reject_stated_figure_over_purchases(
         f"Transaction {row.id} records its money as purchases, so a figure "
         "cannot be stated over them: what it cost is what its purchases say. "
         "To change the total, correct or add a purchase."
+    )
+
+
+def reject_settlement_on_a_deleted_row(
+    row: StatusBearingRow, settlement: Optional[Settlement],
+) -> None:
+    """Refuse a settlement record on a deleted row: a deleted row takes no money.
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89** (developer
+    2026-09-23: *"The two code paths that write money under a row refuse first,
+    with a readable sentence."*).  A record is what the seam's covering writer
+    (:func:`._covering.sync_covering_movement`) turns into a payment record
+    under the row, so refusing the record here is refusing that write, ahead of
+    any mutation.  The other path is ``entry_service.create_entry``'s refusal of
+    a purchase.  Measured by the step's third review: the popover's Actual
+    correction on a deleted Paid $120.00 Hotel reached the covering writer
+    through ``transaction_service.apply_requested_status``'s correction arm,
+    which the settle verbs' ``reject_unsettleable`` does not guard, and wrote a
+    dated $125.00 payment record under the hidden row.
+
+    **The words of a trigger**: :mod:`app.deleted_row_infrastructure` refuses
+    the same write in the database, for a writer that never reaches this door.
+    A record of ``None`` writes nothing and passes: a revert of a deleted row,
+    and a settle-day correction, move no money.  Both row kinds are asked,
+    because a ``Transfer`` has ``is_deleted`` too.
+
+    Args:
+        row: The row being written.
+        settlement: The record this call writes, or ``None``.
+
+    Raises:
+        ValidationError: When *settlement* is not ``None`` and *row* is
+            soft-deleted.  A 400, reachable only by a caller that skipped the
+            ownership doors, which answer a deleted row "not found".
+    """
+    if settlement is None or not row.is_deleted:
+        return
+    kind = "Transfer" if isinstance(row, Transfer) else "Transaction"
+    raise ValidationError(
+        f"{kind} {row.id} was deleted; a payment cannot be recorded on it.  "
+        "Reload the page."
     )
 
 

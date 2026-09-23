@@ -18,8 +18,9 @@ Three things are graded here, each against the SHIPPED schema or code:
 * **migration ``c4a4e7d1b9f2``** -- driven through its shipped ``upgrade`` /
   ``downgrade`` (Definition of Done item 7, the shape
   ``test_cc5_4a2_member_rekey`` uses): the three keys' exact definitions
-  each way, and the refusal on an act already naming no movement, which is
-  the one state the deleted leftover-match check existed for.
+  each way, the refusal on an act already naming no movement, which is
+  the one state the deleted leftover-match check existed for, and the
+  deleted-row triggers (ruling **R-CC89**) going and coming back with it.
 
 The purchase is staged the way finding **CC-363**'s P5 measured it: a one-off
 envelope 'Home Improvement' holding a $25.00 purchase recorded from the bank's
@@ -35,6 +36,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from app.deleted_row_infrastructure import DELETED_ROW_TRIGGERS
 from app.extensions import db as _db
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
@@ -110,6 +112,24 @@ def _keys(session):
         {"names": list(_NAMES)},
     ).all()
     return dict(rows)
+
+
+def _deleted_row_rule(session):
+    """Return ``(triggers, functions)`` of ruling R-CC89's two arms present now."""
+    return (
+        session.execute(
+            text("SELECT count(*) FROM pg_trigger "
+                 "WHERE tgname = ANY(:names) AND NOT tgisinternal"),
+            {"names": [name for name, _table in DELETED_ROW_TRIGGERS]},
+        ).scalar(),
+        session.execute(
+            text("SELECT count(*) FROM pg_proc p "
+                 "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                 "WHERE n.nspname = 'budget' AND p.proname IN ("
+                 "'refuse_movement_under_deleted_row', "
+                 "'refuse_hiding_a_row_holding_money')"),
+        ).scalar(),
+    )
 
 
 def _day(seed_user):
@@ -267,6 +287,17 @@ class TestTheMigration:
             assert _keys(db.session) == _BEFORE
             _run(_M.upgrade, db.session)
             assert _keys(db.session) == _AT_HEAD
+
+    def test_the_downgrade_removes_the_deleted_row_rule_and_the_upgrade_restores_it(
+        self, app, db,
+    ):
+        """Ruling **R-CC89**'s two triggers and functions go and come back with the revision."""
+        with app.app_context():
+            assert _deleted_row_rule(db.session) == (2, 2)
+            _run(_M.downgrade, db.session)
+            assert _deleted_row_rule(db.session) == (0, 0)
+            _run(_M.upgrade, db.session)
+            assert _deleted_row_rule(db.session) == (2, 2)
 
     def test_an_act_already_naming_no_movement_refuses_the_upgrade(
         self, app, db, seed_user,

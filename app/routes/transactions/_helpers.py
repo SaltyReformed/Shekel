@@ -41,7 +41,7 @@ from app.services.entry_service import (
 from app.services.pay_calendar import FiledRow, calendar_for
 from app.utils.auth_helpers import (
     get_accessible_transaction,
-    is_transfer_shadow,
+    is_not_found_to_transaction_doors,
     log_refused_lookup,
 )
 from app.utils.dates import display_today
@@ -554,25 +554,28 @@ def _get_owned_transaction(txn_id):
     :func:`app.routes._render_helpers.render_transaction_cell` is the one that
     names it -- see its own docstring, which this step re-measured.
 
-    **A transfer SHADOW row answers ``None`` too** (leaf ``balance:X-bi-6-1``,
-    ruling **R-BAL87**), through the one predicate
-    :func:`~app.utils.auth_helpers.is_transfer_shadow` states for both
-    ownership doors: the grid's leg cells call the transfer routes, so a
+    **A transfer SHADOW row and a DELETED row answer ``None`` too**, through
+    the one predicate
+    :func:`~app.utils.auth_helpers.is_not_found_to_transaction_doors` states
+    for both ownership doors.  A shadow (leaf ``balance:X-bi-6-1``, ruling
+    **R-BAL87**): the grid's leg cells call the transfer routes, so a
     transaction door asked about a shadow is a stale page or a probe, and
     admitting it would let a regular PATCH write past the transfer's
-    invariants.  The interval's fence; ``X-bi-6``'s last leaf deletes the
-    rows and the predicate with them.
+    invariants -- the interval's fence, which ``X-bi-6``'s last leaf deletes
+    with the rows.  A deleted row (ruling **R-CC89**): it takes no money, and
+    a stale popover's Save or Mark Credit on one wrote a payment record or a
+    card payback under a row no screen shows.
 
     Returns:
-        Transaction if found, owned by current_user and not a transfer
-        shadow, else None.
+        Transaction if found, owned by current_user, not a transfer shadow
+        and not deleted, else None.
     """
     txn = db.session.get(Transaction, txn_id)
     if txn is None:
         return None
     if txn.user_id != current_user.id:
         return None
-    if is_transfer_shadow(txn):
+    if is_not_found_to_transaction_doors(txn):
         return None
     return txn
 

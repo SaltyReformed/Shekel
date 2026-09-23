@@ -539,11 +539,13 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     ``definition_delete.permanently_delete_definition``; guard 3 has already
     refused a recurring one), so a movement on this account under a row that
     is NEITHER -- a plan item that lives elsewhere and whose money crossed
-    here -- is what this counts, whatever its row's ``is_deleted`` says (no
-    door leaves a hidden row holding one since rulings **R-CC63** / **R-CC75**,
-    and the release's migration refuses to inherit one, **R-CC82**; the count
-    does not rely on either): the row is not checking's ghost to hard-delete,
-    and the swipe still names the card.  A
+    here -- is what this counts, whatever its row's ``is_deleted`` says.  (A
+    hidden row that is not a transfer's leg holds none, which the database
+    holds: none can arrive under a hidden row, ruling **R-CC89**; no row can
+    be hidden holding one, **R-CC92**; and the release's migration refuses to
+    inherit one, **R-CC82**.  A hidden leg can still hold its kept payment,
+    finding **BAL-532**.  The count relies on none of this.)  The row is not
+    checking's ghost to hard-delete, and the swipe still names the card.  A
     movement under a row the cleanup DOES remove is
     :func:`account_holding_movements`' (plan step ``credit_card:CC-5-4a-4``):
     until that step a ghost's movement cascaded with it

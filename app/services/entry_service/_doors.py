@@ -360,11 +360,16 @@ def create_entry(
     # **A DELETED row takes no purchase** (plan step ``credit_card:CC-5-4a-4``,
     # its second review, H1).  Deleting a recurring occurrence empties it and
     # keeps it as a tombstone (ruling **R-CC75**: "A hidden row then never
-    # holds money"), and ``get_accessible_transaction`` does not filter
+    # holds money"), and ``get_accessible_transaction`` did not filter
     # ``is_deleted`` -- so a stale grid (a companion's open page) posting here
     # put a purchase back under a row no screen shows, which locked its pay
     # period with no row to delete it from.  The settle doors' own refusal of
     # the same row (``transaction_service._row_rules.reject_unsettleable``).
+    # One of the three layers of ruling **R-CC89** ("a deleted row takes no
+    # money"): the ownership doors now answer a deleted row "not found", so a
+    # route no longer reaches here with one; a service caller that skipped
+    # them still could, and :mod:`app.deleted_row_infrastructure` refuses the
+    # write in the database for one that skips this line too.
     if txn.is_deleted:
         raise ValidationError(
             f"Transaction {txn.id} was deleted; a purchase cannot be added "

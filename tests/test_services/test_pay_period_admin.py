@@ -190,15 +190,18 @@ class TestClassifyPeriodLock:
             periods = _make_future_periods(db.session, seed_user)
             deleted = add_txn(
                 db.session, seed_user, periods[1], "Rent", "1200.00",
-                status_enum=StatusEnum.DONE, is_deleted=True,
+                status_enum=StatusEnum.DONE,
             )
             # The state the delete door leaves (ruling R-CC75): its payment
-            # taken off through the one removal act.  Rule-5 re-expression,
-            # developer-confirmed 2026-09-23.
+            # taken off through the one removal act, then the row hidden --
+            # in that order, because the database refuses a payment written
+            # under a hidden row (R-CC89) and a row hidden holding one
+            # (R-CC92).  Rule-5 re-expressions, developer-confirmed 2026-09-23.
             movement_removal.remove_movements(
                 list(deleted.entries), seed_user["user"].id,
                 because=match_withdrawal.LEFT_THE_BOOKS,
             )
+            deleted.is_deleted = True
             assert _lock(periods[1], display_today()) is None
 
     def test_a_hidden_row_still_holding_its_payment_locks(

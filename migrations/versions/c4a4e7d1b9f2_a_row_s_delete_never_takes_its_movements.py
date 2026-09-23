@@ -5,7 +5,8 @@ Revises: 2eabfa596ee0
 Create Date: 2026-09-22 22:40:00.000000
 Review: developer, 2026-09-22 / 2026-09-23 (rulings R-CC54 parts (2) and (3),
 R-CC63..R-CC66, R-CC82: three foreign keys dropped and re-created NO ACTION,
-and the two refusals before them)
+and the two refusals before them; R-CC89 and R-CC92: the deleted-row
+triggers)
 
 Plan step ``credit_card:CC-5-4a-4``.  Rulings **R-CC54** parts (2) and (3)
 (developer 2026-09-22): *"The database stops cascading a row's delete to its
@@ -64,13 +65,31 @@ payment after this release, which is finding **BAL-532**'s
 (``balance:X-bi-6-4``) to end, and a refusal over a state the release goes on
 creating would stop nothing it fixes.
 
+**And a deleted row holds no money from here on** (ruling **R-CC89**,
+developer 2026-09-23: *"The database refuses any payment or purchase written
+under a deleted row, so no door, now or later, can do it."*, and **R-CC92**
+extending it the same day, "Refuse both ways": hiding a row that still holds
+one is refused too, a transfer's leg excepted as BAL-532's until X-bi-6-4).  The revision installs
+:mod:`app.deleted_row_infrastructure`'s two triggers after the keys: a
+movement arriving under a deleted row is refused, and so is a commit that
+leaves a non-transfer row hidden while it holds one.  Each grades a write,
+never a stored row, so neither refuses anything already there -- and the
+refusal above has already stopped the upgrade over the one stored state the
+second would forbid.  The downgrade removes them FIRST, before the keys
+cascade again, and they depend on nothing the key flips do.
+
 ``tests/test_models/test_cc5_4a4_row_keeps_its_movements.py`` drives the
 shipped ``upgrade`` / ``downgrade``: each key's refusal after the upgrade and
-its cascade after the downgrade, both refusals and their controls, and the
-round trip.
+its cascade after the downgrade, both refusals and their controls, the
+triggers' install and removal, and the round trip.
 """
 from alembic import op
 import sqlalchemy as sa
+
+from app.deleted_row_infrastructure import (
+    apply_deleted_row_infrastructure,
+    remove_deleted_row_infrastructure,
+)
 
 
 # revision identifiers, used by Alembic.
@@ -196,15 +215,18 @@ def upgrade():
     _recreate(row_key, ondelete=None, name=_ROW_KEY_NEW_NAME)
     _recreate(_OWNER_KEY, ondelete=None)
     _recreate(_MEMBER_KEY, ondelete=None)
+    apply_deleted_row_infrastructure(op.execute)
     print(
         "CC-5-4a-4: transaction_entries' two row keys and "
         "statement_match_members' movement key are NO ACTION; 0 stranded "
-        "acts; 0 hidden rows holding a movement."
+        "acts; 0 hidden rows holding a movement; a movement arriving under a "
+        "deleted row, and a row hidden while it holds one, are refused."
     )
 
 
 def downgrade():
-    """Restore the three keys' ``ON DELETE CASCADE`` and the old key name."""
+    """Remove the deleted-row triggers, then restore the three keys' cascade."""
+    remove_deleted_row_infrastructure(op.execute)
     row_key = (
         _ROW_KEY_NEW_NAME, "transaction_entries", ["transaction_id"],
         "transactions", ["id"],

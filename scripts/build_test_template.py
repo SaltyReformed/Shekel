@@ -160,6 +160,7 @@ from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.level_infrastructure import apply_level_infrastructure
 from app.sighting_infrastructure import apply_sighting_infrastructure
+from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -309,6 +310,14 @@ def _populate_template(app) -> None:
         # A bank line goes with its last sighting (plan step
         # bank_import:X-f6b-1): idempotent re-application, same contract.
         apply_sighting_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # A deleted row takes no money (plan step credit_card:CC-5-4a-4):
+        # idempotent re-application, same contract, and a rule a FIXTURE can
+        # trip -- one that stages a movement under a hidden row.
+        apply_deleted_row_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

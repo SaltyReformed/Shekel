@@ -69,6 +69,7 @@ from alembic.config import Config
 
 from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
+from app.deleted_row_infrastructure import apply_deleted_row_infrastructure
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.sighting_infrastructure import apply_sighting_infrastructure
@@ -215,6 +216,16 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Last-sighting rule ready.")
+
+    # A deleted row takes no money (plan step credit_card:CC-5-4a-4, ruling
+    # R-CC89): a payment or purchase arriving under a deleted row is refused.
+    # Same fresh-DB reason, same three-caller contract.
+    print("Applying deleted-row rule (payments and purchases)...")
+    apply_deleted_row_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Deleted-row rule ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

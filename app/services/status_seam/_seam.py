@@ -47,6 +47,7 @@ from app.services.status_seam._refusals import (
     reject_figure_without_settled_status,
     reject_future_settle_day,
     reject_settle_day_without_settled_status,
+    reject_settlement_on_a_deleted_row,
     reject_settlement_without_settled_status,
     reject_stated_figure_over_purchases,
     reject_tender_without_settled_status,
@@ -521,6 +522,11 @@ def apply_status_change(
     # X-au-c3): a row records what moved only while it is settled.  Ordered with
     # the refusals above, and for the identical reason.
     reject_settlement_without_settled_status(new_status_id, settlement)
+
+    # A deleted row takes no money (ruling **R-CC89**): the record is what the
+    # covering writer below turns into a payment under the row, so it is
+    # refused here, ahead of any mutation like the three above.
+    reject_settlement_on_a_deleted_row(row, settlement)
 
     # (``reject_settle_day_without_a_record`` stood here through plan step
     # ``balance:X-bi-4b-1`` -- ``ck_transactions_settle_day_needs_a_record``

@@ -500,9 +500,11 @@ def _trigger_family_check(module: str, attribute: str) -> tuple[str, int]:
     """Return the SQL that counts one trigger family, and the count it must find.
 
     One attachment per entry in the named ``(trigger name, table)`` constant:
-    ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``)
-    and ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
-    ``bank_import:X-f6b-1``).  BOTH halves come from that one constant -- the
+    ``app.level_infrastructure.LEVEL_TRIGGERS`` (plan step ``balance:X-bj-1``),
+    ``app.sighting_infrastructure.SIGHTING_TRIGGERS`` (plan step
+    ``bank_import:X-f6b-1``) and
+    ``app.deleted_row_infrastructure.DELETED_ROW_TRIGGERS`` (plan step
+    ``credit_card:CC-5-4a-4``).  BOTH halves come from that one constant -- the
     names the query looks for and the number it must find -- so the check
     cannot count a trigger the module renamed, nor accept a template missing
     one.
@@ -716,6 +718,12 @@ def _verify_image(tag: str) -> None:
                 "last-sighting triggers",
                 *_trigger_family_check(
                     "app.sighting_infrastructure", "SIGHTING_TRIGGERS",
+                ),
+            ),
+            (
+                "deleted-row triggers",
+                *_trigger_family_check(
+                    "app.deleted_row_infrastructure", "DELETED_ROW_TRIGGERS",
                 ),
             ),
         ):

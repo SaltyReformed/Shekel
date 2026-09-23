@@ -82,10 +82,14 @@ def rows_holding_purchase_postings(*scope):
     delete no longer reach a row holding a movement (rulings **R-CC63**,
     **R-CC54**), and a row holds a posting only through one, so both loops
     were deleted.  The restore keeps it although it finds nothing since that
-    step: no door leaves a hidden row holding a movement (rulings **R-CC63**,
-    **R-CC75**) and the release's migration refuses to inherit one (**R-CC82**)
-    -- kept as the restore's own statement of what it re-posts rather than an
-    argument that nothing could.
+    step, because a definition's hidden row holds no movement, and the
+    DATABASE holds that: a movement cannot arrive under a hidden row (ruling
+    **R-CC89**), a row cannot be hidden while it holds one (**R-CC92**), and
+    the release's migration refuses to inherit one (**R-CC82**) --
+    :mod:`app.deleted_row_infrastructure`.  (A transfer's leg is the one hidden
+    row that can still hold its kept payment, finding **BAL-532**, and a
+    transfer's leg is no definition's row.)  Kept as the restore's own
+    statement of what it re-posts rather than an argument that nothing could.
 
     Args:
         *scope: The SQLAlchemy clauses selecting the rows the bulk statement is
