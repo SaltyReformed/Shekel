@@ -1,0 +1,823 @@
+"""Shekel Budget App -- the pay stub ENTRY door's service (plan step salary:S11-b).
+
+A real pay stub is TRANSCRIBED line by line into the four tables of
+:mod:`app.models.pay_stub` (``S11-a``) through this service and nothing else.
+It moves ``$0.00``: no paycheck prices from a stub until the engine's
+calibrated path (``S11-c``); the old calibration keeps pricing until then.
+
+**What the door refuses, and whose rule each refusal is:**
+
+* a date that is not a payday the app holds or projects a paycheck for
+  (ruling **R-SAL49**, "Record the payday first"), and a payday later than the
+  owner's next one (**R-SAL48**, "Up to next payday") -- asked of a new stub
+  and of an edit that CHANGES the date, never of an edit that keeps it
+  (**R-SAL53**, "Keep its date, allow edits": a stub whose payday later left
+  the pay record stays correctable in place).  One test answers both
+  "is it a payday" and "what does the app price that day": the calendar's own
+  span, :meth:`~app.services.pay_calendar.PayCalendar.span_containing`.  A day
+  below the record is refused as the record's (``your pay record starts
+  ...``); once the pay calendar's "Add earlier paychecks" door exists
+  (``pay_calendar:C18-b``, not yet built), an earlier stub gets in by
+  recording its payday there first;
+* a NEW stub on a payday that already holds one, and an edit that moves a
+  stub onto such a payday (fork 4, "One per payday", as ruling **R-SAL52**,
+  "Refuse, show the saved one", amends it: nothing is overwritten unseen --
+  the entry flow opens a held payday's stub instead);
+* a stub missing any of the four taxes (``$0.00`` is a figure, a blank is
+  not: decomposition item 2, "the four taxes required");
+* a printed net the lines do not add up to, to the cent (ruling **R-SAL42**,
+  decomposition item 2: typed once as a check, never stored);
+* a one-off named like one of the profile's paycheck lines or a tax, or like
+  another one-off on the same stub (ruling **R-SAL45**, compared ignoring
+  capitals and extra spaces, **R-SAL51** (b)).
+
+The payday's calendar range, the base pay and the amount bounds are the entry
+schema's; a line or kind id the owner does not hold is not a refusal but a
+NOT-FOUND (the 404 rule).
+
+**Every write keys on the owned profile and stub, never on input.**  A stub's
+``salary_profile_id`` is the profile the route resolved; a child row's
+``pay_stub_id`` is never read from input at all (review L5 of ``S11-a``): each
+child is appended to, updated on or removed from its stub's own collection, so
+the database's keys are the only thing that places it.
+
+**An edit writes the stub ROW whenever it changes anything**, including a
+child-only edit, because the row's ``version_id`` guards the stub as one act
+only if the row is in the UPDATE (``PayStub``'s docstring: SQLAlchemy bumps it
+for the row alone).  An edit that changes nothing writes nothing and bumps
+nothing -- the status seam's rule -- so re-saving a form nobody changed is not
+a conflict.  A DOUBLE submit whose first post changed the stub IS one: the
+second carries the version the first consumed, and the route turns it away
+as stale like every versioned form in the app.
+
+Flask-free: takes plain values and ORM rows, returns plain values; every
+function that prices takes the route's
+:class:`~app.services.balance_at.BalanceContext`.
+"""
+
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
+
+from sqlalchemy import inspect
+from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
+
+from app import ref_cache
+from app.enums import PaycheckLineKindEnum
+from app.exceptions import NotFoundError, PayStubRefused
+from app.extensions import db
+from app.models.pay_stub import (
+    PayStub,
+    PayStubLineAmount,
+    PayStubOneOff,
+    PayStubWithholding,
+)
+from app.models.paycheck_line import PaycheckLine
+from app.models.salary_profile import SalaryProfile
+from app.services import paycheck_line_kinds, withholding_kinds
+from app.services.pay_calendar import PayCalendar, span_starting_on_or_after
+from app.services.paycheck_calculator import waterfall_gross, waterfall_net
+from app.utils.money import ZERO
+
+if TYPE_CHECKING:
+    from app.services.balance_at import BalanceContext
+    from app.services.pay_calendar import DerivedPeriod
+
+
+# ── Values ─────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class OneOffFigure:
+    """One named one-off a stub prints (fork 8b, "Keep it as a one-off").
+
+    Attributes:
+        name: The name as printed, outer spaces trimmed.
+        paycheck_line_kind_id: Which of the four paycheck-line kinds it is.
+        amount: Its figure, ``>= 0``.
+    """
+    name: str
+    paycheck_line_kind_id: int
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class StubFigures:
+    """Everything a stub RECORDS, as the entry form states it.
+
+    The printed net is not here: it is a CHECK the door runs, not a figure the
+    stub keeps (rule 14 -- the net is derived from these).
+
+    Attributes:
+        payday: The stub's date.
+        base_pay: The base pay line, ``> 0``.
+        line_amounts: ``paycheck_line_id -> amount`` for each of the profile's
+            paycheck lines the stub prints; a line it does not print is absent.
+        withholdings: ``withholding_kind_id -> amount``, one per tax.
+        one_offs: The one-offs, in the order the form listed them.
+        notes: Free text, or ``None``.
+    """
+    payday: date
+    base_pay: Decimal
+    line_amounts: Mapping[int, Decimal]
+    withholdings: Mapping[int, Decimal]
+    one_offs: tuple[OneOffFigure, ...]
+    notes: str | None
+
+
+@dataclass(frozen=True)
+class StubTotals:
+    """What a stub's figures ADD UP to -- derived, never stored.
+
+    Attributes:
+        gross: Base pay plus the taxable earnings.
+        pre_tax: The pre-tax deductions.
+        taxes: The four taxes.
+        post_tax: The post-tax deductions.
+        after_tax: The after-tax earnings.
+        net: :func:`~app.services.paycheck_calculator.waterfall_net` of the
+            five above, the rule a priced paycheck's net uses too.
+    """
+    gross: Decimal
+    pre_tax: Decimal
+    taxes: Decimal
+    post_tax: Decimal
+    after_tax: Decimal
+    net: Decimal
+
+
+@dataclass(frozen=True)
+class LineComparison:
+    """One paycheck line set beside itself: the stub's figure and the app's.
+
+    Fork 2, "Taxes only": "When you enter a stub, the app lists any line that
+    disagrees with it so you can fix one side."  ``None`` on a side means that
+    side does not have the line on this payday -- the stub does not print it,
+    or the app does not take it.
+
+    Attributes:
+        name: The paycheck line's name.
+        kind_label: Its kind, worded (:data:`~app.services.paycheck_line_kinds.LABELS`).
+        on_stub: The stub's figure, or ``None``.
+        in_app: What the app prices the line at that payday, or ``None``.
+    """
+    name: str
+    kind_label: str
+    on_stub: Decimal | None
+    in_app: Decimal | None
+
+    @property
+    def agrees(self) -> bool:
+        """Whether both sides have the line at the same figure."""
+        return self.on_stub == self.in_app
+
+
+@dataclass(frozen=True)
+class OneOffRow:
+    """A one-off as the report lists it: its name, its kind worded, its figure.
+
+    Attributes:
+        name: The one-off's own name.
+        kind_label: Its kind, worded (:data:`~app.services.paycheck_line_kinds.LABELS`).
+        amount: The figure.
+    """
+    name: str
+    kind_label: str
+    amount: Decimal
+
+
+@dataclass(frozen=True)
+class StubReport:
+    """A saved stub set beside the paycheck the app prices on its payday.
+
+    Attributes:
+        totals: What the stub's figures add up to.
+        app_base_pay: The salary's base pay that payday, or ``None`` when the
+            app holds no paycheck there any longer (the pay record moved).
+        base_gap: The stub's base pay less the salary's (fork 5, "The app's
+            salary": the entry screen shows the gap), or ``None`` with it.
+        lines: Every paycheck line the stub prints or the app takes that
+            payday, in the profile's line order.
+        one_offs: The one-offs, in the order they were entered.
+    """
+    totals: StubTotals
+    app_base_pay: Decimal | None
+    base_gap: Decimal | None
+    lines: tuple[LineComparison, ...]
+    one_offs: tuple[OneOffRow, ...]
+
+    @property
+    def disagreements(self) -> int:
+        """How many lines disagree -- the count the screen leads with."""
+        return sum(1 for line in self.lines if not line.agrees)
+
+
+@dataclass(frozen=True)
+class StubSummary:
+    """One stub as the profile page's "Pay stubs" card lists it (**R-SAL51** (a)).
+
+    Attributes:
+        stub_id: The stub's id, for its link and its switch.
+        payday: Its date.
+        net: What its figures add up to.
+        use_for_pricing: Its switch.
+        version_id: The row's counter, which the switch's form carries.
+    """
+    stub_id: int
+    payday: date
+    net: Decimal
+    use_for_pricing: bool
+    version_id: int
+
+
+@dataclass(frozen=True)
+class FormLines:
+    """The profile's paycheck lines, split the way the entry form lists them.
+
+    Ruling **R-SAL50**, "Pick the payday first": "the form lists the paycheck
+    lines the app takes that payday ..., the lines it doesn't take that payday
+    under their own heading".
+
+    Attributes:
+        taken: The lines the app prices on the payday, in line order.
+        not_taken: Every other line of the profile, in line order.
+    """
+    taken: tuple[PaycheckLine, ...]
+    not_taken: tuple[PaycheckLine, ...]
+
+
+# ── The payday ─────────────────────────────────────────────────────
+
+
+def payday_refusal(ctx: "BalanceContext", day: date, today: date) -> str | None:
+    """Return why *day* cannot carry a stub, or ``None`` when it can.
+
+    Rulings **R-SAL49** and **R-SAL48**: the day must open a paycheck the app
+    holds or projects -- the calendar's span covering it STARTS on it -- and
+    must not be later than the owner's next payday (the first span opening on
+    or after *today*).  So on 2026-09-23 the 2026-09-24 stub is accepted and
+    the 2026-10-08 one is refused until 2026-09-24 has passed.
+
+    Args:
+        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
+        day: The stub's date.
+        today: The owner's civil today (the display timezone's).
+
+    Returns:
+        The message to show, or ``None``.
+    """
+    calendar = ctx.calendar()
+    if _paycheck_on(calendar, day) is None:
+        opening = calendar.opening_bound()
+        if opening is not None and day < opening:
+            return (
+                f"The app holds no paycheck on {day.isoformat()}: your pay "
+                f"record starts {opening.isoformat()}."
+            )
+        return f"{day.isoformat()} is not one of your paydays."
+    upcoming = span_starting_on_or_after(calendar, today)
+    if upcoming is not None and day > upcoming.start_date:
+        return (
+            f"{day.isoformat()} has not been paid yet.  A stub can be entered "
+            f"up to your next payday, {upcoming.start_date.isoformat()}."
+        )
+    return None
+
+
+def _paycheck_on(calendar: PayCalendar, day: date) -> "DerivedPeriod | None":
+    """Return the paycheck period that opens on *day*, or ``None``.
+
+    Saved or projected forward (``span_containing``); nothing below the
+    record, where the calendar holds no paycheck.
+    """
+    span = calendar.span_containing(day)
+    if span is None or span.start_date != day:
+        return None
+    return span
+
+
+# ── Reads ──────────────────────────────────────────────────────────
+
+
+def stub_summaries(profile: SalaryProfile) -> list[StubSummary]:
+    """Return one :class:`StubSummary` per stub of *profile*, newest payday first.
+
+    The three child collections load in one ``SELECT ... IN`` each for every
+    stub at once, not three per stub: the card renders on every visit to the
+    profile page.
+    """
+    stubs = (
+        db.session.query(PayStub)
+        .options(
+            selectinload(PayStub.line_amounts),
+            selectinload(PayStub.withholdings),
+            selectinload(PayStub.one_offs),
+        )
+        .filter(PayStub.salary_profile_id == profile.id)
+        .order_by(PayStub.payday.desc())
+        .all()
+    )
+    return [
+        StubSummary(
+            stub_id=stub.id, payday=stub.payday,
+            net=totals_of(profile, figures_of(stub)).net,
+            use_for_pricing=stub.use_for_pricing, version_id=stub.version_id,
+        )
+        for stub in stubs
+    ]
+
+
+def stub_on(profile: SalaryProfile, day: date) -> PayStub | None:
+    """Return the profile's stub dated *day*, or ``None``."""
+    return (
+        db.session.query(PayStub)
+        .filter(PayStub.salary_profile_id == profile.id, PayStub.payday == day)
+        .one_or_none()
+    )
+
+
+def form_lines(profile: SalaryProfile, ctx: "BalanceContext", day: date) -> FormLines:
+    """Split the profile's lines into those the app takes on *day* and the rest.
+
+    Args:
+        profile: The owned salary profile.
+        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
+        day: The payday the form is for: one :func:`payday_refusal`
+            accepted, a saved stub's, or a refused form's re-rendered date.
+
+    Returns:
+        The :class:`FormLines`.  With no paycheck on *day* (a saved stub whose
+        payday the record no longer holds) every line is "not taken".
+    """
+    priced = _app_paycheck(profile, ctx, day)
+    taken_ids = priced[1].keys() if priced is not None else set()
+    return FormLines(
+        taken=tuple(line for line in profile.lines if line.id in taken_ids),
+        not_taken=tuple(line for line in profile.lines if line.id not in taken_ids),
+    )
+
+
+def figures_of(stub: PayStub) -> StubFigures:
+    """Return what a saved stub records, as the entry form states it."""
+    return StubFigures(
+        payday=stub.payday,
+        base_pay=stub.base_pay,
+        line_amounts={row.paycheck_line_id: row.amount for row in stub.line_amounts},
+        withholdings={row.withholding_kind_id: row.amount for row in stub.withholdings},
+        one_offs=tuple(
+            OneOffFigure(row.name, row.paycheck_line_kind_id, row.amount)
+            for row in sorted(stub.one_offs, key=lambda row: row.id)
+        ),
+        notes=stub.notes,
+    )
+
+
+def totals_of(profile: SalaryProfile, figures: StubFigures) -> StubTotals:
+    """Return what *figures* add up to, each line by its own kind.
+
+    Args:
+        profile: The owned profile whose lines *figures* names.
+        figures: The stub's figures.
+
+    Returns:
+        The :class:`StubTotals`.
+
+    Raises:
+        NotFoundError: *figures* names a line the profile does not hold.
+    """
+    kind_ids = {line.id: line.paycheck_line_kind_id for line in profile.lines}
+    by_kind = {member: ZERO for member in PaycheckLineKindEnum}
+    for line_id, amount in figures.line_amounts.items():
+        if line_id not in kind_ids:
+            raise NotFoundError(f"paycheck line {line_id} is not this profile's")
+        by_kind[ref_cache.paycheck_line_kind_member(kind_ids[line_id])] += amount
+    for one_off in figures.one_offs:
+        by_kind[ref_cache.paycheck_line_kind_member(one_off.paycheck_line_kind_id)] += (
+            one_off.amount
+        )
+    gross = waterfall_gross(figures.base_pay, by_kind[PaycheckLineKindEnum.TAXABLE_EARNING])
+    taxes = sum(figures.withholdings.values(), ZERO)
+    pre_tax = by_kind[PaycheckLineKindEnum.PRE_TAX_DEDUCTION]
+    post_tax = by_kind[PaycheckLineKindEnum.POST_TAX_DEDUCTION]
+    after_tax = by_kind[PaycheckLineKindEnum.AFTER_TAX_EARNING]
+    return StubTotals(
+        gross=gross, pre_tax=pre_tax, taxes=taxes, post_tax=post_tax,
+        after_tax=after_tax,
+        net=waterfall_net(gross, pre_tax, taxes, post_tax, after_tax),
+    )
+
+
+def stub_report(profile: SalaryProfile, stub: PayStub, ctx: "BalanceContext") -> StubReport:
+    """Set a saved stub beside the paycheck the app prices on its payday.
+
+    Args:
+        profile: The stub's (owned) profile.
+        stub: The saved stub.
+        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
+
+    Returns:
+        The :class:`StubReport`.
+    """
+    figures = figures_of(stub)
+    priced = _app_paycheck(profile, ctx, stub.payday)
+    app_base, app_lines = priced if priced is not None else (None, {})
+    lines = tuple(
+        LineComparison(
+            name=line.name,
+            kind_label=_kind_label(line.paycheck_line_kind_id),
+            on_stub=figures.line_amounts.get(line.id),
+            in_app=app_lines.get(line.id),
+        )
+        for line in profile.lines
+        if line.id in figures.line_amounts or line.id in app_lines
+    )
+    return StubReport(
+        totals=totals_of(profile, figures),
+        app_base_pay=app_base,
+        base_gap=(figures.base_pay - app_base) if app_base is not None else None,
+        lines=lines,
+        one_offs=tuple(
+            OneOffRow(
+                one_off.name, _kind_label(one_off.paycheck_line_kind_id), one_off.amount,
+            )
+            for one_off in figures.one_offs
+        ),
+    )
+
+
+def _app_paycheck(
+    profile: SalaryProfile, ctx: "BalanceContext", day: date,
+) -> tuple[Decimal, dict[int, Decimal]] | None:
+    """Price the app's own paycheck on *day*: ``(base pay, {line id: amount})``.
+
+    Through the read pass's pricer, the one every salary surface reads, so the
+    comparison shows what the grid and the cockpit show.  ``None`` when the
+    app holds no paycheck on *day*.
+    """
+    period = _paycheck_on(ctx.calendar(), day)
+    if period is None:
+        return None
+    breakdown = ctx.paychecks().for_profile(profile).at(period)
+    priced = (
+        *breakdown.earnings.taxable, *breakdown.deductions.pre_tax,
+        *breakdown.deductions.post_tax, *breakdown.earnings.after_tax,
+    )
+    return (
+        breakdown.earnings.base_biweekly,
+        {line.paycheck_line_id: line.amount for line in priced},
+    )
+
+
+def _kind_label(kind_id: int) -> str:
+    """Word a paycheck-line kind id through the one label map."""
+    return paycheck_line_kinds.LABELS[ref_cache.paycheck_line_kind_member(kind_id)]
+
+
+# ── Writes ─────────────────────────────────────────────────────────
+
+
+def record_stub(
+    profile: SalaryProfile, figures: StubFigures, printed_net: Decimal,
+    ctx: "BalanceContext", today: date,
+) -> PayStub:
+    """Record a NEW stub for *figures.payday*; a payday already holding one is refused.
+
+    Fork 4 ("One per payday") as ruling **R-SAL52**, "Refuse, show the saved
+    one", amends it: the entry flow opens a held payday's stub
+    at its first step (**R-SAL50**), so a record reaching a held payday is a
+    form left open while the same payday was entered elsewhere, and it is
+    refused rather than let overwrite figures the owner never saw.
+
+    Args:
+        profile: The owned profile.
+        figures: The stub's figures (shape-checked by the entry schema).
+        printed_net: The net the stub prints, checked and discarded.
+        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
+        today: The owner's civil today.
+
+    Returns:
+        The stub, flushed.
+
+    Raises:
+        PayStubRefused: Any refusal the module docstring lists.
+        NotFoundError: *figures* names a line or kind the owner does not hold.
+    """
+    errors = _payday_errors(ctx, figures.payday, today)
+    if not errors and stub_on(profile, figures.payday) is not None:
+        errors["payday"] = held_payday_refusal(figures.payday)
+    _refuse(profile, figures, printed_net, errors)
+    stub = PayStub(salary_profile_id=profile.id, payday=figures.payday,
+                   base_pay=figures.base_pay, notes=figures.notes)
+    db.session.add(stub)
+    _write(stub, figures)
+    db.session.flush()
+    return stub
+
+
+def edit_stub(
+    stub: PayStub, figures: StubFigures, printed_net: Decimal,
+    ctx: "BalanceContext", today: date,
+) -> PayStub:
+    """Rewrite a saved stub's figures, its payday included.
+
+    Args:
+        stub: The saved stub, its ownership and version already checked by
+            the route; its profile is the one its lines must belong to.
+        figures: The stub's figures (shape-checked by the entry schema).
+        printed_net: The net the stub prints, checked and discarded.
+        ctx: The route's :class:`~app.services.balance_at.BalanceContext`.
+        today: The owner's civil today.
+
+    Returns:
+        The stub, flushed.
+
+    Raises:
+        PayStubRefused: Any refusal the module docstring lists, including a
+            payday another of the profile's stubs holds.
+        NotFoundError: *figures* names a line or kind the owner does not hold.
+    """
+    profile = stub.salary_profile
+    # R-SAL53: the payday rules are asked only of a date the edit CHANGES; a
+    # stub keeps its own date -- the document's -- even once the pay record
+    # no longer holds that payday.
+    errors = {}
+    if figures.payday != stub.payday:
+        errors = _payday_errors(ctx, figures.payday, today)
+        if not errors and stub_on(profile, figures.payday) is not None:
+            errors["payday"] = (
+                f"Your {figures.payday.isoformat()} stub already exists; open it "
+                f"to change it."
+            )
+    _refuse(profile, figures, printed_net, errors)
+    _write(stub, figures)
+    db.session.flush()
+    return stub
+
+
+def held_payday_refusal(payday: date) -> str:
+    """R-SAL52's words for a NEW stub on a payday that already holds one.
+
+    Spelled once for the two places that meet it: the service's own check
+    and the record route's arm for the unique key, which is how the same
+    refusal arrives when two records of one payday race past that check.
+    """
+    return (
+        f"Your {payday.isoformat()} stub was entered while this form was open; "
+        f"open it to change it."
+    )
+
+
+def set_use_for_pricing(stub: PayStub, on: bool) -> bool:
+    """Turn a stub's "Use for pricing" switch (fork 8a', **R-SAL51** (a)).
+
+    Nothing is deleted either way: off keeps the stub, greyed and editable.
+
+    Args:
+        stub: The saved stub, its version already checked by the route.
+        on: The state the owner asked for.
+
+    Returns:
+        Whether the switch moved; an identical request writes nothing.
+    """
+    if stub.use_for_pricing == on:
+        return False
+    stub.use_for_pricing = on
+    return True
+
+
+def _payday_errors(ctx: "BalanceContext", day: date, today: date) -> dict[str, str]:
+    """:func:`payday_refusal` as the refusal map's ``payday`` entry."""
+    message = payday_refusal(ctx, day, today)
+    return {"payday": message} if message is not None else {}
+
+
+def _refuse(
+    profile: SalaryProfile, figures: StubFigures, printed_net: Decimal,
+    errors: dict[str, str],
+) -> None:
+    """Add the tax, one-off and net refusals to *errors*; raise if any stand.
+
+    Raises:
+        NotFoundError: An id the owner does not hold (a tampered form).
+        PayStubRefused: *errors* is not empty.
+    """
+    _check_ids(figures)
+    missing_tax = False
+    for kind_id, label in withholding_kinds.kind_options():
+        if kind_id not in figures.withholdings:
+            errors[f"tax-{kind_id}"] = f"Enter the stub's {label} ($0.00 if none)."
+            missing_tax = True
+    errors.update(_one_off_errors(profile, figures.one_offs))
+    # The net is checked only over a COMPLETE set of taxes: without one, the
+    # lines' sum leaves it out and the check would blame figures that are right.
+    net = totals_of(profile, figures).net
+    if not missing_tax and net != printed_net:
+        errors["printed_net"] = (
+            f"The lines add up to ${net:,.2f}, but the stub prints "
+            f"${printed_net:,.2f} (a difference of ${abs(net - printed_net):,.2f}).  "
+            f"Check each figure against the stub."
+        )
+    if errors:
+        raise PayStubRefused(errors)
+
+
+def _check_ids(figures: StubFigures) -> None:
+    """Refuse a tax or one-off kind id the reference lists do not hold."""
+    tax_ids = {kind_id for kind_id, _ in withholding_kinds.kind_options()}
+    if not set(figures.withholdings) <= tax_ids:
+        raise NotFoundError("a withholding kind the app does not hold")
+    for one_off in figures.one_offs:
+        if ref_cache.paycheck_line_kind_member(one_off.paycheck_line_kind_id) is None:
+            raise NotFoundError("a paycheck-line kind the app does not hold")
+
+
+def name_key(name: str) -> str:
+    """The form a name is COMPARED in: capitals and extra spaces ignored (R-SAL51 (b))."""
+    return " ".join(name.split()).casefold()
+
+
+def _one_off_errors(
+    profile: SalaryProfile, one_offs: Iterable[OneOffFigure],
+) -> dict[str, str]:
+    """Refuse a one-off named like a paycheck line, a tax or another one-off.
+
+    Ruling **R-SAL45**: "S11-b's screen refuses a one-off whose name matches
+    one of the profile's paycheck lines or a tax name ('enter it on the line
+    instead')".  Every line of the profile counts, ended or not: a stub names
+    a line by the line, whatever its span.
+
+    Returns:
+        ``{"one_off:<index>": message}`` for each refused one-off.
+    """
+    lines = {name_key(line.name): line.name for line in profile.lines}
+    taxes = {name_key(label): label for label in withholding_kinds.LABELS.values()}
+    seen: set[str] = set()
+    errors = {}
+    for index, one_off in enumerate(one_offs):
+        key = name_key(one_off.name)
+        if key in lines:
+            message = (
+                f"'{one_off.name}' is your paycheck line '{lines[key]}'; enter "
+                f"it on the line instead."
+            )
+        elif key in taxes:
+            message = (
+                f"'{one_off.name}' is the tax '{taxes[key]}'; enter it with "
+                f"the taxes instead."
+            )
+        elif key in seen:
+            message = f"Two one-offs are named '{one_off.name}'."
+        else:
+            seen.add(key)
+            continue
+        errors[f"one_off:{index}"] = message
+    return errors
+
+
+def _write(stub: PayStub, figures: StubFigures) -> None:
+    """Make *stub* record exactly *figures*, row by row.
+
+    Each child table is diffed on its natural key -- the line, the tax, the
+    one-off's name -- so an unchanged figure is not rewritten (the audit log
+    records what CHANGED) and no row is deleted and re-inserted under the same
+    key.  When anything changed on a SAVED stub the row itself is written, so
+    its ``version_id`` covers the edit (the module docstring).
+    """
+    with db.session.no_autoflush:
+        changed = _sync_all(stub, figures)
+    if changed and inspect(stub).persistent:
+        flag_modified(stub, "base_pay")
+
+
+def _sync_all(stub: PayStub, figures: StubFigures) -> bool:
+    """Apply *figures* to *stub*'s own fields and its three collections.
+
+    Run under ``no_autoflush``: loading a collection after a field changed
+    would otherwise flush the row's UPDATE mid-edit, and the forced write
+    after it would bump the version a SECOND time for one edit.
+
+    Returns:
+        Whether anything changed.
+    """
+    changed = False
+    for attr in ("payday", "base_pay", "notes"):
+        if getattr(stub, attr) != getattr(figures, attr):
+            setattr(stub, attr, getattr(figures, attr))
+            changed = True
+    changed |= _sync(
+        stub.line_amounts, "paycheck_line_id", figures.line_amounts,
+        lambda key, amount: PayStubLineAmount(paycheck_line_id=key, amount=amount),
+    )
+    changed |= _sync(
+        stub.withholdings, "withholding_kind_id", figures.withholdings,
+        lambda key, amount: PayStubWithholding(withholding_kind_id=key, amount=amount),
+    )
+    one_offs = {one_off.name: one_off for one_off in figures.one_offs}
+    changed |= _sync(
+        stub.one_offs, "name",
+        {name: (one_off.paycheck_line_kind_id, one_off.amount)
+         for name, one_off in one_offs.items()},
+        lambda key, value: PayStubOneOff(
+            name=key, paycheck_line_kind_id=value[0], amount=value[1],
+        ),
+        fields=("paycheck_line_kind_id", "amount"),
+    )
+    return changed
+
+
+def _sync(
+    rows: list[Any], key_attr: str, wanted: Mapping[Any, Any],
+    make: Callable[[Any, Any], Any], fields: tuple[str, ...] = ("amount",),
+) -> bool:
+    """Diff one child collection onto *wanted*; return whether it changed.
+
+    Args:
+        rows: The stub's collection (``delete-orphan``: removing deletes).
+        key_attr: The child's natural-key attribute.
+        wanted: ``key -> value``; a one-field child's value is its amount, a
+            several-field child's is a tuple in *fields* order.
+        make: Builds a new child from ``(key, value)``.
+        fields: The attributes a value writes.
+
+    Returns:
+        Whether any row was added, removed or rewritten.
+    """
+    changed = False
+    held = {getattr(row, key_attr): row for row in rows}
+    for key, row in held.items():
+        if key not in wanted:
+            rows.remove(row)
+            changed = True
+    for key, value in wanted.items():
+        values = value if len(fields) > 1 else (value,)
+        row = held.get(key)
+        if row is None:
+            rows.append(make(key, value))
+            changed = True
+            continue
+        for attr, new in zip(fields, values):
+            if getattr(row, attr) != new:
+                setattr(row, attr, new)
+                changed = True
+    return changed
+
+
+# ── The paycheck-line delete (fork 10, R-SAL51 (c)) ─────────────
+
+
+def line_delete_refusal(line: PaycheckLine) -> str | None:
+    """Return why a paycheck line cannot be deleted, or ``None`` when it can.
+
+    Fork 10, "Refuse; end it instead": a line any stub names is refused, and
+    **R-SAL51** (c) names every such stub, newest first.  The database refuses
+    the same delete (``fk_pay_stub_line_amounts_paycheck_line`` is
+    ``RESTRICT``); this is the door's wording of it.
+
+    Args:
+        line: The owned :class:`~app.models.paycheck_line.PaycheckLine`.
+
+    Returns:
+        The message, or ``None``.
+    """
+    paydays = [
+        payday for (payday,) in (
+            db.session.query(PayStub.payday)
+            .join(PayStubLineAmount, PayStubLineAmount.pay_stub_id == PayStub.id)
+            .filter(PayStubLineAmount.paycheck_line_id == line.id)
+            .order_by(PayStub.payday.desc())
+        )
+    ]
+    if not paydays:
+        return None
+    dates = [payday.isoformat() for payday in paydays]
+    named = dates[0] if len(dates) == 1 else f"{', '.join(dates[:-1])} and {dates[-1]}"
+    noun = "stub" if len(dates) == 1 else "stubs"
+    return f"{line.name} is on your {named} {noun}; end it instead."
+
+
+__all__ = [
+    "FormLines",
+    "LineComparison",
+    "OneOffFigure",
+    "OneOffRow",
+    "StubFigures",
+    "StubReport",
+    "StubSummary",
+    "StubTotals",
+    "edit_stub",
+    "figures_of",
+    "form_lines",
+    "held_payday_refusal",
+    "line_delete_refusal",
+    "name_key",
+    "payday_refusal",
+    "record_stub",
+    "set_use_for_pricing",
+    "stub_on",
+    "stub_report",
+    "stub_summaries",
+    "totals_of",
+]

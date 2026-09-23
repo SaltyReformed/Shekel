@@ -85,8 +85,10 @@ class PayStub(OptimisticLockMixin, TimestampMixin, db.Model):
 
       ``payday``          -- the stub's date, which the entry door requires to be
           one of the owner's paydays.  UNIQUE per profile (fork 4, "One stub per
-          payday per job"): entering a date again EDITS that stub, and the audit
-          log keeps the old figures.  A DATE and not a pay-period key, because
+          payday per job"): entering a date again OPENS that stub for editing
+          (ruling **R-SAL50**), a new stub on a held payday is refused rather
+          than let overwrite it (**R-SAL52**), and the audit log keeps every
+          edit's old figures.  A DATE and not a pay-period key, because
           the date is the document's own fact and a pay period is a row the pay
           calendar may regenerate.
       ``base_pay``        -- the base pay line the stub prints.  Required and

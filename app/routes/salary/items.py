@@ -60,7 +60,7 @@ from app.schemas.validation import (
     RECURRENCE_NOMINAL_DAY_KEY,
     RECURRENCE_STARTS_ON_KEY,
 )
-from app.services import paycheck_line_kinds, payroll_line_cadence
+from app.services import paycheck_line_kinds, pay_stub_service, payroll_line_cadence
 from app.services.balance_at import BalanceContext
 from app.services.recurrence import NeverEnds, end_bound_from_columns
 from app.routes.salary._bp import salary_bp
@@ -596,6 +596,14 @@ def delete_line(line_id):
     version-pinned by SQLAlchemy; a concurrent edit raises
     :class:`StaleDataError`, converted to a flash + redirect by the
     canonical :func:`regenerate_commit_or_report` guard.
+
+    **A line a transcribed pay stub names is refused** (plan step
+    salary:S11-b; fork 10, "Refuse; end it instead", worded by ruling
+    **R-SAL51** (c)): the message names every such stub, newest first, and
+    ending the line keeps it on past paychecks.  The database refuses the
+    same delete (``fk_pay_stub_line_amounts_paycheck_line`` is ``RESTRICT``),
+    so a stub entered between this check and the flush still cannot lose its
+    line; that race reaches the generic failure below instead of the wording.
     """
     deduction = get_owned_via_parent(
         PaycheckLine, line_id, "salary_profile",
@@ -604,6 +612,14 @@ def delete_line(line_id):
         abort(404)
 
     profile = deduction.salary_profile
+
+    refusal = pay_stub_service.line_delete_refusal(deduction)
+    if refusal is not None:
+        logger.info(
+            "user_id=%d refused to delete payroll line %d: a pay stub names it",
+            current_user.id, line_id,
+        )
+        return _respond_after_line_change(profile, notice=refusal)
 
     # Stage the deletion (no DB I/O yet); the flush + commit happen inside
     # the stale guard below, so a concurrent-edit StaleDataError raised by

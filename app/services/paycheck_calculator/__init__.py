@@ -190,6 +190,8 @@ from ._breakdown import (
     PeriodInfo,
     PricedLine,
     TaxLines,
+    waterfall_gross,
+    waterfall_net,
 )
 from ._pricing import calculate_paycheck, project_salary
 
@@ -202,4 +204,6 @@ __all__ = [
     "TaxLines",
     "calculate_paycheck",
     "project_salary",
+    "waterfall_gross",
+    "waterfall_net",
 ]
