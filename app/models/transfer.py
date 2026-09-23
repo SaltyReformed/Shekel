@@ -394,16 +394,19 @@ class Transfer(
         transfers page or a grid shadow cell -- ask ONE question rather than
         each re-deriving "which shadow, and what if it is missing".
 
-        Read off the INCOME (to-account) shadow, the same row
-        ``posting_service._entry_date`` reads for the pair, so the day this
-        renders is the day the ledger files the postings under.
+        Read off the INCOME (to-account) shadow.  The posting writer files
+        each side's entry under that side's own covering movement's day since
+        plan step ``balance:X-bi-6-3`` (ruling **R-BAL45**), and the pair
+        applier keeps the two days equal until ``X-bi-6-4`` lets them part,
+        so the day this renders is the day the ledger files both postings
+        under through that interval.
 
         **It answers ``None`` rather than raising**, which is the difference
-        between this read and ``_entry_date``'s: that one is about to WRITE
-        real money to a journal entry and must refuse an undated settled row
-        (fail loud -- a fabricated date files money on a day nothing recorded);
-        this one is filling in a form field, and a form that 500s because a row
-        is malformed helps nobody.  The template renders the correction box for
+        between this read and the writer's: the movement writer is about to
+        WRITE real money to a journal entry and posts nothing for an undated
+        movement (a fabricated date would file money on a day nothing
+        recorded); this one is filling in a form field, and a form that 500s
+        because a row is malformed helps nobody.  The template renders the correction box for
         any SETTLED transfer, dated or not, so an undated one gets a repair path
         rather than a blank.
 
@@ -414,10 +417,11 @@ class Transfer(
         already fails loud on -- would have 500'd both full-edit popovers, which
         is precisely the outcome the paragraph above says this read avoids.  A
         neutral review caught the contradiction between the code and its own
-        docstring.  ``_entry_date`` reaches the same place with ``.first()``;
-        the duplicate pair carries one day either way (Transfer Invariant 3),
-        and detecting the corruption is that validator's job, not this form
-        field's.
+        docstring.  The posting writer's own income-shadow read reached the
+        same place with ``.first()`` until plan step ``balance:X-bi-6-3``
+        deleted it; the duplicate pair carries one day either way (Transfer
+        Invariant 3), and detecting the corruption is that validator's job,
+        not this form field's.
 
         There is no setter, deliberately: ``status_seam.apply_status_change``
         is the single writer of ``Transaction.settled_on``, and an assignable
@@ -544,9 +548,10 @@ class Transfer(
         ``Transfer`` is not a ``SettleDatedMixin`` and carries neither column,
         so the row-shaped reader beside it cannot be handed one.
 
-        Read off the INCOME (to-account) shadow, the same row
-        ``posting_service._entry_date`` reads for the pair, so the day this
-        answers is the day the ledger files the postings under.
+        Read off the INCOME (to-account) shadow -- one day on both sides
+        through the interval the pair applier keeps (Transfer Invariant 3),
+        so the day this answers is the day the ledger files both sides'
+        per-movement postings under (plan step ``balance:X-bi-6-3``).
 
         There is no setter, for the reason :attr:`settled_on` has none:
         ``status_seam.apply_status_change`` and

@@ -770,8 +770,9 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     # the rule stopped naming the row's OCCURRENCE (plan step R17) AND the
     # transfer carries nothing
     # of the owner's.  Routed through the canonical hard-delete path (Transfer
-    # Invariant 4): ``delete_transfer`` reverses any posted effect while the
-    # rows still exist to link against, takes the loan-payment split back,
+    # Invariant 4): ``delete_transfer`` reverses any posted cash effect while
+    # the rows still exist to link against, re-syncs a loan the payment left
+    # (its split links no row, ruling **R-BAL102**),
     # runs the orphan-verification self-check and emits
     # ``EVT_TRANSFER_HARD_DELETED`` per deletion.  See audit B6-03 / LOW-02.
     for xfer in work.retire:

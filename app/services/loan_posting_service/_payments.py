@@ -1,14 +1,13 @@
-"""Loan-payment correction posting: the per-payment split reconcile.
+"""Loan-payment correction posting: the per-payment split's TARGET legs.
 
-Posts the REAL principal / interest / escrow / refund split of a confirmed loan
-payment into the append-only double-entry ledger, as a balanced CORRECTION
-layered on top of the Build-Order Step 2 cash entry.
-
-Step 2 (:mod:`app.services.posting_service`) already posted the whole cash as a
-balanced entry (``Checking -cash / Loan +cash``) linked by ``transfer_id``.  But
-that dumps the ENTIRE cash onto the loan, when only the PRINCIPAL portion pays
-the debt down.  Because a posted entry is immutable, this module appends a second
-balanced entry that moves the non-principal off the loan::
+The REAL principal / interest / escrow / refund split of a confirmed loan
+payment, as the balanced CORRECTION the ledger layers on top of the payment's
+cash movement (:mod:`app.services._posting_purchases`, plan step
+``balance:X-bi-6-3``: the loan-side covering movement's own entry
+``Loan +cash / Transit -cash``).  That entry dumps the ENTIRE cash onto the
+loan, when only the PRINCIPAL portion pays the debt down.  Because a posted
+entry is immutable, the ledger appends a second balanced entry that moves the
+non-principal off the loan::
 
     Loan     -(interest + escrow + excess)   [principal]
     Interest +interest                        [interest -> Expense]
@@ -17,30 +16,41 @@ balanced entry that moves the non-principal off the loan::
              --------------------------------
              0
 
-The loan's NET (Step-2 cash + this correction) is then exactly the real principal
-paid.  The split (:mod:`app.services.loan_ledger`) is computed from the ACTUAL cash
-(``principal = cash - interest - escrow``), so an extra or short payment is
-captured honestly.
+The loan's NET (the cash leg + this correction) is then exactly the real
+principal paid.  The split (:mod:`app.services.loan_ledger`) is computed from
+the ACTUAL cash (``principal = cash - interest - escrow``), so an extra or short
+payment is captured honestly -- and a payment of ``$0.00`` (a missed
+installment recorded as paid) carries the whole standing charge as an
+underpayment, growing the debt by exactly the interest and escrow it did not
+clear.
 
-**Linked by ``transaction_id``, not ``transfer_id``.**  The correction links to
-the loan-side income shadow's ``transaction_id``, leaving ``transfer_id`` NULL.
-That NULL is load-bearing: the Step-2 cash path reads the loan ledger via
-``posting_service._posted_by_period(transfer_id == ...)``, so a ``transfer_id`` on the
-correction would corrupt its cash reversals.  ``transaction_id`` is invisible to
-both the cash transfer path (which keys by ``transfer_id``) and the Step-3
-transaction path (which skips transfer shadows), so the correction is disjoint
-from every existing reader by construction.
+**A DERIVATION, keyed like one: ``(loan_payment kind, the payment's pay
+period, its visible day)`` and NO row link** (ruling **R-BAL102**, which
+re-ruled **R-BAL100**).  The split is re-computed from scratch by every walk,
+exactly as the loan's opening and true-ups are, so it is reconciled in the
+SAME loop as they are (:mod:`._corrections`) and its entry links no row: not
+the loan-side shadow (its key through ``balance:X-bi-6-1b``, a row plan step
+``X-bi-6-5`` deletes), not the shadow's covering movement (R-BAL100's key,
+which a ``$0.00`` payment does not have -- the seam writes no movement for a
+figure of nothing, and the walk still charges the installment), not the
+transfer.  A key with no row has nothing to lose: no teardown door owes it a
+reversal first, no detector hunts payments that "left the confirmed set" (a
+key with no target reverses in the same pass), and no reader maps rows back
+onto payments.  Two payments on one day in one period merge into one entry,
+which is the sum the ledger holds; WHICH payment paid what is the walk's
+answer (:mod:`._display`), never the ledger's.
 
-**Flask-isolated**: plain data in, ORM objects or plain values out; never imports
-``request`` / ``session``.  Flushes but never commits -- the caller owns the
-transaction boundary.
+**This module builds the TARGET and nothing else.**  The reconcile -- what is
+posted, the delta, the emission -- is :mod:`._corrections`' one loop over the
+anchor and split targets together, on the shared primitives in
+:mod:`app.services._posting_reconcile`.
+
+**Flask-isolated**: plain data in, plain values out; never imports
+``request`` / ``session``.  Reads the chart (minting a per-loan row on first
+use) but writes no posting.
 """
 
-import logging
-from datetime import date
 from decimal import Decimal
-
-from sqlalchemy.orm import joinedload
 
 from app import ref_cache
 from app.enums import (
@@ -48,31 +58,15 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
 )
-from app.extensions import db
-from app.models.journal_entry import JournalEntry
-from app.models.transaction import Transaction
 from app.services import ledger_account_service
 from app.services.posting_service import _ledger_account_for
-from app.services._posting_write import (
-    _MAX_DESCRIPTION_LENGTH,
-    emit_keyed_delta_entries,
-    source_entry_builder,
-)
-
 from app.services._posting_reconcile import (
-    account_owner_id,
-    delta_legs,
-    summed_posting_legs,
-)
-from app.services.user_write_lock import lock_user_writes
-from app.utils.balance_predicates import settled_day
-
-from app.services.loan_ledger import (
-    PaymentOutcome,
-    compute_loan_payment_splits,
+    CorrectionKey,
+    LegMap,
+    merge_target_legs,
 )
 
-logger = logging.getLogger(__name__)
+from app.services.loan_ledger import PaymentOutcome
 
 
 # The three per-loan correction components, each a tuple of (the per-loan ledger
@@ -90,101 +84,16 @@ _LOAN_CORRECTION_COMPONENTS = (
 )
 
 
-def _loan_payment_description(shadow: Transaction) -> str:
-    """Return the human label for a loan-payment correction entry.
-
-    ``"Loan payment split: <shadow name>"`` truncated to the description column
-    width.  Display only -- never read for logic.
-
-    Args:
-        shadow: The loan-side income shadow the correction books under.
-
-    Returns:
-        The truncated description string.
-    """
-    return (
-        f"Loan payment split: {shadow.name}"
-    )[:_MAX_DESCRIPTION_LENGTH]
-
-
-def _loan_payment_entry_filters(transaction_id: int) -> list:
-    """Return the entry filters selecting a shadow's loan-payment corrections.
-
-    The ``source_kind = loan_payment`` filter makes the selection disjoint from
-    the Step-2 cash path (which links the same shadow's TRANSFER by
-    ``transfer_id``, never this ``transaction_id``) and the Step-3 transaction
-    path (which skips transfer shadows): only the loan-payment correction is
-    ever summed under these filters.  Shared by the posted-legs reader and the
-    per-period date reader so the two can never select different entry sets.
-
-    Args:
-        transaction_id: The income shadow's id whose corrections to select.
-
-    Returns:
-        The filter expressions.
-    """
-    return [
-        JournalEntry.transaction_id == transaction_id,
-        JournalEntry.source_kind_id == ref_cache.posting_source_id(
-            PostingSourceEnum.LOAN_PAYMENT
-        ),
-    ]
-
-
-def _posted_loan_payment_legs(
-    transaction_id: int,
-) -> dict[tuple[int, date], dict[int, tuple[Decimal, int]]]:
-    """Return the loan-payment legs posted under a shadow's id, per (period, date).
-
-    ``{(pay_period_id, entry_date): {ledger_account_id: (net_amount,
-    posting_kind_id)}}`` summed over every ``loan_payment``-sourced journal
-    entry linked to *transaction_id* (the income shadow's id).  The loan analog
-    of :func:`~app.services._posting_write.posted_by_period`, additionally
-    carrying each ledger's posting kind: within a loan correction a ledger
-    account always carries ONE kind (the loan-linked principal leg, or a
-    per-loan interest / escrow / refund leg), so grouping by
-    ``(ledger_account_id, posting_kind_id)`` yields one row per ledger and the
-    kind travels with the net.  The reconcile (:func:`_reconcile_loan_payment`)
-    reads this back so a reversal leg negates EXACTLY what was posted -- with
-    the kind it was posted under (load-bearing when a component zeroes out and
-    its target leg is no longer resolved), in the PERIOD it was posted in (the
-    2026-07-02 review's R2 attribution rule: a revert-and-move must reverse
-    into the ORIGINAL period, never the shadow's new one), and AT THE DATE it
-    was posted at (per-date since plan step E1a / finding N-13: a correction
-    whose amounts are right but whose ``entry_date`` no longer matches the
-    shadow's settle date is stale, and only a date-keyed read can see it).
-
-    Args:
-        transaction_id: The income shadow's id whose posted corrections to sum.
-
-    Returns:
-        ``{(pay_period_id, entry_date): {ledger_account_id: (net Decimal,
-        posting_kind_id)}}``; empty when no correction is posted yet.
-    """
-    rows = summed_posting_legs(
-        [JournalEntry.pay_period_id, JournalEntry.entry_date],
-        _loan_payment_entry_filters(transaction_id),
-    ).all()
-    posted: dict[tuple[int, date], dict[int, tuple[Decimal, int]]] = {}
-    for period_id, entry_date, ledger_id, net, kind_id in rows:
-        posted.setdefault((period_id, entry_date), {})[ledger_id] = (
-            net, kind_id,
-        )
-    return posted
-
-
-def _loan_payment_target(
-    outcome: PaymentOutcome,
-) -> dict[int, tuple[Decimal, int]]:
+def _loan_payment_target(outcome: PaymentOutcome) -> LegMap:
     """Build the target ledger legs for one payment's real-split correction.
 
     Maps the split to ``{ledger_account_id: (signed amount, posting_kind_id)}``,
     dropping any zero component so no empty per-loan ledger account is minted and
     no zero leg is written:
 
-    * the loan's LINKED ledger (the Asset/Liability mirror Step 2 dumped the
-      whole cash onto) gets ``-(interest + escrow + excess)`` tagged
-      ``principal`` -- so the loan's NET across the Step-2 cash leg and this
+    * the loan's LINKED ledger (the Asset/Liability mirror the cash movement
+      dumped the whole cash onto) gets ``-(interest + escrow + excess)`` tagged
+      ``principal`` -- so the loan's NET across the cash leg and this
       correction is exactly ``principal`` (plan Section 1);
     * the per-loan ``loan_interest`` Expense ledger gets ``+interest``;
     * the per-loan ``loan_escrow`` Expense ledger gets ``+escrow``;
@@ -196,7 +105,7 @@ def _loan_payment_target(
     keyed only when their amount is non-zero.  The legs sum to zero by
     construction.  An all-principal payment (``interest == escrow == excess ==
     0``) yields an EMPTY target: the loan already nets to principal from the
-    Step-2 cash leg, so no correction is owed.
+    cash leg, so no correction is owed.
 
     Args:
         outcome: The payment's :class:`~app.services.loan_ledger.PaymentOutcome`
@@ -218,7 +127,7 @@ def _loan_payment_target(
     # parent transfer's owner directly since ``C13-a``.
     owner_id = shadow.user_id
     loan_account_id = shadow.account_id
-    target: dict[int, tuple[Decimal, int]] = {}
+    target: LegMap = {}
 
     # The loan-linked leg backs the non-principal cash out of the loan; its
     # magnitude mirrors the interest + escrow + refund legs, so the four sum to
@@ -230,7 +139,7 @@ def _loan_payment_target(
             loan_leg, ref_cache.posting_kind_id(PostingKindEnum.PRINCIPAL),
         )
     for ledger_kind, posting_kind, attr in _LOAN_CORRECTION_COMPONENTS:
-        amount = getattr(outcome, attr)
+        amount: Decimal = getattr(outcome, attr)
         if amount != 0:
             ledger = ledger_account_service.get_or_create_loan_ledger_account(
                 owner_id, loan_account_id, ledger_kind,
@@ -241,274 +150,46 @@ def _loan_payment_target(
     return target
 
 
-def _reconcile_loan_payment(
-    shadow: Transaction,
-    target: dict[int, tuple[Decimal, int]],
-) -> list[JournalEntry]:
-    """Reconcile one payment's posted correction to *target*, idempotently.
-
-    The loan analog of the reconcile inside :func:`sync_transaction_postings`,
-    keyed by the income shadow's ``transaction_id`` (NOT ``transfer_id`` -- that
-    keeps the correction invisible to the Step-2 cash path; plan Section 5).
-    Emits one balanced delta journal entry PER ``(pay period, entry date)``
-    whose posted legs differ from the target (via
-    :func:`app.services._posting_reconcile.delta_legs`), or ``[]`` when
-    already at target (an idempotent no-op).
-
-    *target* maps each ledger account the correction should land on to its
-    ``(signed amount, posting_kind_id)`` and belongs to the shadow's CURRENT
-    pay period AT its settle date (step C2's one clock); an EMPTY *target*
-    reverses the whole correction to zero (the reverse-before-delete /
-    stale-shadow path).  The posted side (:func:`_posted_loan_payment_legs`)
-    carries each ledger's kind PER (PERIOD, DATE), so a leg whose target
-    dropped to zero is still reversed with the kind it was posted under -- in
-    the PERIOD it was posted in and AT THE DATE it was posted at (the
-    2026-07-02 review's R2 attribution rule, per-date since plan step E1a): a
-    reverted-and-moved payment's stale correction reverses into its ORIGINAL
-    period, never the shadow's new one, so the net-zero pair cannot straddle
-    periods.  The date key is what closes finding N-13: a settled ``settled_on``
-    edit moves the shadow's settle date, the old-dated correction becomes a
-    posted key with no target (reversed at its own date), the new date posts
-    fresh -- converging in ONE pass, so a repeat sync writes nothing and the
-    checked-projection assert cannot fire on a legitimate edit.
-
-    Flushes but does not commit (the caller owns the transaction).
-
-    Args:
-        shadow: The loan-side income shadow the correction books under.  Must be
-            flushed (``id`` set) so the entry links by ``transaction_id`` and
-            the posted legs read back.
-        target: ``{ledger_account_id: (amount, posting_kind_id)}`` the ledger
-            should net to in the shadow's current period at its settle date
-            (empty to reverse to zero).
-
-    Returns:
-        The new delta :class:`~app.models.journal_entry.JournalEntry` list,
-        one per (period, entry date) reconciled (in practice a single entry),
-        or ``[]`` when already at target.
-    """
-    targets: dict[tuple[int, date], dict[int, tuple[Decimal, int]]] = {}
-    if target:
-        targets[(
-            shadow.pay_period_id,
-            settled_day(shadow.id, shadow.settled_on),
-        )] = target
-    posted = _posted_loan_payment_legs(shadow.id)
-    legs_by_key = {
-        key: legs
-        for key in sorted(set(targets) | set(posted))
-        if (legs := delta_legs(
-            targets.get(key, {}), posted.get(key, {}),
-        ))
-    }
-    if not legs_by_key:
-        return []
-
-    # Each delta entry carries its key's period and date: the target entry the
-    # shadow's settle instant, a reversal the exact date of the correction it
-    # reverses (the R2 rule, per-date since step E1a).  The header's other
-    # fields are one statement for every posting source
-    # (``_posting_write.source_entry_builder``).  Linked by transaction_id (the
-    # income shadow), leaving transfer_id NULL -- and that NULL is load-bearing:
-    # the Step-2 cash path reads the loan ledger by transfer_id, so a
-    # transfer_id here would corrupt its cash reversals (plan Section 5 / the
-    # CRITICAL bug v1 had).
-    return emit_keyed_delta_entries(
-        legs_by_key,
-        source_entry_builder(
-            user_id=shadow.user_id,
-            scenario_id=shadow.scenario_id,
-            source_kind_id=ref_cache.posting_source_id(
-                PostingSourceEnum.LOAN_PAYMENT
-            ),
-            description=_loan_payment_description(shadow),
-            transaction_id=shadow.id,
-        ),
-        f"loan-payment split correction for shadow {shadow.id}",
-    )
-
-
-def _stale_loan_payment_shadows(
-    loan_account_id: int,
-    scenario_id: int,
-    synced_shadow_ids: set[int],
-) -> list[Transaction]:
-    """Return loan-payment shadows with a posted correction that no longer applies.
-
-    The income shadows of *loan_account_id* in *scenario_id* that carry at least
-    one posted ``loan_payment`` correction (their ``transaction_id`` appears on
-    such an entry) but are NOT in *synced_shadow_ids* -- the set the current
-    :func:`walk_loan_ledger` just reconciled.  Under genesis the walk splits
-    EVERY confirmed payment from origination, so a payment is stale ONLY when it
-    genuinely left the confirmed set -- reverted or edited to un-settle -- never
-    because a new anchor "pushed it behind" (genesis re-splits a pre-anchor
-    payment from the anchor's reset, it does not drop it).  A stale correction is
-    reversed to zero so the ledger stops reflecting a payment that no longer
-    counts.
-
-    A HARD-deleted payment is NOT here -- its row is gone and the entry's
-    ``transaction_id`` was SET NULL (so it does not join), which is why the
-    delete path reverses it BEFORE deletion via
-    :func:`reverse_loan_payment_postings_for_shadow`.
-
-    Args:
-        loan_account_id: The loan whose stale corrections to find.
-        scenario_id: The budget scenario to scope to.
-        synced_shadow_ids: The shadow ids the current sync already reconciled.
-
-    Returns:
-        The still-present income shadows whose corrections are now stale
-        (``pay_period`` eager-loaded for the reversal entry header).
-    """
-    loan_payment_source_id = ref_cache.posting_source_id(
-        PostingSourceEnum.LOAN_PAYMENT
-    )
-    posted_shadow_ids = {
-        row[0]
-        for row in (
-            db.session.query(JournalEntry.transaction_id)
-            .join(Transaction, Transaction.id == JournalEntry.transaction_id)
-            .filter(
-                JournalEntry.source_kind_id == loan_payment_source_id,
-                JournalEntry.scenario_id == scenario_id,
-                Transaction.account_id == loan_account_id,
-            )
-            .distinct()
-            .all()
-        )
-    }
-    stale_ids = posted_shadow_ids - synced_shadow_ids
-    if not stale_ids:
-        return []
-    return (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.pay_period))
-        .filter(
-            Transaction.id.in_(stale_ids),
-            Transaction.account_id == loan_account_id,
-        )
-        .all()
-    )
-
-
-def reconcile_loan_payment_splits(
-    loan_account_id: int,
-    scenario_id: int,
+def payment_split_targets(
     splits: list[PaymentOutcome],
-) -> None:
-    """Reconcile a loan's per-payment corrections to a PRE-WALKED split list.
+) -> dict[CorrectionKey, LegMap]:
+    """Merge a loan's payment splits into per-(kind, period, day) targets.
 
-    The reconcile half of the payment sync, taking the splits already produced
-    by :func:`walk_loan_ledger` rather than re-walking, so the unified
-    :func:`app.services.loan_posting_service.sync_loan_postings` can drive BOTH
-    the payment and the anchor reconcile off ONE walk (the anchor half is
-    :func:`._anchors.reconcile_loan_anchor_corrections`), never the two walks a
-    pair of self-contained syncs would cost.  Reconciles each payment's
-    correction to its target legs (:func:`_reconcile_loan_payment` /
-    :func:`_loan_payment_target`), then reverses any correction whose payment is
-    no longer confirmed (:func:`_stale_loan_payment_shadows`).
+    The split half of the loan's correction target (ruling **R-BAL102**): every
+    settled outcome's legs (:func:`_loan_payment_target`) summed into the key
+    ``(loan_payment source id, the payment's pay_period_id, the payment's
+    visible day)`` through
+    :func:`app.services._posting_reconcile.merge_target_legs` -- the same
+    merge the anchor half applies to two same-day anchors.  The PERIOD is the
+    payment's own stored one (the owner's budgeting choice, ruling
+    **pay_calendar:R-PC53**), which is what the anchors cannot have and so
+    derive; the DAY is the fold's one clock for the payment
+    (:attr:`~app.services.loan_ledger.PaymentOutcome.visible_on`, the settled
+    day the cash movement's entry carries too), so the split and the cash it
+    re-classifies land on one date.
 
-    WHOLE-loan because interest accrues on the running balance -- re-splitting
-    one payment (a true-up, a rate change, an amount edit) re-splits every LATER
-    one -- so a per-payment reconcile could leave the downstream corrections
-    stale; the caller therefore passes the loan's FULL split list, not a subset.
-    Idempotent and self-healing: a re-run with the same splits writes nothing
-    (reconcile-to-target sees ``delta == 0`` everywhere).  Touches ONLY the
-    loan's own ledgers (linked, interest, escrow, refund) -- never Checking (the
-    Step-2 cash entry is immutable and correct), so a loan sync can never move a
-    cash balance.  Flushes but does not commit (the caller owns the transaction).
+    An all-principal outcome contributes an empty leg map, and that is not
+    what reverses a stale correction: the reconcile walks the UNION of the
+    target and posted keys, so a key the ledger holds a correction under and
+    the walk no longer prices -- a reverted payment, a re-split that fell to
+    all-principal, a payment moved to another period or day -- reverses
+    whether or not it appears here.  Two payments on one day in one period
+    sum here; a second payment inside one accrual period clears nothing fresh
+    (plan step X-au-g-2c-3b-2) and contributes nothing.
 
     Args:
-        loan_account_id: The loan whose corrections to reconcile (scopes the
-            stale-shadow reversal query).
-        scenario_id: The budget scenario to reconcile within.
-        splits: The loan's confirmed payment splits from
-            :func:`walk_loan_ledger` -- the WHOLE list (the walk bounds nothing;
-            it replays every settled payment).
+        splits: The loan's settled outcomes from
+            :func:`~app.services.loan_ledger.walk_loan_ledger`
+            (``settled_splits`` -- the WHOLE list: the walk bounds nothing).
+
+    Returns:
+        ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
+        (amount, kind_id)}}``; empty when the loan has no settled payment.
     """
-    synced_shadow_ids: set[int] = set()
+    source_id = ref_cache.posting_source_id(PostingSourceEnum.LOAN_PAYMENT)
+    target: dict[CorrectionKey, LegMap] = {}
     for outcome in splits:
-        shadow = outcome.source
-        synced_shadow_ids.add(shadow.id)
-        _reconcile_loan_payment(shadow, _loan_payment_target(outcome))
-
-    # A payment that was posted but has since left the confirmed set (reverted
-    # or un-settled) keeps a stale correction; an empty target reverses it to
-    # zero.  Hard deletes are handled before the row is gone, by
-    # reverse_loan_payment_postings_for_shadow.
-    for shadow in _stale_loan_payment_shadows(
-        loan_account_id, scenario_id, synced_shadow_ids,
-    ):
-        _reconcile_loan_payment(shadow, {})
-
-
-def sync_loan_payment_postings(
-    loan_account_id: int, scenario_id: int,
-) -> None:
-    """Walk a loan's confirmed payments and reconcile ONLY their split corrections.
-
-    The payment-only sync: computes the real split of every confirmed payment
-    from origination (:func:`compute_loan_payment_splits`) and reconciles them
-    (:func:`reconcile_loan_payment_splits`).  Posts ONLY the payment-split
-    corrections; the loan's opening / true-up corrections are reconciled
-    separately by
-    :func:`app.services.loan_posting_service.sync_loan_anchor_corrections`, and
-    the go-forward chokepoints reconcile BOTH in one walk via
-    :func:`app.services.loan_posting_service.sync_loan_postings`.  This
-    single-half entry point remains for reconciling payments in isolation (the
-    split-value unit tests).
-
-    Idempotent and self-healing: a re-run with no change writes nothing, and a
-    missed call repairs at the next sync.  Touches ONLY the loan's own ledgers
-    (never Checking).  Every settled payment splits, whatever its pay period
-    (settlement is the confirming event -- see
-    :func:`app.services.loan_loaders.settled_income_shadows`), and the walk reads no clock, so
-    this posts the same ledger whenever it runs.  Flushes but does not commit
-    (the caller owns the transaction).
-
-    Args:
-        loan_account_id: The loan whose corrections to reconcile.
-        scenario_id: The budget scenario to reconcile within.
-    """
-    # Locked like every other reconcile door (plan step X-f1c3c) -- see the
-    # note on its anchor twin: no ``app/`` caller today, but exported.
-    owner_id = account_owner_id(loan_account_id)
-    if owner_id is not None:
-        lock_user_writes(owner_id)
-    reconcile_loan_payment_splits(
-        loan_account_id, scenario_id,
-        compute_loan_payment_splits(loan_account_id, scenario_id),
-    )
-
-
-def reverse_loan_payment_postings_for_shadow(income_shadow: Transaction) -> None:
-    """Reverse one loan payment's split correction before its shadow is deleted.
-
-    The loan analog of :func:`reverse_postings_before_delete`: reconciles the
-    income shadow's ``loan_payment`` correction to zero
-    (:func:`_reconcile_loan_payment` with an empty target), emitting a balanced
-    reversal for whatever is posted, so a HARD delete (which SET-NULLs the
-    entry's ``transaction_id``) never strands the correction's legs.  Run FIRST,
-    while ``income_shadow.id`` still exists, by the delete wiring; the whole-loan
-    :func:`sync_loan_payment_postings` then re-splits the downstream payments
-    whose running balance the deletion changed.
-
-    Idempotent no-op for a never-posted (Projected) shadow.  Flushes but does
-    not commit (the caller owns the transaction).
-
-    **It reads posted legs before it writes their negation, so it takes the
-    owner's write lock like every other reconcile** (plan step X-f1c3c).  It
-    converges even unlocked -- the whole-loan sync that follows it in the same
-    transaction re-derives everything and ``_assert_checked_projection``
-    refuses a divergent ledger -- but "the reconcile that happens to run last
-    fixes it" is a property of the current call order, not a guarantee, and a
-    neutral review was right to name it.
-
-    Args:
-        income_shadow: The loan-side income :class:`Transaction` about to be
-            deleted.  Must still be flushed (``id`` set) so the reversal links
-            by ``transaction_id`` and reads the posted legs back.
-    """
-    owner_id = income_shadow.user_id
-    lock_user_writes(owner_id)
-    _reconcile_loan_payment(income_shadow, {})
+        key = (source_id, outcome.source.pay_period_id, outcome.visible_on)
+        bucket = target.setdefault(key, {})
+        merge_target_legs(bucket, _loan_payment_target(outcome))
+    return target

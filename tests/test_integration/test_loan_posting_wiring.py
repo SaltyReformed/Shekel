@@ -7,15 +7,16 @@ transfer settle / revert / edit / delete / restore paths
 (:func:`app.services.loan_anchor_service.apply_loan_anchor_true_up`), the ARM rate
 change and origination-rate / params edit routes, and loan-params creation (the
 N1 back-post).  These integration tests drive each chokepoint through its REAL
-entry point (the service call or the HTTP route), with NO manual
-``sync_loan_payment_postings`` call anywhere, and assert the ledger ends in the
-right state.
+entry point (the service call or the HTTP route), with NO manual loan sync
+call anywhere, and assert the ledger ends in the right state.
 
-The load-bearing invariant (plan Section 5 / 8.5): a Step-4 correction carries a
-NULL ``transfer_id``, so the Step-2 cash reader (``_posted_net``, transfer_id
-keyed) never sees it -- proven end-to-end by asserting a revert / delete of a
-corrected payment posts the FULL cash reversal (Checking returns to exactly 0),
-not a reversal short by the correction.
+The load-bearing invariant (plan Section 5 / 8.5): a Step-4 correction links
+NO row -- it is a date-keyed correction since plan step ``balance:X-bi-6-3``
+(ruling **R-BAL102**), and carried a NULL ``transfer_id`` before that -- so
+the cash reader (movement-keyed, source-filtered) never sees it -- proven
+end-to-end by asserting a revert / delete of a corrected payment posts the
+FULL cash reversal (Checking returns to exactly 0), not a reversal short by
+the correction.
 
 Loans use a $100,000 anchor at 6%, so the first month accrues exactly $500.00
 (``100000 * 0.06 / 12``); every asserted split is hand-computed in the docstring.
@@ -123,7 +124,7 @@ class TestSettleWiringAutoPosts:
             db.session.commit()
 
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             # Genesis: opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -231,13 +232,14 @@ class TestRevertAndDeletePostFullCashReversal:
     ):
         """Hard-deleting a corrected payment strands nothing; the loan resets to baseline.
 
-        reverse-before-delete zeroes the payment correction while the shadow id
-        still exists (the CASCADE then SET-NULLs the entry's transaction_id), and
-        the Step-2 reverse-before posts the FULL cash reversal.  Nothing stranded:
-        Checking returns to its $1000.00 opening, the interest ledger nets to
-        zero, and the loan-linked ledger
-        returns to the trued-up baseline -100000.00 (opening + true-up remain --
-        the delete touches only the payment correction).
+        The teardown door posts the FULL cash reversal before the rows go (the
+        movement's link is what the CASCADE severs), and the loan's re-sync
+        AFTER the delete reverses the payment's split at its own key -- the
+        split links no row (ruling **R-BAL102**), so nothing about it needed
+        the shadow to still exist.  Nothing stranded: Checking returns to its
+        $1000.00 opening, the interest ledger nets to zero, and the loan-linked
+        ledger returns to the trued-up baseline -100000.00 (opening + true-up
+        remain -- the delete touches only the payment correction).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -511,7 +513,7 @@ class TestNonLoanTransferIgnored:
             db.session.commit()
 
             shadow = loan_income_shadow(db.session, xfer.id, savings.id)
-            assert loan_correction_entries(db.session, shadow.id) == []
+            assert loan_correction_entries(db.session, shadow) == []
             # And no loan_payment entry exists for this account at all.
             loan_payment_source = ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT,
@@ -659,7 +661,7 @@ class TestRouteChokepointWiring:
             db.session.commit()
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             # Not resolvable yet -> no correction at settle.
-            assert loan_correction_entries(db.session, shadow.id) == []
+            assert loan_correction_entries(db.session, shadow) == []
 
             resp = auth_client.post(
                 f"/accounts/{loan.id}/loan/setup",
@@ -682,7 +684,7 @@ class TestRouteChokepointWiring:
             assert resp.status_code == 302
 
             # Back-posted: the correction now exists with interest 500.00.
-            entries = loan_correction_entries(db.session, shadow.id)
+            entries = loan_correction_entries(db.session, shadow)
             assert len(entries) == 1
             assert ledger_net(
                 db.session, _interest_ledger(loan).id, scenario_id,

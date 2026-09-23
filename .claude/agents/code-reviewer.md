@@ -61,8 +61,9 @@ Transfer invariants (critical -- violating any one is a critical bug):
   budget.transactions (R-BAL13 / R-BAL38, balance:X-bi-6a) -- every still-projected
   leg a balance folds is one side of the parent priced by `resolve_transfer_amount`,
   no balance reader reads a projected shadow row, a settled leg is its shadow's
-  DATED covering movement since balance:X-bi-4a (R-BAL80; the posted ledger still
-  books the pair off the income shadow's record until X-bi-6, R-BAL45), and no
+  DATED covering movement since balance:X-bi-4a (R-BAL80; the posted ledger books
+  each side's movement as its own entry against the owner's Transfers-in-transit
+  account since balance:X-bi-6-3, R-BAL45 / R-BAL101), and no
   amount is read off budget.transfers for a row that has settled (the forward loan
   plan also reads transfers for occurrence identity, R-R66). A plan leg is emitted
   only for a side whose dated movement does not exist (R-BAL79), so a status DRIFT

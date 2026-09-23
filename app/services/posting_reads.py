@@ -45,11 +45,13 @@ def settled_figure_clause():
     """Return the SQL for what a SETTLED transaction records as having moved.
 
     The query-tier twin of :func:`app.services.row_valuation.settled_figure`, and
-    the ONE spelling of it in SQL (plan step **X-au-c3**): two readers ask it
-    -- :func:`settled_transfer_effect` and
-    ``posting_service._settle_effective`` -- and two copies of a money rule
-    is this arc's own root cause 1.  (A third, ``settled_transaction_effect``,
-    went at plan step ``balance:X-bi-4a`` with the row's own leg.)
+    the ONE spelling of it in SQL (plan step **X-au-c3**): one reader asks it
+    -- :func:`settled_transfer_effect` -- and two copies of a money rule is
+    this arc's own root cause 1.  (``settled_transaction_effect`` went at
+    plan step ``balance:X-bi-4a`` with the row's own leg;
+    ``posting_service._settle_effective`` at ``balance:X-bi-6-3``, when a
+    transfer's legs became its movements' own entries and the writer stopped
+    reading the pair's figure off the income shadow.)
 
     **The record is the row's entries, and the figure is their sum** (plan
     step ``balance:X-bi-4b-1``, ruling **R-BAL80**): ``COALESCE(SUM(amount),

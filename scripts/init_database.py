@@ -247,7 +247,7 @@ def migrate_existing_database():
 
 
 def resync_all_cash_postings_after_migration():
-    """Re-date every settled cash source's postings after the chain is at head.
+    """Re-date or re-book every settled cash source's postings after the chain is at head.
 
     Ruling **R-DH (b)** (2026-07-31,
     ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A journal
@@ -280,9 +280,19 @@ def resync_all_cash_postings_after_migration():
     sources).  Idempotent and self-healing via reconcile-to-target, so it is safe
     on every deploy: a source already at target posts nothing.  Commits in one
     transaction; the deferred balanced-journal trigger validates every entry at
-    that COMMIT, so an unbalanced re-post aborts the deploy loud.
+    that COMMIT, so an unbalanced re-post aborts the deploy loud.  Until plan
+    step ``X-bi-6-5`` the resync itself also refuses, raising before that
+    commit, while any transfer still holds a nonzero legacy one-entry posting
+    -- one whose family it had to skip (ruling **R-BAL104**).  That is NOT an
+    automatic rollback (ruling **R-BAL105**): the migrations above have
+    already committed, and the previous image cannot resolve
+    ``c7d1e9a4b2f8`` (the migration the deploy that re-books the legacy shape
+    carries), so ``deploy/shekel-deploy.sh`` refuses to re-pin it and the
+    site is down until an operator intervenes -- the ruled recovery is
+    restoring the pre-deploy dump it names.  The release rehearsal on a
+    same-day dump meets it first.
     """
-    print("Re-dating settled cash postings (transactions + transfers)...")
+    print("Resyncing settled cash postings (transactions + transfers)...")
     # Fresh transaction + ref_cache init, matching the two hooks below (see the
     # loan backfill for the idle-read-transaction rationale).  This hook runs
     # FIRST, so it is the one that opens ref_cache for the sequence.
@@ -292,17 +302,18 @@ def resync_all_cash_postings_after_migration():
     db.session.commit()
     # CHANGED, not walked (finding N-133 / F8).  A steady-state deploy prints
     # zeroes; a non-zero line is the operator's only evidence that a one-time
-    # re-date actually happened, and the one worth reading in the deploy log.
+    # re-date or re-book actually happened, and the one worth reading in the
+    # deploy log.
     if transactions or transfers:
         print(
-            f"Cash posting re-date complete: RE-POSTED {transactions} "
-            f"transaction(s) and {transfers} transfer(s).  These sources' "
-            "journal entries moved to a different entry_date; a rollback "
-            "ACROSS this dating change must re-run the hook under the old "
-            "image, not only swap the container."
+            f"Cash posting resync complete: RE-POSTED {transactions} "
+            f"transaction(s) and {transfers} transfer(s); their journal "
+            "entries were re-dated or re-booked.  To roll back past this "
+            "deploy, follow deploy/shekel-deploy.sh's rollback instructions; "
+            "it logs the pre-deploy dump it took."
         )
     else:
-        print("Cash posting re-date complete: already at target (0 changed).")
+        print("Cash posting resync complete: already at target (0 changed).")
 
 
 def backfill_loan_payment_postings_after_migration():

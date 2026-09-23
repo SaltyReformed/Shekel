@@ -894,11 +894,12 @@ class TestOneBrokenPairCannotStopTheDeployResync:
     """``resync_all_cash_postings`` skips a drifted pair instead of aborting.
 
     **The refusal that made this necessary is correct, and its blast radius was
-    not** (developer ruling, 2026-08-17).  ``posting_service._settle_effective``
-    gained a settled-status predicate at plan step X-au-c3 and raises
-    ``PostingError`` when the income shadow is not settled -- right for a single
-    write path, where a caller asking what one transfer settled at must not be
-    handed a fabricated figure.
+    not** (developer ruling, 2026-08-17).  The one-entry writer's figure read
+    (deleted with that writer at plan step ``balance:X-bi-6-3``) gained a
+    settled-status predicate at plan step X-au-c3 and raised ``PostingError``
+    when the income shadow was not settled -- right for a single write path,
+    where a caller asking what one transfer settled at must not be handed a
+    fabricated figure.
 
     But this batch selects transfers by the PARENT's status and runs at
     container start (``scripts/init_database.py``) with no isolation, so one
