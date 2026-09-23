@@ -645,9 +645,12 @@ def payment_timeliness_from_txns(txns: list[PlanItem]) -> dict | None:
     column, so through ``X-bi-6-1b`` the row was timed and the leg was not:
     two shapes, two answers.  The gate reads the RECORD for both
     (:func:`_holds_a_record`), so they answer alike; a row with a record
-    keeps its own ``settled_on`` as the day.  Dropping a $0.00 close moves
-    every figure here -- the count, on time / late and the average -- as
-    the one declared change (0 such rows on the 2026-09-22 production dump).
+    keeps its own ``settled_on`` as the day.  Dropping a $0.00 close takes
+    one off the count and off whichever of on time / late it fell in, and
+    shifts the unrounded average unless its days equal the rest's mean (the
+    2-dp figure can round a small shift away); when it was the only timed
+    item the answer becomes ``None``.  That is the one declared change (0
+    such rows on the 2026-09-22 production dump).
 
     The caller (the Spending report's hero, the one caller) supplies the
     window's settled expenses already attributed, so this core owns only

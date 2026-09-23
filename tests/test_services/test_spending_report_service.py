@@ -1792,6 +1792,48 @@ class TestATransferIsALegOfItsParent:
                 "avg_days_before_due": Decimal("1.00"),
             }
 
+    def test_a_zero_record_close_moves_the_on_time_count_and_the_average_too(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """R-BAL90's declared change on a MIXED window (the leaf's review, M4).
+
+        Both bills are due on the period's third day.  Water closes at
+        ``$0.00`` on the first day (2 days early, no record); Power pays
+        ``$60.00`` on the fifth (2 days late, recorded).  Through leaf
+        X-bi-6-1b both were timed: 2 bills, 1 on time, 1 late, average
+        ``(2 + -2) / 2 = 0.00``.  With Water out, Power alone is timed: 1 bill,
+        0 on time, 1 late, average ``-2 / 1 = -2.00``.  So the hero's "Bills
+        on time" chip reads ``0 / 1`` where it read ``1 / 2``, and its caption
+        "avg 2.0 days late" where it read "avg 0.0 days early": the close moved
+        the total, the on-time count it fell in, and the average, which it
+        moves here (its +2 days against the rest's -2).  ``paid_late`` stays
+        1.  What this pins is HOW MUCH the declared change moves the
+        hero on a window holding a late bill; the gate itself is killed by
+        the row twin above as well (``_holds_a_record`` forced ``True`` fails
+        both).
+        """
+        with app.app_context():
+            period = seed_periods[0]
+            due = period.start_date + timedelta(days=2)
+            _txn(
+                db, seed_user, period, "Water", "Rent", "45.00",
+                actual="0.00", due_date=due, settled_on=period.start_date,
+            )
+            _txn(
+                db, seed_user, period, "Power", "Rent", "60.00",
+                due_date=due, settled_on=period.start_date + timedelta(days=4),
+            )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+
+            assert report.hero.payment_timing == {
+                "total_bills_paid": 1, "paid_on_time": 0, "paid_late": 1,
+                "avg_days_before_due": Decimal("-2.00"),
+            }
+
     def test_tied_surprises_rank_rows_before_legs_by_a_total_order(
         self, app, seed_user, seed_periods, db,
     ):
