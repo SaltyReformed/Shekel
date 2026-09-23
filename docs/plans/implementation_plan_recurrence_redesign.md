@@ -245,6 +245,15 @@ passed with every refusal accepted.
 (`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
 exactly what made the mismatch invisible.
 
+**The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
+cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this
+document's own rulings table, so the lift that read the tables would have left it behind.
+
+**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
+completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
+when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
+record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+
 - [x] **R17** `4e8b40b3` -- as built: `historical/thirteen_shipped_recurrence_steps_2026-09-02.md`.
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
@@ -539,49 +548,11 @@ guarded on the deferring placement precisely so a LEAD cannot silently inherit i
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
 
-- [ ] **R12 -- the image pins its locale.**
-**It also takes F-15** (**R-R54**, 2026-09-03): month names would follow the process locale if
-anything ever called `setlocale` -- nothing does, `$0.00` -- and ONE line, `LC_ALL` pinned in the
-image with a startup assertion, covers every site and every future one. The site COUNT is
-**R-R54**'s and is stated there, not restated here; it is not reproducible by any pattern this row
-could name, which rule 6 says is a reason to state no total.
-**Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
-`deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
-that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
-re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one-release drop of
-`ref.recurrence_patterns` on the second of those, and R9 deleted `TestDeliberateRefSeedSurplus`,
-which was the last EXECUTABLE statement of the hazard that refusal now covers. **That sentence USED
-to end "an executable guard was replaced by an unexercised one", and it was already false when
-written**: `repin_is_safe` is exercised by `test_it_refuses_and_leaves_the_pin_at_the_new_digest`
-and `test_a_compose_failure_also_refuses`, both of which observe the refusal AND the pin.
-
-**THE SCRIPT IS DRIVEN, and this paragraph said otherwise for 25 days.**
-`tests/test_deploy/test_shekel_deploy_behaviour.py` shells out to the real `deploy/shekel-deploy.sh`
-with a stubbed `docker` on `PATH` and observes OUTCOMES; it landed at `398c332c` on 2026-08-08, nine
-days BEFORE `D41` was filed against its absence, and it is not `@pytest.mark.docker`, so CI runs it.
-Re-check with `grep -rln 'shekel-deploy.sh' tests/` rather than re-reading this sentence.
-
-**That decision was TAKEN and all four arms EXIST**: a `tests/` module shelling out to `bash` was
-the answer, and it already covers every arm this step listed as its minimum -- a stamp the target
-cannot resolve is refused (`test_a_target_older_than_the_database_is_refused_up_front`); a stamp the
-OLD image cannot resolve refuses the re-pin
-(`test_it_refuses_and_leaves_the_pin_at_the_new_digest`); an unchanged stamp after a container that
-never started still re-pins (`test_a_release_with_no_new_migrations_reverts_the_pin`); and an
-unreadable `alembic_version` is unsafe (`test_an_empty_listing_aborts_rather_than_assuming`), plus
-`TestThePreflightIsHonest` on `preflight_migrations` directly.
-**So `D41` is DISCHARGED and what remains of this step is `F-15`**: `LC_ALL` pinned in the image
-with a startup assertion, which is one line and no harness at all. The step is kept rather than
-withdrawn because that half is real and unbuilt; its deploy-predicate half is not work anybody still
-owes.
-
-**The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
-cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this
-document's own rulings table, so the lift that read the tables would have left it behind.
-
-**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
-completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
-when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
-record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+- [x] **R12 -- the image pins its locale.** `cde86066` -- `LC_ALL=C.UTF-8` set in the Dockerfile's
+      runtime stage, `scripts/test.sh` and `.env.example`, and `create_app`'s first statement
+      refuses any other value under every configuration (**R-R92**, extending **R-R54**); a test
+      holds the Dockerfile's line to `PINNED_LOCALE`. Closed **F-15**. `D41` was DISCHARGED before
+      it, not closed here: the deploy script's test landed at `398c332c`.
 
 ### Carried steps -- scheduled here so they are not merely remembered
 
