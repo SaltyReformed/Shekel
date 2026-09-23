@@ -53,7 +53,7 @@ On a fresh deploy, also set the matching app-side env vars (already declared in
 - `DB_SSLMODE=require` makes `entrypoint.sh` apply the same posture to `DATABASE_URL_APP` (the
   least-privilege role's URL).
 - `PGSSLMODE=require` covers every `psql` call in `entrypoint.sh` (schema bootstrap, role
-  provisioning, audit-trigger health check).
+  provisioning). The audit-trigger check runs inside entrypoint step 3 over `DATABASE_URL`.
 
 Verify the channel encryption:
 

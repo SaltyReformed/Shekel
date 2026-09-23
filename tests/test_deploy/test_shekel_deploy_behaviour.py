@@ -149,8 +149,10 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
                     # public.alembic_version.  The stamp ADVANCES once the
                     # deploy has run, which is what a migration at entrypoint
                     # step 3 does and what makes the post-failure re-read
-                    # mean something.
+                    # mean something.  FAKE_STAMP_REREAD_RC models a re-read
+                    # that fails (finding BAL-535).
                     if grep -q '^compose' "$FAKE_LOG"; then
+                        [ "$FAKE_STAMP_REREAD_RC" != "0" ] && exit "$FAKE_STAMP_REREAD_RC"
                         printf '%s\\n' "$FAKE_STAMPED_AFTER"
                     else
                         printf '%s\\n' "$FAKE_STAMPED"
@@ -282,7 +284,8 @@ class _Stack:
             container_log: str = "fake container log",
             logs_rc: str = "0", container_image_id: str | None = None,
             target_image_id: str | None = None,
-            stop_rc: str = "0") -> subprocess.CompletedProcess:
+            stop_rc: str = "0",
+            stamp_reread_rc: str = "0") -> subprocess.CompletedProcess:
         """Run the real deploy script against this stack.
 
         Args:
@@ -309,6 +312,8 @@ class _Stack:
             target_image_id: The pulled target's image ID; ``""`` for one
                 that cannot be read.  Defaults to the TARGET's.
             stop_rc: Exit status for ``docker stop``.
+            stamp_reread_rc: Exit status for every stamp read once the deploy
+                has run (non-zero: the re-read fails).
 
         Returns:
             The completed process, with stdout and stderr captured together.
@@ -349,6 +354,7 @@ class _Stack:
                 else target_image_id
             ),
             "FAKE_STOP_RC": stop_rc,
+            "FAKE_STAMP_REREAD_RC": stamp_reread_rc,
         })
         argv = ["bash", str(_DEPLOY_SCRIPT), "--no-verify"]
         if dry_run:
@@ -807,6 +813,105 @@ class TestTheStampIsReadOnceTheTargetIsStopped:
         assert _last_stamp_read(calls) < calls.index("stop probe-app"), calls
         assert len(_compose_ups(calls)) == 1, calls
         assert f"{_DEPLOY_SCRIPT} {_OLD}" in _flat(output)
+
+
+def _refusal(output: str) -> str:
+    """Return what the script printed from its refusal onward.
+
+    Args:
+        output: Captured stdout/stderr of a run that refused.
+
+    Returns:
+        The text after ``REFUSING to roll back.``: what the operator reads
+        once the deploy has failed, apart from the pre-flight above it.
+    """
+    assert "REFUSING to roll back." in output, output
+    return output.split("REFUSING to roll back.", 1)[1]
+
+
+_NEW_SHORT = _NEW[7:19]
+
+
+class TestTheRefusalSaysOnlyWhatTheStampShows:
+    """Finding BAL-535: the refusal's diagnosis comes from the stamp it re-read.
+
+    It used to say the new image "COMMITTED its migrations" and print the
+    PRE-FLIGHT's stamp as the database's state whatever brought it there --
+    a re-read that FAILED included, where nothing is known -- and it named
+    only a restore that discards data, even for a release that was merely
+    slower than the health window, which starting the new pin again recovers
+    with nothing lost.
+    """
+
+    def test_an_unreadable_stamp_claims_no_commit_and_prints_no_stale_stamp(
+        self, stack,
+    ):
+        """The re-read fails: nothing about a commit is claimed, no stamp is printed.
+
+        The pin stays and the way back is this script's own pre-flight, which
+        reads the stamp again before writing anything.
+        """
+        result = stack.run(
+            health="unhealthy", stamp_reread_rc="1", **_MIGRATION_BEARING,
+        )
+        output = result.stdout + result.stderr
+        refusal = _refusal(output)
+        assert result.returncode == 1, output
+        assert stack.pin == _NEW
+        assert len(_compose_ups(stack.invocations)) == 1, stack.invocations
+        assert "The stamp could not be re-read after the failure" in refusal
+        assert "UNKNOWN" in refusal
+        assert "COMMITTED" not in refusal
+        assert "stamped at" not in refusal
+        assert f"{_DEPLOY_SCRIPT} {_OLD}" in _flat(refusal)
+
+    def test_a_stamp_the_target_resolves_names_starting_it_again(self, stack):
+        """Step 3 committed a stamp the new image wrote: restart first, restore second."""
+        result = stack.run(health="unhealthy", **_MIGRATION_BEARING)
+        output = result.stdout + result.stderr
+        refusal = _refusal(output)
+        assert result.returncode == 1, output
+        assert stack.pin == _NEW
+        assert "Database is now stamped at: 0003" in refusal
+        assert f"{_NEW_SHORT}'s step 3 COMMITTED its" in refusal
+        restart = f"cd {stack.shekel_dir} && docker compose up -d app"
+        assert restart in refusal
+        assert "It resolves this stamp, so" in refusal
+        assert refusal.index(restart) < refusal.index("pg_restore")
+
+    def test_a_stamp_neither_image_resolves_names_only_the_restore(self, stack):
+        """A stamp the new image cannot resolve either: no commit claimed, no restart offered.
+
+        Its step 3 cannot have written a revision it has no script for, so
+        something other than this deploy moved the stamp.
+        """
+        result = stack.run(
+            health="unhealthy",
+            **{**_MIGRATION_BEARING, "stamped_after": "0009"},
+        )
+        output = result.stdout + result.stderr
+        refusal = _refusal(output)
+        assert result.returncode == 1, output
+        assert "Database is now stamped at: 0009" in refusal
+        assert "cannot resolve that revision either" in refusal
+        assert "COMMITTED" not in refusal, (
+            "a stamp the new image cannot resolve was not written by its step 3"
+        )
+        assert "It resolves this stamp" not in refusal
+        assert f"start {_NEW_SHORT} again" not in refusal
+        assert "pg_restore" in refusal
+
+    def test_the_refusal_saves_the_failed_log_and_names_it(self, stack):
+        """The log is kept beside the dump, since the restore recreates the container."""
+        result = stack.run(
+            health="unhealthy", container_log=_REFUSAL_LINE,
+            **_MIGRATION_BEARING,
+        )
+        output = result.stdout + result.stderr
+        saved = sorted(stack.backup_dir.glob("*.failed-container.log"))
+        assert len(saved) == 1, output
+        assert _REFUSAL_LINE in saved[0].read_text(encoding="utf-8")
+        assert str(saved[0]) in _refusal(output)
 
 
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:

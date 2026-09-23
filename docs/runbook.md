@@ -132,7 +132,7 @@ produced, not by which script you remember.
 | Canonical source | `deploy/shekel-deploy.sh` in the repo, symlinked to `/opt/docker/scripts/` | `scripts/deploy.sh` |
 | Stack | `/opt/docker/shekel` (hardened, digest-pinned) | `/opt/shekel` (`docker-compose.yml` + `docker-compose.build.yml`) |
 | Image | `ghcr.io/saltyreformed/shekel@sha256:...`, cosign-verified | built locally from the working tree |
-| Rollback | digest revert, **refused for a migration-bearing release** (2.3) | `:previous` image tag |
+| Rollback | digest revert, decided by the re-read schema stamp (2.3) | `:previous` image tag |
 
 `scripts/deploy.sh` **refuses to run when `/opt/docker/shekel` exists** (`--force-self-hosted`
 overrides): running it on the maintainer's host would replace the pinned, hardened container with an
@@ -153,16 +153,20 @@ shekel-deploy --dry-run        # resolve, verify, report the pre-flight, change 
    already matches the current pin.
 2. `cosign verify` against the keyless OIDC identity of `.github/workflows/docker-publish.yml`.
    Aborts if `cosign` is missing; `--no-verify` is for emergencies only.
-3. **Migration pre-flight.** Lists `migrations/versions` in *both* images and reports the revisions
-   the target adds. A non-empty set means the release is **migration-bearing**, which changes the
-   failure path (2.3). `--dry-run` reports this without deploying.
+3. **Migration pre-flight.** Lists `migrations/versions` in *both* images, reads the database's
+   Alembic stamp, and refuses up front a target that cannot resolve it (an image older than the
+   database). It reports the revisions the target adds: a **migration-bearing** release. `--dry-run`
+   reports all of this without deploying.
 4. **`pg_dump -Fc` of the whole database** into `~/shekel-backups/` (override with
-   `SHEKEL_BACKUP_DIR`), written to a `.part` file and renamed only after `pg_restore -l` reads a
-   table of contents back out of it. **No dump, no deploy** -- a dump failure aborts *before* the
-   pin is touched.
+   `SHEKEL_BACKUP_DIR`), written to a `.part` file and renamed only after `pg_restore -f /dev/null`
+   decodes every data block of it (a table-of-contents read passes a truncated archive).
+   **No dump, no deploy** -- a dump failure aborts *before* the pin is touched.
 5. Rewrites `SHEKEL_IMAGE_DIGEST` in `/opt/docker/shekel/.env` and `docker compose up -d app`.
-   Migrations run inside the container, at entrypoint step 3.
+   Entrypoint step 3 runs the migrations, the reference and tax seeds, the three ledger hooks and
+   the audit-trigger check in ONE transaction: they commit together or not at all.
 6. Polls the container healthcheck for up to 4 minutes; ntfy ping either way.
+7. **On failure**, stops the new container, re-reads the stamp, and either re-pins the previous
+   digest or refuses (2.3).
 
 **The canonical copy is `deploy/shekel-deploy.sh` in this repo**, and
 `/opt/docker/scripts/shekel-deploy.sh` is a symlink to it. That means
@@ -236,17 +240,38 @@ curl -s http://localhost/health
 
 ### 2.3 Rolling Back
 
-#### A migration-bearing production release CANNOT be rolled back by re-pinning
+#### Production (`shekel-deploy`): the re-read stamp decides
 
-**Read this before reaching for a rollback.** Migrations run at entrypoint step 3, *before* the
-health check. So by the time a production deploy is judged unhealthy, the database may already be
-stamped at a revision the previously-pinned image's Alembic tree does not contain. That image then
-dies at step 3 as well -- reproduced as `CommandError: Can't locate revision identified by ...` --
-so re-pinning turns one dead container into two.
+When the new image fails (compose rejects it, or it is not healthy within 4 minutes),
+`shekel-deploy` stops the new container, so its entrypoint can commit nothing more, then re-reads
+the database's Alembic stamp. That stamp, not the release, decides what happens:
 
-`shekel-deploy` therefore **refuses to re-pin** when its pre-flight found new migrations. It leaves
-the pin at the new digest deliberately, prints the revisions the release added, and names the
-pre-deploy dump plus the exact restore sequence. Recovery is:
+- **The previous image can resolve the stamp.** The release migrated nothing, or entrypoint step 3
+  failed and rolled back: since plan step `X-cv` the migrations, the reference and tax seeds, the
+  ledger hooks and the audit-trigger check are ONE transaction, so a failure there leaves the stamp
+  unmoved even for a migration-bearing release. The script saves the failed container's log beside
+  the dump (its name with `.failed-container.log` for `.dump`), re-pins the previous digest and
+  waits for it to be healthy. Nothing is restored.
+- **The previous image cannot resolve the stamp.** Step 3 COMMITTED and something later failed (the
+  first-boot user seed, the static copy, or the app never became healthy). Re-pinning would give a
+  second dead container -- reproduced as `CommandError: Can't locate revision identified by ...`
+  (finding F-8) -- so the script **refuses**, leaves the pin at the new digest, saves the log, and
+  names the ways out:
+  1. **Start the new pin again**, offered when the new image resolves the stamp (it wrote it):
+     `cd /opt/docker/shekel && docker compose up -d app`. Nothing is restored and nothing is lost.
+     The right first move when the log shows a transient failure, such as a release that was only
+     slower than the health window.
+  2. **Restore the pre-deploy dump** and re-pin the previous digest (below). This discards
+     everything written since the dump.
+- **The stamp could not be re-read** (the database container did not answer). The script claims
+  nothing about a commit and leaves the pin. Once the database answers, roll back through
+  `shekel-deploy <old-digest>`: its pre-flight reads the stamp and refuses up front, naming the
+  restore, if the previous image cannot resolve it.
+- **The new container could not be stopped.** No stamp read is final, so the script refuses and
+  leaves the pin: `docker stop shekel-prod-app`, then `shekel-deploy <old-digest>`.
+
+**Read the saved log first** (the path is in the output and the ntfy alert). It names the step that
+failed, and whether a restart can clear it.
 
 **Restoring discards everything written since the dump was taken** -- minutes of real entries in a
 budgeting app. Capture the failed state first so that window stays recoverable.
@@ -280,16 +305,9 @@ sed -i 's|^SHEKEL_IMAGE_DIGEST=.*|SHEKEL_IMAGE_DIGEST=<old-digest>|' /opt/docker
 docker compose up -d app
 ```
 
-**Read `docker logs shekel-prod-app` first.** A health failure that never reached the migration step
-needs no restore at all -- only the pin. The refusal is fail-closed because the two cases are not
-distinguishable from the exit status, not because a restore is always required.
-
-For a release with **no** new migrations -- 6 of the last 10 are pure digest reverts -- the
-automatic rollback is unchanged and still correct.
-
 **Automatic rollback:** For a self-hosted source build, `scripts/deploy.sh` automatically rolls back
-if the health check fails after restart. No manual action is needed. For production, see the
-migration rule above.
+if the health check fails after restart. No manual action is needed. For production, see the stamp
+rule above.
 
 **Manual rollback, SELF-HOSTED source-build stacks only** (`/opt/shekel`, `scripts/deploy.sh`). It
 does not apply to the maintainer's production stack, which has no `:previous` tag and no
@@ -345,9 +363,8 @@ docker compose up -d
 docker compose ps
 # All three services (db, app, nginx) should show "healthy".
 
-# 6. Seed the database (first run only).
-docker exec shekel-prod-app python scripts/seed_ref_tables.py
-docker exec shekel-prod-app python scripts/seed_tax_brackets.py
+# 6. Seed the first user (first run only).  The reference and tax seeds
+#    already ran inside entrypoint step 3, as they do on every start.
 docker exec shekel-prod-app python scripts/seed_user.py
 
 # 7. Verify the application.

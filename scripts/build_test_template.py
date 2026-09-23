@@ -155,7 +155,11 @@ from psycopg2 import sql
 
 from app import create_app
 from app.append_only_infrastructure import apply_append_only_infrastructure
-from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
+from app.audit_infrastructure import (
+    AUDIT_TRIGGER_COUNT_SQL,
+    EXPECTED_TRIGGER_COUNT,
+    apply_audit_infrastructure,
+)
 from app.level_infrastructure import apply_level_infrastructure
 from app.migration_runner import upgrade_to_head
 from app.sighting_infrastructure import apply_sighting_infrastructure
@@ -353,8 +357,9 @@ def _verify_template_state() -> None:
       :data:`_EXPECTED_ACCOUNT_TYPE_COUNT`.  Catches a seed list
       edit that removed or duplicated a row.
     * ``pg_trigger`` count of non-internal ``audit_*`` triggers
-      equals :data:`EXPECTED_TRIGGER_COUNT` from
-      :mod:`app.audit_infrastructure`.  Catches a new table that was
+      (:data:`app.audit_infrastructure.AUDIT_TRIGGER_COUNT_SQL`, the
+      query the deploy's check runs too) equals
+      :data:`EXPECTED_TRIGGER_COUNT` exactly.  Catches a new table that was
       added to ``AUDITED_TABLES`` but whose trigger never attached
       (or, less likely, a stray trigger left over from a previous
       template that the DROP did not wipe).
@@ -381,10 +386,7 @@ def _verify_template_state() -> None:
                     "and that seed_reference_data committed cleanly."
                 )
 
-            cur.execute(
-                "SELECT count(*) FROM pg_trigger "
-                "WHERE tgname LIKE 'audit_%' AND NOT tgisinternal"
-            )
+            cur.execute(AUDIT_TRIGGER_COUNT_SQL)
             trigger_count = cur.fetchone()[0]
             if trigger_count != EXPECTED_TRIGGER_COUNT:
                 raise RuntimeError(

@@ -10,7 +10,8 @@ Covers:
     role within the test, asserting the role can DML but not DDL,
     then dropping it.
   * The ``app.current_user_id`` session-variable capture path.
-  * The trigger-count health check that ``entrypoint.sh`` runs.
+  * The trigger count the deploy's check asks for
+    (``app.audit_infrastructure.require_audit_triggers``, entrypoint step 3).
 
 The tests lean on the ``shekel_user`` test role being a PostgreSQL
 superuser (which it is on this project's local dev/test config) so
@@ -942,19 +943,21 @@ class TestLedgerAppendOnlyPrivileges:
 
 
 # ---------------------------------------------------------------------------
-# Health check (matches entrypoint.sh)
+# Health check (matches the deploy's check, entrypoint step 3)
 # ---------------------------------------------------------------------------
 
 
 class TestEntrypointHealthCheck:
-    """Mirror the post-migration assertion that ``entrypoint.sh`` runs.
+    """Mirror the post-migration check the deploy runs.
 
-    The shell script counts ``pg_trigger.tgname LIKE 'audit_%'`` and
-    compares against ``EXPECTED_TRIGGER_COUNT`` from the shared
-    module.  If the test below fails, the production startup check
-    would also fail and Gunicorn would refuse to start -- which is
-    the intended behaviour, but it is easier to debug a broken test
-    than a refused container start.
+    ``app.audit_infrastructure.require_audit_triggers`` counts the
+    ``audit_*`` triggers inside entrypoint step 3's one transaction
+    (plan step balance:X-cv; it was a shell step 7 before) and compares
+    against ``EXPECTED_TRIGGER_COUNT`` from the shared module.  If the
+    test below fails, the production check would also fail and refuse
+    the deploy -- which is the intended behaviour, but it is easier to
+    debug a broken test than a refused deploy.  The count here is
+    spelled independently of the deploy's on purpose.
     """
 
     def test_count_meets_expected(self, db):
@@ -962,7 +965,7 @@ class TestEntrypointHealthCheck:
 
         ``>=`` rather than ``==`` so adding extra triggers in a
         future migration (e.g. for the read-audit instrumentation
-        in C-52) cannot break this test; the entrypoint check uses
+        in C-52) cannot break this test; the deploy's check uses
         the same comparator.
         """
         actual = _trigger_count(db.session)

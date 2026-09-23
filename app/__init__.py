@@ -37,14 +37,15 @@ def create_app(config_name=None, *, init_ref_cache=True):
         init_ref_cache: When True (the default -- used by Gunicorn and the
                      dev/test server), eagerly populate ``ref_cache`` and
                      register the ref-id Jinja globals at app creation.  Set
-                     False ONLY by the deploy-time migration host
-                     (``scripts/init_database.py``), which builds the app
-                     solely to obtain an Alembic context and runs BEFORE the
-                     migrations that seed new ref rows.  ``ref_cache.init``
-                     treats a missing row in an existing ref table as fatal
-                     (a genuine seed/data drift), so eager-initing it on a
-                     pre-migration database would raise -- exactly the
-                     bootstrap window the migration host must run through.
+                     False ONLY by the two hosts that write ref rows before
+                     reading them: the deploy (``scripts/init_database.py``),
+                     which runs BEFORE the migrations and the seed that bring
+                     new ref rows, and the manual repair seed
+                     (``scripts/seed_ref_tables.py``, ruling R-BAL123).
+                     ``ref_cache.init`` treats a missing row in an existing
+                     ref table as fatal (a genuine seed/data drift), so
+                     eager-initing it before the seed would raise -- exactly
+                     the window both hosts must run through.
                      The runtime guard is unchanged: Gunicorn always inits.
 
     Returns:
@@ -177,12 +178,13 @@ def create_app(config_name=None, *, init_ref_cache=True):
     # database IDs.  Then expose cached status IDs as Jinja globals so
     # templates can compare status_id without querying the database.
     #
-    # Skipped entirely when ``init_ref_cache`` is False: the deploy-time
-    # migration host (``scripts/init_database.py``) builds the app only to
-    # obtain an Alembic context and runs BEFORE the migrations that seed new
-    # ref rows.  ``ref_cache.init`` treats a missing row in an existing ref
-    # table as fatal, so eager-initing it on a pre-migration database would
-    # raise and abort the deploy (see the create_app docstring).  Gunicorn,
+    # Skipped entirely when ``init_ref_cache`` is False: the deploy
+    # (``scripts/init_database.py``) and the manual ref seed
+    # (``scripts/seed_ref_tables.py``) run BEFORE the rows they seed exist,
+    # and read the cache only after seeding, if at all.  ``ref_cache.init``
+    # treats a missing row in an existing ref table as fatal, so
+    # eager-initing it on a pre-migration database would raise and abort
+    # the deploy (see the create_app docstring).  Gunicorn,
     # the dev server, and the test app always init (the default).
     #
     # ``ref_cache.init`` is resilient to missing ref tables during the
@@ -870,8 +872,8 @@ def _ensure_schemas():
 def _seed_ref_tables():
     """Seed reference lookup tables if empty (dev/test only).
 
-    In production, this is handled by the Docker entrypoint via
-    ``scripts/seed_ref_tables.py``.  Idempotent -- skips rows that
+    In production the deploy seeds inside entrypoint step 3's one
+    transaction (``scripts/init_database.py``).  Idempotent -- skips rows that
     already exist.  Silently skips the entire seed if the tables
     haven't been created yet (e.g. first test-session run before
     ``create_all()``).

@@ -39,9 +39,12 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import InternalError, InvalidRequestError
 
 from app import migration_runner, ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum
+from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT
+from app.enums import PostingKindEnum, PostingSourceEnum, StatementSourceEnum
 from app.models.category import Category
+from app.ref_seeds import ACCT_TYPE_SEEDS
 from app.services.posting_reads import PostingError
+from app.services.tax_seed_data import DEFAULT_FICA
 from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
@@ -339,15 +342,149 @@ class TestACleanRunCommitsOnce:
             ), {"u": user_id}).scalar_one() == 1
 
 
+def _delete_the_unreferenced_ref_row(db) -> None:
+    """Delete, committed, one ref row nothing in the per-test database references.
+
+    ``ref.statement_sources`` 'secu_checking_csv' backs an enum member
+    ``ref_cache`` requires, and no statement import or external identity exists
+    here to hold it, so the deploy's reference seed must put it back -- and
+    must do so BEFORE the cache is read, or the strict ``ref_cache.init``
+    refuses the table.
+    """
+    db.session.execute(text(
+        "DELETE FROM ref.statement_sources WHERE name = 'secu_checking_csv'"
+    ))
+    db.session.commit()
+
+
+def _seeded(db, user_id: int) -> dict:
+    """Read, over a connection of its own, what the two deploy seeds COMMITTED.
+
+    Args:
+        db: The Flask-SQLAlchemy handle.
+        user_id: The user whose tax defaults the tax seed adds.
+
+    Returns:
+        ``ref_row`` (whether the deleted ref row is back) and ``fica`` (how
+        many FICA configurations the user holds; ``seed_user`` makes none).
+    """
+    with db.engine.connect() as conn:
+        return {
+            "ref_row": conn.execute(text(
+                "SELECT count(*) FROM ref.statement_sources "
+                "WHERE name = 'secu_checking_csv'"
+            )).scalar_one(),
+            "fica": conn.execute(text(
+                "SELECT count(*) FROM salary.fica_configs WHERE user_id = :u"
+            ), {"u": user_id}).scalar_one(),
+        }
+
+
+class TestTheSeedsAndTheCheckAreInsideTheOneTransaction:
+    """Entrypoint steps 4, 6 and 7 run inside step 3 (ruling R-BAL122).
+
+    The reference seed, the tax seed and the audit-trigger check used to run
+    after ``init_database.py`` had committed, so a failure in one of them left
+    the release's stamp behind a dead container: the case ``shekel-deploy``
+    cannot re-pin.  Now they commit with the migration or roll back with it.
+    """
+
+    def test_a_clean_run_commits_both_seeds_with_the_migration(
+        self, app, db, seed_user, pending_migration, uncorrected_payment,
+    ):
+        """The deleted ref row and the user's tax defaults commit with the stamp.
+
+        It also pins ruling R-BAL122's ORDER on an existing database: the ref
+        row is missing when the deploy starts, so a cache read before the seed
+        would refuse ``StatementSource.SECU_CHECKING_CSV`` and fail the deploy.
+        """
+        _delete_the_unreferenced_ref_row(db)
+        user_id = seed_user["user"].id
+        assert _seeded(db, user_id) == {"ref_row": 0, "fica": 0}
+
+        _INIT_DB.initialise_database()
+
+        assert _committed(db, uncorrected_payment) == {
+            "stamp": _PROBE_REVISION, "probe": True, "corrections": 1,
+        }
+        assert _seeded(db, user_id) == {
+            "ref_row": 1, "fica": len(DEFAULT_FICA),
+        }
+        # The deploy loaded ref_cache itself, from the seeded rows: the
+        # re-inserted row has a NEW id, which only a load after the seed can
+        # know (conftest's per-test load read the deleted row's id).
+        with db.engine.connect() as conn:
+            new_id = conn.execute(text(
+                "SELECT id FROM ref.statement_sources "
+                "WHERE name = 'secu_checking_csv'"
+            )).scalar_one()
+        assert ref_cache.statement_source_id(
+            StatementSourceEnum.SECU_CHECKING_CSV,
+        ) == new_id
+
+    def test_a_missing_audit_trigger_rolls_everything_back(
+        self, app, db, seed_user, pending_migration, uncorrected_payment,
+    ):
+        """One audit trigger is gone: the check refuses and nothing commits.
+
+        Not the migration, not the hook's correction, and neither seed's rows:
+        before X-cv's leaf 2 this check was entrypoint step 7, run after step 3
+        had committed all of them.
+        """
+        _delete_the_unreferenced_ref_row(db)
+        db.session.execute(text(
+            "DROP TRIGGER audit_transactions ON budget.transactions"
+        ))
+        db.session.commit()
+        user_id = seed_user["user"].id
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                rf"Audit trigger check failed: {EXPECTED_TRIGGER_COUNT - 1} "
+                rf"audit trigger\(s\), at least {EXPECTED_TRIGGER_COUNT}"
+            ),
+        ):
+            _INIT_DB.initialise_database()
+        db.session.rollback()
+
+        assert _committed(db, uncorrected_payment) == {
+            "stamp": pending_migration, "probe": False, "corrections": 0,
+        }
+        assert _seeded(db, user_id) == {"ref_row": 0, "fica": 0}
+
+    def test_a_surplus_audit_trigger_is_not_refused(
+        self, app, db, pending_migration, uncorrected_payment,
+    ):
+        """AT LEAST the expected count, as step 7 asked: an extra trigger passes.
+
+        A missing trigger means writes that leave no audit row; a surplus one
+        (a trigger this image's list does not name) is not what the check is
+        for, and refusing it would fail a deploy over a harmless row.
+        """
+        db.session.execute(text(
+            "CREATE TRIGGER audit_xcv_surplus AFTER INSERT ON budget.categories "
+            "FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()"
+        ))
+        db.session.commit()
+
+        _INIT_DB.initialise_database()
+
+        assert _committed(db, uncorrected_payment) == {
+            "stamp": _PROBE_REVISION, "probe": True, "corrections": 1,
+        }
+
+
 def _with_stray_calls(monkeypatch, db, hook, *, before=None, after=None):
-    """Run a real deploy hook's service between stray session calls.
+    """Run a real step of the deploy between stray session calls.
 
     Args:
         monkeypatch: pytest's monkeypatch fixture.
         db: The Flask-SQLAlchemy handle whose session the hooks use.
-        hook: ``(service module, function name)`` of the hook's real service:
-            the loan backfill is the SECOND hook (the third follows it), the
-            anchor backfill the THIRD and last.
+        hook: ``(module, function name)`` of the step's real function: the
+            loan backfill is the SECOND deploy hook (more follow it), and the
+            tax seed the LAST step that uses the session (ruling R-BAL122's
+            order; only the audit-trigger count, on the connection, follows).
         before: ``"commit"`` or ``"rollback"``, called on ``db.session`` before
             the real service runs; ``None`` for no call.
         after: The same, called after it.
@@ -368,9 +505,7 @@ def _with_stray_calls(monkeypatch, db, hook, *, before=None, after=None):
 
 
 _SECOND_HOOK = (_INIT_DB.loan_posting_service, "backfill_all_loan_postings")
-_THIRD_HOOK = (
-    _INIT_DB.account_posting_service, "backfill_all_account_anchor_postings",
-)
+_LAST_SESSION_STEP = (_INIT_DB, "seed_tax_brackets")
 
 
 class TestNothingInsideTheSequenceCanCommit:
@@ -446,8 +581,13 @@ class TestNothingInsideTheSequenceCanCommit:
     def test_a_rollback_after_the_last_statement_fails_the_one_commit(
         self, app, db, pending_migration, uncorrected_payment, monkeypatch,
     ):
-        """The last hook rolls back after its work: the deploy's commit refuses."""
-        _with_stray_calls(monkeypatch, db, _THIRD_HOOK, after="rollback")
+        """The last session step rolls back after its work: the deploy's commit refuses.
+
+        That step is the tax seed since ruling R-BAL122 put the seeds and the
+        audit-trigger check after the hooks; it was the third hook before
+        (re-expressed with the developer's confirmation, rule 5).
+        """
+        _with_stray_calls(monkeypatch, db, _LAST_SESSION_STEP, after="rollback")
         with pytest.raises(InvalidRequestError) as refused:
             _INIT_DB.initialise_database()
 
@@ -460,8 +600,12 @@ class TestNothingInsideTheSequenceCanCommit:
     def test_a_commit_after_the_last_statement_is_harmless(
         self, app, db, pending_migration, uncorrected_payment, monkeypatch,
     ):
-        """The last hook commits after its work: everything commits, once, as usual."""
-        _with_stray_calls(monkeypatch, db, _THIRD_HOOK, after="commit")
+        """The last session step commits after its work: everything commits, once.
+
+        The tax seed since ruling R-BAL122, the third hook before (re-expressed
+        with the developer's confirmation, rule 5).
+        """
+        _with_stray_calls(monkeypatch, db, _LAST_SESSION_STEP, after="commit")
 
         _INIT_DB.initialise_database()
 
@@ -590,6 +734,14 @@ def _fresh_state(db) -> dict:
         }
 
 
+def _committed_builtin_account_types(db) -> int:
+    """Count, over a connection of its own, the COMMITTED built-in account types."""
+    with db.engine.connect() as conn:
+        return conn.execute(text(
+            "SELECT count(*) FROM ref.account_types WHERE user_id IS NULL"
+        )).scalar_one()
+
+
 class TestAFreshBuildIsOneTransaction:
     """The first-boot branch commits its schema and its stamp together, or neither."""
 
@@ -615,6 +767,23 @@ class TestAFreshBuildIsOneTransaction:
         assert _fresh_state(db) == {"users_table": False, "stamps": None}
         db.session.rollback()
 
+    def test_a_failure_after_the_seed_leaves_the_database_empty(
+        self, app, db, monkeypatch,
+    ):
+        """The audit-trigger check refuses after the reference seed ran: nothing survives."""
+        _empty_the_database(db)
+
+        def _refuse(_connection):
+            """Stand in for an audit-trigger check that refuses."""
+            raise RuntimeError("forged audit-trigger refusal")
+
+        monkeypatch.setattr(_INIT_DB, "require_audit_triggers", _refuse)
+        with pytest.raises(RuntimeError, match="forged audit-trigger refusal"):
+            _INIT_DB.initialise_database()
+
+        assert _fresh_state(db) == {"users_table": False, "stamps": None}
+        db.session.rollback()
+
     def test_a_clean_build_commits_the_schema_and_the_stamp_together(
         self, app, db,
     ):
@@ -626,6 +795,21 @@ class TestAFreshBuildIsOneTransaction:
         assert _fresh_state(db) == {
             "users_table": True, "stamps": [_real_head()],
         }
+
+    def test_a_clean_build_commits_the_reference_rows_too(self, app, db):
+        """The reference rows are committed with the schema and the stamp.
+
+        Finding BAL-536: before ruling R-BAL122 this build committed EMPTY ref
+        tables, and entrypoint step 4's cache read refused them, so no new
+        production install could boot.  The strict ``ref_cache.init`` now runs
+        inside the build, after the seed, and the build returning at all means
+        it passed.
+        """
+        _empty_the_database(db)
+
+        _INIT_DB.initialise_database()
+
+        assert _committed_builtin_account_types(db) == len(ACCT_TYPE_SEEDS)
 
 
 class TestTheDeployKeepsTheAppsLogging:

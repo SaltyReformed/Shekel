@@ -56,12 +56,14 @@
 #     the last 10 releases were pure digest reverts.
 #
 # Since plan step balance:X-cv, entrypoint step 3 is ONE transaction: the
-# migrations and the three deploy hooks in `scripts/init_database.py` commit
-# together or not at all.  So a failure INSIDE step 3 -- a migration that
-# errors, a hook that refuses -- leaves the stamp where it was, and this script
-# re-pins the previous image even for a migration-bearing release.  Only a
-# failure AFTER step 3 has committed (a later entrypoint step, or the health
-# check) leaves the new stamp, and that is the case the refusal still meets.
+# migrations, the reference and tax seeds, the three deploy hooks and the
+# audit-trigger check in `scripts/init_database.py` commit together or not at
+# all.  So a failure INSIDE step 3 -- a migration that errors, a hook that
+# refuses, a missing audit trigger -- leaves the stamp where it was, and this
+# script re-pins the previous image even for a migration-bearing release.
+# Only a failure AFTER step 3 has committed (a later entrypoint step, or the
+# health check) leaves the new stamp, and that is the case the refusal still
+# meets.
 # The re-read stamp is still the only question; since X-cv it is read only
 # after the target image's container has been STOPPED, and FOR SHARE, so a
 # step 3 still in flight cannot commit behind the read
@@ -390,10 +392,16 @@ repin_is_safe() {
     # never started, or whose entrypoint step 3 failed (one transaction since
     # plan step balance:X-cv), migrated nothing that stuck, so the stamp is
     # unchanged and the ordinary rollback still applies.
+    #
+    # STAMPED_REVISIONS becomes what the re-read found, or EMPTY when it found
+    # nothing: the pre-flight's value describes the database before the
+    # deploy, and `refuse_to_repin` must never report it as the database's
+    # state after one (finding BAL-535).
     local stamped
     log "re-reading the stamp (waits for any step-3 transaction still ending) ..."
     # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
     if ! stamped=$(db_stamped_revisions) || [ -z "$stamped" ]; then
+        STAMPED_REVISIONS=""
         log "could not re-read public.alembic_version after the failure;"
         log "treating the rollback as unsafe."
         return 1
@@ -498,42 +506,105 @@ save_failed_container_log() {
     else
         rm -f "$FAILED_LOG_PATH"
         FAILED_LOG_PATH=""
-        log "WARN: could not save ${CONTAINER_NAME}'s log before re-pinning;"
-        log "      it is in Loki (Grafana) only."
+        log "WARN: could not save ${CONTAINER_NAME}'s log before the container"
+        log "      is recreated; it is in Loki (Grafana) only."
     fi
 }
 
 refuse_to_repin() {
-    # The F-8 failure path: the previously-pinned image cannot resolve the
-    # revision the database is stamped at NOW, so re-pinning it produces a
-    # SECOND dead container rather than a recovery.  Name the dump and stop.
+    # The F-8 failure path: re-pinning the previous image is not known to
+    # recover, so the pin stays at the new digest and the ways out are named.
+    # `repin_is_safe` leaves one of three states, and each gets only the
+    # claims it can support (finding BAL-535):
     #
-    # The first instruction is to STOP the container, and that ordering is not
-    # cosmetic: the app runs `restart: unless-stopped` and re-runs
-    # `alembic upgrade head` on every start, so an operator who begins with
-    # pg_restore is restoring underneath a container that is concurrently
-    # migrating.  `stop_failed_container` has usually stopped it already, but
-    # not on every path here -- a daemon that could not be asked leaves both
-    # the container and the stamp unread -- so the instruction stays first
-    # and unconditional.
+    #   * STAMPED_REVISIONS holds a stamp the previous image cannot resolve and
+    #     the NEW image can: the new image's step 3 COMMITTED, and the
+    #     container failed later (a later entrypoint step, or the health
+    #     check).  Starting it again restores nothing and loses nothing, which
+    #     is the recovery when the failure was transient: a release that was
+    #     only slower than the health check allowed (the container's own
+    #     healthcheck turning unhealthy, or HEALTH_TIMEOUT_S running out)
+    #     reaches here too, stopped by `stop_failed_container` as it came up.
+    #     Going back to the previous image means restoring the dump.
+    #   * STAMPED_REVISIONS holds a stamp NEITHER image can resolve: the new
+    #     image's step 3 cannot have written it, so something other than this
+    #     deploy moved it, and only the dump is named.
+    #   * STAMPED_REVISIONS is EMPTY: the re-read failed, so whether step 3
+    #     committed is unknown and nothing about it is claimed.  Once the
+    #     database answers, the rollback goes through this script, whose
+    #     pre-flight asks the stamp question again before writing anything.
+    #
+    # The failed container's log is saved first, as on the re-pin paths: the
+    # restore below ends in a `compose up` that recreates the container, and
+    # `docker logs` then shows the previous image.
+    #
+    # In the restore sequence the first instruction is to STOP the container,
+    # and that ordering is not cosmetic: the app runs `restart: unless-stopped`
+    # and re-runs `alembic upgrade head` on every start, so an operator who
+    # begins with pg_restore is restoring underneath a container that is
+    # concurrently migrating.  `stop_failed_container` has usually stopped it
+    # already, but not on every path here -- a daemon that could not be asked
+    # leaves both the container and the stamp unread -- so the instruction
+    # stays first and unconditional.
     local why="$1"
+    save_failed_container_log
+    local failed_log="${FAILED_LOG_PATH:-not saved; docker logs ${CONTAINER_NAME}, or Loki}"
     log ""
     log "REFUSING to roll back."
     log "  ${why}"
     log ""
-    log "  ${new_short}'s entrypoint step 3 COMMITTED its migrations and the"
-    log "  container then failed later (a later entrypoint step, or the health"
-    log "  check).  ${old_short} does not contain a migration script for the"
-    log "  revision the database is now stamped at, so it would die at step 3."
-    log "  The pin is left at ${new_short} deliberately; change it only after"
-    log "  the database is restored."
-    log ""
-    local stamped_line
+    if [ -z "$STAMPED_REVISIONS" ]; then
+        log "  The stamp could not be re-read after the failure, so whether"
+        log "  ${new_short}'s entrypoint step 3 committed its migrations is"
+        log "  UNKNOWN, and re-pinning ${old_short} blind could make a second dead"
+        log "  container.  The pin is left at ${new_short}."
+        log ""
+        log "  Failed container's log: ${failed_log}"
+        log ""
+        log "  Once the database answers, roll back through this script, whose"
+        log "  pre-flight reads the stamp and refuses up front, naming the"
+        log "  restore, if ${old_short} cannot resolve it:"
+        log "    docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} \\"
+        log "        -tAc 'SELECT version_num FROM public.alembic_version'"
+        log "    $0 ${old_digest}"
+        log ""
+        log "  Pre-deploy dump:"
+        log "    ${DUMP_PATH}"
+        ntfy_notify 5 "Shekel deploy FAILED, rollback REFUSED" \
+            "${new_short} did not come up and the stamp could not be re-read, so whether its migrations committed is unknown. Pin left at ${new_short}. Once the database answers, run: shekel-deploy ${old_digest}. Dump: ${DUMP_PATH}. Failed container's log: ${failed_log}"
+        exit 1
+    fi
+    local stamped_line restart_hint=""
     stamped_line=$(printf '%s' "$STAMPED_REVISIONS" | tr '\n' ' ')
-    log "  Database is stamped at: ${stamped_line}"
-    if [ -n "$ADDED_REVISIONS" ]; then
-        log "  Migrations this release added:"
-        printf '%s\n' "$ADDED_REVISIONS" | sed 's/^/    /'
+    log "  Database is now stamped at: ${stamped_line}"
+    log "  ${old_short} has no migration script for that revision, so it would"
+    log "  die at entrypoint step 3."
+    # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
+    if image_resolves_revisions "$NEW_MIGRATIONS" "$STAMPED_REVISIONS"; then
+        log "  ${new_short}'s step 3 COMMITTED its migrations, and the container"
+        log "  then failed later (a later entrypoint step, or the health check)."
+        log "  The pin is left at ${new_short}."
+        if [ -n "$ADDED_REVISIONS" ]; then
+            log "  Migrations this release added:"
+            printf '%s\n' "$ADDED_REVISIONS" | sed 's/^/    /'
+        fi
+        log ""
+        log "  Read the failed container's log first -- it says which step failed:"
+        log "    ${failed_log}"
+        log ""
+        log "  If the log shows a failure a restart can clear -- the release was"
+        log "  only slower than the health check allowed, or a transient error --"
+        log "  start ${new_short} again.  It resolves this stamp, so nothing is"
+        log "  restored and nothing written since the dump is lost:"
+        log "    cd ${SHEKEL_DIR} && docker compose up -d ${COMPOSE_SERVICE}"
+        log ""
+        log "  Otherwise, going back to ${old_short} means restoring the dump."
+        restart_hint=" If the log shows a transient failure, start it again (nothing lost): cd ${SHEKEL_DIR} && docker compose up -d ${COMPOSE_SERVICE}. Otherwise restore."
+    else
+        log "  ${new_short} cannot resolve that revision either, so its step 3"
+        log "  did not write it: something other than this deploy moved the"
+        log "  stamp.  The pin is left at ${new_short}; restoring the dump is the"
+        log "  way back.  The failed container's log: ${failed_log}"
     fi
     log ""
     log "  Pre-deploy dump:"
@@ -562,12 +633,9 @@ refuse_to_repin() {
     log "  failed migration created survives and will collide on the retry:"
     log "    docker exec ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} \\"
     log "        -c '\\dt budget.*'"
-    log ""
-    log "  Read the container's logs first -- they say which later step failed:"
-    log "    docker logs ${CONTAINER_NAME}"
 
     ntfy_notify 5 "Shekel deploy FAILED, rollback REFUSED" \
-        "${new_short} committed its migrations, then did not come up, and ${old_short} cannot resolve the schema the database is now at, so re-pinning cannot work. Pin left at ${new_short}. FIRST run: docker compose stop ${COMPOSE_SERVICE} (it re-migrates on every restart). Dump: ${DUMP_PATH}"
+        "${new_short} did not come up and ${old_short} cannot resolve the schema the database is now at (${stamped_line}), so re-pinning cannot work. Pin left at ${new_short}. Read the failed container's log (${failed_log}) first.${restart_hint} Before any restore, run: docker compose stop ${COMPOSE_SERVICE} (it re-migrates on every restart). Dump: ${DUMP_PATH}"
     exit 1
 }
 
@@ -763,12 +831,12 @@ preflight_migrations "$old_digest" "$new_digest"
 if [ -n "$ADDED_REVISIONS" ]; then
     log "MIGRATION-BEARING release: the target adds these revisions --"
     printf '%s\n' "$ADDED_REVISIONS" | sed 's/^/    /'
-    log "  Entrypoint step 3 runs them and the deploy hooks in ONE transaction,"
-    log "  so a failure there leaves the stamp where ${old_short} can resolve"
-    log "  it and the rollback applies.  If step 3 COMMITS and a later step or"
-    log "  the health check then fails, re-pinning ${old_short} will NOT work."
-    log "  This script re-reads the stamp after a failure and refuses rather"
-    log "  than making a second dead container."
+    log "  Entrypoint step 3 runs them, the seeds, the deploy hooks and the"
+    log "  audit-trigger check in ONE transaction, so a failure there leaves the"
+    log "  stamp where ${old_short} can resolve it and the rollback applies."
+    log "  If step 3 COMMITS and a later step or the health check then fails,"
+    log "  re-pinning ${old_short} will NOT work.  This script re-reads the stamp"
+    log "  after a failure and refuses rather than making a second dead container."
 else
     log "the target adds no migrations, so a failure leaves the schema where"
     log "${old_short} can still resolve it and the rollback applies as usual."

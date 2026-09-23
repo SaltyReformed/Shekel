@@ -25,8 +25,8 @@ REQUIRES adding a row to ``AUDITED_TABLES`` here AND running
 ``flask db migrate`` so the rebuild migration's idempotent CREATE
 TRIGGER picks it up on the next ``flask db upgrade``.  The
 ``coding-standards.md`` "Schema Design" section documents this
-invariant; the entrypoint trigger-count assertion enforces it at
-container start.
+invariant; the deploy's trigger-count check
+(:func:`require_audit_triggers`) enforces it at container start.
 """
 
 from __future__ import annotations
@@ -132,13 +132,67 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
 
 
 # Number of triggers the live database must carry once the rebuild
-# migration has run.  The entrypoint health check refuses to start
-# Gunicorn when ``COUNT(pg_trigger WHERE tgname LIKE 'audit_%') <
-# EXPECTED_TRIGGER_COUNT``; the migration tests assert the same number
-# round-trips through upgrade and downgrade.  ``len(AUDITED_TABLES)``
-# rather than a hard-coded constant so adding a row above is the only
-# edit a future commit needs to make.
+# migration has run.  The deploy refuses to commit when the database
+# carries fewer (:func:`require_audit_triggers`); the migration tests
+# assert the same number round-trips through upgrade and downgrade.
+# ``len(AUDITED_TABLES)`` rather than a hard-coded constant so adding a
+# row above is the only edit a future commit needs to make.
 EXPECTED_TRIGGER_COUNT: int = len(AUDITED_TABLES)
+
+# The one spelling of "how many audit triggers does this database carry"
+# that the deploy's check and the test-template build share (plan step
+# balance:X-cv leaf 2): the non-internal triggers named ``audit_<table>``
+# (:func:`_trigger_sql_for_table`).  The tests count with spellings of their
+# own on purpose -- an oracle that shared this one could not see it wrong --
+# and ``scripts/build_test_db_image.py``'s image check still carries its own
+# ``LIKE 'audit\_%'``.  ``starts_with`` rather than ``LIKE 'audit_%'``:
+# LIKE reads a bare ``_`` as any one character, and a ``%`` means something
+# different to each driver path that runs this text -- the deploy's
+# SQLAlchemy connection and the test-template build's raw psycopg2 cursor
+# both read it verbatim.
+AUDIT_TRIGGER_COUNT_SQL = (
+    "SELECT count(*) FROM pg_trigger "
+    "WHERE starts_with(tgname, 'audit_') AND NOT tgisinternal"
+)
+
+
+def require_audit_triggers(connection) -> int:
+    """Refuse a database that carries fewer audit triggers than this image expects.
+
+    The deploy's check, run inside its one transaction just before the
+    commit (``scripts/init_database.py``, ruling **R-BAL122**), so a
+    database missing a trigger is refused with nothing committed and
+    ``deploy/shekel-deploy.sh`` re-pins the previous image.  Until plan step
+    balance:X-cv it was ``entrypoint.sh`` step 7, a shell ``psql`` count run
+    AFTER step 3 had committed, whose refusal left a stamp the previous
+    image could not always resolve.
+
+    AT LEAST :data:`EXPECTED_TRIGGER_COUNT`, as step 7 asked: a missing
+    trigger means writes to an audited table leave no audit row, which is
+    what this refuses.  A surplus trigger (one this image's
+    :data:`AUDITED_TABLES` does not name) is not; the test-template build
+    asks for the exact number instead, because it builds from this list.
+
+    Args:
+        connection: A SQLAlchemy ``Connection``; on the deploy, the one its
+            transaction runs on, so the count sees that transaction's own DDL.
+
+    Returns:
+        int: The number of audit triggers found, for the deploy log.
+
+    Raises:
+        RuntimeError: When fewer than :data:`EXPECTED_TRIGGER_COUNT` exist.
+    """
+    found = connection.exec_driver_sql(AUDIT_TRIGGER_COUNT_SQL).scalar_one()
+    if found < EXPECTED_TRIGGER_COUNT:
+        raise RuntimeError(
+            f"Audit trigger check failed: {found} audit trigger(s), at least "
+            f"{EXPECTED_TRIGGER_COUNT} expected (one per "
+            "app.audit_infrastructure.AUDITED_TABLES entry).  A table added "
+            "to AUDITED_TABLES whose migration did not attach its trigger is "
+            "the usual cause; writes to that table would leave no audit row."
+        )
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -367,8 +421,8 @@ def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:
 
     Yields:
         Two SQL statements: a guarded DROP and a guarded CREATE.
-        Trigger name is fixed at ``audit_<table>`` to keep enumeration
-        via ``pg_trigger.tgname LIKE 'audit_%'`` simple.
+        Trigger name is fixed at ``audit_<table>`` to keep counting by
+        that prefix (:data:`AUDIT_TRIGGER_COUNT_SQL`) simple.
     """
     trigger_name = f"audit_{table}"
     yield f"DROP TRIGGER IF EXISTS {trigger_name} ON {schema}.{table}"
