@@ -22,7 +22,12 @@ door's own precondition, asked before the sequence starts.
    and the finding was SEQUENCED behind the key for exactly that reason.
    FIRST, ahead of ``deletion_refusal``, so a caller naming the wrong owner is
    told nothing about the row -- the ordering ``entry_service._doors`` states
-   for the same pair of guards.
+   for the same pair of guards.  Then the row's LOCK (ruling **R-CC96**, plan
+   step ``credit_card:CC-5-4a-4``), before any step reads what the row holds,
+   so a purchase that won a race with this delete is read as committed and
+   taken off with the rest.  A change to the row ITSELF that won (a Mark Paid)
+   moved its version, and the delete's version-pinned write answers it as it
+   always has: the route's 409.
 1. **Reverse the postings** (``posting_service``), while
    ``journal_entries.transaction_id`` and ``.transaction_entry_id`` still link
    them.  Both are ``ON DELETE SET NULL``: reversing afterwards is impossible
@@ -107,6 +112,7 @@ from app.services import (
     match_withdrawal,
     movement_removal,
     posting_service,
+    row_write_lock,
 )
 from app.services.match_withdrawal import MatchWithdrawal
 from app.services.transaction_service._row_rules import deletion_refusal
@@ -281,10 +287,27 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
             reason this row may not be deleted on its own -- a transfer shadow
             or a CC payback.  It fires BEFORE anything is written, so a refused
             delete leaves the database exactly as it was.
+        StaleDataError: When the row left the table while this waited for its
+            lock -- another hard delete won the race
+            (:func:`app.services.row_write_lock.lock_row`).  The route answers
+            it as it answers the version pin's own, with the 409 and re-fetch.
         PostingError: From the ledger reconcile, on a broken invariant.
     """
     if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {txn.id} not found.")
+
+    # **The row's lock, before anything reads what the row holds** (ruling
+    # **R-CC96**: "your delete waits a moment, then removes the occurrence and
+    # its $12.34 purchase, as if it was there when you pressed Delete").  A
+    # purchase committed while this waited is then in ``entries`` -- expired
+    # here, so the set the one removal act runs over is read under the lock
+    # -- and goes with the rest; without the lock the delete read the row
+    # empty, hid it over the purchase, and the database's hiding arm refused
+    # the commit as a raw error (the step's fourth review, P15).  ``FOR
+    # UPDATE``, the strength a hard delete ends at, whichever arm this takes:
+    # the arm is read below, off the row as it stands locked.
+    row_write_lock.lock_row(txn, removing=True)
+    db.session.expire(txn, ["entries"])
 
     # Asked ONCE and threaded: the refusal's third arm and step 5 below want
     # the same answer, and one request asks a producer once.

@@ -37,7 +37,8 @@ from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
-from app.services import posting_service
+from app.extensions import db
+from app.services import posting_service, row_write_lock
 from app.services.cash_ledger import (
     AmountBasis,
     derived_amount_basis,
@@ -516,8 +517,27 @@ def settle_transaction(
     """
     # Checked FIRST and before any mutation, so a refused call leaves the row
     # untouched -- the ordering ``status_seam.apply_status_change`` uses for
-    # its own three refusals, and for the same reason.
+    # its own three refusals, and for the same reason.  It reads the row's
+    # loaded columns and issues no statement, which is why it may precede the
+    # lock below: a caller's staged state is refused before any flush.
     reject_unsettleable(txn)
+    # **The row's write lock before anything reads the database for it**
+    # (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC96** -- Mark Paid
+    # "takes that lock first" -- and **R-CC99** (a)).  Everything below decides
+    # from the row: whether it settles from its purchases, and at what figure.
+    # Decided from a read taken before a racing purchase committed, a Groceries
+    # envelope with nothing spent settled at its $300.00 plan while the
+    # companion's $12.34 purchase landed beside it -- $312.34 recorded against
+    # a $300.00 envelope, measured 2026-09-23.  Locked here and its movements
+    # re-read (``entries`` expired; the lock's statement has flushed anything
+    # staged), the purchase is either in before the decision, which then
+    # settles at the purchases, or waits and meets the purchase door's
+    # settled-row refusal.  ``is_deleted`` is re-read by the lock, so a delete
+    # that won is refused further down in words (the envelope branch's own
+    # ``reject_unsettleable``, or the seam's, one sentence).  The seam takes
+    # the same lock again for its other callers, which costs nothing once held.
+    row_write_lock.lock_row(txn)
+    db.session.expire(txn, ["entries"])
     # The tender's reading and its gate, before any mutation for the same
     # reason and ahead of the identity no-op below: a bad REFERENCE is refused
     # whatever the row's state, so a replayed settle naming a foreign account

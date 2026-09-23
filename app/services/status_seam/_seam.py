@@ -32,7 +32,7 @@ from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import pay_period_service
+from app.services import pay_period_service, row_write_lock
 from app.services.settle_day import (
     SettleDay,
     record_settle_day,
@@ -525,7 +525,18 @@ def apply_status_change(
 
     # A deleted row takes no money (ruling **R-CC89**): the record is what the
     # covering writer below turns into a payment under the row, so it is
-    # refused here, ahead of any mutation like the three above.
+    # refused here, ahead of any mutation like the three above.  **The row's
+    # write lock comes first** (ruling **R-CC96**), before the refusal reads
+    # ``is_deleted`` and before this act's first write to the row: Mark Paid
+    # racing the row's delete then waits here and meets the refusal in words.
+    # Without this line it read the row as live, waited at its own status
+    # ``UPDATE`` instead, and answered the delete's moved version with the
+    # route's 409 -- measured by removing it, against
+    # ``test_cc5_4a4_row_lock_races``.  Only a ``Transaction`` recording a
+    # record takes it: a record of ``None`` writes no money, and a
+    # ``Transfer``'s money is its shadows', each of which comes through here.
+    if settlement is not None and isinstance(row, Transaction):
+        row_write_lock.lock_row(row)
     reject_settlement_on_a_deleted_row(row, settlement)
 
     # (``reject_settle_day_without_a_record`` stood here through plan step

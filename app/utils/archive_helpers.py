@@ -544,8 +544,9 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     here -- is what this counts, whatever its row's ``is_deleted`` says.  (A
     hidden row that is not a transfer's leg holds none, which the database
     holds: none can arrive under a hidden row, ruling **R-CC89**; no row can
-    be hidden holding one, **R-CC92**; and the release's migration refuses to
-    inherit one, **R-CC82**.  A hidden leg can still hold its kept payment,
+    be hidden holding one, **R-CC92**; neither in either order of a race,
+    because the arrival check locks the row, **R-CC96**; and the release's
+    migration refuses to inherit one, **R-CC82**.  A hidden leg can still hold its kept payment,
     finding **BAL-532**.  The count relies on none of this.)  The row is not
     checking's ghost to hard-delete, and the swipe still names the card.  A
     movement under a row the cleanup DOES remove is

@@ -97,6 +97,7 @@ from app.services.status_seam._record import (
 from app.services.status_seam._refusals import (
     StatusBearingRow,
     day_is_in_the_future,
+    deleted_row_payment_refusal,
     reject_figure_without_settled_status,
     reject_future_settle_day,
     reject_settle_day_without_settled_status,
@@ -132,6 +133,7 @@ __all__ = [
     "movement_settlement",
     "recorded_settlement",
     "tender_account_id_of",
+    "deleted_row_payment_refusal",
     "reject_figure_without_settled_status",
     "reject_tender_without_settled_status",
     "day_is_in_the_future",

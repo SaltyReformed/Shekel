@@ -19,6 +19,7 @@ from app.services import (
     match_withdrawal,
     movement_removal,
     posting_service,
+    row_write_lock,
     status_seam,
 )
 from app.services.cash_ledger import (
@@ -50,13 +51,30 @@ def lock_source_transaction_for_payback(
 
     Shared by :func:`mark_as_credit` and
     :func:`entry_credit_workflow.sync_entry_payback` to bracket each
-    one's read-then-insert sequence with a row-level write lock.
+    one's read-then-insert sequence with a row-level write lock, and
+    by :func:`app.services.entry_service.create_entry`, which takes it
+    FIRST (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC96**): a
+    purchase door that locks its row before any refusal reads it sees a
+    delete that won a race as committed, and refuses in words.  The lock
+    keywords are :data:`app.services.row_write_lock.WRITE_LOCK`, the one
+    statement of the strength every such door takes.
     PostgreSQL serialises any concurrent ``FOR NO KEY UPDATE`` /
     ``FOR UPDATE`` request on the same row, so two concurrent
     payback-creating callers serialise instead of both falling
     through their idempotency check and double-inserting.
 
-    Three SQLAlchemy options are load-bearing:
+    **It locks FIRST and reads SECOND, in two statements** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC99**), through
+    :func:`app.services.row_write_lock.lock_and_read`.  It was one locking
+    ``SELECT`` carrying the joined eager loads below until then, and after
+    waiting on a concurrent Mark Paid that statement handed back the Paid
+    row's ``status_id`` with ``status`` of ``None`` -- measured 2026-09-23;
+    ``lock_and_read``'s docstring has why -- so every caller reading
+    ``txn.status`` after the wait read nothing.  The three options below
+    are split between the two statements: the lock carries ``of=`` and
+    ``key_share``, the read ``populate_existing()``.  ``of=`` is kept although
+    the locking statement now joins nothing, so a join added to it later
+    cannot turn the lock into the ``FeatureNotSupported`` it guards against:
 
       * ``of=Transaction`` -- ``Transaction.account``, ``.status``,
         ``.category``, and ``.transaction_type`` are
@@ -78,7 +96,7 @@ def lock_source_transaction_for_payback(
         parent).  The stricter FOR UPDATE would deadlock with
         those FK-validation locks under load.
 
-      * ``populate_existing()`` -- forces the locking SELECT to
+      * ``populate_existing()`` -- forces the read after the lock to
         overwrite any cached attributes already in the session's
         identity map.  Without it a serialised second request
         would observe its own pre-lock cached attributes
@@ -105,13 +123,7 @@ def lock_source_transaction_for_payback(
         NotFoundError: If the row does not exist or does not belong to
             ``owner_id``.
     """
-    txn = (
-        db.session.query(Transaction)
-        .filter_by(id=transaction_id)
-        .populate_existing()
-        .with_for_update(of=Transaction, key_share=True)
-        .one_or_none()
-    )
+    txn = row_write_lock.lock_and_read(transaction_id)
     if txn is None:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
     # Defense-in-depth: verify ownership on the row's own owner column
@@ -363,8 +375,8 @@ def mark_as_credit(transaction_id, user_id):
         payback if the transaction is already in ``credit`` status.
 
     Raises:
-        NotFoundError:  If the transaction doesn't exist or doesn't
-            belong to *user_id*.
+        NotFoundError:  If the transaction doesn't exist, doesn't
+            belong to *user_id*, or was deleted (ruling **R-CC99** (b)).
         ValidationError: If the transaction is income (can't credit income),
             is a transfer shadow, uses entry tracking, has a status
             other than projected, or has no following pay period.
@@ -372,6 +384,18 @@ def mark_as_credit(transaction_id, user_id):
     # See ``lock_source_transaction_for_payback`` for the full
     # rationale behind FOR NO KEY UPDATE + populate_existing().
     txn = lock_source_transaction_for_payback(transaction_id, user_id)
+    # **A row deleted while this waited is "not found"** (plan step
+    # ``credit_card:CC-5-4a-4``, ruling **R-CC99** (b), extending **R-CC89**:
+    # "the stale Mark Credit gets 'not found', exactly as for another user's
+    # row").  The route's ownership door answers a deleted row so, but it read
+    # the row before this lock; measured 2026-09-23, a Delete landing first
+    # left this door turning the hidden $80.00 Dinner Credit and creating a
+    # live $80.00 payback in the next period with no visible source.  Asked
+    # after the lock, which re-reads the row, so the delete has committed by
+    # now.  The route answers ``NotFoundError`` by re-fetching through that
+    # same door, which 404s the deleted row.
+    if txn.is_deleted:
+        raise NotFoundError(f"Transaction {transaction_id} not found.")
     if txn.is_income:
         raise ValidationError("Cannot mark income as credit.")
     if txn.transfer_id is not None:

@@ -371,8 +371,10 @@ def _stale_transaction_response(txn_id, target=None):
     the transaction from the database so the user sees the winner's
     state -- never the loser's stale in-memory copy -- and tags the
     cell with ``conflict=True`` so the template surfaces a warning
-    indicator.  Returns a 404 if the row was hard-deleted by the
-    winning request.
+    indicator.  Returns a 404 if the winning request deleted the row --
+    hard, or soft: the re-fetch goes through the ownership door, which
+    answers a soft-deleted row "not found" since plan step
+    ``credit_card:CC-5-4a-4`` (ruling **R-CC89**).
 
     The mobile/companion Mark Paid path passes a :class:`_RenderTarget`
     with ``render_mode == "mobile_card"`` so the 409 body is the

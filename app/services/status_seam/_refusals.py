@@ -299,8 +299,17 @@ def reject_settlement_on_a_deleted_row(
     **The words of a trigger**: :mod:`app.deleted_row_infrastructure` refuses
     the same write in the database, for a writer that never reaches this door.
     A record of ``None`` writes nothing and passes: a revert of a deleted row,
-    and a settle-day correction, move no money.  Both row kinds are asked,
-    because a ``Transfer`` has ``is_deleted`` too.
+    and a settle-day correction, move no money.
+
+    **A ``Transfer`` is asked too, and today it cannot arrive with a record: it
+    is the words plan step ``balance:X-bi-6-4`` owes its own arrival arm.**
+    The one caller that hands this seam a ``Transfer``
+    (``transfer_service._status``) hands it no record: a transfer's money is
+    recorded on its two shadows, each a ``Transaction`` that comes through
+    here on its own.  X-bi-6-4 re-parents a transfer's movements onto the
+    transfer itself, and :mod:`app.deleted_row_infrastructure` states what the
+    database must then refuse (a movement arriving under a deleted TRANSFER);
+    a transfer carrying its own record would meet this refusal, by its name.
 
     Args:
         row: The row being written.
@@ -308,14 +317,40 @@ def reject_settlement_on_a_deleted_row(
 
     Raises:
         ValidationError: When *settlement* is not ``None`` and *row* is
-            soft-deleted.  A 400, reachable only by a caller that skipped the
-            ownership doors, which answer a deleted row "not found".
+            soft-deleted.  A 400.  A route reaches it only when the row's
+            delete won a race after the route's ownership door read the row
+            live -- that door answers a deleted row "not found" -- and the
+            seam's lock on the row (ruling **R-CC96**) is what lets this read
+            see the winner.  A service caller that skipped the door reaches it
+            directly.
     """
     if settlement is None or not row.is_deleted:
         return
-    kind = "Transfer" if isinstance(row, Transfer) else "Transaction"
-    raise ValidationError(
-        f"{kind} {row.id} was deleted; a payment cannot be recorded on it.  "
+    raise ValidationError(deleted_row_payment_refusal(row))
+
+
+def deleted_row_payment_refusal(row: StatusBearingRow) -> str:
+    """Return the sentence a payment on a deleted row is refused with.
+
+    **One sentence for the two doors that refuse it** -- this seam's
+    :func:`reject_settlement_on_a_deleted_row` and the settle verbs'
+    ``transaction_service`` ``reject_unsettleable``, which since ruling
+    **R-CC96** is what a Mark Paid that lost a race to the row's delete meets
+    -- so the owner reads one answer whichever door refused.  It names the
+    row and never its id (ruling **R-CC98**, developer 2026-09-23: *"never
+    show a user a system ID. A user will not know what that is and only be
+    confused. Use the name of the transaction"*), in the words ruling R-CC96
+    quotes for the purchase door's twin: *"Groceries was deleted: a purchase
+    cannot be recorded under it"*.
+
+    Args:
+        row: The deleted row.
+
+    Returns:
+        The refusal, naming *row*.
+    """
+    return (
+        f"{row.name} was deleted: a payment cannot be recorded under it.  "
         "Reload the page."
     )
 

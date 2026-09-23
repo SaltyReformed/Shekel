@@ -34,9 +34,18 @@ so either can move without the other.
   a FENCE with an owner**: the transfer's soft delete still hides a leg
   holding its kept payment -- finding **balance:BAL-532**, owned by plan step
   ``balance:X-bi-6-4`` -- and refusing it would turn that door into an error
-  until then.  **X-bi-6-4 deletes the ``transfer_id IS NULL`` clause** from
-  both this arm's ``WHEN`` and its function once the transfer's soft delete
-  takes a leg's payment off first.  ``transfer_id`` is watched as well as
+  until then.  **Deleting the ``transfer_id IS NULL`` clause alone would not
+  retire the fence**, because ``balance:X-bi-6-4`` re-parents a transfer's
+  movements onto ``budget.transfers`` (``transaction_id`` nullable under an
+  exactly-one-parent check): after it the legs hold nothing, a movement
+  arriving under a deleted TRANSFER names no row the arrival arm reads, and a
+  transfer's soft delete hides a ``budget.transfers`` row no attachment here
+  watches -- so R-CC92's "until X-bi-6-4" would become permanent without
+  anyone deciding it.  What X-bi-6-4 owes the rule is three changes together:
+  the arrival arm also refuses a movement whose TRANSFER parent is deleted;
+  the hiding arm gains an attachment on ``budget.transfers``, excepting
+  nothing; and the ``transfer_id IS NULL`` clause goes from this arm's
+  ``WHEN`` and its function.  ``transfer_id`` is watched as well as
   ``is_deleted``, so a raw ``UPDATE`` re-pointing a hidden leg away from its
   transfer cannot walk out of the exception.
 
@@ -47,18 +56,51 @@ for a purchase and
 for a payment record -- and the pages' half is the two ownership doors
 answering "not found" for a deleted row (``get_accessible_transaction`` and
 ``routes/transactions/_helpers._get_owned_transaction``).  The hiding arm has
-no words of its own because no door can reach it: the row delete takes the
-movements off first and the archive leaves a holding row alone.  Both arms are
-what make the rule hold for a bulk statement, a psql session and a writer
-nobody enumerated, the same pairing ``ck_transaction_entries_positive_amount``
-has with ``entry_service``'s refusal of a purchase worth nothing.
+no words of its own because no door reaches it in either order of a race: the
+row delete takes the movements off first and the archive leaves a holding row
+alone, and each takes the row's lock (below) BEFORE it reads what the row
+holds.  Both arms are what make the rule hold for a bulk statement, a psql
+session and a writer nobody enumerated, the same pairing
+``ck_transaction_entries_positive_amount`` has with ``entry_service``'s refusal
+of a purchase worth nothing.
+
+**The rule holds under concurrency because the arrival arm LOCKS the row**
+(ruling **R-CC96**, developer 2026-09-23, "Lock in both": *"the database
+check locks the row, so no deleted row can hold money from any writer, listed
+or not"*).  Under ``READ COMMITTED`` each arm reads committed data only, and a
+row's soft delete takes ``FOR NO KEY UPDATE`` while a movement ``INSERT``'s
+foreign-key check takes ``FOR KEY SHARE`` -- two locks that do not conflict.
+So an arm without a lock of its own read the row as live while its delete was
+open, the delete's deferred check found no movement because the purchase had
+not committed, and both committed: the step's fourth review measured a $12.34
+purchase added by one session while another deleted its Groceries row, ending
+``(hidden, held) = (True, 1)``, the state this module exists to forbid.  The
+arm now reads ``is_deleted`` under :data:`ROW_WRITE_LOCK`, so the two
+serialise in either order: a hide already open makes the arrival wait, and
+refuses it once the hide commits; an arrival already open makes the hide wait
+until the movement has committed, when the hiding arm sees it and refuses the
+hide.
+
+**Why ``FOR NO KEY UPDATE`` and not the weaker ``FOR SHARE``.**  Either
+conflicts with a hide; the difference is what the same transaction does NEXT.
+Every money writer in the app goes on to take the row's write lock -- the
+purchase door's payback sync
+(``credit_workflow.lock_source_transaction_for_payback``) and Mark Paid's
+status ``UPDATE`` -- so a ``FOR SHARE`` taken first must be upgraded, and two
+writers each holding it then wait on each other.  Measured 2026-09-23 on two
+raw connections, ``FOR SHARE`` then ``FOR NO KEY UPDATE`` on one row:
+``DeadlockDetected`` for one of the two, where taking ``FOR NO KEY UPDATE``
+first let both commit.  One strength is also what lets the app's four doors
+take the SAME lock first (:mod:`app.services.row_write_lock`), so the second
+click of a race meets a door's sentence instead of this arm's raw error; for a
+door already holding it the arm's lock is its own, and waits on nothing.
 
 **The arrival arm is an immediate ``BEFORE`` row trigger**, as
 :mod:`app.level_infrastructure` chose and for a sharper reason here.  A
 trigger's ``WHEN`` can read only the movement's own columns, never its row's
 ``is_deleted``, so a deferred trigger would queue an event on EVERY movement
 written, and a queued event makes DDL on ``budget.transaction_entries`` illegal
-for the rest of its transaction -- the hazard
+until the queue is drained -- the hazard
 :mod:`app.opening_infrastructure` records costing two CI failures.  Immediate is
 also correct for the one ordering that matters: SQLAlchemy's unit of work
 writes a row before its children, so an un-delete and a write in one flush
@@ -110,18 +152,28 @@ DELETED_ROW_TRIGGERS: tuple[tuple[str, str], ...] = (
     ("ck_hidden_row_holds_nothing", "budget.transactions"),
 )
 
+#: The row lock the arrival arm takes on the movement's row, whatever state the
+#: row is in -- the strength every door that writes money under a row, or hides
+#: one, takes FIRST (ruling **R-CC96**, :mod:`app.services.row_write_lock`).
+#: The module docstring's two concurrency paragraphs say why this strength.
+ROW_WRITE_LOCK = "FOR NO KEY UPDATE"
+
 _CREATE_ARRIVAL_FUNCTION_SQL = f"""
 CREATE OR REPLACE FUNCTION {_ARRIVAL_FUNCTION}()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_hidden BOOLEAN;
 BEGIN
     -- Re-saving a movement where it already is brings nothing to its row.
     IF TG_OP = 'UPDATE' AND NEW.transaction_id = OLD.transaction_id THEN
         RETURN NEW;
     END IF;
-    IF EXISTS (
-        SELECT 1 FROM budget.transactions
-        WHERE id = NEW.transaction_id AND is_deleted
-    ) THEN
+    -- Locked whatever its state: a filter on is_deleted would lock nothing
+    -- while the row is live, and a hide committing after this read would
+    -- then leave the movement under a hidden row.
+    SELECT is_deleted INTO v_hidden FROM budget.transactions
+    WHERE id = NEW.transaction_id {ROW_WRITE_LOCK};
+    IF v_hidden THEN
         RAISE EXCEPTION
             'transaction % was deleted: a payment or purchase cannot be '
             'recorded under it (rule {_ARRIVAL_FUNCTION}, ruling R-CC89)',

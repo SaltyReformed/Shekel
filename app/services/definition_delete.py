@@ -84,8 +84,10 @@ def rows_holding_purchase_postings(*scope):
     were deleted.  The restore keeps it although it finds nothing since that
     step, because a definition's hidden row holds no movement, and the
     DATABASE holds that: a movement cannot arrive under a hidden row (ruling
-    **R-CC89**), a row cannot be hidden while it holds one (**R-CC92**), and
-    the release's migration refuses to inherit one (**R-CC82**) --
+    **R-CC89**), a row cannot be hidden while it holds one (**R-CC92**) --
+    in either order of a race too, because the arrival check locks the row
+    (**R-CC96**) -- and the release's migration refuses to inherit one
+    (**R-CC82**) --
     :mod:`app.deleted_row_infrastructure`.  (A transfer's leg is the one hidden
     row that can still hold its kept payment, finding **BAL-532**, and a
     transfer's leg is no definition's row.)  Kept as the restore's own

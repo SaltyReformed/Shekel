@@ -656,7 +656,11 @@ def delete_transaction(txn_id):
     hard-delete DELETE are both version-pinned by SQLAlchemy.  A concurrent
     commit that bumps the row's version raises ``StaleDataError``, which the
     handler converts to a 409 + conflict cell so the user can retry against
-    fresh state.
+    fresh state -- or to a 404 when that commit deleted the row, soft or hard
+    (``_stale_transaction_response`` re-fetches through the ownership door,
+    which answers a deleted row "not found").  A hard delete that won while
+    this one waited for the row's lock (ruling **R-CC96**) raises the same
+    error from the lock, and is answered the same way.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:

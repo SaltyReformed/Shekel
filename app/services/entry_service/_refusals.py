@@ -283,6 +283,17 @@ def _reject_settled_addition(txn: Transaction) -> None:
     also refuses a stated figure over purchases at the seam, and the seam
     WITHDRAWS a kept movement when a ``purchases`` record lands) and
     ``carry_forward``'s direct call writes that record unconditionally.
+    **That held one click at a time, and not under a race** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC99** (a), measured 2026-09-23): a
+    purchase and Mark Paid racing on one empty $300.00 Groceries envelope
+    ended Paid holding the $300.00 payment AND the $12.34 purchase in either
+    order -- Mark Paid chose its figure from a read taken before the purchase
+    committed, and this refusal read a ``status`` the locking read handed back
+    as ``None`` after its wait.  Both doors now lock the row before they read
+    it (``transaction_service.settle_transaction``; the purchase door through
+    :func:`app.services.row_write_lock.lock_and_read`), so the second click
+    either settles at the purchases or meets this sentence, naming the row
+    (ruling **R-CC98**).
     It read the row's ``settled_basis_id`` through ``X-bi-4a``; that column
     is the movement's stale cache, deleted at ``X-bi-4b-2``.
 
@@ -332,7 +343,7 @@ def _reject_settled_addition(txn: Transaction) -> None:
     if not txn.covering_movements:
         return
     raise ValidationError(
-        f"Transaction {txn.id} has settled and records a fixed figure, so a "
+        f"{txn.name} has settled and records a fixed figure, so a "
         "new purchase cannot be added to it: the row's cost would not grow by "
         "the purchase, and the purchase's own cash would be counted beside a "
         "figure that already covers it. Set the row back to Projected, add "

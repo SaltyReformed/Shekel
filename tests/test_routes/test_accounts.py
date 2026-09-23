@@ -3638,20 +3638,26 @@ class TestTheReconcileRoutesUngradedBranches:
             assert b"had already been settled elsewhere" not in response.data
 
     def test_a_stale_settle_re_renders_the_panel_as_a_designed_400(
-        self, app, auth_client, seed_user, seed_periods_today,
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
     ):
         """A concurrent commit mid-reconcile is a designed refusal, not a 500.
 
-        The race is engineered the way ``test_optimistic_locking_c18`` does it:
-        a ``before_update`` mapper event bumps the row's version from a
-        separate connection during the UPDATE, defeating the version-pinned
-        WHERE.  The response carries ``Shekel-Designed-Fragment`` because htmx
+        The race is engineered the way ``test_optimistic_locking_c18``'s
+        mark-done case does it: the other tab's commit lands JUST BEFORE the
+        settle takes the row's lock -- the only moment it still can, since the
+        settle verb locks the row first (plan step ``credit_card:CC-5-4a-4``,
+        ruling **R-CC96**; re-expressed on the developer's word, Round 12 Q1,
+        2026-09-23, "Move the change earlier").  It was a ``before_update``
+        mapper event bumping the version DURING the UPDATE, which under the
+        lock waits on this request and times out.  The version moves from a
+        separate connection, the real lock is taken, and the version-pinned
+        WHERE fails.  The response carries ``Shekel-Designed-Fragment`` because htmx
         leaves a 4xx non-swapping, so a refusal without it renders NOTHING and
         the button reads as broken -- worse than the error it reports.  Shown
         to FIRE: deleting the route's ``except StaleDataError`` arm turns this
         into a 500.
         """
-        from sqlalchemy import event
+        from app.services import row_write_lock  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             bill = self._bill(seed_user, seed_periods_today[0])
@@ -3659,29 +3665,27 @@ class TestTheReconcileRoutesUngradedBranches:
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
 
             fired = {"flag": False}
+            real_lock_row = row_write_lock.lock_row
 
-            def make_stale(_mapper, _connection, target):
-                if fired["flag"] or target.id != bill_id:
-                    return
-                fired["flag"] = True
-                with db.engine.connect() as conn:
-                    conn.execute(
-                        text(
-                            "UPDATE budget.transactions "
-                            "SET version_id = version_id + 1 WHERE id = :id"
-                        ),
-                        {"id": bill_id},
-                    )
-                    conn.commit()
+            def make_stale_then_lock(row, **kwargs):
+                if not fired["flag"] and row.id == bill_id:
+                    fired["flag"] = True
+                    with db.engine.connect() as conn:
+                        conn.execute(
+                            text(
+                                "UPDATE budget.transactions "
+                                "SET version_id = version_id + 1 WHERE id = :id"
+                            ),
+                            {"id": bill_id},
+                        )
+                        conn.commit()
+                real_lock_row(row, **kwargs)
 
-            event.listen(Transaction, "before_update", make_stale)
-            try:
-                response = auth_client.post(
-                    f"/accounts/{seed_user['account'].id}/reconcile",
-                    data={"transaction_ids": [str(bill_id)]},
-                )
-            finally:
-                event.remove(Transaction, "before_update", make_stale)
+            monkeypatch.setattr(row_write_lock, "lock_row", make_stale_then_lock)
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"transaction_ids": [str(bill_id)]},
+            )
 
             assert response.status_code == 400, response.data
             assert response.headers.get("Shekel-Designed-Fragment") == "1"

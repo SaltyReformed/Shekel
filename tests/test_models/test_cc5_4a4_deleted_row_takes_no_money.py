@@ -284,7 +284,7 @@ class TestARowCannotBeHiddenHoldingMoney:
         """End to end: a recurring $300 Groceries occurrence holding a $40 purchase, deleted.
 
         ``transaction_service.delete_transaction`` takes the purchase off
-        through the one removal act and hides the row in one flush (ruling
+        through the one removal act and hides the row in one save (ruling
         **R-CC75**); the hiding arm lets it commit.
         """
         with app.app_context():

@@ -175,9 +175,9 @@ class TestADeletedRowTakesNoPurchase:
             row_id, user_id = row.id, seed_user["user"].id
             assert auth_client.delete(f"/transactions/{row_id}").status_code == 200
 
+            # Named, never numbered (ruling R-CC98, developer 2026-09-23).
             with pytest.raises(ValidationError, match=(
-                f"Transaction {row_id} was deleted; a purchase cannot be "
-                "added to it"
+                "Groceries was deleted: a purchase cannot be recorded under it"
             )):
                 entry_service.create_entry(
                     row_id, user_id,
@@ -342,9 +342,9 @@ class TestTheSeamRefusesADeletedRow:
             db.session.expire_all()
             deleted = db.session.get(Transaction, row_id)
 
+            # Named, never numbered (ruling R-CC98, developer 2026-09-23).
             with pytest.raises(ValidationError, match=(
-                f"Transaction {row_id} was deleted; a payment cannot be "
-                "recorded on it"
+                "Hotel was deleted: a payment cannot be recorded under it"
             )):
                 transaction_service.apply_requested_status(
                     deleted, paid, submitted=typed(Decimal("125.00")),

@@ -28,6 +28,7 @@ from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import match_withdrawal, movement_removal, posting_service
+from app.services.credit_workflow import lock_source_transaction_for_payback
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.movement_account import admitted_movement_account_id
 from app.services.settle_day import (
@@ -347,15 +348,19 @@ def create_entry(
     """
     owner_id = resolve_owner_id(user_id)
 
-    txn = db.session.get(Transaction, transaction_id)
-    if txn is None:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
-
-    # Ownership: the row's own owner column (security response rule: 404).
-    # It was ``txn.pay_period.user_id`` until plan step
-    # ``pay_calendar:C13-b``.
-    if txn.user_id != owner_id:
-        raise NotFoundError(f"Transaction {transaction_id} not found.")
+    # **The row's write lock FIRST, so every refusal below reads the row as it
+    # stands locked** (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC96**:
+    # "whichever click lands second gets a sentence").  A purchase added while
+    # the same row's delete was open read the row as live, waited at the
+    # payback sync's lock until the delete committed, and then committed under
+    # the hidden row -- measured by the step's fourth review.  Locked here, it
+    # waits BEFORE the refusals and meets the one below in words.  The helper
+    # the payback sync already calls, so the strength is stated once
+    # (:mod:`app.services.row_write_lock`); it re-reads every column, which
+    # this door may, because it writes none of the row's own.  Ownership is the
+    # row's own owner column, asked inside it (security response rule: 404;
+    # ``txn.pay_period.user_id`` until plan step ``pay_calendar:C13-b``).
+    txn = lock_source_transaction_for_payback(transaction_id, owner_id)
 
     # **A DELETED row takes no purchase** (plan step ``credit_card:CC-5-4a-4``,
     # its second review, H1).  Deleting a recurring occurrence empties it and
@@ -367,13 +372,18 @@ def create_entry(
     # the same row (``transaction_service._row_rules.reject_unsettleable``).
     # One of the three layers of ruling **R-CC89** ("a deleted row takes no
     # money"): the ownership doors now answer a deleted row "not found", so a
-    # route no longer reaches here with one; a service caller that skipped
-    # them still could, and :mod:`app.deleted_row_infrastructure` refuses the
-    # write in the database for one that skips this line too.
+    # route reaches here with one only when the delete won a race after its
+    # door read the row live (ruling **R-CC96**; the lock above is why this
+    # line then sees it); a service caller that skipped them still could, and
+    # :mod:`app.deleted_row_infrastructure` refuses the write in the database
+    # for one that skips this line too.
     if txn.is_deleted:
+        # Named, never numbered (ruling **R-CC98**), in the words ruling
+        # **R-CC96** quotes: "Groceries was deleted: a purchase cannot be
+        # recorded under it".
         raise ValidationError(
-            f"Transaction {txn.id} was deleted; a purchase cannot be added "
-            "to it.  Reload the page.",
+            f"{txn.name} was deleted: a purchase cannot be recorded under it.  "
+            "Reload the page.",
         )
 
     # Entry-capable: purchase tracking must be enabled on the row's

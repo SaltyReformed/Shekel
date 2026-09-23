@@ -374,7 +374,10 @@ class TestSettleFromEntriesPreconditions:
 
             with pytest.raises(ValidationError) as exc_info:
                 transaction_service.settle_from_entries(txn)
-            assert "soft-deleted" in str(exc_info.value)
+            # The seam's own sentence, naming the row (ruling R-CC98).
+            assert "was deleted: a payment cannot be recorded under it" in (
+                str(exc_info.value)
+            )
 
             # No state change should have leaked through -- the helper
             # raised before any mutation, so a rollback is just hygiene.
@@ -587,7 +590,8 @@ class TestSettleTransactionTheVerb:
         beginning, with its own docstring giving the reason, and the MANUAL
         branch never did -- so the refusal was a property of which branch a row
         happened to take rather than of the verb.  It was REACHABLE:
-        ``get_accessible_transaction`` does not filter ``is_deleted``, so
+        ``get_accessible_transaction`` did not filter ``is_deleted`` until plan
+        step ``credit_card:CC-5-4a-4`` (ruling **R-CC89**), so
         ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
         flipped it into the settled band and stamped a settle day, while
         ``effective_amount`` valued it at ``Decimal("0")`` -- a row that reads
@@ -606,7 +610,10 @@ class TestSettleTransactionTheVerb:
             with pytest.raises(ValidationError) as exc:
                 transaction_service.settle_transaction(txn)
 
-            assert "soft-deleted" in str(exc.value)
+            # The seam's own sentence, naming the row (ruling R-CC98).
+            assert "was deleted: a payment cannot be recorded under it" in (
+                str(exc.value)
+            )
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
             assert txn.settled_on is None
 
@@ -630,7 +637,10 @@ class TestSettleTransactionTheVerb:
             with pytest.raises(ValidationError) as exc:
                 transaction_service.settle_amount(txn, amount_basis_for(txn))
 
-            assert "soft-deleted" in str(exc.value)
+            # The seam's own sentence, naming the row (ruling R-CC98).
+            assert "was deleted: a payment cannot be recorded under it" in (
+                str(exc.value)
+            )
 
     def test_an_envelope_with_entries_ignores_a_supplied_actual(
         self, app, seed_user, seed_periods,

@@ -35,6 +35,7 @@ from app.services import (
     definition_edit,
     posting_service,
     recurrence_engine,
+    row_write_lock,
     template_amount_service,
 )
 from app.services.balance_at import BalanceContext
@@ -608,6 +609,15 @@ def _soft_delete_projected_rows(template_id):
         is_projected_clause(Transaction),
         Transaction.is_deleted.is_(False),
     )
+    # **The rows' locks FIRST, then both reads as NEW statements** (ruling
+    # **R-CC96**: the archive is one of the two hiders that take the row lock
+    # before anything else).  A purchase added to one of these rows while the
+    # archive ran was invisible to the reads below -- each reads committed
+    # data only -- so the row was hidden over it and the database's hiding arm
+    # refused the whole commit as a raw error.  Locked first, the archive
+    # waits for that purchase to commit and then reads it: the row is KEPT
+    # and named in the flash with the rest.
+    row_write_lock.lock_rows(*projected)
     kept = archive_helpers.rows_holding_movements(*projected)
     hidden = db.session.query(Transaction).filter(
         *projected, archive_helpers.holds_nothing(),

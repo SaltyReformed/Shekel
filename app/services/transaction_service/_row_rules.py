@@ -36,6 +36,7 @@ no index on ``template_id``), issued only for a rule-less definition's row.
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services.definition_delete import is_last_row_of_its_definition
+from app.services.status_seam import deleted_row_payment_refusal
 from app.utils.archive_helpers import template_has_standing_rule
 
 
@@ -320,7 +321,11 @@ def reject_unsettleable(txn: Transaction) -> None:
     rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
     cost is to the data.  (The ownership doors answer a deleted row "not
     found" since plan step ``credit_card:CC-5-4a-4``, ruling **R-CC89**, so a
-    route no longer reaches this arm; a service caller still can.)
+    route reaches this arm only when the row's delete won a race after the
+    door read it live -- the settle verb's row lock, ruling **R-CC96**, is
+    what lets it see the winner -- and a service caller still can.  The words
+    are the seam's own for the same refusal, one sentence naming the row,
+    ruling **R-CC98**.)
 
     Ordered shadow-then-deleted so a row that is both reports the rule that
     routes it somewhere else rather than the one that refuses it outright.  Both
@@ -340,7 +345,4 @@ def reject_unsettleable(txn: Transaction) -> None:
             "legs and the parent move together.",
         )
     if txn.is_deleted:
-        raise ValidationError(
-            f"Transaction {txn.id} is soft-deleted; a settle cannot "
-            "resurrect a deleted row.",
-        )
+        raise ValidationError(deleted_row_payment_refusal(txn))
