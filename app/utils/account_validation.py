@@ -166,10 +166,35 @@ def _account_type_is_visible(type_id, user_id):
         "does not exist" and "owned by another user" so the
         response cannot be used to enumerate other owners' types.
     """
+    return _visible_account_type(type_id, user_id) is not None
+
+
+def _visible_account_type(type_id, user_id):
+    """Return the account type ``type_id`` names if this user may use it, else ``None``.
+
+    :func:`_account_type_is_visible`'s rule, answering with the ROW -- for the
+    create route, which needs the type itself to cross the balance the owner
+    typed (plan step credit_card:CC-5-5b, ruling R-CC52).  Asking the boolean
+    and then ``db.session.get`` again was a second read of one row: the
+    session's identity map holds weak references, so the first lookup's row
+    was gone by the second and a probe counted the extra SELECT (the CC-5-5b
+    adversarial review, finding L1).
+
+    Args:
+        type_id: Submitted ``ref.account_types.id`` value.
+        user_id: ``auth.users.id`` of the current owner.
+
+    Returns:
+        The :class:`AccountType` when it exists and is seeded or owned by
+        *user_id*; ``None`` otherwise, for both "does not exist" and "owned
+        by another user" -- the same indistinguishable answer.
+    """
     account_type = db.session.get(AccountType, type_id)
     if account_type is None:
-        return False
-    return account_type.user_id is None or account_type.user_id == user_id
+        return None
+    if account_type.user_id is None or account_type.user_id == user_id:
+        return account_type
+    return None
 
 
 def _crosses_posting_boundary(old_type, new_amortization, new_category_id):

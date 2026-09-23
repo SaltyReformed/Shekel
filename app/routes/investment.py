@@ -123,32 +123,66 @@ def growth_chart(account_id):
     return render_template("investment/_growth_chart.html", **ctx)
 
 
+def render_balance_hero(account_id: int) -> str | None:
+    """Draw the investment balance hero cell, or ``None`` if the page hides it.
+
+    The investment / retirement page's DRAW (rulings R-CC74 / R-CC77, finding
+    CC-365): the ONE function behind :func:`balance_hero` -- the Cancel /
+    Escape target ``accounts.anchor._anchor_revert_url`` maps
+    ``revert=investment`` to -- and behind the anchor save opened from the
+    detail page's hero, which answered with the grid's cell until then.
+    Renders ``investment/_balance_hero.html`` with the model-from-anchor
+    balance the detail headline shows, so either answer restores the exact
+    figure.  It never aborts, because the save calls it after its write has
+    committed.
+
+    Its producer opens its own read pass from the owner's id, as this GET's
+    always has: that module is one of the service doors plan step
+    pay_calendar:C11 closes (ledger row P56), and it is not moved here.
+
+    **It keys on the id, and the producer is the ownership gate**: it answers
+    ``None`` for an id that is not the current user's active account -- not
+    found, not owned, or archived.  The save's account is already
+    ownership-checked; the GET needs no second lookup.
+
+    Args:
+        account_id: The account whose hero to draw.
+
+    Returns:
+        The rendered cell, or ``None`` when the account is not among the
+        owner's ACTIVE accounts -- which the GET answers with a 404 and the
+        save (archived between page load and now) with an empty cell.
+    """
+    cell = investment_dashboard_service.compute_balance_hero_cell(
+        current_user.id, account_id,
+    )
+    if cell is None:
+        return None
+    return render_template("investment/_balance_hero.html", **cell)
+
+
 @investment_bp.route("/accounts/<int:account_id>/investment/balance-hero")
 @require_owner
 def balance_hero(account_id):
     """HTMX partial: the investment balance hero cell (Loop B P1 C4).
 
-    The Cancel / Escape and 409-conflict revert target for the detail page's
-    click-to-edit anchor editor: ``accounts._anchor_revert_url`` maps
-    ``revert=investment`` here, mirroring how the cockpit's ``revert=accounts``
-    maps to ``savings.cockpit_balance``.  Renders
-    ``investment/_balance_hero.html`` with the model-from-anchor balance the
-    detail headline shows, so a reverted cell restores the exact figure.
+    The Cancel / Escape revert target for the detail page's click-to-edit
+    anchor editor: ``accounts._anchor_revert_url`` maps ``revert=investment``
+    here, mirroring how the cockpit's ``revert=accounts`` maps to
+    ``savings.cockpit_balance``.  The cell is :func:`render_balance_hero`'s --
+    the draw a save opened from the hero answers with too.
 
-    The narrow producer is the IDOR + active gate: it returns ``None`` -- a
-    404 -- for an account that is not among the user's active accounts (not
-    found, not owned, or archived between page load and the revert),
-    satisfying the 404-for-both security rule.  Non-HTMX requests redirect to
-    the dashboard page.
+    The draw's ``None`` is the IDOR + active gate: a 404 for an account that
+    is not among the user's active accounts (not found, not owned, or archived
+    between page load and the revert), satisfying the 404-for-both security
+    rule.  Non-HTMX requests redirect to the dashboard page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("investment.dashboard", account_id=account_id))
-    cell = investment_dashboard_service.compute_balance_hero_cell(
-        current_user.id, account_id,
-    )
+    cell = render_balance_hero(account_id)
     if cell is None:
         abort(404)
-    return render_template("investment/_balance_hero.html", **cell)
+    return cell
 
 
 def _resolve_salary_profile_url(action: str | None, profile_id: int | None):

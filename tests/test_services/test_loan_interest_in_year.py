@@ -32,6 +32,7 @@ from app.extensions import db
 from app.services import balance_at
 from app.services.balance_at._plan import loan_plan
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed
 from tests.oracles.loan_monthly_composition import charge_then_allocate
 from tests._test_helpers import (
     clear_loan_ledger,
@@ -65,7 +66,8 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     """Independently fold the loan's PLAN records to its projected interest in *year*.
 
     A test-side parallel of the producer's projected half (step C6c): it seeds from
-    the SAME balance at the read day the timeline carries there, walks the loan's
+    what the loan OWES at the read day, the SAME balance the timeline carries there
+    (the seam's held figure read through ``owed()``), walks the loan's
     :func:`~app.services.balance_at._plan.loan_plan` records in due order, and sums
     each payment's interest (the RETIRED one-payment-a-month composition) by its EFFECTIVE
     year, dropping any due-month slot in *exclude_slots* (the settled-slot merge) --
@@ -74,10 +76,12 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     checked here, while the arithmetic VALUE is pinned by hand in
     ``test_loan_plan_forward_oracle`` (never the producer as its own oracle, N-7).
     """
-    # The balance the projection starts from: the seam's own figure at the read
+    # The balance the projection starts from: what the loan OWES at the read
     # day (what ``DebtSchedule.projection_seed`` was until plan step
     # recurrence:R16-c-1 replayed the whole timeline from the origination).
-    seed = balance_at.balance_at(loan, ctx, ctx.as_of)
+    # The seam reports it HELD, negative when owed (ruling R-CC47), and the
+    # loan domain folds what is OWED, so the seed crosses once through owed().
+    seed = owed(balance_at.balance_at(loan, ctx, ctx.as_of))
     plan = loan_plan(loan, ctx)
     # The CHARGE standing against each accrual period, keyed by the period it
     # opens.  Since plan step R16-a a month's interest and escrow are charged

@@ -15,12 +15,16 @@ from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.services import cash_ledger
+from app.services import balance_at, cash_ledger
+from app.services.account_category import is_liability_account
+from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 from app.services.savings_dashboard_service._types import (
     ArchivedAccount,
+    ArchivedDebt,
     _AccountParams,
     _DashboardCoreData,
 )
@@ -166,20 +170,30 @@ def _load_account_params(accounts: list[Account]) -> _AccountParams:
     )
 
 
-def _load_archived_accounts(user_id: int) -> list[ArchivedAccount]:
+def _load_archived_accounts(
+    ctx: BalanceContext,
+) -> list[ArchivedAccount | ArchivedDebt]:
     """Load archived accounts with minimal data for the collapsed section.
 
     Archived accounts do not receive balance projections, engine calls,
-    or goal calculations -- they are historical, so the only figure the drawer
-    can show is the last balance the user asserted for the account.
+    or goal calculations -- they are historical.  A non-debt's drawer figure is
+    the last balance the user asserted for it; a DEBT's is what it owes today
+    (ruling **R-CC67**, with R-CC53 for a loan; ledger row CC-362, plan step
+    credit_card:CC-5-5c).
 
     **That figure is NAMED for what it is** (plan step X-w2, ruling R-CH,
     finding N-114).  The rows were untyped ``{account, current_balance}`` dicts,
     and ``current_balance`` is what
     :class:`~.._types.AccountProjection` calls the seam-derived balance every
     LIVE tile renders -- a different fact under the same key, on the same page.
-    :class:`~.._types.ArchivedAccount` carries why that matters and which
-    finding owns the question of whether the line belongs here at all.
+    :class:`~.._types.ArchivedAccount` carries why that matters.  A debt is an
+    :class:`~.._types.ArchivedDebt` whose one figure is ``owed``: the seam's
+    balance at the pass's day through
+    :func:`app.services.liability_sign.owed`, the figure a live liability
+    tile shows (:attr:`~.._types.AccountProjection.shown_balance`).  It read the
+    debt's typed assertion until CC-5-5c, which for a configured loan is not
+    its balance in either sign: an archived Mortgage on the 2026-09-22 17:06
+    production dump read ``$178,103.41`` where it owed ``$176,719.77``.
 
     The ``or Decimal("0.00")`` this loop used to apply is gone with the dict:
     an account always carries an assertion (E-19), so the reducer could fire
@@ -189,19 +203,28 @@ def _load_archived_accounts(user_id: int) -> list[ArchivedAccount]:
     mirrored it (plan step X-f1c3a).
 
     Args:
-        user_id: Integer ID of the current user.
+        ctx: The page's read pass: its ``user_id`` scopes the query, and a
+            debt's balance is read at its ``as_of`` -- the same day every live
+            tile on the page is.
 
     Returns:
-        The :class:`~.._types.ArchivedAccount` rows, ordered for display.
+        One row per archived account, ordered for display:
+        :class:`~.._types.ArchivedDebt` for a liability,
+        :class:`~.._types.ArchivedAccount` for everything else.
     """
     accounts = (
         db.session.query(Account)
-        .filter_by(user_id=user_id, is_active=False)
+        .filter_by(user_id=ctx.user_id, is_active=False)
         .order_by(Account.sort_order, Account.name)
         .all()
     )
     return [
-        ArchivedAccount(
+        ArchivedDebt(
+            account=acct,
+            owed=owed(balance_at.balance_at(acct, ctx, ctx.as_of)),
+        )
+        if is_liability_account(acct)
+        else ArchivedAccount(
             account=acct,
             last_anchor_balance=cash_ledger.resolve_anchor(acct).balance,
         )

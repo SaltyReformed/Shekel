@@ -7,7 +7,8 @@ an investment / property compounds.  See the package docstring
 the four per-kind boundary rules these entries own.
 
 **There are TWO kinds here, not five** (plan step X-g2b).  A configured loan is
-its amortization ``positions()``; everything else is ONE event replay
+its amortization ``positions()``, reported in the HELD sign every other balance
+takes (ruling R-CC47, plan step credit_card:CC-5-5c); everything else is ONE event replay
 (:mod:`app.services.balance_at._asset_fold`), whose ACCRUAL tier exists only for
 an account that models a return and whose CONTRIBUTION tier only for one whose
 payroll funds it.  So a HYSA, a brokerage, a Property and a checking account are
@@ -30,6 +31,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
+from app.services.liability_sign import owed
 from app.services.pay_calendar import DerivedPeriod
 from ._context import BalanceContext
 
@@ -225,6 +227,10 @@ def balance_at_dates(
       or before the resolver's now (the only complete record of the past -- it
       books the true-ups that never appear as schedule rows), and the forward
       schedule projection after (step C3b).  N dates cost one fold walk.
+      ``positions`` states what the loan OWES; this arm reports what it HOLDS,
+      :func:`app.services.liability_sign.owed` of each figure (ruling
+      **R-CC47**, plan step credit_card:CC-5-5c), so a configured loan owing
+      ``176,719.77`` reads ``-176,719.77`` like every other account's balance.
     * **Everything else** -> the event REPLAY (:func:`_modelled_balances`) over
       the whole list.  That includes an AMORTIZING account with no
       ``LoanParams`` -- a Mortgage typed but never filled in, which has no
@@ -251,7 +257,8 @@ def balance_at_dates(
             Duplicates collapse.
 
     Returns:
-        ``{date: balance}`` -- one ``Decimal`` per distinct requested date.
+        ``{date: balance}`` -- one HELD ``Decimal`` per distinct requested
+        date: negative when the account owes, a configured loan included.
 
     Raises:
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
@@ -264,7 +271,13 @@ def balance_at_dates(
     """
     _require_scenario(ctx)
     if configured_loan(account, ctx) is not None:
-        return positions(account, ctx, dates)
+        # positions() states what the loan OWES; the held balance is owed() of
+        # it, because the flip is its own inverse -- this is R-CC29's ONE flip
+        # applied at the seam's loan arm, not a second spelling of it.
+        return {
+            on: owed(owed_on)
+            for on, owed_on in positions(account, ctx, dates).items()
+        }
     return _modelled_balances(account, ctx, dates)
 
 

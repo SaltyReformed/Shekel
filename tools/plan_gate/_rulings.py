@@ -211,10 +211,13 @@ RULINGS_HEADING_RX = re.compile(
 #: measured.  A ruling is the same shape -- a decision somebody has TAKEN --
 #: so this file is capped the same way its siblings are, which is not at all.
 #: This is the runaway backstop a dropped cap owes: a duplicated table or a
-#: generator loop fails loudly instead of committing.  Set far above the 182
-#: rulings the five arcs held when the registry was created (105 lifted, 77
-#: still to come), so it can never bind on real work.
-RULINGS_RUNAWAY_ROWS = 600
+#: generator loop fails loudly instead of committing.  It was set at 600, far
+#: above the 182 rulings the five arcs held when the registry was created (105
+#: lifted, 77 still to come), and said to be unable to bind on real work; real
+#: work reached it on 2026-09-23 (608 rows).  The developer raised it to 700 as
+#: an INTERIM (balance:R-BAL131), until balance:R-BAL130's redesign -- a plan
+#: that holds open work only -- deletes the totals.
+RULINGS_RUNAWAY_ROWS = 700
 
 #: The widest a single ruling row may be, in characters.
 #:
@@ -332,16 +335,19 @@ def runaway_violation() -> str | None:
     """Return the backstop's message, or ``None``.
 
     Returns:
-        The message when the table holds more rows than any real corpus could.
+        The message when the table holds more rows than the interim total
+        (balance:R-BAL131), which real work can reach.
     """
     actual = len(ruling_rows())
     if actual <= RULINGS_RUNAWAY_ROWS:
         return None
     return (
         f"rulings.md holds {actual} rows against a {RULINGS_RUNAWAY_ROWS}-row "
-        f"runaway backstop. This is not a forcing function and rule 5 is not "
-        f"the answer: a count this size is a duplicated table or a generator "
-        f"loop, not work somebody did"
+        f"runaway backstop, an interim total (balance:R-BAL131) that real "
+        f"work can reach. Rule 5 is not the answer: rule out a duplicated "
+        f"table or a generator loop, and otherwise the answer is "
+        f"balance:R-BAL130's redesign, which deletes the totals, not a hunt "
+        f"for a script"
     )
 
 

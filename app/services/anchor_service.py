@@ -10,7 +10,8 @@ D-C; the loan half moved there at plan step ``recurrence:R20`` when
 its third door crossed the module line ceiling -- the seam this
 docstring always drew).  Both call sites switch on the same
 :class:`AnchorTrueUpOutcome` enum so the route layer's response
-composition is uniform.
+composition is uniform; the cash door carries it inside an
+:class:`AnchorTrueUpReport` (ruling R-CC79).
 
 The checking-anchor path -- :func:`apply_anchor_true_up` -- backs the
 grid and Net Worth Cockpit HTMX anchor-edit endpoint (``true_up``).
@@ -94,8 +95,9 @@ Two consequences worth stating, both measured before the indexes were dropped:
   * **The remaining exposure is a surplus audit row, not money.**  Two truly
     concurrent identical submissions could each pass the compare -- except they
     cannot, because the compare runs under the same per-owner lock the reconcile
-    takes (:mod:`app.services.user_write_lock`), taken at the TOP of the door so
-    the waiter re-reads the winner's row.  Even without it the cost was
+    takes (:mod:`app.services.user_write_lock`), taken before the door's first
+    read of an assertion so the waiter re-reads the winner's row.  Even without
+    it the cost was
     ``$0.00``: a duplicate assertion's correction delta is zero, a zero delta
     emits no legs (``account_posting_service._anchors``), and same-day
     corrections merge on one key.
@@ -122,8 +124,9 @@ service rather than paste a third copy.
 
 Services boundary: no Flask imports, no ``request``/``session``/
 ``current_app``/``render_template``.  The route owns the response
-rendering; this module returns an outcome enum the route translates
-into its template/header pair.  The session itself is the project's
+rendering; this module returns what it decided -- an outcome enum, and on the
+cash door the governing assertion either side of the write -- which the route
+translates into its template/header pair.  The session itself is the project's
 SQLAlchemy ``db.session`` proxy, which IS Flask-bound -- consistent
 with every other service in ``app/services/`` (e.g. ``entry_service``,
 ``balance_resolver``).
@@ -200,10 +203,13 @@ class AmortizingAccountAnchorError(ValueError):
 
 
 class AnchorTrueUpOutcome(enum.Enum):
-    """Discriminant returned by :func:`apply_anchor_true_up`.
+    """What a true-up door decided: to write, or that nothing changed.
 
-    The route picks a partial template + status code + headers from
-    this; the service never touches the response layer.
+    Returned by the loan door
+    (:func:`app.services.loan_anchor_service.apply_loan_anchor_true_up`) and
+    carried by the cash door's :class:`AnchorTrueUpReport`.  The route picks a
+    partial template + status code + headers from this; the service never
+    touches the response layer.
 
     Members:
         COMMITTED: The new ``AccountAnchorHistory`` row was written
@@ -222,6 +228,97 @@ class AnchorTrueUpOutcome(enum.Enum):
 
     COMMITTED = "committed"
     UNCHANGED = "unchanged"
+
+
+@dataclass(frozen=True)
+class AnchorTrueUpReport:
+    """What :func:`apply_anchor_true_up` decided, and what governs either side.
+
+    **The door reports what it knows, so nothing around it re-reads the ledger
+    to learn it** (ruling **R-CC79**, developer 2026-09-23).  It returned the
+    bare :class:`AnchorTrueUpOutcome` until then, so the route asked the ledger
+    for the governing assertion three more times per grid save: once BEFORE the
+    write and outside the owner's lock, for its acknowledgement test, and twice
+    after it -- once for that test, the day it names and the grid's "as of"
+    caption, and once more inside the grid's own draw.  Both governing
+    assertions are read inside the lock that serialises the write, so a second
+    tab's save cannot land between them and the acknowledgement compares two
+    figures one transaction saw.
+
+    **The before is the stager's own read, handed back** (ruling **R-CC85**,
+    developer 2026-09-23).  :func:`stage_anchor_true_up` reads the latest
+    assertion once, for ruling R-EQ's compare, and returns it as
+    :attr:`AnchorStageReport.latest`.  The door read the same record itself
+    until then, one statement before the stager, and on a save for today the
+    two reads returned the same row.  So a save that writes reads the governing
+    assertion TWICE when it is dated on or after the latest assertion's day, as
+    a save for today always is -- the stager's latest, which is then also the
+    record governing the submitted day, and the door's after -- and THREE when
+    it is dated BEFORE that day: the stager reads the submitted day's own
+    record between them, because the latest is then a later record and a
+    different fact.  An ``UNCHANGED`` save reads no after, so one fewer.
+
+    "Governs today" is the account's latest owner-declared assertion
+    (:func:`app.services.cash_ledger.governing_anchor`, the non-raising twin of
+    :func:`~app.services.cash_ledger.resolve_anchor`, one query between them).
+    It reads no clock and needs none: both write doors refuse a future day
+    (:func:`resolve_observation_day`), so the latest assertion is the one that
+    governs today.
+
+    Attributes:
+        outcome: Whether the door wrote (``COMMITTED``) or found the submission
+            already governing and rolled back (``UNCHANGED``, ruling R-EQ).
+        governing_before: The assertion that governed today BEFORE the write:
+            the stager's read of the latest assertion
+            (:attr:`AnchorStageReport.latest`, ruling R-CC85), taken under the
+            owner's lock and before anything was staged; ``None`` for an
+            account carrying no assertion at all (fixture-only in production --
+            ``account_service.create_account`` writes an opening).
+        governing_after: The assertion that governs today AFTER the write, read
+            under the same lock, before the commit releases it.  A back-dated
+            write leaves it equal to :attr:`governing_before`, because an
+            assertion for an earlier day does not govern today.  On
+            ``UNCHANGED`` it IS :attr:`governing_before`, never re-read: nothing
+            was written.  Never ``None``: a ``COMMITTED`` door has just appended
+            an assertion, and an ``UNCHANGED`` one found an assertion governing
+            the submitted day, which is at or before today.
+    """
+
+    outcome: AnchorTrueUpOutcome
+    governing_before: cash_ledger.AnchorPoint | None
+    governing_after: cash_ledger.AnchorPoint
+
+
+@dataclass(frozen=True)
+class AnchorStageReport:
+    """What :func:`stage_anchor_true_up` decided, and the latest assertion it read.
+
+    **The stager hands back the one read it makes of the latest assertion**
+    (ruling **R-CC85**, developer 2026-09-23).  It returned a bare ``bool``
+    until then, and the cash door asked the ledger for the same record itself
+    one statement earlier, to report what governed today before its write: on
+    a save dated on or after the latest assertion's day, as a save for today
+    always is, two reads of one fact under one lock.  The door reports this
+    field instead.  The account factory reads only :attr:`staged`, since an
+    account it flushed a few statements earlier carries no assertion for
+    :attr:`latest` to name.
+
+    Attributes:
+        staged: ``True`` when an assertion was appended to the session;
+            ``False`` when the submission matched the assertion governing the
+            submitted day and nothing was staged (ruling R-EQ).  Each caller
+            decides what a decline means for ITS transaction.
+        latest: The account's latest owner-declared assertion
+            (:func:`app.services.cash_ledger.governing_anchor`), read under the
+            owner's lock and BEFORE this assertion was staged, so it is what
+            governed today before this write (both write doors refuse a future
+            day).
+            ``None`` for an account carrying no assertion at all, which is the
+            state the account factory calls in.
+    """
+
+    staged: bool
+    latest: cash_ledger.AnchorPoint | None
 
 
 @dataclass(frozen=True)
@@ -379,7 +476,7 @@ def stage_anchor_true_up(
     account: Account,
     new_balance: Decimal,
     observed_on: ObservationDay,
-) -> bool:
+) -> AnchorStageReport:
     """Append a dated balance ASSERTION for ``account`` without committing.
 
     The flush-only in-memory core of :func:`apply_anchor_true_up`.  It does NOT
@@ -407,28 +504,57 @@ def stage_anchor_true_up(
     sharing a definition, but two EVENTS sharing a write door.
 
     **It decides whether there is anything to append, and that decision is
-    ruling R-EQ.**  It takes the owner's write lock, asks
-    :func:`app.services.cash_ledger.resolve_anchor` which assertion currently
-    governs, and appends only when the submission differs from it.  Three
-    properties are load-bearing and each is here rather than in a caller:
+    ruling R-EQ.**  It takes the owner's write lock, reads which assertion
+    governs the submitted day, and appends only when the submission differs
+    from it.  Three properties are load-bearing and each is here rather than in
+    a caller:
 
     * **The lock precedes the read.**  A compare-then-append is a
       read-modify-write, so an unserialised one lets two concurrent submissions
       each read the pre-state and both append.  It is taken here, with the read
-      it protects, rather than at the door.  It is NOT a guarantee that the
-      advisory lock is the transaction's FIRST lock: ``lock_user_writes``
-      executes a statement and therefore AUTOFLUSHES, so a caller holding a
-      dirty ORM row emits that ``UPDATE`` -- and takes its row lock -- before
-      this line.  That ordering is the CALLER's to keep (finding **N-193**), and
+      it protects, so it holds for BOTH callers.  **Since ruling R-CC85 it is
+      the cash door's only acquisition above that read**: the door
+      (:func:`apply_anchor_true_up`) took its own a few statements earlier
+      (ruling **R-CC79**) to guard a read of the latest assertion that this
+      function now makes and hands back, so the door no longer takes it.  The
+      lock is transaction-scoped, so it still covers the door's after-read,
+      which precedes the commit that releases it.  It is NOT a
+      guarantee that the advisory lock is the transaction's FIRST lock:
+      ``lock_user_writes`` executes a statement and therefore AUTOFLUSHES, so
+      a caller holding a dirty ORM row emits that ``UPDATE`` -- and takes its
+      row lock -- before this line.  That ordering is the CALLER's to keep (finding **N-193**), and
       it is why ``routes/accounts/crud.update_account`` still takes the same
       re-entrant lock at its own top even though plan step X-f1e stopped it
       reaching this function at all.
-    * **The governing assertion is asked for, never re-derived.**
-      :func:`app.services.cash_ledger.governing_anchor_on` shares ONE query with
-      ``resolve_anchor`` -- same tie-breaks, ``(observed_on, created_at, id)``
-      DESC, matching the walk's replay -- and differs only in its horizon.  A
-      local ``MAX``/``first()`` here would be a second statement of that rule,
-      which is the defect class this module's own history is made of.
+    * **The governing assertion is asked for, never re-derived, and asked
+      ONCE when once answers it** (ruling **R-CC85**).  The first read is
+      :func:`app.services.cash_ledger.governing_anchor`, the account's latest
+      assertion, which the cash door also reports.  Only when that record is
+      dated AFTER the submitted day is
+      :func:`app.services.cash_ledger.governing_anchor_on` asked for the day's
+      own.  Both are ONE query, ``cash_ledger._facts._governing_row`` --
+      one ordering, ``(observed_on, created_at, id)`` DESC, matching the walk's
+      replay -- and differ only in its horizon.  A local ``MAX``/``first()``
+      here would be a second statement of that rule, which is the defect class
+      this module's own history is made of.  The read that is skipped is
+      PROVED redundant, from that query's filter and ordering alone:
+
+      ``_governing_row`` returns the first row, in one TOTAL order (``id`` is
+      unique, so no two rows tie), of one set S -- the account's
+      owner-declared assertions -- and for a day D the first row of S_D, the
+      members of S with ``observed_on <= D``.  Let L be the first row of S.
+      If ``L.observed_on <= D``, L is a member of S_D; S_D is a subset of S,
+      so no member of S_D precedes L; so L is the first row of S_D, and the
+      second read would return L.  If S is empty, S_D is empty too and both
+      reads return ``None``.  Only when ``L.observed_on > D`` is L outside
+      S_D, and then the day's record is a different row, read for itself.  The
+      proof needs nothing of the order but that both reads share it, and
+      nothing of the horizon but that it is membership by ``observed_on <=
+      D``.  Both would run under the owner's lock, which the one writer of an
+      owner-declared assertion (this function, ruling R-ES) takes, and before
+      this assertion is staged, so they would see one S.  Reads per call: ONE
+      when the day is on or after the latest assertion's (a save for today, an
+      origination), TWO for a back-dated day.
     * **The comparison is against the row governing the SUBMITTED DAY, not the
       account's latest row.**  Two things follow, and both were measured.  The
       deleted unique index asked "does an identical row exist anywhere", so
@@ -482,18 +608,23 @@ def stage_anchor_true_up(
             one, so an unbounded day cannot reach this line.
 
     Returns:
-        ``True`` when an assertion was appended to the session; ``False`` when
-        the submission matched the governing assertion and nothing was staged.
-        The caller decides what an unchanged submission means for ITS
-        transaction: :func:`apply_anchor_true_up` rolls back and reports
-        ``UNCHANGED``.
+        An :class:`AnchorStageReport`.  Its ``staged`` is ``True`` when an
+        assertion was appended to the session and ``False`` when the submission
+        matched the governing assertion and nothing was staged; the caller
+        decides what that means for ITS transaction
+        (:func:`apply_anchor_true_up` rolls back and reports ``UNCHANGED``, the
+        account factory raises).  Its ``latest`` is the account's latest
+        assertion as read before this assertion was staged, which the cash door
+        reports as what governed today (ruling R-CC85).
 
     **It raises NOTHING, and saying so is a correction.**  It documented a
     ``RuntimeError`` "when the account carries no assertion at all, from
     ``cash_ledger.resolve_anchor``" -- but it does not call ``resolve_anchor``.
-    It calls :func:`app.services.cash_ledger.governing_anchor_on`, which returns
-    ``None`` on an account with no history precisely because that is an honest
-    answer to a WRITER where it is a broken invariant to a reader.  The claim
+    It calls :func:`app.services.cash_ledger.governing_anchor` and, for a
+    back-dated day, :func:`app.services.cash_ledger.governing_anchor_on`, and
+    each returns ``None`` on an account with no history precisely because that
+    is an honest answer to a WRITER where it is a broken invariant to a
+    reader.  The claim
     was true of an earlier draft and load-bearing in the wrong direction: an
     account with no assertions is exactly the state
     ``account_service.create_account`` is in when it calls here.  The
@@ -501,15 +632,23 @@ def stage_anchor_true_up(
     :func:`resolve_observation_day` call, above this function.
     """
     day = observed_on.civil_day
-    # Ruling R-EQ: the lock comes before the READ the decision below is made
-    # from.  See the function docstring for why it is here and not at either
-    # door.
+    # Ruling R-EQ: the lock comes before the READS the decision below is made
+    # from.  Since ruling R-CC85 it is the cash door's only acquisition above
+    # them (see the function docstring).
     lock_user_writes(account.user_id)
-    governing = cash_ledger.governing_anchor_on(account.id, day)
+    # Ruling R-CC85: the latest assertion, read ONCE and handed back.  Dated on
+    # or before the submitted day, it IS the one governing that day (the proof
+    # is in the docstring), so a second read would return the same row.  Dated
+    # after it, the day's own record is a different fact and is read for itself.
+    latest = cash_ledger.governing_anchor(account.id)
+    if latest is None or latest.observed_on <= day:
+        governing = latest
+    else:
+        governing = cash_ledger.governing_anchor_on(account.id, day)
     if governing is not None and (
         (governing.observed_on, governing.balance) == (day, new_balance)
     ):
-        return False
+        return AnchorStageReport(staged=False, latest=latest)
 
     db.session.add(AccountAnchorHistory(
         account_id=account.id,
@@ -523,7 +662,7 @@ def stage_anchor_true_up(
         "Anchor assertion staged: account %d at $%s as of %s",
         account.id, new_balance, day.isoformat(),
     )
-    return True
+    return AnchorStageReport(staged=True, latest=latest)
 
 
 def apply_anchor_true_up(
@@ -531,13 +670,30 @@ def apply_anchor_true_up(
     account: Account,
     new_balance: Decimal,
     observed_on: date | None = None,
-) -> AnchorTrueUpOutcome:
+) -> AnchorTrueUpReport:
     """Append a balance assertion for ``account``, re-base its postings, commit.
 
     Stages the assertion via :func:`stage_anchor_true_up`, re-bases the
     account's posted anchor corrections, and commits.  Returns an
-    :class:`AnchorTrueUpOutcome` discriminant the caller translates into its
-    rendered response.
+    :class:`AnchorTrueUpReport` the caller translates into its rendered
+    response.
+
+    **It reports the assertion that governs today on both sides of the write,
+    and reads both under the owner's lock** (ruling **R-CC79**, developer
+    2026-09-23).  It reported only the outcome until then, so the route read
+    the governing assertion before calling -- outside the lock -- and again
+    after, which let two tabs saving at once show the wrong acknowledgement:
+    the "before" figure it compared against could be one a concurrent save had
+    already replaced.  **The before is the stager's read** (ruling **R-CC85**):
+    :func:`stage_anchor_true_up` takes the lock, reads the latest assertion
+    once for its own compare and hands it back, so this door reads nothing
+    before the write.  The after-read precedes the commit that releases the
+    lock.  Reads of the governing assertion per call: TWO for a save dated on
+    or after the latest assertion's day, as a save for today always is (the
+    stager's latest, which is then also the record governing the submitted
+    day, and the after); THREE for one dated before that day (the stager
+    reads the submitted day's record too).  An ``UNCHANGED`` submission wrote
+    nothing, so its after IS its before and is not read at all.
 
     **The C-17 optimistic lock left this path at plan step X-f1c3c** (ruling
     R-EN), and the reason is that the path stopped writing the row the lock
@@ -583,12 +739,16 @@ def apply_anchor_true_up(
     the winner's postings and reconciles to the true merged target.
     **Since plan step X-f1c4b the SAME lock is taken one layer up**, in
     :func:`stage_anchor_true_up`, because ruling R-EQ's compare-then-append is
-    itself a read-modify-write.  It is re-entrant and transaction-scoped, so
-    taking it twice costs nothing.  On THIS path it is also the transaction's
-    first lock -- the route does only reads before calling (measured, statement
-    by statement, by a neutral concurrency review) -- but that is a property of
-    the route, not of the lock, and finding **N-193** stays open for the settle
-    paths regardless.
+    itself a read-modify-write.  Ruling R-CC79 took it once more, HERE, above a
+    read of what governs today that this door then made; ruling R-CC85 moved
+    that read into the stager, below the stager's own acquisition, and this
+    door's acquisition went with it.  It is re-entrant and transaction-scoped,
+    so the reconcile's repeat costs nothing and the after-read below still
+    holds it.  On THIS path it is also the transaction's first lock -- the route
+    does only reads before calling (measured, statement by statement, by a
+    neutral concurrency review) -- but that is a property of the route, not of
+    the lock, and finding **N-193** stays open for the settle paths
+    regardless.
 
     **It touches no entry, and that is ruling R-DH (d).**  It used to bulk-flip
     ``is_cleared`` on every entry dated on or before the server's today, which
@@ -627,10 +787,11 @@ def apply_anchor_true_up(
             a clock-dependent rule.
 
     Returns:
-        AnchorTrueUpOutcome -- which response the route should render.
-        ``UNCHANGED`` when the submission matched the governing assertion, in
-        which case this function has rolled the session back and written
-        nothing.
+        The :class:`AnchorTrueUpReport`: the outcome -- ``UNCHANGED`` when the
+        submission matched the governing assertion, in which case this
+        function has rolled the session back and written nothing -- and the
+        assertion governing today before and after the write, both read under
+        the owner's lock.
 
     Raises:
         ValidationError: When *observed_on* is in the future or precedes the
@@ -666,9 +827,16 @@ def apply_anchor_true_up(
     # judged.
     day = resolve_observation_day(account.user_id, observed_on)
 
-    if not stage_anchor_true_up(
+    # Ruling R-CC85: the stager takes the owner's lock, reads the latest
+    # assertion once under it, and hands it back -- what governed today, read
+    # inside the same serialisation as the write, so a concurrent save cannot
+    # land between it and the after-read below.  This door reads nothing first.
+    staging = stage_anchor_true_up(
         account=account, new_balance=new_balance, observed_on=day,
-    ):
+    )
+    governing_before = staging.latest
+
+    if not staging.staged:
         # Ruling R-EQ: the submission IS the governing assertion, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back
         # rather than returning on an open transaction -- the stager took the
@@ -684,7 +852,14 @@ def apply_anchor_true_up(
             "stands; nothing written (idempotent success)",
             account_id,
         )
-        return AnchorTrueUpOutcome.UNCHANGED
+        # Nothing was written, so what governs today is what governed before:
+        # reported, not re-read.  Never ``None`` here -- the stager declines
+        # only when an assertion governs the submitted day, at or before today.
+        return AnchorTrueUpReport(
+            outcome=AnchorTrueUpOutcome.UNCHANGED,
+            governing_before=governing_before,
+            governing_after=governing_before,
+        )
 
     # Build-Order Step 5: the new assertion re-bases the account's
     # anchor corrections in EVERY scenario (anchor history is
@@ -695,5 +870,12 @@ def apply_anchor_true_up(
     account_posting_service.sync_account_anchor_postings_all_scenarios(
         account.id,
     )
+    # After the write and BEFORE the commit, because the commit releases the
+    # lock: read after it, a second tab's save could already govern.
+    governing_after = cash_ledger.governing_anchor(account.id)
     db.session.commit()
-    return AnchorTrueUpOutcome.COMMITTED
+    return AnchorTrueUpReport(
+        outcome=AnchorTrueUpOutcome.COMMITTED,
+        governing_before=governing_before,
+        governing_after=governing_after,
+    )

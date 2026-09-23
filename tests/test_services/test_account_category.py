@@ -138,6 +138,43 @@ class TestIsLiabilityAccount:
             ) is (category is AcctCategoryEnum.LIABILITY)
 
 
+class TestTheTypeAnswersWhatItsAccountAnswers:
+    """The TYPE-level entrances (plan step credit_card:CC-5-5b).
+
+    The create form classifies a balance before its account exists (ruling
+    R-CC52), so the rule is asked of the account TYPE too.  An account and its
+    type must be classified identically -- a type answering differently from
+    its own account would store a new account's opening in one sign and read it
+    back in the other.
+    """
+
+    @pytest.mark.parametrize("category", list(AcctCategoryEnum))
+    def test_each_category_classifies_the_same_by_type_and_by_account(
+        self, app, db, seed_user, category,
+    ):
+        """Every category: the type's answer IS its account's, both rules."""
+        with app.app_context():
+            account = _account_in(category)
+            assert account_category.account_type_category(
+                account.account_type,
+            ) is category
+            assert account_category.account_category(account) is category
+            assert account_category.is_liability_type(
+                account.account_type,
+            ) is (category is AcctCategoryEnum.LIABILITY)
+            assert account_category.is_liability_account(account) is (
+                category is AcctCategoryEnum.LIABILITY
+            )
+
+    def test_no_type_has_no_category_and_is_no_liability(
+        self, app, db, seed_user,
+    ):
+        """A ``None`` type: no category, and not a liability (the safe side)."""
+        with app.app_context():
+            assert account_category.account_type_category(None) is None
+            assert account_category.is_liability_type(None) is False
+
+
 class TestTheTwoSpellingsAreOneAnswer:
     """Finding N-118's construction property, asserted rather than trusted.
 

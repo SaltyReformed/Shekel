@@ -3247,7 +3247,10 @@ class TestDebtSummaryDisplay:
             assert "Loans paid off" in html
             assert "excludes" in html
             assert "$500.00" in html
-            assert "revolving" in html
+            # Captioned by WHY it is left out since ruling R-CC68 (plan step
+            # credit_card:CC-5-5c); it read "revolving" until then, which a
+            # loan with no terms and a custom liability are not.
+            assert "with no payoff date" in html
 
     def test_a_borrower_whose_loans_are_all_retired_is_told_so(
         self, app, auth_client, seed_user, seed_periods, db,

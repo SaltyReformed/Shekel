@@ -10,8 +10,10 @@ with the arithmetic shown in a comment.  What is pinned:
   day of 31 is Jan 31, Feb 28 (29 in a leap year), Mar 31, Apr 30;
 * the due date is the first due day strictly AFTER the close (**R-CC26**), so
   a due day later in the month than the close is the SAME month's;
-* the sign: the seam's negative-when-owed fold becomes a positive owed
-  figure ONCE (**R-CC29**), a credit stays negative, and zero carries no sign;
+* the sign is NOT pinned here: R-CC29's one flip left this module at plan
+  step credit_card:CC-5-5a and its three tests left this file with it at
+  CC-5-5b (``tests/test_services/test_liability_sign.py``, beside
+  :func:`app.services.liability_sign.owed`);
 * the minimum is ``max(floor, round_money(pct x balance))`` clamped to the
   balance and floored at zero, rounded HALF_UP at that one boundary;
 * grace is kept when the prior statement was paid in full by its due date,
@@ -23,10 +25,6 @@ from decimal import Decimal
 
 import pytest
 
-# The one flip moved from ``card_statement`` into the balance seam at plan step
-# credit_card:CC-5-5a (ruling R-CC47); ``TestTheSignIsFixedOnce`` pins the same
-# three R-CC29 answers at its new home, assertions unchanged.
-from app.services.balance_at import owed
 from app.services.card_statement import (
     CycleWindow,
     cycle_containing,
@@ -232,26 +230,6 @@ class TestTheDueDateIsTheFirstDueDayAfterTheClose:
     def test_a_due_day_one_day_after_the_close(self):
         """Closes Jan 30, due on the 31st: Jan 31, as the terms state."""
         assert due_date_for(date(2026, 1, 30), 31) == date(2026, 1, 31)
-
-
-class TestTheSignIsFixedOnce:
-    """Ruling R-CC29: the fold's negative-when-owed becomes an owed figure."""
-
-    def test_a_debt_is_a_positive_owed_figure(self):
-        """The seam's -1,234.56 is 1,234.56 owed."""
-        assert owed(Decimal("-1234.56")) == Decimal("1234.56")
-
-    def test_a_credit_stays_negative(self):
-        """A fold of +50.00 (the issuer owes the owner) is -50.00 owed."""
-        assert owed(Decimal("50.00")) == Decimal("-50.00")
-
-    def test_zero_carries_no_sign(self):
-        """A zero fold is an UNSIGNED 0.00 owed -- ``-0.00`` would print as
-        money owed on a screen -- and still two places."""
-        result = owed(Decimal("0.00"))
-        assert result == Decimal("0.00")
-        assert result.is_signed() is False
-        assert result.as_tuple().exponent == -2
 
 
 class TestTheMinimumPayment:

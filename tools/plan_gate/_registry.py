@@ -825,8 +825,8 @@ REGISTRY_CAPS = {
 #: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
 #: for the reasons above.  This is the runaway backstop a dropped cap owes: a
 #: duplicated table or a generator loop fails loudly instead of committing.
-#: Set far above the 157 steps the index held when the cap was dropped, so it
-#: can never bind on a real decomposition.
+#: Set far above the 157 steps the index held when the cap was dropped; it has not bound
+#: yet, but the rulings total's 'can never bind' failed 2026-09-23 (balance:R-BAL131).
 STEPS_RUNAWAY_ROWS = 400
 
 #: The number of ``ledger.md`` rows that can only be an accident.
@@ -834,8 +834,8 @@ STEPS_RUNAWAY_ROWS = 400
 #: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
 #: for the reasons above.  This is the runaway backstop a dropped cap owes:
 #: a duplicated table or a generator loop fails loudly instead of committing.
-#: Set far above the 227 rows the ledger held when the cap was dropped, so it
-#: can never bind on a real finding.
+#: Set far above the 227 rows the ledger held when the cap was dropped; it has not bound
+#: yet, but the rulings total's 'can never bind' failed 2026-09-23 (balance:R-BAL131).
 LEDGER_RUNAWAY_ROWS = 400
 
 #: The widest a single ``ledger.md`` row may be, in characters.
