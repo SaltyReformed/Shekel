@@ -294,7 +294,7 @@ one worktree or many. The full suite is MINUTES, not seconds; the current count 
 live in `docs/testing-standards.md` (Test Run Guidelines). **The wrapper defaults to
 `-m "not docker"`, which DESELECTS the container-spawning `tests/test_deploy` tests** -- they vanish
 from the report rather than appearing as skips, so a green local run is not a claim about them; CI
-runs bare `pytest` and executes them all. Single test:
+runs the wrapper in six shards with `-m ""` and executes them all. Single test:
 `./scripts/test.sh tests/path/test_file.py::test_name -v`.
 **A migration needs no manual template rebuild**: the template is baked into the image and the
 wrapper re-verifies it on EVERY invocation, rebuilding when the key moved

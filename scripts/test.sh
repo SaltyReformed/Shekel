@@ -69,10 +69,11 @@
 #                        one caller today is
 #                        tests/test_scripts/test_test_runner.py, which drives
 #                        a stub docker that cannot satisfy a real
-#                        verification.  It is NOT set by CI: CI does not use
-#                        this wrapper at all and builds the TEMPLATE, not the
-#                        image.  Unset is the developer's case and every real
-#                        run, and is verified on every invocation.
+#                        verification.  It is NOT set by CI: CI's jobs run
+#                        this wrapper like any other run and bake the image on
+#                        their own runner (``bank_import:X-gy``).  Unset is
+#                        the developer's case and every real run, and is
+#                        verified on every invocation.
 #     PYTEST_MARKER_EXPR Marker expression handed to pytest.
 #                        Default: ``not docker`` (see the note above the
 #                        pytest invocation at the bottom of this file).
@@ -210,8 +211,9 @@ unset _daemon_private _daemon_answered _daemon_kind _ci_sanctioned
 # the build-and-verify entirely.  It exists for a caller that knows more than
 # this script does: today that is this wrapper's own tests, which drive a stub
 # docker that cannot satisfy a real verification.  CI is NOT such a caller --
-# it never invokes this wrapper.  When the variable is unset -- the
-# developer's case, and every real run -- the builder runs and checks the
+# its jobs bake and verify the image here like every other run.  When the
+# variable is unset -- the developer's case, and every real run -- the
+# builder runs and checks the
 # cached image on EVERY invocation rather than trusting the tag, so a stale or
 # damaged image is rebuilt here instead of being cloned from for the whole run.
 if [ -n "${TEST_DB_IMAGE:-}" ]; then
@@ -248,9 +250,9 @@ fi
 #     reached only ~38% in 13 minutes, at a run-queue of 32, ~950,000 context
 #     switches/sec and 28% iowait.  No test FAILED in either -- the slowest
 #     single test is 2.58 s against pytest.ini's per-test timeout (30 s then;
-#     90 s since 2026-09-13, sized to CI's clock -- docs/testing-standards.md,
-#     Test Run Guidelines), so there is roughly 11x of headroom and that
-#     measurement was sitting on it.
+#     90 s from 2026-09-13 and 50 s since 2026-09-22, sized to CI's clock --
+#     docs/testing-standards.md, Test Run Guidelines), so there was roughly
+#     11x of headroom and that measurement was sitting on it.
 #
 # So what survives is a resource fact, not a defect, and the right instrument
 # for a resource fact is information rather than a mutex: this prints what else
@@ -505,9 +507,10 @@ echo "[test.sh] private cluster $_run_container on ${_run_sockdir}" \
 # so on this host the tests/test_deploy conftest guard sees an isolated
 # endpoint and the full local opt-in is just:
 #   PYTEST_MARKER_EXPR=docker ./scripts/test.sh tests/test_deploy/...
-# CI is unaffected: it invokes pytest directly, not this wrapper, so it still
-# runs the full set.  An explicit ``-m`` in the caller's arguments takes
-# precedence (pytest keeps the last ``-m`` on the command line).
+# CI's shards pass ``-m ""`` (``.github/workflows/ci.yml``), so CI still runs
+# the full set: an explicit ``-m`` in the caller's arguments takes precedence
+# (pytest keeps the last ``-m`` on the command line), and an empty expression
+# selects everything.
 PYTEST_MARKER_EXPR="${PYTEST_MARKER_EXPR:-not docker}"
 
 # NOT `exec`: the container has to be removed after pytest returns, and an
