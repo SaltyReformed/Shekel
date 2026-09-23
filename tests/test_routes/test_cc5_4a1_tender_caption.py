@@ -5,7 +5,7 @@ account leaves the acts naming it, withdrawn and DISCLOSED as a delete's are.
 The delete discloses through its confirm dialog before the press; the "Paid
 from" picker is a ``<select>`` inside the popover's Save form, so it discloses
 beside the control, before the pick, in a caption the route derives through
-the withdrawal's own read twin (``match_withdrawal.pending_for_moved_movement``,
+the withdrawal's own read twin (``match_withdrawal.pending_for_movements``,
 the same derivation the seam's write uses at ``_re_point``).
 """
 

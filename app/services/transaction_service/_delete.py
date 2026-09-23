@@ -23,25 +23,32 @@ door's own precondition, asked before the sequence starts.
    FIRST, ahead of ``deletion_refusal``, so a caller naming the wrong owner is
    told nothing about the row -- the ordering ``entry_service._doors`` states
    for the same pair of guards.
-1. **Withdraw the matches this delete would leave naming no app row at all**
-   (:mod:`app.services.match_withdrawal`, developer ruling 2026-08-25) -- for
-   the row, its purchases AND its live CC-payback chain, because all of them
-   go in this one commit.  A match asserts that a bank line IS these rows; when
-   the last of them stops existing the assertion is withdrawn and the line is
-   unexplained again.  FIRST, while the members still exist to be read: their
-   foreign keys are ``ON DELETE CASCADE``, so after the delete there is nothing
-   left to say which lines were freed.
-2. **Take down the live CC payback chain** (``credit_workflow``), because
-   ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
-   this a projected payback survives its source and inflates the next period
-   with no offsetting credit row.  Step 1 has already withdrawn its matches, so
-   that helper no longer does: one withdrawal per press is what lets the
-   dialog's figure and the receipt's figure be one derivation.
-3. **Reverse the postings** (``posting_service``), while
+1. **Reverse the postings** (``posting_service``), while
    ``journal_entries.transaction_id`` and ``.transaction_entry_id`` still link
    them.  Both are ``ON DELETE SET NULL``: reversing afterwards is impossible
    and the original legs would be stranded on their ledger accounts with
-   nothing to offset them.
+   nothing to offset them.  Each row's WHOLE family at once -- the row's, and
+   each live CC payback's in its chain -- so the anchor is re-checked once per
+   row rather than once per movement (the churn ruling **R-BAL103** removed
+   from the deploy resync); FIRST since plan step ``credit_card:CC-5-4a-3``,
+   so step 2 finds every leaving movement's legs already at zero.  The row is
+   reversed on the soft arm too: a tombstone contributes to no balance.
+2. **Take the movements off the books through the ONE act**
+   (:mod:`app.services.movement_removal`, plan step ``credit_card:CC-5-4a-3``,
+   ruling **R-CC54**) -- the row's purchases and payment AND those of its live
+   CC-payback chain, because all of them go in this one commit.  The act takes
+   them out of every match, withdrawing one left naming no app row
+   (developer ruling 2026-08-25): a match asserts that a bank line IS these
+   rows, and when the last of them stops existing the line is unexplained
+   again.  Over the WHOLE set in one call, so the dialog's figure and the
+   receipt's are one derivation.  Only the rows that LEAVE the table: a
+   soft-deleted row keeps its movements and its matches
+   (:func:`_leaves_the_table`).
+3. **Take down the live CC payback chain** (``credit_workflow``), because
+   ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
+   this a projected payback survives its source and inflates the next period
+   with no offsetting credit row.  Step 2 has already taken the chain's
+   movements off, so that helper takes down rows holding none.
 4. **Remove the row**, soft or hard by whether its definition RECURS.
 5. **Dispose of the definition the row was the LAST of** (plan step
    ``balance:X-bi-7b``, rulings **R-BAL23** / **R-BAL27**): a one-off is a
@@ -86,6 +93,7 @@ from app.services import (
     credit_workflow,
     definition_delete,
     match_withdrawal,
+    movement_removal,
     posting_service,
 )
 from app.services.match_withdrawal import MatchWithdrawal
@@ -256,9 +264,14 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
     definition = txn.template if last_row_of_definition else None
-    withdrawn = match_withdrawal.withdraw_for_rows(leaving, owner_id)
+    for row in [txn, *(row for row in leaving if row is not txn)]:
+        posting_service.reverse_postings_before_delete(row)
+    withdrawn = movement_removal.remove_movements(
+        [movement for row in leaving for movement in row.entries],
+        owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
+        rows_leaving=leaving,
+    )
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)
-    posting_service.reverse_postings_before_delete(txn)
 
     if soft:
         txn.is_deleted = True

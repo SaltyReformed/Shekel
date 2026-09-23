@@ -30,12 +30,12 @@ has run (:func:`_as_recorded`), or the one the screen offered as a
 SETTLEMENT because the row was settled already.  A settled row's money IS its
 movement (ruling **R-BAL80**), on whichever account it moved through, and
 naming the movement is what lets a bill charged to the card be matched on the
-card's statement at all: the member key holds a row member to the ROW's
+card's statement at all: the member key held a row member to the ROW's
 account.  The rows an act CREATES are still recorded as rows (a residual, a
 minted envelope): what the act made and what it names are two relations, and
-the second names the money.  Acts recorded before that step name rows; the
-readers carry both shapes until plan step ``credit_card:CC-5-4a-2`` re-keys
-them.
+the second names the money.  Acts recorded before that step named rows until
+plan step ``credit_card:CC-5-4a-2`` re-keyed each onto its payment and dropped
+the member table's row column (ruling **R-CC45**).
 
 **It does NOT write ``reconciled_by_id``, and that is ruling R-FV.**  That
 column names an ``account_anchor_history`` row -- a balance the owner asserted

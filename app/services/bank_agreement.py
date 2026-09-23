@@ -57,9 +57,9 @@ from app.models.account import Account
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatchMember
 from app.extensions import db
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at, cash_ledger, statement_import
+from app.services.statement_match import matched_subjects
 from app.utils.dates import days_in_range
 
 _ZERO_MONEY = Decimal("0.00")
@@ -756,19 +756,18 @@ def _rows_on(
         the item that explains most of a day's difference reads first.
 
     **Sourced from the WALK, so these sum to the day's ``recorded`` total.**
-    An envelope's purchase is a fact in its own right there
-    (:attr:`~app.services.cash_ledger.CashSourceFact.entry_id`), which is why
-    the match state is asked of the entry when there is one and of the
-    transaction otherwise -- the same two-subject split
-    ``statement_match_members`` stores.  **A COVERING MOVEMENT is asked of
-    BOTH its homes** (plan step ``credit_card:CC-5-4a-1``, ruling
-    **R-CC43**): a settled bill's or paycheck's money walks as its movement's
-    fact; a match recorded since that step names the movement itself, and one
-    recorded before names its ROW (the shape plan steps X-bi-3a / 3b set,
-    ruling **R-BAL39**, under which asking the entry alone read every matched
-    bill as unexplained on this screen -- adversarial review of X-bi-3b,
-    2026-09-16).  The row half goes with the column at plan step
-    ``credit_card:CC-5-4a-2``.
+    Every fact there is a MOVEMENT
+    (:attr:`~app.services.cash_ledger.CashSourceFact.entry_id`; the fold
+    reads movements and no row, ruling **R-BAL80**) -- a purchase, or the
+    covering movement a settled bill's or paycheck's money walks as -- and
+    every app-side match member names a movement (rulings **R-CC43**,
+    **R-CC45**), so the match state is the fact's own entry, asked of the
+    ONE claims producer (:func:`~app.services.statement_match
+    .matched_subjects`, its ``entries``) rather than a second query over the
+    members that could drift from the review screen's.
+    Through plan step ``credit_card:CC-5-4a-2`` an act recorded before
+    ``CC-5-4a-1`` named the covering movement's ROW, and this asked both
+    homes; migration ``2eabfa596ee0`` re-keyed those onto the movement.
     """
     facts = [
         fact
@@ -787,18 +786,14 @@ def _rows_on(
     ]
     if not facts:
         return []
-    names, covering = _row_names(facts)
-    claimed_txns, claimed_entries = _claimed_app_rows(account.id)
+    names = _row_names(facts)
+    claimed = matched_subjects(account.id).entries
     return sorted(
         (
             (
                 fact.delta,
                 names.get((fact.transaction_id, fact.entry_id), "(unnamed)"),
-                fact.entry_id in claimed_entries
-                or (
-                    (fact.entry_id is None or fact.entry_id in covering)
-                    and fact.transaction_id in claimed_txns
-                ),
+                fact.entry_id in claimed,
             )
             for fact in facts
         ),
@@ -807,60 +802,23 @@ def _rows_on(
     )
 
 
-def _row_names(
-    facts: list,
-) -> "tuple[dict[tuple[int, int | None], str], set[int]]":
-    """Return a display name for each fact's source row, and the mirrors.
+def _row_names(facts: list) -> "dict[tuple[int, int], str]":
+    """Return a display name for each fact's movement.
 
     Args:
-        facts: :class:`~app.services.cash_ledger.CashSourceFact` values.
+        facts: :class:`~app.services.cash_ledger.CashSourceFact` values, each
+            a movement (the fold reads no row, ruling **R-BAL80**).
 
     Returns:
-        ``({(transaction_id, entry_id): name}, covering)`` -- the names, and
-        the ids of the entry facts that are a row's COVERING MOVEMENT, whose
-        match state :func:`_rows_on` asks of the parent as well as of the
-        entry.  Read in the same query as the entry's name, so a day costs two
-        queries at most and none when nothing is on it.
+        ``{(transaction_id, entry_id): name}``, from the movement's own
+        description, in one query -- none when nothing is on the day.
     """
-    names: "dict[tuple[int, int | None], str]" = {}
-    covering: set[int] = set()
-    txn_ids = {f.transaction_id for f in facts if f.entry_id is None}
-    entry_ids = {f.entry_id for f in facts if f.entry_id is not None}
-    if txn_ids:
-        for txn_id, name in db.session.query(
-            Transaction.id, Transaction.name,
-        ).filter(Transaction.id.in_(txn_ids)):
-            names[(txn_id, None)] = name
-    if entry_ids:
-        for entry_id, txn_id, description, covers in db.session.query(
+    entry_ids = {fact.entry_id for fact in facts}
+    return {
+        (txn_id, entry_id): description
+        for entry_id, txn_id, description in db.session.query(
             TransactionEntry.id,
             TransactionEntry.transaction_id,
             TransactionEntry.description,
-            TransactionEntry.covers_settlement,
-        ).filter(TransactionEntry.id.in_(entry_ids)):
-            names[(txn_id, entry_id)] = description
-            if covers:
-                covering.add(entry_id)
-    return names, covering
-
-
-def _claimed_app_rows(account_id: int) -> "tuple[set, set]":
-    """Return the app rows a statement match already claims.
-
-    Args:
-        account_id: The account whose matches to read.
-
-    Returns:
-        ``(transaction ids, transaction entry ids)``.
-    """
-    claimed_txns: set = set()
-    claimed_entries: set = set()
-    for txn_id, entry_id in db.session.query(
-        StatementMatchMember.transaction_id,
-        StatementMatchMember.transaction_entry_id,
-    ).filter(StatementMatchMember.account_id == account_id):
-        if txn_id is not None:
-            claimed_txns.add(txn_id)
-        if entry_id is not None:
-            claimed_entries.add(entry_id)
-    return claimed_txns, claimed_entries
+        ).filter(TransactionEntry.id.in_(entry_ids))
+    }

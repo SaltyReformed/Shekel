@@ -804,8 +804,9 @@ def filed_acts(seed_user, how_many, *, by_rule):
     :func:`~app.services._posting_purchases.emit_purchase_deltas` *k* times --
     quadratic in the number of acts.  Measured 2026-08-31 on this box, 51
     acts: **1,326 emit calls (51x52/2) and 4.50 s into one envelope, against
-    51 calls and 1.13 s spread across 51**.  CI pins ``-n 12`` on a hosted
-    runner with ``nproc`` far under 12, and that oversubscription multiplied
+    51 calls and 1.13 s spread across 51**.  CI then pinned ``-n 12`` on a
+    hosted runner with ``nproc`` far under 12 (its shards run ``-n logical``
+    since ``bank_import:X-gy``), and that oversubscription multiplied
     the concentrated shape past ``pytest.ini``'s 30 s per-test budget: four
     cases timed out at 28.94-29.03 s having taken 4.7 s here.  **The app's
     quadratic is real and is NOT this fixture's to fix** -- it is finding
