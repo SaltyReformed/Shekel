@@ -27,10 +27,14 @@ standing, because re-planning a row is what makes it feel handled.
 reconciler is the SECOND-best answer** -- an invariant that cannot be violated
 beats one something enforces.  The goal state is that ``steps.md`` stops
 STORING the shipped set and derives it, at which point this module and the
-``commit`` column delete together.  Until a ``Plan-Step:`` trailer is carried by
-every shipping commit, deriving would rest on a convention only 56 of 126
-historical commits followed, so the reconciler comes first and is what measures
-whether the convention has taken.
+``commit`` column delete together.  The claim that derivation would read is the
+``Ships:`` trailer (:data:`_SHIPS`, ruling **R-BAL134**), and no commit on any
+ref carried one when it was ruled (measured 2026-09-23).
+**So every commit from before R-BAL134 is invisible to these arms**: a leaf
+shipped under prose and never ticked is caught by nothing (two were, on one
+unmerged branch, when it was ruled).  Nor can the arm tell whether the
+convention has taken: a shipping commit without the trailer reads exactly as
+one that shipped nothing.
 
 **Ancestry is asked of HEAD, not of a named branch.**  The question an arm can
 actually answer is *is this true of the tree I am grading*, which is right on
@@ -64,7 +68,6 @@ about it.
 """
 from __future__ import annotations
 
-import re
 import subprocess
 
 import _registry as registry
@@ -72,21 +75,32 @@ import _registry as registry
 #: Cited by every message below, so a failure sends the reader to the rule.
 _RULE = "conventions.md rule 7"
 
-#: How a commit claims a step.  ``Plan step balance:X-au-f-2`` and
-#: ``Plan step X-au-f-2`` are both live spellings; the arc prefix is optional
-#: because half the corpus predates it.  The trailing guard is what keeps
-#: ``X-au-f`` from matching inside ``X-au-f-2`` -- ``\b`` does not, since a
-#: hyphen is a non-word character and the boundary is satisfied there.
-_CLAIM = r"Plan step\s+(?:{arc}:)?{ident}(?![\w-])"
-
-#: A commit that NAMES a step while saying it does not tick it.  These are real
-#: and deliberate: ``1cd4e61b`` shipped a rehearsed runbook for
-#: ``balance:X-f3c-2b-2c`` and says in its own message that the tick waits on a
-#: production deploy.  Grading it as a missed tick would be a false positive on
-#: a commit that did the honest thing.
-_DISCLAIMED = re.compile(
-    r"does NOT tick its step|NOT FOR MERGE|\bWIP\b",
-)
+#: The git trailer a commit claims a step with: one ``Ships: <arc>:<id>`` line
+#: per step it SHIPS, in the message's trailer block (ruling **R-BAL134**).
+#:
+#: **Only the trailer block is read, and git parses it**, so no sentence is a
+#: claim however it is worded.  The prose reading this replaced
+#: (``Plan step <id>`` anywhere in the message) could not tell a claim from a
+#: mention, and a message cannot be reworded once pushed, so a sentence that
+#: only NAMED an open step wedged the gate on every branch carrying it --
+#: ``ec1a5b28``, a C18 checkpoint, said the open ``recurrence:R22`` "deletes"
+#: its stopgap and blocked C18's merge with ``dev`` -- and a list of phrasings
+#: that excused a sentence (``does NOT tick its step``, ``WIP``) was the fence
+#: grown around it.  A commit that does not ship a step now carries no
+#: trailer, and there is nothing to excuse.  **A trailer binds once pushed,
+#: as the sentence did**: it is a deliberate claim, so a leaf withdrawn or
+#: reverted after its push still claims its step until the row is ticked, and
+#: nothing here reads a revert.
+#:
+#: **The value is the step's KEY, exactly** (conventions.md rule 10): a bare
+#: id or a trailing note names no step, and is dropped silently.  **The
+#: trailer block is git's, not a line that looks like one**: it is the
+#: message's LAST paragraph, and only when every line in it is a trailer (or a
+#: quarter are and one is git-generated or configured, such as
+#: ``Signed-off-by:``).  So ``Ships:`` goes in the SAME paragraph as
+#: ``Co-Authored-By:`` -- written as a paragraph of its own above that block,
+#: it is prose and names nothing.
+_SHIPS = "Ships"
 
 
 def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -151,18 +165,44 @@ def is_carried(sha: str, heads: tuple[str, ...] | None = None) -> bool:
     )
 
 
-def _commits() -> list[tuple[str, str]]:
-    """Return ``(sha, whole message)`` for every commit reachable from :func:`graded_heads`."""
-    out = _git("log", *graded_heads(), "--format=%H%x01%s%x02%b%x03").stdout
-    commits = []
-    for record in out.split("\x03"):
+def _shipping_claims() -> dict[str, tuple[str, str]]:
+    """Return ``{"<arc>:<id>": (sha, subject)}`` for each :data:`_SHIPS` trailer graded.
+
+    **One ``git log`` over the whole history, reading ``%(trailers)``**,
+    rather than ``git interpret-trailers --parse`` once per commit: this reads
+    each message as git stored it, in one process.  ``interpret-trailers`` is
+    built for a patch e-mail and ends the message at a ``---`` line, so the two
+    disagree on a message holding one (measured 2026-09-23, git 2.55: a
+    mid-body ``---`` with ``Ships: a:b`` at the end reads ``a:b`` here and
+    nothing there).  ``key=`` matches case-insensitively and ``separator``
+    keeps a commit's several claims apart.  ``git log`` lists a child before
+    its parent on one line of history, so of two claims there the later is
+    the one reported.
+
+    Raises:
+        RuntimeError: when ``git log`` fails.  The walk's empty output would
+            otherwise read as "no commit claims anything" -- the gate passing
+            on nothing.
+    """
+    walk = _git(
+        "log", *graded_heads(),
+        f"--format=%H%x01%s%x01%(trailers:key={_SHIPS},valueonly,separator=%x02)%x03",
+    )
+    if walk.returncode:
+        raise RuntimeError(
+            f"git log could not read the {_SHIPS}: trailers: {walk.stderr.strip()}",
+        )
+    claims: dict[str, tuple[str, str]] = {}
+    for record in walk.stdout.split("\x03"):
         record = record.strip("\n")
         if not record:
             continue
         sha, _, rest = record.partition("\x01")
-        subject, _, body = rest.partition("\x02")
-        commits.append((sha, f"{subject}\n{body}"))
-    return commits
+        subject, _, values = rest.partition("\x01")
+        for value in values.split("\x02"):
+            if value.strip():
+                claims.setdefault(value.strip(), (sha, subject))
+    return claims
 
 
 def shipped_commit_violations() -> list[str]:
@@ -203,16 +243,20 @@ def shipped_commit_violations() -> list[str]:
 def unticked_leaf_violations() -> list[str]:
     """Rules 7 and 14: no commit in this tree claims a step the index calls open.
 
-    **This is the arm the ``X-au-f-2`` miss exists for.**  A commit that says
-    ``Plan step <id>`` is the shipping session's own statement that it built
-    that step; if the row is still ranked, the tick it owed never came.
+    **This is the arm the ``X-au-f-2`` miss exists for.**  A commit carrying
+    ``Ships: <arc>:<id>`` is the shipping session's own statement that it
+    built that step; if the row is still ranked, the tick it owed never came.
+    Only that trailer is a claim (:data:`_SHIPS`).
 
-    **CONTAINERS are exempt, and that is not a softening.**  A container never
-    ships by itself -- it ticks when its last leaf does, which
-    :func:`_order.starts_violations` already grades through
-    ``_container_starts_problem`` -- so a commit naming one is naming the SPAN
-    it worked under.  Grading them raised five false positives on the live
-    corpus against one true finding, every one a leaf commit citing its family.
+    **CONTAINERS are exempt, and that is not a softening.**  A container's
+    tick FOLLOWS its leaves' both ways: :func:`_order.starts_violations`
+    refuses one left open after its last leaf ships
+    (``_container_starts_problem``), and rule 13's sixth arm refuses a declared
+    decomposed parent ticked while a leaf is open -- which every container row
+    declares itself (30 of 30, 2026-09-23).  So the claim that ships a
+    container is its last leaf's trailer, and a trailer naming the container
+    while a leaf is open is one no tick could answer: grading it would block
+    every branch carrying it.
 
     Returns:
         One message per open leaf a commit claims; empty when the history
@@ -220,23 +264,16 @@ def unticked_leaf_violations() -> list[str]:
     """
     if not history_is_gradeable():
         return []
-    commits = _commits()
+    claims = _shipping_claims()
     problems = []
     for row in registry.step_rows():
-        if row.shipped or row.is_container:
+        if row.shipped or row.is_container or row.key not in claims:
             continue
-        claim = re.compile(
-            _CLAIM.format(arc=re.escape(row.arc), ident=re.escape(row.ident)),
+        sha, subject = claims[row.key]
+        problems.append(
+            f"{row.key} is `{row.state}` in steps.md, but {sha[:9]} in this "
+            f"tree carries `{_SHIPS}: {row.key}` -- {subject!r}.  A step that "
+            f"ships is ticked in the same push, and its findings re-pointed "
+            f"with it ({_RULE}, conventions.md rule 2)",
         )
-        for sha, message in commits:
-            if not claim.search(message) or _DISCLAIMED.search(message):
-                continue
-            subject = message.splitlines()[0]
-            problems.append(
-                f"{row.key} is `{row.state}` in steps.md, but {sha[:9]} in this "
-                f"tree says it SHIPPED it -- {subject!r}.  A step that ships is "
-                f"ticked in the same push, and its findings re-pointed with it "
-                f"({_RULE}, conventions.md rule 2)",
-            )
-            break
     return problems
