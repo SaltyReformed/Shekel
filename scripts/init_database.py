@@ -247,7 +247,7 @@ def migrate_existing_database():
 
 
 def resync_all_cash_postings_after_migration():
-    """Re-date every settled cash source's postings after the chain is at head.
+    """Re-date or re-book every settled cash source's postings after the chain is at head.
 
     Ruling **R-DH (b)** (2026-07-31,
     ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).  A journal
@@ -292,7 +292,7 @@ def resync_all_cash_postings_after_migration():
     restoring the pre-deploy dump it names.  The release rehearsal on a
     same-day dump meets it first.
     """
-    print("Re-dating settled cash postings (transactions + transfers)...")
+    print("Resyncing settled cash postings (transactions + transfers)...")
     # Fresh transaction + ref_cache init, matching the two hooks below (see the
     # loan backfill for the idle-read-transaction rationale).  This hook runs
     # FIRST, so it is the one that opens ref_cache for the sequence.
@@ -302,17 +302,18 @@ def resync_all_cash_postings_after_migration():
     db.session.commit()
     # CHANGED, not walked (finding N-133 / F8).  A steady-state deploy prints
     # zeroes; a non-zero line is the operator's only evidence that a one-time
-    # re-date actually happened, and the one worth reading in the deploy log.
+    # re-date or re-book actually happened, and the one worth reading in the
+    # deploy log.
     if transactions or transfers:
         print(
-            f"Cash posting re-date complete: RE-POSTED {transactions} "
-            f"transaction(s) and {transfers} transfer(s).  These sources' "
-            "journal entries moved to a different entry_date; a rollback "
-            "ACROSS this dating change must re-run the hook under the old "
-            "image, not only swap the container."
+            f"Cash posting resync complete: RE-POSTED {transactions} "
+            f"transaction(s) and {transfers} transfer(s); their journal "
+            "entries were re-dated or re-booked.  To roll back past this "
+            "deploy, follow deploy/shekel-deploy.sh's rollback instructions; "
+            "it logs the pre-deploy dump it took."
         )
     else:
-        print("Cash posting re-date complete: already at target (0 changed).")
+        print("Cash posting resync complete: already at target (0 changed).")
 
 
 def backfill_loan_payment_postings_after_migration():

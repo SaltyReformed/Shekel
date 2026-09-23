@@ -411,9 +411,11 @@ class LedgerAccount(UserScopedMixin, CreatedAtMixin, db.Model):
         # "Why ck_ledger_accounts_loan_shape does not pin kind_id" and the
         # parallel un-CHECKed ``class_id``).  ``NOT is_owner_bucket`` matches
         # the sibling ``ck_ledger_accounts_owner_bucket_shape`` form so the two
-        # read alike; the predicate matches the migration's CHECK DDL
-        # byte-for-byte (re-created under the same name by plan step
-        # ``balance:X-bi-6-3``'s migration, which renamed the column).
+        # read alike; the predicate matches ``efca4315bf81``'s CHECK DDL
+        # byte-for-byte with ``is_fallback`` read as ``is_owner_bucket``.
+        # Plan step ``balance:X-bi-6-3``'s migration renamed that column and
+        # did NOT re-create this CHECK: Postgres stores the expression parsed,
+        # so it follows the rename by itself and keeps its name.
         db.CheckConstraint(
             "loan_account_id IS NULL OR (account_id IS NULL AND "
             "category_id IS NULL AND NOT is_owner_bucket)",

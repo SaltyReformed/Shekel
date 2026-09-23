@@ -1337,8 +1337,9 @@ class TestRestoreTransfer:
         simply took the first leg holding a record would ALWAYS take the expense
         leg -- here the reverted one, carrying a stale ``$25.00``.  Writing that
         onto the income leg would price the pair at a figure one of them had
-        already stopped claiming, and the posted ledger reads that figure
-        (``posting_service._settle_effective``).
+        already stopped claiming, and the posted ledger reads that figure (each
+        leg's covering movement is posted as its own entry since plan step
+        ``balance:X-bi-6-3``, through ``_posting_purchases.emit_purchase_deltas``).
 
         The two legs are given DIFFERENT records on purpose: with equal ones the
         preference is unobservable, which is why the shape survived a suite
@@ -2052,9 +2053,10 @@ class TestDueDateAndSettleDayShadows:
 
         The ``settled_on`` edit door (ruling **R-ED**): the user read their
         statement and the money moved on a day other than the one the settle
-        was recorded on.  Both shadows take the SAME day, which
-        ``posting_service._entry_date`` depends on -- it reads the income
-        shadow's day for the pair.
+        was recorded on.  Both shadows take the SAME day (Transfer Invariant
+        3, until ``X-bi-6-4`` lets the two days part); since plan step
+        ``balance:X-bi-6-3`` the posting writer files each side's entry under
+        that side's own covering movement's day, so the two land together.
         """
         with app.app_context():
             td = transfer_data

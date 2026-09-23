@@ -2487,10 +2487,10 @@ class TestTransferSettleDayEditDoor:
 
         The gate ruling R-ED names for this half in terms: a test that EDITS a
         settled row's day and asserts the LEDGER followed.  Both shadows take
-        the corrected day (Transfer Invariant 3 --
-        ``posting_service._entry_date`` reads the income shadow's day for the
-        pair), and the reconcile reverses the stale-dated entry and re-posts at
-        the corrected day (finding **N-13**).
+        the corrected day (Transfer Invariant 3 -- the posting writer files
+        each side's entry under that side's covering movement's day since plan
+        step ``balance:X-bi-6-3``), and the reconcile reverses the stale-dated
+        entries and re-posts at the corrected day (finding **N-13**).
         """
         with app.app_context():
             original = display_today() - timedelta(days=9)
@@ -2699,9 +2699,11 @@ class TestTransferSettleDayEditDoor:
 
         The shape the template's condition is written for, and the reason it
         keys on the STATUS rather than on ``xfer.settled_on``: an undated
-        settled transfer is exactly what makes ``posting_service._entry_date``
-        raise ``UndatedSettleError`` -- a 500 on the grid -- so it is the row
-        that most needs a way to state the day its money really moved.  Keying
+        settled transfer made the posting writer before plan step
+        ``balance:X-bi-6-3`` raise ``UndatedSettleError`` (a 500 on the grid),
+        and the one movement writer now posts nothing for an undated movement,
+        so it is the row that most needs a way to state the day its money
+        really moved.  Keying
         the condition on the day instead would hide the box from precisely that
         row, and a neutral review found nothing grading the difference:
         ``{% if xfer.settled_on %}`` passed the whole suite.

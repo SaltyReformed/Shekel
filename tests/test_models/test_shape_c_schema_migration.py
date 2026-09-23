@@ -36,9 +36,14 @@ The renamed column, index and CHECK are asserted at HEAD by
 ``test_posting_cash_schema_migration.py`` (the migration that added them,
 re-expressed for the rename).  The executable upgrade -> downgrade -> upgrade
 round-trip was run during development against the prod-clone
-``shekel_xbi63`` (2026-09-21): the ledger's 1,277 entries and 0.00 trial
-balance untouched in both directions, the two reference rows seeded and
-removed, the index re-keyed and restored.
+``shekel_xbi63`` (2026-09-21) on LEAF 1's migration: the ledger's 1,277
+entries and 0.00 trial balance untouched in both directions, the two
+reference rows seeded and removed, the index re-keyed and restored.  That
+measurement predates leaf 2 and no longer describes the ledger half: the
+upgrade now UPDATEs every linked ``loan_payment`` entry (25 on the
+2026-09-20 restore; their links cleared, their legs unchanged) and the
+downgrade DELETEs every ``loan_payment`` entry whole, graded here by
+:class:`TestTheSplitUnlinkExecutes` and :class:`TestDowngradeExecutes`.
 """
 from __future__ import annotations
 
@@ -176,7 +181,8 @@ class TestDowngradeExecutes:
     untouched, no posting left without its entry.  The DDL half (the index
     re-key, the renames) is not executed here: it would alter the schema
     under the ORM for the rest of the item, and its source is graded by
-    :class:`TestDowngradeSource`; the full round-trip ran on the clone.
+    :class:`TestDowngradeSource`; the full round-trip ran on the clone at
+    leaf 1 (the module docstring says what it did not cover).
     """
 
     def test_dml_tears_the_transit_ledger_down_whole(

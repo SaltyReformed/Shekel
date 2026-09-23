@@ -417,10 +417,11 @@ class Transfer(
         already fails loud on -- would have 500'd both full-edit popovers, which
         is precisely the outcome the paragraph above says this read avoids.  A
         neutral review caught the contradiction between the code and its own
-        docstring.  ``_entry_date`` reaches the same place with ``.first()``;
-        the duplicate pair carries one day either way (Transfer Invariant 3),
-        and detecting the corruption is that validator's job, not this form
-        field's.
+        docstring.  The posting writer's own income-shadow read reached the
+        same place with ``.first()`` until plan step ``balance:X-bi-6-3``
+        deleted it; the duplicate pair carries one day either way (Transfer
+        Invariant 3), and detecting the corruption is that validator's job,
+        not this form field's.
 
         There is no setter, deliberately: ``status_seam.apply_status_change``
         is the single writer of ``Transaction.settled_on``, and an assignable

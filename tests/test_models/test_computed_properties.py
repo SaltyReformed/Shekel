@@ -539,15 +539,19 @@ class TestTransferSettleDay:
     def test_it_reads_the_income_shadow(
         self, app, db, seed_user, seed_periods,
     ):
-        """The day comes from the TO-account shadow, the row the ledger reads.
+        """The day comes from the TO-account shadow, named by its account.
 
-        ``posting_service._entry_date`` dates a transfer's journal entry from
-        the income shadow alone, so this property must read the same row: were
-        it to read the expense side, a pair that had somehow diverged would
-        render one day on the form and file the postings under another.  The
-        divergence is forced here (bypassing the service, which is what keeps
-        the pair equal) precisely because the two rows are otherwise identical
-        and the choice would be untestable.
+        Until plan step ``balance:X-bi-6-3`` the posting writer dated a
+        transfer's one journal entry from the income shadow alone, so this
+        property reads the same row: were it to read the expense side, a pair
+        that had somehow diverged would render one day on the form and file
+        the postings under another.  Since that step each side's entry is
+        filed under that side's covering movement's own day, so the property
+        no longer names the row the ledger dates from; it still names the
+        income shadow (``Transfer.settled_on``'s docstring says why), and this
+        test pins that choice.  The divergence is forced here (bypassing the
+        service, which is what keeps the pair equal) precisely because the two
+        rows are otherwise identical and the choice would be untestable.
 
         **The unfalsifiable version of this test was fixed in the CODE, not
         here, and that is the point worth keeping.**  The property used to
@@ -596,8 +600,8 @@ class TestTransferSettleDay:
 
                 assert xfer.settled_on == income_day, (
                     "the property did not read the income (to-account) shadow, "
-                    "which is the row posting_service._entry_date dates the "
-                    f"transfer's journal entry from: got {xfer.settled_on} "
+                    "the row Transfer.settled_on names for the pair's day: "
+                    f"got {xfer.settled_on} "
                     f"with income={income_day} expense={expense_day}"
                 )
 

@@ -663,7 +663,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
     every journal entry the app writes.  It exists because those two do NOT
     reach an ordinary transaction or a NON-loan transfer: the loan package's
     staleness detector is scoped to one loan's linked ledger
-    (``loan_posting_service._sync._resync_stale_transfers``) and the anchor
+    (``loan_posting_service._sync._reconcile_lineage_transfer_entries``) and the anchor
     backfill reconciles only the corrections, so a checking-to-savings transfer
     and every ordinary settled row were maintained per-mutation and by nothing
     else.
@@ -775,8 +775,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
     fails AFTER this commits, the rolled-back image reads a display-dated
     ledger with the previous image's UTC rules, and only the entries whose two
     days differ are affected (on production at the cutover: one payment, one
-    day).  Rolling back ACROSS a dating change therefore needs this hook
-    re-run under the old image, not just a container swap.
+    day).  Rolling back ACROSS a re-date or a re-book therefore follows
+    ``deploy/shekel-deploy.sh``'s rollback instructions; for a
+    migration-bearing release that is the pre-deploy dump it names.
 
     **It is the THIRD multi-owner transaction, and it takes every per-user
     write lock up front** (plan step X-f1c3c, finding N-193).  It iterates every

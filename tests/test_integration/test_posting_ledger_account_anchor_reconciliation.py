@@ -206,9 +206,10 @@ def _linked_ledger_sum_as_of(
 
     The "ledger through an assertion day" reader: every linked-ledger entry --
     a source OR an anchor correction -- carries an ``entry_date`` equal to the
-    civil day its money moved (``posting_service._entry_date`` /
-    ``_transaction_entry_date`` read the STORED ``transactions.settled_on``
-    since plan step X-f1; corrections take the anchor's observed day), so
+    civil day its money moved (a source entry is dated by its movement's own
+    STORED ``settled_on``, through ``_posting_purchases.emit_purchase_deltas``
+    since plan steps ``balance:X-bi-4a`` and ``balance:X-bi-6-3``;
+    corrections take the anchor's observed day), so
     summing legs with ``entry_date <= civil_date`` reconstructs the ledger as of
     the END of that civil day -- the ``TestLedgerThroughEachAssertionDay``
     invariant.  The fixture places every event on a DISTINCT, increasing civil
