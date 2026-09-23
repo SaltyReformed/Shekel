@@ -52,7 +52,10 @@ door's own precondition, asked before the sequence starts.
    line read explained (measured 2026-09-23; ledger **N-290**'s soft-delete
    half), and plan step ``credit_card:CC-5-4a-4``'s doors then refused to
    remove that hidden row's period or definition with a sentence naming a
-   row the grid does not show.  A hidden row holds nothing now.
+   row the grid does not show.  A row this door hides holds nothing now; one
+   hidden before this release refuses the release's migration
+   (``c4a4e7d1b9f2``, ruling **R-CC82**), and a transfer leg the TRANSFER's
+   soft delete hides may still hold its kept payment (finding **BAL-532**).
 3. **Take down the live CC payback chain** (``credit_workflow``), because
    ``transactions.credit_payback_for_id`` is ``ON DELETE SET NULL`` -- without
    this a projected payback survives its source and inflates the next period
@@ -151,21 +154,21 @@ class RowDeletion:
     disposes_definition: bool
 
 
-def _leaves_the_table(
-    txn: Transaction,
-) -> "tuple[bool, list[Transaction], list[Transaction]]":
-    """Return whether *txn* stays as a tombstone, the rows emptied, and the rows that go.
+def _leaves_the_books(txn: Transaction) -> "tuple[bool, list[Transaction]]":
+    """Return whether *txn* stays as a tombstone, and every row this press takes off the books.
 
-    **Two sets, because the soft arm empties a row it does not remove**
-    (ruling **R-CC75**).  EMPTIED is every row whose payments and purchases
-    leave the books in this press -- *txn* and its live CC-payback chain, on
-    either arm -- and is what the ONE removal act runs over.  LEAVING is
-    every row that really leaves the table -- the chain, and *txn* too
-    unless it recurs -- and is what the act and the dialog are told is going,
-    so a creation record naming a TOMBSTONE is reported as staying: the row
-    is still there, holding nothing.  Until that ruling the act ran over
-    LEAVING alone, so a soft-deleted row kept its movements and its matches
-    (the module docstring's step 2 carries the measurement).
+    **ONE set, on either arm** (rulings **R-CC75**, **R-CC84**): *txn* and its
+    live CC-payback chain -- every row whose payments and purchases leave the
+    books in this press, which is what the ONE removal act runs over AND what
+    it and the dialog are told is going.  A recurring row stays in the table
+    as a tombstone holding nothing, and it is still GOING to the owner: they
+    deleted it and the grid no longer shows it, so a creation record naming it
+    is not reported as a row that stays (ruling **R-CC84**, developer
+    2026-09-23: "The hidden row counts as leaving, like any deleted row").
+    Until R-CC75 the act ran over the rows leaving the TABLE alone, so a
+    soft-deleted row kept its movements and its matches (the module
+    docstring's step 2 carries the measurement); R-CC75 made that two sets,
+    and R-CC84 made them one again.
 
     **The payback chain goes either way**, because
     :func:`~app.services.credit_workflow.delete_payback_on_source_delete` hard-
@@ -177,13 +180,10 @@ def _leaves_the_table(
         txn: The row being deleted.
 
     Returns:
-        ``(soft, emptied, leaving)`` -- whether the row stays as a tombstone,
-        every row whose movements go (*txn* first), and every row this commit
-        really removes from the table.
+        ``(soft, rows)`` -- whether the row stays as a tombstone, and every
+        row whose movements go (*txn* first).
     """
-    soft = txn.recurs
-    chain = credit_workflow.live_payback_chain(txn)
-    return soft, [txn, *chain], ([] if soft else [txn]) + chain
+    return txn.recurs, [txn, *credit_workflow.live_payback_chain(txn)]
 
 
 def preview_deletion(
@@ -208,15 +208,11 @@ def preview_deletion(
     """
     if last_row_of_definition is None:
         last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
-    soft, emptied, leaving = _leaves_the_table(txn)
+    soft, rows = _leaves_the_books(txn)
     return RowDeletion(
         soft=soft,
-        paybacks=tuple(
-            row.name for row in leaving if row.id != txn.id
-        ),
-        withdrawn=match_withdrawal.pending_for_rows(
-            emptied, rows_leaving=leaving,
-        ),
+        paybacks=tuple(row.name for row in rows[1:]),
+        withdrawn=match_withdrawal.pending_for_rows(rows),
         disposes_definition=last_row_of_definition,
     )
 
@@ -274,20 +270,19 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if refusal is not None:
         raise ValidationError(refusal)
 
-    soft, emptied, leaving = _leaves_the_table(txn)
-    paybacks = tuple(row.name for row in leaving if row.id != txn.id)
+    soft, rows = _leaves_the_books(txn)
+    paybacks = tuple(row.name for row in rows[1:])
     # The definition is read off the row BEFORE the row is deleted: the
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
     definition = txn.template if last_row_of_definition else None
-    for row in emptied:
+    for row in rows:
         posting_service.reverse_postings_before_delete(row)
-    # Over EMPTIED, on both arms (ruling R-CC75): a tombstone keeps its place
-    # in the table and nothing it held.
+    # Over every row, on both arms (rulings R-CC75, R-CC84): a tombstone keeps
+    # its place in the table and nothing it held, and goes to the owner.
     withdrawn = movement_removal.remove_movements(
-        [movement for row in emptied for movement in row.entries],
-        owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
-        rows_leaving=leaving,
+        [movement for row in rows for movement in row.entries],
+        owner_id, because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=rows,
     )
     credit_workflow.delete_payback_on_source_delete(txn, owner_id)
 

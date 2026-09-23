@@ -1143,6 +1143,14 @@ class TestDataConsistency:
         db.session.commit()
         assert dc12().passed
 
+        # Its payment first, in the same raw SQL: a row holding one is no
+        # longer deleted with it (plan step credit_card:CC-5-4a-4, R-CC54;
+        # rule-5 re-expression, developer-confirmed 2026-09-23).
+        db.session.execute(sqlalchemy.text(
+            "DELETE FROM budget.transaction_entries WHERE transaction_id IN "
+            "(SELECT id FROM budget.transactions "
+            "WHERE transfer_id = :t AND account_id = :a)"
+        ), {"t": transfer.id, "a": savings.id})
         db.session.execute(sqlalchemy.text(
             "DELETE FROM budget.transactions "
             "WHERE transfer_id = :t AND account_id = :a"

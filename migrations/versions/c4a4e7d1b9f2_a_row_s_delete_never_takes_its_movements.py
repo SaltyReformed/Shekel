@@ -46,10 +46,25 @@ explaining its bank lines forever.  Measured 0 of 284 on the 17:06 dump; a
 non-zero count is the developer's to rule, so the revision names the acts and
 writes nothing.
 
+**Why it refuses on a hidden row holding a movement** (ruling **R-CC82**,
+developer 2026-09-23: *"The release's database update counts such rows and
+refuses to run if any exist, naming them, the same way it already refuses on
+orphaned statement matches."*).  The same release makes a deleted recurring
+occurrence give up its payments and purchases (ruling **R-CC75**) and an
+archive hide only rows holding nothing (**R-CC63**) -- going FORWARD.  A row
+the code before it hid while it still held one would lock its pay period
+(truncate, regenerate and reset refuse over it) with no screen able to reach
+the row.  Measured 0 on production at 2026-09-23 12:08 UTC.  **A transfer's
+shadow is excepted** (the developer's follow-up the same morning, "Non-transfer
+rows"): the transfer's own soft delete still hides a leg holding its kept
+payment after this release, which is finding **BAL-532**'s
+(``balance:X-bi-6-4``) to end, and a refusal over a state the release goes on
+creating would stop nothing it fixes.
+
 ``tests/test_models/test_cc5_4a4_row_keeps_its_movements.py`` drives the
 shipped ``upgrade`` / ``downgrade``: each key's refusal after the upgrade and
-its cascade after the downgrade, the stranded-act refusal and its control,
-and the round trip.
+its cascade after the downgrade, both refusals and their controls, and the
+round trip.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -71,6 +86,18 @@ _STRANDED_ACTS_SQL = (
     "                    WHERE m.match_id = a.id "
     "                      AND m.transaction_entry_id IS NOT NULL) "
     " ORDER BY a.id"
+)
+
+#: Every hidden row that is not a transfer's shadow and still holds a payment
+#: or purchase -- a row whose period would lock with no screen able to reach
+#: it (ruling **R-CC82**).
+_HIDDEN_HOLDING_ROWS_SQL = (
+    "SELECT t.id FROM budget.transactions t "
+    " WHERE t.is_deleted "
+    "   AND t.transfer_id IS NULL "
+    "   AND EXISTS (SELECT 1 FROM budget.transaction_entries e "
+    "                WHERE e.transaction_id = t.id) "
+    " ORDER BY t.id"
 )
 
 #: The three keys this revision flips, as ``(name, table, columns, referent,
@@ -113,6 +140,30 @@ def refuse_stranded_acts(bind) -> None:
         )
 
 
+def refuse_hidden_rows_holding_movements(bind) -> None:
+    """Refuse the upgrade while any hidden non-transfer row holds a movement.
+
+    Module-level so a test can DRIVE the refusal, as
+    :func:`refuse_stranded_acts`.
+
+    Args:
+        bind: A SQLAlchemy connection.
+
+    Raises:
+        RuntimeError: Naming each such row's ``transactions`` id and the
+            diagnostic query.  Nothing has been written.
+    """
+    hidden = [row[0] for row in bind.execute(sa.text(_HIDDEN_HOLDING_ROWS_SQL))]
+    if hidden:
+        raise RuntimeError(
+            f"CC-5-4a-4 refuses: {len(hidden)} hidden row(s) hold a recorded "
+            f"payment or purchase (ids {hidden}; diagnose with: "
+            f"{_HIDDEN_HOLDING_ROWS_SQL}).  Each would lock its pay period "
+            "with no screen able to reach it.  Nothing was written; each is "
+            "the developer's to rule (ruling R-CC82)."
+        )
+
+
 def _recreate(key, *, ondelete, name=None) -> None:
     """Drop *key* and create it again with *ondelete*, optionally renamed.
 
@@ -134,6 +185,7 @@ def upgrade():
     """Make a row's movements and a match's movements undeletable by cascade."""
     bind = op.get_bind()
     refuse_stranded_acts(bind)
+    refuse_hidden_rows_holding_movements(bind)
     row_key = (
         _ROW_KEY_OLD_NAME, "transaction_entries", ["transaction_id"],
         "transactions", ["id"],
@@ -144,7 +196,7 @@ def upgrade():
     print(
         "CC-5-4a-4: transaction_entries' two row keys and "
         "statement_match_members' movement key are NO ACTION; 0 stranded "
-        "acts."
+        "acts; 0 hidden rows holding a movement."
     )
 
 

@@ -191,7 +191,7 @@ def _rule_naming(seed_user, template):
 
 
 class TestDelete:
-    """``_delete._leaves_the_table`` keys soft-versus-hard on ``recurs``."""
+    """``_delete._leaves_the_books`` keys soft-versus-hard on ``recurs``."""
 
     def test_a_rule_less_definitions_last_row_takes_the_definition_with_it(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -337,7 +337,7 @@ class TestDelete:
                 f"/transactions/{one_off.id}/full-edit",
             ).data.decode()
             assert "This cannot be undone." in html
-            assert "This occurrence will not come back" not in html
+            assert "This occurrence stays deleted" not in html
             # A one-off's ONLY row takes the item with it (R-BAL27), and the
             # dialog says so off the same answer the door acts on.
             assert "the item itself goes with it" in html
@@ -345,7 +345,12 @@ class TestDelete:
             html = auth_client.get(
                 f"/transactions/{recurring.id}/full-edit",
             ).data.decode()
-            assert "This occurrence will not come back" in html
+            assert "This occurrence stays deleted" in html
+            # Ruling R-CC83: the un-archive that brings it back, empty (R-CC75).
+            assert (
+                "Archiving and then un-archiving that item would bring it "
+                "back, empty." in html
+            )
             assert "This cannot be undone." not in html
             assert "the item itself goes with it" not in html
 

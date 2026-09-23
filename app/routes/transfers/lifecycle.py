@@ -54,7 +54,6 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.ref import Status
-from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import (
@@ -147,12 +146,7 @@ def _archive(template, ctx):
         is_projected_clause(Transfer),
         Transfer.is_deleted.is_(False),
     )
-    kept = archive_helpers.rows_holding_movements(
-        Transaction.transfer_id.in_(
-            db.session.query(Transfer.id).filter(*projected)
-        ),
-        counted_by=Transaction.transfer_id,
-    )
+    kept = archive_helpers.transfers_holding_movements(*projected)
     transfers_to_delete = (
         db.session.query(Transfer)
         .filter(*projected, archive_helpers.transfer_holds_nothing())

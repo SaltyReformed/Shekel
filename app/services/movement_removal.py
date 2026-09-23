@@ -50,12 +50,13 @@ out of every match, delete.
    (plan step ``CC-5-4a-4``, ruling **R-CC64**): the row's ``entries``
    relationship carries no delete cascade and its database keys are
    ``NO ACTION``, so no row delete -- through the ORM or in bulk -- can take
-   a movement with it.  Deleted BEFORE it leaves the collection: a child
-   removed from a relationship with no ``delete-orphan`` is otherwise
-   NULLED at flush, which ``transaction_id``'s ``NOT NULL`` refuses; marked
-   deleted first, the flush emits the ``DELETE`` alone (measured on
-   SQLAlchemy 2.0.54).  The collection itself is read before either, so a
-   lazy load's autoflush cannot land the ``DELETE`` under it first.
+   a movement with it.  DELETED, not merely removed: a child removed from a
+   relationship with no ``delete-orphan`` and not deleted is NULLED at
+   flush, which ``transaction_id``'s ``NOT NULL`` refuses; deleted, the flush
+   emits the ``DELETE`` alone whichever of the two came first (measured on
+   SQLAlchemy 2.0.54, delete-then-remove here and remove-then-delete by
+   CC-5-4a-4's first review).  The collection itself is read before either,
+   so a lazy load's autoflush cannot land the ``DELETE`` under it first.
    **NOT flushed here**: a door that deletes the row
    next deletes it through the ORM, whose unit of work orders the
    movement's ``DELETE`` first; the transfer delete, whose shadows go by the
@@ -134,13 +135,12 @@ def remove_movements(
         movements, owner_id, because=because, rows_leaving=rows_leaving,
     )
     for movement in movements:
-        # The collection is read FIRST, then the movement is deleted, then it
-        # leaves the collection -- the order the module docstring's step 3
-        # measures.  Removed before it is deleted, the flush would NULL the
-        # movement's ``transaction_id`` instead of deleting it; deleted before
-        # the collection is loaded, the lazy load's autoflush would emit the
-        # DELETE first and load a collection it is no longer in (step 2's
-        # flush expires it, which is how a MATCHED purchase met that).
+        # The collection is read FIRST: deleted before the collection is
+        # loaded, the lazy load's autoflush would emit the DELETE first and
+        # load a collection it is no longer in (step 2's flush expires it,
+        # which is how a MATCHED purchase met that).  Then deleted AND out of
+        # the collection -- removed without the delete, the flush would NULL
+        # its ``transaction_id`` (the module docstring's step 3).
         family = movement.transaction.entries
         db.session.delete(movement)
         family.remove(movement)

@@ -63,7 +63,8 @@ class DerivedRowFields(NamedTuple):
     existed, so "make the row match the template again" could only be spelled
     as "throw the row away and build another".  That cost the owner every
     column a template does NOT derive: the purchases recorded against the row
-    (``transaction_entries`` CASCADE from their parent), its ``notes``, its
+    (``transaction_entries`` CASCADED from their parent until plan step
+    ``credit_card:CC-5-4a-4``), its ``notes``, its
     ``is_envelope`` and ``companion_visible`` flags, its ``created_at``, and
     its own id -- finding **N-292**, measured at 3 purchase records worth
     ``$499.82`` on one live row, destroyed with no prompt by an edit as small

@@ -27,8 +27,8 @@ place, where the two cannot drift:
 row for the DELETE-and-recreate regenerate machine -- conflict, immutable, or
 "safe to delete and regenerate" -- and that third class was a premise both
 engines have now dropped.  Plan step R10-a replaced it on the transaction side
-(``transaction_entries`` CASCADE, so deleting a projected envelope destroyed the
-owner's purchases); R10-b replaces it on the transfer side, where a delete took
+(``transaction_entries`` CASCADED then, so deleting a projected envelope destroyed
+the owner's purchases); R10-b replaces it on the transfer side, where a delete took
 the row's ``notes``, its id and any settlement record it had retained through a
 revert.  What stands in its place is :func:`classify_maintain_work`, which both
 engines share -- so the shared helper is the decision that MAINTAINS rather than

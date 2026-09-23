@@ -42,6 +42,8 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import match_withdrawal, movement_removal
 from tests._test_helpers import (
     add_entry,
+    create_account_of_type,
+    create_settled_transfer,
     load_migration_module,
     run_migration_callable as _run,
 )
@@ -249,7 +251,7 @@ class TestTheOneActStillRemovesAMovement:
 
 
 class TestTheMigration:
-    """``c4a4e7d1b9f2``: the three keys each way, and its one refusal."""
+    """``c4a4e7d1b9f2``: the three keys each way, and its two refusals."""
 
     def test_the_keys_are_no_action_at_head(self, app, db):
         """The test database is built at head, so the keys read as upgraded."""
@@ -290,3 +292,73 @@ class TestTheMigration:
             assert f"ids [{created.match_id}]" in str(caught.value)
             assert "name no movement" in str(caught.value)
             assert _keys(db.session) == _BEFORE
+
+    def test_a_hidden_row_still_holding_a_purchase_refuses_the_upgrade(
+        self, app, db, seed_user,
+    ):
+        """A row the old code hid while it held a purchase stops the upgrade.
+
+        Ruling **R-CC82**: the state an archive or a recurring occurrence's
+        delete made before this release -- the row soft-deleted, its $25.00
+        purchase kept under it -- staged directly under the downgraded schema.
+        The upgrade names the row and writes nothing: the keys still cascade.
+        """
+        with app.app_context():
+            row = _unmatched_purchase(seed_user)
+            _run(_M.downgrade, db.session)
+            db.session.execute(
+                text("UPDATE budget.transactions SET is_deleted = TRUE "
+                     "WHERE id = :id"),
+                {"id": row.id},
+            )
+            db.session.commit()
+            with pytest.raises(RuntimeError) as caught:
+                _run(_M.upgrade, db.session)
+            db.session.rollback()
+            assert f"ids [{row.id}]" in str(caught.value)
+            assert "hidden row(s) hold a recorded payment or purchase" in (
+                str(caught.value)
+            )
+            assert _keys(db.session) == _BEFORE
+
+    def test_a_hidden_transfer_leg_holding_its_payment_does_not_refuse(
+        self, app, db, seed_user,
+    ):
+        """A soft-deleted transfer's leg holding its payment is BAL-532's, not this refusal's.
+
+        The developer's follow-up to R-CC82 ("Non-transfer rows"): the
+        transfer's soft delete still makes this state after the release, so
+        the upgrade does not stop over it.  A settled $100.00 transfer, the
+        transfer and both shadows flagged hidden with their payments in place.
+        """
+        with app.app_context():
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "R-CC82 Savings",
+            )
+            db.session.commit()
+            transfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_user["bootstrap_period"], amount=Decimal("100.00"),
+            )
+            db.session.commit()
+            _run(_M.downgrade, db.session)
+            db.session.execute(
+                text("UPDATE budget.transactions SET is_deleted = TRUE "
+                     "WHERE transfer_id = :t"),
+                {"t": transfer.id},
+            )
+            db.session.execute(
+                text("UPDATE budget.transfers SET is_deleted = TRUE "
+                     "WHERE id = :t"),
+                {"t": transfer.id},
+            )
+            db.session.commit()
+            held = db.session.execute(
+                text("SELECT count(*) FROM budget.transaction_entries e "
+                     "JOIN budget.transactions t ON t.id = e.transaction_id "
+                     "WHERE t.transfer_id = :t AND t.is_deleted"),
+                {"t": transfer.id},
+            ).scalar()
+            assert held == 2
+            _run(_M.upgrade, db.session)
+            assert _keys(db.session) == _AT_HEAD

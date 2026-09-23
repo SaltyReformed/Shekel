@@ -11,8 +11,9 @@ exactly as it found it and asks.
 **Until plan step R10-a this deleted every auto-generated row in the window and
 generated replacements** (ruling **R-R19**, finding **N-292**).  That was safe
 only while a generated row was a pure projection of ``(template, period)``, and
-it has not been one for a long time: ``transaction_entries`` CASCADE from their
-parent, so an edit as small as a rename destroyed the PURCHASES recorded
+it has not been one for a long time: ``transaction_entries`` CASCADED from their
+parent (until plan step ``credit_card:CC-5-4a-4``), so an edit as small as a
+rename destroyed the PURCHASES recorded
 against a part-spent envelope -- measured on a production clone at 3 records
 worth ``$499.82``, taken with no prompt and an ``overridden_conflict_count`` of
 0.  It also dropped ``notes``, ``is_envelope``, ``companion_visible``,
@@ -76,7 +77,8 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     **Until plan step R10-a this deleted every auto-generated row in the window
     and generated replacements**, which was safe only while a generated row was
     a pure projection of ``(template, period)``.  It has not been one for a
-    long time: ``transaction_entries`` CASCADE from their parent, so the sweep
+    long time: ``transaction_entries`` CASCADED from their parent (until plan
+    step ``credit_card:CC-5-4a-4``), so the sweep
     destroyed the PURCHASES recorded against a part-spent envelope -- measured
     on a production clone at 3 records worth ``$499.82``, taken silently by an
     edit as small as a rename, with ``overridden_conflict_count`` reporting 0.
@@ -146,7 +148,8 @@ def _rows_holding_owner_records(existing) -> set[int]:
     "The owner's own records" is what finding **N-292** is about: a generated
     row is not a pure projection of ``(template, period)``, and the columns
     below are the ones a regeneration cannot reconstruct.  Purchases are the
-    costly one -- ``transaction_entries`` CASCADE from their parent, so the old
+    costly one -- ``transaction_entries`` CASCADED from their parent (until plan
+    step ``credit_card:CC-5-4a-4``), so the old
     delete-and-recreate sweep destroyed them, measured at 3 records worth
     ``$499.82`` on one live row.
 

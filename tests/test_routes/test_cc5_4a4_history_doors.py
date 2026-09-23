@@ -23,6 +23,7 @@ the text.
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from decimal import Decimal
 
@@ -52,6 +53,7 @@ from app.services.pay_period_locks import (
     classify_schedule_locks,
 )
 from app.services.statement_match import accept_match, matched_subjects
+from app.utils.archive_helpers import HeldMovements
 from tests._test_helpers import (
     add_entry,
     create_account_of_type,
@@ -536,10 +538,44 @@ class TestTheRowDoorsSoftArm:
             assert line.id not in matched_subjects(seed_user["account"].id).lines
             assert _settled_cash(seed_user) == cash_with_purchase + Decimal("40.00")
 
+    def test_the_rendered_dialog_names_the_line_it_frees(
+        self, app, db, auth_client, seed_user,
+    ):
+        """R-CC75's dialog half, graded on the card the owner reads (review 1, L5).
+
+        The delete button's ``hx-confirm`` on the recurring occurrence's card
+        names the KROGER line the press frees, beside R-CC83's sentence.
+        """
+        with app.app_context():
+            _template, row, _created, line = _recurring_groceries_holding_kroger(
+                seed_user,
+            )
+            html = auth_client.get(f"/transactions/{row.id}/full-edit").data.decode()
+            confirm = re.search(
+                r'hx-delete="/transactions/' + str(row.id)
+                + r'"[^>]*?hx-confirm="([^"]*)"',
+                html, flags=re.S,
+            )
+            assert confirm is not None
+            question = confirm.group(1)
+            freed = (
+                f"{line.posted_on.month}/{line.posted_on.day} KROGER -$40.00"
+            )
+            assert "This occurrence stays deleted" in question
+            assert (
+                "withdraws 1 accepted match, so 1 bank line is unexplained "
+                f"again on your statement screen: {freed}"
+            ) in question
+
     def test_its_definition_then_deletes_and_its_period_does_not_lock(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """A hidden row never holds money, so nothing refuses over one."""
+        """A row the occurrence delete hides holds no money, so nothing refuses over it.
+
+        What THIS door leaves (ruling R-CC75).  A row hidden before this
+        release still holding one refuses the migration (R-CC82); a transfer
+        leg the transfer's soft delete hides is BAL-532's.
+        """
         with app.app_context():
             periods = seed_periods_today
             template = make_expense_template(
@@ -566,3 +602,50 @@ class TestTheRowDoorsSoftArm:
             assert _flashes(auth_client) == [
                 "Recurring transaction 'Gas' permanently deleted.",
             ]
+
+
+class TestTheSentencesCountWhatTheyName:
+    """Several holding rows get a plural sentence (review 1, finding L6).
+
+    Ruling R-CC66 ruled the singular -- "the row holding it stays on your
+    budget", "delete it from its row first" -- and the plural branches below
+    are this leaf's own: "them" had no plural antecedent after "holds a
+    recorded purchase", and "delete it" named one row among several.
+    """
+
+    @pytest.mark.parametrize(("payment", "purchase", "named"), [
+        (False, True, False),
+        (False, True, True),
+        (True, False, False),
+        (True, True, False),
+    ])
+    def test_several_kept_rows_name_what_they_hold_in_the_plural(
+        self, payment, purchase, named,
+    ):
+        """Two live rows: the clause names the kind in the plural either way."""
+        kinds = {
+            (False, True): "recorded purchases",
+            (True, False): "recorded payments",
+            (True, True): "recorded payments and purchases",
+        }[(payment, purchase)]
+        held = HeldMovements(payment=payment, purchase=purchase, live_rows=2)
+        assert held.stays("row", named=named) == (
+            f"the 2 rows holding {kinds} stay on your budget"
+        )
+
+    def test_one_kept_row_refers_back_or_names_it(self):
+        """One live row keeps R-CC66's own shape, named or referred back to."""
+        held = HeldMovements(payment=False, purchase=True, live_rows=1)
+        assert held.stays("transfer", named=False) == (
+            "the transfer holding it stays on your budget"
+        )
+        assert held.stays("row", named=True) == (
+            "the row holding a recorded purchase stays on your budget"
+        )
+
+    def test_a_reset_blocked_by_several_rows_says_delete_each(self):
+        """Three holding rows: 'delete each from its row first'."""
+        assert str(PayPeriodResetBlocked(holding_count=3)).startswith(
+            "Cannot reset the schedule: 3 row(s) hold a recorded payment or "
+            "purchase; delete each from its row first."
+        )

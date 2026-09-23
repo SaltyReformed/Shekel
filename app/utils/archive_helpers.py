@@ -52,20 +52,36 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 
 
+def holds_a_movement():
+    """Return the clause selecting a row that holds a payment or purchase.
+
+    **The ONE spelling of "does this row hold a movement"** (CC-5-4a-4's
+    first review, L4): the archives' :func:`holds_nothing` negates it, the
+    transfer archive's :func:`transfer_holds_nothing` asks it of each leg,
+    and the pay-period lock and reset gate
+    (``pay_period_locks``, ``pay_period_gates``) filter on it.  The
+    relationship's own ``EXISTS`` over ``budget.transaction_entries``, hidden
+    rows included -- a row's ``is_deleted`` does not change what it holds.  A
+    function rather than a module constant: building a relationship's clause
+    configures the mappers, which an import must not.
+
+    Returns:
+        An ``EXISTS`` clause correlated to ``Transaction``.
+    """
+    return Transaction.entries.any()
+
+
 def holds_nothing():
     """Return the clause that keeps every row holding a movement OUT of a scope.
 
     The archives' (ruling **R-CC63**: "Archive hides only rows that hold
-    nothing"), added to the ``Transaction`` query a bulk soft-delete runs over.
-    The relationship's own ``EXISTS`` over ``budget.transaction_entries``, so
-    it and the ``*_holding_movements`` family below ask one question of one
-    table.  A function rather than a module constant: building a
-    relationship's clause configures the mappers, which an import must not.
+    nothing"), added to the ``Transaction`` query a bulk soft-delete runs
+    over: :func:`holds_a_movement`, negated.
 
     Returns:
         A ``NOT EXISTS`` clause correlated to ``Transaction``.
     """
-    return ~Transaction.entries.any()
+    return ~holds_a_movement()
 
 
 def transfer_holds_nothing():
@@ -73,13 +89,12 @@ def transfer_holds_nothing():
 
     A transfer's money is its two shadows' movements, so the transfer archive
     keeps a transfer either of whose legs holds a payment (ruling **R-CC65**)
-    -- the same ``EXISTS`` over ``budget.transaction_entries``, reached
-    through the shadows.
+    -- :func:`holds_a_movement`, reached through the shadows.
 
     Returns:
         A ``NOT EXISTS`` clause correlated to ``Transfer``.
     """
-    return ~Transfer.shadow_transactions.any(Transaction.entries.any())
+    return ~Transfer.shadow_transactions.any(holds_a_movement())
 
 
 @dataclass(frozen=True)
@@ -127,8 +142,10 @@ class HeldMovements:
 
         Args:
             thing: What a holding row is to the owner ("row", "transfer").
-            named: Say what it holds (``True``), or refer back with it /
-                them (``False``).
+            named: Say what it holds (``True``), or refer back with "it"
+                (``False``).  Several rows always name it, in the plural:
+                the sentence before them said "a recorded purchase", which
+                "them" cannot refer back to.
 
         Returns:
             The clause, without a capital or a full stop.
@@ -138,7 +155,10 @@ class HeldMovements:
         if self.live_rows == 1:
             what = self.noun if named else "it"
             return f"the {thing} holding {what} stays on your budget"
-        what = self.noun if named else "them"
+        if self.payment and self.purchase:
+            what = "recorded payments and purchases"
+        else:
+            what = "recorded payments" if self.payment else "recorded purchases"
         return (
             f"the {self.live_rows} {thing}s holding {what} stay on your budget"
         )
@@ -215,11 +235,30 @@ def transfer_template_holding_movements(template_id: int) -> HeldMovements:
     Returns:
         Its legs' :class:`HeldMovements`; falsy when none holds one.
     """
+    return transfers_holding_movements(
+        Transfer.transfer_template_id == template_id,
+    )
+
+
+def transfers_holding_movements(*transfer_scope) -> HeldMovements:
+    """Return what the legs of the transfers matching *transfer_scope* hold.
+
+    **The ONE spelling of a transfer's legs as a row scope** (CC-5-4a-4's
+    first review, L4): the recurring-transfer permanent delete's refusal
+    (:func:`transfer_template_holding_movements`) and the transfer archive's
+    receipt (``routes/transfers/lifecycle._archive``) both ask it.  Counted by
+    TRANSFER, so a transfer whose two legs each hold its payment is one kept
+    transfer to the owner.
+
+    Args:
+        *transfer_scope: ``Transfer`` filter clauses.
+
+    Returns:
+        The legs' :class:`HeldMovements`; falsy when none holds one.
+    """
     return rows_holding_movements(
         Transaction.transfer_id.in_(
-            db.session.query(Transfer.id).filter(
-                Transfer.transfer_template_id == template_id,
-            )
+            db.session.query(Transfer.id).filter(*transfer_scope)
         ),
         counted_by=Transaction.transfer_id,
     )
@@ -484,8 +523,9 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     refused a recurring one), so a movement on this account under a row that
     is NEITHER -- a plan item that lives elsewhere and whose money crossed
     here -- is what this counts, whatever its row's ``is_deleted`` says: a
-    soft-deleted checking envelope keeps its card swipe, the row is not
-    checking's ghost to hard-delete, and the swipe still names the card.  A
+    checking envelope soft-deleted before ruling **R-CC75** (whose delete now
+    empties the row) may still hold its card swipe, the row is not checking's
+    ghost to hard-delete, and the swipe still names the card.  A
     movement under a row the cleanup DOES remove is
     :func:`account_holding_movements`' (plan step ``credit_card:CC-5-4a-4``):
     until that step a ghost's movement cascaded with it

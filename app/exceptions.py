@@ -423,9 +423,10 @@ class PayPeriodResetBlocked(ShekelError):
                 f"instead."
             )
         else:
+            each = "it" if holding_count == 1 else "each"
             message = (
                 f"Cannot reset the schedule: {holding_count} row(s) hold a "
-                f"recorded payment or purchase; delete it from its row "
+                f"recorded payment or purchase; delete {each} from its row "
                 f"first.  Reset rebuilds your entire schedule and would "
                 f"delete every row with it."
             )

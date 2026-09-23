@@ -989,7 +989,7 @@ class TestTransactionCRUD:
     ):
         """DELETE /transactions/<id> hard-deletes a one-off, and its definition with it.
 
-        The fork is ``recurs`` (``_delete._leaves_the_table``): a row that
+        The fork is ``recurs`` (``_delete._leaves_the_books``): a row that
         does not recur leaves the table, and a rule-less definition with no
         row defines nothing, so it goes in the same act (ruling R-BAL27).
         Re-aimed at plan step balance:X-bi-7c: the hand-built link-less row
@@ -1225,7 +1225,7 @@ class TestTransactionCRUD:
                 f"/transactions/{txn.id}/full-edit",
             ).data.decode()
 
-            assert "This occurrence will not come back" in html
+            assert "This occurrence stays deleted" in html
             assert "This cannot be undone." not in html
 
     def test_the_card_withholds_the_delete_from_a_CC_payback(

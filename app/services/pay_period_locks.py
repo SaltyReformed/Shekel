@@ -69,6 +69,7 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.services.pay_calendar import PayCalendar
+from app.utils import archive_helpers
 from app.utils.balance_predicates import settled_status_ids
 
 logger = logging.getLogger(__name__)
@@ -257,7 +258,7 @@ def _period_ids_holding_movement(period_ids: list[int]) -> set[int]:
     """
     rows = db.session.query(Transaction.pay_period_id).filter(
         Transaction.pay_period_id.in_(period_ids),
-        Transaction.entries.any(),
+        archive_helpers.holds_a_movement(),
     ).distinct().all()
     return {row[0] for row in rows}
 

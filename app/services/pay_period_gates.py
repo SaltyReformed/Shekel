@@ -57,6 +57,7 @@ from app.models.transfer import Transfer
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.pay_period_locks import PeriodLockReason
+from app.utils import archive_helpers
 from app.utils.balance_predicates import (
     is_projected,
     settled_status_ids,
@@ -475,7 +476,7 @@ def movement_holding_row_count(user_id: int) -> int:
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .filter(
             PayPeriod.user_id == user_id,
-            Transaction.entries.any(),
+            archive_helpers.holds_a_movement(),
         )
         .count()
     )

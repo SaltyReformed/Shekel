@@ -29,10 +29,11 @@ purchases off through the one act exactly as its hard delete does (ruling
 **R-CC75**, developer 2026-09-23: *"Deleting the occurrence takes its payments
 and purchases off the books through the one removal act, exactly as deleting
 a one-off does"*), so an act the tombstone empties is withdrawn here and its
-line is unexplained again (``transaction_service._delete._leaves_the_table``'s
-EMPTIED set).  Until that ruling it withdrew nothing, on the argument that a
-shipped button reverses a soft delete; what that left was a hidden row holding
-money the balance does not count, under a match that read explained.  A
+line is unexplained again (``transaction_service._delete._leaves_the_books``;
+the tombstone counts as leaving, ruling **R-CC84**).  Until R-CC75 it withdrew
+nothing, on the argument that a shipped button reverses a soft delete; what
+that left was a hidden row holding money the balance does not count, under a
+match that read explained.  A
 TRANSFER's soft delete still withdraws nothing
 (``transfer_service.delete_transfer``'s ``if not soft``): its restore paths
 (``transfers.templates``' un-archive through ``restore_transfer``, and
@@ -97,9 +98,13 @@ empty an act behind this module's back.  The read-time predicate that
 stopped counting such an act's line as explained
 (``statement_match._candidates.act_still_names_a_row``) is DELETED with it:
 an act naming no app row is unrepresentable rather than filtered.  What this
-module adds is the CLEANUP and the DISCLOSURE at the doors the owner
-actually presses: the act the press empties goes, and the dialog names the
-lines it frees.
+module adds is the CLEANUP and the DISCLOSURE: the act the press empties goes,
+and a door that discloses names the lines it frees before the press -- the row
+delete (ruling **R-CC75**) and the two popovers (**R-CC56**, **R-CC59**).
+The grid's one-click Mark Paid withdraws and logs by ruling (**R-CC56**); the
+reconcile panel, carry-forward, the purchase delete and the Credit doors
+withdraw and log with no caption until plan step ``credit_card:CC-5-4a-5``
+(**R-CC76**, **R-CC80**; findings **CC-364**, **CC-367**).
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -370,11 +375,12 @@ def _summarise(
 
 
 def _subject_ids(rows) -> "tuple[set[int], set[int]]":
-    """Return every row and purchase id that leaves the table with *rows*.
+    """Return the ids of *rows* and of every movement they hold.
 
-    **Its purchases go with it, and so does its PAYMENT**: a hard delete
-    takes every entry under the row -- through the act that takes a movement
-    off the books (:mod:`app.services.movement_removal`, plan step
+    **Its purchases leave the books, and so does its PAYMENT**: a delete
+    takes every entry under the row, on either arm (ruling **R-CC75**) --
+    through the act that takes a movement off the books
+    (:mod:`app.services.movement_removal`, plan step
     ``credit_card:CC-5-4a-3``) before the row itself goes -- and a match
     naming one loses that member -- a purchase's member, or the covering
     movement's that every act names for a settled row (ruling **R-CC43**:
@@ -384,10 +390,13 @@ def _subject_ids(rows) -> "tuple[set[int], set[int]]":
     :func:`_summarise`: an act's creations may name a row.
 
     Args:
-        rows: The transactions about to be deleted, each with ``entries``
-            accessible.  The delete verb passes the row AND its live CC-payback
-            chain, because those go down in the same commit and a dialog that
-            named only the first would understate the press.
+        rows: The transactions whose movements the press takes off, each with
+            ``entries`` accessible -- the row AND its live CC-payback chain,
+            because those go down in the same commit and a dialog that named
+            only the first would understate the press.  A recurring row is
+            among them though it stays in the table as an emptied tombstone
+            (ruling **R-CC75**): the owner deleted it, so it counts as
+            leaving (ruling **R-CC84**).
 
     Returns:
         ``(transaction_ids, entry_ids)``.
@@ -458,32 +467,26 @@ def _withdraw(
     )
 
 
-def pending_for_rows(rows, *, rows_leaving=None) -> MatchWithdrawal:
+def pending_for_rows(rows) -> MatchWithdrawal:
     """Return what deleting *rows* would withdraw, WITHOUT withdrawing it.
 
     The read half, for the confirm dialog on a delete control: what
     :func:`app.services.movement_removal.remove_movements` withdraws when
-    the delete verb hands it every movement of *rows* with *rows_leaving*
-    leaving -- the act's own two inputs, so the dialog and the press are one
-    derivation.  Runs on a popover render: one member query always, and the
-    act and line queries only where an act actually names one of these
-    subjects.
+    the delete verb hands it every movement of *rows* with *rows* leaving.
+    A recurring row's tombstone is among them and counts as leaving (ruling
+    **R-CC84**: the owner deleted it, so no creation naming it is reported
+    as kept).  Runs on a popover render: one member query always, and the act
+    and line queries only where an act actually names one of these subjects.
 
     Args:
-        rows: The transactions whose movements the press takes off -- the
-            row the owner pressed AND everything that goes down with it.
-        rows_leaving: Those of *rows* that leave the TABLE, when not all of
-            them do: a recurring row's tombstone is emptied but stays
-            (ruling **R-CC75**), so a creation naming it is reported as
-            kept.  ``None`` -- every row leaves.
+        rows: The transactions a screen is offering to delete -- the row the
+            owner pressed AND everything that goes down with it.
 
     Returns:
         Its :class:`MatchWithdrawal`.  All zeroes when no act would be emptied,
         which is every row on a book nobody has matched.
     """
     transaction_ids, entry_ids = _subject_ids(rows)
-    if rows_leaving is not None:
-        transaction_ids = {row.id for row in rows_leaving}
     return _summarise(
         _acts_emptied_by(entry_ids), transaction_ids, entry_ids,
     )

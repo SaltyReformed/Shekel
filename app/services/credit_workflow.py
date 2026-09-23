@@ -262,11 +262,13 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     Keyed on :func:`get_active_payback` rather than Credit status
     because entry-level credit sources carry a live payback while their
     own ``status_id`` is NOT Credit -- a status guard would miss them.
-    Entry links (``TransactionEntry.credit_payback_id``) are severed
-    before the delete -- a sever that finds nothing on the one caller's
-    path, which has taken every movement of the source off the books first
-    on both of its arms (ruling **R-CC75**: a soft-deleted source no longer
-    keeps its entries).  No-op
+    **It severs no entry link, because none is left to sever**: the one
+    caller has taken every movement of the source and of each level off
+    the books through the one removal act first, on both of its arms
+    (plan step ``credit_card:CC-5-4a-4``; ruling **R-CC75**: a soft-deleted
+    source no longer keeps its entries).  A link a direct caller leaves
+    in place is ``TransactionEntry.credit_payback_id``'s ``ON DELETE SET
+    NULL`` to clear.  No-op
     (and no log event) when no live payback exists -- the common case for
     every ordinary delete.
 
@@ -302,16 +304,6 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     for depth in range(len(chain) - 1, -1, -1):
         payback = chain[depth]
         parent = txn if depth == 0 else chain[depth - 1]
-        # Sever entry links before the delete (mirrors sync_entry_payback's
-        # delete branch).  On this function's one caller's path there is
-        # nothing left to sever: ``transaction_service._delete`` has already
-        # taken every movement of the source and of each level off the books
-        # through the one removal act, on BOTH of its arms (plan step
-        # ``credit_card:CC-5-4a-4``: a row's entries no longer cascade with
-        # it, and ruling R-CC75: a soft-deleted source no longer keeps them).
-        for entry in parent.entries:
-            if entry.credit_payback_id == payback.id:
-                entry.credit_payback_id = None
         # Reverse this level's postings while ``journal_entries.transaction_id``
         # still links them.  Idempotent no-op for a still-Projected payback.
         posting_service.reverse_postings_before_delete(payback)
