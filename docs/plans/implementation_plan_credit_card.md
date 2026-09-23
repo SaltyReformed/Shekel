@@ -195,13 +195,10 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       link and the bill does not, so `status_seam.record_clearing` learns which account's statement
       it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
       package, announce-first.
-- [ ] **CC-5-5** `fix(cards): one sign for every balance` -- `R-CC47` (re-scoping `R-CC41`; the
-      sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
-      minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
-      `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
-      flip), and given 2026-09-23 5d (the debt goals the flip's goal question became,
-      `R-CC69`..`R-CC73`); ticks with its last leaf. `$0.00` on production's net-worth figures (both
-      liabilities are configured loans).
+- [x] **CC-5-5** `8f8b056d` -- `R-CC47` (re-scoping `R-CC41`; the sixth site `R-CC48`): every
+      balance is what the account HOLDS, negative when owed, and owed is minus it; the DECOMPOSED
+      parent, split 2026-09-22 (`R-CC50` as amended by `R-CC52`) into 5a, 5b and 5c, and given
+      2026-09-23 5d (`R-CC69`..`R-CC73`); ticked with 5d.
   - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
         into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
         non-loan liability's owed amount floored at zero, summed (`R-CC49`);
@@ -220,33 +217,12 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         words (`R-CC68`); an anchor save answers its opener's display (`R-CC74`, `R-CC77`, `R-CC78`)
         from the door's report (`R-CC79`, `R-CC85`). Rule-5 re-signs confirmed; closed **CC-354**,
         **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
-- [ ] **CC-5-5d** `feat(goals): a goal on a debt is a milestone to get under` -- `R-CC69`..`R-CC73`.
-      Asked at 5c what a savings goal on a debt means, the developer refused all three readings
-      offered (`R-CC69`) and ruled a milestone to get UNDER: a fixed amount only (no income-relative
-      'months of salary' mode), below what the debt owes when the goal is saved (the Van Loan: under
-      `$10,000` while it owes `$14,745.51`). Progress runs from what it owed when the goal was set
-      down to the target (`R-CC70`: `0.00%` today, `39.24%` on 2027-01-01 with `$1,862.31` of
-      `$4,745.51` paid down, `100%` at `$10,000`); that start is RE-READ from the books each time,
-      what they now say it owed on the goal's set day (its `created_at`), never stored (`R-CC71`: a
-      back-dated correction moves it; a debt whose early history is missing reads its opening). A
-      debt goal may target `$0.00` while a savings goal still needs more:
-      `ck_savings_goals_positive_target` (`target_amount > 0`) relaxed by an Alembic migration, the
-      app refusing `$0.00` on a savings goal (`R-CC72`). The card shows when the debt is projected
-      to fall below the target, from the forward figures the loan page reads, and whether that is on
-      pace for the goal's date, with no required-per-period figure (`R-CC73`: July 2027) and no
-      manual per-period field (`R-CC90`). The readers: `routes/savings.py` `_goal_form_context`
-      (every active account, debts included),
-      `savings_dashboard_service/_goals._goal_account_balance` (since 5c a debt's HELD balance, so
-      `percent_complete` holds a goal on a loan at `0%`) and
-      `savings_goal_service.calculate_trajectory`. A debt goal on a card or any other non-loan debt
-      reads its tile's figure for its start, its current figure and the target check (`R-CC88`).
-      **CC-371** (an archived debt's drawer figure is the day's balance while a live non-loan tile
-      shows its current period's end) is NOT yet ruled: `R-CC67` says what it owes today, and the
-      question is with the developer, asked by the CC-5-5d lane 2026-09-23. The goal move is
-      answered by `R-CC87`: refused, and re-typing an account across savings and debt is refused
-      while a goal is on it. Its OWN PR and OWN release after 5b and 5c's (the coordinator's call),
-      the migration re-parented at merge. `$0.00` on production: its one goal is on the Money
-      Market. Closes **CC-360**, **CC-371**.
+  - [x] **CC-5-5d** `8f8b056d` -- a goal on a DEBT is a milestone to get under (`R-CC69`..`R-CC73`):
+        ONE goal door, `savings_goal_door.judge_goal_save` (`R-CC87`, `R-CC90`, `R-CC93`); every
+        debt figure by the tile's one rule, `_tile.tile_balance_on` (`R-CC88`, `R-CC95`), a
+        card-style goal's start recorded as `start_owed` (`R-CC91`); a Delete goal button
+        (`R-CC94`); migration `764461215480`. Rule-5 re-expressions confirmed; closed **CC-360**,
+        **CC-371**; suite 15368/0.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
