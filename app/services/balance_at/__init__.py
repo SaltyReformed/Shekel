@@ -91,17 +91,21 @@ kill.
   the per-assertion plug that telescopes.  It is the post-cutover balance
   function evaluated today, so what it measures is what plan step X-f3c-5's
   flip will leave unexplained.  See :mod:`._outstanding`.
-* The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
-  owed magnitude at a list of FORWARD calendar dates in one resolution pass --
+* The LIABILITY entry (:func:`liability_owed_at_dates`) answers what every
+  debt OWES at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
   maps nor the scalar can serve without re-resolving each loan per date.  Since
   plan step credit_card:CC-1 it is kind-blind: every liability's future is the
   kind-correct multi-date read (``_kind_correct.balance_at_dates``, which the
   scalar is a one-date reading of), so a Credit Card's projected balance reaches
-  the horizon instead of holding flat.  See :mod:`._liability`, which also
-  holds the seam's ONE sign flip, :func:`owed` (what an account owes is minus
-  the balance it holds; ruling R-CC29's flip, moved here from
-  ``card_statement`` at plan step credit_card:CC-5-5a, ruling R-CC47).
+  the horizon instead of holding flat.  See :mod:`._liability`.  The ONE sign
+  flip (what an account owes is minus the balance it holds; ruling R-CC29's
+  flip) is NOT a seam export: it was one from plan step credit_card:CC-5-5a
+  (ruling R-CC47) until CC-5-5b moved it to
+  :func:`app.services.liability_sign.owed`, beside the crossing the balance
+  doors read, and outside the seam so the seam's own configured-loan arms can
+  read it without a circular import.  They do since CC-5-5c: every balance
+  this seam reports is HELD, a configured loan's included (ruling R-CC47).
 * The LOAN-FIGURES entry (:func:`loan_figures`) answers everything a loan tile
   wants BESIDE its balance -- the payment, the rate, the payoff date, whether it
   is retired -- and deliberately carries NO balance, so a consumer holding it
@@ -221,15 +225,17 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.  All money
 is :class:`~decimal.Decimal`; ``float`` only at a serialization boundary.
 
 Liability classification is NOT a balance concern: the balance MAPS here are
-balances only, and the net-worth reduction lives with its consumers in
-``savings_dashboard_service``.  Two of them turn a signed balance into an owed
-MAGNITUDE with ``abs`` -- ``_net_worth.compute_net_worth_today`` (the hero) and
-``_net_worth._sum_composition_at_period`` (per-period, banded; the net-worth
-series derives assets / liabilities / net from those bands).  The third,
-``_horizon._liability_band``, does NOT: it takes its magnitudes from
-:func:`liability_owed_at_dates` below, which is the one seam entry that accepts
-a caller's already-classified liability set and returns owed magnitudes on that
-same ``abs`` convention.  All three classify asset-vs-liability through the one
+balances only, every one HELD (negative when owed; ruling R-CC47), and the
+net-worth reduction lives with its consumers in ``savings_dashboard_service``.
+Net worth is the plain sum of those balances -- no sign branch -- and what a
+liability OWES is :func:`app.services.liability_sign.owed` of its balance,
+which ``_net_worth.compute_net_worth_today`` (the hero's liability total) and
+``_net_worth._sum_composition_at_period`` (the per-period liability band) read,
+and which :func:`liability_owed_at_dates` below applies for
+``_horizon._liability_band``.  Until plan step credit_card:CC-5-5c all three
+took ``abs`` instead, because a configured loan reported owed and every other
+account held, and a card holding a credit read as debt (ledger row CC-354).
+All three classify asset-vs-liability through the one
 ``account_category.is_liability_account`` home.
 """
 
@@ -270,7 +276,7 @@ from ._kind_correct import (
     build_maps,
     investment_growth_since_anchor,
 )
-from ._liability import liability_owed_at_dates, owed
+from ._liability import liability_owed_at_dates
 from ._resolution import is_standing_loan_payment
 from ._loan_figures import (
     LoanFigures,
@@ -375,7 +381,6 @@ __all__ = [
     "interest_projection_for_account",
     "investment_growth_since_anchor",
     "liability_owed_at_dates",
-    "owed",
     "is_standing_loan_payment",
     "loan_closing_date",
     "loan_figures",

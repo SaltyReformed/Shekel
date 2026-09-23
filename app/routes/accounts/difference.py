@@ -21,11 +21,18 @@ prose off a measured claim.  X-f2-a's own commit predicted this one: its
 difference-preview family is what took ``anchor`` from 916 to the ceiling in
 the first place.
 
-The bodies are unchanged.  Two names stayed in ``anchor`` and are imported
-here rather than copied: ``LOAN_ANCHOR_REFUSAL`` is the write door's own
-copy for "a loan's balance is not a cash anchor" (ruling D4 / step A1, finding
-B-15), and a message with readers in two modules is part of the interface --
-finding **N-33**'s shape stated rather than fenced by convention.
+The bodies are unchanged.  ``LOAN_ANCHOR_REFUSAL`` is imported rather than
+copied -- the one sentence for "a loan's balance is not a cash anchor" (ruling
+D4 / step A1, finding B-15), and a message with readers in two modules is part
+of the interface, finding **N-33**'s shape stated rather than fenced by
+convention.  It is read from :mod:`app.routes.accounts._door_meaning`, not from
+``anchor``, by ruling **R-CC78**: importing ``anchor`` here closed a loop once
+``anchor`` imported the cash page's draw, through ``detail`` and
+``outstanding`` back to this module.  Plan step
+credit_card:CC-5-5b's stale-form rule (ruling R-CC61) is not in ``anchor``: the
+save, this preview and the books-opening POST all read it from
+:mod:`app.routes.accounts._door_meaning`, one predicate with a sentence for
+each surface.
 
 The KIND TEST is not imported, and that is this step's review talking.  The
 cut first promoted ``anchor._is_amortizing`` to public so both modules could
@@ -48,8 +55,9 @@ from flask_login import current_user
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL
-from app.services import anchor_service, balance_at
+from app.routes.accounts._door_meaning import door_meaning_preview_refusal
+from app.routes.accounts._door_meaning import LOAN_ANCHOR_REFUSAL
+from app.services import anchor_service, balance_at, liability_sign
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -64,7 +72,7 @@ from app.utils.auth_helpers import get_or_404, require_owner
 _UNREADABLE_DAY = "Enter a date to compare this balance against."
 
 
-def _preview_submission() -> tuple[Decimal | None, date | None, str | None]:
+def _preview_submission() -> tuple[Decimal | None, date | None, str | None, bool]:
     """Parse the editor's two boxes LENIENTLY, through the write door's schema.
 
     The preview fires while the user is still typing, so it must answer a
@@ -99,9 +107,12 @@ def _preview_submission() -> tuple[Decimal | None, date | None, str | None]:
     figure with the wrong day -- this arc's own root defect, rendered.
 
     Returns:
-        ``(recorded, submitted_day, refusal)``.  ``refusal`` is ``None`` unless
-        the DATE box holds something unparseable, in which case both figures are
-        ``None`` and the message is ready to render.
+        ``(recorded, submitted_day, refusal, asked_owed)``.  ``refusal`` is
+        ``None`` unless the DATE box holds something unparseable, in which case
+        both figures are ``None`` and the message is ready to render.
+        ``asked_owed`` is what the form says its box asked (plan step
+        credit_card:CC-5-5b, ruling R-CC61) -- read here by the same schema the
+        save reads it by.
     """
     raw = dict(request.args)
     errors = _anchor_schema.validate(raw)
@@ -111,16 +122,22 @@ def _preview_submission() -> tuple[Decimal | None, date | None, str | None]:
         # "Balance as of".  The editor's own rejection surface can afford the
         # field name because it re-renders the labelled input beside it; a
         # caption floating under the form cannot.
-        return None, None, _UNREADABLE_DAY
+        return None, None, _UNREADABLE_DAY, False
 
     if "anchor_balance" in errors:
         raw.pop("anchor_balance", None)
+    # A mark that is not a boolean is a forged form, and dropped: absent reads
+    # as "the box asked for the balance", so on a liability the caller refuses
+    # it (ruling R-CC61) rather than ``load`` raising a 500 from a GET.
+    if "asks_owed" in errors:
+        raw.pop("asks_owed", None)
     data = _anchor_schema.load(raw, partial=("anchor_balance",))
     balance = data.get("anchor_balance")
     return (
         None if balance is None else Decimal(str(balance)),
         data.get("observed_on"),
         None,
+        data["asks_owed"],
     )
 
 
@@ -240,13 +257,20 @@ def _anchor_difference_context(account: Account) -> dict:
         The template context: ``refusal`` (str or ``None``), and when there is a
         comparison to draw, ``observed_on`` / ``records`` / ``recorded`` /
         ``difference`` / ``verdict``.  ``difference`` is ``None`` whenever there
-        is nothing to compare.
+        is nothing to compare.  The three figures are in the DOOR's language
+        (the amount owed, for a liability; plan step credit_card:CC-5-5b) and
+        ``verdict`` is decided on the HELD difference, so it means the same
+        thing on every account.
     """
     empty = {"refusal": None, "difference": None}
     if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return {"refusal": LOAN_ANCHOR_REFUSAL, "difference": None}
 
-    recorded, submitted_day, refusal = _preview_submission()
+    recorded, submitted_day, refusal, asked_owed = _preview_submission()
+    # Ruling R-CC61: the box was rendered under the other meaning, so the save
+    # this previews would be refused -- say so, in the preview's own words,
+    # rather than price the figure under a meaning the box never showed.
+    refusal = refusal or door_meaning_preview_refusal(account, asked_owed)
     if refusal is not None:
         return {"refusal": refusal, "difference": None}
     try:
@@ -264,13 +288,23 @@ def _anchor_difference_context(account: Account) -> dict:
     if records is None:
         return empty
 
-    difference = recorded - records
+    # **The comparison is HELD and the three figures are the door's** (plan
+    # step credit_card:CC-5-5b, ruling R-CC57).  A liability's box holds the
+    # amount OWED, so it crosses to the held sign the records are in -- the
+    # SAME crossing the save makes -- and the verdict reads the held difference
+    # exactly as it always has: a card whose records owe $1,000.00, typed as
+    # owing $1,200.00, is -1,200.00 - (-1,000.00) = -200.00, spend Shekel has
+    # not recorded.  What renders crosses back, so the owner reads $1,000.00 /
+    # $1,200.00 / $200.00 in the words they typed in.  An asset crosses
+    # nothing both ways.
+    acct_type = account.account_type
+    difference = liability_sign.held_balance(acct_type, recorded) - records
     return {
         "refusal": None,
         "observed_on": day,
-        "records": records,
+        "records": liability_sign.shown_figure(acct_type, records),
         "recorded": recorded,
-        "difference": difference,
+        "difference": liability_sign.shown_figure(acct_type, difference),
         "verdict": difference_verdict(difference),
     }
 

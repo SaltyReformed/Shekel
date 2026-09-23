@@ -412,42 +412,70 @@ def cockpit_section():
     )
 
 
+def render_cockpit_balance(account_id: int) -> str | None:
+    """Draw one account's cockpit balance cell, or ``None`` if the cockpit hides it.
+
+    The cockpit's DRAW (rulings R-CC74 / R-CC77, finding CC-365): the ONE
+    function behind :func:`cockpit_balance` -- the Cancel / Escape revert
+    ``accounts.anchor._anchor_revert_url`` maps ``revert=accounts`` to -- and
+    behind the anchor save opened from a cockpit card, so the saved cell and
+    the reverted one cannot differ.  They did: the save answered with the
+    grid's HELD cell, so a card owing $1,200.00 showed ``-$1,200.00`` until
+    ``balanceChanged`` redrew the section, because this cell shows what a debt
+    OWES (plan step credit_card:CC-5-5c).
+
+    Renders ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>``
+    cell the editor replaced -- with the SAME value the grid loop passes it
+    (plan step X-t1): the account's ``AccountProjection`` from the narrow
+    :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
+    producer, over a read pass this opens, as the GET always has.  It never
+    aborts, because the save calls it after its write has committed.
+
+    **It keys on the id, and the producer is the ownership gate**: the pass is
+    the current user's, so an id that is not among THEIR active accounts --
+    not found, not owned, or archived -- answers ``None``.  The save's
+    account is already ownership-checked; the GET needs no second lookup.
+
+    Args:
+        account_id: The account whose cell to draw.
+
+    Returns:
+        The rendered cell, or ``None`` when the account is not among the
+        owner's ACTIVE accounts -- which the GET answers with a 404 and the
+        save (archived between page load and now) with an empty cell.
+    """
+    projection = savings_dashboard_service.compute_account_balance_cell(
+        BalanceContext.build(current_user.id), account_id,
+    )
+    if projection is None:
+        return None
+    return render_template("savings/_cockpit_balance.html", ad=projection)
+
+
 @savings_bp.route("/savings/cockpit/<int:account_id>/balance")
 @require_owner
 def cockpit_balance(account_id):
     """HTMX partial: re-render one account's cockpit balance cell.
 
-    The Cancel / Escape (and 409-conflict retry) revert target for the
-    cockpit's per-card inline anchor editor: ``accounts._anchor_revert_url``
-    maps the editor's ``revert=accounts`` token here, mirroring how
-    ``revert=dashboard`` maps to ``dashboard.balance_section``.  Renders
-    ``savings/_cockpit_balance.html`` -- the ``#acct-balance-<id>`` cell the
-    editor replaced -- with the seam-derived balance from the
-    narrow :func:`~app.services.savings_dashboard_service.compute_account_balance_cell`
-    producer, so the reverted cell shows the exact figure the grid showed.
+    The Cancel / Escape revert target for the cockpit's per-card inline anchor
+    editor: ``accounts._anchor_revert_url`` maps the editor's
+    ``revert=accounts`` token here, mirroring how ``revert=dashboard`` maps to
+    ``dashboard.balance_section``.  The cell is :func:`render_cockpit_balance`'s
+    -- the draw a save opened from that card answers with too.
 
-    The producer is the IDOR + active gate (as ``balance_section``'s
-    producer is for the dashboard): it returns ``None`` -- a 404 -- for an
-    account that is not among the user's active accounts (not found, not
-    owned, or archived between page load and the revert), satisfying the
-    404-for-both security rule.  Non-HTMX requests redirect to the
-    dashboard page.
-
-    The partial is rendered with the SAME value the grid loop passes it (plan
-    step X-t1): the producer returns the account's ``AccountProjection``, so
-    the reverted cell and the cell it replaces read one object rather than two
-    dicts that have to agree.
+    The draw's ``None`` is the IDOR + active gate (as ``balance_section``'s
+    producer is for the dashboard): a 404 for an account that is not among the
+    user's active accounts (not found, not owned, or archived between page
+    load and the revert), satisfying the 404-for-both security rule.
+    Non-HTMX requests redirect to the dashboard page.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("savings.dashboard"))
 
-    projection = savings_dashboard_service.compute_account_balance_cell(
-        BalanceContext.build(current_user.id), account_id,
-    )
-    if projection is None:
+    cell = render_cockpit_balance(account_id)
+    if cell is None:
         abort(404)
-
-    return render_template("savings/_cockpit_balance.html", ad=projection)
+    return cell
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])
