@@ -583,7 +583,7 @@ REFUSED: "Only after 5c's design"; "Drop the wait".
 |---|---|---|---|---|---|---|
 | credit_card | CC-356 (`credit_card:CC-5-4a-1`'s tick review 2026-09-21, M3; the developer's R-CC46 text "the row/definition doors reported, not fixed") | -- | **A DEFINITION'S ACCOUNT MOVE RE-ATTRIBUTES A PROJECTED ROW THAT A PRE-4a-1 ROW MEMBER STILL NAMES, AND THE MEMBER KEY 500s.** Since **R-CC36** `recurrence_engine/_maintain.py` (`propagate_to_unruled_definition`, :404-447; :225-240) moves every Projected row's `account_id` with its definition; a ROW member recorded before CC-5-4a-1 (103 on the 2026-09-21 10:33 dump, the reverted acts shown as "no longer holding" among them) is held to the row's account by `fk_statement_match_members_transaction_account` (NO ACTION on update, `app/models/statement_match.py:281-286`), so the move raises `IntegrityError` where R-CC46 owes a withdrawal and a disclosure | `$0.00`; a 500 on a definition move over a matched Projected row (0 cards; 103 row members on production's shape) | **OPEN, born with an owner**: the re-key deletes the row-member shape whole, after which a definition move touches no member's subject (the payment stays where the money moved, **R-CC42**); sequenced there by the developer's R-CC46 text | CC-5-4a-2 |
 
-**CC-359** CLOSED at `credit_card:CC-5-4a-3` `175b192d` as NOT A DEFECT; it was never a row. Granted at CC-5-4a-2's review (L6) for `_release._remove`'s claim that the shared delete verb's withdrawal is a no-op, unverified for a row an act CREATED that later gained a purchase another act matched. Measured at 4a-3: adding a purchase does NOT move the row's `version_id` (2 -> 2, 3 -> 3), so the revision is not what holds it; `_release._container_survives`' content arm keeps a container that still holds a purchase, so releasing the first act never reaches the second. Pinned by `tests/test_services/test_statement_match/test_withdrawal.py::TestReleasingAnActDoesNotWithdrawTwice::test_a_purchase_ANOTHER_act_matched_keeps_the_container_and_that_act`, which failed when that content arm was deleted (4a-3's mutation log).
+**CC-359** CLOSED at `credit_card:CC-5-4a-3` `175b192d` as NOT A DEFECT; it was never a row. Granted at CC-5-4a-2's review (L6) for `_release._remove`'s claim that the shared delete verb's withdrawal is a no-op, unverified for a row an act CREATED that later gained a purchase another act matched. Measured at 4a-3: adding a purchase does NOT move the row's `version_id` (2 -> 2 on a minted envelope, 3 -> 3 on a reverted residual), so the revision is not what holds it; `_release._container_survives`' content arm keeps a container that still holds a purchase, so releasing the first act never reaches the second. Pinned for the CONTAINER case by `tests/test_services/test_statement_match/test_withdrawal.py::TestReleasingAnActDoesNotWithdrawTwice::test_a_purchase_ANOTHER_act_matched_keeps_the_container_and_that_act`, which failed when that content arm was deleted (4a-3's mutation log); the residual and income cases are held by the refusals `_release._remove` names (`entry_service._refusals._reject_settled_addition`; after a revert the undo's revision check and `_accept._reject_parent_and_its_own_purchase`; `create_entry`'s expense-only guard), with no pin of their own.
 
 ### CC-5-4a-2's rulings and confirmations, VERBATIM as picked (AskUserQuestion in the CC-5-4a-2 session shekel-0d, 2026-09-22)
 
@@ -758,7 +758,7 @@ moved -25.00 -> 0 (the balance $25.00 higher than the bank); the act was left ho
 P6 -- a matched Paid $120 Hotel bill reverted to Projected, then its template permanently deleted: the kept
 payment destroyed, the act left holding its line alone. Production census (17:06 dump `shekel_cc54a2_base`):
 284 acts, 0 stranded, 0 lineless; 1 non-settled row holds a movement (an un-dated purchase under template 19
-'Clothes', already refused permanent delete by its merchant rule); 0 future periods hold one; 0 matched
+'Clothes', already refused permanent delete by its merchant rule) [FALSE, measured at CC-5-4a-4's entry: template 19 has no merchant rule and its permanent delete is permitted; see CC-363]; 0 future periods hold one; 0 matched
 movements under a non-settled row.
 
 ##### Q1 "Root cause" -- PICKED (**R-CC54**): **"Root-cause design (Recommended)"**
@@ -783,14 +783,14 @@ pay-period deletes destroy payments and purchases as a side effect, judging safe
 by what a row holds. Measured: permanently deleting the one-off 'Home Improvement', whose $25.00 purchase was
 recorded from Checking's 1/5 bank line, erases the purchase, so Checking reads $25.00 higher than the bank, and
 the match is stranded. A matched $120 Hotel bill, reverted then template-deleted, loses its kept payment the
-same way. On production's 17:06 copy the rule changes nothing deletable today. Which design?"
+same way. On production's 17:06 copy the rule changes nothing deletable today. [FALSE, measured at CC-5-4a-4's entry: template 19 'Clothes' (no merchant rule, no settled row) holds movement 343, $107.57, under a row its permanent delete may erase, and its archive drops that purchase from the fold; see CC-363] Which design?"
 
 ##### Q2 "Sequencing" -- PICKED (**R-CC55**): **"Two leaves (Recommended)"**
 
 > CC-5-4a-3 builds part (1). CC-5-4a-2 then deploys with it, as R-CC51 requires, because the popover path is
 > the one R-CC51 is about. A next leaf (id from the coordinator) builds parts (2)+(3) with their migration and
 > deletes the check. Until that leaf ships, the bulk doors behave as today (the Home Improvement case stays
-> live, with 0 instances on production).
+> live, with 0 instances on production). [FALSE, measured at CC-5-4a-4's entry: template 19 'Clothes' is one live instance; see CC-363]
 
 Refused: *"One leaf, all three"* (CC-5-4a-3 builds (1), (2) and (3) with the migration, announced to the
 template, account and pay-period owners; CC-5-4a-2's release waits for all of it).
@@ -801,7 +801,7 @@ Measured before asking (scratch probe on the 4a-3 tree, deleted after): a $500 C
 marked Paid, its Checking leg's payment matched to a -$500 line; `transfer_service.update_transfer(...,
 figure=typed(0.00))` (the transfer popover's Actual box) -> acts 1 -> 0, the line unclaimed, both legs'
 covering movements gone. The transfer popover rendered no caption. Census: only two templates post
-`settled_amount` (grid/_transaction_full_edit.html, transfers/_transfer_full_edit.html).
+`settled_amount` (grid/_transaction_full_edit.html, transfers/_transfer_full_edit.html). [INCOMPLETE as a census of the doors that take $0.00, read at the CC-5-4a-2 / 4a-3 tick: `accounts/_reconcile_panel.html:71` posts a per-row `settled_amount-<id>` (`min="0"`) that settles through `transaction_service.settle_transaction`, a door neither R-CC56 nor R-CC59 names]
 
 ##### Q1 "Transfer $0" -- PICKED: **"Same caption, this leaf (Recommended)"**
 

@@ -142,8 +142,8 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       writer), 4a-2 (the re-key migration; the member table's bill column dropped) and 4b (the card
       panel's settlements arm, `R-CC44`), and on 2026-09-22 given 4a-3 (one act takes a movement off
       the books; the popovers' captions; `R-CC51`) and 4a-4 (a row holding a movement is history;
-      neither match key cascades; `R-CC55`); ticks with its last leaf. Must land before any card
-      import exists.
+      neither member subject key cascades; `R-CC55`); ticks with its last leaf. Must land before any
+      card import exists.
   - [x] **CC-5-4a-1** `079524b0` -- the payment MOVEMENT is the matcher's subject on every screen
         (`R-CC43`): `RowKind.SETTLEMENT` (the movement's identity, the row's record: priced as a
         movement when dated, the row's paycheck as its window, dated through the row's own door with

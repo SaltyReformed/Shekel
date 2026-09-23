@@ -83,11 +83,11 @@ revision below this one is plan step ``balance:X-bi-6-3``'s ``c7d1e9a4b2f8``
 (this revision was re-parented onto it at the merge; the two touch disjoint
 tables), and the code at that revision already carries plan step
 ``CC-5-4a-1``'s writer, which WRITES movement members and reads both shapes,
-so every member this upgrade leaves is already a state that revision holds.  Re-keying "back" could not even be
-total: an act recorded on the card names a checking bill's payment ON the
-card, and no row member can hold it there (the row is on checking).  So the
-column, its key, its unique index and the three-term check return, empty of
-row members.
+so every member this upgrade leaves is already a state that revision holds.
+Re-keying "back" could not even be total: an act recorded on the card names a
+checking bill's payment ON the card, and no row member can hold it there (the
+row is on checking).  So the column, its key, its unique index and the
+three-term check return, empty of row members.
 
 **Locking.**  The UPDATE rewrites the row members once (103 on production);
 each ``DROP`` is catalog-only; ``ADD CONSTRAINT ... CHECK`` scans the table
