@@ -83,6 +83,9 @@ arm_A4() { (service_env && arm A4-service-n4 env SHEKEL_TEST_FIXTURE_PROFILE=1 p
 arm_E0() { run_container_arm E0-run-disk-n12 ""; }
 arm_E() { run_container_arm E-run-tmpfs-n12 "--tmpfs /var/lib/postgresql:rw,size=6g"; }
 arm_D() { arm D-testsh-n12 env SHEKEL_TEST_FIXTURE_PROFILE=1 ./scripts/test.sh "${SLICE[@]}" -n 12 "${COMMON[@]}"; }
+arm_H3() { arm H3-testsh-n3 env SHEKEL_TEST_FIXTURE_PROFILE=1 ./scripts/test.sh "${SLICE[@]}" -n 3 "${COMMON[@]}"; }
+arm_H4() { arm H4-testsh-n4 env SHEKEL_TEST_FIXTURE_PROFILE=1 ./scripts/test.sh "${SLICE[@]}" -n 4 "${COMMON[@]}"; }
+arm_H6() { arm H6-testsh-n6 env SHEKEL_TEST_FIXTURE_PROFILE=1 ./scripts/test.sh "${SLICE[@]}" -n 6 "${COMMON[@]}"; }
 arm_F() {
     local a b
     a=$(printf '%q ' "${HALF_A[@]}")
@@ -108,10 +111,12 @@ echo "XGY slice: ${#SLICE[@]} files; halves ${#HALF_A[@]}/${#HALF_B[@]}"
 arm bake python scripts/build_test_db_image.py
 arm D-dbbench ./scripts/test.sh tools/xgy_measure/db_bench.py -n 0 -p no:randomly -s -q
 
+# Round 2 (after round 1 found the runner CPU-bound): test.sh's socket
+# cluster at -n 3/4/6/12 against today's service cluster at -n 12.
 case "$REPLICATE" in
-    1) ORDER=(A12 A8 A4 E0 E D F G) ;;
-    2) ORDER=(G F D E E0 A4 A8 A12) ;;
-    *) ORDER=(D A12 G A4 F E A8 E0) ;;
+    1) ORDER=(A12 D H4 H3 H6) ;;
+    2) ORDER=(H6 H3 H4 D A12) ;;
+    *) ORDER=(H4 A12 H6 D H3) ;;
 esac
 for a in "${ORDER[@]}"; do
     echo "XGY running arm $a"

@@ -2,7 +2,10 @@
 # request that is never merged.  Replaces the real CI on this branch so each
 # push runs only the matched A/B of bank_import:X-gy (ledger BI-496): the same
 # slice of the suite under several cluster/worker arms, sequentially on ONE
-# runner per replicate (tools/xgy_measure/run_all.sh).
+# runner per replicate (tools/xgy_measure/run_all.sh).  Round 2 adds the
+# ``shard`` job: the FULL suite (docker tests included, as CI runs it) split
+# six ways by tools/xgy_measure/xgy_shard.py, each shard on its own runner
+# through scripts/test.sh at -n auto.
 
 name: CI
 
@@ -13,13 +16,68 @@ permissions:
   contents: read
 
 jobs:
+  shard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    env:
+      TZ: Pacific/Kiritimati
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Runner capacity
+        run: |
+          echo "XGY cores: $(nproc)"
+          lscpu | grep 'Model name' | sed 's/^/XGY lscpu /'
+          python tools/xgy_measure/cpu_bench.py 5 | sed 's/^/XGY /'
+
+      - name: Suite shard (test.sh, -n auto, every marker)
+        env:
+          SHARD: ${{ matrix.shard }}
+          PYTHONPATH: tools/xgy_measure
+        run: |
+          start=$(date +%s.%N)
+          XGY_SHARD="${SHARD}/6" ./scripts/test.sh -p xgy_shard -n auto -m "" --tb=short -q --durations=40
+          echo "XGY SHARD ${SHARD} wall=$(python3 -c "print(f'{$(date +%s.%N)-$start:.1f}')")s"
+
+      - name: Audit-trigger benchmarks (serial), shard 0 only
+        if: matrix.shard == 0
+        run: |
+          start=$(date +%s.%N)
+          ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+          echo "XGY PERF wall=$(python3 -c "print(f'{$(date +%s.%N)-$start:.1f}')")s"
+
   measure:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        replicate: [1, 2, 3]
+        replicate: [1, 2]
 
     # Byte-for-byte today's lint-and-test service container: arms A12/A8/A4.
     services:
