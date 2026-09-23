@@ -1,17 +1,18 @@
 """Classify a pull request's change set for CI: ``registry-only`` or ``full``.
 
-``ci.yml``'s ``lint-and-test`` job runs pylint and the whole pytest suite --
-about forty minutes -- on every pull request, and a registry pass (the
-``docs/plans`` commit that ticks a step, files its findings and records its
-rulings) is a pull request whose only grader is the plan gate.  The registry
-lane is serialized, one such PR at a time each computed on the tree the last
-one left, so each of those forty minutes is on the queue's critical path and
-grades nothing: no code changed, so no pylint message and no test outcome can
-have moved.
+``ci.yml``'s ``lint`` job and six ``test`` shard jobs run pylint and the whole
+pytest suite -- about ten minutes and seven runners since ``bank_import:X-gy``
+split them, forty minutes on one runner before -- on every pull request, and a
+registry pass (the ``docs/plans`` commit that ticks a step, files its findings
+and records its rulings) is a pull request whose only grader is the plan gate.
+The registry lane is serialized, one such PR at a time each computed on the
+tree the last one left, so each of those minutes is on the queue's critical
+path and grades nothing: no code changed, so no pylint message and no test
+outcome can have moved.
 
-This module says which change sets are that.  ``ci.yml`` asks it once, right
-after checkout, and skips every code-grading step unless the answer is
-``full``; the plan gate itself (``pytest tools/plan_gate`` and its pylint
+This module says which change sets are that.  ``ci.yml``'s ``scope`` job asks
+it once, and every code-grading JOB is skipped unless the answer is ``full``;
+the plan gate itself (``pytest tools/plan_gate`` and its pylint
 floor) runs in BOTH scopes, and the ``polyglot-lint`` job (rumdl, typos and
 the rest) is untouched and still lints every Markdown file.  Approved by the
 developer 2026-09-11 as its own tooling PR.
@@ -32,8 +33,10 @@ below.
 **It fails CLOSED, twice.**  Here: an empty change set, an absolute path, a
 ``..`` and any path outside the prefixes all answer ``full``.  In ``ci.yml``:
 every guard is ``!= 'registry-only'``, so a missing or misspelled output runs
-everything rather than nothing.  The cost of a wrong ``full`` is forty
-minutes; the cost of a wrong ``registry-only`` is a merge no test graded.
+everything rather than nothing, and the ``lint-and-test`` aggregate
+(``ci_verdict``) lets a code grader skip only on exactly ``registry-only``.
+The cost of a wrong ``full`` is a full run; the cost of a wrong
+``registry-only`` is a merge no test graded.
 
 **Its honesty rests on one census**, :func:`registry_readers`: no module in
 a suite the ``registry-only`` scope SKIPS may read a registry-only path,

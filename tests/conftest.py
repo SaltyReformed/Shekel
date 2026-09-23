@@ -19,8 +19,10 @@ delivery changes.
 The clone uses ``STRATEGY WAL_LOG``.  Phase 3b's original
 ``STRATEGY FILE_COPY`` was chosen for the reflink path on the dev
 box's btrfs PGDATA and is 20x SLOWER on any cluster that has not
-switched durability off -- which CI's postgres service container
-has not.  ``_clone_worker_database`` below carries the measurements
+switched durability off -- which CI's postgres service container had
+not, until 2026-08-18 (since ``bank_import:X-gy`` CI runs the
+wrapper's non-durable cluster).  ``_clone_worker_database`` below
+carries the measurements
 and the failures that decision produced; do not restore
 ``FILE_COPY`` without re-measuring against a durable cluster.
 """
@@ -754,6 +756,7 @@ from tests._test_helpers import (
     settle_day_columns,
     state_template_price,
 )
+from tests._shard import SHARD_ENV, apply_shard, parse_shard
 
 
 # ---------------------------------------------------------------------------
@@ -3598,6 +3601,37 @@ def _profile_print_summary():
     print()
 
 
+def pytest_collection_modifyitems(config, items):
+    """Narrow the collection to one CI shard when ``SHEKEL_TEST_SHARD`` is set.
+
+    CI splits the suite across parallel jobs (plan step ``bank_import:X-gy``);
+    each exports ``SHEKEL_TEST_SHARD=<index>/<total>`` and runs only its share.
+    Unset -- every local run -- this deselects nothing.  How the split is a
+    partition by construction, and why it keeps every ``xdist_group`` whole,
+    is :mod:`tests._shard`.
+    """
+    apply_shard(config, items, os.environ.get(SHARD_ENV))
+
+
+def pytest_report_header():
+    """Head the report with the shard when this run is ONE SHARD of the suite.
+
+    Under xdist a shard's deselected items never reach the summary line --
+    measured 2026-09-22, a shard of 2,589 read ``2589 passed`` and nothing
+    else -- so the report of a run that covered a sixth of the suite reads
+    like a whole-suite pass.  A variable left exported in a local shell would
+    produce exactly that, green.
+    """
+    spec = os.environ.get(SHARD_ENV)
+    if spec is None:
+        return None
+    index, total = parse_shard(spec)
+    return (
+        f"{SHARD_ENV}={spec}: this run is shard {index} of {total} "
+        f"(0-based) and runs ONLY that share of the suite"
+    )
+
+
 def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argument
     """Drop the per-pytest-worker database AND emit the profile summary.
 
@@ -3632,9 +3666,9 @@ def pytest_sessionfinish(session, exitstatus):  # pylint: disable=unused-argumen
     :func:`_bootstrap_worker_database`), so the orphan is at worst a
     temporary disk-space cost between runs.  Under ``./scripts/test.sh``
     since ``balance:X-br-4`` there IS no next session on this cluster --
-    it is removed with the container -- so the sweep's remaining live
-    caller is CI, which runs more than one pytest invocation against one
-    service container.
+    it is removed with the container -- and since ``bank_import:X-gy`` CI
+    runs every pytest invocation through that wrapper too, so no caller in
+    this repository reuses a cluster across sessions any more.
 
     Profile aggregation:
         When ``SHEKEL_TEST_FIXTURE_PROFILE`` is set, the harness

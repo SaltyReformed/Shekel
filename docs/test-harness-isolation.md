@@ -25,8 +25,9 @@ Items 1 and 2 shipped to `dev`; the churn problem is solved:
 
 - **Marker + default-exclude (commit `56e48204`).** A `docker` pytest marker tags the eight
   daemon-touching classes across `tests/test_deploy/` (28 tests); `scripts/test.sh` defaults to
-  `-m "not docker"`, so a routine local run spawns zero containers. CI calls `pytest` directly, so
-  it still runs the full set. This alone removes the local churn this doc set out to fix.
+  `-m "not docker"`, so a routine local run spawns zero containers. CI still runs the full set: it
+  called `pytest` directly then, and its shards pass `-m ""` to the wrapper since
+  `bank_import:X-gy`. This alone removes the local churn this doc set out to fix.
 - **Fail-closed guard (commit `5df43d4f`).** `tests/test_deploy/conftest.py` skips the docker-marked
   tests when `DOCKER_HOST` is the system socket, UNLESS the run is sanctioned: CI (GitHub sets
   `CI=true`), a non-default `DOCKER_HOST`, or `SHEKEL_ALLOW_HOST_DOCKER=1`. The CI exemption
@@ -106,8 +107,9 @@ correct; they just have nowhere isolated to run locally.
 
 ## Why CI is already fine
 
-`.github/workflows/ci.yml` runs `runs-on: ubuntu-latest` (:39) and invokes `pytest` directly (:224)
-on an **ephemeral runner with its own throwaway docker daemon**. Containers there are created and
+`.github/workflows/ci.yml` runs its suite shards on `ubuntu-latest` (through `scripts/test.sh` since
+`bank_import:X-gy`, directly before) on an
+**ephemeral runner with its own throwaway docker daemon**. Containers there are created and
 discarded on infrastructure that no homelab observability watches. So the collision is
 **local-only**.
 
@@ -228,8 +230,8 @@ That is CLAUDE.md rule 14's shape and it wants one of the two deleted. Exporting
 those 28 tests run, but only for a caller who also passes `PYTEST_MARKER_EXPR=docker`: this wrapper
 defaults to `-m "not docker"`, which deselects them before the conftest is ever consulted.
 
-CI is unaffected: it calls `pytest` directly (not `scripts/test.sh`), so its own `DOCKER_HOST` /
-default socket keeps working.
+CI is unaffected: its runners carry no rootless socket, so the wrapper leaves `DOCKER_HOST` unset
+and uses the runner's own throwaway daemon, which `CI=true` sanctions.
 
 ### Complementary hardening (do regardless of rootless)
 
@@ -251,8 +253,9 @@ the single biggest churn reduction — routine local TDD then spins up **zero** 
   pytestmark = pytest.mark.docker
   ```
 
-- Default-exclude in **`scripts/test.sh`** (NOT `pytest.ini addopts`, so CI — which calls pytest
-  directly — still runs the full set):
+- Default-exclude in **`scripts/test.sh`** (NOT `pytest.ini addopts`, so CI -- which then called
+  pytest directly, and since `bank_import:X-gy` passes `-m ""` to the wrapper -- still runs the full
+  set):
 
   ```bash
   # Local default: skip container-spawning tests unless explicitly requested.
