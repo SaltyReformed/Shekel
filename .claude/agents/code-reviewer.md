@@ -92,6 +92,9 @@ Tests:
 - Assert behavior and computed values, not just status codes or truthiness. A
   financial assertion should show the arithmetic that produced the expected value.
   A test that does not verify behavior is worse than no test.
+- Tests that must share one session (one reads state another left in the worker)
+  share an `@pytest.mark.xdist_group`: CI shards the suite across runners and only a
+  group is kept whole (`tests/_shard.py`).
 
 ## How to report
 

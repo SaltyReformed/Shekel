@@ -332,7 +332,13 @@ class TestThePaymentIsTheCardScreensCandidate:
     def test_the_member_names_the_movement_on_the_cards_account(
         self, app, seed_user,
     ):
-        """What the act records: the movement, held to the card by its key."""
+        """What the act records: the movement, held to the card by its key.
+
+        Since ``CC-5-4a-2`` the member table has no row column, so "no member
+        names the row" is the schema's; the assertion that said so went with it.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
+        """
         with app.app_context():
             card = _card(seed_user)
             txn = _hotel_bill(seed_user, seed_user["bootstrap_period"])
@@ -351,7 +357,6 @@ class TestThePaymentIsTheCardScreensCandidate:
 
             members = _members_of(accepted.match_id)
             assert {m.account_id for m in members} == {card.id}
-            assert {m.transaction_id for m in members} == {None}
             assert {m.transaction_entry_id for m in members} == {
                 None, _movement(txn).id,
             }
@@ -359,7 +364,7 @@ class TestThePaymentIsTheCardScreensCandidate:
             claims = matched_subjects(card.id)
             assert claims.entries == {_movement(txn).id}
             assert claims.transactions == {txn.id}, (
-                "a row is claimed through its payment (the claims' two homes)"
+                "a row is claimed through its payment"
             )
             assert claims.lines == {line.id}
 
@@ -718,7 +723,7 @@ class TestTheRowsRefusalsApplyToItsPayment:
 
 
 class TestTheClaimsSeeARowThroughItsPayment:
-    """What an act already names, read through either home."""
+    """What an act already names, read through the row's payment."""
 
     def test_a_reverted_row_whose_payment_an_act_names_is_not_offered_again(
         self, app, seed_user,
@@ -848,97 +853,6 @@ class TestTheClaimsSeeARowThroughItsPayment:
             assert db.session.query(StatementMatchMember).count() == 0
 
 
-class TestAnActRecordedBeforeThisStepStillClaimsItsRow:
-    """The interval's other home: an act naming the ROW, until CC-5-4a-2 re-keys it.
-
-    The app writes no such member any more, so the case writes one as the
-    past did.  Measured on the production clone of 2026-09-21 before the
-    two-home claim existed: 103 settled rows named by row reappeared on
-    Checking's unmatched panel as movements nothing claimed.
-    """
-
-    @staticmethod
-    def _an_old_shape_act(seed_user, line, txn):
-        """Record a match naming *txn* BY ROW, the member shape before R-CC43."""
-        match = StatementMatch(
-            account_id=seed_user["account"].id, user_id=seed_user["user"].id,
-            applied_by_rule=False,
-        )
-        db.session.add(match)
-        db.session.flush()
-        db.session.add(StatementMatchMember(
-            match_id=match.id, account_id=seed_user["account"].id,
-            bank_statement_line_id=line.id,
-        ))
-        db.session.add(StatementMatchMember(
-            match_id=match.id, account_id=seed_user["account"].id,
-            transaction_id=txn.id,
-        ))
-        db.session.commit()
-        return match
-
-    def test_its_settlement_is_not_offered_and_the_register_holds(
-        self, app, seed_user,
-    ):
-        with app.app_context():
-            checking = seed_user["account"]
-            bank_day = _first_day(seed_user)
-            txn = _hotel_bill(seed_user, seed_user["bootstrap_period"])
-            settle_transaction(txn, settle_day=_entered(bank_day))
-            db.session.commit()
-            line = a_bank_line(
-                seed_user, an_import(seed_user), amount="-120.00", posted_on=bank_day,
-            )
-            db.session.commit()
-            self._an_old_shape_act(seed_user, line, txn)
-
-            scope = a_scope(seed_user, checking)
-            claims = matched_subjects(checking.id)
-            (candidate,) = [
-                row for row in scope.candidates.rows
-                if row.transaction_id == txn.id
-            ]
-            assert candidate.kind is RowKind.SETTLEMENT
-            assert candidate.row_id not in claims.entries
-            assert txn.id in claims.transactions
-            assert [
-                row for row in unmatched_rows(scope.candidates, claims)
-                if row.transaction_id == txn.id
-            ] == []
-            (group,) = accepted_acts(seed_user, checking)
-            (row,) = group.rows
-            assert row.label == "Hotel" and row.cash_amount == -_HOTEL
-            assert group.agrees is True
-
-    def test_a_stale_form_naming_its_settlement_is_refused(
-        self, app, seed_user,
-    ):
-        """The screen rendered before the old act was recorded; the act refuses."""
-        with app.app_context():
-            checking = seed_user["account"]
-            bank_day = _first_day(seed_user)
-            txn = _hotel_bill(seed_user, seed_user["bootstrap_period"])
-            settle_transaction(txn, settle_day=_entered(bank_day))
-            db.session.commit()
-            statement = an_import(seed_user)
-            line = a_bank_line(
-                seed_user, statement, amount="-120.00", posted_on=bank_day,
-            )
-            other_line = a_bank_line(
-                seed_user, statement, amount="-120.00",
-                posted_on=bank_day, sequence_in_group=1,
-            )
-            db.session.commit()
-            scope = a_scope(seed_user, checking)
-            stale = a_submission(scope, lines=[other_line], transactions=[txn])
-            self._an_old_shape_act(seed_user, line, txn)
-
-            with pytest.raises(ValidationError, match="no longer available"):
-                accept_match(stale, a_scope(seed_user, checking))
-            db.session.rollback()
-            assert db.session.query(StatementMatch).count() == 1
-
-
 class TestARePointWithdrawsTheMatchNamingThePayment:
     """Ruling **R-CC46**: the correction goes through; the match it falsifies goes."""
 
@@ -961,7 +875,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             _accept(seed_user, checking, [line], [txn])
             movement = _movement(txn)
 
-            pending = match_withdrawal.pending_for_moved_movement(movement)
+            pending = match_withdrawal.pending_for_movements([movement])
             assert pending.matches == 1
             assert [freed.line_id for freed in pending.lines] == [line.id]
             assert pending.lines[0].description == "GROCERIES"
@@ -1006,7 +920,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             accepted = _accept(seed_user, checking, [line], [hotel, other])
             assert len(_members_of(accepted.match_id)) == 3
 
-            pending = match_withdrawal.pending_for_moved_movement(_movement(hotel))
+            pending = match_withdrawal.pending_for_movements([_movement(hotel)])
             assert pending.matches == 0 and pending.lines == ()
 
             _correct_tender(hotel, card.id)
@@ -1030,7 +944,7 @@ class TestARePointWithdrawsTheMatchNamingThePayment:
             settle_transaction(txn, settle_day=_entered(_first_day(seed_user)))
             db.session.commit()
 
-            pending = match_withdrawal.pending_for_moved_movement(_movement(txn))
+            pending = match_withdrawal.pending_for_movements([_movement(txn)])
             assert pending.matches == 0 and not pending.frees_a_line
             _correct_tender(txn, card.id)
 

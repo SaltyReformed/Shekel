@@ -11,7 +11,12 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.ref import Status
-from app.services import category_service, pay_period_service
+from app.services import (
+    category_service,
+    match_withdrawal,
+    pay_period_service,
+    transfer_legs,
+)
 from app.services.pay_calendar import calendar_for
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
@@ -120,4 +125,39 @@ def get_full_edit(xfer_id):
         # Pre-hint (grid audit D2): the status dropdown disables
         # transitions the state machine would reject.
         allowed_status_ids=allowed_transitions(xfer),
+        # **What a $0.00 Actual would WITHDRAW** (plan step
+        # ``credit_card:CC-5-4a-3``, ruling **R-CC59**): the caption under
+        # the Actual box, read through the same twin the seam's write uses.
+        payment_withdraws=_payment_withdrawal(xfer),
     )
+
+
+def _payment_withdrawal(xfer):
+    """Return what taking BOTH legs' payments out of their matches would withdraw.
+
+    The read twin of the seam's write on a transfer's ``$0.00`` record: the
+    settle hands each leg the one record (``transfer_service._status``), and
+    a ``$0.00`` figure takes each leg's covering movement off the books
+    through ``movement_removal.remove_movements`` (ruling **R-CC54**).  An
+    act names ONE leg's movement -- a member is held to its movement's
+    account, and the legs are on two -- so the two legs' acts are disjoint
+    and one read over both movements is what the two per-leg writes
+    withdraw.  The movements come through
+    ``transfer_legs.covering_movements_by_leg``, the ONE join from a
+    transfer to its legs' records that this popover's figures read too
+    (``transfer_settlement_amounts`` through ``grid_transfer_leg``) -- a
+    second CALL of that join in the same render, one indexed query, where
+    threading one load through both reads would change the leg producers'
+    signatures (reported, not done here).
+
+    Args:
+        xfer: The owned, live transfer the popover is drawn for.
+
+    Returns:
+        A :class:`~app.services.match_withdrawal.MatchWithdrawal`, or
+        ``None`` when neither leg holds a payment.
+    """
+    movements = list(transfer_legs.covering_movements_by_leg([xfer.id]).values())
+    if not movements:
+        return None
+    return match_withdrawal.pending_for_movements(movements)

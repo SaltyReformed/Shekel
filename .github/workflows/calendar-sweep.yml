@@ -56,25 +56,12 @@ jobs:
           - "2026-11-30"  # month end
           - "2026-09-01"  # first of a month (installment falls on today)
 
-    services:
-      postgres:
-        # Keep this digest in lockstep with ci.yml and the compose files.
-        image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
-        env:
-          POSTGRES_USER: shekel_test
-          POSTGRES_PASSWORD: shekel_test
-          POSTGRES_DB: shekel_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+    # The cluster is ``scripts/test.sh``'s, the one every run gets (ruling
+    # bank_import:R-BI40): a private postgres from the baked template image
+    # with the same durability, lock and statement settings a local run and
+    # ci.yml's shards have.  A service container here once carried a third
+    # configuration -- durability ON, every timeout off.
     env:
-      TEST_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/shekel_test
-      TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
       SHEKEL_FAKE_TODAY: ${{ matrix.fake_today }}
 
     steps:
@@ -93,9 +80,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Build test template database
-        run: python scripts/build_test_template.py
-
       # ``server_clock`` is deselected because those tests compare a
       # POSTGRES-stamped timestamp against a Python-derived one, and
       # time-machine moves Python's clock but not the database's -- so
@@ -107,5 +91,14 @@ jobs:
       # docs/testing-standards.md), and "it fails at some dates but not
       # others" is NOT sufficient evidence -- one of them varies by date
       # and is still an artifact.
+      #
+      # ``-n logical`` is the runner's logical CPU count, which measured faster
+      # there than ``pytest.ini``'s local ``-n 12`` (ci.yml step 7 carries
+      # the figures) -- and the per-test timeout DEPENDS on it: ``pytest.ini``'s
+      # 50 s is 3x the slowest test at this worker count (ruling
+      # bank_import:R-BI41), and at ``-n 12`` the settled-bound family read
+      # 24-27 s on the runner, under 2x of the cap.  ``CI`` is set on the
+      # runner, which is what sanctions the wrapper using the runner's own
+      # throwaway daemon.
       - name: Run tests as if today were ${{ matrix.fake_today }}
-        run: pytest --tb=short -q -m "not docker and not server_clock"
+        run: ./scripts/test.sh -n logical --tb=short -q -m "not docker and not server_clock"

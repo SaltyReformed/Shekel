@@ -467,14 +467,20 @@ EVT_STATEMENT_MATCH_RELEASED = _register(
 
 EVT_STATEMENT_MATCH_WITHDRAWN = _register(
     "statement_match_withdrawn", BUSINESS,
-    "A row left the books, so the accepted matches naming it (or one of its "
-    "purchases) were withdrawn and their bank lines are unexplained again.  "
-    "The SIBLING of statement_match_released and not the same act: a release "
-    "is the owner undoing a decision, and this is the decision losing its "
-    "subject.  It moves NO money of its own -- the door that removed the row "
-    "reversed its postings -- and rows the withdrawn acts had CREATED are "
-    "LEFT standing, which kept_row_count reports (plan step "
-    "bank_import:X-gb).",
+    "A movement the accepted matches named left them -- taken off the books "
+    "with its row, as a purchase, or as a payment a $0.00 / purchases record "
+    "withdrew, or moved onto another account -- so the acts it was the last "
+    "app row of were withdrawn and their bank lines are unexplained again; "
+    "the message says which (plan steps bank_import:X-gb, "
+    "credit_card:CC-5-4a-1, credit_card:CC-5-4a-3).  The SIBLING of "
+    "statement_match_released and not the same act: a release is the owner "
+    "undoing a decision, and this is the decision losing its subject.  It "
+    "moves NO money of its own -- a removal's act reverses the movement's "
+    "legs itself, and a moved movement keeps its money -- and rows the "
+    "withdrawn acts had CREATED are LEFT standing, which kept_row_count "
+    "reports.  transaction_ids names the "
+    "rows involved, transaction_entry_ids the movements, freed_line_ids the "
+    "lines (transaction_entry_id, singular, until CC-5-4a-3).",
 )
 
 EVT_STATEMENT_MATCH_LINELESS = _register(

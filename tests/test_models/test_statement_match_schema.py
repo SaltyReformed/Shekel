@@ -207,7 +207,6 @@ def _a_member(db, match, **overrides):
         "match_id": match.id,
         "account_id": match.account_id,
         "bank_statement_line_id": None,
-        "transaction_id": None,
         "transaction_entry_id": None,
     }
     fields.update(overrides)
@@ -230,16 +229,25 @@ class TestAMemberNamesExactlyOneSubject:
         assert "ck_statement_match_members_one_subject" in str(caught.value)
 
     def test_naming_two_subjects_is_refused(self, app, db, seed_user):
-        """A member on both sides makes the match's two halves unreadable."""
+        """A member on both sides makes the match's two halves unreadable.
+
+        The app's side is a MOVEMENT since the row column went (plan step
+        ``credit_card:CC-5-4a-2``, ruling **R-CC45**); this named a row
+        through that column until then.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
+        """
         match = _a_match(db, seed_user)
         line = _a_line(db, seed_user)
-        transaction = _a_transaction(db, seed_user)
+        movement = _an_entry(
+            db, seed_user, _a_transaction(db, seed_user), covers_settlement=True,
+        )
 
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
             _a_member(
                 db, match,
                 bank_statement_line_id=line.id,
-                transaction_id=transaction.id,
+                transaction_entry_id=movement.id,
             )
 
         assert "ck_statement_match_members_one_subject" in str(caught.value)
@@ -282,7 +290,7 @@ def _a_transaction(db, seed_user, name="Electricity"):
 
 
 class TestASubjectBelongsToAtMostOneMatch:
-    """The three partial unique indexes."""
+    """The two partial unique indexes."""
 
     def test_one_line_in_two_matches_is_refused(self, app, db, seed_user):
         """One bank line explained twice, with both acts looking complete."""
@@ -296,36 +304,52 @@ class TestASubjectBelongsToAtMostOneMatch:
 
         assert "uq_statement_match_members_line" in str(caught.value)
 
-    def test_one_transaction_in_two_matches_is_refused(
+    def test_one_movement_in_two_matches_is_refused(
         self, app, db, seed_user,
     ):
-        """One app row claimed by two statements."""
-        transaction = _a_transaction(db, seed_user)
+        """One app movement claimed by two statements.
+
+        It asked the same of a ROW and ``uq_statement_match_members_transaction``
+        until plan step ``credit_card:CC-5-4a-2`` (ruling **R-CC45**) dropped
+        that column with its index: a member names a movement, and a row is
+        named through its one payment.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
+        """
+        movement = _an_entry(
+            db, seed_user, _a_transaction(db, seed_user), covers_settlement=True,
+        )
         _a_member(
-            db, _a_match(db, seed_user), transaction_id=transaction.id,
+            db, _a_match(db, seed_user), transaction_entry_id=movement.id,
         )
 
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
             _a_member(
-                db, _a_match(db, seed_user), transaction_id=transaction.id,
+                db, _a_match(db, seed_user), transaction_entry_id=movement.id,
             )
 
-        assert "uq_statement_match_members_transaction" in str(caught.value)
+        assert "uq_statement_match_members_entry" in str(caught.value)
 
     def test_two_members_naming_no_line_do_not_collide(
         self, app, db, seed_user,
     ):
         """The index is PARTIAL, and this is what that buys.
 
-        Every member leaves two of the three columns NULL, so a non-partial
+        Every member leaves one of the two columns NULL, so a non-partial
         index would let the FIRST member of the second match collide with the
-        first member of the first on a column neither of them names.
+        first member of the first on a column neither of them names.  (Three
+        columns until plan step ``credit_card:CC-5-4a-2`` dropped the row's,
+        ruling **R-CC45**; this staged a row member until then.)
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
         """
         match = _a_match(db, seed_user)
-        transaction = _a_transaction(db, seed_user)
+        movement = _an_entry(
+            db, seed_user, _a_transaction(db, seed_user), covers_settlement=True,
+        )
         line = _a_line(db, seed_user)
 
-        _a_member(db, match, transaction_id=transaction.id)
+        _a_member(db, match, transaction_entry_id=movement.id)
         _a_member(db, match, bank_statement_line_id=line.id)
 
         assert db.session.query(StatementMatchMember).count() == 2
@@ -588,10 +612,16 @@ class TestTheMigrationRepairsWhatTheConstraintCannotSee:
     def test_it_deletes_an_act_that_holds_no_bank_line(
         self, app, db, seed_user,
     ):
-        """FIRING CONTROL: the state the constraint alone would leave standing."""
-        txn = _a_transaction(db, seed_user)
+        """FIRING CONTROL: the state the constraint alone would leave standing.
+
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
+        """
+        movement = _an_entry(
+            db, seed_user, _a_transaction(db, seed_user), covers_settlement=True,
+        )
         lineless = _a_match(db, seed_user)
-        _a_member(db, lineless, transaction_id=txn.id)
+        _a_member(db, lineless, transaction_entry_id=movement.id)
         db.session.flush()
 
         db.session.execute(db.text(self._REPAIR))
@@ -604,12 +634,18 @@ class TestTheMigrationRepairsWhatTheConstraintCannotSee:
     def test_it_leaves_an_act_that_HOLDS_one_alone(
         self, app, db, seed_user,
     ):
-        """FIRING CONTROL against over-deleting: a real match must survive."""
+        """FIRING CONTROL against over-deleting: a real match must survive.
+
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
+        """
         line = _a_line(db, seed_user)
-        txn = _a_transaction(db, seed_user)
+        movement = _an_entry(
+            db, seed_user, _a_transaction(db, seed_user), covers_settlement=True,
+        )
         held = _a_match(db, seed_user)
         _a_member(db, held, bank_statement_line_id=line.id)
-        _a_member(db, held, transaction_id=txn.id)
+        _a_member(db, held, transaction_entry_id=movement.id)
         db.session.flush()
 
         db.session.execute(db.text(self._REPAIR))
@@ -628,10 +664,17 @@ class TestTheMigrationRepairsWhatTheConstraintCannotSee:
         its transactions through ``matched_subjects``, so those rows can never
         be offered or matched again.  Freeing them is the point of removing it,
         not a side effect.
+
+        The act names the row's PAYMENT, the one app-side member shape since
+        plan step ``credit_card:CC-5-4a-2`` (ruling **R-CC45**); it named the
+        row through the dropped column until then.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
         """
         txn = _a_transaction(db, seed_user)
+        payment = _an_entry(db, seed_user, txn, covers_settlement=True)
         lineless = _a_match(db, seed_user)
-        _a_member(db, lineless, transaction_id=txn.id)
+        _a_member(db, lineless, transaction_entry_id=payment.id)
         db.session.flush()
         assert txn.id in matched_subjects(seed_user["account"].id).transactions
 
@@ -644,14 +687,17 @@ class TestTheMigrationRepairsWhatTheConstraintCannotSee:
         ).transactions
 
 
-def _an_entry(db, seed_user, transaction, amount="25.00"):
-    """Stage and return one purchase under *transaction*.
+def _an_entry(db, seed_user, transaction, amount="25.00", *, covers_settlement=False):
+    """Stage and return one purchase under *transaction*, or its payment.
 
     Args:
         db: The session fixture.
         seed_user: The seeded user bundle.
         transaction: The parent budget row.
         amount: Its figure, as a string.
+        covers_settlement: Stage the row's covering movement -- its PAYMENT,
+            the member shape a matched settled row takes -- rather than a
+            purchase.
 
     Returns:
         The staged
@@ -668,6 +714,7 @@ def _an_entry(db, seed_user, transaction, amount="25.00"):
         amount=Decimal(amount),
         description="Kroger",
         purchased_on=seed_user["bootstrap_period"].start_date,
+        covers_settlement=covers_settlement,
     )
     db.session.add(entry)
     db.session.flush()
@@ -1052,7 +1099,6 @@ class TestASubjectIsReachedThroughTheAccountToo:
 
     @pytest.mark.parametrize("model, relation, target", [
         (StatementMatchMember, "line", "bank_statement_lines"),
-        (StatementMatchMember, "transaction", "transactions"),
         (StatementMatchMember, "entry", "transaction_entries"),
         (StatementMatchCreation, "transaction", "transactions"),
         (StatementMatchCreation, "entry", "transaction_entries"),
@@ -1085,7 +1131,6 @@ class TestASubjectIsReachedThroughTheAccountToo:
 
     @pytest.mark.parametrize("model, relation", [
         (StatementMatchMember, "line"),
-        (StatementMatchMember, "transaction"),
         (StatementMatchMember, "entry"),
         (StatementMatchCreation, "transaction"),
         (StatementMatchCreation, "entry"),

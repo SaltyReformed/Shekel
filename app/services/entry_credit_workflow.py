@@ -20,7 +20,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import match_withdrawal, posting_service
+from app.services import match_withdrawal, movement_removal, posting_service
 from app.services.amount_ownership import state_own_amount
 from app.services.row_valuation import settled_figure
 from app.services.pay_calendar import FiledRow, calendar_for
@@ -272,18 +272,24 @@ def sync_entry_payback(
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
-        # A match naming this payback stops being true when the row goes, so
-        # it is withdrawn and its bank line is unexplained again (developer
-        # ruling 2026-08-25, plan step ``bank_import:X-gb``).  BEFORE the
-        # delete: the member rows CASCADE, so afterwards nothing says which
-        # lines were freed.
-        match_withdrawal.withdraw_for_rows([existing_payback], owner_id)
         # Reverse the payback's own ledger postings before deleting it
         # (Build-Order Step 3 reverse-before-delete): an entry-level payback that
         # was settled -- and therefore posted -- before its source's credit
         # entries were all removed must not leave its double-entry legs stranded.
-        # Idempotent no-op for a still-Projected payback.
+        # Its WHOLE family at once, one anchor re-check.  Idempotent no-op for a
+        # still-Projected payback.
         posting_service.reverse_postings_before_delete(existing_payback)
+        # Its movements off the books through the ONE act (plan step
+        # ``credit_card:CC-5-4a-3``, ruling **R-CC54**): a match naming this
+        # payback stops being true when the row goes, so it is withdrawn and
+        # its bank line is unexplained again (developer ruling 2026-08-25, plan
+        # step ``bank_import:X-gb``) -- a reverted payback keeps its payment
+        # un-dated, and an act may still name it.
+        movement_removal.remove_movements(
+            list(existing_payback.entries), owner_id,
+            because=match_withdrawal.LEFT_THE_BOOKS,
+            rows_leaving=[existing_payback],
+        )
         db.session.delete(existing_payback)
         db.session.flush()
         log_event(
