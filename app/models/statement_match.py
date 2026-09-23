@@ -222,22 +222,31 @@ class StatementMatchMember(db.Model):
     question the database answers: without them a second review pass could
     explain one bank line twice, and the two acts would each look complete.
 
-    **The MOVEMENT key CASCADES, and the consequence is stated rather than
-    hidden.**  Deleting a purchase, withdrawing a settle's covering movement,
-    or destroying a pay period and the transactions under it (their movements
-    go with them), removes that member and leaves the act smaller --
-    so a group can stop balancing without anything raising.  Refusing instead
-    would refuse an ordinary delete because of a record the user cannot see
-    from the row they are deleting, which is the dead end finding **N-302**
-    records one table over.  A group that no longer balances is reported by
-    :class:`~app.services.statement_match.AcceptedGroup`'s ``agrees`` flag, on
-    the screen where it can be re-reviewed -- and a group that has lost every
-    app row is caught by the same flag, because ``_still_holds`` asks whether
-    any row is left before it asks anything else.
+    **NEITHER key cascades** (plan step ``credit_card:CC-5-4a-4``, ruling
+    **R-CC54**: "A match's key to its payment or purchase stops cascading,
+    like its key to the bank line").  **The MOVEMENT key CASCADED until
+    migration ``c4a4e7d1b9f2``**, on the argument that refusing would refuse
+    an ordinary delete over a record the user cannot see from the row (the
+    dead end finding **N-302** records one table over) -- and what that left
+    was a door that could empty an act without the act knowing: the template,
+    account and pay-period deletes destroyed a named movement by cascade and
+    left the act holding its bank line alone, which read as explained forever
+    until a predicate in the one read that decides stopped counting it
+    (finding **CC-363**).  Both ends are closed now, so there is nothing for
+    that predicate to catch and it is deleted: an ordinary delete never
+    reaches this key, because the ONE act that takes a movement off the books
+    (:mod:`app.services.movement_removal`) takes it out of every match first
+    -- withdrawing an act left naming no app row and saying which line it
+    freed, or leaving a group smaller for its ``agrees`` flag
+    (:class:`~app.services.statement_match.AcceptedGroup`) to report -- and
+    the doors that deleted rows as a side effect keep a row holding a
+    movement instead.  So an act naming only lines is unrepresentable rather
+    than filtered, and the key refusing is a defect's loud failure, never a
+    user's dead end.
 
-    **The BANK-LINE key does NOT cascade, and the asymmetry is the whole
-    point** (plan step ``bank_import:X-f6a-4``).  Losing app rows is VISIBLE;
-    losing bank lines was not.  A match with no line left asserts nothing about
+    **The BANK-LINE key has never cascaded, and it is where the reasoning
+    started** (plan step ``bank_import:X-f6a-4``).  Losing app rows was
+    VISIBLE; losing bank lines was not.  A match with no line left asserts nothing about
     a bank, so :func:`~app.services.statement_match._accepted_view
     .accepted_groups` could not render it and no release button could ever
     exist for it -- while ``matched_subjects`` reads the members directly and
@@ -292,12 +301,14 @@ class StatementMatchMember(db.Model):
              "budget.bank_statement_lines.account_id"],
             name="fk_statement_match_members_line_account",
         ),
+        # The movement key, NO ACTION for the line key's reasons (the class
+        # docstring; ``CASCADE`` until migration ``c4a4e7d1b9f2``, ruling
+        # **R-CC54**).
         db.ForeignKeyConstraint(
             ["transaction_entry_id", "account_id"],
             ["budget.transaction_entries.id",
              "budget.transaction_entries.account_id"],
             name="fk_statement_match_members_entry_account",
-            ondelete="CASCADE",
         ),
         # One subject, at most one match.  Partial, because one of the two
         # columns is NULL on every row and a NULL is not a claim.
@@ -435,12 +446,17 @@ class StatementMatchCreation(db.Model):
     indexes make structural.  Two acts each claiming to have minted one row
     would each offer to remove it, and the second would find it gone.
 
-    **The subject keys CASCADE**, exactly as the member keys do and with the
-    same consequence stated rather than hidden: a row the owner deletes
-    themselves takes its creation record with it, so an undo has nothing to
-    remove and nothing to refuse.  Refusing an ordinary delete because of a
-    record the user cannot see from the row they are deleting is the dead end
-    finding **N-302** records one table over.
+    **The subject keys CASCADE, and unlike the MEMBER keys they still do**
+    (plan step ``credit_card:CC-5-4a-4`` flipped the member's movement key to
+    NO ACTION, ruling **R-CC54**).  A member is a CLAIM that a bank line is
+    this movement, so losing one silently is a false statement about the
+    bank; a creation is only a record of what an undo would take back, so a
+    subject the owner deletes themselves -- through the one act for a
+    movement, through the row's own door for an emptied container -- takes
+    its creation record with it, and the undo has nothing to remove and
+    nothing to refuse.  Refusing that delete because of a record the user
+    cannot see from the row is the dead end finding **N-302** records one
+    table over.
     """
 
     __tablename__ = "statement_match_creations"

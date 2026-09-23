@@ -243,12 +243,18 @@ class TransactionEntry(
         # maintained** (plan step ``credit_card:CC-5-1``, ruling **R-BAL76**).
         # The pair keys onto ``uq_transactions_id_user``, the superkey added
         # for exactly this, so ``owner_id`` cannot be written as anyone but
-        # the row's owner.  ``ON DELETE CASCADE`` matches the single-column
-        # ``transaction_id`` key beside it, which stays as the ``transaction``
-        # relationship's declared join path: that key is about the PARENT'S
-        # EXISTENCE and this one is about AGREEMENT, and two keys over the
-        # same column deleting differently would make a delete's outcome
-        # depend on which PostgreSQL evaluated (ruling **R-CC32**).
+        # the row's owner.  **No ``ondelete`` -- NO ACTION** (plan step
+        # ``credit_card:CC-5-4a-4``, rulings **R-CC54**, **R-CC64**), matching
+        # the single-column ``transaction_id`` key beside it, which stays as
+        # the ``transaction`` relationship's declared join path: that key is
+        # about the PARENT'S EXISTENCE and this one is about AGREEMENT, and two
+        # keys over the same column deleting differently would make a delete's
+        # outcome depend on which PostgreSQL evaluated (ruling **R-CC32**).
+        # Both were ``CASCADE`` until migration ``c4a4e7d1b9f2``: a row's
+        # delete took its payments and purchases with it, and the template,
+        # account and pay-period doors destroyed recorded money that way
+        # (finding **CC-363**).  A row holding a movement is history now, and
+        # deleting one is refused; see ``transaction_id`` below.
         #
         # Through CC-5-1 the pair here was ``(transaction_id, account_id)``
         # onto ``uq_transactions_id_account`` --
@@ -266,7 +272,6 @@ class TransactionEntry(
             ["transaction_id", "owner_id"],
             ["budget.transactions.id", "budget.transactions.user_id"],
             name="fk_transaction_entries_owner_transaction",
-            ondelete="CASCADE",
         ),
         # **...AND ITS ACCOUNT IS THAT OWNER'S**, which is the half that makes
         # a movement on another owner's account unrepresentable: the owner key
@@ -357,9 +362,30 @@ class TransactionEntry(
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    # THE ROW THIS MOVEMENT IS FILED UNDER, and the row's delete does NOT take
+    # it (plan step ``credit_card:CC-5-4a-4``, rulings **R-CC54**,
+    # **R-CC64**).  **No ``ondelete`` -- NO ACTION, as the bank-line key of a
+    # match is** (``fk_statement_match_members_line_account``): a movement is
+    # money that moved, so a row holding one is history, and a statement that
+    # deletes such a row is REFUSED rather than taking the payment or
+    # purchase with it.  The ONE act that takes a movement off the books
+    # (:mod:`app.services.movement_removal`) deletes it first and on
+    # purpose; the doors that delete rows as a side effect of something else
+    # -- a definition's, an account's or a pay period's removal -- keep a
+    # holding row instead (:mod:`app.utils.archive_helpers`).  NO ACTION
+    # rather than RESTRICT is the line key's choice, taken for consistency:
+    # the two differ only in WHEN the check runs (the end of the statement
+    # against each row), and no statement in ``app/`` deletes a row and its
+    # movements together, so both refuse the same deletes.  Named at the re-create
+    # (migration ``c4a4e7d1b9f2``); it carried Postgres' default
+    # ``transaction_entries_transaction_id_fkey`` and ``ON DELETE CASCADE``
+    # until then.
     transaction_id = db.Column(
         db.Integer,
-        db.ForeignKey("budget.transactions.id", ondelete="CASCADE"),
+        db.ForeignKey(
+            "budget.transactions.id",
+            name="fk_transaction_entries_transaction_id",
+        ),
         nullable=False,
     )
     # The account this movement's money moved THROUGH -- its OWN fact since

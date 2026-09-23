@@ -1,0 +1,292 @@
+"""Plan step ``credit_card:CC-5-4a-4``: a row's delete never takes its movements.
+
+Rulings **R-CC54** parts (2) and (3) and **R-CC64** (developer 2026-09-22):
+the database stops cascading a row's delete to its payments and purchases, a
+match's key to its payment or purchase stops cascading like its key to the
+bank line, and the object layer stops cascading too -- "No door at any layer,
+now or written later, can delete a row still holding a payment or purchase:
+it errors where tests see it."
+
+Three things are graded here, each against the SHIPPED schema or code:
+
+* **the keys refuse** -- a bulk ``DELETE`` of a row holding a purchase (the
+  shape the template, account and pay-period doors used), an ORM
+  ``session.delete`` of one (the object layer's copy of the cascade, which
+  flipping the database key alone would have left open), and a ``DELETE`` of
+  a movement a match names;
+* **the one act still removes a movement** -- explicitly, the row staying;
+* **migration ``c4a4e7d1b9f2``** -- driven through its shipped ``upgrade`` /
+  ``downgrade`` (Definition of Done item 7, the shape
+  ``test_cc5_4a2_member_rekey`` uses): the three keys' exact definitions
+  each way, and the refusal on an act already naming no movement, which is
+  the one state the deleted leftover-match check existed for.
+
+The purchase is staged the way finding **CC-363**'s P5 measured it: a one-off
+envelope 'Home Improvement' holding a $25.00 purchase recorded from the bank's
+line through the real create door, which also records the match.
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+
+from app.extensions import db as _db
+from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.services import match_withdrawal, movement_removal
+from tests._test_helpers import (
+    add_entry,
+    load_migration_module,
+    run_migration_callable as _run,
+)
+# Pylint: ``shekel-private-module-import`` -- the statement-match builders are
+# the one way a test stages a bank line, a scope and an accepted act as the
+# app does (the convention ``test_cc5_4a2_member_rekey`` keeps).
+# pylint: disable=shekel-private-module-import
+from tests.test_services.test_statement_match._builders import (
+    a_bank_line,
+    a_one_off_envelope,
+    an_import,
+    filed_by,
+)
+
+#: This step's own revision, loaded so its SHIPPED callables are what runs.
+_M = load_migration_module(
+    "c4a4e7d1b9f2_a_row_s_delete_never_takes_its_movements.py",
+)
+
+#: The three keys this step flips, as ``pg_get_constraintdef`` prints them at
+#: head -- no ``ON DELETE`` clause is NO ACTION.
+_AT_HEAD = {
+    "fk_transaction_entries_transaction_id": (
+        "FOREIGN KEY (transaction_id) REFERENCES budget.transactions(id)"
+    ),
+    "fk_transaction_entries_owner_transaction": (
+        "FOREIGN KEY (transaction_id, owner_id) REFERENCES "
+        "budget.transactions(id, user_id)"
+    ),
+    "fk_statement_match_members_entry_account": (
+        "FOREIGN KEY (transaction_entry_id, account_id) REFERENCES "
+        "budget.transaction_entries(id, account_id)"
+    ),
+}
+
+#: ...and as the downgrade restores them: ``c4a4e7d1b9f2``'s parent, read off
+#: the 2026-09-22 17:06 production dump with ``pg_get_constraintdef`` (the
+#: single-column key under Postgres' default name).
+_BEFORE = {
+    "transaction_entries_transaction_id_fkey": (
+        "FOREIGN KEY (transaction_id) REFERENCES budget.transactions(id) "
+        "ON DELETE CASCADE"
+    ),
+    "fk_transaction_entries_owner_transaction": (
+        "FOREIGN KEY (transaction_id, owner_id) REFERENCES "
+        "budget.transactions(id, user_id) ON DELETE CASCADE"
+    ),
+    "fk_statement_match_members_entry_account": (
+        "FOREIGN KEY (transaction_entry_id, account_id) REFERENCES "
+        "budget.transaction_entries(id, account_id) ON DELETE CASCADE"
+    ),
+}
+
+_NAMES = tuple(set(_AT_HEAD) | set(_BEFORE))
+
+
+def _keys(session):
+    """Return ``{name: definition}`` for whichever of the keys exist now."""
+    rows = session.execute(
+        text(
+            "SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint "
+            " WHERE conname = ANY(:names)"
+        ),
+        {"names": list(_NAMES)},
+    ).all()
+    return dict(rows)
+
+
+def _day(seed_user):
+    """A bank day inside the bootstrap period, after the books opened."""
+    return seed_user["bootstrap_period"].start_date + timedelta(days=1)
+
+
+def _home_improvement(seed_user):
+    """P5's envelope holding a $25.00 purchase recorded from the bank's line.
+
+    Returns:
+        ``(row, created)`` -- the envelope and the create door's
+        :class:`~app.services.statement_match.CreatedPurchase` (the purchase
+        and the act that matches it to the line).
+    """
+    row = a_one_off_envelope(seed_user)
+    line = a_bank_line(
+        seed_user, an_import(seed_user), amount="-25.00",
+        posted_on=_day(seed_user), description="HOME DEPOT",
+    )
+    _db.session.commit()
+    created = filed_by(seed_user, line, row, by_rule=False)
+    _db.session.commit()
+    return row, created
+
+
+def _unmatched_purchase(seed_user):
+    """A one-off envelope holding a $25.00 purchase no match names."""
+    row = a_one_off_envelope(seed_user)
+    add_entry(
+        _db.session, seed_user, row, Decimal("25.00"), _day(seed_user),
+    )
+    _db.session.commit()
+    return row
+
+
+class TestTheKeysRefuse:
+    """No statement can delete a row holding a movement, or a named movement."""
+
+    def test_a_bulk_delete_of_a_row_holding_a_purchase_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The template / account / pay-period doors' shape: one bulk DELETE.
+
+        It cascaded the purchase away until this step (finding **CC-363**,
+        P5: Checking read $25.00 above the bank).
+        """
+        with app.app_context():
+            row = _unmatched_purchase(seed_user)
+            with pytest.raises(IntegrityError) as caught:
+                db.session.query(Transaction).filter_by(id=row.id).delete(
+                    synchronize_session=False,
+                )
+                db.session.flush()
+            db.session.rollback()
+            assert "fk_transaction_entries_" in str(caught.value)
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=row.id,
+            ).count() == 1
+
+    def test_an_orm_delete_of_a_row_holding_a_purchase_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The object layer's copy of the cascade is gone too (ruling R-CC64).
+
+        ``cascade="all, delete-orphan"`` on ``Transaction.entries`` had the
+        unit of work DELETE the purchase before the row, so the database never
+        saw a row holding one; a later door deleting the Clothes row directly
+        would have erased the $107.57 silently.
+        """
+        with app.app_context():
+            row = _unmatched_purchase(seed_user)
+            with pytest.raises(IntegrityError) as caught:
+                db.session.delete(row)
+                db.session.flush()
+            db.session.rollback()
+            assert "fk_transaction_entries_" in str(caught.value)
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=row.id,
+            ).count() == 1
+
+    def test_a_movement_a_match_names_cannot_be_deleted(
+        self, app, db, seed_user,
+    ):
+        """The member's movement key is NO ACTION, like its line key (R-CC54 (3))."""
+        with app.app_context():
+            _row, created = _home_improvement(seed_user)
+            with pytest.raises(IntegrityError) as caught:
+                db.session.query(TransactionEntry).filter_by(
+                    id=created.entry_id,
+                ).delete(synchronize_session=False)
+                db.session.flush()
+            db.session.rollback()
+            assert "fk_statement_match_members_entry_account" in str(
+                caught.value,
+            )
+            assert db.session.query(StatementMatchMember).filter_by(
+                transaction_entry_id=created.entry_id,
+            ).count() == 1
+
+
+class TestTheOneActStillRemovesAMovement:
+    """``movement_removal`` deletes each movement itself; its row stays."""
+
+    def test_an_unmatched_purchase_goes_and_its_row_stays(
+        self, app, db, seed_user,
+    ):
+        """No ``delete-orphan`` any more: the act's explicit DELETE is the path.
+
+        Removed from the collection BEFORE it was deleted, the flush would
+        NULL ``transaction_id`` and ``NOT NULL`` would refuse it.
+        """
+        with app.app_context():
+            row = _unmatched_purchase(seed_user)
+            (purchase,) = row.entries
+            purchase_id = purchase.id
+            movement_removal.remove_movements(
+                [purchase], seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            assert row.entries == []
+            db.session.commit()
+            assert db.session.get(TransactionEntry, purchase_id) is None
+            assert db.session.get(Transaction, row.id) is not None
+
+    def test_a_matched_purchase_goes_with_its_act(self, app, db, seed_user):
+        """Out of the match FIRST, so the NO ACTION member key never meets it."""
+        with app.app_context():
+            row, created = _home_improvement(seed_user)
+            movement_removal.remove_movements(
+                [db.session.get(TransactionEntry, created.entry_id)],
+                seed_user["user"].id,
+                because=match_withdrawal.LEFT_THE_BOOKS,
+            )
+            db.session.commit()
+            assert db.session.get(TransactionEntry, created.entry_id) is None
+            assert db.session.get(StatementMatch, created.match_id) is None
+            assert db.session.get(Transaction, row.id) is not None
+
+
+class TestTheMigration:
+    """``c4a4e7d1b9f2``: the three keys each way, and its one refusal."""
+
+    def test_the_keys_are_no_action_at_head(self, app, db):
+        """The test database is built at head, so the keys read as upgraded."""
+        with app.app_context():
+            assert _keys(db.session) == _AT_HEAD
+
+    def test_the_downgrade_restores_every_cascade_and_the_upgrade_flips_back(
+        self, app, db,
+    ):
+        """Both directions, exactly -- including the single-column key's name."""
+        with app.app_context():
+            _run(_M.downgrade, db.session)
+            assert _keys(db.session) == _BEFORE
+            _run(_M.upgrade, db.session)
+            assert _keys(db.session) == _AT_HEAD
+
+    def test_an_act_already_naming_no_movement_refuses_the_upgrade(
+        self, app, db, seed_user,
+    ):
+        """The stored past a cascade stranded, asked of once before the check goes.
+
+        Staged under the downgraded schema the way the template delete made
+        it before this step: the envelope's bulk ``DELETE`` cascades the
+        purchase AND its member, and the act keeps its bank line alone.  The
+        upgrade names the act and writes nothing -- the keys still cascade.
+        """
+        with app.app_context():
+            row, created = _home_improvement(seed_user)
+            _run(_M.downgrade, db.session)
+            db.session.query(Transaction).filter_by(id=row.id).delete(
+                synchronize_session=False,
+            )
+            db.session.commit()
+            assert db.session.get(StatementMatch, created.match_id) is not None
+            with pytest.raises(RuntimeError) as caught:
+                _run(_M.upgrade, db.session)
+            db.session.rollback()
+            assert f"ids [{created.match_id}]" in str(caught.value)
+            assert "name no movement" in str(caught.value)
+            assert _keys(db.session) == _BEFORE

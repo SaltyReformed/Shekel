@@ -50,7 +50,6 @@ from app.models.statement_match import StatementMatchMember
 from app.services.cash_ledger import account_opening_fact
 
 from ._bars import CreationBars, is_a_holding_state
-from ._candidates import act_still_names_a_row
 from ._gaps import bounded_lines
 from ._rules import rules_for
 
@@ -83,18 +82,16 @@ def _spoken_for(account_id: int):
     Returns:
         The query of claimed ``bank_statement_line_id`` values.
     """
+    # **Every line membership is a claim** (plan step
+    # ``credit_card:CC-5-4a-4``, ruling **R-CC54**): an act naming a line and
+    # no movement is unrepresentable now rather than filtered here, so this
+    # and ``_candidates.matched_subjects`` read the members as they stand and
+    # cannot disagree about what "explained" means.
     return (
         db.session.query(StatementMatchMember.bank_statement_line_id)
         .filter(
             StatementMatchMember.account_id == account_id,
             StatementMatchMember.bank_statement_line_id.isnot(None),
-            # ...and the act still names an app row, or the membership is not a
-            # claim about anything (:func:`~._candidates.act_still_names_a_row`,
-            # which carries the argument and the measurement).  The SAME clause
-            # ``matched_subjects`` applies, so the screen's list, the grid's
-            # count and the offer set cannot disagree about what "explained"
-            # means.
-            act_still_names_a_row(),
         )
     )
 
@@ -135,13 +132,14 @@ def skipped(account_id: int):
     of what the store is for: a skip nothing reads is a line that comes back on
     the next visit.
 
-    **No "still names a row" clause here, and the asymmetry with**
-    :func:`_spoken_for` **is the difference between the two acts.**  A match can
-    outlive its subject -- destroying the last app row it names leaves it
-    claiming a line and asserting nothing -- so that reader has to ask whether
-    the claim survives.  A skip names NO app row, so there is nothing for it to
-    outlive: it stands until the owner undoes it, or until its own line goes
-    (``fk_statement_line_skips_line_account``, ``ON DELETE CASCADE``).
+    **No "still names a row" clause here, and none in** :func:`_spoken_for`
+    **either since plan step ``credit_card:CC-5-4a-4``.**  A match could
+    outlive its subject until then -- destroying the last movement it named
+    left it claiming a line and asserting nothing -- so that reader asked
+    whether the claim survived; the movement's key refuses that now (ruling
+    **R-CC54**).  A skip names NO app row, so there was never anything for it
+    to outlive: it stands until the owner undoes it, or until its own line
+    goes (``fk_statement_line_skips_line_account``, ``ON DELETE CASCADE``).
 
     Args:
         account_id: The account.

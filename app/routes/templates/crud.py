@@ -548,25 +548,7 @@ def archive_template(template_id):
         abort(404)
 
     template.is_active = False
-
-    # Soft-delete projected transactions for this template.
-    # Centralized ``is_projected_clause`` (D6-09 / MED-02) so the
-    # archive-template, unarchive-template, and hard-delete-fallback
-    # filters in this module share one definition.
-    scope = (
-        Transaction.template_id == template.id,
-        is_projected_clause(Transaction),
-        Transaction.is_deleted.is_(False),
-    )
-    # A soft-deleted row contributes to no balance, so whatever its purchases
-    # posted must come back out FIRST -- and it must be first: the deploy
-    # resync skips ``is_deleted`` rows, so a leg stranded here is stranded for
-    # good rather than until the next boot (plan step X-f3b, ruling **R-FM**).
-    for txn in definition_delete.rows_holding_purchase_postings(*scope):
-        posting_service.reverse_postings_before_delete(txn)
-    deleted_count = db.session.query(Transaction).filter(
-        *scope,
-    ).update({"is_deleted": True}, synchronize_session="fetch")
+    deleted_count, kept = _soft_delete_projected_rows(template.id)
 
     conflict = commit_or_handle_stale(StaleConflictContext(
         logger=logger,
@@ -580,12 +562,57 @@ def archive_template(template_id):
     if conflict is not None:
         return conflict
 
+    stays = kept.stays("row", named=True)
     flash(
         f"Recurring transaction '{template.name}' archived. "
-        f"{deleted_count} projected transaction(s) removed.",
+        f"{deleted_count} projected transaction(s) removed"
+        + (f"; {stays}." if stays else "."),
         "info",
     )
     return redirect(url_for("templates.list_templates"))
+
+
+def _soft_delete_projected_rows(template_id):
+    """Hide a definition's projected rows that hold NOTHING; keep the rest.
+
+    The archive's write, shared by :func:`archive_template` and the permanent
+    delete's archive fallback so the two cannot come to hide different rows.
+    **A row holding a payment or purchase is NOT hidden** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC63**: "Archive hides only rows
+    that hold nothing"): a soft-deleted row contributes to no balance, so
+    hiding one took its money off the books -- measured on the 2026-09-22
+    production dump, archiving 'Clothes' lifted Checking's 09-10-period
+    projection from $187.12 to $787.12 with a $107.57 purchase inside it,
+    exactly what the permanent delete did.  The row stays as it is, visible,
+    for the owner to close, lower or delete through its own door.
+
+    **No posting reversal precedes the statement any more, and none is
+    owed.**  One ran here because a soft-deleted row's purchase postings
+    would strand (plan step X-f3b, ruling **R-FM**); a row holds a posting
+    only through a DATED purchase, which is a movement
+    (``_posting_purchases.posted_purchase_exists_clause`` is an ``EXISTS``
+    over its entries), so every row this hides holds none by construction.
+    Routed through ``is_projected_clause`` (D6-09 / MED-02) as the
+    unarchive's restore scope is.
+
+    Args:
+        template_id: The definition being archived.
+
+    Returns:
+        ``(hidden, kept)`` -- how many rows the statement hid, and the
+        :class:`~app.utils.archive_helpers.HeldMovements` of the projected
+        rows it kept.
+    """
+    projected = (
+        Transaction.template_id == template_id,
+        is_projected_clause(Transaction),
+        Transaction.is_deleted.is_(False),
+    )
+    kept = archive_helpers.rows_holding_movements(*projected)
+    hidden = db.session.query(Transaction).filter(
+        *projected, archive_helpers.holds_nothing(),
+    ).update({"is_deleted": True}, synchronize_session="fetch")
+    return hidden, kept
 
 
 @templates_bp.route("/templates/<int:template_id>/unarchive", methods=["POST"])
@@ -656,12 +683,17 @@ def hard_delete_template(template_id):
 
     Two-path logic:
       1. If the template has any settled transaction (Paid or Received --
-         anything with ``Status.is_settled = True``), OR any
+         anything with ``Status.is_settled = True``), OR any of its rows
+         holds a payment or purchase whatever its status
+         (``archive_helpers.template_holding_movements``, plan step
+         ``credit_card:CC-5-4a-4``, rulings **R-CC54** / **R-CC66**), OR any
          standing merchant rule files a merchant's bank spending into it
          (``archive_helpers.template_has_standing_rule``, plan step
          ``bank_import:X-gd-2``), permanent deletion is blocked.  The template
-         is archived instead (if not already) and the user is warned, with the
-         sentence naming which of the two reasons applied.
+         is archived instead (if not already) -- the archive's own write,
+         which keeps every row holding a movement live (ruling **R-CC63**) --
+         and the user is warned, with the sentence naming which of the three
+         reasons applied.
       2. If no settled history exists, all linked NON-SETTLED transactions
          are deleted first, then the template itself is permanently
          removed -- ``definition_delete.permanently_delete_definition``, the
@@ -698,28 +730,49 @@ def hard_delete_template(template_id):
     # branch mirrors ``transfers.hard_delete_transfer_template`` but is too
     # thin and too coupled to extract (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
-    # **TWO reasons a permanent delete is refused, and each gets its own
-    # sentence** (plan step ``bank_import:X-gd-2``).  The second was missing:
-    # ``fk_merchant_rules_template_account`` is ON DELETE CASCADE, so deleting
-    # a template destroyed every standing merchant rule filing into it, under
-    # a flash that mentioned only the template.  Under ruling R-GS a rule is
-    # never un-stated by its owner, which made that cascade the only way one
-    # could disappear at all.  Measured 2026-08-26: template 19 on the
-    # developer's own data carries a rule and no settled history, so the
-    # permanent arm was live on it.
+    # **THREE reasons a permanent delete is refused, and each gets its own
+    # sentence** (plan step ``bank_import:X-gd-2`` added the rule's).  The
+    # rule's was missing: ``fk_merchant_rules_template_account`` is ON DELETE
+    # CASCADE, so deleting a template destroyed every standing merchant rule
+    # filing into it, under a flash that mentioned only the template.  Under
+    # ruling R-GS a rule is never un-stated by its owner, which made that
+    # cascade the only way one could disappear at all.  Measured 2026-08-26
+    # on the developer's DEV data: template 19 carried a rule there.  *The
+    # 2026-09-22 production dump carries none, so its permanent arm WAS live
+    # on production -- and destroyed the $107.57 purchase its current row
+    # holds, which the second reason now refuses.*
+    #
+    # **The movement reason is plan step ``credit_card:CC-5-4a-4``'s**
+    # (rulings **R-CC54**, **R-CC66**, closing finding **CC-363**): a row
+    # holding a payment or purchase is history whatever its status, and the
+    # permanent delete below removes every non-settled row, so it deleted the
+    # money with the row.  Asked AFTER the settled question, whose sentence is
+    # the truer one when both hold, and it names what is held.
     #
     # The REASON is resolved before the branch rather than inside it, because
-    # the archive body below is long and identical for both -- and telling an
-    # owner their template "has payment history" when what it has is a
-    # merchant rule is the screens-stating-what-is-false defect this arc keeps
-    # closing.
+    # the archive body below is long and identical for all three -- and
+    # telling an owner their template "has payment history" when what it has
+    # is a merchant rule, or an unpaid envelope's purchase, is the
+    # screens-stating-what-is-false defect this arc keeps closing.
     refusal = None
+    held = None
     if archive_helpers.template_has_paid_history(template.id):
         refusal = (
             f"'{template.name}' has payment history and cannot be permanently "
             "deleted. It has been archived instead."
         )
-    elif archive_helpers.template_has_standing_rule(template.id):
+    else:
+        held = archive_helpers.template_holding_movements(template.id)
+    if held:
+        stays = held.stays("row", named=False)
+        refusal = (
+            f"'{template.name}' holds {held.noun} and cannot be permanently "
+            "deleted. It has been archived instead"
+            + (f"; {stays}." if stays else ".")
+        )
+    elif refusal is None and archive_helpers.template_has_standing_rule(
+        template.id,
+    ):
         refusal = (
             f"'{template.name}' is where a merchant's bank spending goes and "
             "cannot be permanently deleted -- that answer would go with it. "
@@ -730,20 +783,9 @@ def hard_delete_template(template_id):
         if template.is_active:
             template.is_active = False
             # pylint: enable=duplicate-code
-            # Soft-delete projected transactions (same logic as
-            # archive_template).  Routed through ``is_projected_clause``
-            # (D6-09 / MED-02); see ``archive_template`` above, including why
-            # the posting reversal has to precede the bulk statement.
-            fallback_scope = (
-                Transaction.template_id == template.id,
-                is_projected_clause(Transaction),
-                Transaction.is_deleted.is_(False),
-            )
-            for txn in definition_delete.rows_holding_purchase_postings(*fallback_scope):
-                posting_service.reverse_postings_before_delete(txn)
-            db.session.query(Transaction).filter(
-                *fallback_scope,
-            ).update({"is_deleted": True}, synchronize_session="fetch")
+            # The archive's own write, so the fallback hides exactly the rows
+            # the archive button would (:func:`_soft_delete_projected_rows`).
+            _soft_delete_projected_rows(template.id)
             conflict = commit_or_handle_stale(StaleConflictContext(
                 logger=logger,
                 log_label="hard_delete_template archive-fallback",
@@ -757,10 +799,10 @@ def hard_delete_template(template_id):
                 return conflict
         return redirect(url_for("templates.list_templates"))
 
-    # No settled history and no standing rule -- the one act that permanently
-    # removes a definition, shared with the account hard-delete since plan step
-    # balance:X-bi-7a (its docstring carries the order: purchase postings
-    # reversed, the non-settled rows deleted, then the definition).
+    # No settled history, no row holding a movement and no standing rule --
+    # the one act that permanently removes a definition, shared with the
+    # account hard-delete since plan step balance:X-bi-7a (its docstring
+    # carries the order: the non-settled rows deleted, then the definition).
     template_name = template.name
     definition_delete.permanently_delete_definition(template)
     conflict = commit_or_handle_stale(StaleConflictContext(

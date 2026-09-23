@@ -75,25 +75,25 @@ transfer delete, and the status seam's ``$0.00`` / ``purchases`` record
 (finding **CC-358**: until this step the seam deleted the payment itself and
 withdrew nothing, so the act kept its line alone and a re-match raised on
 ``uq_statement_match_members_line``).  The member of an act that KEEPS
-another app row is taken out explicitly, as the move always did, rather than
-left to the member key's cascade: the act is the one path a movement leaves
-by, and plan step ``credit_card:CC-5-4a-4`` stops that key cascading.
+another app row is taken out explicitly, as the move always did: the act is
+the one path a movement leaves by, and the member key does not cascade.
 
-**The claim "every door" is still NOT made here, because it is still false.**
-Three BULK doors destroy movements without the act -- ``routes/templates/
-crud``'s permanent delete (``definition_delete``), the account delete's
-ghost rows, and ``pay_period_write.retire_paydays``' cascade -- because they
-judge what they may destroy by a row's STATUS rather than by what it holds
-(finding **CC-363**, measured: a permitted template delete erased a `$25.00`
-purchase recorded from a bank line, and the act kept its line alone).  Ruling
-**R-CC54** ends that at the root in plan step ``credit_card:CC-5-4a-4``: a row
-holding a movement is history those doors keep, and neither of a match's keys
-cascades.  Until then the INVARIANT rests on
-:func:`~app.services.statement_match.matched_subjects`' own predicate, which
-stops counting a bank line as explained while its act names no app row; that
-step deletes it.  What this module adds on top is the CLEANUP and the
-DISCLOSURE at the doors the owner actually presses: the false record goes
-rather than lingering, and the dialog names the lines the press frees.
+**"Every door" is structural since plan step ``credit_card:CC-5-4a-4``**
+(rulings **R-CC54**, **R-CC63**..**R-CC65**, closing finding **CC-363**).
+Three BULK doors destroyed movements without the act -- the template and
+account permanent deletes and the pay-period retire -- because they judged
+what they may destroy by a row's STATUS rather than by what it held
+(measured: a permitted template delete erased a `$25.00` purchase recorded
+from a bank line, and the act kept its line alone).  Now a row holding a
+movement is history those doors keep, and neither the row's key to its
+movements nor the member's key to its movement cascades, so no statement can
+empty an act behind this module's back.  The read-time predicate that
+stopped counting such an act's line as explained
+(``statement_match._candidates.act_still_names_a_row``) is DELETED with it:
+an act naming no app row is unrepresentable rather than filtered.  What this
+module adds is the CLEANUP and the DISCLOSURE at the doors the owner
+actually presses: the act the press empties goes, and the dialog names the
+lines it frees.
 
 **Why it is a leaf module and not part of** :mod:`app.services.statement_match`.
 That package imports ``entry_service``, ``credit_workflow`` and
@@ -258,9 +258,10 @@ def _acts_naming(entry_ids: "set[int]") -> "list[StatementMatch]":
     that names that payment (ruling **R-CC43**) is on the CARD's account.
     Deleting the bill takes the payment with it, and an act lookup scoped to
     checking would have left that act standing while its member cascaded
-    away -- the false record :func:`~app.services.statement_match
-    .act_still_names_a_row` stops counting but this module exists to remove,
-    and the freed card line undisclosed by the dialog.
+    away -- an act naming a line and no movement, and the freed card line
+    undisclosed by the dialog.  (Since plan step ``credit_card:CC-5-4a-4``
+    the member key refuses rather than cascades, so a wrong scope here would
+    fail loud at the flush instead.)
 
     Args:
         entry_ids: Entry ids about to leave -- a purchase's, or a row's
@@ -299,9 +300,11 @@ def _loses_every_row(act: StatementMatch, entry_ids: "set[int]") -> bool:
         entry_ids: Movement ids about to leave the table.
 
     Returns:
-        ``True`` when every app-side member is in the going set.  An act
-        holding no app-side member at all answers ``True`` -- it already
-        asserts nothing, and taking it is the repair rather than a surprise.
+        ``True`` when every app-side member is in the going set.  Every act
+        reaching here names at least one of them (:func:`_acts_naming`), and
+        since plan step ``credit_card:CC-5-4a-4`` no act can name no movement
+        at all (ruling **R-CC54**), so the empty case this once answered
+        ``True`` for has no subject.
     """
     return all(
         member.transaction_entry_id in entry_ids
@@ -422,8 +425,7 @@ def _withdraw(
 
     The members go with each act through the ORM cascade and the composite
     foreign key alike, which is what puts the lines back among the unexplained:
-    ``statement_match.matched_subjects`` stops counting a line whose act names
-    no app row.
+    no member names them any more.
 
     Args:
         acts: The acts to withdraw.

@@ -18,14 +18,21 @@ with a surviving row is now undeletable by the database, so the order below
 body, so the two doors cannot part again.
 
 **What the act is, in order.**  Every NON-SETTLED row the definition names is
-deleted first -- after its purchase postings are reversed, because
-``transaction_entries`` CASCADE from their parent and
-``journal_entries.transaction_entry_id`` is ``ON DELETE SET NULL``, so a
-purchase deleted without a reversal leaves both of its legs on their ledger
-accounts with nothing left to explain them (ruling **R-FM**: a PROJECTED
-envelope holds postings once a purchase records its bank day).  Then the
-definition goes through the session, so ``amount_versions``' delete-orphan
-and the rule's cascade run.  The delete is restricted to non-settled rows via
+deleted first, then the definition goes through the session, so
+``amount_versions``' delete-orphan and the rule's cascade run.  **None of
+those rows holds a payment or a purchase** (plan step
+``credit_card:CC-5-4a-4``, rulings **R-CC54**, **R-CC64**): a row holding one
+is history, which the definition door asks
+(:func:`~app.utils.archive_helpers.template_holding_movements`) and archives
+on, the account door asks of its rule-less definitions
+(``account_holding_movements``), and the row door removes through
+:mod:`app.services.movement_removal` before it gets here -- and the database
+refuses the delete otherwise (``fk_transaction_entries_transaction_id``, NO
+ACTION).  Until that step the movements CASCADED with their rows, and this act
+reversed each purchase's postings first so their legs would not strand; a row
+holds a posting only through a dated purchase, so with no movement in scope
+there is no posting to reverse, and the loop is deleted rather than kept as a
+guard for a state the key refuses.  The delete is restricted to non-settled rows via
 ``Status.is_settled`` (CRIT-05 / E-22) so a race-window mark-done cannot
 destroy Paid / Received history; **the two definition doors have already
 asked :func:`~app.utils.archive_helpers.template_has_paid_history`** --
@@ -70,7 +77,12 @@ def rows_holding_purchase_postings(*scope):
     this returns the empty list with ONE indexed read in the ordinary case and
     the callers loop over nothing.  Moved here whole from
     ``routes/templates/crud`` at plan step ``balance:X-bi-7a``, with the
-    delete that uses it; the archive and restore doors still call it.
+    delete that used it.  **The unarchive's restore is its one caller since
+    plan step ``credit_card:CC-5-4a-4``**: the archive and this module's
+    delete no longer reach a row holding a movement (rulings **R-CC63**,
+    **R-CC54**), and a row holds a posting only through one, so both loops
+    were deleted.  The restore keeps it for rows an archive hid before that
+    step.
 
     Args:
         *scope: The SQLAlchemy clauses selecting the rows the bulk statement is
@@ -129,9 +141,10 @@ def permanently_delete_definition(template) -> None:
 
     The module docstring carries the order and why each step is where it is.
     The caller has refused on :func:`~app.utils.archive_helpers.template_has_paid_history`
-    (and, at the definition's own door, on a standing merchant rule) BEFORE
-    reaching here; the settled-row restriction below is the backstop for a
-    caller that has not.
+    and on a row holding a movement (and, at the definition's own door, on a
+    standing merchant rule) BEFORE reaching here; the settled-row restriction
+    below is the backstop for a caller that has not, and the movement keys
+    are the database's own.
 
     Args:
         template: The :class:`~app.models.transaction_template.TransactionTemplate`
@@ -141,13 +154,8 @@ def permanently_delete_definition(template) -> None:
     settled_status_ids = db.session.query(Status.id).filter(
         Status.is_settled.is_(True)
     ).scalar_subquery()
-    delete_scope = (
+    db.session.query(Transaction).filter(
         Transaction.template_id == template.id,
         Transaction.status_id.notin_(settled_status_ids),
-    )
-    for txn in rows_holding_purchase_postings(*delete_scope):
-        posting_service.reverse_postings_before_delete(txn)
-    db.session.query(Transaction).filter(
-        *delete_scope,
     ).delete(synchronize_session="fetch")
     db.session.delete(template)

@@ -43,18 +43,28 @@ out of every match, delete.
    another row loses this member and turns amber on the register.  Reversing
    first changes nothing it reads -- a reversal writes journal entries and
    touches neither a movement nor a member.
-3. **Delete it**, by taking it out of its row's ``entries`` -- the
-   ``delete-orphan`` relationship issues the ``DELETE`` at the next flush --
-   so a reconcile that walks ``txn.entries`` after the act returns (the
-   settle verbs', the entry door's re-derivation) never meets a movement
-   that is gone.  **NOT flushed here**: a door that deletes the row next
-   deletes it through the ORM, whose unit of work orders the movement's
-   ``DELETE`` first; the transfer delete, whose shadows go by the database's
-   cascade, flushes first itself rather than leave that order to the unit of
-   work's sort; and the status seam runs this inside callers'
-   ``no_autoflush`` blocks (the carry-forward batch), where a flush the old
-   seam never made would write an intermediate state early.  Step 2 flushes
-   only when a match named a movement.
+3. **Delete it** -- ``db.session.delete`` on the movement, then out of its
+   row's ``entries`` so a reconcile that walks ``txn.entries`` after the act
+   returns (the settle verbs', the entry door's re-derivation) never meets a
+   movement that is gone.  **This is the ONLY delete of a movement there is**
+   (plan step ``CC-5-4a-4``, ruling **R-CC64**): the row's ``entries``
+   relationship carries no delete cascade and its database keys are
+   ``NO ACTION``, so no row delete -- through the ORM or in bulk -- can take
+   a movement with it.  Deleted BEFORE it leaves the collection: a child
+   removed from a relationship with no ``delete-orphan`` is otherwise
+   NULLED at flush, which ``transaction_id``'s ``NOT NULL`` refuses; marked
+   deleted first, the flush emits the ``DELETE`` alone (measured on
+   SQLAlchemy 2.0.54).  The collection itself is read before either, so a
+   lazy load's autoflush cannot land the ``DELETE`` under it first.
+   **NOT flushed here**: a door that deletes the row
+   next deletes it through the ORM, whose unit of work orders the
+   movement's ``DELETE`` first; the transfer delete, whose shadows go by the
+   database's cascade, flushes first itself, because a shadow's ``DELETE``
+   landing before its movements' is now refused rather than cascaded; and
+   the status seam runs this inside callers' ``no_autoflush`` blocks (the
+   carry-forward batch), where a flush the old seam never made would write
+   an intermediate state early.  Step 2 flushes only when a match named a
+   movement.
 
 **What it does NOT do** is anything about the ROW.  Whether the row goes, stays
 as a tombstone, re-derives its figure or re-books its payback is the door's;
@@ -63,13 +73,17 @@ account is not a removal either -- the movement stays on the books -- so it
 takes only step 2 (``match_withdrawal.withdraw_for_moved_movement``, ruling
 **R-CC46**).
 
-**Where it does not reach yet** (finding **CC-363**): the template and account
-permanent deletes and the pay-period retire destroy movements by bulk
-statement or cascade without it.  Ruling **R-CC54**'s second and third parts
-end that in plan step ``credit_card:CC-5-4a-4`` -- a row holding a movement is
-history those doors keep, and neither of a match's keys cascades -- and until
-then ``statement_match.matched_subjects``' own predicate is what keeps a
-stranded act from reading as a claim.
+**The doors that are NOT row deletes do not reach a movement at all** (plan
+step ``credit_card:CC-5-4a-4``, rulings **R-CC54**, **R-CC63**..**R-CC65**,
+closing finding **CC-363**).  The template, transfer-template and account
+permanent deletes destroyed movements by bulk statement or cascade, the
+pay-period truncate / regenerate / reset by cascade, and the archives hid
+them: a row holding a movement is now HISTORY each of those doors keeps --
+the permanent deletes archive instead, the archives leave it live, the
+pay-period doors refuse its period
+(:mod:`app.utils.archive_helpers`' ``*_holding_movements`` family) -- and
+the keys that let them try refuse instead.  The owner takes a movement off
+the books by deleting it, or its row, through a door that calls this.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a
 frozen dataclass out, no Flask import.  It MUTATES and does NOT commit -- the
@@ -79,6 +93,7 @@ step 2's match writes need.
 
 from __future__ import annotations
 
+from app.extensions import db
 from app.services import match_withdrawal, posting_service
 from app.services.match_withdrawal import MatchWithdrawal
 
@@ -119,5 +134,14 @@ def remove_movements(
         movements, owner_id, because=because, rows_leaving=rows_leaving,
     )
     for movement in movements:
-        movement.transaction.entries.remove(movement)
+        # The collection is read FIRST, then the movement is deleted, then it
+        # leaves the collection -- the order the module docstring's step 3
+        # measures.  Removed before it is deleted, the flush would NULL the
+        # movement's ``transaction_id`` instead of deleting it; deleted before
+        # the collection is loaded, the lazy load's autoflush would emit the
+        # DELETE first and load a collection it is no longer in (step 2's
+        # flush expires it, which is how a MATCHED purchase met that).
+        family = movement.transaction.entries
+        db.session.delete(movement)
+        family.remove(movement)
     return withdrawn

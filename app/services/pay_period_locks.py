@@ -91,17 +91,30 @@ class PeriodLockReason(enum.Enum):
     The members are ordered by precedence.  The classifier returns the
     FIRST applicable reason, so a historical period that also holds a
     settled transaction reports ``HISTORICAL``.
+
+    **``HOLDS_MOVEMENT`` joined at plan step ``credit_card:CC-5-4a-4``**
+    (rulings **R-CC54**: "truncate/regenerate lock its period", and
+    **R-CC66**'s badge): a period holding a row -- any status, soft-deleted
+    or not -- that holds a payment or a purchase, dated or not.  A movement
+    is money that moved, so a row holding one is history, and deleting the
+    period deleted it through ``transactions.pay_period_id``'s cascade;
+    the movement's key refuses that now, and this makes the refusal a
+    designed one.  It outranks ``LEDGER_POSTINGS`` because it is the truer
+    sentence where both hold: a dated purchase's own legs are what make a
+    period's ledger non-zero.
     """
 
     HISTORICAL = "historical"
     SETTLED_TXN = "settled"
+    HOLDS_MOVEMENT = "holds_movement"
     LEDGER_POSTINGS = "ledger_postings"
 
 
 def _resolve_lock(
-    *, is_historical: bool, has_settled: bool, has_unbalanced_ledger: bool,
+    *, is_historical: bool, has_settled: bool, holds_movement: bool,
+    has_unbalanced_ledger: bool,
 ) -> PeriodLockReason | None:
-    """Apply the lock-reason precedence to three already-computed booleans.
+    """Apply the lock-reason precedence to four already-computed booleans.
 
     The single source of truth for the ordering, shared by the
     single-period and bulk classifiers so the two query strategies
@@ -132,6 +145,8 @@ def _resolve_lock(
         is_historical: The period has already ended (``end_date`` is
             before the reference date).
         has_settled: The period holds a non-deleted settled transaction.
+        holds_movement: A row in the period holds a payment or a purchase
+            (see :func:`_period_ids_holding_movement`).
         has_unbalanced_ledger: The period's journal entries do NOT net to
             zero per ledger account -- posted financial state a CASCADE
             delete would mis-state (see
@@ -145,6 +160,8 @@ def _resolve_lock(
         return PeriodLockReason.HISTORICAL
     if has_settled:
         return PeriodLockReason.SETTLED_TXN
+    if holds_movement:
+        return PeriodLockReason.HOLDS_MOVEMENT
     if has_unbalanced_ledger:
         return PeriodLockReason.LEDGER_POSTINGS
     return None
@@ -155,7 +172,7 @@ def classify_schedule_locks(
 ) -> "dict[int, PeriodLockReason | None]":
     """Return ``{period_id: reason | None}`` for every SAVED period of *calendar*.
 
-    Two set queries plus an in-memory date check -- the no-N+1 path the truncate
+    Three set queries plus an in-memory date check -- the no-N+1 path the truncate
     and regenerate doors run before they delete anything, and the settings page
     renders as a per-period badge.
 
@@ -208,16 +225,42 @@ def classify_schedule_locks(
         return {}
 
     settled = _period_ids_with_settled_transaction(period_ids)
+    holding = _period_ids_holding_movement(period_ids)
     unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
 
     return {
         period.period_id: _resolve_lock(
             is_historical=period.end_date < as_of,
             has_settled=period.period_id in settled,
+            holds_movement=period.period_id in holding,
             has_unbalanced_ledger=period.period_id in unbalanced,
         )
         for period in saved
     }
+
+
+def _period_ids_holding_movement(period_ids: list[int]) -> set[int]:
+    """Return the ``period_ids`` holding a row that holds a payment or purchase.
+
+    **Every row, soft-deleted or not, and every status** (plan step
+    ``credit_card:CC-5-4a-4``, ruling **R-CC54**): the period's delete takes
+    every row filed under it through ``transactions.pay_period_id``'s
+    cascade, hidden ones and transfer shadows included (a shadow's period
+    is its transfer's, Transfer Invariant 3), so any of them holding a
+    movement is one the database now refuses to lose.  Dated or not: an
+    un-dated purchase is money in flight, as recorded as a dated one.
+
+    Args:
+        period_ids: The pay-period ids being classified.
+
+    Returns:
+        The subset holding such a row.
+    """
+    rows = db.session.query(Transaction.pay_period_id).filter(
+        Transaction.pay_period_id.in_(period_ids),
+        Transaction.entries.any(),
+    ).distinct().all()
+    return {row[0] for row in rows}
 
 
 def _period_ids_with_settled_transaction(period_ids: list[int]) -> set[int]:

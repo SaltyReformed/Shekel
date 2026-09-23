@@ -12,11 +12,12 @@ endpoint name is preserved verbatim, so no ``url_for`` site or template
 changed.
 
 The three are one concern: which of the template's ``budget.transfers`` rows
-still stand for it.  Archiving soft-deletes its projected rows (and their
-shadow pairs, through the transfer service), unarchiving restores them and
-fills forward, and hard-delete either destroys the unsettled rows with the
-template or -- where settled history stands -- falls back to the archive
-(:func:`_archive`, the one spelling both archive arms share).  What the
+still stand for it.  Archiving soft-deletes its projected rows that hold
+nothing (and their shadow pairs, through the transfer service), unarchiving
+restores them and fills forward, and hard-delete either destroys the
+unsettled rows with the template or -- where settled history stands, or a
+leg holds a payment (plan step ``credit_card:CC-5-4a-4``) -- falls back to
+the archive (:func:`_archive`, the one spelling both archive arms share).  What the
 template IS (its CRUD routes, its form payload, its recurrence rule) stays in
 ``templates.py``, and what happens to a NON-repeating template's single row on
 an edit is :mod:`app.routes.transfers._instances`.
@@ -53,6 +54,7 @@ from flask_login import current_user
 
 from app.extensions import db
 from app.models.ref import Status
+from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import (
@@ -102,13 +104,19 @@ def _archive(template, ctx):
     1. ``is_active = False``, FLUSHED under the stale guard: the
        version-pinned ``UPDATE`` lands here, before the service's soft-deletes
        flush and before anything reads the active set.
-    2. Every projected, non-deleted transfer of the template is soft-deleted
-       THROUGH the transfer service, so its two shadow transactions go with it
-       (the three-level cascade: template archival -> transfer soft-delete ->
-       shadow soft-delete).  Routed through the centralized
-       ``is_projected_clause`` (D6-09 / MED-02) parameterised on ``Transfer``
-       so the rule "what does a Projected filter look like in SQL" is shared
-       with the Transaction filter sites.
+    2. Every projected, non-deleted transfer of the template that HOLDS
+       NOTHING is soft-deleted THROUGH the transfer service, so its two
+       shadow transactions go with it (the three-level cascade: template
+       archival -> transfer soft-delete -> shadow soft-delete).  **A transfer
+       either of whose legs holds a payment is kept** (plan step
+       ``credit_card:CC-5-4a-4``, rulings **R-CC63**, **R-CC65**): a
+       Projected leg holds one only as a reverted settle's kept payment, which
+       may still be matched to the bank's line, and a row holding a movement
+       is history the archive leaves as it is
+       (``archive_helpers.transfer_holds_nothing``).  Routed through the
+       centralized ``is_projected_clause`` (D6-09 / MED-02) parameterised on
+       ``Transfer`` so the rule "what does a Projected filter look like in
+       SQL" is shared with the Transaction filter sites.
     3. The loan this template pays into, if it is one, has its standing
        payment re-derived (ruling **R-R85**): with this template out of the
        active set the next-oldest transfer into the loan is PROMOTED and its
@@ -123,22 +131,31 @@ def _archive(template, ctx):
         ctx: The stale-race context the caller reports through.
 
     Returns:
-        The number of projected transfers retired, or a refusal
-        :class:`Response` (the stale race, or the promotion's refusal) the
-        caller returns verbatim, the session rolled back.
+        ``(retired, kept)`` -- the number of projected transfers retired and
+        the :class:`~app.utils.archive_helpers.HeldMovements` of the
+        projected ones kept -- or a refusal :class:`Response` (the stale race,
+        or the promotion's refusal) the caller returns verbatim, the session
+        rolled back.
     """
     template.is_active = False
     stale = flush_or_handle_stale(ctx)
     if stale is not None:
         return stale
 
+    projected = (
+        Transfer.transfer_template_id == template.id,
+        is_projected_clause(Transfer),
+        Transfer.is_deleted.is_(False),
+    )
+    kept = archive_helpers.rows_holding_movements(
+        Transaction.transfer_id.in_(
+            db.session.query(Transfer.id).filter(*projected)
+        ),
+        counted_by=Transaction.transfer_id,
+    )
     transfers_to_delete = (
         db.session.query(Transfer)
-        .filter(
-            Transfer.transfer_template_id == template.id,
-            is_projected_clause(Transfer),
-            Transfer.is_deleted.is_(False),
-        )
+        .filter(*projected, archive_helpers.transfer_holds_nothing())
         .all()
     )
     for xfer in transfers_to_delete:
@@ -149,7 +166,7 @@ def _archive(template, ctx):
     )
     if refused is not None:
         return refused
-    return len(transfers_to_delete)
+    return len(transfers_to_delete), kept
 
 
 @transfers_bp.route("/transfers/<int:template_id>/archive", methods=["POST"])
@@ -175,17 +192,20 @@ def archive_transfer_template(template_id):
         abort(404)
 
     ctx = _stale_context("archive_transfer_template", template_id)
-    removed = _archive(template, ctx)
-    if not isinstance(removed, int):
-        return removed
+    archived = _archive(template, ctx)
+    if not isinstance(archived, tuple):
+        return archived
+    removed, kept = archived
 
     conflict = commit_or_handle_stale(ctx)
     if conflict is not None:
         return conflict
 
+    stays = kept.stays("transfer", named=True)
     flash(
         f"Recurring transfer '{template.name}' archived. "
-        f"{removed} projected transfer(s) removed.",
+        f"{removed} projected transfer(s) removed"
+        + (f"; {stays}." if stays else "."),
         "info",
     )
     return redirect(url_for("transfers.list_transfer_templates"))
@@ -300,9 +320,11 @@ def hard_delete_transfer_template(template_id):
          deletion, shadow transactions no longer exist in the table.
 
     Two-path logic:
-      - History exists (Paid transfers): permanent deletion is
-        blocked.  Template is archived instead (if not already) and the
-        user is warned (:func:`_archive_instead_of_delete`).
+      - History exists (Paid transfers, or a transfer whose leg holds a
+        payment -- plan step ``credit_card:CC-5-4a-4``, ruling
+        **R-CC65**): permanent deletion is blocked.  Template is archived
+        instead (if not already) and the user is warned, the sentence naming
+        which (:func:`_archive_instead_of_delete`).
       - No history: linked transfers are hard-deleted through the
         transfer service (which CASCADE-deletes shadows), then the
         template itself is permanently removed (:func:`_destroy`).
@@ -329,21 +351,43 @@ def hard_delete_transfer_template(template_id):
         abort(404)
 
     if archive_helpers.transfer_template_has_paid_history(template.id):
-        return _archive_instead_of_delete(template, template_id)
+        return _archive_instead_of_delete(
+            template, template_id,
+            f"'{template.name}' has payment history and cannot be permanently "
+            "deleted. It has been archived instead.",
+        )
+    # **A transfer whose leg holds a payment is history too** (plan step
+    # ``credit_card:CC-5-4a-4``, rulings **R-CC65**, **R-CC66**): a reverted
+    # settle KEEPS its payment on each leg (ruling **R-BAL61**), perhaps
+    # still matched to the bank's line, and :func:`_destroy` took it off the
+    # books through the transfer service's removal act -- withdrawing the
+    # match and freeing the line -- as a side effect of deleting the
+    # template.
+    held = archive_helpers.transfer_template_holding_movements(template.id)
+    if held:
+        stays = held.stays("transfer", named=False)
+        return _archive_instead_of_delete(
+            template, template_id,
+            f"'{template.name}' holds {held.noun} and cannot be permanently "
+            "deleted. It has been archived instead"
+            + (f"; {stays}." if stays else "."),
+        )
     return _destroy(template, template_id)
 
 
-def _archive_instead_of_delete(template, template_id):
+def _archive_instead_of_delete(template, template_id, refusal):
     """The history arm of :func:`hard_delete_transfer_template`: archive, warn.
 
-    A template with settled history is never destroyed; it is archived in
-    place of the deletion the owner asked for -- if it was still active --
-    and the flash says so, once the archive has committed.  The archive is
-    :func:`_archive`'s, promotion included.
+    A template with settled history, or a transfer holding a payment, is
+    never destroyed; it is archived in place of the deletion the owner asked
+    for -- if it was still active -- and the flash says why, once the
+    archive has committed.  The archive is :func:`_archive`'s, promotion
+    included, so a transfer holding a payment stays live.
 
     Args:
         template: The owner-checked :class:`TransferTemplate`.
         template_id: Its id, for the stale-race log.
+        refusal: The sentence naming the reason, flashed on success.
 
     Returns:
         The redirect to the template list, or a refusal :class:`Response`.
@@ -352,20 +396,16 @@ def _archive_instead_of_delete(template, template_id):
         ctx = _stale_context(
             "hard_delete_transfer_template archive-fallback", template_id,
         )
-        removed = _archive(template, ctx)
-        if not isinstance(removed, int):
-            return removed
+        archived = _archive(template, ctx)
+        if not isinstance(archived, tuple):
+            return archived
         conflict = commit_or_handle_stale(ctx)
         if conflict is not None:
             return conflict
     # Flashed AFTER the archive, and only once it committed: a refusal above
     # (the promotion's, or the stale race) sends its own sentence, and this
     # one beside it would report an archive that did not happen.
-    flash(
-        f"'{template.name}' has payment history and cannot be permanently "
-        "deleted. It has been archived instead.",
-        "warning",
-    )
+    flash(refusal, "warning")
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
@@ -374,6 +414,8 @@ def _destroy(template, template_id):
 
     Safe to permanently delete linked transfers through the transfer service
     so that shadow transactions are CASCADE-deleted (invariants 1, 2, 4).
+    None of them holds a payment: the caller archived on that (plan step
+    ``credit_card:CC-5-4a-4``), so the service's removal act takes nothing.
     ``transfer_service.delete_transfer`` flushes but does not commit, so all
     deletions are atomic within a single DB transaction.
 

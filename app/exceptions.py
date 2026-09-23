@@ -289,22 +289,43 @@ class PayPeriodLocked(ShekelError):
 
     Raised by truncate / regenerate when the window they would delete or
     rebuild contains a period that may never be removed -- it is
-    historical, holds a settled transaction, is an account's balance
-    anchor, or is a recurrence rule's origin.  A hard lock is NOT
-    overridable (unlike the discard gate); the operation deletes nothing.
+    historical, holds a settled transaction, holds a row holding a payment
+    or purchase, or holds posted ledger entries
+    (:class:`~app.services.pay_period_locks.PeriodLockReason`).  A hard lock
+    is NOT overridable (unlike the discard gate); the operation deletes
+    nothing.
+
+    **The message names each period locked for holding a movement** (plan
+    step ``credit_card:CC-5-4a-4``, ruling **R-CC66**: "the refusal names
+    the period: 'Pay period 9/10 holds a recorded payment or purchase;
+    delete it from its row first.'"), and counts the rest.  Its generic
+    sentence listed "an account anchor, or a recurrence anchor" until then:
+    two reasons deleted at plan steps X-f1c3c and R7b-4, which it went on
+    naming.
 
     Attributes:
         blocking: A dict mapping each blocking pay-period id to its
             :class:`~app.services.pay_period_locks.PeriodLockReason`.
+        holding_starts: The start dates of the blocking periods locked for
+            holding a payment or purchase, in schedule order.
     """
 
-    def __init__(self, blocking):
+    def __init__(self, blocking, holding_starts=()):
         self.blocking = blocking
-        super().__init__(
-            f"Operation refused: {len(blocking)} pay period(s) are locked "
-            f"(historical, settled, an account anchor, or a recurrence "
-            f"anchor) and cannot be deleted or rebuilt."
-        )
+        self.holding_starts = list(holding_starts)
+        sentences = [
+            f"Pay period {start.month}/{start.day} holds a recorded payment "
+            "or purchase; delete it from its row first."
+            for start in self.holding_starts
+        ]
+        others = len(blocking) - len(self.holding_starts)
+        if others:
+            sentences.append(
+                f"Operation refused: {others} pay period(s) are locked (past, "
+                f"settled, or holding posted ledger entries) and cannot be "
+                f"deleted or rebuilt."
+            )
+        super().__init__(" ".join(sentences))
 
 
 class PayPeriodDiscardRequired(ShekelError):
@@ -376,19 +397,38 @@ class PayPeriodResetBlocked(ShekelError):
     rebuilds only the unlocked future tail) so settled money is never
     rewritten under a new schedule.  The operation changes nothing.
 
+    **Or when a row holds a payment or a purchase**, whatever its status
+    (plan step ``credit_card:CC-5-4a-4``, ruling **R-CC65**): the reset
+    deletes every row, and a movement is money that moved.  Its sentence
+    names what is held (ruling **R-CC66**).  Asked only once no settled row
+    blocks, so exactly one of the two counts is non-zero.
+
     Attributes:
         settled_count: The number of settled transactions blocking the
-            reset.
+            reset (0 when a held movement is the reason).
+        holding_count: The number of rows holding a payment or purchase
+            blocking the reset (0 when a settled row is the reason).
     """
 
-    def __init__(self, settled_count):
+    def __init__(self, settled_count=0, holding_count=0):
         self.settled_count = settled_count
-        super().__init__(
-            f"Cannot reset the schedule: you have {settled_count} settled "
-            f"transaction(s).  Reset rebuilds your entire schedule and is "
-            f"only for first-time setup before any paychecks have settled.  "
-            f"Use Regenerate to rebuild your future schedule instead."
-        )
+        self.holding_count = holding_count
+        if settled_count:
+            message = (
+                f"Cannot reset the schedule: you have {settled_count} settled "
+                f"transaction(s).  Reset rebuilds your entire schedule and is "
+                f"only for first-time setup before any paychecks have "
+                f"settled.  Use Regenerate to rebuild your future schedule "
+                f"instead."
+            )
+        else:
+            message = (
+                f"Cannot reset the schedule: {holding_count} row(s) hold a "
+                f"recorded payment or purchase; delete it from its row "
+                f"first.  Reset rebuilds your entire schedule and would "
+                f"delete every row with it."
+            )
+        super().__init__(message)
 
 
 class StatementImportError(ShekelError):

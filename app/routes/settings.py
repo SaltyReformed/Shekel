@@ -99,6 +99,11 @@ _PP_LOCK_BADGES = {
     pay_period_locks.PeriodLockReason.SETTLED_TXN: (
         "Settled", "flag-chip flag-chip--warning",
     ),
+    # Money moved, so the caution role (plan step credit_card:CC-5-4a-4; the
+    # label is ruling R-CC66's, verbatim).
+    pay_period_locks.PeriodLockReason.HOLDS_MOVEMENT: (
+        "Holds a recorded payment or purchase", "flag-chip flag-chip--warning",
+    ),
     pay_period_locks.PeriodLockReason.LEDGER_POSTINGS: (
         "Posted", "flag-chip flag-chip--warning",
     ),

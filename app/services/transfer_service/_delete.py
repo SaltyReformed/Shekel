@@ -92,7 +92,11 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # transfer and withdrawal test), through a mapper-level dependency the
     # self-referential ``Transaction`` mapper sorts row by row -- so the order
     # is stated here rather than left to that sort.  Measured on the
-    # developer's own dev database at 16 matched shadows.
+    # developer's own dev database at 16 matched shadows.  Since plan step
+    # ``credit_card:CC-5-4a-4`` the shadows' cascade no longer takes a
+    # movement with them: ``fk_transaction_entries_transaction_id`` is NO
+    # ACTION, so a shadow still holding one REFUSES the transfer's delete,
+    # and an order that went wrong here would fail loud rather than cascade.
     #
     # **A SOFT delete withdraws nothing, and the ``if not soft`` below is what
     # says so** (the rule's own docstring: "the CALLER is what says so"): the

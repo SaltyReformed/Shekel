@@ -605,7 +605,7 @@ def _archive_instead_of_delete(account, account_id, reason):
 def _history_refusal(account, definitions) -> "str | None":
     """Return why *account*'s history forbids a permanent delete, or ``None``.
 
-    Guard 4 of :func:`hard_delete_account`, its two arms asked in order and
+    Guard 4 of :func:`hard_delete_account`, its three arms asked in order and
     each answering with the sentence the archive flash prints:
 
     * **rows** -- any non-deleted transaction on the account or under one of
@@ -613,16 +613,25 @@ def _history_refusal(account, definitions) -> "str | None":
       whatever its ``is_deleted`` (the definition door's own refusal, ruling
       **R-JE**; an adversarial review of plan step ``balance:X-bi-7a``
       reproduced the disposal nulling such a row's link);
-    * **movements** (plan step ``credit_card:CC-5-2``) -- money that moved
-      through this account from rows that are NOT its own: a card holding
-      swipes recorded in checking envelopes (ruling **R-CC15**).  The row arm
-      cannot see them (the rows are checking's) and the door's cleanup
-      disposes of none, so ``fk_transaction_entries_account_id``'s RESTRICT
-      (ruling **R-CC32**) met the DELETE as a 500.  **A stated behaviour
-      change**: such an account ARCHIVES, as every other kind of history
-      does.  Exactly the set the cleanup cannot reach
-      (``archive_helpers.account_holds_other_rows_movements``), so a card
-      whose only movements sit under its own ghost rows still deletes.
+    * **held movements** (plan step ``credit_card:CC-5-4a-4``, rulings
+      **R-CC65**, **R-CC66**) -- a payment or purchase under ANY row the
+      cleanup below would remove: a soft-deleted ghost on the account or
+      under one of its definitions, or a leg of a transfer from or to it
+      (``archive_helpers.account_holding_movements``).  The row arm sees the
+      live ones; these are the hidden ones, and a row holding a movement is
+      history whatever its ``is_deleted`` -- the cleanup deleted it with the
+      movement until then (finding **CC-363**), and the movement's key
+      refuses that now;
+    * **movements on it** (plan step ``credit_card:CC-5-2``) -- money that
+      moved through this account from rows that are NOT its own: a card
+      holding swipes recorded in checking envelopes (ruling **R-CC15**).
+      Neither arm above sees them (the rows are checking's) and the door's
+      cleanup disposes of none, so ``fk_transaction_entries_account_id``'s
+      RESTRICT (ruling **R-CC32**) met the DELETE as a 500.  **A stated
+      behaviour change**: such an account ARCHIVES, as every other kind of
+      history does (``archive_helpers.account_holds_other_rows_movements``).
+      *A card whose only movements sat under its own ghost rows still
+      deleted, with them, until the second arm.*
 
     Args:
         account: The owned :class:`~app.models.account.Account`.
@@ -639,6 +648,12 @@ def _history_refusal(account, definitions) -> "str | None":
         return (
             f"'{account.name}' has transaction history and cannot be "
             "permanently deleted. It has been archived instead."
+        )
+    held = archive_helpers.account_holding_movements(account.id)
+    if held:
+        return (
+            f"'{account.name}' holds {held.noun} and cannot be permanently "
+            "deleted. It has been archived instead."
         )
     if archive_helpers.account_holds_other_rows_movements(account.id):
         return (
@@ -675,7 +690,12 @@ def hard_delete_account(account_id):
          definition door's own refusal (``template_has_paid_history``,
          ruling **R-JE**): the disposal below would otherwise leave that
          row TEMPLATE-priced with its link nulled, the state finding
-         **N-440** names.  And so does a MOVEMENT on this account under a
+         **N-440** names.  So does a payment or purchase under ANY row the
+         cleanup below would remove, soft-deleted ghosts and transfer legs
+         included (``account_holding_movements``, plan step
+         ``credit_card:CC-5-4a-4``, ruling **R-CC65**): a row holding a
+         movement is history, and its key refuses the cleanup's delete.
+         And so does a MOVEMENT on this account under a
          row that is neither on it nor under one of its definitions
          (``account_holds_other_rows_movements``, plan step
          ``credit_card:CC-5-2``): a card holding swipes recorded in
@@ -704,8 +724,8 @@ def hard_delete_account(account_id):
           Disposed of through ``definition_delete.permanently_delete_definition``,
           the SAME act the definition's own hard-delete performs, so the
           soft-deleted ghosts it still names (on this account or another)
-          are deleted with their purchase postings reversed rather than
-          unlinked.  Their series rows cascade with them; the merchant rules
+          are deleted rather than unlinked -- none holding a movement, which
+          guard 4 has archived on.  Their series rows cascade with them; the merchant rules
           that could name one cascade with the ACCOUNT already
           (``fk_merchant_rules_owner``).
       CASCADE-FK dependents (LoanParams, InterestParams,
@@ -803,9 +823,12 @@ def hard_delete_account(account_id):
     # Every one of them holds no live row and no settled row (guard 4
     # archived the account otherwise), so each defines nothing; the
     # soft-deleted, non-settled ghosts it still names -- on this account,
-    # already gone at step 2, or on another -- are deleted with their
-    # purchase postings reversed, never unlinked, because it is the SAME act
-    # the definition's own hard-delete performs.
+    # already gone at step 2, or on another -- are deleted, never unlinked,
+    # because it is the SAME act the definition's own hard-delete performs.
+    # None of them, and none of steps 1-2's rows, holds a payment or
+    # purchase: guard 4's held-movements arm archived the account otherwise
+    # (plan step ``credit_card:CC-5-4a-4``), so step 1's removal act and
+    # these deletes take no movement.
     for definition in definitions:
         definition_delete.permanently_delete_definition(definition)
 

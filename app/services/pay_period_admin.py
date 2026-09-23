@@ -430,6 +430,14 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     Bounded for safety: it refuses if the user has ANY settled
     transaction.  Once a paycheck has settled, rewriting the schedule
     under it would corrupt history, so those users use regenerate instead.
+    **And it refuses while ANY row holds a payment or a purchase** (plan
+    step ``credit_card:CC-5-4a-4``, ruling **R-CC65**), whatever its status:
+    the wipe deletes every row through ``transactions.pay_period_id``'s
+    cascade, and a movement is money that moved -- a Projected envelope
+    holding a purchase recorded from the bank is history exactly as a Paid
+    bill is.  Until that step the settled gate alone let the wipe destroy
+    such a purchase; its key now refuses the delete, and this makes the
+    refusal a designed one.
 
     The whole operation is ONE transaction the route commits.
 
@@ -446,7 +454,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
     Steps, all in one transaction:
 
-      1. Refuse if any settled transaction exists (delete nothing).
+      1. Refuse if any settled transaction exists, or any row holds a
+         payment or purchase (delete nothing).
       2. Take the per-user advisory lock (a structural mutation, like
          extend / truncate / regenerate).
       3. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
@@ -539,7 +548,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
 
     Raises:
         PayPeriodResetBlocked: The user has at least one settled
-            transaction; nothing is changed.
+            transaction, or a row holding a payment or purchase; nothing is
+            changed.
         ValidationError: ``record_paydays`` rejects the batch (an invalid
             start date or cadence).
     """
@@ -563,7 +573,13 @@ def reset_pay_periods(user_id, new_start_date, num_periods, rhythm):
     # schedule in this same transaction (review M2 / R7).
     settled = pay_period_gates.settled_transaction_count(user_id)
     if settled > 0:
-        raise PayPeriodResetBlocked(settled)
+        raise PayPeriodResetBlocked(settled_count=settled)
+    # The second gate (plan step credit_card:CC-5-4a-4, ruling R-CC65): a row
+    # holding a movement, whatever its status, is history the wipe below
+    # would take with it -- and fk_transaction_entries_transaction_id refuses.
+    holding = pay_period_gates.movement_holding_row_count(user_id)
+    if holding > 0:
+        raise PayPeriodResetBlocked(holding_count=holding)
 
     # Serialize against concurrent structural mutations for this user.
     user_write_lock.lock_user_writes(user_id)

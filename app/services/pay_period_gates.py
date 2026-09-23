@@ -221,7 +221,14 @@ def gate_deletable_tail(
         # per account (a self-cancelling original + reversal pair).  Whoever
         # relaxes these locks MUST first reverse the postings
         # (posting_service.reverse_postings_before_delete / the loan sync).
-        raise PayPeriodLocked(blocking)
+        # A third layer since plan step credit_card:CC-5-4a-4: a period
+        # holding a row that holds a payment or purchase classifies
+        # HOLDS_MOVEMENT, and its refusal names the period (ruling R-CC66).
+        raise PayPeriodLocked(blocking, holding_starts=[
+            period.start_date for period in to_delete
+            if blocking.get(period.period_id)
+            is PeriodLockReason.HOLDS_MOVEMENT
+        ])
 
     if not confirm_discard:
         discardable = count_discardable_items(
@@ -238,9 +245,9 @@ def can_reset_pay_periods(user_id: int) -> bool:
     """Return whether a full reset is currently offered to the user.
 
     The read-only UI predicate: reset is offered only when the user has no
-    settled transactions, the same bound :func:`reset_pay_periods`
-    enforces.  The settings page calls this to show or hide the reset
-    control; the service's own gate (which raises
+    settled transactions and no row holding a payment or purchase, the same
+    bounds :func:`reset_pay_periods` enforces.  The settings page calls this
+    to show or hide the reset control; the service's own gate (which raises
     :class:`~app.exceptions.PayPeriodResetBlocked`) remains the
     authoritative defense, so a stale page that posts anyway is still
     refused.
@@ -249,10 +256,13 @@ def can_reset_pay_periods(user_id: int) -> bool:
         user_id: The owning user's id.
 
     Returns:
-        ``True`` when the user has zero settled (non-deleted)
-        transactions, else ``False``.
+        ``True`` when the user has zero settled (non-deleted) transactions
+        and zero rows holding a movement, else ``False``.
     """
-    return settled_transaction_count(user_id) == 0
+    return (
+        settled_transaction_count(user_id) == 0
+        and movement_holding_row_count(user_id) == 0
+    )
 
 
 
@@ -436,6 +446,36 @@ def settled_transaction_count(user_id: int) -> int:
             PayPeriod.user_id == user_id,
             Transaction.status_id.in_(settled_status_ids()),
             Transaction.is_deleted.is_(False),
+        )
+        .count()
+    )
+
+
+def movement_holding_row_count(user_id: int) -> int:
+    """Count the user's rows holding a payment or purchase (the reset's second gate).
+
+    Plan step ``credit_card:CC-5-4a-4``, ruling **R-CC65** ("Reset refuses
+    while any row holds a payment or purchase (dated or not)").  A reset
+    deletes EVERY pay period, and with it every row through
+    ``transactions.pay_period_id``'s cascade -- so any row holding a
+    movement, whatever its status and whether or not it is soft-deleted, is
+    one the reset would destroy and the movement's key now refuses to lose.
+    The lock classifier's ``HOLDS_MOVEMENT`` asks the same of one period;
+    this asks it of the whole schedule, scoped as
+    :func:`settled_transaction_count` is.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The number of the user's rows holding at least one movement.
+    """
+    return (
+        db.session.query(Transaction.id)
+        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        .filter(
+            PayPeriod.user_id == user_id,
+            Transaction.entries.any(),
         )
         .count()
     )
