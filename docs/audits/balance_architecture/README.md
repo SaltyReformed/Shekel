@@ -803,9 +803,9 @@ section 4, under their unchanged ids.*
     `8d812662`: the fabricated `$0.00` in four producers, and `build_trend_periods`'
     `current_index = 0` into an empty list, still live at `routes/accounts/detail.py:228` and
     `analytics_view.py:485`.
-  * [x] **X-x3** `b7d513ff` -- the checklist's pay-period row and its two locks RETIRED, the banner
-    complete once a salary profile and a recurring template exist (**R-BAL116**, superseding R-DA);
-    its four facts asked only when read (**R-BAL117**). Closed `balance:N-328`.
+  * [x] **X-x3** `b7d513ff` -- the pay-period row and its two locks RETIRED (**R-BAL116**,
+    superseding R-DA); the banner complete on `has_salary and has_templates`, the second ANY
+    template (**BAL-537**); its four facts asked when read (**R-BAL117**). Closed `balance:N-328`.
   * [ ] **X-x4 THE STATES SPLIT** (R-CZ) -- an empty requested window stops answering with the
     absence card, and the card's copy stops naming two states.
   * [ ] **X-x5 THE HARNESS** -- delete `verify_savings_producers.py`'s dict-or-attribute `_get`
@@ -1083,6 +1083,8 @@ section 4, under their unchanged ids.*
   **THE ORDER IS LOAD-BEARING -- unmask FIRST, then the ports**: the three tests now skipping ARE
   the collision and the only witnesses that the laundering arms are wrong, so fixing the ports first
   leaves the laundering untested with its witnesses gone, which is strictly worse than today.
+  **Also owns BAL-509, N-408, N-510** (developer 2026-09-23): the deploy tests' flakes, suspected
+  cause the fake-docker shim's 12-character digest-substring match under `-n` workers.
 * [ ] **X-bt** `refactor(test): one producer answers whether a daemon is safe to spawn on` --
   `scripts/test.sh` ASKS the daemon (`docker info`) while `tests/test_deploy/conftest.py` matches a
   PATH ALLOWLIST, and the conftest cannot read the wrapper's answer because in every case it exists

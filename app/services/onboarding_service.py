@@ -5,13 +5,13 @@ The facts behind the welcome checklist ``base.html`` draws for an owner whose
 setup is incomplete, each one asked only when a template reads it.
 
 **Asked on read, not on render** (ruling ``balance:R-BAL117``, plan step
-``balance:X-x3``, closing ledger row **N-328**).  The context processor that
+``balance:X-x3``, closing ledger row **balance:N-328**).  The context processor that
 feeds the checklist used to run every probe on every template an owner's
 request rendered, so five ``EXISTS`` queries ran on HTMX fragments that never
 draw a layout.  Each fact is now a memoized attribute of :class:`OnboardingChecklist`,
 so a render asks exactly the facts its template reads, and each one at most
 once.  A fragment asks none.  A full page asks two when setup is complete
-(``complete`` reads only the salary and recurring facts) and four when the
+(``complete`` reads only the salary and template facts) and four when the
 checklist is drawn.
 
 **It holds no pay-period fact** (ruling ``balance:R-BAL116``, which supersedes
@@ -93,15 +93,21 @@ class OnboardingChecklist:
 
     @cached_property
     def has_templates(self) -> bool:
-        """Whether the owner holds any recurring transaction template."""
+        """Whether the owner holds ANY transaction template, recurring or not.
+
+        Ledger row ``balance:BAL-537``: the salary door mints the paycheck's
+        own template before the profile, and every one-off mints a rule-less
+        definition, so either one makes this true.
+        """
         return _exists(TransactionTemplate.user_id == self.user_id)
 
     @property
     def complete(self) -> bool:
         """Whether the checklist is done, which hides the banner.
 
-        The two steps an owner must take after registering: a salary profile
-        and a recurring transaction.  The account and the categories are
-        provisioned at registration and never gated the banner.
+        ``has_salary and has_templates``: a salary profile and ANY transaction
+        template (ledger row ``balance:BAL-537``), so the salary door's own
+        paycheck template satisfies the second.  The account and the
+        categories are provisioned at registration and never gated the banner.
         """
         return self.has_salary and self.has_templates

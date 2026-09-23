@@ -123,8 +123,9 @@ class TestTheImageSetsThePin:
     this test the first start to fail would be a production deploy (the
     entrypoint's first script calls ``create_app``, the container crash-loops,
     and the deploy rolls back).  It compares the Dockerfile's value with
-    :data:`app.PINNED_LOCALE`; the literal's homes stay where ruling
-    ``recurrence:R-R92`` put them.
+    :data:`app.PINNED_LOCALE`.  Ruling ``recurrence:R-R92`` names ``create_app``,
+    ``scripts/test.sh`` and a host ``.env``; the Dockerfile's ``ENV`` and
+    ``.env.example`` are as built at plan step ``recurrence:R12``.
     """
 
     def test_the_runtime_stage_sets_lc_all_to_the_pin(self):

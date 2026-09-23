@@ -439,12 +439,15 @@ def _until(day: date) -> str:
     about a different fact, and wording them apart is how two spellings of one
     phrase start.
 
-    The month is named from :func:`app.utils.dates.month_name`, this
-    application's one month-name producer, rather than formatted with ``%b``
-    -- see :class:`RecurrenceDescription` for what that escapes and for what
-    it does NOT claim.  The day is zero-padded because that is what the cell
-    rendered before the phrase moved here, so no live row's wording changes
-    for a reason unrelated to this step.
+    The month is named from :func:`app.utils.dates.month_name`, whose table
+    needs no locale, rather than formatted with ``%b``.  It is not the
+    application's only month-name producer: sites across ``app/`` and the
+    templates still use :mod:`calendar` and ``strftime``, as the table's own
+    note in :mod:`app.utils.dates` says.  See :class:`RecurrenceDescription`
+    for what that escapes and for what it does NOT claim.  The day is
+    zero-padded because that is what the cell rendered before the phrase
+    moved here, so no live row's wording changes for a reason unrelated to
+    this step.
 
     Args:
         day: The last day an occurrence may fall on.

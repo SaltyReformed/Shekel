@@ -341,7 +341,7 @@ def _register_context_processors(app):
         Hands the template an
         :class:`~app.services.onboarding_service.OnboardingChecklist`, which
         queries nothing until the template reads a fact (ruling
-        ``balance:R-BAL117``, ledger row N-328): a fragment that never draws
+        ``balance:R-BAL117``, ledger row balance:N-328): a fragment that never draws
         the layout asks none of them.
         """
         # Pylint: ``import-outside-toplevel`` -- imported inside the request-time

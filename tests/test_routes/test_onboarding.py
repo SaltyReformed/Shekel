@@ -283,7 +283,7 @@ class TestOnboardingBanner:
 class TestTheChecklistAsksOnlyWhatItDraws:
     """Each checklist fact is asked when read, and at most once per render.
 
-    Ruling ``balance:R-BAL117`` (plan step X-x3, ledger row N-328).  The
+    Ruling ``balance:R-BAL117`` (plan step X-x3, ledger row balance:N-328).  The
     context processor ran five ``EXISTS`` queries on every template an
     owner's request rendered, HTMX fragments that never draw the layout
     included.  Counted
