@@ -335,16 +335,19 @@ def runaway_violation() -> str | None:
     """Return the backstop's message, or ``None``.
 
     Returns:
-        The message when the table holds more rows than any real corpus could.
+        The message when the table holds more rows than the interim total
+        (balance:R-BAL131), which real work can reach.
     """
     actual = len(ruling_rows())
     if actual <= RULINGS_RUNAWAY_ROWS:
         return None
     return (
         f"rulings.md holds {actual} rows against a {RULINGS_RUNAWAY_ROWS}-row "
-        f"runaway backstop. This is not a forcing function and rule 5 is not "
-        f"the answer: a count this size is a duplicated table or a generator "
-        f"loop, not work somebody did"
+        f"runaway backstop, an interim total (balance:R-BAL131) that real "
+        f"work can reach. Rule 5 is not the answer: rule out a duplicated "
+        f"table or a generator loop, and otherwise the answer is "
+        f"balance:R-BAL130's redesign, which deletes the totals, not a hunt "
+        f"for a script"
     )
 
 

@@ -238,13 +238,15 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       (every active account, debts included),
       `savings_dashboard_service/_goals._goal_account_balance` (since 5c a debt's HELD balance, so
       `percent_complete` holds a goal on a loan at `0%`) and
-      `savings_goal_service.calculate_trajectory`. **CC-371** (an archived debt's drawer figure is
-      the day's balance while a live non-loan tile shows its current period's end) is answered by
-      `R-CC88`: ONE rule, what the tile shows for day D, read by the live tile, the archived list
-      and every debt-goal figure. The goal move is answered by `R-CC87`: refused, and re-typing an
-      account across savings and debt is refused while a goal is on it. Its OWN PR and OWN release
-      after 5b and 5c's (the coordinator's call), the migration re-parented at merge. `$0.00` on
-      production: its one goal is on the Money Market. Closes **CC-360**, **CC-371**.
+      `savings_goal_service.calculate_trajectory`. A debt goal on a card or any other non-loan debt
+      reads its tile's figure for its start, its current figure and the target check (`R-CC88`).
+      **CC-371** (an archived debt's drawer figure is the day's balance while a live non-loan tile
+      shows its current period's end) is NOT yet ruled: `R-CC67` says what it owes today, and the
+      question is with the developer, asked by the CC-5-5d lane 2026-09-23. The goal move is
+      answered by `R-CC87`: refused, and re-typing an account across savings and debt is refused
+      while a goal is on it. Its OWN PR and OWN release after 5b and 5c's (the coordinator's call),
+      the migration re-parented at merge. `$0.00` on production: its one goal is on the Money
+      Market. Closes **CC-360**, **CC-371**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else
