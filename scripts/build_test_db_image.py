@@ -718,6 +718,12 @@ def _verify_image(tag: str) -> None:
                     "app.sighting_infrastructure", "SIGHTING_TRIGGERS",
                 ),
             ),
+            (
+                "pay-stub refusal triggers",
+                *_trigger_family_check(
+                    "app.pay_stub_infrastructure", "PAY_STUB_TRIGGERS",
+                ),
+            ),
         ):
             answer = ask(_TEMPLATE_DATABASE, sql)
             if answer != str(expected):

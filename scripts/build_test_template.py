@@ -160,6 +160,7 @@ from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.level_infrastructure import apply_level_infrastructure
 from app.sighting_infrastructure import apply_sighting_infrastructure
+from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.posting_infrastructure import (
@@ -309,6 +310,14 @@ def _populate_template(app) -> None:
         # A bank line goes with its last sighting (plan step
         # bank_import:X-f6b-1): idempotent re-application, same contract.
         apply_sighting_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # A transcribed pay stub is never deleted and never moved (plan step
+        # salary:S11-a, ruling R-SAL44): idempotent re-application, same
+        # contract, and a refusal a FIXTURE can trip.
+        apply_pay_stub_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

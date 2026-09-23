@@ -340,6 +340,19 @@ _REF_TABLE_SEEDS = (
         "StatementBalanceEvidence",
         ["file_chain", "corroborated", "uncorroborated"],
     ),
+    # WHICH TAX a transcribed pay stub's withholding figure is (salary arc,
+    # plan step S11-a, ruling R-SAL42): the four the paycheck engine computes.
+    # A tax a stub prints and this list lacks (a city income tax) is a new row
+    # and enum member, never a table change -- see
+    # :class:`app.enums.WithholdingKindEnum`.  The migration that creates
+    # ``ref.withholding_kinds`` inline-seeds the identical rows so a freshly
+    # upgraded DB resolves the enum before this idempotent reseed runs -- the
+    # same dual-seed pattern every ref above uses.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    (
+        "WithholdingKind",
+        ["federal_income", "state_income", "social_security", "medicare"],
+    ),
 )
 # pylint: enable=line-too-long
 # fmt: on

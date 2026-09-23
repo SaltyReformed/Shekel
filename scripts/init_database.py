@@ -72,6 +72,7 @@ from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
 from app.level_infrastructure import apply_level_infrastructure
 from app.sighting_infrastructure import apply_sighting_infrastructure
+from app.pay_stub_infrastructure import apply_pay_stub_infrastructure
 from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.append_only_infrastructure import (
     apply_append_only_infrastructure,
@@ -215,6 +216,17 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Last-sighting rule ready.")
+
+    # A transcribed pay stub is never deleted and never moved (plan step
+    # salary:S11-a, ruling R-SAL44).  Same fresh-DB reason, same three-caller
+    # contract: ``create_all`` made the four stub tables and the stamp below
+    # marks 5641f7729b68 applied without running it.
+    print("Applying pay-stub refusal (transcribed pay stubs)...")
+    apply_pay_stub_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Pay-stub refusal ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

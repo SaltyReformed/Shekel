@@ -57,6 +57,7 @@ from app.enums import (
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
+    WithholdingKindEnum,
 )
 
 _logger = logging.getLogger(__name__)
@@ -237,6 +238,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(SettledDayBasisEnum, ref_models.SettledDayBasis),
         _RefSpec(MovementFigureSourceEnum, ref_models.MovementFigureSource),
         _RefSpec(StatementBalanceEvidenceEnum, ref_models.StatementBalanceEvidence),
+        _RefSpec(WithholdingKindEnum, ref_models.WithholdingKind),
     ]
 
 
