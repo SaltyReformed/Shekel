@@ -62,7 +62,8 @@ def _isolate(monkeypatch, root: Path) -> None:
 
     Fail-closed: every inherited ``GIT_*`` is dropped, then the two that decide
     the repository are set explicitly.  The pin is process-wide so the module
-    under test, whose ``_git`` inherits ``os.environ``, is pinned too.
+    under test, whose ``git`` inherits ``os.environ``, is pinned too --
+    and so is :mod:`_growth`, which reads history through that same runner.
 
     **The environment is not the only route in.**  The builder's commits are
     real ``git commit`` calls, and the developer's GLOBAL and SYSTEM config

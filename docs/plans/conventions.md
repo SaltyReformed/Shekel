@@ -86,10 +86,13 @@ end.
    2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the project may have --
    defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
    **a gate may not refuse to record work somebody has done.** Holding them instead: a per-ROW cap
-   each, which makes dropping the line cap a SWAP and not a removal, a runaway backstop each, and
-   rule 3's counts. **The ledger's per-ROW cap is rule 14's twin** -- a row that swells into its
-   arc's argument stops being an index entry -- and the overflow goes to the step that OWNS it: its
-   AS-BUILT record where it shipped, its live specification where it has not (balance:R-HD).
+   each, which makes dropping the line cap a SWAP and not a removal; rule 3's counts; and ONE GROWTH
+   bound, **no change may add more than 100 rows to any one of them**, counted net and graded twice,
+   on the working tree against `HEAD` and on each commit a pull request brings, a merge by the rows
+   it adds of its own (`_growth.py`; balance:R-BAL128, 2026-09-23, which replaced a fixed total each
+   once real work reached one). **The ledger's per-ROW cap is rule 14's twin** -- a row that swells
+   into its arc's argument stops being an index entry -- and the overflow goes to the step that OWNS
+   it: its AS-BUILT record where it shipped, its live specification where it has not (balance:R-HD).
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.

@@ -199,60 +199,51 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
       minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
       `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
-      flip); ticks with its last leaf. `$0.00` on production's net-worth figures (both liabilities
-      are configured loans).
+      flip), and given 2026-09-23 5d (the debt goals the flip's goal question became,
+      `R-CC69`..`R-CC73`); ticks with its last leaf. `$0.00` on production's net-worth figures (both
+      liabilities are configured loans).
   - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
         into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
         non-loan liability's owed amount floored at zero, summed (`R-CC49`);
         `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
         `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
         shape.
-- [ ] **CC-5-5b** `fix(accounts): a liability's balance is asked as owed` -- `R-CC52`: every door
-      that takes a LIABILITY's balance asks for the amount OWED (positive = you owe; a card's credit
-      a negative amount owed) and stores the held sign through `balance_at.owed`, one crossing per
-      door (the form speaks owed, the service stores held; the schema tier may not branch on account
-      class, as `schemas/validation/accounts.py` states): the account create form's opening balance
-      (`templates/accounts/form.html`, its route, `AccountCreateSchema`,
-      `account_service.create_account`), the anchor editor (`routes/accounts/anchor.py`
-      `anchor_form` and its PATCH, `grid/_anchor_edit.html`; amortizing accounts stay refused) and
-      the books-opening door (`routes/accounts/opening.py`, `opening_service`,
-      `accounts/_books_opening.html`), each entered and shown as owed, the pre-fill and a 422
-      redisplay included; the tile editor's held pre-fill (**CC-357**) closes with it. FIRST, a
-      census of every STORED liability balance on the newest production dump
-      (`account_openings.opening_equity`, `account_anchor_history.anchor_balance`, any other
-      books-opening or assertion row), each read under `R-CC47`, and of what reads them: the
-      Mortgage's `+174,281.51` opening and `+178,103.41` anchor were typed as owed, so wrong-signed
-      (both a configured loan's, feeding no net-worth figure; its cash fold and the posted ledger's
-      Balance Sheet are what to trace). A wrong-signed stored value is a MONEY question to the
-      developer, with worked dollars, BEFORE 5c; any backfill is an Alembic migration, which makes
-      this leaf migration-bearing and its own release. Before 5b grades with it, 5a's instrument
-      gains `/grid?account_id=<id>` for each non-amortizing liability (the balance line the anchor
-      door opens from). Graded by 5a's instrument: every ASSET screen byte-identical, a liability
-      form's label change a declared change. Closes **CC-357**.
-- [ ] **CC-5-5c** `fix(cards): a card in credit is the issuer owing` -- `R-CC47` and `R-CC48`, ONE
-      commit: the seam's two configured-loan arms report the HELD sign (`positions()` and the loan
-      domain's producers stay owed), each arm converting through the one flip and never an inline
-      `-positions(...)` (CLAUDE.md rule 14) -- so FIRST `owed` MOVES out of `_liability.py`, which
-      imports `_inputs` and `_kind_correct` (the two arms), to a module with no seam imports (e.g.
-      `balance_at/_sign.py`; the public name `balance_at.owed` stays), and its docstring names the
-      seam's other NON-held outputs (`liability_owed_at_dates`' magnitudes for every liability,
-      `positions`, `secured_loan_series`), none of which may be passed to it; the hero and trend
-      read the plain sum of balances with liabilities as `owed`, the band drops its `abs` and the
-      liability subtotal (`_display._compute_group_subtotals`, `R-CC48`) reads `owed`; the seven
-      loan-balance readers move onto `owed` (debt strategy; the loan pages' `current_balance`
-      property feeding the dashboard, the payoff and refinance calculators and the true-up pre-fill;
-      home equity; on /savings the liability tile's figure, its sparkline and two debt-summary
-      figures) and liability tiles show owed. The flip also decides what a savings goal backed by a
-      LIABILITY reads (**CC-360**: `_goal_form_context` offers any active account, a loan included,
-      and `_goals._goal_account_balance` reads a configured loan's OWED figure as progress today and
-      its held balance once the loan arm is re-signed): 5c either gains that reader, the goal
-      reading `owed()`, or refuses a liability as a goal's account, a design question the lane puts
-      to the developer with worked dollars before building; and the footer's "revolving" caption,
-      whose sum also counts an amortizing account with no loan terms and a custom liability, is
-      corrected (**CC-361**). Every loan test figure that flips sign is a rule-5 re-expression the
-      developer confirms, its classes with counts, before the commit. Graded by 5a's
-      `tests/manual/verify_liability_screens.py` per its docstring's procedure: production's screens
-      byte-identical. Closes **CC-354**, **CC-360**, **CC-361**.
+  - [x] **CC-5-5b** `3d9d0c1a` -- every liability balance door asks OWED and stores held through
+        `liability_sign.held_balance` (`owed()` moved out of the seam; `R-CC52`): the create form
+        (`R-CC58`), the anchor editor on every surface (`R-CC57` as amended by `R-CC60`), the
+        books-opening card; a stale form refused and re-opened as a fresh click (`R-CC61`,
+        `R-CC62`); no stored row re-signed, a loan's anchor cell a link (`R-CC53`). Two commits,
+        `ef4f6782` first; closed **CC-357**; suite 15186/0.
+  - [x] **CC-5-5c** `6daa3048` -- ONE commit (`R-CC50`): the configured-loan arms report HELD
+        through `liability_sign.owed`; net worth the plain sum; band, trend, subtotal (`R-CC48`),
+        tiles, debt summary, loan readers and archived drawer (`R-CC67`) read `owed`; the footer's
+        words (`R-CC68`); an anchor save answers its opener's display (`R-CC74`, `R-CC77`, `R-CC78`)
+        from the door's report (`R-CC79`, `R-CC85`). Rule-5 re-signs confirmed; closed **CC-354**,
+        **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
+- [ ] **CC-5-5d** `feat(goals): a goal on a debt is a milestone to get under` -- `R-CC69`..`R-CC73`.
+      Asked at 5c what a savings goal on a debt means, the developer refused all three readings
+      offered (`R-CC69`) and ruled a milestone to get UNDER: a fixed amount only (no income-relative
+      'months of salary' mode), below what the debt owes when the goal is saved (the Van Loan: under
+      `$10,000` while it owes `$14,745.51`). Progress runs from what it owed when the goal was set
+      down to the target (`R-CC70`: `0.00%` today, `39.24%` on 2027-01-01 with `$1,862.31` of
+      `$4,745.51` paid down, `100%` at `$10,000`); that start is RE-READ from the books each time,
+      what they now say it owed on the goal's set day (its `created_at`), never stored (`R-CC71`: a
+      back-dated correction moves it; a debt whose early history is missing reads its opening). A
+      debt goal may target `$0.00` while a savings goal still needs more:
+      `ck_savings_goals_positive_target` (`target_amount > 0`) relaxed by an Alembic migration, the
+      app refusing `$0.00` on a savings goal (`R-CC72`). The card shows when the debt is projected
+      to fall below the target, from the forward figures the loan page reads, and whether that is on
+      pace for the goal's date, with no required-per-period figure (`R-CC73`: July 2027). The
+      readers: `routes/savings.py` `_goal_form_context` (every active account, debts included),
+      `savings_dashboard_service/_goals._goal_account_balance` (since 5c a debt's HELD balance, so
+      `percent_complete` holds a goal on a loan at `0%`) and
+      `savings_goal_service.calculate_trajectory`. Its FIRST question (**CC-371**): an archived
+      debt's drawer figure is the day's balance while a live non-loan tile shows its current
+      period's end -- which one rule both read. OPEN too, asked at its entry: an EDIT that moves a
+      goal between a savings account and a debt starts it on a day it was no debt goal -- refused,
+      or re-anchored. Its OWN PR and OWN release after 5b and 5c's (the coordinator's call), the
+      migration re-parented at merge. `$0.00` on production: its one goal is on the Money Market.
+      Closes **CC-360**, **CC-371**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else

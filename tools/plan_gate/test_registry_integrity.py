@@ -937,7 +937,8 @@ class TestNoLedgerRowHasGrownIntoASpecification:
 
         What is graded is only that the number in the file is TRUE.  Nothing
         here refuses a wide table; :meth:`test_no_row_is_over_the_row_cap` and
-        the runaway backstop remain the only failures about size.
+        ``_growth``'s per-change bound (balance:R-BAL128) remain the only
+        failures about size.
         """
         assert row_width.stated_crowding_violation() is None
 

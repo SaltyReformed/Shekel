@@ -142,21 +142,10 @@ class TestTheRegistryStatesItsOwnSize:
         stage_rulings(f"**The ruling registry stands at {actual} rows.**", "")
         assert "states no row count" in (rulings.stated_count_violation() or "")
 
-    def test_the_runaway_backstop_is_not_binding(self):
-        """It is a backstop, never a forcing function (rule 4)."""
-        assert rulings.runaway_violation() is None
-        assert len(rulings.ruling_rows()) < rulings.RULINGS_RUNAWAY_ROWS
-
-    def test_the_runaway_backstop_fires(self, monkeypatch):
-        """A duplicated table or a generator loop fails loudly.
-
-        No staging: the defect is a row COUNT, and lowering the backstop to 1
-        against the real 105-row table exercises it exactly.  This control
-        used to call ``stage_rulings`` with an identical replacement, which
-        staged nothing and named a defect it was not planting.
-        """
-        monkeypatch.setattr(rulings, "RULINGS_RUNAWAY_ROWS", 1)
-        assert "runaway backstop" in (rulings.runaway_violation() or "")
+    # The runaway-backstop pair that stood here (the table under 600 rows, and
+    # the arm firing at a monkeypatched 1) went with the backstop itself on
+    # 2026-09-23 (balance:R-BAL128); the bound that replaced it, and its firing
+    # controls for this registry and its two siblings, are ``test_growth.py``.
 
 
 class TestTheMigrationCannotSitHalfDone:
@@ -551,7 +540,7 @@ class TestTheArmsThatHadNoControl:
 
 
 class TestRuleFourAppliesToThisFileToo:
-    """The per-ROW cap, which is the whole of rule 4 here."""
+    """The per-ROW cap: rule 4 here, beside the growth bound (``test_growth.py``)."""
 
     def test_the_only_rows_over_the_cap_are_the_lifted_debt(self):
         """The debt is KEYED, so a new over-cap row is distinguishable.

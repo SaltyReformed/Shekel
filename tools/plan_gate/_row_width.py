@@ -73,7 +73,8 @@ def crowded_ledger_rows() -> list[str]:
     :func:`stated_arc_counts_violation` grading only that the statement is true.
     :func:`stated_crowding_violation` is that pattern for row width.  The
     failures about SIZE remain exactly two: :func:`ledger_row_cap_violations`
-    per row, and :func:`ledger_runaway_violation` as the backstop.
+    per row, and :mod:`_growth`'s bound on the rows one change may add
+    (balance:R-BAL128, which replaced a 400-row total on 2026-09-23).
 
     Returned as keys rather than as a bare count, so a reader who wants to act
     on the number is handed the rows rather than left to find them.
