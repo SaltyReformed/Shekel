@@ -502,7 +502,7 @@ the cost is not the wasted pass but that the two can PART. **Agreement is not th
 was REFUTED at 500,000, `$565.37` against `$565.36`. **Where a layer puts the shared leaf out of
 reach, MOVE THE LEAF** -- `X-au-g-2c-3a` deleted three restatements that placement had FORCED, two
 walks sitting BELOW the allocation so that reaching it was an import cycle. This phase does not own
-the rule, and its last instance here has left it: **N-409**'s escrow floor, a SECOND allocation
+the rule, and its instance here has left it: **N-409**'s escrow floor, a SECOND allocation
 rule for a question the fold already answers, is `recurrence:R16-e`'s with walk 3 (**R-R93**).
 
 **One ground is REFUTED and must not be re-argued**: that `ondelete="SET NULL"` on the template link
@@ -534,7 +534,7 @@ in SILENCE where a refused DELETE is loud.
 * [x] **X-au-g** `3b7716f8` -- the DECOMPOSED parent of the LOAN-PAYMENT cutover (split 2026-08-31),
   ticked 2026-09-23 when its last open leaf was WITHDRAWN (**R-R93**); closed **N-297**, whose
   loan-basis read of the payment history left at `X-au-g-1` (`af61263d`). Its shipped leaves are in
-  `archive/`, indexed by `archive/README.md`.
+  `archive/shipped_steps_archived_2026-09-16.md` and `archive/x_au_g_2c_3b_2_2026-09-02.md`.
   * [x] **X-au-g-2c** `3b7716f8` -- the CUTOVER's parent (the readers, the declaration, the escrow
     rule); ticked with X-au-g.
     * [x] **X-au-g-2c-3** `3b7716f8` -- the escrow rule's parent: FOUR walks each restated one
@@ -1047,12 +1047,13 @@ section 4, under their unchanged ids.*
   of real values -- balances, paycheck amounts, merchant names -- generated from production, which
   the pre-commit hook refuses the way gitleaks refuses a secret; committed text uses made-up
   figures, measured production figures stay in the handoff folder outside the repository, and what
-  is already public stays public, so nothing is rewritten. **The building lane designs, with the
-  developer:** where the list lives and how it stays out of every commit; how it is generated from
-  production READ-ONLY (a same-day dump or a clone) and refreshed; what counts as a real value
-  without drowning in false positives against synthetic test amounts; which surfaces are read (the
-  staged diff, the commit message, both) and by which hooks; how a refused session is told what to
-  write instead; and the `conventions.md` rule, stated once there. It moves no money.
+  is already public stays public. **The building lane designs, with the developer:** where the list
+  lives and how it stays out of every commit; how it is generated from production READ-ONLY (a
+  same-day dump or a clone) and refreshed; what counts as a real value without drowning in false
+  positives against synthetic test amounts; which surfaces are read (the staged diff, the commit
+  message, both) and by which hooks; how a refused session is told what to write instead; where that
+  practice is written; and whether "stays public" means nothing already committed is rewritten. It
+  moves no money.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43

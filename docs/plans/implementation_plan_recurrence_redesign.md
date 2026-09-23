@@ -653,7 +653,10 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       rule-less item's rows, a carried-forward leftover) by their own day, and those stay stored
       under this model, so R-PC96 may survive too. Hand-added rows' own books gap is **PC-519**, a
       separate row. Closes **REC-534**, **REC-535**, **REC-536** (each re-owned here at
-      `pay_calendar:C18-a`'s tick).
+      `pay_calendar:C18-a`'s tick). Those ids, and **R-PC85**, **R-PC86**, **R-PC88**, **R-PC90**,
+      **R-PC91**, **R-PC93**, **R-PC95**, **R-PC96**, **R-PC97** and **PC-519**, are
+      `pay_calendar:C18-a`'s and file at its tick, and this step waits on `pay_calendar:C18` until
+      they do.
 
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
       leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR
@@ -777,13 +780,16 @@ one -- no loan step is pulled forward for the card.
       has taken no payments since `R7d-g-3`, the feed's AMOUNTS have had no reader in `app/` since
       `a1c5082f` deleted `_build_monthly_override`, and a full suite with the amounts stripped
       failed only the one test known to read them; until this step ships the floor stays in the
-      code, read by nothing. `compute_contractual_pi` has one call site (`_context.py`) and defaults
-      its `as_of` to `date.today()`, so its deletion takes a process-clock read off the loan context
+      code, read by nothing. `compute_contractual_pi` has one call site (`_context.py`), which
+      passes `date.today()`, so its deletion takes a process-clock read off the loan context
       (**R-IJ**'s direction). `$0.00`. **Unruled, for this step's session** (the balance lane's
       trace): (a) with the list gone, `amortization_engine.slotted_dates` and `schedule_dates` have
       no production caller (today only `_engine_prep.py` calls `slotted_dates`), which bears on
       **BAL-472** and `balance:X-cb`; (b) **R-BAL7**'s refusal of a dates-only feed lost its stated
-      reason, the forward override, at `R7d-g-3`.
+      reason, the forward override, at `R7d-g-3`; (c) `loan_payment_service/_context.py` names
+      **N-409**'s owner as `balance:X-au-g-2c-3` twice, in the docstring at :79-80 and the comment
+      at :222 -- both false since `R-R93`, and both go with this step's deletion of
+      `contractual_pi`.
 - [ ] **R16-f -- walk 4 is re-expressed over the ONE replay** (ruling **R-R53**; finding **D60**).
       `amortization_engine.project_forward` is the FOURTH walk, the contractual schedule the payoff
       and what-if surfaces read. It becomes the one replay (`loan_ledger.replay_loan_events`,
