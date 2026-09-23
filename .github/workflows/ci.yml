@@ -1,18 +1,37 @@
 # Shekel Budget App -- Continuous Integration
 #
-# Runs linting (pylint) and the full test suite (pytest) on every push
-# to main and on pull requests -- except that a pull request touching
-# ONLY the planning documents and the plan gate runs the plan gate in
-# place of the suite in this job (step 2b, ``tools/plan_gate/ci_scope.py``;
-# polyglot-lint below still runs, and the PostgreSQL service still
-# starts, because a job-level service cannot be conditioned on a step).
-# Uses a PostgreSQL 18 service container
-# to match the production database version (upgraded from PG 16 to
-# PG 18 in Phase 2 of docs/audits/test_improvements/
-# test-performance-implementation-plan.md to enable Phase 3's reflink-
-# backed CREATE DATABASE TEMPLATE clones).
+# Five jobs grade a pull request, and a sixth -- lint-and-test -- answers for
+# the four it needs (polyglot-lint is a required check of its own):
 #
-# Python version matches the production Dockerfile (3.14).
+#   scope          classifies the change set: ``registry-only`` or ``full``
+#                  (tools/plan_gate/ci_scope.py; step 2b below).
+#   plan-gate      the plan gate, in EVERY scope (step 4b).
+#   lint           every pylint floor and the checker tests (steps 5-5c),
+#                  skipped when the scope is ``registry-only``.
+#   test           the suite in six shards, each on its own runner through
+#                  ``scripts/test.sh`` (steps 5d-7b), skipped likewise.
+#   polyglot-lint  the non-Python linters, in every scope (its own check).
+#   lint-and-test  the check branch protection on ``main`` requires.  It
+#                  NEEDS the first four and runs ``if: always()``, because a
+#                  SKIPPED required check counts as passing and a job that
+#                  merely depended on a failed shard would be skipped --
+#                  green.  tools/plan_gate/ci_verdict.py judges every result.
+#
+# WHY SIX JOBS AND NOT ONE (plan step bank_import:X-gy, ledger BI-496,
+# rulings R-BI38..R-BI41).  One job ran for 41-61 min, 35-52 of them the
+# suite, because the hosted runner is CPU-BOUND: 4 vCPUs that are 2 physical
+# cores with SMT, each 1.2-2.1x slower than the developer's cores, under
+# ``pytest.ini``'s ``-n 12``.  Measured 2026-09-22 in a matched A/B on the
+# runner itself (draft PR #447, runs 35803297014, 35806759874, 35808935180):
+# two or four postgres clusters per runner gained 0-7% over one, PGDATA on
+# tmpfs 2-11%, and scripts/test.sh's cluster (socket, baked image, its flags)
+# 8-15% over the TCP service container, while per-test wall clock scaled with
+# the worker count.  More CPUs is the lever, so the suite is split across
+# runners; six shards at ``-n logical`` ran 6.4-9.7 min each.
+#
+# THE STEP NUMBERS are kept from the single-job era, on the same steps, because
+# .pre-commit-config.yaml, pytest.ini and tools/plan_gate/ci_scope.py cite
+# them.  Python matches the production Dockerfile (3.14) in every job.
 
 name: CI
 
@@ -30,114 +49,52 @@ on:
   pull_request:
 
 # ── Token permissions ─────────────────────────────────────────────
-# Least privilege: this job only checks out code, installs deps, and
-# runs pylint/pytest -- it needs no write scope.  Dropping GITHUB_TOKEN
+# Least privilege: these jobs only check out code, install deps, and
+# run pylint/pytest -- they need no write scope.  Dropping GITHUB_TOKEN
 # to read-only bounds the blast radius of a compromised dev dependency
 # running in the install/test steps.  docker-publish.yml scopes its own
 # (broader) token separately.
 permissions:
   contents: read
 
+# ── The process clock, for every job ─────────────────────────────
+env:
+  # ── The process clock is skewed off the app's ON PURPOSE ──────
+  # ``date.today()`` reads the PROCESS timezone; the app's civil day is
+  # ``app.utils.dates.display_today()`` (America/New_York).  Production and
+  # docker-compose.dev.yml both pin ``TZ: America/New_York``, so a test that
+  # mixes the two passes everywhere a human runs it and fails only here --
+  # and, before this line, only for the four hours a night UTC and Eastern
+  # disagreed.  That is how three "flaky" tests reached main: each was a
+  # deterministic failure with a four-hour window (2026-08-01).
+  #
+  # Kiritimati is UTC+14, so the process date runs a day ahead of the app's
+  # for eighteen hours out of every twenty-four.  The coupling now fails on
+  # most runs instead of a few, at no extra cost and with no second job.
+  #
+  # Do NOT "fix" a failure here by setting this to America/New_York.  That
+  # hides the coupling rather than removing it, and the coupling is what
+  # breaks the moment any environment differs.  The fix is always to use the
+  # app's clock in the test -- see docs/testing-standards.md, "The ambient
+  # clock and the ambient calendar".  Reproduce locally with:
+  #     TZ=Pacific/Kiritimati ./scripts/test.sh
+  TZ: Pacific/Kiritimati
+
 # ── Jobs ──────────────────────────────────────────────────────────
 jobs:
-  lint-and-test:
+  scope:
     runs-on: ubuntu-latest
-
-    # PostgreSQL service container for the test suite.  Started
-    # empty; ``scripts/build_test_template.py`` (step 6 below)
-    # builds ``shekel_test_template`` with schemas, tables, audit
-    # infrastructure, and reference seed, which the conftest then
-    # clones per pytest session.
-    services:
-      postgres:
-        # Digest-pinned to match the dev/prod compose files (prod
-        # parity: CI validates against the SAME PostgreSQL build that
-        # runs in production, not a floating Debian tag).  Keep this
-        # digest in lockstep with docker-compose.yml / docker-compose.dev.yml.
-        image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
-        env:
-          POSTGRES_USER: shekel_test
-          POSTGRES_PASSWORD: shekel_test
-          POSTGRES_DB: shekel_test
-        ports:
-          # Map container port 5432 to host port 5432.
-          - 5432:5432
-        # Wait for PostgreSQL to accept connections before starting steps.
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    # Environment variables available to all steps in this job.
-    env:
-      # Connection string for the test database.  conftest.py's
-      # ``_bootstrap_worker_database`` hook overrides this per pytest
-      # session by cloning ``shekel_test_template`` into a uniquely
-      # named DB and rewriting the env var before the first ``import
-      # app``.  The value below is the legacy fallback used only if
-      # the bootstrap is skipped: it points at the empty ``shekel_test``
-      # database the service container auto-creates from POSTGRES_DB.
-      # That database has no schemas or tables (build_test_template.py
-      # populates ``shekel_test_template``, not this one), so a skipped
-      # bootstrap fails loudly at first DB access rather than silently
-      # running against stale data.
-      TEST_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/shekel_test
-      # Admin DSN consumed by both ``scripts/build_test_template.py``
-      # (drops and creates ``shekel_test_template``) and by
-      # ``tests/conftest.py::_bootstrap_worker_database`` (clones the
-      # template into a per-session DB and drops it at
-      # ``pytest_sessionfinish``).  Points at the maintenance
-      # ``postgres`` database -- ``DROP DATABASE`` cannot run against
-      # the connection's own database.  ``shekel_test`` is created as
-      # a superuser by the postgres image's ``POSTGRES_USER`` env, so
-      # ``CREATEDB`` is implicit and no explicit grant step is needed.
-      TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
-      # TOTP_ENCRYPTION_KEY is auto-generated per test by conftest.py.
-      # No need to set it here.
-      #
-      # ── The process clock is skewed off the app's ON PURPOSE ──────
-      # ``date.today()`` reads the PROCESS timezone; the app's civil day is
-      # ``app.utils.dates.display_today()`` (America/New_York).  Production and
-      # docker-compose.dev.yml both pin ``TZ: America/New_York``, so a test that
-      # mixes the two passes everywhere a human runs it and fails only here --
-      # and, before this line, only for the four hours a night UTC and Eastern
-      # disagreed.  That is how three "flaky" tests reached main: each was a
-      # deterministic failure with a four-hour window (2026-08-01).
-      #
-      # Kiritimati is UTC+14, so the process date runs a day ahead of the app's
-      # for eighteen hours out of every twenty-four.  The coupling now fails on
-      # most runs instead of a few, at no extra cost and with no second job.
-      #
-      # Do NOT "fix" a failure here by setting this to America/New_York.  That
-      # hides the coupling rather than removing it, and the coupling is what
-      # breaks the moment any environment differs.  The fix is always to use the
-      # app's clock in the test -- see docs/testing-standards.md, "The ambient
-      # clock and the ambient calendar".  Reproduce locally with:
-      #     TZ=Pacific/Kiritimati ./scripts/test.sh
-      TZ: Pacific/Kiritimati
-
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
     steps:
-      # ── 1. Check out the repository ──────────────────────────────
+      # The three-dot diff below reads history, so this checkout is full.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The plan gate's git arms (tools/plan_gate/_shipped.py) READ this
-          # history: they resolve every SHIPPED step's commit and refuse an
-          # open leaf that a commit on this tree says it shipped.  The default
-          # depth-1 checkout makes both arms blind, and rule 7's hash arm used
-          # to grade a hash's FORM only for exactly that reason -- "a gate that
-          # passes on nothing".  ``test_shipped_against_git`` asserts the
-          # history IS gradeable, so removing this line fails the suite loudly
-          # instead of silently switching two arms off.
           fetch-depth: 0
-          # The arms only READ local history, so the GITHUB_TOKEN still need
-          # not persist in .git/config.  Avoids the credential-persistence
-          # vector (zizmor artipacked).
           persist-credentials: false
 
-      # ── 2. Set up Python ─────────────────────────────────────────
-      # Use the same Python version as the production Dockerfile.
+      # ci_scope.py is standard-library only, so no install precedes it.
       - name: Set up Python 3.14
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -148,8 +105,8 @@ jobs:
       # its findings and records its rulings -- is a pull request whose
       # only grader is the plan gate, and the registry lane is serialized
       # (one such PR at a time, each computed on the tree the last one
-      # left), so the ~40 minutes the suite takes on it sit on the queue's
-      # critical path and grade nothing.  ``tools/plan_gate/ci_scope.py``
+      # left), so the suite's runners and minutes spent on it sit on the
+      # queue's critical path and grade nothing.  ``tools/plan_gate/ci_scope.py``
       # answers ``registry-only`` when EVERY changed path is under
       # docs/plans, the balance arc document's directory or the gate
       # package (derived from ``_registry``, not spelled here) and ``full``
@@ -157,7 +114,7 @@ jobs:
       # What makes the skip sound is the census that module keeps -- no
       # module in a skipped suite reads under those prefixes -- not that
       # every file there is graded; the polyglot-lint job still lints the
-      # Markdown.  Every code-grading step below is guarded
+      # Markdown.  Every code-grading JOB (lint, test) is guarded
       # ``!= 'registry-only'``, so a missing output runs everything rather
       # than nothing; the plan gate (step 4b) is unguarded.  Approved by the
       # developer 2026-09-11 as its own PR; ``test_ci_scope.py`` holds this
@@ -194,8 +151,32 @@ jobs:
           echo "scope=${scope}" >> "${GITHUB_OUTPUT}"
           echo "scope: ${scope}"
 
-      # ── 3. Cache pip dependencies ────────────────────────────────
-      # Speeds up subsequent runs by caching downloaded packages.
+  plan-gate:
+    runs-on: ubuntu-latest
+    steps:
+      # ── 1. Check out the repository ──────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The plan gate's git arms (tools/plan_gate/_shipped.py) READ this
+          # history: they resolve every SHIPPED step's commit and refuse an
+          # open leaf that a commit on this tree says it shipped.  The default
+          # depth-1 checkout makes both arms blind, and rule 7's hash arm used
+          # to grade a hash's FORM only for exactly that reason -- "a gate that
+          # passes on nothing".  ``test_shipped_against_git`` asserts the
+          # history IS gradeable, so removing this line fails the suite loudly
+          # instead of silently switching two arms off.
+          fetch-depth: 0
+          # The arms only READ local history, so the GITHUB_TOKEN still need
+          # not persist in .git/config.  Avoids the credential-persistence
+          # vector (zizmor artipacked).
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       - name: Cache pip packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -204,27 +185,52 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # ── 4. Install Python dependencies ───────────────────────────
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
       # ── 4b. The plan gate, in EVERY scope ────────────────────────
-      # ``pytest tools/plan_gate`` used to ride inside step 5b beside the
-      # checker tests; it is the one grader a registry-only pull request
-      # has, so it stands alone and unguarded, first so a registry defect
-      # fails a full run before the suite spends thirty minutes.  The
-      # package's 10.00/10 pylint floor was enforced by pre-commit alone
-      # until 2026-09-11 (its hook comment says so); a registry-only run
-      # that edits the gate would otherwise merge unlinted, so the floor
-      # is held here too, in both scopes.  ``yaml`` (PyYAML, pinned in
-      # requirements-dev.txt) is what ``test_ci_scope.py`` reads THIS file
-      # with, which is why the step follows the install.
+      # The one grader a registry-only pull request has, so it is a job of
+      # its own with no guard, running beside lint and the shards rather than
+      # ahead of them.  The package's 10.00/10 pylint floor was enforced by
+      # pre-commit alone until 2026-09-11 (its hook comment says so); a
+      # registry-only run that edits the gate would otherwise merge unlinted,
+      # so the floor is held here too, in both scopes.  ``yaml`` (PyYAML,
+      # pinned in requirements-dev.txt) is what ``test_ci_scope.py`` reads
+      # THIS file with, which is why the step follows the install.
       - name: Plan gate (every scope)
         run: |
           pylint tools/plan_gate/ --fail-under=10 --fail-on=E,F --output-format=colorized
           pytest tools/plan_gate -c /dev/null -q
+
+  lint:
+    needs: scope
+    if: needs.scope.outputs.scope != 'registry-only'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
       # ── 5. Run pylint ────────────────────────────────────────────
       # Layered pylint gate:
@@ -250,7 +256,6 @@ jobs:
       #     that drops the score fails the build.  Enforced locally by the Stop
       #     hook via the scripts/hooks/ENFORCE_PYLINT_FLOOR sentinel.
       - name: Lint with pylint
-        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint app/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a. Lint scripts/ ────────────────────────────────────────
@@ -263,7 +268,6 @@ jobs:
       # gate cross-tree duplicate-code is a separate open decision in
       # docs/audits/pylint-cleanup/deep-quality-hunt.md.
       - name: Lint scripts with pylint
-        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint scripts/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a2. Lint the pylint checker package ─────────────────────
@@ -275,7 +279,6 @@ jobs:
       # package only -- the tests/ subtree is out of general pylint scope
       # (ratified decision #1) and is covered by the pytest run in step 5b.
       - name: Lint checker package with pylint
-        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
       # ── 5a3. Lint the manual verification harnesses (E/F only) ───
@@ -300,7 +303,6 @@ jobs:
       # A both-sides harness that must name a HEAD-only API carries a scoped
       # disable with a `Pylint:` rationale (verify_retirement_render.py).
       - name: Lint verification harnesses with pylint
-        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint tests/manual/ --fail-on=E,F --disable=all --enable=E,F --output-format=colorized
 
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
@@ -312,7 +314,6 @@ jobs:
       # meta-messages) so the test files' "disable=X -- explanation" inline
       # comments do not derail this targeted scan.
       - name: Test and apply custom pylint checkers
-        if: steps.scope.outputs.scope != 'registry-only'
         run: |
           pytest tools/pylint/tests -c /dev/null -q
           pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
@@ -327,160 +328,94 @@ jobs:
       # (the pre-consolidation commit fails this exact invocation) and
       # to pass on the consolidated tree.
       - name: Cross-tree duplicate-code (pylint app/ + scripts/)
-        if: steps.scope.outputs.scope != 'registry-only'
         run: pylint app/ scripts/ --disable=all --enable=duplicate-code --disable=unknown-option-value,bad-option-value --output-format=colorized
 
+  test:
+    needs: scope
+    if: needs.scope.outputs.scope != 'registry-only'
+    runs-on: ubuntu-latest
+    strategy:
+      # One red shard must not cancel the others: a failing merge gate should
+      # report every failure it has, not the first shard's.
+      fail-fast: false
+      matrix:
+        # SIX SHARDS (ruling R-BI39).  This list is the count the jobs READ:
+        # each takes its share as ``strategy.job-index`` of
+        # ``strategy.job-total``, so an entry added here re-splits the suite
+        # with no other edit.  (The ruling's number is also pinned by
+        # tests/test_arch/test_the_shards_partition_the_suite.py and named in
+        # the prose that cites R-BI39.)  The labels are the 0-based indexes,
+        # so a check named ``test (0)`` runs shard 0.
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
       # ── 5d. Record the runner's capacity ─────────────────────────
-      # ``pytest.ini`` pins ``-n 12``, a figure profiled on a 24-core
-      # developer box.  Nothing in this job has ever recorded what the
-      # hosted runner actually provides, so whether 12 workers are
-      # under- or over-subscribed here has never been answerable from
-      # a log -- and worker oversubscription is what turns a test's
-      # CPU time into wall-clock time, which is what fixed timeouts
-      # (pytest-timeout, the ``seed_user.py`` subprocess budgets)
-      # measure.  Three cheap commands so the next investigation of a
-      # timeout starts with the number instead of an assumption.
+      # The hosted fleet is not one machine: the X-gy measurement drew AMD
+      # EPYC 7763, 9V74 and 9V45 and an Intel Xeon 6973P, the slowest
+      # running a fixed CPU benchmark 1.8x slower than the fastest.  A shard
+      # that ran long is first a question of which CPU it drew, so the model
+      # is printed beside the core count.
       - name: Record runner capacity
         run: |
           echo "cores: $(nproc)"
+          lscpu | grep 'Model name' || echo "Model name: (not reported)"
           free -h
           df -h /
 
-      # ── 5e. Make the test cluster throwaway ──────────────────────
-      # The suite's per-test isolation drops and re-clones a database
-      # for EVERY test (tests/conftest.py::db, ~9,000 times a run).
-      # Every one of those statements forces cluster-wide checkpoints,
-      # and on a cluster with durability ON each checkpoint fsyncs.
-      # ``docker-compose.dev.yml`` gives the dev test-db
-      # ``fsync=off`` / ``synchronous_commit=off`` /
-      # ``full_page_writes=off``; this service container had no such
-      # settings, so the identical suite paid ~50x per clone here and
-      # nowhere else.  Measured consequence: 24,444 forced checkpoints
-      # in run 32129135926 and 702.8 s of single-threaded checkpointer
-      # time inside a 1733.55 s run -- a serialised floor all 12 xdist
-      # workers block on, which is what pushed the ``url_map`` sweep
-      # past pytest-timeout's 30 s on roughly half of all runs from
-      # 2026-08-16.
+      # ── 7. Run this shard of the suite ───────────────────────────
+      # ``scripts/test.sh`` gives the run a private postgres cluster from the
+      # baked template image -- the SAME cluster, flags and timeouts every
+      # local run gets (ruling R-BI40), where a service container here once
+      # carried a second configuration with ``lock_timeout`` off.  ``CI`` is
+      # set on the runner, which is what sanctions the wrapper using the
+      # runner's own throwaway daemon.
       #
-      # Applied with ALTER SYSTEM + pg_reload_conf rather than in the
-      # ``services:`` block above because GitHub Actions service
-      # containers accept no ``command:``.  ``fsync`` and
-      # ``full_page_writes`` are SIGHUP-context GUCs, so a reload is
-      # enough; no restart, no lost service-container health check.
+      # ``SHEKEL_TEST_SHARD`` is read by ``tests/conftest.py``: the job keeps
+      # the tests ``tests/_shard.py`` assigns it, a partition by construction
+      # that keeps every ``xdist_group`` whole.  ``-m ""`` overrides the
+      # wrapper's local ``not docker`` default, so the container-spawning
+      # ``tests/test_deploy`` tests run here as they always have.
       #
-      # These settings are correct ONLY because this cluster is
-      # thrown away when the job ends: a crash that loses committed
-      # transactions costs a re-run, not data.  Do NOT copy them to
-      # any cluster whose contents must survive -- the same warning
-      # docker-compose.dev.yml carries for the ``db`` service.
-      - name: Configure the test cluster as throwaway
-        if: steps.scope.outputs.scope != 'registry-only'
-        run: |
-          python - <<'PY'
-          import os
-          import time
-
-          import psycopg2
-
-          GUCS = ("fsync", "full_page_writes", "synchronous_commit")
-          DSN = os.environ["TEST_ADMIN_DATABASE_URL"]
-
-
-          def read_settings():
-              """Read the three GUCs over a FRESH backend.
-
-              pg_reload_conf() only signals the postmaster; existing
-              backends apply the new file when they next check for
-              signals, so the connection that issued the reload still
-              reports the OLD values and would make this check a
-              tautology in the wrong direction.  A new connection reads
-              the configuration at startup, so it reports what the next
-              backend -- i.e. every pytest worker -- will actually get.
-              """
-              conn = psycopg2.connect(DSN)
-              try:
-                  with conn.cursor() as cur:
-                      cur.execute(
-                          "SELECT name, setting FROM pg_settings "
-                          "WHERE name = ANY(%s) ORDER BY name",
-                          (list(GUCS),),
-                      )
-                      return dict(cur.fetchall())
-              finally:
-                  conn.close()
-
-
-          conn = psycopg2.connect(DSN)
-          conn.autocommit = True
-          try:
-              with conn.cursor() as cur:
-                  for guc in GUCS:
-                      cur.execute(f"ALTER SYSTEM SET {guc} = off")
-                  cur.execute("SELECT pg_reload_conf()")
-          finally:
-              conn.close()
-
-          # The reload is asynchronous, so poll rather than sleep a
-          # guessed interval.  Ten seconds is far beyond the observed
-          # sub-second latency and still fails the job quickly if the
-          # setting never lands.
-          deadline = time.monotonic() + 10
-          while True:
-              applied = read_settings()
-              if all(v == "off" for v in applied.values()):
-                  break
-              if time.monotonic() > deadline:
-                  # Fail the job rather than run a 30-minute suite that
-                  # silently did not get the setting -- a reload that did
-                  # not take would otherwise surface only as a timeout
-                  # weeks later, which is the failure mode this whole
-                  # step exists to remove.
-                  raise SystemExit(f"GUCs did not apply: {applied}")
-              time.sleep(0.2)
-
-          print(f"test cluster set to throwaway durability: {applied}")
-          PY
-
-      # ── 6. Build the per-pytest-session template database ───────
-      # Builds ``shekel_test_template``: drops + recreates the
-      # database, runs the Alembic chain to ``head``, applies the
-      # audit infrastructure idempotently, seeds reference data,
-      # and truncates ``system.audit_log`` so the template ships
-      # with a zeroed log.  ``tests/conftest.py::_bootstrap_worker_database``
-      # then clones this template into a uniquely-named DB for
-      # every pytest session (and every pytest-xdist worker within
-      # a session) at startup, and drops the clone at
-      # ``pytest_sessionfinish``.  Without this step the bootstrap
-      # raises ``RuntimeError`` on the first test.  Inherits
-      # ``TEST_ADMIN_DATABASE_URL`` from the job env; ``SECRET_KEY``
-      # is defaulted by the script (the template DB is never reached
-      # through Gunicorn, so the value is purely scaffolding).
+      # ``-n logical`` is the runner's logical CPU count, 4 today -- ``auto``
+      # would drop to the PHYSICAL count (2) the day psutil is installed.
+      # Measured 2026-09-22 on the runner, one 1,230-test slice through this
+      # wrapper: -n 4 took 0.88-0.91 of -n 12's time (0.77-0.81 of the old
+      # service container at -n 12, the two changes together), and -n 3 and
+      # -n 6 were slower than -n 4.  The workers and the database shared four
+      # starved vCPUs; oversubscription stretched each test's wall clock,
+      # which is what the per-test timeout measures, and bought no
+      # throughput.  ``pytest.ini``'s ``-n 12`` stays the local default.
       #
-      # Runs AFTER 5e so the template build itself is written to a
-      # cluster that is already non-durable -- the Alembic chain is
-      # the single heaviest write in the job.
-      - name: Build test template database
-        if: steps.scope.outputs.scope != 'registry-only'
-        run: python scripts/build_test_template.py
-
-      # ── 7. Run pytest ────────────────────────────────────────────
-      # ``pytest.ini`` carries ``-n 12 --dist=loadgroup`` in
-      # ``addopts``, so the invocation does not need an explicit
-      # parallelism flag.  Each worker's session-start hook clones
-      # ``shekel_test_template`` (built in the previous step) into a
-      # uniquely-named per-session DB and drops it at session end;
-      # no manual database setup is needed.
-      #
-      # ``--durations=25``: the ``-q`` here overrides ``pytest.ini``'s
-      # ``-v``, so before this flag a green CI run published NO
-      # per-test timing at all.  A test creeping toward its timeout
-      # was therefore invisible until the run it finally blew -- which
-      # is how the ``url_map`` sweep reached ~30 s unnoticed.  The 25
-      # slowest tests are printed on every run, pass or fail, so the
-      # margin is readable before it is gone.
+      # ``--durations=25``: the ``-q`` here overrides ``pytest.ini``'s ``-v``,
+      # so without it a green run publishes no per-test timing at all, and a
+      # test creeping toward its timeout would be invisible until the run it
+      # finally blew.  Each shard prints its own 25 slowest, pass or fail.
       - name: Run tests
-        if: steps.scope.outputs.scope != 'registry-only'
-        run: pytest --tb=short -q --durations=25
+        env:
+          SHEKEL_TEST_SHARD: ${{ strategy.job-index }}/${{ strategy.job-total }}
+        run: ./scripts/test.sh -n logical -m "" --tb=short -q --durations=25
 
       # ── 7b. Audit-trigger benchmarks, SERIALLY ───────────────────
       # ``tests/test_performance`` is excluded from step 7 by
@@ -503,13 +438,39 @@ jobs:
       # them into the parallel run would not "stop ignoring them", it
       # would put a guaranteed flake on a branch-protected gate.
       #
-      # ``--override-ini=addopts=`` drops the whole default addopts
-      # line (which is what carries the ``--ignore`` and ``-n 12``);
-      # ``-n 0`` then runs them in-process, the only condition under
-      # which the numbers mean anything.  Five tests, ~8 s.
+      # ONE shard runs them, after its own suite has finished, so the runner
+      # is otherwise idle.  ``--override-ini=addopts=`` drops the whole
+      # default addopts line (which is what carries the ``--ignore`` and
+      # ``-n 12``); ``-n 0`` then runs them in-process, the only condition
+      # under which the numbers mean anything.  Five tests, 27 s measured.
       - name: Run audit-trigger benchmarks (serial)
-        if: steps.scope.outputs.scope != 'registry-only'
-        run: pytest tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+        if: strategy.job-index == 0
+        run: ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
+
+  lint-and-test:
+    needs: [scope, plan-gate, lint, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      # The verdict, fail-closed: every grader succeeded, or -- only when the
+      # scope is exactly ``registry-only`` -- lint and the shards were
+      # skipped.  A failed, cancelled or wrongly skipped job, a job the
+      # verdict does not know, or one missing from ``needs`` is red.  The
+      # rules and why each exists: tools/plan_gate/ci_verdict.py.
+      - name: Verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: printf '%s' "${NEEDS}" | python tools/plan_gate/ci_verdict.py
 
   # ── Polyglot linters ──────────────────────────────────────────────
   # Non-Python lint floors adopted in docs/audits/polyglot-cleanup
