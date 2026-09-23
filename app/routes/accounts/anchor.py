@@ -47,6 +47,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts._door_meaning import door_meaning_refusal
 from app.routes.accounts.reconcile import prompt_fragment
 from app.services import (
     anchor_service,
@@ -75,48 +76,6 @@ LOAN_ANCHOR_REFUSAL = (
     "A loan's balance is not a cash anchor. Record a balance true-up "
     "on the loan's own page instead."
 )
-
-
-def door_meaning_refusal(account: Account, asked_owed: bool) -> str | None:
-    """Return why a balance form rendered under the OTHER meaning is refused.
-
-    **Ruling R-CC61** (plan step credit_card:CC-5-5b): a liability's box asks
-    for the amount OWED and every other account's asks for its balance
-    (:func:`app.services.liability_sign.asks_owed`), and an account's kind is
-    EDITABLE -- an account with no postings may be re-typed across asset and
-    liability in another tab while a form is open (finding N-199's race, one
-    field over).  Read at SAVE, the typed figure would be crossed under a
-    meaning the box never showed: a $0.00 Checking editor re-typed to a Credit
-    Card, saved at 2,500.00, would store a card owing $2,500.00 where the base
-    code stored a $2,500.00 balance -- $5,000.00 apart (measured by the
-    CC-5-5b adversarial review).  So every form states what it asked
-    (``asks_owed``, which the schema reads), and a mismatch is refused with
-    nothing stored; the caller re-renders the form under the meaning the
-    account has now, so the owner checks the figure against the new words.
-
-    Shared by the anchor editor's save and its difference preview (a preview
-    of a save that would be refused says why instead) and by the
-    books-opening card's POST.  The create form is R-CC61's stated exception:
-    its type is picked in the same submission.
-
-    Args:
-        account: The owned, attached :class:`Account` being saved.
-        asked_owed: What the submitted form says its box asked -- ``True``
-            for the amount owed.  A form that states nothing asked for the
-            balance.
-
-    Returns:
-        The refusal to show, or ``None`` when the form's meaning is the
-        account's.
-    """
-    now_owed = liability_sign.asks_owed(account.account_type)
-    if asked_owed == now_owed:
-        return None
-    asks_for = "the amount owed" if now_owed else "the account's balance"
-    return (
-        "This account's type changed while you were editing; the box now asks "
-        f"for {asks_for}. Check the figure and save again."
-    )
 
 
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
@@ -650,10 +609,14 @@ def _true_up_request_gates(
 
     data = _anchor_schema.load(request.form)
     # Ruling R-CC61: a form rendered under the other meaning is refused BEFORE
-    # anything is staged, and re-rendered under the account's meaning now.
+    # anything is staged, and re-opened as a fresh click opens it under the
+    # account's meaning now -- NOT echoing the figure typed under the old one
+    # (ruling R-CC62; see :func:`_fresh_editor`).
     stale = door_meaning_refusal(account, data["asks_owed"])
     if stale is not None:
-        return None, _anchor_editor_error(account, revert_context, stale)
+        return None, designed_error(
+            _fresh_editor(account, revert_context, stale), 400,
+        )
     # The ONE crossing this door makes (plan step credit_card:CC-5-5b, rulings
     # R-CC52 / R-CC57): a liability's box asks for the amount OWED, on every
     # surface the editor opens from, and the write door stores the held sign.
@@ -838,6 +801,60 @@ def _anchor_revert_url(account_id, revert_context):
     return url_for("accounts.anchor_display", account_id=account_id)
 
 
+def _fresh_editor(
+    account: Account, revert_context: str | None, error: str | None = None,
+) -> str:
+    """Render the anchor editor as a fresh click opens it, optionally refusing.
+
+    The ONE rendering of an editor that has not been typed into: the standing
+    balance in the door's words, today's date, the day bounds.  :func:`anchor_form`
+    answers a click with it, and the stale-form refusal (ruling **R-CC61**)
+    re-opens with it -- carrying the refusal beside the box, and deliberately
+    NOT the figure that was typed (ruling **R-CC62**, plan step
+    credit_card:CC-5-5b).  That figure was typed under the meaning the box no
+    longer has, so echoing it under the new label left the refused save one
+    Enter away: a $0.00 Checking account re-typed to a card, 2,500.00 typed and
+    refused, re-opened as "Amount owed 2500.00" and stored a card owing
+    $2,500.00 on the next Enter (measured by CC-5-5b's re-review).  Opened
+    fresh, Enter re-asserts the standing figure, which changes nothing.
+
+    Args:
+        account: The owned, attached, non-amortizing :class:`Account`.
+        revert_context: The normalized surface token, or ``None`` (the grid).
+        error: The refusal to show beside the box, or ``None`` for a click.
+
+    Returns:
+        The rendered editor.
+    """
+    revert_url = _anchor_revert_url(account.id, revert_context)
+    bounds = _anchor_day_bounds()
+    return render_template(
+        "grid/_anchor_edit.html",
+        account=account,
+        # The pre-fill speaks the door's language (plan step
+        # credit_card:CC-5-5b, ruling R-CC57): a card holding -1,000.00 opens
+        # on 1,000.00 owed, whichever surface opened it; an asset opens on its
+        # balance.  The surface the editor replaces keeps its own sign.
+        anchor_balance=liability_sign.entered_figure(
+            account.account_type, cash_ledger.resolve_anchor(account).balance,
+        ),
+        editing=True,
+        asks_owed=liability_sign.asks_owed(account.account_type),
+        # The statement day defaults to TODAY, not to the governing assertion's
+        # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
+        # the user reading their bank NOW in the overwhelming case, and R-EE
+        # keeps that one click plus Enter; prefilling the last assertion's day
+        # would make the ordinary path silently RE-assert an old day, which is
+        # the one thing this field exists to stop being a guess.  Back-dating is
+        # then a deliberate edit of a box that already shows the right answer.
+        observed_on_value=bounds["observed_on_max"].isoformat(),
+        revert_url=revert_url,
+        revert_context=revert_context,
+        error=error,
+        **bounds,
+    )
+
+
 @accounts_bp.route("/accounts/<int:account_id>/anchor-form", methods=["GET"])
 @require_owner
 def anchor_form(account_id):
@@ -878,32 +895,8 @@ def anchor_form(account_id):
     if classify_account(account) is AccountProjectionKind.AMORTIZING:
         return _anchor_kind_refusal(account)
 
-    revert_context = _normalize_revert_context(request.args.get("revert"))
-    revert_url = _anchor_revert_url(account_id, revert_context)
-    bounds = _anchor_day_bounds()
-    return render_template(
-        "grid/_anchor_edit.html",
-        account=account,
-        # The pre-fill speaks the door's language (plan step
-        # credit_card:CC-5-5b, ruling R-CC57): a card holding -1,000.00 opens
-        # on 1,000.00 owed, whichever surface opened it; an asset opens on its
-        # balance.  The surface the editor replaces keeps its own sign.
-        anchor_balance=liability_sign.entered_figure(
-            account.account_type, cash_ledger.resolve_anchor(account).balance,
-        ),
-        editing=True,
-        asks_owed=liability_sign.asks_owed(account.account_type),
-        # The statement day defaults to TODAY, not to the governing assertion's
-        # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
-        # the user reading their bank NOW in the overwhelming case, and R-EE
-        # keeps that one click plus Enter; prefilling the last assertion's day
-        # would make the ordinary path silently RE-assert an old day, which is
-        # the one thing this field exists to stop being a guess.  Back-dating is
-        # then a deliberate edit of a box that already shows the right answer.
-        observed_on_value=bounds["observed_on_max"].isoformat(),
-        revert_url=revert_url,
-        revert_context=revert_context,
-        **bounds,
+    return _fresh_editor(
+        account, _normalize_revert_context(request.args.get("revert")),
     )
 
 

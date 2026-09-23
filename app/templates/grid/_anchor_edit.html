@@ -109,7 +109,7 @@
       <input type="number" step="0.01" inputmode="decimal" name="anchor_balance"
              value="{{ anchor_balance }}"
              class="form-control" autofocus
-             {% if asks_owed %}id="anchor-balance-{{ account.id }}"{% else %}aria-label="{{ account.name }} account balance"{% endif %}
+             {% if asks_owed %}id="anchor-balance-{{ account.id }}" aria-describedby="anchor-owed-help-{{ account.id }}"{% else %}aria-label="{{ account.name }} account balance"{% endif %}
              data-action="anchor-cancel-on-escape"
              data-revert-url="{{ revert_url }}">
     </div>
@@ -123,7 +123,7 @@
       <i class="bi bi-x"></i>
     </button>
   </div>{% if asks_owed %}
-  <div class="form-text mt-1 mb-0">A credit is a negative amount.</div>{% endif %}
+  <div id="anchor-owed-help-{{ account.id }}" class="form-text mt-1 mb-0">A credit is a negative amount.</div>{% endif %}
   {# The statement day, on its OWN LINE (ruling R-EI) -- the balance keeps the
      first line so the one-click habit is type-a-number-and-Enter exactly as
      before, and the day is a deliberate second act rather than a field to tab

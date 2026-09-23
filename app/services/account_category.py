@@ -114,12 +114,12 @@ def account_type_category(acct_type) -> AcctCategoryEnum | None:
     """Return the :class:`~app.enums.AcctCategoryEnum` for an account TYPE.
 
     The rule :func:`account_category` answers for an account, asked of the type
-    itself -- because one door has to ask it BEFORE the account exists.  The
-    create form's balance box is typed against the account type the owner
-    picked, and plan step credit_card:CC-5-5b (ruling **R-CC52**) makes that door
-    store a liability's balance in the held sign, so the create route classifies
-    the submitted type before
-    :func:`app.services.account_service.create_account` builds the row.
+    itself.  Plan step credit_card:CC-5-5b needed it for the create form, whose
+    balance box is typed against the account type the owner picked before the
+    account exists (ruling **R-CC52** stores a liability's figure in the held
+    sign), and every balance door reaches it since, through
+    :func:`app.services.liability_sign.asks_owed` -- the labels, the crossing
+    and the stale-form guard all ask it of ``account.account_type``.
     :func:`account_category` is this function applied to
     ``account.account_type``, so the two cannot disagree: one dict read,
     reached through two entrances.
@@ -168,10 +168,11 @@ def is_liability_account(account) -> bool:
 def is_liability_type(acct_type) -> bool:
     """Return whether an account TYPE is in the LIABILITY category.
 
-    :func:`is_liability_account` asked of the type, for the one door that
-    classifies a balance before its account exists (see
-    :func:`account_type_category`).  :func:`is_liability_account` reads this, so
-    an account and its type cannot be classified two ways.
+    :func:`is_liability_account` asked of the type -- what
+    :func:`app.services.liability_sign.asks_owed` reads for every balance door,
+    the create form's included (see :func:`account_type_category`).
+    :func:`is_liability_account` reads this, so an account and its type cannot
+    be classified two ways.
 
     Args:
         acct_type: A :class:`~app.models.ref.AccountType`, or ``None`` -- not a

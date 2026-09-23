@@ -73,10 +73,12 @@ class AnchorUpdateSchema(BaseSchema):
     # editor submits nothing, which reads as the balance it asked for.  It is a
     # fact the FORM states about itself, not a branch on account class (ruling
     # R-J keeps that out of this tier): the route compares it with what the
-    # account asks NOW and refuses a mismatch, so a save typed under one
-    # meaning is never stored under the other.  Absent is ``False``, which also
-    # fails a pre-CC-5-5b card editor closed -- that page pre-filled the held
-    # figure.
+    # account asks when the route runs and refuses a mismatch, so a save typed
+    # under one meaning is not stored under the other -- short of a re-type
+    # committed in the sub-second before the write lock, the window
+    # ``app.routes.accounts._door_meaning`` states.  Absent is ``False``, which
+    # also fails a pre-CC-5-5b card editor closed -- that page pre-filled the
+    # held figure.
     asks_owed = fields.Boolean(load_default=False)
 
 

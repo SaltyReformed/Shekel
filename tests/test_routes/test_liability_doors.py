@@ -45,8 +45,9 @@ from tests._test_helpers import create_account_of_type
 #: What a liability's balance form submits beside its figure (ruling R-CC61):
 #: the meaning its box was rendered in.  Every card request below sends it,
 #: because the rendered card forms do -- asserted in
-#: ``TestTheStaleFormIsRefused`` -- and a request without it is the stale form
-#: the doors refuse.
+#: ``TestTheAnchorEditor.test_a_card_owing_1000_opens_on_1000`` and
+#: ``TestTheBooksOpeningCard.test_a_card_states_and_prefills_what_its_books_opened_owing``
+#: -- and a request without it is the stale form the doors refuse.
 _OWED_FORM = {"asks_owed": "true"}
 
 
@@ -624,9 +625,12 @@ class TestTheStaleFormIsRefused:
         """The review's measured race: $0 Checking, re-typed, 2,500.00 saved.
 
         Without the guard it stored -2,500.00 (a card owing $2,500.00) from a
-        box that asked for an asset's balance.  With it: 400, the editor
-        re-rendered asking for the amount owed with the typed figure in it,
-        and not one assertion row written.
+        box that asked for an asset's balance.  With it: 400, not one
+        assertion row written, and the editor re-opened AS A FRESH CLICK OPENS
+        IT (ruling R-CC62): the standing 0.00 in the new words, the typed
+        2500.00 gone.  Then the keystroke the re-review measured: the
+        re-opened form submitted EXACTLY as emitted -- one Enter -- stores the
+        standing 0.00, never the refused -2,500.00.
         """
         with app.app_context():
             account = create_account_of_type(
@@ -648,8 +652,24 @@ class TestTheStaleFormIsRefused:
                 "again."
             ) in html
             assert "Amount owed" in html
-            assert 'value="2500.00"' in html
+            assert 'value="0.00"' in html
+            assert "2500" not in html
             assert self._rows(AccountAnchorHistory, account.id) == before
+            assert cash_ledger.resolve_anchor(
+                db.session.get(Account, account.id),
+            ).balance == Decimal("0.00")
+
+            # One Enter on the re-opened editor: every named input it emits,
+            # posted back unchanged.
+            emitted = dict(re.findall(
+                r'<input[^>]*name="([a-z_]+)"[^>]*value="([^"]*)"', html,
+            ))
+            assert emitted["asks_owed"] == "true"
+            assert emitted["anchor_balance"] == "0.00"
+            again = auth_client.patch(
+                f"/accounts/{account.id}/true-up", data=emitted,
+            )
+            assert again.status_code == 200
             assert cash_ledger.resolve_anchor(
                 db.session.get(Account, account.id),
             ).balance == Decimal("0.00")
@@ -674,6 +694,10 @@ class TestTheStaleFormIsRefused:
             html = resp.data.decode()
             assert "the box now asks for the account&#39;s balance." in html
             assert "Amount owed" not in html
+            # Re-opened fresh: the standing held -1,000.00, now an asset's
+            # balance, and not the 1,200.00 typed as owed.
+            assert 'value="-1000.00"' in html
+            assert "1200" not in html
             assert self._rows(AccountAnchorHistory, card.id) == before
 
     def test_the_preview_of_a_stale_form_says_why_instead_of_pricing_it(
@@ -694,7 +718,7 @@ class TestTheStaleFormIsRefused:
                     "observed_on": display_today().isoformat(),
                 },
             ).data.decode()
-            assert "the box now asks for the amount owed." in html
+            assert "so saving this box would be refused." in html
             assert "font-mono" not in html
 
     def test_a_forged_mark_on_the_preview_is_refused_not_a_500(
@@ -716,7 +740,7 @@ class TestTheStaleFormIsRefused:
                 },
             )
             assert resp.status_code == 200
-            assert "the box now asks for the amount owed." in resp.data.decode()
+            assert "so saving this box would be refused." in resp.data.decode()
 
     def test_a_books_card_posted_after_the_account_became_an_asset(
         self, app, auth_client, seed_user, seed_periods_today,

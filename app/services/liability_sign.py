@@ -87,13 +87,14 @@ def owed(balance: Decimal) -> Decimal:
     carry whatever sign was entered, and two different things keep them out
     of this function -- one structural, one only measured:
 
-    * **Structural, for a CONFIGURED loan.**  Every door crossing through
-      :func:`entered_figure` refuses or skips an AMORTIZING account (the
-      anchor editor, its save and its preview refuse one; the books-opening
-      card is not built for one and its POST refuses one), except the loan
-      setup page, which renders only while a loan has NO terms; and the
-      loan's read-only anchor cell reads no assertion at all (ruling
-      **R-CC53**).  So the production Mortgage's owed-typed opening
+    * **Structural, for a CONFIGURED loan.**  Every door that crosses a
+      STORED figure through :func:`entered_figure` refuses or skips an
+      AMORTIZING account (the anchor editor and its preview refuse one; the
+      books-opening card is not built for one), except the loan setup page,
+      which renders only while a loan has NO terms; and the loan's read-only
+      anchor cell reads no assertion at all (ruling **R-CC53**).  (The create
+      door does cross a new loan's figure, but a TYPED one, never a stored
+      row.)  So the production Mortgage's owed-typed opening
       (``+174,281.51``) and assertion (``+178,103.41``) reach no crossing.
     * **Measured only, for everything else.**  A non-amortizing liability or
       a loan still without terms, typed in the owed sign before this step,

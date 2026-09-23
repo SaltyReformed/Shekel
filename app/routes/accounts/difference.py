@@ -26,9 +26,10 @@ here rather than copied: ``LOAN_ANCHOR_REFUSAL`` is the write door's own
 copy for "a loan's balance is not a cash anchor" (ruling D4 / step A1, finding
 B-15), and a message with readers in two modules is part of the interface --
 finding **N-33**'s shape stated rather than fenced by convention.  Plan step
-credit_card:CC-5-5b added ``door_meaning_refusal`` on the same footing: the
-save and this preview refuse a form rendered under the other meaning by ONE
-rule (ruling R-CC61).
+credit_card:CC-5-5b's stale-form rule (ruling R-CC61) is not in ``anchor``: the
+save, this preview and the books-opening POST all read it from
+:mod:`app.routes.accounts._door_meaning`, one predicate with a sentence for
+each surface.
 
 The KIND TEST is not imported, and that is this step's review talking.  The
 cut first promoted ``anchor._is_amortizing`` to public so both modules could
@@ -51,7 +52,8 @@ from flask_login import current_user
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL, door_meaning_refusal
+from app.routes.accounts._door_meaning import door_meaning_preview_refusal
+from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL
 from app.services import anchor_service, balance_at, liability_sign
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -263,9 +265,9 @@ def _anchor_difference_context(account: Account) -> dict:
 
     recorded, submitted_day, refusal, asked_owed = _preview_submission()
     # Ruling R-CC61: the box was rendered under the other meaning, so the save
-    # this previews would be refused -- say so rather than price the figure
-    # under a meaning the box never showed.
-    refusal = refusal or door_meaning_refusal(account, asked_owed)
+    # this previews would be refused -- say so, in the preview's own words,
+    # rather than price the figure under a meaning the box never showed.
+    refusal = refusal or door_meaning_preview_refusal(account, asked_owed)
     if refusal is not None:
         return {"refusal": refusal, "difference": None}
     try:

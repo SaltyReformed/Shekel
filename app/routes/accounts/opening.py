@@ -57,7 +57,7 @@ from app.enums import AccountOpeningSourceEnum
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts.anchor import door_meaning_refusal
+from app.routes.accounts._door_meaning import door_meaning_refusal
 from app.services import cash_ledger, liability_sign, opening_service
 from app.services.account_projection import (
     AccountProjectionKind,
