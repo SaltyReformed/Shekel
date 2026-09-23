@@ -169,19 +169,12 @@ is on that step's own entry.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
-- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then split` -- **BI-496**, WIDENED
-      2026-09-22 by **R-BI38** from a fix to the job's shape. It starts with its measurement: a
-      matched A/B on the hosted runner names where its 5-13x per-test ratio comes from (the 3x
-      oversubscription of `-n 12` on 4 cores, the per-item drop-and-reclone, the service container's
-      disk). Then ONE change: the suite sharded across ~4-6 parallel jobs by an in-repo splitter,
-      the shards' node-id UNION graded equal to today's collected set (the `docker`-marked tests and
-      the serial audit-trigger benchmarks included); `-n` sized to the runner; lint (the plan gate,
-      pylint, the custom checkers, duplicate-code) its own parallel job; and an aggregate job named
-      `lint-and-test`, the context branch protection requires, failing on any failed, skipped or
-      cancelled shard. No check is weakened, and `ci_scope`'s registry-only scope, `fetch-depth: 0`,
-      the clock-skew `TZ` and the pinned postgres survive; `pytest.ini`'s per-test cap is re-sized
-      from CI's own `--durations`. Expected ~12-15 minutes a PR against 41-61 over four runs on
-      2026-09-22; merged alone, since every PR runs `ci.yml` and `pytest.ini`.
+- [x] **X-gy** `fe1de448` -- CI's one job became `scope`, `plan-gate` (its own job, not in `lint` as
+      specified: `registry-only` skips `lint`), `lint`, six `test` shards (`tests/_shard.py`) via
+      `scripts/test.sh` at `-n logical` and a fail-closed `lint-and-test`: ~10 min a PR, cap 50 s
+      (**R-BI38**..**R-BI41**). Closed **BI-496**: its 5-13x is CONSISTENT WITH oversubscription x a
+      slower core (3.1x x 1.2-2.1x = 3.7-6.5x; SMT fits the top, unmeasured), not the database or
+      disk. **A LATER STEP OBEYS**: tests sharing one session share an `xdist_group`.
 - [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
       both classes in `_outcome.py`, built from the field names so a counter on one side and not the
       other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).
