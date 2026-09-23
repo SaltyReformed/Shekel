@@ -6470,8 +6470,11 @@ class TestTheDebtFreeDateIsOneDerivation:
         band never touches zero.
 
         The card is anchored OWED-AS-NEGATIVE, which is the app's convention
-        (``TestNegativelyAnchoredLiability``), and the caveat reports the
-        magnitude -- the same ``abs`` the net-worth liability total takes.
+        (``TestNegativelyAnchoredLiability``), and the caveat reports what it
+        OWES: the seam's one flip of ``-500.00``, floored at zero (ruling
+        R-CC49, plan step credit_card:CC-5-5a; it read ``abs`` until then, which
+        agrees here and parts on a card holding a credit --
+        ``TestTheRevolvingFooterCountsWhatEachAccountOwes``).
         """
         with app.app_context():
             # Pylint: ``import-outside-toplevel`` -- test-local helper,
@@ -6550,6 +6553,205 @@ class TestTheDebtFreeDateIsOneDerivation:
             # And every other key still agrees, which is the promise itself.
             assert narrow == full
 
+
+class TestTheRevolvingFooterCountsWhatEachAccountOwes:
+    """The footer's ``excludes $X revolving`` is each account's OWED, floored.
+
+    Developer ruling **R-CC49** (plan step credit_card:CC-5-5a, ledger row
+    **CC-354**): "Each account's owed amount, floored at zero, then summed. A
+    credit on one card is not debt and does not pay down another card; the
+    footer counts the debt a payoff date leaves out."  Owed is the seam's one
+    flip, :func:`app.services.balance_at.owed`, of the held balance.
+
+    The three rules the ruling chose between each give a DIFFERENT figure on
+    the second case, so it grades the choice and not just the sign: ``abs()``
+    of each balance (the shipped rule) says ``$8,050.00``, the net sum says
+    ``$7,950.00``, and the ruled per-account floor says ``$8,000.00``.
+    """
+
+    def test_a_card_holding_a_credit_adds_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A card the issuer owes ``$50.00`` is no revolving debt.
+
+        Anchored at ``+50.00`` held (the issuer owes the owner), so::
+
+            owed           = -(+50.00)          = -50.00
+            floored        = max(-50.00, 0.00)  =   0.00
+            revolving_debt =                         0.00
+
+        ``abs()`` reported ``$50.00`` here: a credit captioned as debt.  The
+        configured loan is there because the footer is a caveat ON the loans'
+        payoff date: with no loan there is no debt summary to carry it.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- test-local helpers,
+            # matching this module's convention of importing where used.
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_account_of_type, create_loan_account,
+            )
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Amex",
+                anchor_balance=Decimal("50.00"),
+            )
+            db.session.commit()
+
+            summary = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )["debt_summary"]
+
+            assert summary.revolving_debt == Decimal("0.00")
+
+    def test_a_credit_does_not_pay_down_another_accounts_debt(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The ruling's own example: ``$8,000.00``, not ``$8,050`` or ``$7,950``.
+
+        Every liability with no payoff model, each anchored at its held
+        balance, beside a configured loan the footer must NOT count::
+
+            Visa (card)                  held -1,000.00  owed  1,000.00
+            Amex (card)                  held    +50.00  owed    -50.00 -> 0.00
+            Auto loan (no loan terms)    held -5,000.00  owed  5,000.00
+            Family loan (custom type)    held -2,000.00  owed  2,000.00
+            Car Loan (configured loan)   -- has a payoff model, excluded --
+
+            revolving_debt = 1,000.00 + 0.00 + 5,000.00 + 2,000.00 = 8,000.00
+
+        The auto loan is an AMORTIZING type with no ``LoanParams``, so the
+        seam answers it from the replay (held) and it has no payoff model; the
+        family loan is a user-created LIABILITY type with no flags.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- test-local helpers,
+            # matching this module's convention of importing where used.
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_account_of_type, create_loan_account,
+            )
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Visa",
+                anchor_balance=Decimal("-1000.00"),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Amex",
+                anchor_balance=Decimal("50.00"),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Auto Loan", "Auto loan, no terms",
+                anchor_balance=Decimal("-5000.00"),
+            )
+            family_type = AccountType(
+                name="Family loan",
+                category_id=ref_cache.acct_category_id(
+                    AcctCategoryEnum.LIABILITY,
+                ),
+                user_id=seed_user["user"].id,
+            )
+            db.session.add(family_type)
+            db.session.flush()
+            db.session.add(account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=family_type.id,
+                    name="Family loan",
+                    anchor_balance=Decimal("-2000.00"),
+                ),
+            ))
+            db.session.commit()
+
+            summary = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )["debt_summary"]
+
+            # 1,000.00 + 0.00 + 5,000.00 + 2,000.00 (the Car Loan excluded).
+            assert summary.revolving_debt == Decimal("8000.00")
+
+    def test_only_what_a_liability_with_no_payoff_model_owes_counts(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each clause of the rule, pinned where the floor alone cannot see it.
+
+        Under the floor every POSITIVE owed figure is what survives, so an
+        account whose owed figure is negative adds ``0.00`` whether or not the
+        filter admitted it.  Each account here is chosen so that ONE wrong rule
+        moves the total (CC-5-5a's adversarial review, finding F5): dropping
+        the ``is_liability`` clause admits the overdrawn checking, whose owed
+        figure is ``+300.00``; an ``abs()`` on a non-card liability counts the
+        auto loan's credit; and dropping the ``loan`` clause is graded by the
+        overpaid configured loan below::
+
+            Visa (card)                 held -1,000.00 -> owed 1,000.00  counted
+            Overdrawn checking (ASSET)  held   -300.00 -> not a liability
+                (owed() would read +300.00 if ``is_liability`` were dropped)
+            Auto loan, no terms         held   +300.00 -> owed -300.00 -> 0.00
+                (a CREDIT under rulings R-CC47 / R-CC52; ``abs()`` of a
+                non-card liability would count 300.00)
+            Car Loan (configured loan)  -- has a payoff model, excluded --
+
+            revolving_debt = 1,000.00
+
+        and a configured loan is excluded even when its figure is NEGATIVE (an
+        overpaid payoff folds below zero): owed() of ``-100.00`` is
+        ``+100.00``, which only the ``loan`` clause keeps out.  That half is
+        built from the REAL Car Loan projection with its figure replaced,
+        because an overpaid configured loan is not a state this suite's
+        factories reach -- only the figure is synthetic, the loan detail the
+        filter reads is the one production built.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- test-local helpers,
+            # matching this module's convention of importing where used.
+            # pylint: disable=import-outside-toplevel
+            from tests._test_helpers import (
+                create_account_of_type, create_loan_account,
+            )
+            from app.services.savings_dashboard_service._debt_line import (
+                debt_without_payoff_model,
+            )
+            car_loan = create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Visa",
+                anchor_balance=Decimal("-1000.00"),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Checking", "Overdrawn checking",
+                anchor_balance=Decimal("-300.00"),
+            )
+            create_account_of_type(
+                seed_user, db.session, "Auto Loan", "Auto loan, no terms",
+                anchor_balance=Decimal("300.00"),
+            )
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
+
+            # 1,000.00 (the Visa) + 0.00 (the auto loan's credit); the
+            # overdrawn checking and the Car Loan are not in the rule.
+            assert data["debt_summary"].revolving_debt == Decimal("1000.00")
+
+            loan_ad = next(
+                ad for ad in data["account_data"] if ad.account.id == car_loan.id
+            )
+            assert loan_ad.loan is not None
+            overpaid = replace(loan_ad, current_balance=Decimal("-100.00"))
+            # owed(-100.00) = +100.00 would count if the ``loan`` clause went.
+            assert debt_without_payoff_model([overpaid]) == Decimal("0.00")
 
 
 class TestTheTileHorizonsFollowTheOwnersCadence:
