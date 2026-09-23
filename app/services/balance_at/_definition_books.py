@@ -40,10 +40,16 @@ plain values out; no Flask symbol, no writes, no clock.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from app.services.cash_ledger import governing_account_opening
+from app.services.pay_calendar import PayCalendar
+from app.services.recurrence import (
+    RecurrenceSpec,
+    ResolvedRecurrence,
+    resolved_spec,
+)
 
 #: The attributes naming an account a recurring definition moves money in,
 #: read off the definition by name.  A ``TransactionTemplate`` carries
@@ -79,6 +85,45 @@ class DefinitionBooks:
 
     opened_on: date | None
     is_envelope: bool
+
+
+def resolved_with_books(
+    spec: RecurrenceSpec, calendar: PayCalendar, books: DefinitionBooks,
+) -> ResolvedRecurrence | None:
+    """Return what *spec* MEANS on *calendar*, with *books* attached.
+
+    **The ONE composition of a recurrence with where its definition's books
+    open** (plan step ``pay_calendar:C18-a``): the pure resolution
+    (:func:`~app.services.recurrence.resolved_spec`) with the floor and the
+    envelope flag laid on it.  Two callers, one body:
+    :meth:`~app.services.balance_at.BalanceContext.resolved_for` memoises it
+    for every reader of a definition's occurrences, keyed by exactly these
+    inputs; and the opening restatement (ruling **R-PC88**,
+    ``planned_rows_books.first_row_an_opening_strands``) asks it of the books
+    the account WOULD have -- a :class:`DefinitionBooks` read with the
+    candidate day standing in for the account's own opening -- which no pass
+    memo holds, because no account opens there yet.
+
+    Args:
+        spec: The authored recurrence.
+        calendar: The owner's pay calendar.
+        books: The definition's :class:`DefinitionBooks`.
+
+    Returns:
+        The resolved value with ``books_opened_on`` and ``is_envelope`` set,
+        or ``None`` when the owner has no pay periods.
+
+    Raises:
+        RecurrenceResolutionError: See
+            :func:`~app.services.recurrence.resolved_spec`.
+    """
+    resolved = resolved_spec(spec, calendar)
+    if resolved is None:
+        return None
+    return replace(
+        resolved, books_opened_on=books.opened_on,
+        is_envelope=books.is_envelope,
+    )
 
 
 def definition_books(

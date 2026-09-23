@@ -170,6 +170,48 @@ class UnsavedDefinition:
     is_envelope: bool = False
 
 
+def resolved_rule_of(
+    template: RecurrenceOwner, ctx: BalanceContext,
+) -> ResolvedRecurrence | None:
+    """Return what *template*'s RULE means on *ctx*, its books attached, or ``None``.
+
+    The pass's memoised resolution of the rule
+    (:meth:`~app.services.balance_at.BalanceContext.resolved_recurrence_of`)
+    under its AUTHORED closing alone -- the half :func:`resolved_definition`
+    narrows by the destination, and the whole of what the edit door's
+    stranded-row refusal walks (``planned_rows_books.definition_edit_refusal``,
+    plan step ``pay_calendar:C18-a``), which asks only what the books drop
+    and needs no loan's stop to ask it.  One function for the two, because
+    the None-guarded read was spelled in both and pylint's ``duplicate-code``
+    measured it.
+
+    ``getattr`` rather than attribute access, and NOT
+    ``obligations_aggregator.template_rule``: that module reads THIS door
+    since plan step R7d-e (its expired filter judges the composed closing),
+    so importing it here would be a cycle one step out -- the same "move the
+    leaf" problem plan step R7d-d solved one layer down, recreated one layer
+    up.  The read is one ``getattr`` and the duck-typed contract is the
+    recurrence package's own
+    (:data:`~app.services.recurrence.RecurrenceOwner`).
+
+    Args:
+        template: The recurring definition; see :func:`resolved_definition`
+            for the ownership contract.
+        ctx: The read pass.
+
+    Returns:
+        The resolved value, or ``None`` when the definition does not repeat
+        (no rule names it) or the owner has no pay periods.
+
+    Raises:
+        RecurrenceResolutionError: See :func:`resolved_definition`.
+    """
+    rule = getattr(template, "recurrence_rule", None)
+    if rule is None:
+        return None
+    return ctx.resolved_recurrence_of(rule)
+
+
 def resolved_definition(
     template: RecurrenceOwner, ctx: BalanceContext,
 ) -> ResolvedRecurrence | None:
@@ -234,21 +276,10 @@ def resolved_definition(
             still resolves for such an owner: the not-a-loan answer is reached
             before the scenario guard.
     """
-    # ``getattr`` rather than attribute access, and NOT
-    # ``obligations_aggregator.template_rule``: that module reads THIS door
-    # since plan step R7d-e (its expired filter judges the composed closing),
-    # so importing it here would be a cycle one step out -- the same "move the
-    # leaf" problem plan step R7d-d solved one layer down, recreated one layer
-    # up.  The read is one ``getattr`` and the duck-typed contract is the
-    # recurrence package's own
-    # (:data:`~app.services.recurrence.RecurrenceOwner`).
-    rule = getattr(template, "recurrence_rule", None)
-    if rule is None:
-        return None
     # The pass's memo, not a fresh resolution: the forward plan behind the
     # derived stop below walks this same rule to sum the definition's
     # occurrences (plan step R16-b-2), and one pass resolves one rule once.
-    resolved = ctx.resolved_recurrence_of(rule)
+    resolved = resolved_rule_of(template, ctx)
     if resolved is None:
         return None
     # The occurrence walk is deliberately NOT run first.  ``resolved_recurrence``
@@ -436,5 +467,6 @@ __all__ = [
     "UnsavedDefinition",
     "read_definition",
     "resolved_definition",
+    "resolved_rule_of",
     "resolved_submission",
 ]

@@ -204,17 +204,19 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     the pay-period normalisation and the cycle phase, both stated in the module
     docstring.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- these twelve ARE what one
-    recurrence means, read as a flat unit by a single consumer, and the plan's
-    END-state table (section 3) carries all but ``offset_periods``; the ninth,
-    ``max_per_month``, joined at plan step salary:R15-a as the cadence's third
-    value and is read flat for the reason ``interval_n`` and ``unit`` are.  The
-    tenth, eleventh and twelfth, ``due_day_of_month``, ``books_opened_on`` and
-    ``is_envelope``, joined at plan step ``pay_calendar:C18-a`` (rulings
-    **R-PC85**, **R-PC86**, **R-PC89**): the day a row is due, the day before
-    which no row may land, and which of a row's days the two are compared on
-    -- what the walk compares, and flat because :attr:`closing` -- their
-    mirror at the other end -- is one field too.  Pairing
+    Pylint: ``too-many-instance-attributes`` (12/7) -- the first nine are what
+    one recurrence means, read as a flat unit by a single consumer, and the
+    plan's END-state table (section 3) carries all but ``offset_periods``; the
+    ninth, ``max_per_month``, joined at plan step salary:R15-a as the
+    cadence's third value and is read flat for the reason ``interval_n`` and
+    ``unit`` are.  The tenth, ``due_day_of_month``, is the rule's own (the day
+    a row is due), joined at plan step ``pay_calendar:C18-a`` so the walk
+    dates a row as it is written; the eleventh and twelfth,
+    ``books_opened_on`` and ``is_envelope`` (rulings **R-PC85**, **R-PC89**),
+    are facts about the DEFINITION the read pass attaches as one
+    ``balance_at._definition_books.DefinitionBooks`` value and lays here
+    flat, each read on its own by the walk -- the floor by the comparison,
+    the flag by :meth:`books_day`.  Pairing
     ``starts_on`` with ``nominal_day`` was weighed and rejected: it would make
     every consumer unwrap a two-field object to ask for a date, and since this
     step the pair cannot disagree, so there is nothing for a wrapper to police.
@@ -449,10 +451,11 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
         :func:`~app.utils.books_boundary.row_books_day` over this value's own
         row date and *period*'s last day (plan step ``pay_calendar:C18-a``):
         the due day for a bill (ruling **R-PC86**), the paycheck's last day
-        for an envelope (ruling **R-PC89**).  The picker lives in that leaf,
-        not here, because the doors refusing to strand a planned row
-        (``app.services.planned_rows_books``) ask it of a STORED row, which
-        is not a resolved value.
+        for an envelope (ruling **R-PC89**).  The picker lives in that pure
+        leaf beside :func:`~app.utils.books_boundary.books_hold`, the one
+        comparison it feeds; the doors refusing to strand a planned row
+        (``app.services.planned_rows_books``) reach both only through the
+        walk that asks this.
 
         Args:
             period: The pay period the row is placed in, saved or projected.

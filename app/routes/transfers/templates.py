@@ -654,16 +654,7 @@ def _regenerate_and_commit_template(
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
-    FIRST refuses a save that would STRAND a still-projected transfer of
-    this definition on or before its books -- the later opening of its two
-    accounts -- whatever field the edit changed (plan step
-    ``pay_calendar:C18-a``, rulings **R-PC90** / **R-PC91**;
-    :func:`app.services.planned_rows_books.definition_edit_refusal`), because
-    the regeneration below would retire that transfer without a word.  The
-    edit is whole and flushed by now, so the refusal reads the state the save
-    would leave.
-
-    THEN brings the standing payment of the destination the edit LEAVES
+    FIRST brings the standing payment of the destination the edit LEAVES
     onto the loan's contract (plan step R7d-g-2, ruling **R-R85**; the same
     entry helper every lifecycle door calls, and the one write this function
     makes before regenerating).  The edit it is for: the standing payment's
@@ -673,6 +664,18 @@ def _regenerate_and_commit_template(
     all, and writes nothing: a rename costs it one lookup.  Its one refusal
     is the window CHECK's (ruling **R-R82**), worded whole, and it sends the
     user back to the edit form.
+
+    THEN refuses a save that would STRAND a still-projected transfer of this
+    definition -- one answering an occurrence the books drop, the later
+    opening of its two accounts -- whatever field the edit changed (plan
+    step ``pay_calendar:C18-a``, rulings **R-PC90** / **R-PC91**;
+    :func:`app.services.planned_rows_books.definition_edit_refusal`), because
+    a maintain pass reaching that transfer retires it -- the one below, for
+    a paycheck ending on or after *effective_from*.  AFTER the sync, because
+    the sync can move the rule's first occurrence, and that moves which
+    occurrences the save would leave: graded before it, the refusal would
+    read a rule the save does not keep.  A refusal rolls the whole pending
+    write back, the sync's included.
 
     Then re-runs ``transfer_recurrence.regenerate_for_template`` against the
     baseline scenario, diverting to the recurrence-conflict chooser when an
@@ -691,9 +694,12 @@ def _regenerate_and_commit_template(
         effective_from: Date from which regeneration applies.
         template_id: The template's id, used for redirect kwargs and logging.
         pass_ctx: The route's PRE-WRITE read pass, which serves the
-            stranded-row refusal: each memo it reads is keyed by its input,
-            so the edited rule and accounts resolve afresh, and an edit moves
-            no opening and no payday.  Regeneration still builds its own.
+            stranded-row refusal.  Its resolution memo is keyed by the rule's
+            spec and the definition's books, so the edited and synced rule
+            resolves afresh; the calendar and the per-account opening memos
+            are keyed by the owner and the account, and they serve the edited
+            state only because an edit moves no payday and no opening.
+            Regeneration still builds its own.
 
     Returns:
         A ``Response`` -- the chooser, or the edit form on a stale-data or
@@ -703,15 +709,16 @@ def _regenerate_and_commit_template(
     edit_form = RedirectTarget(
         "transfers.edit_transfer_template", {"template_id": template_id},
     )
-    # The stranded-row refusal first (the edit is whole and flushed, so it
-    # reads the state the save would leave), then the standing payment's
-    # sync.  ``rows_follow=False``: the pass below is the one that brings
-    # this definition's rows along, and the standing payment is the only
+    # The standing payment's sync first, then the stranded-row refusal: the
+    # sync may move the rule's first occurrence, and the refusal grades the
+    # rule the save would leave (the edit is whole and flushed by now).
+    # ``rows_follow=False``: the pass below is the one that brings this
+    # definition's rows along, and the standing payment is the only
     # definition the sync can move from this door (see the helper).
-    refused = refuse_stranding_save(
-        template, pass_ctx, edit_form,
-    ) or sync_loan_payment_start_or_refuse(
+    refused = sync_loan_payment_start_or_refuse(
         template.to_account_id, redirect=edit_form, rows_follow=False,
+    ) or refuse_stranding_save(
+        template, pass_ctx, edit_form,
     )
     if refused is not None:
         return refused

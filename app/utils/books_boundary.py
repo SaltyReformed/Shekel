@@ -45,7 +45,7 @@ def books_hold(opened_on: date, day: date) -> bool:
     unwinds.  Stating it in one function is what stops the two readings
     drifting apart across its five call sites in ``cash_ledger._books``, ONE
     in ``statement_match`` (``_gaps._split_at_books_open``), ONE in the
-    recurrence walk (``recurrence._placement._placements``, plan step
+    recurrence walk (``recurrence._placement._lands_inside_the_books``, plan step
     ``pay_calendar:C18-a``: ruling **R-PC86** chose this same strict reading
     for a GENERATED row, so a bill due on the opening day is inside the
     opening exactly as a movement settled that day is), and one SQL tier --
@@ -76,16 +76,17 @@ def row_books_day(due_on: date, period_end: date, *, is_envelope: bool) -> date:
     """Return the day of a planned row that the books are compared with.
 
     **THE one statement of which day that is** (plan step
-    ``pay_calendar:C18-a``), asked by every reader that bounds a planned row
-    by its accounts' books: the recurrence walk
+    ``pay_calendar:C18-a``), asked by the one reader that bounds a planned
+    row by its accounts' books: the recurrence walk
     (``recurrence._placement._lands_inside_the_books``, through
-    ``ResolvedRecurrence.books_day``) and the two doors that refuse to strand
-    a still-projected row below them (``app.services.planned_rows_books``:
+    ``ResolvedRecurrence.books_day``).  The doors that refuse to strand a
+    still-projected row below the books (``app.services.planned_rows_books``:
     the opening restatement, ruling **R-PC88**, and a recurring definition's
-    edit, rulings **R-PC90** / **R-PC91**).  One picker is what makes each
-    refusal fire exactly when the walk would stop naming the row: a refusal
-    choosing its own day would let a save the walk strands through, or
-    refuse one it does not.
+    edit, rulings **R-PC90** / **R-PC91**) ask the WALK which occurrences the
+    books drop, so they reach this picker only through it: a door choosing
+    its own day -- or reading a row's stored one, which the first cut did --
+    would let through a save the walk strands a row by, or refuse one it
+    does not.
 
     **A bill is compared on its DUE day** (ruling **R-PC86**): the day its
     money lands, so a bill due on or before the opening is already inside

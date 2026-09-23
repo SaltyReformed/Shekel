@@ -20,6 +20,9 @@ What each class covers:
 * :class:`TestTheWalkStopsAtTheBooks` -- the pure walk.  One composition
   (``recurrence._placement._placements``) serves both public walks, and these
   pin both, at the boundary from both sides.
+* :class:`TestWhatTheBooksDrop` -- ``placements_below_the_books``, the walk's
+  answer to what the floor removed, which the doors refusing to strand a row
+  ask (rulings R-PC88 / R-PC90 / R-PC91).
 * :class:`TestTheCashDayIsCompared` -- ruling R-PC86: a bill scheduled before
   the books but due after them is kept; one due ON the opening is not.
 * :class:`TestTheRowDateIsOneDerivation` -- the day the walk bounds by and the
@@ -47,6 +50,7 @@ from app.services.recurrence import (
     RecurrenceSpec,
     compute_due_date,
     occurrence_placements,
+    placements_below_the_books,
     projected_occurrence_placements,
     resolve,
 )
@@ -188,17 +192,109 @@ class TestTheWalkStopsAtTheBooks:
         assert date(2026, 4, 22) in _dates(unbounded)
         assert date(2026, 4, 22) not in _dates(bounded)
 
-    def test_no_floor_walks_exactly_what_it_walked_before(self):
-        """``None`` is the pure resolver's answer and bounds nothing."""
+    def test_no_floor_walks_every_occurrence_through_the_horizon(self):
+        """``None`` is the pure resolver's answer and bounds nothing.
+
+        Graded against the dates themselves (review L2: the first cut
+        compared the value with itself and could not fail): every monthly
+        occurrence on the prepended calendar, 03-22 included -- the one a
+        floor at any of the owner's paydays would drop.
+        """
         calendar = build_calendar(
             first_payday=_PREPENDED, cadence_days=14, count=12,
         )
         resolved = _monthly(date(2026, 3, 22))
 
         assert resolved.books_opened_on is None
-        assert occurrence_placements(
-            replace(resolved, books_opened_on=None), calendar,
-        ) == occurrence_placements(resolved, calendar)
+        assert _dates(occurrence_placements(resolved, calendar)) == [
+            date(2026, month, 22) for month in range(3, 9)
+        ]
+
+
+class TestWhatTheBooksDrop:
+    """``placements_below_the_books``: the walk's own answer to "what did the floor remove"."""
+
+    def test_it_is_exactly_what_the_floor_removes_from_the_unbounded_walk(self):
+        """The floored walk and this partition the unbounded walk, in walk order.
+
+        A floor ON 04-22 drops 03-22 and 04-22 (the opening is the close of
+        its day, R-HG) and keeps the rest -- and nothing is in both halves or
+        in neither.
+        """
+        calendar = build_calendar(
+            first_payday=_PREPENDED, cadence_days=14, count=12,
+        )
+        resolved = _monthly(date(2026, 3, 22))
+        bounded = replace(resolved, books_opened_on=date(2026, 4, 22))
+
+        dropped = placements_below_the_books(bounded, calendar)
+        kept = occurrence_placements(bounded, calendar)
+
+        assert _dates(dropped) == [date(2026, 3, 22), date(2026, 4, 22)]
+        assert sorted(dropped + kept, key=lambda p: p.occurrence) == list(
+            occurrence_placements(resolved, calendar),
+        )
+
+    def test_no_floor_drops_nothing(self):
+        """A value with no floor is unbounded, so nothing is below it."""
+        calendar = build_calendar(
+            first_payday=_PREPENDED, cadence_days=14, count=12,
+        )
+
+        assert placements_below_the_books(
+            _monthly(date(2026, 3, 22)), calendar,
+        ) == ()
+
+    def test_an_ENVELOPE_is_dropped_by_its_paychecks_last_day(self):
+        """R-PC89 through the same predicate: the straddled paycheck is kept.
+
+        Every-paycheck on the 03-26 calendar, books opening 04-12 -- three
+        days into the 04-09..04-22 paycheck.  As a bill that paycheck's row
+        is due 04-09, inside the books, so it is dropped; as an envelope it
+        compares 04-22, after them, so only the paychecks wholly on or before
+        the opening are.
+        """
+        calendar = build_calendar(
+            first_payday=date(2026, 3, 26), cadence_days=14, count=12,
+        )
+        every_paycheck = resolve(
+            RecurrenceSpec(
+                user_id=_USER_ID,
+                unit=RecurrenceUnitEnum.PERIOD,
+                starts_on=date(2026, 3, 26),
+            ),
+            calendar,
+        )
+        bill = replace(every_paycheck, books_opened_on=date(2026, 4, 12))
+        envelope = replace(bill, is_envelope=True)
+
+        assert _dates(placements_below_the_books(bill, calendar)) == [
+            date(2026, 3, 26), date(2026, 4, 9),
+        ]
+        assert _dates(placements_below_the_books(envelope, calendar)) == [
+            date(2026, 3, 26),
+        ]
+
+    def test_an_UNPLACED_occurrence_is_never_reported(self):
+        """Below the first payday there is no row day and no row to strand."""
+        calendar = build_calendar(
+            first_payday=date(2026, 3, 26), cadence_days=14, count=12,
+        )
+        resolved = resolve(
+            RecurrenceSpec(
+                user_id=_USER_ID,
+                unit=RecurrenceUnitEnum.MONTH,
+                starts_on=date(2026, 1, 22),
+            ),
+            calendar,
+        )
+
+        dropped = placements_below_the_books(
+            replace(resolved, books_opened_on=date(2026, 4, 25)), calendar,
+        )
+
+        assert _dates(dropped) == [date(2026, 4, 22)]
+        assert all(placement.period is not None for placement in dropped)
 
 
 class TestTheCashDayIsCompared:

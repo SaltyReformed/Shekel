@@ -24,8 +24,8 @@ they can be asked in:
 
 A FIFTH is asked later, by each door once its edit is applied, because it
 grades the state the save would LEAVE rather than the submission: no edit may
-strand a still-projected row of the definition on or before its books
-(:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
+leave a still-projected row of the definition answering an occurrence its
+books drop (:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
 
 **:class:`RecurrenceFormContext` is DEFINED here**, one layer below the
 authoring helpers that also take it, and that is what keeps the split a
@@ -673,9 +673,11 @@ def refuse_stranding_save(
     Rulings **R-PC90** / **R-PC91** (developer, 2026-09-22; plan step
     ``pay_calendar:C18-a``): a recurring definition's edit is refused when
     the state it would save leaves a live, still-projected row of that
-    definition on or before its books, WHATEVER field changed -- an account
-    moved onto books that open later, the envelope box unticked -- because
-    the regeneration after it would retire that row without a word.  The
+    definition answering an occurrence its books drop, WHATEVER field
+    changed -- an account moved onto books that open later, the envelope box
+    unticked, a due day cleared -- because a maintain pass reaching that row
+    retires it (the save's own regeneration, for a paycheck ending on or
+    after the edit's effective date; a later pass for an older one).  The
     predicate is :func:`app.services.planned_rows_books
     .definition_edit_refusal`'s; this is the door half both edit doors share
     (``routes/templates/crud.update_template``, and
@@ -688,10 +690,12 @@ def refuse_stranding_save(
     Args:
         template: The edited definition -- rule, amount and fields applied,
             not committed.
-        pass_ctx: The door's PRE-WRITE read pass.  It serves this read
-            because each memo it reads is keyed by its input -- the edited
-            spec and accounts miss and resolve afresh -- and an edit moves no
-            opening and no payday.
+        pass_ctx: The door's PRE-WRITE read pass.  Its resolution memo is
+            keyed by the rule's spec and the definition's books, so the
+            edited rule resolves afresh; the calendar and the per-account
+            opening memos are keyed by the owner and the account, and they
+            serve the edited state only because an edit moves no payday and
+            no opening.
         redirect: The edit form to send the owner back to.
 
     Returns:

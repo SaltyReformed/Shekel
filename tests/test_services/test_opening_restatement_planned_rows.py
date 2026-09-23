@@ -5,9 +5,8 @@ definition's occurrences start above the books of every account it moves money
 in, compared on the row's due day with a day ON the opening inside it (ruling
 **R-PC86**).  So moving an account's books LATER past a recurring row that is
 still Projected -- an unpaid, overdue bill the rule generated -- would leave
-that row named by no occurrence, and the maintain pass retires such a row the
-next time it re-runs the rule over its paycheck, raising the forecast without a
-word.  Josh ruled the door refuses instead (2026-09-22, "Refuse the move"): the
+that row answering an occurrence the walk drops, and a maintain pass that
+reaches its paycheck retires such a row, raising the forecast without a word.  Josh ruled the door refuses instead (2026-09-22, "Refuse the move"): the
 owner marks the row paid, cancels it or moves it, then restates the books.
 
 Each account here is built with :func:`~tests._test_helpers.account_never_asserted`
@@ -218,9 +217,9 @@ class TestAProjectedRecurringRowBoundsTheRestatement:
 class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
     """R-PC88 under R-PC89: an envelope's day is its paycheck's LAST day.
 
-    The refusal asks the walk's own picker, so it refuses exactly the
-    restatements that would strand the row -- not the ones between its due
-    day and its paycheck's end, which the walk still names.
+    The refusal asks the walk itself, so it refuses exactly the restatements
+    that would strand the row -- not the ones between its due day and its
+    paycheck's end, which the walk still names.
     """
 
     def test_the_envelope_rows_DUE_day_is_accepted(
@@ -286,6 +285,52 @@ class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
             assert outcome is OpeningRestatementOutcome.COMMITTED
 
 
+class TestTheDefinitionsAccountsBoundItsRows:
+    """Review L1: the walk bounds a row by its DEFINITION's accounts, not the row's.
+
+    A definition moved to another account leaves the rows its pass did not
+    reach where they were (ruling R-CC36 keeps a row outside the maintain
+    window on its old account).  Those rows answer occurrences of the
+    definition's walk, which the NEW account's books bound; the old
+    account's books no longer bound it at all.  The first cut keyed rows by
+    their own account, so it refused the old account's restatement over rows
+    no walk of it names and let the new account's strand them.
+    """
+
+    def test_the_OLD_account_may_open_past_rows_its_definition_left_behind(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Nothing the old account's books bound is stranded by moving them."""
+        with app.app_context():
+            old, rows = _account_with_projected_rows(seed_user, seed_periods)
+            _moved_to_a_new_account(seed_user, rows[0].template)
+            first_due = min(row.due_date for row in rows)
+            assert all(row.account_id == old.id for row in rows)
+
+            outcome = apply_opening_restatement(
+                account=old, opening=BooksOpening(first_due, Decimal("0.00")),
+            )
+
+            assert outcome is OpeningRestatementOutcome.COMMITTED
+
+    def test_the_NEW_account_is_refused_over_the_rows_left_on_the_old_one(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The definition's walk is bounded by its new account, wherever its rows sit."""
+        with app.app_context():
+            _old, rows = _account_with_projected_rows(seed_user, seed_periods)
+            new = _moved_to_a_new_account(seed_user, rows[0].template)
+            first = min(rows, key=lambda row: row.due_date)
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=new,
+                    opening=BooksOpening(first.due_date, Decimal("0.00")),
+                )
+
+            assert f"and due {first.due_date.isoformat()}" in str(refused.value)
+
+
 def _opening_count(account):
     """Return how many opening records *account* carries."""
     return _db.session.query(AccountOpening).filter_by(
@@ -293,11 +338,9 @@ def _opening_count(account):
     ).count()
 
 
-def _account_opened_early(seed_user):
+def _account_opened_early(seed_user, name="Planned-rows account"):
     """Return a never-asserted account whose books open before the schedule."""
-    account = account_never_asserted(
-        seed_user, _db.session, name="Planned-rows account",
-    )
+    account = account_never_asserted(seed_user, _db.session, name=name)
     _db.session.flush()
     _db.session.add(AccountOpening(
         account_id=account.id,
@@ -307,6 +350,19 @@ def _account_opened_early(seed_user):
             AccountOpeningSourceEnum.USER_DECLARED,
         ),
     ))
+    _db.session.flush()
+    return account
+
+
+def _moved_to_a_new_account(seed_user, template):
+    """Point *template* at a new early-opened account, leaving its rows where they are.
+
+    The state a definition's account move leaves for the rows no maintain
+    pass reached (ruling R-CC36): the definition names the new account, its
+    rows still sit on the old one.
+    """
+    account = _account_opened_early(seed_user, name="Moved-to account")
+    template.account_id = account.id
     _db.session.flush()
     return account
 

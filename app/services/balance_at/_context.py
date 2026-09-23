@@ -54,7 +54,7 @@ loan silently resolving at a different one.
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -75,11 +75,10 @@ from app.services.recurrence import (
     ResolvedRecurrence,
     occurrence_placements,
     recurrence_spec,
-    resolved_spec,
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
-from ._definition_books import DefinitionBooks, definition_books
+from ._definition_books import DefinitionBooks, definition_books, resolved_with_books
 from ._memoize import _memoize_once, require_scenario
 
 if TYPE_CHECKING:
@@ -651,18 +650,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         under its authored closing to sum the definition's occurrences -- so
         one page reading one loan payment resolved its rule twice on one pass
         (plan ledger row **N-511**'s shape; rule 14's ONE WALK forbids it).
-        Both readers take the pure resolution from here and each applies its
-        own closing to the value.
+        Both readers take the resolution (books attached) from here and each
+        applies its own closing to the value.
 
         **A memo on the PASS, not a cache**, for the reason :meth:`calendar`
         gives, and filled here because ``app.services.recurrence`` is a leaf
         below the seam.
 
         **Keyed by what the rule SAYS, not by which row it is.**  The
-        resolution is a pure function of the rule's authored columns and the
-        pass's calendar (:func:`~app.services.recurrence.resolved_spec`), so
-        the spec IS the rule's input and an entry keyed by it cannot be served
-        for a different one.  A first cut keyed by ``rule.id``, and the merge
+        resolution is a function of the rule's authored columns, the pass's
+        calendar and its definition's books (:meth:`resolved_for`'s key), so
+        an entry keyed by those inputs cannot be served for a different one.
+        A first cut keyed by ``rule.id``, and the merge
         of plan step R7d-c-2 -- which has GENERATION read a rule through this
         memo -- measured the proxy's cost: ``reauthor_rule`` rewrites columns
         IN PLACE, so a rule edited and regenerated on one pass regenerated on
@@ -747,8 +746,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         memo keys by); over different openings, or an envelope beside a bill
         (ruling **R-PC89**), they mean different occurrences and walk apart.
         The floor is read first -- a memo hit per account -- so a foreign
-        spec costs one opening read before the resolver refuses it; nothing
-        is stored for it, and the refusal still names the rule.
+        spec costs one opening read (memoised) before the resolver refuses
+        it; no resolution is stored for it, and the refusal names the rule.
 
         Args:
             spec: The authored recurrence.
@@ -767,10 +766,8 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         books = definition_books(definition, self._books_opened_on)
         key = (spec, books)
         if key not in self._recurrences:
-            resolved = resolved_spec(spec, self.calendar())
-            self._recurrences[key] = None if resolved is None else replace(
-                resolved, books_opened_on=books.opened_on,
-                is_envelope=books.is_envelope,
+            self._recurrences[key] = resolved_with_books(
+                spec, self.calendar(), books,
             )
         return self._recurrences[key]
 
@@ -816,7 +813,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 .resolved_definition` returns.  Must have been resolved
                 against THIS pass's calendar, which every producer of one
                 guarantees by reading :meth:`resolved_recurrence_of` or
-                ``resolved_spec(spec, ctx.calendar())``.
+                :meth:`resolved_for`, never the bare ``resolved_spec``.
 
         Returns:
             One :class:`~app.services.recurrence.OccurrencePlacement` per

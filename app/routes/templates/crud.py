@@ -472,9 +472,10 @@ def update_template(template_id):
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
     # chooser rolls the pending edit back; its Apply re-runs this same edit)
-    # -- unless the save would strand a still-projected row on or before its
-    # books, whatever field changed (rulings R-PC90 / R-PC91), which is
-    # refused first: the edit is whole now, and regeneration would retire it.
+    # -- unless the save would leave a still-projected row answering an
+    # occurrence its books drop, whatever field changed (rulings R-PC90 /
+    # R-PC91), which is refused first: the edit is whole now, and the pass
+    # that reaches that row retires it (this one, from ``effective_from``).
     diverted = refuse_stranding_save(
         template, pass_ctx,
         RedirectTarget("templates.edit_template", {"template_id": template_id}),

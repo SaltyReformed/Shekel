@@ -6,41 +6,58 @@ above the books of every account it moves money in (ruling **R-PC85**), and
 the walk names no occurrence whose row would land on or before them
 (``recurrence._placement._lands_inside_the_books``).  A row the rule has
 already generated and the owner has not settled -- an unpaid, still-Projected
-bill or envelope -- is therefore STRANDED by any save that moves the books
-past it: the rule stops naming its paycheck, and the maintain pass retires a
-row its rule no longer names the next time it re-runs that rule over the
-paycheck (plan step R10-a), raising the forecast without a word.  The owner
-decides instead -- marked paid it becomes a movement, cancelled it holds
-nothing, moved later it stays owed -- and three doors refuse the save until
-they have:
+bill or envelope -- is therefore STRANDED by any save that makes the books
+drop the occurrence it answers: the rule stops naming it, and the maintain
+pass retires a row its rule no longer names (plan step R10-a) whenever a pass
+reaches that row's paycheck -- the save's own regeneration for a paycheck
+ending on or after the edit's effective date (today unless the owner types an
+earlier one), a later pass for an older one.  A row holding the owner's
+records is retained with a notice instead; a record-free one is deleted and
+the forecast rises by its amount without a word.  The owner decides instead --
+marked paid it becomes a movement, cancelled it holds nothing, moved later it
+stays owed -- and the doors refuse the save until they have:
 
 * the opening restatement, moving an account's books LATER (ruling
-  **R-PC88**; ``opening_service._reject_books_open_on_or_after_planned_rows``
-  asks :func:`first_stranded_row` over the account's rows);
+  **R-PC88**; ``opening_service._reject_books_open_on_or_after_planned_rows``);
 * a recurring definition's edit, whatever field it changes (rulings
   **R-PC90** -- an account move -- and **R-PC91**, which widened it to any
-  save, an envelope box unticked included): :func:`definition_edit_refusal`,
-  asked by the transaction- and transfer-template edit routes AFTER the edit
-  is applied, so it reads the state the save would leave.
+  save, an envelope box unticked or a due day cleared included):
+  :func:`definition_edit_refusal`, asked by the transaction- and
+  transfer-template edit routes AFTER the edit is applied, so it reads the
+  state the save would leave.
 
-**ONE picker and ONE comparison, the walk's own.**  Which day of a row is
-compared is :func:`~app.utils.books_boundary.row_books_day` -- the due day for
-a bill (ruling **R-PC86**), the paycheck's last day for an envelope (ruling
-**R-PC89**) -- and the comparison is :func:`~app.utils.books_boundary
-.books_hold`.  The walk asks both of a PLACEMENT and this asks both of a
-STORED row, so each door refuses exactly the saves the walk would strand a
-row through: a door choosing its own day would refuse saves that strand
-nothing, or pass one that does (an envelope whose due day falls after its
-paycheck's end).  The stored row's due day is the day the generator stamped;
-a row the owner re-dated is OVERRIDDEN, which the maintain pass keeps as a
-conflict rather than retiring, so reading its own day errs toward refusing.
+**The WALK decides, never a stored day** (the adversarial review of this
+step, finding H1).  :func:`first_row_below_the_books` asks
+:func:`~app.services.recurrence.placements_below_the_books` which occurrences
+the books drop from the walk the save would leave, and matches a row to the
+occurrence it answers by ``occurs_on`` -- the key the maintain pass itself
+matches by -- so a door refuses exactly the rows the pass would stop naming.
+Reading a row's STORED due day instead let a save through that strands one:
+the regeneration re-dates every still-named row by the NEW rule, so clearing
+a bill's due day moves its cash day back onto its scheduled day, inside the
+books, while the stored day still read as outside them.  The day a refusal
+names is the walk's for the placement
+(:meth:`~app.services.recurrence.ResolvedRecurrence.books_day`: the due day
+for a bill, ruling **R-PC86**; the paycheck's last day for an envelope,
+ruling **R-PC89**) -- the row as the save would leave it, which is the
+wording the developer ruled for R-PC91's message.
+
+**An OVERRIDDEN row is refused over too.**  The pass keeps a row the owner
+re-priced as a conflict rather than retiring it, but the conflict chooser's
+"use" hands it back to its definition, and the next pass that reaches it then
+retires it like any other.  A row that answers NO occurrence (``occurs_on``
+``NULL``) is never matched: no walk names it with or without the books, so
+the books cannot strand it (finding REC-516 retains it either way).
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data and ORM
 reads in, a row or a sentence out; no Flask symbol, no writes, no clock.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
+
+from sqlalchemy import or_
 
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
@@ -48,9 +65,15 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services.pay_calendar import FiledRow, PayCalendar
+from app.services.balance_at import definition_books, resolved_with_books
+from app.services.pay_calendar import PayCalendar
+from app.services.recurrence import (
+    ResolvedRecurrence,
+    placements_below_the_books,
+    recurrence_spec,
+)
+from app.services.recurring_definition import resolved_rule_of
 from app.utils.balance_predicates import is_projected_clause
-from app.utils.books_boundary import books_hold, row_books_day
 
 
 @dataclass(frozen=True)
@@ -59,8 +82,9 @@ class StrandedRow:
 
     Attributes:
         name: The row's name, for the refusal.
-        books_day: The day the books are compared with
-            (:func:`~app.utils.books_boundary.row_books_day`).
+        books_day: The day the books are compared with, for the placement
+            the walk gives the row
+            (:meth:`~app.services.recurrence.ResolvedRecurrence.books_day`).
         is_envelope: Whether *books_day* is the row's paycheck's last day
             (an envelope) rather than its due day, which is what the refusal
             has to say to be true.
@@ -87,131 +111,176 @@ class StrandedRow:
         return f'"{self.name}" is still projected {where}'
 
 
-def first_stranded_row(
-    floor: date,
-    calendar: PayCalendar,
-    *,
-    transactions: tuple = (),
-    transfers: tuple = (),
+@dataclass(frozen=True)
+class DefinitionWalk:
+    """One recurring definition as a save would leave it, and where its rows are.
+
+    Attributes:
+        resolved: The definition's recurrence, carrying the books floor and
+            the envelope flag the save would leave.
+        transactions: SQL criteria selecting the definition's transactions;
+            empty asks none.
+        transfers: The same for its transfers; empty asks none.
+    """
+
+    resolved: ResolvedRecurrence
+    transactions: tuple = ()
+    transfers: tuple = ()
+
+
+def first_row_below_the_books(
+    calendar: PayCalendar, walks: Iterable[DefinitionWalk],
 ) -> StrandedRow | None:
-    """Return the earliest live, still-projected recurring row books at *floor* would strand.
+    """Return the earliest live, still-projected row whose occurrence the books drop.
 
-    The rows asked about are RECURRING and LIVE: a transaction, or a
-    transfer, whose definition carries a recurrence rule, not soft-deleted,
-    still in the Projected status, in any scenario (an opening is
-    scenario-free, ruling **R-GX**).  "Template-linked" alone would be wrong
-    by a whole class: every hand-entered one-off mints a RULE-LESS definition
-    since plan step ``balance:X-bi-7c`` (a one-time transfer has one too), and
-    no walk names -- so nothing retires -- a rule-less definition's row.  A
-    settled row is a movement, and the movement rules speak for it.
-
-    **Every candidate is read, not only the earliest by due day**, because
-    the day compared is not one column: an envelope's is its paycheck's last
-    day, which ``budget.pay_periods`` does not store (the calendar derives
-    it).  Five scalar columns per row, on two doors that are not hot paths:
-    an opening restatement asks about one account's projected rows, a
-    definition's edit about its own.
+    **The one question every door refusing to strand a row asks**, over one
+    definition (an edit) or every definition moving money in an account (an
+    opening restatement): of the occurrences
+    :func:`~app.services.recurrence.placements_below_the_books` reports for a
+    walk -- those its rule names that its books floor drops -- which does a
+    live row still answer?  A row answers the occurrence in its
+    ``occurs_on``, the key the maintain pass matches by, so the rows found
+    are exactly the ones the pass would stop naming.  Live means not
+    soft-deleted and still Projected, in any scenario (one definition's rule
+    walks the same in every scenario, and an opening is scenario-free,
+    ruling **R-GX**); a settled row is a movement, and the movement rules
+    speak for it.
 
     Args:
-        floor: The day the books would open (the candidate opening, or the
-            latest opening across a definition's accounts).
-        calendar: The owner's pay calendar, which derives each row's
-            paycheck -- the same derivation the walk's placements carry.
-        transactions: SQL criteria selecting the transactions to ask about,
-            beside the recurring-and-live ones this adds; empty asks none.
-        transfers: The same for transfers; empty asks none.
+        calendar: The owner's pay calendar, which every walk places on.
+        walks: The definitions to ask about, each as the save would leave it.
 
     Returns:
-        The stranded row with the EARLIEST compared day (ties to the lower
-        id, transactions before transfers), or ``None`` when *floor* strands
-        none.
-
-    Raises:
-        RuntimeError: A row names a period *calendar* does not hold
-            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`)
-            -- a contradiction, since both keys are NOT NULL.
+        The stranded row with the EARLIEST compared day across every walk
+        (ties to transactions before transfers, then the lower id), named by
+        the day its walk compares for its placement, or ``None`` when the
+        save strands none.
     """
     candidates = []
-    if transactions:
-        candidates.extend(
-            (row_books_day(due_on, _period_end(calendar, Transaction, row_id, period_id),
-                           is_envelope=envelope), 0, row_id, name, envelope)
-            for row_id, name, due_on, period_id, envelope in (
-                db.session.query(
-                    Transaction.id, Transaction.name, Transaction.due_date,
-                    Transaction.pay_period_id, TransactionTemplate.is_envelope,
+    for walk in walks:
+        compared = {
+            placement.occurrence: walk.resolved.books_day(placement.period)
+            for placement in placements_below_the_books(walk.resolved, calendar)
+        }
+        if not compared:
+            continue
+        for table_order, model, criteria in (
+            (0, Transaction, walk.transactions), (1, Transfer, walk.transfers),
+        ):
+            if not criteria:
+                continue
+            candidates.extend(
+                (compared[occurs_on], table_order, row_id, name, walk.resolved.is_envelope)
+                for row_id, name, occurs_on in (
+                    db.session.query(model.id, model.name, model.occurs_on)
+                    .filter(
+                        *criteria,
+                        model.occurs_on.in_(list(compared)),
+                        model.is_deleted.is_(False),
+                        is_projected_clause(model),
+                    )
+                    .all()
                 )
-                .join(
-                    TransactionTemplate,
-                    TransactionTemplate.id == Transaction.template_id,
-                )
-                .join(
-                    RecurrenceRule,
-                    RecurrenceRule.transaction_template_id
-                    == TransactionTemplate.id,
-                )
-                .filter(
-                    *transactions,
-                    Transaction.is_deleted.is_(False),
-                    is_projected_clause(Transaction),
-                )
-                .all()
             )
-        )
-    if transfers:
-        # A transfer is never an envelope, so its compared day is its due
-        # day; asked through the picker all the same, so the answer has one
-        # spelling for both tables.
-        candidates.extend(
-            (row_books_day(due_on, _period_end(calendar, Transfer, row_id, period_id),
-                           is_envelope=False), 1, row_id, name, False)
-            for row_id, name, due_on, period_id in (
-                db.session.query(
-                    Transfer.id, Transfer.name, Transfer.due_date,
-                    Transfer.pay_period_id,
-                )
-                .join(
-                    RecurrenceRule,
-                    RecurrenceRule.transfer_template_id
-                    == Transfer.transfer_template_id,
-                )
-                .filter(
-                    *transfers,
-                    Transfer.is_deleted.is_(False),
-                    is_projected_clause(Transfer),
-                )
-                .all()
-            )
-        )
-    stranded = [
-        candidate for candidate in candidates
-        if not books_hold(floor, candidate[0])
-    ]
-    if not stranded:
+    if not candidates:
         return None
-    books_day, _table, _row_id, name, envelope = min(stranded)
-    return StrandedRow(name=name, books_day=books_day, is_envelope=envelope)
+    books_day, _table_order, _row_id, name, is_envelope = min(candidates)
+    return StrandedRow(name=name, books_day=books_day, is_envelope=is_envelope)
 
 
-def _period_end(calendar: PayCalendar, model, row_id: int, period_id: int) -> date:
-    """Return the last day of the paycheck a stored row is filed in.
+def first_row_an_opening_strands(
+    account_id: int, opened_on: date, calendar: PayCalendar,
+) -> StrandedRow | None:
+    """Return the earliest row books opening on *opened_on* would strand, or ``None``.
 
-    Through :meth:`~app.services.pay_calendar.PayCalendar.require_period`, the
-    twin for a row already FILED: its key is NOT NULL, so a period the
-    calendar lacks is a contradiction, not "not found".
+    **Ruling R-PC88's one producer**, read by the restatement door's refusal
+    (``opening_service._reject_books_open_on_or_after_planned_rows``) and by
+    the books-opening card's date ceiling (``routes/accounts/opening``), so
+    the day the card stops at and the row the door names cannot come from two
+    answers.  Every RECURRING definition that moves money in the account is
+    walked with the books it would have if the account opened on *opened_on*
+    -- the later of that day and the definition's OTHER accounts' governing
+    openings (:func:`~app.services.balance_at.definition_books`, the candidate
+    standing in for this account's own), composed by the ONE composition
+    (:func:`~app.services.balance_at.resolved_with_books`).  Each walk asks
+    after the definition's OWN rows, wherever they sit: a row left on an
+    account the definition has since moved off (ruling **R-CC36** keeps a
+    row outside the maintain window where it was) is bounded by the
+    definition's walk, not by the account it is filed under.
+
+    A rule-less definition is not asked: no walk names its rows, so no books
+    can strand them.
 
     Args:
+        account_id: The account whose books would open on *opened_on*.
+            Assumed the owner's; the definitions referring to it are too.
+        opened_on: The candidate opening day.
         calendar: The owner's pay calendar.
-        model: The row's mapped class, for the refusal's table name.
-        row_id: The row's id.
-        period_id: The ``budget.pay_periods.id`` it is filed in.
 
     Returns:
-        The period's derived ``end_date``.
+        The earliest stranded row, or ``None``.
+
+    Raises:
+        RecurrenceResolutionError: A definition's stored rule cannot be
+            resolved (:func:`~app.services.recurrence.resolved_spec`).
     """
-    return calendar.require_period(FiledRow(
-        table=model.__table__.fullname, row_id=row_id, period_id=period_id,
-    )).end_date
+    candidate = {account_id: opened_on}
+    walks = []
+    for definition, criteria in _recurring_definitions_moving_money_in(account_id):
+        resolved = resolved_with_books(
+            recurrence_spec(definition.recurrence_rule), calendar,
+            # A fresh memo holding the candidate: the definition's other
+            # accounts are read as they stand, this one as it would.
+            definition_books(definition, dict(candidate)),
+        )
+        if resolved is not None:
+            walks.append(DefinitionWalk(resolved, **criteria))
+    return first_row_below_the_books(calendar, walks)
+
+
+def _recurring_definitions_moving_money_in(account_id: int) -> list:
+    """Return ``(definition, criteria)`` for every recurring definition touching *account_id*.
+
+    A transaction template whose account it is, and a transfer template it is
+    either end of, each carrying a recurrence rule; *criteria* selects that
+    definition's own rows for :class:`DefinitionWalk`.
+
+    Args:
+        account_id: The account.
+
+    Returns:
+        The pairs, transaction templates first, each table by id.
+    """
+    transaction_definitions = (
+        db.session.query(TransactionTemplate)
+        .join(
+            RecurrenceRule,
+            RecurrenceRule.transaction_template_id == TransactionTemplate.id,
+        )
+        .filter(TransactionTemplate.account_id == account_id)
+        .order_by(TransactionTemplate.id)
+        .all()
+    )
+    transfer_definitions = (
+        db.session.query(TransferTemplate)
+        .join(
+            RecurrenceRule,
+            RecurrenceRule.transfer_template_id == TransferTemplate.id,
+        )
+        .filter(or_(
+            TransferTemplate.from_account_id == account_id,
+            TransferTemplate.to_account_id == account_id,
+        ))
+        .order_by(TransferTemplate.id)
+        .all()
+    )
+    return [
+        (definition, {"transactions": (Transaction.template_id == definition.id,)})
+        for definition in transaction_definitions
+    ] + [
+        (definition, {"transfers": (Transfer.transfer_template_id == definition.id,)})
+        for definition in transfer_definitions
+    ]
 
 
 def definition_edit_refusal(template, ctx) -> str | None:
@@ -219,18 +288,20 @@ def definition_edit_refusal(template, ctx) -> str | None:
 
     Rulings **R-PC90** and **R-PC91** (developer, 2026-09-22): a recurring
     definition's edit is refused when the state it would SAVE leaves a live,
-    still-projected row of that definition on or before its books --
-    whatever field changed.  An account moved onto one whose books open
-    later, an envelope box unticked (its rows then compare on their due day,
-    not their paycheck's last day), or a row that already sat below its
-    books: one check, on the saved state, so no field has to be remembered.
+    still-projected row of that definition answering an occurrence the books
+    drop -- whatever field changed.  An account moved onto one whose books
+    open later, an envelope box unticked (its rows then compare on their due
+    day, not their paycheck's last day), a due day cleared (the row's cash
+    day moves back onto its scheduled day), or a row that already sat below
+    its books: one check, on the saved state, so no field has to be
+    remembered.
 
     **Asked after the edit is applied and before regeneration**, so the
-    floor and the flag are the save's own: the floor through the SAME
-    composition the walk takes (:meth:`~app.services.balance_at.BalanceContext
-    .resolved_recurrence_of`, reading the definition's accounts off the edited
-    object), and the envelope flag through the query below, which autoflushes
-    the edited definition before it reads the column.
+    rule, the floor and the envelope flag are the save's own, all through
+    the SAME composition the walk takes (the pass's memoised resolution,
+    :func:`~app.services.recurring_definition.resolved_rule_of`, reading the
+    rule's columns and the definition's accounts and ``is_envelope`` off the
+    edited objects).
 
     Args:
         template: The edited
@@ -245,17 +316,16 @@ def definition_edit_refusal(template, ctx) -> str | None:
         including a definition with no rule, whose rows no walk names, and an
         owner with no pay periods, who has no rows.
     """
-    rule = template.recurrence_rule
-    if rule is None:
-        return None
-    resolved = ctx.resolved_recurrence_of(rule)
-    if resolved is None or resolved.books_opened_on is None:
+    resolved = resolved_rule_of(template, ctx)
+    if resolved is None:
         return None
     if isinstance(template, TransferTemplate):
         scope = {"transfers": (Transfer.transfer_template_id == template.id,)}
     else:
         scope = {"transactions": (Transaction.template_id == template.id,)}
-    row = first_stranded_row(resolved.books_opened_on, ctx.calendar(), **scope)
+    row = first_row_below_the_books(
+        ctx.calendar(), (DefinitionWalk(resolved, **scope),),
+    )
     if row is None:
         return None
     return (
@@ -268,7 +338,9 @@ def definition_edit_refusal(template, ctx) -> str | None:
 
 
 __all__ = [
+    "DefinitionWalk",
     "StrandedRow",
     "definition_edit_refusal",
-    "first_stranded_row",
+    "first_row_an_opening_strands",
+    "first_row_below_the_books",
 ]

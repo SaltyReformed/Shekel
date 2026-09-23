@@ -258,6 +258,33 @@ class TestTheReviewPassStopsOfferingIt:
         assert review.proposals == ()
         assert line.id not in {other.line_id for other in review.unmatched}
 
+    def test_the_same_line_the_day_AFTER_IS_proposed_against_that_row(
+        self, app, db, seed_user,
+    ):
+        """POSITIVE CONTROL for the case above (C18-a adversarial review, L3).
+
+        That case's row is filed a paycheck on, so its line sits at the very
+        edge of the proposer's day window; ``proposals == ()`` would pass
+        there for a window that merely shrank.  The same row and the same
+        figure, the line a day later -- past the books -- IS proposed, so the
+        empty answer above is the books' and not the window's.
+        """
+        day = _the_calendars_first_day(db, seed_user)
+        a_transaction(
+            seed_user, name="Duke Energy", amount="180.00",
+            period=a_later_period(seed_user),
+        )
+        line = a_bank_line(
+            seed_user, an_import(seed_user), posted_on=day + timedelta(days=1),
+        )
+
+        review = review_set(a_scope(seed_user))
+
+        assert [
+            [bank.line_id for bank in proposal.lines]
+            for proposal in review.proposals
+        ] == [[line.id]]
+
     def test_a_line_the_day_AFTER_is_offered(self, app, db, seed_user):
         """The other side of the boundary, so the split is not simply "all".
 

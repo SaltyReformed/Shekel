@@ -68,16 +68,12 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import or_
-
 from app import ref_cache
 from app.enums import AccountOpeningSourceEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.account_opening import AccountOpening
-from app.models.transaction import Transaction
-from app.models.transfer import Transfer
 from app.services import account_posting_service, cash_ledger, planned_rows_books
 from app.services.pay_calendar import calendar_for
 from app.services.user_write_lock import lock_user_writes
@@ -245,9 +241,9 @@ def _reject_restatement_day(
     because its repair is the cheapest: mark the row paid, cancel it or move
     it.  It exists because ruling **R-PC85** made a recurring definition's
     occurrences stop at its accounts' books, so a restatement moving the books
-    past a still-projected recurring row would leave that row named by no
-    occurrence -- and the maintain pass retires such a row the next time it
-    re-runs the rule over its paycheck (plan step R10-a), without a word.
+    past a still-projected recurring row would leave that row answering an
+    occurrence the walk drops -- and a maintain pass that reaches its
+    paycheck retires such a row (plan step R10-a), without a word.
 
     Stated as one function rather than five calls at the door so the ORDER is a
     property of the rule set rather than of whichever caller ran first -- the
@@ -265,8 +261,8 @@ def _reject_restatement_day(
         ValidationError: When the day is in the future, on or after a day the
             account already records money moving, on or after a day it has
             matched a bank line on, after a day it has asserted a balance
-            for, or on or after the compared day of a still-projected
-            recurring row that moves money in it.
+            for, or where it would strand a still-projected recurring row
+            of a definition that moves money in it.
     """
     _reject_future_opening(opened_on)
     cash_ledger.reject_books_open_on_or_after_movements(account_id, opened_on)
@@ -288,47 +284,46 @@ def _reject_restatement_day(
 def _reject_books_open_on_or_after_planned_rows(
     account_id: int, user_id: int, opened_on: date,
 ) -> None:
-    """Refuse books opening on or after a still-projected recurring row's compared day.
+    """Refuse books opening where a still-projected recurring row would be stranded.
 
     **Ruling R-PC88** (developer, 2026-09-22; plan step ``pay_calendar:C18-a``).
     A recurring definition's occurrences start above the books of every
     account it moves money in (ruling **R-PC85**).  Moving the books LATER
     past a row that is still Projected -- an unpaid, overdue bill the rule
-    generated -- therefore leaves it named by no occurrence, and the maintain
-    pass retires such a row the next time it re-runs the rule over its
-    paycheck, silently raising the forecast.  The owner decides instead:
-    marked paid it becomes a movement (and the movement rule speaks),
-    cancelled it holds nothing, moved later it stays owed.
+    generated -- makes the walk drop the occurrence it answers, and a
+    maintain pass that reaches such a row retires it, silently raising the
+    forecast.  The owner decides instead: marked paid it becomes a movement
+    (and the movement rule speaks), cancelled it holds nothing, moved later
+    it stays owed.
 
-    **Which rows, which day, and the comparison are**
-    :func:`app.services.planned_rows_books.first_stranded_row`'s, shared with
-    the recurring definitions' edit doors (rulings **R-PC90** / **R-PC91**)
-    and asking the walk's own picker: a transaction on this account or a
-    transfer from or to it, whose definition carries a rule, live and still
-    Projected, compared on its due day -- or, for an envelope, its paycheck's
-    last day (ruling **R-PC89**) -- under the strict
-    :func:`~app.utils.books_boundary.books_hold`.
+    **Which rows, which day, and the comparison are the WALK's**
+    (:func:`app.services.planned_rows_books.first_row_an_opening_strands`,
+    the one producer the books-opening card's date ceiling reads too): every
+    recurring definition moving money in the account is walked with the books
+    it would have if the account opened on *opened_on*, and a live,
+    still-Projected row answering an occurrence that walk drops is stranded
+    -- named by the day the walk compares for it, a bill's due day or an
+    envelope's paycheck's last day (rulings **R-PC86**, **R-PC89**), under the
+    strict :func:`~app.utils.books_boundary.books_hold`.  It read each row's
+    STORED due day and its own account until the step's adversarial review
+    (H1, L1): the walk re-dates a row by its rule and bounds it by its
+    DEFINITION's accounts, and a door that asked anything else could pass a
+    day that strands a row or refuse one that strands none.
 
     No figure is named: the refusal is about a DAY, so the opening door's
     HELD-figure contract (ruling **R-CC52**) is untouched.
 
     Args:
         account_id: The account whose books are being restated.
-        user_id: Its owner, whose pay calendar derives each row's paycheck.
+        user_id: Its owner, whose pay calendar every walk places on.
         opened_on: The candidate opening day.
 
     Raises:
-        ValidationError: When a live, still-projected recurring row moving
-            money in the account would land on or before *opened_on*.
+        ValidationError: When books opening on *opened_on* would strand a
+            live, still-projected recurring row.
     """
-    stranded = planned_rows_books.first_stranded_row(
-        opened_on,
-        calendar_for(user_id),
-        transactions=(Transaction.account_id == account_id,),
-        transfers=(or_(
-            Transfer.from_account_id == account_id,
-            Transfer.to_account_id == account_id,
-        ),),
+    stranded = planned_rows_books.first_row_an_opening_strands(
+        account_id, opened_on, calendar_for(user_id),
     )
     if stranded is None:
         return
@@ -501,7 +496,7 @@ def apply_opening_restatement(
         ValidationError: When the day breaks one of the five day rules
             (:func:`_reject_restatement_day`): in the future, on or after a
             recorded movement or a matched bank line, after an assertion, or
-            on or after a still-projected recurring row's due day (ruling
+            where it would strand a still-projected recurring row (ruling
             **R-PC88**).  Raised before anything is staged.
     """
     acct_type = account.account_type

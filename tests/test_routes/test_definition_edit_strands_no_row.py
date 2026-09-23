@@ -16,7 +16,7 @@ a hand-picked payload can pass against an arm a browser never reaches):
 the envelope box is posted only when ticked, as a browser posts a checkbox.
 """
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -32,13 +32,14 @@ from app.services import account_service, recurrence_engine, transfer_recurrence
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.balance_predicates import is_projected_clause
+from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
     cadence_payload,
     make_cadence_rule,
     state_template_price,
 )
-from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from tests.oracles.recurrence_baseline import EVERY_PERIOD, MONTHLY
 
 _ONE_DAY = timedelta(days=1)
 
@@ -195,6 +196,70 @@ class TestATransactionDefinitionsEditIsRefused:
             assert saved.name == "Rent"
             assert _first_due(saved) == first_due
 
+    def test_clearing_a_due_day_that_kept_a_CURRENT_row_outside_the_books_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """H1: the save re-dates the row by the NEW rule; the refusal reads that walk.
+
+        A monthly bill scheduled on the current paycheck's first day, due
+        later, on books opening that same first day: its due day is after the
+        opening, so it was generated (R-PC86).  Clearing the due day moves
+        its cash day back onto its scheduled day -- ON the opening, inside
+        it -- so the walk stops naming it, and it is in the CURRENT paycheck,
+        which the save's own regeneration reaches (review M1).  The row's
+        STORED due day still reads outside the books, which is exactly what
+        the first cut compared and passed.  The refusal names the row as the
+        save would leave it: due on its scheduled day.
+        """
+        with app.app_context():
+            scheduled, account, template = _monthly_bill_due_after_the_books(
+                seed_user, seed_periods_today,
+            )
+            row = _live_row_answering(template, scheduled)
+            assert row.due_date > scheduled, "precondition: stored due day outside"
+
+            resp = auth_client.post(
+                f"/templates/{template.id}",
+                data=_transaction_update_payload(
+                    template, unit=RecurrenceUnitEnum.MONTH, due_day_of_month="",
+                ),
+                follow_redirects=True,
+            )
+
+            assert b"This change cannot be saved" in resp.data
+            assert f"still projected and due {scheduled.isoformat()}".encode() in (
+                resp.data
+            )
+            assert f"open {scheduled.isoformat()}".encode() in resp.data
+            saved = _reload(TransactionTemplate, template.id)
+            assert saved.account_id == account.id
+            assert saved.recurrence_rule.due_day_of_month is not None
+            kept = _live_row_answering(saved, scheduled)
+            assert kept.id == row.id and kept.due_date == row.due_date
+
+    def test_keeping_that_due_day_is_saved(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The same bill, its due day posted back unchanged: nothing is stranded."""
+        with app.app_context():
+            scheduled, _account, template = _monthly_bill_due_after_the_books(
+                seed_user, seed_periods_today,
+            )
+            due_day = template.recurrence_rule.due_day_of_month
+
+            resp = auth_client.post(
+                f"/templates/{template.id}",
+                data=_transaction_update_payload(
+                    template, unit=RecurrenceUnitEnum.MONTH, name="Water",
+                    due_day_of_month=str(due_day),
+                ),
+            )
+
+            assert resp.status_code == 302
+            saved = _reload(TransactionTemplate, template.id)
+            assert saved.name == "Water"
+            assert _live_row_answering(saved, scheduled).name == "Water"
+
 
 @pytest.mark.usefixtures("seed_periods_today")
 class TestATransferDefinitionsEditIsRefused:
@@ -272,6 +337,35 @@ def _first_payday(seed_user):
     return min(p.start_date for p in all_periods(seed_user["user"].id))
 
 
+def _monthly_bill_due_after_the_books(seed_user, periods):
+    """A monthly bill scheduled on the current paycheck's first day, due after books opening then.
+
+    The current paycheck is ``seed_periods_today``'s period 4, and its first
+    day is the Monday of today's week -- on or before today, so books may
+    open on it (an opening cannot be in the future).  The due day is the
+    28th, or the next month's 1st when the scheduled day is already the
+    28th or later: either way strictly after the scheduled day, and a
+    different day of the month, so the rule states a real due day.
+
+    Returns:
+        ``(scheduled, account, template)`` -- the scheduled day (also the
+        books' opening day), the account, and the committed template.
+    """
+    scheduled = periods[4].start_date
+    assert scheduled <= display_today() < periods[5].start_date
+    account = _account_opened_on(seed_user, "Water account", scheduled)
+    template = _transaction_template_with_rows(
+        seed_user, "Water bill", account_id=account.id, cadence=MONTHLY,
+        starts_on=scheduled, due_day_of_month=28 if scheduled.day < 28 else 1,
+    )
+    return scheduled, account, template
+
+
+def _live_row_answering(template, occurs_on: date):
+    """The template's one live projected transaction answering *occurs_on*."""
+    (row,) = [row for row in _live_rows(template) if row.occurs_on == occurs_on]
+    return row
+
 def _savings_account(seed_user):
     """Create and commit a Savings account whose books open on the first payday.
 
@@ -300,8 +394,15 @@ def _schedule(user_id):
     )
 
 
-def _transaction_template_with_rows(seed_user, name, *, account_id=None, is_envelope=False):
-    """An every-paycheck expense template, its rows generated, committed."""
+def _transaction_template_with_rows(
+    seed_user, name, *, account_id=None, is_envelope=False,
+    cadence=EVERY_PERIOD, **rule_kwargs,
+):
+    """An expense template, every paycheck unless *cadence* says otherwise, its rows generated.
+
+    *rule_kwargs* reach :func:`~tests._test_helpers.make_cadence_rule` --
+    ``starts_on`` and ``due_day_of_month`` for the monthly bill.
+    """
     expense = db.session.query(TransactionType).filter_by(name="Expense").one()
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -315,7 +416,7 @@ def _transaction_template_with_rows(seed_user, name, *, account_id=None, is_enve
     db.session.add(template)
     db.session.flush()
     state_template_price(template)
-    make_cadence_rule(template, EVERY_PERIOD)
+    make_cadence_rule(template, cadence, **rule_kwargs)
     recurrence_engine.generate_for_template(
         template, _schedule(template.user_id), seed_user["scenario"].id,
     )
@@ -379,11 +480,13 @@ def _reload(model, template_id):
     return db.session.get(model, template_id)
 
 
-def _transaction_update_payload(template, **overrides):
+def _transaction_update_payload(template, unit=RecurrenceUnitEnum.PERIOD, **overrides):
     """The transaction edit form's fields, the cadence restated, as a browser posts them.
 
     The envelope box is present only when ticked (``"on"``); a test that
-    unticks it deletes the key.
+    unticks it deletes the key.  The due-day box is posted only by a test
+    that states one, cleared (``""``) or not -- the form hides and DISABLES
+    it under an every-paycheck cadence, so a browser posts nothing there.
     """
     payload = {
         "name": template.name,
@@ -394,7 +497,7 @@ def _transaction_update_payload(template, **overrides):
         "version_id": str(template.version_id),
         # The cadence restated WITHOUT a start: the stored one rides through,
         # which is what a browser posts for an untouched rule.
-        **cadence_payload(unit=RecurrenceUnitEnum.PERIOD, states_a_start=False),
+        **cadence_payload(unit=unit, states_a_start=False),
     }
     if template.is_envelope:
         payload["is_envelope"] = "on"

@@ -247,6 +247,7 @@ from ._cash_flow import (
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext
+from ._definition_books import definition_books, resolved_with_books
 from ._memoize import require_scenario
 from ._grid import (
     GridBalanceView,
@@ -369,6 +370,7 @@ __all__ = [
     "cash_outstanding_difference",
     "confirmed_view",
     "debt_schedule_rows",
+    "definition_books",
     "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",
@@ -389,6 +391,7 @@ __all__ = [
     "loan_principal_paid_in_year",
     "positions",
     "records_balance_at",
+    "resolved_with_books",
     "positions_period_map",
     "require_scenario",
     "secured_loan_series",

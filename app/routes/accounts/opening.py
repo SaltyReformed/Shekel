@@ -63,6 +63,8 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.opening_service import OpeningRestatementOutcome
+from app.services.pay_calendar import calendar_for
+from app.services.planned_rows_books import StrandedRow, first_row_an_opening_strands
 from app.utils.account_validation import _opening_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today
@@ -102,6 +104,7 @@ def _opening_ceilings(
     earliest_movement: "date | None",
     earliest_assertion: "date | None",
     earliest_matched_line: "date | None",
+    first_planned_row: StrandedRow | None,
 ) -> "list[OpeningCeiling]":
     """Return every bound on this account's opening day, in REFUSAL order.
 
@@ -120,6 +123,16 @@ def _opening_ceilings(
             for, or ``None``.
         earliest_matched_line: The earliest day the account has matched a bank
             line on, or ``None``.
+        first_planned_row: The earliest still-projected recurring row books
+            opening TODAY would strand (ruling **R-PC88**; the producer the
+            door's own refusal asks,
+            :func:`~app.services.planned_rows_books.first_row_an_opening_strands`),
+            or ``None``.  Asked at today because that is the latest day the
+            box takes, and a later opening strands every row an earlier one
+            does: so the day before this row's compared day is the latest that
+            strands none of the rows only THIS account's books bound.  A row
+            a definition's OTHER account already strands is refused at any
+            day, which no ceiling can express; the door's refusal says so.
 
     Returns:
         One :class:`OpeningCeiling` per bound that applies, always non-empty --
@@ -177,6 +190,17 @@ def _opening_ceilings(
                 "from the balances you record."
             ),
         ))
+    if first_planned_row is not None:
+        ceilings.append(OpeningCeiling(
+            # MINUS a day: the row's compared day ON the opening is inside it.
+            day=first_planned_row.books_day - timedelta(days=1),
+            said=(
+                f"The recurring {first_planned_row.described()}, so the "
+                "books have to open before that day -- mark it paid, cancel "
+                "it or move it later first if your records really do start "
+                "later."
+            ),
+        ))
     return ceilings
 
 
@@ -184,6 +208,7 @@ def _latest_legal_opening_day(
     earliest_movement: "date | None",
     earliest_assertion: "date | None",
     earliest_matched_line: "date | None",
+    first_planned_row: StrandedRow | None,
 ) -> OpeningCeiling:
     """Return the latest day this account's books may legally open on.
 
@@ -193,8 +218,11 @@ def _latest_legal_opening_day(
     refuses by, never from a template literal: the owner's today
     (``display_today()``, ruling **R-DH (b)** -- the process clock is pinned to
     the display zone in the deployed container but not in CI or a script), the
-    account's earliest recorded movement, its earliest MATCHED bank line and
-    its earliest asserted balance.
+    account's earliest recorded movement, its earliest MATCHED bank line, its
+    earliest asserted balance and the first still-projected recurring row its
+    books would strand (ruling **R-PC88**, plan step ``pay_calendar:C18-a``:
+    the fifth rule, which the card offered days past until that step's
+    adversarial review, M2).
 
     **The layering is deliberate, not redundant**, and it is the argument
     ``anchor._anchor_day_bounds`` makes for its own pair: an input bound is
@@ -232,16 +260,21 @@ def _latest_legal_opening_day(
             because it can be strictly EARLIER: a match settles every member on
             the LATEST of its bank days, so the group's first line predates the
             row that explains it.
+        first_planned_row: The earliest still-projected recurring row books
+            opening today would strand, or ``None``; see
+            :func:`_opening_ceilings` for why today is the day asked.
 
     Returns:
         The binding :class:`OpeningCeiling` -- the EARLIEST of the owner's
         today, the day before the account's first recorded movement, the day
-        before its first matched bank line, and the day of its first asserted
-        balance -- carrying the sentence that names it.
+        before its first matched bank line, the day of its first asserted
+        balance, and the day before the first planned row's compared day --
+        carrying the sentence that names it.
     """
     return min(
         _opening_ceilings(
             earliest_movement, earliest_assertion, earliest_matched_line,
+            first_planned_row,
         ),
         key=lambda ceiling: ceiling.day,
     )
@@ -264,7 +297,7 @@ def books_opening_context(account: Account) -> "dict | None":
         (whether a human stated the standing figure or the X-f3c-2a
         migration derived it) and ``ceiling``, the binding
         :class:`OpeningCeiling` carrying the date box's ``max`` and the
-        sentence naming which of the FOUR bounds set it -- or ``None`` for
+        sentence naming which of the FIVE bounds set it -- or ``None`` for
         an AMORTIZING account, whose opening is its loan's original principal.
         ``None`` rather than a flag the template branches on: a card that must
         not be offered is absent, not disabled, which is the dead-end
@@ -293,6 +326,10 @@ def books_opening_context(account: Account) -> "dict | None":
     # question once, and the ceiling and the sentence explaining it come from
     # the same answer.
     first_matched = cash_ledger.earliest_matched_line_day(account.id)
+    # The fifth (ruling R-PC88), from the one producer the door refuses by.
+    first_planned = first_row_an_opening_strands(
+        account.id, display_today(), calendar_for(account.user_id),
+    )
     return {
         "opened_on": opening.opened_on,
         "equity": opening.opening_equity,
@@ -309,7 +346,7 @@ def books_opening_context(account: Account) -> "dict | None":
         # broken, and a card that picked which bound to name would be picking
         # in a different order from the ``min`` that set the box's own ``max``.
         "ceiling": _latest_legal_opening_day(
-            earliest, first_assertion, first_matched,
+            earliest, first_assertion, first_matched, first_planned,
         ),
     }
 
@@ -348,11 +385,12 @@ def restate_opening(account_id):
     day and figure, and commits.
 
     **Every money and date refusal belongs to the service, and this route adds
-    none of its own.**  The day is bounded there by all FOUR rules
+    none of its own.**  The day is bounded there by all FIVE rules
     ``opening_service._reject_restatement_day`` applies -- not in the future,
     strictly before every movement the account records, strictly before every
-    bank line it has matched (ruling **R-HG** for both), and on or before the
-    first balance the owner asserted -- so
+    bank line it has matched (ruling **R-HG** for both), on or before the
+    first balance the owner asserted, and stranding no still-projected
+    recurring row (ruling **R-PC88**) -- so
     the card's date-input ``max`` is a convenience the browser applies first
     and never a second answer to the same question.  The kind gate is asked
     here as well, and that is not a duplicate for the reason

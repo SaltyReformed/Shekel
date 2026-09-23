@@ -20,7 +20,7 @@ takes (:func:`occurrence_placements` over the SAVED schedule,
 Pure: no Flask, no ORM, no clock, no database.
 """
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from app.enums import PeriodPlacementEnum
@@ -282,8 +282,9 @@ def _lands_inside_the_books(
     paycheck the books open inside is kept.  Compared through the one strict
     :func:`~app.utils.books_boundary.books_hold`.  The doors that refuse to
     strand a still-projected row below the books
-    (``app.services.planned_rows_books``) ask the same picker of a stored row,
-    so each refuses exactly what this would stop naming.
+    (``app.services.planned_rows_books``) ask :func:`placements_below_the_books`,
+    which is THIS predicate's complement over the same walk with the floor
+    lifted -- so each refuses exactly the occurrences this stops naming.
 
     **An UNPLACED occurrence is kept**, because it has no row day to compare
     and no row: ``period`` is ``None`` only below the owner's first payday
@@ -304,6 +305,54 @@ def _lands_inside_the_books(
     if floor is None or placement.period is None:
         return True
     return books_hold(floor, resolved.books_day(placement.period))
+
+
+def placements_below_the_books(
+    resolved: ResolvedRecurrence,
+    calendar: PayCalendar,
+) -> tuple[OccurrencePlacement, ...]:
+    """Return the occurrences the books drop from *resolved*'s saved walk.
+
+    **What the books bound removes, asked of the walk itself** (plan step
+    ``pay_calendar:C18-a``, rulings **R-PC88**, **R-PC90** and **R-PC91**).
+    :func:`occurrence_placements` over the same value with its floor lifted,
+    less every placement :func:`_lands_inside_the_books` keeps: so these are
+    exactly the occurrences the rule still names that the walk stops naming
+    because of the books -- ONE walk, ONE comparison, and no second spelling
+    of either.  The maintain pass matches a row to the occurrence it answers
+    (``occurs_on``), so a live row answering one of these is a row the next
+    pass to reach it retires, and the doors that refuse to strand an unpaid
+    row ask this rather than reading the row's stored due day, which the
+    save's regeneration re-dates by the NEW rule (a cleared due day moves a
+    bill's cash day onto its scheduled day, inside the books).
+
+    The closing is kept as *resolved* carries it, so an occurrence the
+    closing stops is in neither walk and never reported here: the books are
+    the only thing the two walks differ by.
+
+    Args:
+        resolved: The recurrence, carrying its books floor
+            (:attr:`~._resolution.ResolvedRecurrence.books_opened_on`) --
+            the floor the save being graded would leave.
+        calendar: The owner's pay-period schedule.
+
+    Returns:
+        One :class:`OccurrencePlacement` per dropped occurrence, ascending by
+        date, each on the saved period its row would live in (an unplaced
+        occurrence is never dropped); empty when *resolved* has no floor.
+
+    Raises:
+        RecurrenceGenerationError: See :func:`occurrence_placements`.
+    """
+    if resolved.books_opened_on is None:
+        return ()
+    unbounded = occurrence_placements(
+        replace(resolved, books_opened_on=None), calendar,
+    )
+    return tuple(
+        placement for placement in unbounded
+        if not _lands_inside_the_books(resolved, placement)
+    )
 
 
 def projected_occurrence_placements(
@@ -365,5 +414,6 @@ __all__ = [
     "OccurrencePlacement",
     "occurrence_placements",
     "place",
+    "placements_below_the_books",
     "projected_occurrence_placements",
 ]
