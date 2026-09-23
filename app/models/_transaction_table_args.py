@@ -295,17 +295,19 @@ transaction_table_args = (
         "version_id > 0",
         name="ck_transactions_version_id_positive",
     ),
-    # The SUPERKEY the statement matcher's two member tables name to prove a
-    # matched row's ``account_id`` is the statement's
-    # (``fk_statement_match_members_transaction_account``,
-    # ``fk_statement_match_creations_transaction_account``).  It constrains
+    # The SUPERKEY the statement matcher's creations table names to prove a
+    # row an act minted is on the statement's account
+    # (``fk_statement_match_creations_transaction_account``; the member
+    # table's twin, ``fk_statement_match_members_transaction_account``, went
+    # with its column at plan step ``credit_card:CC-5-4a-2``, a member naming
+    # a movement since).  It constrains
     # nothing -- ``id`` is already the primary key, so this key can reject no
     # row -- and exists only because PostgreSQL requires a UNIQUE over
     # exactly the referenced columns before a composite foreign key may
     # target them.  Added at plan step X-f3a-1 for
     # ``fk_transaction_entries_parent_account``, which held a movement's
     # account equal to its parent's until plan step ``credit_card:CC-5-1``
-    # dropped that key (ruling **R-BAL76**); the matcher's keys keep it.
+    # dropped that key (ruling **R-BAL76**); the creations key keeps it.
     db.UniqueConstraint("id", "account_id", name="uq_transactions_id_account"),
     # The SUPERKEY ``transaction_entries`` names to prove a movement's OWNER
     # is its parent row's (``fk_transaction_entries_owner_transaction``, plan

@@ -27,7 +27,7 @@ from app.models.user import User
 from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
-from app.services import match_withdrawal, posting_service
+from app.services import match_withdrawal, movement_removal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.movement_account import admitted_movement_account_id
 from app.services.settle_day import (
@@ -857,25 +857,20 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # carrying money was ever IN that sum, so deleting a debit one cannot move
     # it.
     removed_credit = bool(entry.is_credit and entry.amount)
-    # A bank line matched to this purchase is no longer explained by it once
-    # it goes, so the match is withdrawn and the line is unexplained again
-    # (developer ruling 2026-08-25, plan step ``bank_import:X-gb``).  Its
-    # PARENT is untouched: removing one purchase leaves the envelope and every
-    # other purchase in it asserting exactly what they did.  BEFORE the delete
-    # for the same reason the posting reversal below is -- the member's foreign
-    # key is ON DELETE CASCADE, so afterwards nothing says which line was
-    # freed.
-    match_withdrawal.withdraw_for_purchase(entry, owner_id)
-    # Reverse the purchase's OWN cash leg while the row still exists (ruling
-    # **R-FM**, plan step X-f3b).  ``journal_entries.transaction_entry_id`` is
-    # ON DELETE SET NULL, so reversing afterwards is impossible: the link is
-    # severed and the legs are stranded on their ledger accounts with nothing
-    # to offset them.  The transaction analog is
-    # ``posting_service.reverse_postings_before_delete``, called at the
-    # transaction-delete doors for the identical reason.  Idempotent no-op for a
-    # purchase that never posted.
-    posting_service.reverse_purchase_postings_before_delete(entry)
-    db.session.delete(entry)
+    # Off the books through the ONE act every door that removes a movement
+    # calls (plan step ``credit_card:CC-5-4a-3``, ruling **R-CC54**): its OWN
+    # cash leg reversed while ``journal_entries.transaction_entry_id`` still
+    # links it (ruling **R-FM**, plan step X-f3b; that key is ON DELETE SET
+    # NULL), then out of the matches naming it -- a bank line matched to this
+    # purchase is no longer explained by it once it goes, so an act left
+    # naming no app row is withdrawn and the line is unexplained again
+    # (developer ruling 2026-08-25, plan step ``bank_import:X-gb``) -- then
+    # deleted out of its envelope's ``entries``.  Its PARENT is untouched:
+    # removing one purchase leaves the envelope and every other purchase in it
+    # asserting exactly what they did.
+    movement_removal.remove_movements(
+        [entry], owner_id, because=match_withdrawal.LEFT_THE_BOOKS,
+    )
     db.session.flush()
 
     log_event(
