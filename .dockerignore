@@ -11,11 +11,12 @@
 #                               docker exec ops)
 #   - scripts/init_db.sql       Schema bootstrap (entrypoint.sh)
 #   - scripts/init_db_role.sql  Role provisioning (entrypoint.sh)
-#   - scripts/init_database.py  First-boot schema apply (entrypoint.sh)
+#   - scripts/init_database.py  Step 3, one transaction (entrypoint.sh)
 #   - scripts/seed_user.py      Seed initial owner (entrypoint.sh +
 #                               docker exec ops)
-#   - scripts/seed_ref_tables.py    Seed lookup tables (entrypoint.sh)
-#   - scripts/seed_tax_brackets.py  Seed US tax brackets (entrypoint.sh)
+#   - scripts/seed_ref_tables.py    Seed lookup tables (docker exec repair)
+#   - scripts/seed_tax_brackets.py  Seed US tax brackets (imported by
+#                                   init_database.py + docker exec repair)
 #   - scripts/seed_companion.py     Seed companion user (docker exec)
 #   - scripts/audit_cleanup.py  Audit log retention (docker exec)
 #   - scripts/integrity_check.py    Integrity sweep (docker exec)

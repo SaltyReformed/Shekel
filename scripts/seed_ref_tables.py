@@ -7,9 +7,17 @@ deduction timings, calc methods, tax types, and raise types.
 
 Uses upsert pattern to avoid duplicates on re-run; delegates to
 ``app.ref_seeds.seed_reference_data`` -- the single source of truth
-for ref-table seeding across the application factory, this script,
-the pytest fixture stack, and the test-template builder.  See audit
-finding H-002 for the rationale.
+for ref-table seeding across the application factory, the deploy, this
+script, the pytest fixture stack, and the test-template builder.  See
+audit finding H-002 for the rationale.
+
+The deploy no longer runs this script: entrypoint step 3
+(``scripts/init_database.py``) seeds inside its one transaction, before
+anything reads ``ref_cache`` (plan step balance:X-cv, ruling R-BAL122).
+This is the operator's repair tool, and it builds the app WITHOUT the
+eager ``ref_cache.init`` (ruling R-BAL123, finding BAL-536): that init
+treats a missing row as fatal, so a tool that ran it first died on
+exactly the database it exists to repair.
 
 Usage:
     python scripts/seed_ref_tables.py
@@ -36,7 +44,7 @@ def seed_ref_tables():
 
     Thin wrapper around ``seed_reference_data`` that owns the
     transaction boundary and prints one line per inserted row so the
-    deploy operator gets an audit trail in the entrypoint logs.
+    operator sees what the repair inserted.
     """
     seed_reference_data(db.session, verbose=True)
     db.session.commit()
@@ -44,6 +52,8 @@ def seed_ref_tables():
 
 
 if __name__ == "__main__":
-    app = create_app()
+    # init_ref_cache=False: the cache is read AFTER a seed, never before one
+    # (ruling R-BAL123).  Nothing here reads it.
+    app = create_app(init_ref_cache=False)
     with app.app_context():
         seed_ref_tables()

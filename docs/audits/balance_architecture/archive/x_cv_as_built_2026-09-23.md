@@ -1,0 +1,31 @@
+> **ARCHIVED. Historical record only -- this document governs nothing and
+> may be out of date.** The live plan is `docs/plans/steps.md`; the code as
+> committed is the source of truth for what the app does.
+
+# X-cv as built: a deploy is all-or-nothing (2026-09-23)
+
+Archived at the tick of `balance:X-cv`, **R-BAL105**'s future step, built in four leaves and five commits on `feat/balance-x-cv`: leaf 1 `a8480560` (entrypoint step 3 runs the migrations on the caller's connection, Alembic's shared-connection recipe, and the three deploy hooks commit nothing of their own), leaf 1b `5f83439c` (the deploy owns the transaction and the session joins it with autobegin off; one migration runner, `app/migration_runner.py`; `shekel-deploy` stops a target-image container and reads the stamp `FOR SHARE`), leaf 2 `be1bdb35` (the reference seed, the tax seed and the audit-trigger check join the transaction in one order; **BAL-535**, **BAL-536**) and leaf 2b `c6efbbe7` (the audit-trigger refusal names its tables) with `832c30bd` (`docs/runbook.md` s.2.3 as the second rehearsal measured it). No migration; no money moved. The rulings are **R-BAL109**..**R-BAL115**, **R-BAL118**..**R-BAL124**, **R-BAL127** and **R-BAL129** in `docs/plans/rulings.md`. The commits are the record; the rehearsals, reviews, mutation runs and suite logs are `~/projects/shekel-handoffs/HANDOFF-X-cv.md` and `balance-2026-09-22/xcv/`, `balance-2026-09-23/xcv1b/`, `xcv2/`, `xcv2b/`.
+
+## What a failed deploy costs now
+
+**R-BAL105**'s manual dump restore is gone for every failure INSIDE entrypoint step 3, which since leaf 2 includes the reference seed, the tax seed and the audit-trigger check: the stamp stays where it was and `shekel-deploy` re-pins the previous image. A failure AFTER step 3's commit in a release that adds a migration (a failure in the first-boot user seed, the static-file copy, the app start or the health check) still meets `refuse_to_repin`, which since **BAL-535** names the restart that loses nothing when the new image resolves the stamp; one that adds none leaves the stamp where the previous image resolves it, and `shekel-deploy` re-pins (the rehearsal's S6: `repin_is_safe` asks only whether the previous image resolves the stamp it re-reads). A fault every image checks, a dropped audit trigger, makes the re-pinned image refuse too; `docs/runbook.md` s.2.3 names that case and its repair (**R-BAL129**). A refused deploy still burns sequence values: it leaves every row where the deploy found it, `alembic_version` included, but "sequence counters, which PostgreSQL does not roll back, still advance" (`scripts/init_database.py`, its module docstring).
+
+## Ledger rows CLOSED at this tick; neither was ever a row
+
+Both were granted by the coordinator on 2026-09-23 with owner `X-cv` leaf 2 and fixed there before any tick filed them. Each predicate below was re-grepped against the tick's HEAD.
+
+**BAL-535** CLOSED at leaf 2 `be1bdb35` (leaf 1b's second review, its L-b): `refuse_to_repin` said the release COMMITTED its migrations and printed the PRE-deploy stamp as the database's when the refusal came from an UNREADABLE stamp, and a release only slower than the health check was sent to a data-losing restore where starting the new pin again would recover. At HEAD `repin_is_safe` empties `STAMPED_REVISIONS` when the re-read fails (`deploy/shekel-deploy.sh`), and `refuse_to_repin` branches three ways: unreadable (no commit claimed, no stamp printed, the way back this script's own pre-flight); a stamp the new image resolves (COMMITTED, and the restart that loses nothing named before the restore); a stamp neither image resolves (the restore only). Pinned by `tests/test_deploy/test_shekel_deploy_behaviour.py::TestTheRefusalSaysOnlyWhatTheStampShows`.
+
+**BAL-536** CLOSED at leaf 2 `be1bdb35` (leaf 2's own probe on a throwaway empty database): a FIRST-BOOT deploy passed step 3 and died at step 4, where `scripts/seed_ref_tables.py`'s plain `create_app()` ran the strict `ref_cache.init` against empty ref tables, and every restart died in step 3. At HEAD `entrypoint.sh` has no step 4 (step 3 runs `scripts/init_database.py`, then step 5), `_bring_to_release` seeds the reference rows before `ref_cache.init` on a new database as on an existing one (**R-BAL122**), and `seed_ref_tables.py` builds the app with `init_ref_cache=False` (**R-BAL123**). Pinned by `tests/test_scripts/test_init_database_one_transaction.py::TestAFreshBuildIsOneTransaction::test_a_clean_build_commits_the_reference_rows_too` and `tests/test_scripts/test_seed_ref_tables.py`.
+
+## The README entry as it stood, verbatim
+
+    * [ ] **X-cv** `chore(deploy): a deploy is all-or-nothing` -- **R-BAL105**'s future step. Today `scripts/init_database.py` commits the migrations (in `migrations/env.py`'s own transaction) BEFORE the three deploy hooks run, so a hook that refuses (**R-BAL104**'s legacy-net refusal, hook 2's loan checked-projection assert that is **R-BAL98**'s fail-closed gate, an unbalanced entry at commit, the anchor walk's refusals) leaves a stamp the previous image cannot resolve and `deploy/shekel-deploy.sh` refuses to re-pin: a manual dump restore.
+      The step: one connection and ONE transaction for entrypoint step 3 -- `env.py` configured with the caller's connection (Alembic's shared-connection recipe), `ref_cache` and the three hooks on that session, one commit, each hook's leading `rollback()` gone -- graded by a rehearsal in which a forged hook refusal leaves `alembic_version` at the pre-deploy stamp and the re-pin fires.
+      Precondition checked 2026-09-22: no migration uses `autocommit_block` or `CONCURRENTLY`. It moves no money; it changes how every release deploys.
+
+## The `steps.md` row as it stood, verbatim
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| balance | X-cv | -- | Make every deploy all-or-nothing: `scripts/init_database.py` runs the Alembic migrations and the three deploy hooks in ONE database transaction (`migrations/env.py` takes the caller's connection, Alembic's shared-connection recipe), so a hook that refuses leaves the stamp unmoved and `shekel-deploy` re-pins the previous image on its own (**R-BAL105**). | #36 | -- | NOW / balance:X-bi-6-3 (shipped; the refusal whose cost this removes, R-BAL105) |
