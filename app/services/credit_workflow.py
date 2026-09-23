@@ -188,8 +188,10 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
         # of is withdrawn and that line is unexplained again (developer ruling
         # 2026-08-25, plan step ``bank_import:X-gb``).  Measured on the
         # developer's own dev database at 4 matched paybacks, every one of them
-        # reachable from the Undo CC button on the grid card -- which is why
-        # that button now asks first.
+        # reachable from the Undo CC button on the grid card.  That button asks
+        # nothing first, and neither does the popover's Status leaving Credit:
+        # this door withdraws the act and logs it with no caption (finding
+        # ``credit_card:CC-367``).
         movement_removal.remove_movements(
             list(payback.entries), user_id,
             because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=[payback],

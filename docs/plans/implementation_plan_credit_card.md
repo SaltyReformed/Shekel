@@ -183,8 +183,11 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       a reverted envelope's tick (the seam's purchases arm) and a transfer row's box at `$0.00`,
       which takes both legs' payments off as the transfer popover's Actual box does. Carry-forward's
       confirmation (`grid/_carry_forward_preview_modal.html`) says it for each envelope
-      `settle_from_entries` would settle. Only the grid's one-click Mark Paid stays silent
-      (`R-CC56`). After 4a-4 (`R-CC76`). Closes **CC-364**.
+      `settle_from_entries` would settle. Of the seam's doors only the grid's one-click Mark Paid
+      stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
+      purchase delete, Undo CC, the popover's Status leaving Credit, the account and
+      recurring-transfer permanent deletes) are **CC-367**, and whether `R-CC76` reaches them,
+      widening this step, is the developer's question. After 4a-4 (`R-CC76`). Closes **CC-364**.
 - [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
       of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
       another, listed under the bill's name in its paycheck block, ticked through the bill's own
