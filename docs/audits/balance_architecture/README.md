@@ -502,8 +502,8 @@ the cost is not the wasted pass but that the two can PART. **Agreement is not th
 was REFUTED at 500,000, `$565.37` against `$565.36`. **Where a layer puts the shared leaf out of
 reach, MOVE THE LEAF** -- `X-au-g-2c-3a` deleted three restatements that placement had FORCED, two
 walks sitting BELOW the allocation so that reaching it was an import cycle. This phase does not own
-the rule but carries instances of it: **N-409**'s escrow floor is a SECOND allocation rule for a
-question the fold already answers, and the two DISAGREE.
+the rule, and its last instance here has left it: **N-409**'s escrow floor, a SECOND allocation
+rule for a question the fold already answers, is `recurrence:R16-e`'s with walk 3 (**R-R93**).
 
 **One ground is REFUTED and must not be re-argued**: that `ondelete="SET NULL"` on the template link
 would make a "derived rows have a link" CHECK refuse a definition delete. `budget.transfers` already
@@ -531,42 +531,20 @@ in SILENCE where a refused DELETE is loud.
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
 * [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's and it stores none; 59 rows declared (**R-JB**), FOUR absorbed defects closed or filed. `archive/x_au_d_as_built_2026-09-03.md`.
 * [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series; 525 rows declared, the `$502.45` class dead. Closed **N-244**, **N-247**, **N-444**. Its own keep-vs-use claim was REFUTED (**R-JD**) -- see `archive/seven_shipped_pointers_2026-09-05.md` and `archive/x_au_e_as_built_2026-09-03.md`.
-* [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
-  leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
-  loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
-  those three unblock.
-  * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
-    the declaration, and the escrow rule. It ticks with the last of its three leaves.
-    * [ ] **X-au-g-2c-3** the DECOMPOSED parent of the escrow rule, split 2026-09-02. It ticks
-      with the last of its leaves.
-      **N-409 named ONE floor; the trace found the defect is a CLASS, and the class is a LAYERING
-      one.** Four independent walks fold a loan -- the settled walk, the forward plan, the
-      resolver's replay and its projection -- and the rule each needs sat ABOVE two of them in the
-      import graph, so reaching it was the cycle `loan_ledger._split -> rate_period_engine ->
-      amortization_engine`. Each restated it instead: FOUR statements of the allocation and TWO of
-      the charge calendar. **The duplication was FORCED, not chosen, which is why every remedy here
-      is a MOVE or a DELETION and none is a guard.** Measured on the production Mortgage: a
-      `$1,700.00` payment against its `$1,910.95` installment reports `$1,293.96` -- the contractual
-      P&I to the cent, so the schedule and its 2048-12-01 payoff are byte-identical to an
-      on-schedule month while the seam's fold puts the owner `$210.95` further behind and dates the
-      payoff 2049-01-01. Two answers, one screen.
-      * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
+* [x] **X-au-g** `3b7716f8` -- the DECOMPOSED parent of the LOAN-PAYMENT cutover (split 2026-08-31),
+  ticked 2026-09-23 when its last open leaf was WITHDRAWN (**R-R93**); closed **N-297**, whose
+  loan-basis read of the payment history left at `X-au-g-1` (`af61263d`). Its shipped leaves are in
+  `archive/`, indexed by `archive/README.md`.
+  * [x] **X-au-g-2c** `3b7716f8` -- the CUTOVER's parent (the readers, the declaration, the escrow
+    rule); ticked with X-au-g.
+    * [x] **X-au-g-2c-3** `3b7716f8` -- the escrow rule's parent: FOUR walks each restated one
+      allocation because the rule sat above them in the import graph, so every remedy was a MOVE or
+      a DELETION (**R-IZ**, **R-R53**); ticked with X-au-g.
+      * [x] **X-au-g-2c-3b** `3b7716f8` -- the charge calendar: `3b-1` `fd3afc59` moved it to the
+        leaf both walks reach, `3b-2` below. `3b-3`, the engine feed's floor (**N-409**), was
+        WITHDRAWN 2026-09-23 (**R-R93**): nothing has read the feed's amounts since
+        `recurrence:R7d-g-3`, and `recurrence:R16-e` deletes the feed with walk 3.
         * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE accrual and ONE escrow per INSTALLMENT, both tiers on the ONE replay (rule 14). Rules **R-IX**, files **N-439**. **A later step must NOT delete `tests/oracles/loan_monthly_composition.py`.** `archive/x_au_g_2c_3b_2_2026-09-02.md`.
-        * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
-          passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
-          rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
-          threshold to the installment (built at `X-au-g-2b`, a REGRESSION, reverted) and expecting
-          the resolver routing to make `amount - escrow == period_pi(due)` an IDENTITY (`2c-1`
-          showed the feed also carries settled, MANUAL-mode and non-payment rows). Closes
-          **N-409**. **MOVES MONEY.**
-          **What it orphans, AST-verified over all modules in `app/`:** `LoanContext.contractual_pi`
-          has ZERO attribute reads, and `compute_contractual_pi` has ONE call site which exists only
-          to feed the floor -- both are deleted with it, taking a `date.today()` read off the loan
-          context (ruling **R-IJ**'s direction).
-          **The trap it must not walk into:** `PaymentRecord.__post_init__` REFUSES a negative
-          amount, and `cash - escrow` goes negative on a payment below its escrow -- measured live
-          at `-416.99` by typing `$200.00` into a projected mortgage payment. Passing the CASH is
-          what keeps that invariant TRUE rather than relaxing it.
 * [ ] **X-au-m** `fix(transfers): an owner-priced pair states its figure ONCE` -- Transfer Invariant
   3's AMOUNT clause, the half `X-au-g-2c-2` did not reach (**R-JA**).
   `transfer_service/_amount.apply_amount_ownership`'s TAKE arm calls `state_own_amount` on the
@@ -1062,6 +1040,19 @@ section 4, under their unchanged ids.*
 * [ ] **X-cv** `chore(deploy): a deploy is all-or-nothing` -- **R-BAL105**'s future step. Today `scripts/init_database.py` commits the migrations (in `migrations/env.py`'s own transaction) BEFORE the three deploy hooks run, so a hook that refuses (**R-BAL104**'s legacy-net refusal, hook 2's loan checked-projection assert that is **R-BAL98**'s fail-closed gate, an unbalanced entry at commit, the anchor walk's refusals) leaves a stamp the previous image cannot resolve and `deploy/shekel-deploy.sh` refuses to re-pin: a manual dump restore.
   The step: one connection and ONE transaction for entrypoint step 3 -- `env.py` configured with the caller's connection (Alembic's shared-connection recipe), `ref_cache` and the three hooks on that session, one commit, each hook's leading `rollback()` gone -- graded by a rehearsal in which a forged hook refusal leaves `alembic_version` at the pre-deploy stamp and the re-pin fires.
   Precondition checked 2026-09-22: no migration uses `autocommit_block` or `CONCURRENTLY`. It moves no money; it changes how every release deploys.
+* [ ] **X-cw** `feat(hooks): a real production value is refused in anything committed` --
+  **R-BAL132**'s build step. The repository is PUBLIC, and its documents, code comments, tests and
+  commit messages have carried real production figures; the developer kept it public and ruled that
+  a real value be refused at commit time instead. **Decided (the ruling):** a local, UNTRACKED list
+  of real values -- balances, paycheck amounts, merchant names -- generated from production, which
+  the pre-commit hook refuses the way gitleaks refuses a secret; committed text uses made-up
+  figures, measured production figures stay in the handoff folder outside the repository, and what
+  is already public stays public, so nothing is rewritten. **The building lane designs, with the
+  developer:** where the list lives and how it stays out of every commit; how it is generated from
+  production READ-ONLY (a same-day dump or a clone) and refreshed; what counts as a real value
+  without drowning in false positives against synthetic test amounts; which surfaces are read (the
+  staged diff, the commit message, both) and by which hooks; how a refused session is told what to
+  write instead; and the `conventions.md` rule, stated once there. It moves no money.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
