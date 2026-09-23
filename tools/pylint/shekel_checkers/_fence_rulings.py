@@ -598,8 +598,17 @@ _FENCED_MODULE_RULINGS = {
         # ``calendar`` stands on -- a cadence, a first occurrence and an
         # authored bound, DATES with no money anywhere in the value -- and
         # ``recurrence.resolved_recurrence`` is a public leaf below this seam
-        # that answers the identical value.
+        # that answers the identical value -- less the books floor, since
+        # plan step pay_calendar:C18-a, which is one more DATE.
         "resolved_recurrence_of",
+        # Its spec-and-definition form (plan step pay_calendar:C18-a, ruling
+        # R-PC85): the same resolution with the definition's BOOKS FLOOR --
+        # the latest ``opened_on`` among the accounts it moves money in --
+        # attached, which ``resolved_recurrence_of`` calls and the form
+        # preview's unsaved definition calls directly.  A NON-producer on the
+        # same ground: a cadence, a first occurrence, a bound and one more
+        # DATE, no money anywhere in the value.
+        "resolved_for",
         # The read pass's OCCURRENCE-WALK memo (plan step recurrence:R7d-f-2,
         # ledger row N-513's remedy): every occurrence a resolved recurrence
         # names on the owner's calendar, walked once per pass.  A NON-producer

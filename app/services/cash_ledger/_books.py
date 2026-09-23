@@ -35,9 +35,13 @@ either side:
   the owner had just stated.
 
 **They are five questions about one COMPARISON, and the comparison is stated
-once** -- :func:`books_hold`, which every refusal here asks and nothing here
-re-spells.  Each reads a different table to answer it, so the QUERIES cannot be
-collapsed; the test that decides them can, and leaving it open-coded five times
+once** -- :func:`~app.utils.books_boundary.books_hold`, which every refusal
+here asks and nothing here re-spells.  It is defined in that pure leaf since
+plan step ``pay_calendar:C18-a`` (ruling **R-PC85**), because the recurrence
+walk asks it too and may not import this package; it is imported here and
+re-exported through ``cash_ledger`` under its old name.  Each reads a
+different table to answer it, so the QUERIES cannot be collapsed; the test
+that decides them can, and leaving it open-coded five times
 is how the ``<`` / ``<=`` distinction ruling **R-HG** turns on comes to differ
 between two of them.  That is why they are read together: "two statements of
 one rule that differ silently is the failure this arc names as its own root
@@ -87,6 +91,10 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.utils.balance_predicates import owner_declared_clause
+# The ONE comparison every refusal below asks, and re-exported through
+# ``cash_ledger`` under its old name; it lives in a pure leaf since plan step
+# ``pay_calendar:C18-a`` because the recurrence walk asks it too.
+from app.utils.books_boundary import books_hold
 from app.opening_infrastructure import (
     MATCHED_LINE_DAYS_SQL, SETTLED_MOVEMENTS_SQL,
 )
@@ -95,50 +103,6 @@ from ._events import account_opening_fact
 
 if TYPE_CHECKING:  # pragma: no cover -- annotation only
     from ._events import CashOpeningFact
-
-
-def books_hold(opened_on: date, day: date) -> bool:
-    """Return whether books opening on *opened_on* may record money on *day*.
-
-    **THE comparison this module is about, stated once** (ruling **R-HG**).
-    An account's opening equity is the balance at the CLOSE of ``opened_on``,
-    so a day on or before it is ALREADY INSIDE the figure and recording money
-    there counts it twice.  Every refusal in this module asks this and none
-    re-spells it.
-
-    **It is ``>`` and not ``>=``, and that is the whole of R-HG's ruled
-    half.**  The ruling weighed the start-of-day reading -- refuse only a
-    STRICTLY earlier movement -- and rejected it, because
-    ``account_service.create_account`` stores the balance a human typed *as
-    of* a day, which is that day's close, and admitting a same-day movement
-    leaves the harm alive for exactly the rows finding **N-378** measured: on
-    a MODELLED account the correction that heals the double count books to
-    ``unrealized_change``, so a transfer becomes market performance that never
-    unwinds.  Stating it in one function is what stops the two readings
-    drifting apart across its five call sites in this package, ONE in
-    ``statement_match`` (``_gaps._split_at_books_open``), and one SQL tier --
-    and the SQL tier states it once too, as
-    ``budget.books_hold``, which every predicate there asks rather
-    than re-spelling.  *It said TWO in ``statement_match``, the second being
-    ``_undisposed.awaiting_review_count`` open-coding the same ``>`` as a
-    COLUMN EXPRESSION because a SQL filter cannot call a Python predicate.*
-    Plan step ``bank_import:X-gm`` deleted that count in favour of a walk over
-    the rows ``_split_at_books_open`` already bounds, so the exception it
-    stated no longer exists and this census is re-read rather than
-    decremented.  It was open-coded in five PL/pgSQL predicates
-    until plan step X-f3c-2b-2b's adversarial design review counted
-    them, three of which that step had just added under a docstring
-    claiming the comparison was stated once.
-
-    Args:
-        opened_on: The day the account's books open.
-        day: The civil day money is claimed to have moved.
-
-    Returns:
-        ``True`` when *day* falls after the books opened, so the movement is
-        outside the opening equity and may be recorded.
-    """
-    return day > opened_on
 
 
 def reject_movement_before_books_open(account_id: int, day: date) -> None:

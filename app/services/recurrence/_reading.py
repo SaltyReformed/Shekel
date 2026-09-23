@@ -86,18 +86,13 @@ from app.services.recurrence._frequency import (
     placement_member,
     unit_member,
 )
-from app.services.recurrence._offer import (
-    fires_on_day_of_month,
-    require_row_date_coordinate,
-)
+from app.services.recurrence._offer import require_row_date_coordinate
+from app.services.recurrence._row_day import cadence_scheduled_day
 from app.services.recurrence._vocabulary import (
     modelled_placement,
     modelled_unit,
 )
-from app.services.recurrence._nominal_day import (
-    cadence_day_of_month,
-    is_offerable_nominal_day,
-)
+from app.services.recurrence._nominal_day import is_offerable_nominal_day
 from app.services.recurrence._resolution import (
     RecurrenceSpec,
     ResolvedRecurrence,
@@ -360,9 +355,13 @@ def scheduling_day_of_month(rule: RecurrenceRule) -> int | None:
     unit = unit_member(rule.unit_id)
     require_row_date_coordinate(unit, f"recurrence rule {rule.id}")
     placement = placement_member(rule.placement_id)
-    if not fires_on_day_of_month(unit, placement):
-        return None
-    return cadence_day_of_month(unit, rule.starts_on, rule.nominal_day)
+    # The gate and the join live in the pure leaf the occurrence walk asks
+    # too (plan step pay_calendar:C18-a): one statement of "which day a
+    # cadence schedules its rows on", from a rule here and from a resolved
+    # value there.
+    return cadence_scheduled_day(
+        unit, placement, rule.starts_on, rule.nominal_day,
+    )
 
 
 def recurrence_spec(rule: RecurrenceRule) -> RecurrenceSpec:

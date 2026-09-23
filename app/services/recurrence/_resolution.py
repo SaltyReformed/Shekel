@@ -96,7 +96,7 @@ from app.enums import (
     PeriodPlacementEnum,
     RecurrenceUnitEnum,
 )
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import DerivedPeriod, PayCalendar
 from app.services.recurrence._bounds import NEVER_ENDS, EndBound
 from app.services.recurrence._closing import Closing
 from app.services.recurrence._frequency import (
@@ -109,7 +109,14 @@ from app.services.recurrence._nominal_day import (
     _require_nominal_day_pair,
     cadence_day_of_month,
 )
-from app.services.recurrence._offer import require_authorable_cadence
+from app.services.recurrence._offer import (
+    require_authorable_cadence,
+    require_row_date_coordinate,
+)
+from app.services.recurrence._row_day import (
+    cadence_scheduled_day,
+    date_row,
+)
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 #: The domain ``ck_recurrence_rules_due_dom`` bounds its column to.  Named once,
@@ -196,11 +203,16 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     the pay-period normalisation and the cycle phase, both stated in the module
     docstring.
 
-    Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE what one
+    Pylint: ``too-many-instance-attributes`` (11/7) -- these eleven ARE what one
     recurrence means, read as a flat unit by a single consumer, and the plan's
     END-state table (section 3) carries all but ``offset_periods``; the ninth,
     ``max_per_month``, joined at plan step salary:R15-a as the cadence's third
-    value and is read flat for the reason ``interval_n`` and ``unit`` are.  Pairing
+    value and is read flat for the reason ``interval_n`` and ``unit`` are.  The
+    tenth and eleventh, ``due_day_of_month`` and ``books_opened_on``, joined at
+    plan step ``pay_calendar:C18-a`` (rulings **R-PC85**, **R-PC86**): the day
+    a row is due and the day before which no row may land, the two the walk
+    compares, and flat because :attr:`closing` -- their mirror at the other
+    end -- is one field too.  Pairing
     ``starts_on`` with ``nominal_day`` was weighed and rejected: it would make
     every consumer unwrap a two-field object to ask for a date, and since this
     step the pair cannot disagree, so there is nothing for a wrapper to police.
@@ -279,6 +291,38 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             rest, for every unit; it is refused at construction beside a unit
             whose occurrences cannot repeat within a month, so a value here is
             one the walk can act on.
+        due_day_of_month: The real bill due day when it differs from the
+            scheduling day, or ``None`` -- the authored value
+            :class:`RecurrenceSpec` already carried, read through to the
+            resolved side at plan step ``pay_calendar:C18-a`` so the walk can
+            date a placement exactly as its row would be dated
+            (:meth:`row_date`).  It was needed nowhere on this side before:
+            only ``compute_due_date`` read it, off the rule row.
+        books_opened_on: The latest governing ``opened_on`` across every
+            account the definition moves money in, or ``None`` for no
+            floor (ruling **R-PC85**, plan step ``pay_calendar:C18-a``).  **The
+            opening end's mirror of :attr:`closing`**: the rule says when it
+            fires and the ACCOUNT says where the app keeps books, so the walk
+            names no occurrence whose row would land on or before this day
+            (ruling **R-PC86**: the row's CASH day, :meth:`row_date`, under
+            :func:`~app.utils.books_boundary.books_hold`'s strict reading --
+            an opening is the CLOSE of its day, ruling R-HG).  Until that step
+            nothing stated the bound at all: the owner's first payday stood in
+            for it, because an occurrence with no paycheck to land in is
+            skipped, and a paycheck recorded below the books let the rule fill
+            it -- a ``$531.94`` Van Payment and a ``$100.00`` birthday dated
+            before Checking's books, measured on a production clone.
+
+            **:func:`resolve` leaves it ``None``**, for the reason it leaves
+            the closing's derived half empty: it is pure, and the day is a
+            fact about ACCOUNTS read from the database.  The read pass
+            attaches it (``BalanceContext.resolved_for``), the ONE place every
+            reader of a definition's occurrences takes its value from -- row
+            creation, the forecast's loan estimate, the Recurring screens and
+            the form's live preview.  **It is not a copy of the rule's start
+            and must not become one**: an opening is restated (the owner's
+            Van Loan moved 05-21 -> 04-22 on the data this was measured on),
+            and a stored copy would need a reconciler (``CLAUDE.md`` rule 14).
     """
 
     offset_periods: int
@@ -290,6 +334,8 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     closing: Closing
     nominal_day: int | None
     max_per_month: int | None
+    due_day_of_month: int | None = None
+    books_opened_on: date | None = None
 
     def __post_init__(self) -> None:
         """Refuse a value whose first occurrence and nominal day disagree.
@@ -343,6 +389,46 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
         """
         return cadence_day_of_month(
             self.unit, self.starts_on, self.nominal_day,
+        )
+
+    def row_date(self, period: DerivedPeriod) -> date:
+        """Return the day a row this recurrence generates into *period* is due.
+
+        **The day** :func:`~app.services.recurrence.compute_due_date`
+        **stamps on that row, from this value's own coordinates** (plan step
+        ``pay_calendar:C18-a``, ruling **R-PC86**).  Both hand the same two
+        coordinates to one body -- the day the cadence schedules its rows on
+        (:func:`~app.services.recurrence._row_day.cadence_scheduled_day`)
+        and the due day -- and :func:`~app.services.recurrence._row_day
+        .date_row` dates it, so the day the walk bounds by the books and the
+        day the written row carries are one derivation.  For a calendar
+        cadence :attr:`starts_on` IS the rule's stored first occurrence; for
+        the ``PERIOD`` unit it is normalised, but that unit schedules on no
+        day of the month, so its row is dated from *period* either way.
+
+        The row-date refusal is asked FIRST, as
+        ``scheduling_day_of_month`` asks it: a ``WEEK`` value is
+        unconstructible through :func:`resolve` (the authorable-cadence
+        refusal) but not by hand, and a plausible payday-dated answer for it
+        would discard the weekday the rule means.
+
+        Args:
+            period: The pay period the row is placed in, saved or projected.
+
+        Returns:
+            The due day.
+
+        Raises:
+            RecurrenceResolutionError: The unit's occurrences cannot be dated
+                onto a generated row (``require_row_date_coordinate``).
+        """
+        require_row_date_coordinate(self.unit, "a resolved recurrence")
+        return date_row(
+            cadence_scheduled_day(
+                self.unit, self.placement, self.starts_on, self.nominal_day,
+            ),
+            self.due_day_of_month,
+            period,
         )
 
 
@@ -834,4 +920,9 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         # interval and unit are: one pair of values feeds the walk and the
         # count, and the ceiling is the third of them (plan step salary:R15-a).
         max_per_month=cadence.max_per_month,
+        due_day_of_month=spec.due_day_of_month,
+        # ``books_opened_on`` stays ``None``: a fact about ACCOUNTS, read
+        # from the database by the read pass that attaches it
+        # (``BalanceContext.resolved_for``), for the reason the closing's
+        # derived half is left empty above.
     )

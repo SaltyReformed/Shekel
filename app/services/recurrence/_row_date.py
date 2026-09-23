@@ -29,12 +29,12 @@ the saved horizon, ``period_id`` ``None``) dates a row exactly as a saved one
 does, which is what lets the seam date an occurrence the schedule has not
 materialised yet.
 """
-import calendar as cal
 from datetime import date
 
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import DerivedPeriod
 from app.services.recurrence._reading import scheduling_day_of_month
+from app.services.recurrence._row_day import date_row
 
 
 def compute_due_date(rule: RecurrenceRule, period: DerivedPeriod) -> date:
@@ -47,6 +47,13 @@ def compute_due_date(rule: RecurrenceRule, period: DerivedPeriod) -> date:
     derive a row's due date through this same pure helper, so it is
     deliberately part of this package's public surface (like
     :func:`~app.services.recurrence.rule_occurrences`).
+
+    **The dating itself lives in**
+    :func:`~app.services.recurrence._row_day.date_row` **since plan step
+    ``pay_calendar:C18-a``**, so the occurrence walk dates a placement
+    exactly as this dates the row (ruling **R-PC86** bounds generation by
+    the row's CASH day); this function reads the rule's two coordinates and
+    hands them there, and nothing about the answer changed.
 
     Source priority:
       1. rule.due_day_of_month (if set and differs from the scheduling day)
@@ -93,58 +100,12 @@ def compute_due_date(rule: RecurrenceRule, period: DerivedPeriod) -> date:
             refusal every other reader of this rule already makes, rather than
             dating a row from a cadence nothing can read.
     """
-    dom = scheduling_day_of_month(rule)
-    due_dom = rule.due_day_of_month
-
-    # A cadence that names no day of the month -- every-paycheck, every-N, and
-    # a monthly rule funded from the month's first paycheck -- is dated from
-    # its period's start.
-    if dom is None:
-        return period.start_date
-
-    # Determine the base month by finding which month within the period
-    # contains the scheduling-day target.  This is the LAST reader of the
-    # endpoint-month scan plan step R4a deleted from period selection, and it
-    # carries the same defect: at a cadence where the firing month is neither
-    # endpoint the row is dated in the wrong month entirely (plan ledger row
-    # D18).  Plan step R5 owns it, with the due-date model it rewrites.
-    #
-    # The containment test is the PERIOD's own rule since pay-calendar plan
-    # step C4-a-3 (``DerivedPeriod.covers``, ruling R-PC31); it was
-    # ``period.start_date <= target <= period.end_date`` open-coded here, one
-    # of the three sites that spelled it out.
-    base_year = period.start_date.year
-    base_month = period.start_date.month
-
-    for dt in (period.start_date, period.end_date):
-        last_day = cal.monthrange(dt.year, dt.month)[1]
-        target_day = min(dom, last_day)
-        target = date(dt.year, dt.month, target_day)
-        if period.covers(target):
-            base_year = dt.year
-            base_month = dt.month
-            break
-
-    if due_dom is None or due_dom == dom:
-        # No separate due date -- use day_of_month in the base month.
-        last_day = cal.monthrange(base_year, base_month)[1]
-        return date(base_year, base_month, min(dom, last_day))
-
-    # Next-month convention: due_day_of_month < day_of_month means the
-    # due date falls in the month after the scheduling month.
-    if due_dom < dom:
-        if base_month == 12:
-            due_year = base_year + 1
-            due_month = 1
-        else:
-            due_year = base_year
-            due_month = base_month + 1
-    else:
-        due_year = base_year
-        due_month = base_month
-
-    last_day = cal.monthrange(due_year, due_month)[1]
-    return date(due_year, due_month, min(due_dom, last_day))
+    # The rule's two coordinates, and the dating itself in the pure leaf the
+    # occurrence walk asks too (plan step pay_calendar:C18-a, ruling R-PC86):
+    # one body for "the day a row carries", whichever caller holds the rule.
+    return date_row(
+        scheduling_day_of_month(rule), rule.due_day_of_month, period,
+    )
 
 
 __all__ = ["compute_due_date"]

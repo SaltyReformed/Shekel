@@ -35,6 +35,7 @@ from app.services.recurrence._occurrence import (
     occurrences,
 )
 from app.services.recurrence._resolution import ResolvedRecurrence
+from app.utils.books_boundary import books_hold
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,9 @@ def occurrence_placements(
             beyond it, each carrying ``period=None``.
 
     Returns:
-        One :class:`OccurrencePlacement` per occurrence, ascending by date.
+        One :class:`OccurrencePlacement` per occurrence, ascending by date --
+        less any whose row would land on or before the definition's books
+        (:func:`_lands_inside_the_books`, plan step ``pay_calendar:C18-a``).
         Empty for a schedule with no periods, where nothing can be placed and
         no window can be stated.
 
@@ -218,6 +221,10 @@ def _placements(
     :func:`projected_occurrence_placements`, which differ only in the search
     they hand in.  Refuses before the empty-schedule short-circuit, so both
     callers refuse exactly what :func:`occurrences` and :func:`place` refuse.
+    **The books bound is applied HERE and only here** (plan step
+    ``pay_calendar:C18-a``, ruling **R-PC85**), so the two walks -- the saved
+    one generation and the screens read, the projected one the loan estimate
+    prices -- cannot disagree about which occurrences precede the books.
 
     Args:
         resolved: The recurrence's two-axis meaning.
@@ -227,17 +234,69 @@ def _placements(
             schedule's horizon.
 
     Returns:
-        One :class:`OccurrencePlacement` per occurrence, ascending by date.
+        One :class:`OccurrencePlacement` per occurrence the books admit,
+        ascending by date.
     """
     _require_generable(resolved)
     horizon = calendar.horizon()
     if horizon is None:
         return ()
     window_end = horizon if through is None else through
-    return tuple(
+    placed = (
         OccurrencePlacement(occurrence=occurrence, period=search(occurrence))
         for occurrence in occurrences(resolved, calendar, through=window_end)
     )
+    return tuple(
+        placement for placement in placed
+        if _lands_inside_the_books(resolved, placement)
+    )
+
+
+def _lands_inside_the_books(
+    resolved: ResolvedRecurrence, placement: OccurrencePlacement,
+) -> bool:
+    """Return whether *placement*'s row would land where the app keeps books.
+
+    **The books bound, applied in the ONE composition both walks share**
+    (plan step ``pay_calendar:C18-a``, rulings **R-PC85** and **R-PC86**).  A
+    rule says when it fires; the ACCOUNT says where the app keeps books, and
+    money on or before an account's opening day is already inside its opening
+    equity (ruling **R-HG**).  So an occurrence whose row would land on or
+    before :attr:`~._resolution.ResolvedRecurrence.books_opened_on` -- the
+    latest opening across every account the definition moves money in -- is
+    not an occurrence the app models, and neither walk names it: generation
+    cannot write it, the loan estimate cannot price it, and a screen cannot
+    list it.  Until this bound, the owner's first payday stood in for it,
+    because an occurrence with no paycheck is skipped; a paycheck recorded
+    below the books let the rules fill it, measured on a production clone at
+    ``$531.94`` + ``$100.00`` dated before Checking's opening.
+
+    **The day compared is the ROW's cash day, not the occurrence** (R-PC86):
+    :meth:`~._resolution.ResolvedRecurrence.row_date`, the day
+    ``compute_due_date`` stamps on the written row, through the one strict
+    comparison :func:`~app.utils.books_boundary.books_hold` states -- so a bill
+    scheduled before the books but due after them is kept, and one due ON the
+    opening day is not.
+
+    **An UNPLACED occurrence is kept**, because it has no row day to compare
+    and no row: ``period`` is ``None`` only below the owner's first payday
+    under ``CONTAINING_DATE`` or past the saved horizon, and no reader writes,
+    estimates or counts such an occurrence (ruling **R-R64**) -- keeping it is
+    the walk's answer before this bound, unchanged.  A value with no floor
+    (``None``: the pure resolver's, or a definition moving money in no
+    account) is unbounded, as it always was.
+
+    Args:
+        resolved: The recurrence, carrying its books floor.
+        placement: One occurrence and the period it lands in.
+
+    Returns:
+        ``True`` when the placement stays in the walk.
+    """
+    floor = resolved.books_opened_on
+    if floor is None or placement.period is None:
+        return True
+    return books_hold(floor, resolved.row_date(placement.period))
 
 
 def projected_occurrence_placements(
@@ -281,8 +340,10 @@ def projected_occurrence_placements(
     Returns:
         One :class:`OccurrencePlacement` per occurrence, ascending by date,
         each placed on a saved or projected paycheck (``None`` only before the
-        opening bound under ``CONTAINING_DATE``).  Empty for a schedule with no
-        periods.
+        opening bound under ``CONTAINING_DATE``) -- less any whose row would
+        land on or before the definition's books, the bound the saved walk
+        applies through the same composition (plan step
+        ``pay_calendar:C18-a``).  Empty for a schedule with no periods.
 
     Raises:
         RecurrenceGenerationError: See :func:`occurrence_placements`.

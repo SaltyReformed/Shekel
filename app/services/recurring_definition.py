@@ -109,7 +109,6 @@ from app.services.recurrence import (
     RecurrenceSpec,
     ResolvedRecurrence,
     RuleReading,
-    resolved_spec,
 )
 
 
@@ -134,6 +133,15 @@ class UnsavedDefinition:
     word by construction -- the form never reads the stored column.  Nothing
     else about a definition's identity reaches the derived stop.
 
+    **It carries the SOURCE accounts too, since plan step
+    ``pay_calendar:C18-a``** (ruling **R-PC85**): the other end of the
+    composition is where the definition's books open, and that is every
+    account it moves money in -- a transaction form's ``account_id``, a
+    transfer form's ``from_account_id`` beside its ``to_account_id`` --
+    named exactly as a template names them, so the read pass reads a stored
+    template and this by one rule (``balance_at._definition_books``).  Without
+    them the preview would list a date saving would not generate.
+
     Attributes:
         to_account_id: The destination account the form names, or ``None``
             for a transaction template (which pays into no account) and for a
@@ -143,9 +151,16 @@ class UnsavedDefinition:
             missing and for foreign alike), and the pass refuses a foreign
             account a second time when it memoises the loan
             (``ForeignAccountError`` from ``_memoize_once``, plan step X-i4).
+        account_id: The account a transaction form names, or ``None`` (a
+            transfer form, or a transaction form with none chosen yet).  The
+            owner's, by the same gate.
+        from_account_id: The account a transfer form draws from, or ``None``.
+            The owner's, by the same gate.
     """
 
     to_account_id: int | None
+    account_id: int | None = None
+    from_account_id: int | None = None
 
 
 def resolved_definition(
@@ -273,11 +288,13 @@ def resolved_submission(
     posts nothing, which is what the loan's standing payment posts -- so it
     is taken as stated.  (Until R7d-g a stored definition's went through
     ruling **R-R56**'s arm, because its column could hold the chokepoints'
-    cache.)  Resolved through
-    :func:`~app.services.recurrence.resolved_spec`, the producer the pass's
-    own memo wraps, rather than through that memo: the memo is keyed by a
-    rule's spec and this caller resolves one spec once per request, so there
-    is one producer either way and nothing here to collapse.
+    cache.)  **Resolved through the pass's**
+    :meth:`~app.services.balance_at.BalanceContext.resolved_for` **since plan
+    step ``pay_calendar:C18-a``**, the one composition that attaches where
+    the definition's books open (ruling **R-PC85**), so the preview and the
+    save it previews bound by one floor.  It called ``resolved_spec`` directly
+    until then -- one producer either way, the memo adding nothing but a key;
+    the floor is what the memo's method adds now.
 
     Args:
         spec: What the form states, unresolved.
@@ -304,7 +321,7 @@ def resolved_submission(
             has no baseline scenario (ruling **R-R30**); see
             :func:`resolved_definition`.
     """
-    resolved = resolved_spec(spec, ctx.calendar())
+    resolved = ctx.resolved_for(spec, definition)
     if resolved is None:
         return None
     return _narrowed(

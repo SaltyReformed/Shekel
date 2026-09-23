@@ -271,27 +271,30 @@ def resolve_generation_plan(
     period and the pass would cost O(schedule) writes instead of O(new).
 
     **The two ``effective_from`` defaults this used to apply are gone**, and
-    deleting them is a simplification rather than a behaviour change.  It fell
-    back to the rule's start period and then to the first candidate period;
-    both are already inside the anchor
-    (``app.services.recurrence._resolution._effective_start`` takes the
-    GREATEST of the schedule's opening payday, the rule's ``start_date`` and
-    its start period's).
+    deleting them was a simplification rather than a behaviour change: it fell
+    back to the rule's start period and then to the first candidate period,
+    both already inside the anchor of the day (measured then: identical answers
+    for all 46 live rules over all 61 production periods, and a byte-identical
+    ``tests/oracles/recurrence_baseline.txt``).  ``None`` plainly means "no
+    lower window bound".  *This paragraph credited that to
+    ``_resolution._effective_start`` taking "the GREATEST of the schedule's
+    opening payday, the rule's ``start_date`` and its start period's" until
+    plan step ``pay_calendar:C18-a`` found it describing a function plan step
+    R7c-b had deleted*: a rule's first occurrence is AUTHORED since then
+    (``starts_on``, ruling **R-R16**), nothing takes a maximum with the
+    schedule's opening payday, and an occurrence below the owner's first
+    payday was skipped only because no paycheck existed to place it in.
 
-    **The reason is about the PLACED PERIOD, not the occurrence**, and an
-    adversarial review corrected an earlier wording that said "no walk emits an
-    occurrence before the anchor".  That is false for the ``PERIOD`` unit:
-    ``_occurrence._period_walk`` yields a qualifying paycheck's own payday,
-    which precedes a mid-period anchor deliberately (ruling R-R8).  What holds
-    for every unit is the thing the old filter actually tested -- it bounded
-    the placed period's ``end_date``, and every period any walk can yield
-    satisfies ``end_date >= anchor >= effective_from``.  So neither default
-    could ever drop a row the anchor had not already dropped.  Verified by
-    measurement as well as by argument: identical answers for all 46 live rules
-    over all 61 production periods, and a byte-identical
-    ``tests/oracles/recurrence_baseline.txt`` over the 428 shapes it then
-    held (430 since plan step R4b-2 added D10's).  ``None`` now
-    plainly means "no lower window bound".
+    **Where a definition's occurrences START is two facts since plan step
+    ``pay_calendar:C18-a``** (rulings **R-PC85**, **R-PC86**): the rule's own
+    first occurrence, and the day after the books open on every account it
+    moves money in.  The second rides on the resolved value the composed door
+    returns (``ResolvedRecurrence.books_opened_on``, attached by the read pass)
+    and the walk drops an occurrence whose row would land on or before it, so
+    a paycheck recorded below an account's books is not filled with rows whose
+    money is already inside that account's opening equity -- measured on a
+    production clone as a ``$531.94`` Van Payment and a ``$100.00`` birthday
+    before this step.  Nothing here reads it: the placements already carry it.
 
     Args:
         template: The (Transaction|Transfer)Template to generate from.

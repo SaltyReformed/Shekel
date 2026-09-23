@@ -68,14 +68,20 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import or_
+
 from app import ref_cache
 from app.enums import AccountOpeningSourceEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.account_opening import AccountOpening
+from app.models.recurrence_rule import RecurrenceRule
+from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services import account_posting_service, cash_ledger
 from app.services.user_write_lock import lock_user_writes
+from app.utils.balance_predicates import is_projected_clause
 from app.utils.dates import display_today
 
 
@@ -209,9 +215,9 @@ def _reject_future_opening(opened_on: date) -> None:
 
 
 def _reject_restatement_day(account_id: int, opened_on: date) -> None:
-    """Apply all FOUR of a RESTATEMENT's day rules, in the order that reads best.
+    """Apply all FIVE of a RESTATEMENT's day rules, in the order that reads best.
 
-    The future rule first and the three record rules after it, because a day
+    The future rule first and the four record rules after it, because a day
     that has not happened is wrong about itself before it is wrong about the
     records: telling an owner who typed next year that "this account already
     records money moving on 2026-03-27" answers a question they did not ask.
@@ -233,7 +239,16 @@ def _reject_restatement_day(account_id: int, opened_on: date) -> None:
     2026-08-31, account 1's earliest matched line and earliest movement are the
     same day, and production holds no match at all.
 
-    Stated as one function rather than four calls at the door so the ORDER is a
+    **The PLANNED-ROW rule is ruling R-PC88** (plan step ``pay_calendar:C18-a``,
+    :func:`_reject_books_open_on_or_after_planned_rows`), and it is last
+    because its repair is the cheapest: mark the row paid, cancel it or move
+    it.  It exists because ruling **R-PC85** made a recurring definition's
+    occurrences stop at its accounts' books, so a restatement moving the books
+    past a still-projected recurring row would leave that row named by no
+    occurrence -- and the maintain pass retires such a row the next time it
+    re-runs the rule over its paycheck (plan step R10-a), without a word.
+
+    Stated as one function rather than five calls at the door so the ORDER is a
     property of the rule set rather than of whichever caller ran first -- the
     shape :func:`app.services.anchor_service.resolve_observation_day` gives the
     assertion door's two bounds.
@@ -246,8 +261,9 @@ def _reject_restatement_day(account_id: int, opened_on: date) -> None:
     Raises:
         ValidationError: When the day is in the future, on or after a day the
             account already records money moving, on or after a day it has
-            matched a bank line on, or after a day it has asserted a balance
-            for.
+            matched a bank line on, after a day it has asserted a balance
+            for, or on or after the due day of a still-projected recurring row
+            that moves money in it.
     """
     _reject_future_opening(opened_on)
     cash_ledger.reject_books_open_on_or_after_movements(account_id, opened_on)
@@ -263,6 +279,98 @@ def _reject_restatement_day(account_id: int, opened_on: date) -> None:
         account_id, opened_on,
     )
     cash_ledger.reject_books_open_after_an_assertion(account_id, opened_on)
+    _reject_books_open_on_or_after_planned_rows(account_id, opened_on)
+
+
+def _reject_books_open_on_or_after_planned_rows(
+    account_id: int, opened_on: date,
+) -> None:
+    """Refuse books opening on or after a still-projected recurring row's due day.
+
+    **Ruling R-PC88** (developer, 2026-09-22; plan step ``pay_calendar:C18-a``).
+    A recurring definition's occurrences start above the books of every
+    account it moves money in (ruling **R-PC85**, compared on the row's due
+    day under :func:`~app.utils.books_boundary.books_hold`, ruling
+    **R-PC86**).  Moving the books LATER past a row that is still Projected --
+    an unpaid, overdue bill the rule generated -- therefore leaves it named by
+    no occurrence, and the maintain pass retires such a row the next time it
+    re-runs the rule over its paycheck, silently raising the forecast.  The
+    owner decides instead: marked paid it becomes a movement (and the movement
+    rule speaks), cancelled it holds nothing, moved later it stays owed.
+
+    **The rows are RECURRING and LIVE**: a transaction on this account, or a
+    transfer from or to it, whose definition carries a recurrence rule, in any
+    scenario (an opening is scenario-free, ruling **R-GX**), not soft-deleted,
+    still in the Projected status.  "Template-linked" alone would be wrong,
+    and by a whole class: every hand-entered one-off mints a RULE-LESS
+    definition since plan step ``balance:X-bi-7c`` (and a one-time transfer
+    has one too), so it would refuse a row no rule names and nothing retires.
+    A settled row is the movement rule's.
+    The day is the row's own ``due_date`` (every template-linked row carries
+    one: ``ck_transactions_template_row_needs_due_date`` and its transfer
+    twin), the cash day the generator stamped.  Only the EARLIEST is read, and
+    the comparison is asked of it in Python -- the shape
+    :func:`app.services.cash_ledger.reject_books_open_on_or_after_movements`
+    takes -- so the strict ``>`` is not re-spelled as a SQL filter.
+
+    No figure is named: the refusal is about a DAY, so the opening door's
+    HELD-figure contract (ruling **R-CC52**) is untouched.
+
+    Args:
+        account_id: The account whose books are being restated.
+        opened_on: The candidate opening day.
+
+    Raises:
+        ValidationError: When a live, still-projected recurring row moving
+            money in the account is due on or before *opened_on*.
+    """
+    earliest_transaction = (
+        db.session.query(Transaction.due_date, Transaction.name)
+        .join(
+            RecurrenceRule,
+            RecurrenceRule.transaction_template_id == Transaction.template_id,
+        )
+        .filter(
+            Transaction.account_id == account_id,
+            Transaction.is_deleted.is_(False),
+            is_projected_clause(Transaction),
+        )
+        .order_by(Transaction.due_date, Transaction.id)
+        .first()
+    )
+    earliest_transfer = (
+        db.session.query(Transfer.due_date, Transfer.name)
+        .join(
+            RecurrenceRule,
+            RecurrenceRule.transfer_template_id == Transfer.transfer_template_id,
+        )
+        .filter(
+            or_(
+                Transfer.from_account_id == account_id,
+                Transfer.to_account_id == account_id,
+            ),
+            Transfer.is_deleted.is_(False),
+            is_projected_clause(Transfer),
+        )
+        .order_by(Transfer.due_date, Transfer.id)
+        .first()
+    )
+    candidates = [
+        row for row in (earliest_transaction, earliest_transfer)
+        if row is not None
+    ]
+    if not candidates:
+        return
+    due_on, name = min(candidates, key=lambda row: row.due_date)
+    if cash_ledger.books_hold(opened_on, due_on):
+        return
+    raise ValidationError(
+        f"These books cannot open on {opened_on.isoformat()}: the recurring "
+        f"\"{name}\" is still projected and due {due_on.isoformat()}.  An "
+        "opening is the balance at the END of its day, so moving it there "
+        "would put that unpaid item inside it.  Mark it paid, cancel it or "
+        "move it later first, then restate the books."
+    )
 
 
 def stage_account_opening(
@@ -422,9 +530,11 @@ def apply_opening_restatement(
         AmortizingAccountOpeningError: When ``account`` is an amortizing loan.
             Raised BEFORE anything is staged and before the owner's write lock
             is taken, so the session is clean.
-        ValidationError: When the day is in the future or lands on or after a
-            movement the account already records.  Also raised before anything
-            is staged and before the lock.
+        ValidationError: When the day breaks one of the five day rules
+            (:func:`_reject_restatement_day`): in the future, on or after a
+            recorded movement or a matched bank line, after an assertion, or
+            on or after a still-projected recurring row's due day (ruling
+            **R-PC88**).  Raised before anything is staged.
     """
     acct_type = account.account_type
     if acct_type is not None and acct_type.has_amortization:
