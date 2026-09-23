@@ -96,6 +96,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_settled_transfer,
     linked_ledger_account,
+    transfer_family_journal_filter,
 )
 from app.services import cash_ledger
 from app.models.amount_ownership import AmountOwnership
@@ -299,10 +300,12 @@ def _legs_by_account(account_id: int, transfer_id: int) -> dict[int, Decimal]:
 
     Used to compare a transfer posted go-forward against the same transfer
     posted by the backfill: both must land the same signed amount on the
-    account's LINKED ledger.  Scoped by *transfer_id* AND the LINKED kind:
-    a Step-5 anchor correction also lands legs sharing the ``account_id``
-    (its equity twin carries the negation), so a bare-``account_id`` map
-    would fold correction legs into the transfer comparison.
+    account's LINKED ledger.  Scoped by the transfer's FAMILY (its two
+    per-movement entries since plan step ``balance:X-bi-6-3``,
+    ``transfer_family_journal_filter``) AND the LINKED kind: a Step-5 anchor
+    correction also lands legs sharing the ``account_id`` (its equity twin
+    carries the negation), so a bare-``account_id`` map would fold
+    correction legs into the transfer comparison.
     """
     return {
         entry_id: amount
@@ -316,7 +319,7 @@ def _legs_by_account(account_id: int, transfer_id: int) -> dict[int, Decimal]:
             LedgerAccount.kind_id == ref_cache.ledger_account_kind_id(
                 LedgerAccountKindEnum.LINKED,
             ),
-            JournalEntry.transfer_id == transfer_id,
+            transfer_family_journal_filter(transfer_id),
         )
         .all()
     }
@@ -473,12 +476,13 @@ class TestPerAccountReconciliation:
                 assert _independent_txn_effect(
                     account_id, scenario_id,
                 ) == Decimal("0.00")
-            # Two entries survive (settle + reversal); neither was edited.
+            # Four entries survive (a settle and a reversal per side, plan
+            # step ``balance:X-bi-6-3``); none was edited.
             assert (
                 _db.session.query(JournalEntry)
-                .filter_by(transfer_id=transfer.id)
+                .filter(transfer_family_journal_filter(transfer.id))
                 .count()
-            ) == 2
+            ) == 4
             _assert_full_reconciliation(scenario_id)
 
     @pytest.mark.server_clock
@@ -585,25 +589,26 @@ class TestEverySettledTransferPosts:
             for xfer in settled:
                 entry_count = (
                     _db.session.query(JournalEntry)
-                    .filter_by(transfer_id=xfer.id)
+                    .filter(transfer_family_journal_filter(xfer.id))
                     .count()
                 )
                 assert entry_count >= 1, (
                     f"settled transfer {xfer.id} posted no journal entry"
                 )
-            # Simple settles post exactly one entry each, so the settled
-            # transfers and the TRANSFER-sourced journal entries are in
-            # bijection -- no skip (an entry-less settled transfer) and no
-            # stray double-post.
+            # Simple settles post exactly TWO entries each -- one per side,
+            # against transit (plan step ``balance:X-bi-6-3``) -- so the
+            # settled transfers and the transfer-movement-sourced journal
+            # entries are in a two-to-one bijection: no skip (an entry-less
+            # settled transfer) and no stray double-post.
             assert (
                 _db.session.query(JournalEntry)
                 .filter(
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                        PostingSourceEnum.TRANSFER,
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
                     ),
                 )
                 .count()
-            ) == len(settled)
+            ) == 2 * len(settled)
 
 
 # ---------------------------------------------------------------------------
@@ -617,28 +622,29 @@ class TestPerEntryAndTrialBalance:
     def test_every_entry_balances_and_trial_balance_is_zero(
         self, app, db, seed_user,
     ):
-        """Two settled transfers -> two balanced entries; trial balance 0.
+        """Two settled transfers -> four balanced entries; trial balance 0.
 
-        Arithmetic: the $100 and $250 settles each post a two-leg entry summing
-        to zero, and the Step-5 openings (Checking +1000/-1000, Savings
-        +100/-100 against their equity twins) are balanced pairs too, so no
-        entry violates ``SUM = 0`` / ``COUNT >= 2`` and the whole-ledger
-        total stays 0.00.
+        Arithmetic: the $100 and $250 settles each post two two-leg entries
+        (one per side, against transit -- plan step ``balance:X-bi-6-3``)
+        summing to zero, and the Step-5 openings (Checking +1000/-1000,
+        Savings +100/-100 against their equity twins) are balanced pairs too,
+        so no entry violates ``SUM = 0`` / ``COUNT >= 2`` and the
+        whole-ledger total stays 0.00.
         """
         with app.app_context():
             _build_asset_and_liability_books(seed_user)
 
-            # Exactly the two settled transfers produced TRANSFER-sourced
-            # entries (the $40 Projected posted none).
+            # Exactly the two settled transfers produced transfer-movement-
+            # sourced entries, two each (the $40 Projected posted none).
             assert (
                 _db.session.query(JournalEntry)
                 .filter(
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                        PostingSourceEnum.TRANSFER,
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
                     ),
                 )
                 .count()
-            ) == 2
+            ) == 4
             # No entry violates the per-entry balanced invariant.
             assert _entries_violating_balance() == []
             # Whole-ledger trial balance is zero.
@@ -906,14 +912,16 @@ class TestOracleIsNotVacuous:
             _db.session.commit()
             assert _trial_balance() == Decimal("0.00")
 
-            # Inject one extra, unmatched leg onto the transfer's entry
-            # (picked by its link -- the Step-5 openings mean several entries
-            # exist).  Flush (not commit) makes it visible to the query; the
-            # DEFERRED balanced trigger validates only at COMMIT, which we
-            # never reach.
+            # Inject one extra, unmatched leg onto one of the transfer's two
+            # entries (picked by its family link -- the Step-5 openings mean
+            # several entries exist).  Flush (not commit) makes it visible to
+            # the query; the DEFERRED balanced trigger validates only at
+            # COMMIT, which we never reach.
             entry_id = (
                 _db.session.query(JournalEntry.id)
-                .filter_by(transfer_id=transfer.id)
+                .filter(transfer_family_journal_filter(transfer.id))
+                .order_by(JournalEntry.id)
+                .limit(1)
                 .scalar()
             )
             _db.session.execute(_db.text(

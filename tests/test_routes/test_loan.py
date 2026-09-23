@@ -41,9 +41,9 @@ from app.services import (
 )
 
 from tests._test_helpers import (
-    bind_rule_to_loan,
     add_escrow_line,
     an_entered_day,
+    bind_rule_to_loan,
     clear_loan_ledger,
     create_account_of_type,
     create_loan_account,
@@ -61,6 +61,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     select_option_values,
     state_template_price,
+    transfer_side_journal_filter,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.models.amount_ownership import AmountOwnership
@@ -2354,10 +2355,12 @@ class TestEscrowPostingSync:
         # carries a WRONG date.  Raw SQL bypasses the append-only ORM listener,
         # exactly as the legacy writes that predate it did (the test runs as the
         # table owner).
+        # The loan-side cash entry is the loan-side MOVEMENT's since plan step
+        # ``balance:X-bi-6-3`` (it was the one ``transfer_id`` entry).
         cash_entry_id = (
             db.session.query(JournalEntry.id)
             .filter(
-                JournalEntry.transfer_id == xfer.id,
+                transfer_side_journal_filter(xfer.id, loan.id),
                 JournalEntry.scenario_id == scenario_id,
             )
             .scalar()

@@ -70,6 +70,7 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    transfer_family_journal_filter,
 )
 
 
@@ -244,12 +245,12 @@ class TestBackfillPostsHistoricalCorrection:
 
             # Reproduce the pre-Commit-5 historical state: settled, no correction.
             _clear_corrections()
-            assert loan_correction_entries(db.session, shadow.id) == []
+            assert loan_correction_entries(db.session, shadow) == []
 
             posted = _backfill()
 
             assert loan.id in posted
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             # Opening (-250000) + true-up (+150000) + principal (+500).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -288,8 +289,8 @@ class TestBackfillPostsHistoricalCorrection:
             _clear_corrections()
             _backfill()
 
-            assert len(loan_correction_entries(db.session, shadow1.id)) == 1
-            assert len(loan_correction_entries(db.session, shadow2.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow1)) == 1
+            assert len(loan_correction_entries(db.session, shadow2)) == 1
             # Opening (-250000) + true-up (+150000) + principal (+1002.50).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -321,7 +322,7 @@ class TestBackfillPostsHistoricalCorrection:
             _clear_corrections()
             _backfill()
 
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             # Opening (-250000) + true-up (+150000) + principal (+400).
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
@@ -392,7 +393,7 @@ class TestBackfillIdempotentNoDoublePost:
             _backfill()
 
             assert db.session.query(JournalEntry).count() == entries_after_first
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -443,8 +444,8 @@ class TestBackfillCoverage:
             posted = _backfill()
 
             assert loan_a.id in posted and loan_b.id in posted
-            assert len(loan_correction_entries(db.session, shadow_a.id)) == 1
-            assert len(loan_correction_entries(db.session, shadow_b.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow_a)) == 1
+            assert len(loan_correction_entries(db.session, shadow_b)) == 1
 
     def test_backfills_every_scenario(
         self, app, db, seed_user, seed_periods,
@@ -474,8 +475,8 @@ class TestBackfillCoverage:
             _clear_corrections()
             _backfill()
 
-            assert len(loan_correction_entries(db.session, shadow_base.id)) == 1
-            assert len(loan_correction_entries(db.session, shadow_whatif.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow_base)) == 1
+            assert len(loan_correction_entries(db.session, shadow_whatif)) == 1
             assert ledger_net(
                 db.session,
                 find_loan_ledger_account(
@@ -595,19 +596,28 @@ class TestDeployHookCommitsBackfill:
             # Reproduce the pre-Commit-5 historical state (settled, no correction),
             # committed so a separate connection can see the starting point.
             _clear_corrections()
-            assert loan_correction_entries(db.session, shadow.id) == []
+            assert loan_correction_entries(db.session, shadow) == []
 
             _INIT_DB.backfill_loan_payment_postings_after_migration()
 
             # A fresh connection sees only COMMITTED rows: the correction is
-            # visible only if the hook committed (not merely flushed).
+            # visible only if the hook committed (not merely flushed).  Read at
+            # the split's KEY -- its scenario, period and day (ruling R-BAL102:
+            # the split links no row; it was read by ``transaction_id`` here
+            # until plan step ``balance:X-bi-6-3``).
             with db.engine.connect() as conn:
                 committed = conn.execute(
                     text(
                         "SELECT count(*) FROM budget.journal_entries "
-                        "WHERE transaction_id = :tid AND source_kind_id = :src"
+                        "WHERE source_kind_id = :src AND scenario_id = :sid "
+                        "  AND pay_period_id = :pid AND entry_date = :day"
                     ),
-                    {"tid": shadow.id, "src": loan_payment_source_id},
+                    {
+                        "src": loan_payment_source_id,
+                        "sid": shadow.scenario_id,
+                        "pid": shadow.pay_period_id,
+                        "day": shadow.settled_on,
+                    },
                 ).scalar()
             assert committed == 1
 
@@ -664,21 +674,23 @@ class TestDowngradeReversible:
 
             shadow = loan_income_shadow(db.session, xfer.id, loan.id)
             # The go-forward wiring posted the correction + minted the interest ledger.
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             interest_ledger = find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             )
             assert interest_ledger is not None
+            # Each transfer's cash is TWO per-movement entries since plan
+            # step ``balance:X-bi-6-3``.
             loan_cash_entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
+                .filter(transfer_family_journal_filter(xfer.id)).count()
             )
-            assert loan_cash_entries == 1
+            assert loan_cash_entries == 2
             savings_cash_entries = (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=cash_xfer.id).count()
+                .filter(transfer_family_journal_filter(cash_xfer.id)).count()
             )
-            assert savings_cash_entries == 1
+            assert savings_cash_entries == 2
             linked_before = len(
                 ledger_accounts_for_account(db.session, loan.id)
             )
@@ -693,17 +705,17 @@ class TestDowngradeReversible:
             db.session.commit()
 
             # Step-4 artifacts removed.
-            assert loan_correction_entries(db.session, shadow.id) == []
+            assert loan_correction_entries(db.session, shadow) == []
             assert _per_loan_ledger_count(loan) == 0
-            # Step-2 cash entries + linked ledger accounts survive.
+            # The cash entries + linked ledger accounts survive.
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(xfer.id)).count()
+            ) == 2
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=cash_xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(cash_xfer.id)).count()
+            ) == 2
             assert len(
                 ledger_accounts_for_account(db.session, loan.id)
             ) == linked_before
@@ -767,7 +779,7 @@ class TestGenesisBoundaryMigration:
             assert find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.EQUITY_OPENING,
             ) is not None
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            assert len(loan_correction_entries(db.session, shadow)) == 1
 
             _GENESIS_MIGRATION._remove_loan_genesis_postings(db.session)
             db.session.commit()
@@ -805,15 +817,16 @@ class TestGenesisBoundaryMigration:
                     account_correction_source_ids,
                 ),
             ).count() == 0
-            # Payment correction, interest ledger, Step-2 cash, linked ledger survive.
-            assert len(loan_correction_entries(db.session, shadow.id)) == 1
+            # Payment correction, interest ledger, the cash entries, linked
+            # ledger survive.
+            assert len(loan_correction_entries(db.session, shadow)) == 1
             assert find_loan_ledger_account(
                 db.session, loan.id, LedgerAccountKindEnum.LOAN_INTEREST,
             ) is not None
             assert (
                 db.session.query(JournalEntry)
-                .filter_by(transfer_id=xfer.id).count()
-            ) == 1
+                .filter(transfer_family_journal_filter(xfer.id)).count()
+            ) == 2
 
     def test_downgrade_source_removes_genesis_entries_and_equity_accounts(self):
         """The downgrade source deletes genesis entries + equity_opening accounts."""

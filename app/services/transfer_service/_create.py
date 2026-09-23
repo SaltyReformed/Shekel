@@ -472,7 +472,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
             ),
         )
         db.session.flush()
-        posting_service.sync_transfer_postings(xfer, settled=True)
+        posting_service.sync_transfer_postings(xfer)
         _sync_loan_postings_if_loan(xfer)
 
     log_event(

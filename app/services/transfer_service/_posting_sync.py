@@ -107,12 +107,15 @@ def _reconcile_postings_after_update(
       changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
       ``apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
       ``status_id`` and the grid shadow-edit path can settle and set an actual
-      in one call; the reconcile reads what the income shadow is worth,
-      so it must run once everything is in place or it would post the pre-edit
-      estimate.  ``xfer.status_id`` is the post-update status, so its
-      ``is_settled`` is the correct target sense.  Idempotent
-      reconcile-to-target: a settle posts the effect, a revert / cancel reverses
-      to zero, an unchanged effect writes nothing.
+      in one call; the reconcile reads what each shadow's covering movement
+      records, so it must run once everything is in place or it would post
+      the pre-edit figure.  Since plan step ``balance:X-bi-6-3`` (ruling
+      **R-BAL101**) it is told no settled sense: a movement posts iff it is
+      dated under a contributing parent, and the seam has already dated (a
+      settle) or un-dated (a revert) both movements by the time this runs.
+      Idempotent reconcile-to-target: a settle posts the two per-movement
+      entries, a revert / cancel reverses them to zero, an unchanged effect
+      writes nothing.
     * **Loan-payment genesis reconcile** last (a no-op for a non-loan transfer):
       a settle / revert / amount / actual / period edit of a loan payment
       re-reconciles that loan's confirmed-payment splits (coupled on the running
@@ -191,9 +194,11 @@ def _reconcile_postings_after_update(
     # at the new settle date (finding N-13), and the loan sync's
     # checked-projection assert then verifies the ledger against the walk.
     if needs_reconcile or (settle_day_edited and current_status.is_settled):
-        posting_service.sync_transfer_postings(
-            xfer, settled=current_status.is_settled,
-        )
+        # The pair's door reads each movement's own state (dated under a
+        # contributing parent, or not) since plan step ``balance:X-bi-6-3``
+        # (ruling **R-BAL101**), so the settled sense is no longer passed:
+        # the seam has already dated or un-dated the movements above.
+        posting_service.sync_transfer_postings(xfer)
         _sync_loan_postings_if_loan(xfer)
     if settle_day_edited and current_status.is_settled:
         account_posting_service.sync_account_anchor_postings(

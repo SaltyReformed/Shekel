@@ -7,12 +7,13 @@ That day is the day the event HAPPENED, and it is already the day the posting
 carries in ``journal_entries.entry_date``:
 
 * a **PAYMENT** is visible from its **settled date** -- the shadow's STORED
-  ``transactions.settled_on``, read through the SAME
-  :func:`app.utils.balance_predicates.settled_day` accessor the posting writer
-  stamps a transfer's ``entry_date`` with
-  (:func:`app.services.posting_service._entry_date`), the day the cash walk
-  folds the payment's covering movement on, and the SAME date the checking
-  outflow moves on, so the loan and checking move together (ruling R-A).
+  ``transactions.settled_on``, read through the
+  :func:`app.utils.balance_predicates.settled_day` accessor; the posting
+  writer files the loan-side entry under the loan-side covering movement's
+  own day (plan step ``balance:X-bi-6-3``), which the pair applier keeps
+  equal to the shadow's, the day the cash walk folds that movement on, and
+  the SAME date the checking outflow moves on, so the loan and checking move
+  together (ruling R-A).
 
   **There is no derivation and no fallback left here, and that is plan step
   X-f1** (ruling R-EC).  It WAS the display-timezone civil date of the shadow's
@@ -31,7 +32,7 @@ carries in ``journal_entries.entry_date``:
   2026-07-01 Eastern and the last day of that pay period.
 * an **ANCHOR** is visible from its **own civil date** (``anchor_date``) -- the one
   date it ever asserts, and the ``entry_date`` the anchor correction is posted at
-  (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).
+  (:func:`app.services._posting_reconcile.emit_correction_entry`).
 
 **This is step C2 -- the one clock that replaced the two boundary predicates the
 old rule used.**  Before it, a payment counted from its pay period's ``start_date``
@@ -83,7 +84,7 @@ def anchor_visible_on(anchor_date: date) -> date:
 
     The anchor's OWN civil date (step C2): an assertion happens on the date it
     asserts, which is the ``entry_date`` its correction is posted at
-    (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).  It no
+    (:func:`app.services._posting_reconcile.emit_correction_entry`).  It no
     longer needs the owner's calendar -- the pre-C2 rule
     ``LEAST(anchor_date, containing period.start)`` did, only to reach the pay
     period the anchor had to be FILED under -- a requirement of the per-period
@@ -108,13 +109,12 @@ def payment_visible_on(shadow: Transaction) -> date:
 
     Its **settled date** (step C2, ruling R-A): the shadow's STORED
     ``settled_on``, read through the shared
-    :func:`app.utils.balance_predicates.settled_day`.  That is the same accessor
-    the posting writer stamps a transfer's ``entry_date`` through
-    (:func:`app.services.posting_service._entry_date`), and the covering
-    movement the seam mirrors that day onto is what the cash fold counts, so
-    the day the fold counts this payment and the day the sum-of-postings
-    reader counts it cannot drift; and it is the day the checking outflow
-    moves, so the loan and checking move together.
+    :func:`app.utils.balance_predicates.settled_day`.  The covering movement
+    the seam mirrors that day onto is what the cash fold counts AND what the
+    posting writer files the loan-side entry under (plan step
+    ``balance:X-bi-6-3``), so the day the fold counts this payment and the
+    day the sum-of-postings reader counts it cannot drift; and it is the day
+    the checking outflow moves, so the loan and checking move together.
 
     **It DERIVED that day from ``paid_at`` until plan step X-f1** (ruling R-EC)
     -- a display-timezone conversion of the click instant with the pay period's

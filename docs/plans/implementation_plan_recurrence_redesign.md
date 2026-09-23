@@ -293,7 +293,7 @@ deletes that function.
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
 **There is no `recurrence_due_dates` table and there will not be**: R-R12 puts the installment on
 the ROW, where the ledger already reads it, rather than on the rule. The files carrying
-`payment_day` in code (census 19 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
+`payment_day` in code (census 18 code files `payment_day` in `app/**/*.py`) -- EIGHT more name it
 only in prose, which a code census excludes by construction --
 **already read it as the installment, bar two** -- exactly two make it a CASH day, in
 `routes/loan/payment_transfer.py` and `loan_recurrence_sync.py`, and those two ARE D4's mechanism.

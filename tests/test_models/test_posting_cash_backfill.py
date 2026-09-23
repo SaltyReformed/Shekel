@@ -183,7 +183,7 @@ def _counter_ledger(user_id, ledger_class, category_id=None):
     """Return the category / fallback ledger account, mirroring the resolver.
 
     Keys on ``(user_id, class_id)`` plus either ``category_id`` (a category
-    row) or ``is_fallback`` (the Uncategorized fallback), exactly as
+    row) or ``is_owner_bucket`` (the Uncategorized fallback), exactly as
     ``ledger_account_service._find_existing_category_ledger_account`` does.
     """
     class_id = ref_cache.ledger_account_class_id(ledger_class)
@@ -191,7 +191,7 @@ def _counter_ledger(user_id, ledger_class, category_id=None):
         user_id=user_id, class_id=class_id, account_id=None,
     )
     if category_id is None:
-        return query.filter_by(is_fallback=True).one_or_none()
+        return query.filter_by(is_owner_bucket=True).one_or_none()
     return query.filter_by(category_id=category_id).one_or_none()
 
 

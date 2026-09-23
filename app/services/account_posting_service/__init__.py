@@ -37,7 +37,7 @@ Books through :mod:`app.services.posting_service`'s shared balanced-write
 path and the reconcile primitives in
 :mod:`app.services._posting_reconcile` (``posted_correction_legs`` /
 ``emit_correction_deltas``, which owns the union-the-keys loop and the
-``delta_legs`` / ``emit_anchor_correction_entry`` pair inside it -- all shared
+``delta_legs`` / ``emit_correction_entry`` pair inside it -- all shared
 with the loan package, so the two correction families can never drift on the
 delta math, the correction-entry shape, or the reconcile loop itself).  Ledger
 rows are minted only via

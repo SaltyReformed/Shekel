@@ -220,6 +220,14 @@ _REF_TABLE_SEEDS = (
         # on its own day, so its envelope's close books only the remainder.
         # Migration ``b7c3d9e1f204`` inline-seeds it.
         "purchase",
+        # ONE side of a settled transfer -- a shadow's covering movement on
+        # its own bank day against the owner's Transfers-in-transit account
+        # (ruling **R-BAL45**'s shape C, built at plan step
+        # ``balance:X-bi-6-3`` under **R-BAL101**); it links
+        # ``transaction_entry_id`` exactly as ``purchase`` does.  The
+        # ``transfer`` source above is legacy since that step.  Migration
+        # ``c7d1e9a4b2f8`` inline-seeds it.
+        "transfer_movement",
     ]),
     ("LedgerAccountKind", [
         "linked", "category", "fallback", "orphan",
@@ -229,6 +237,11 @@ _REF_TABLE_SEEDS = (
         # account's TRUE-UP difference WAS.  Both share the ``anchor_equity``
         # column shape and its ``(account_id, kind_id)`` unique.
         "interest_income", "unrealized_change",
+        # The owner's Transfers-in-transit clearing account (Asset), the
+        # second OWNER-BUCKET kind beside ``fallback`` (ruling **R-BAL99**,
+        # plan step ``balance:X-bi-6-3``; migration ``c7d1e9a4b2f8``
+        # inline-seeds it).
+        "transit",
     ]),
     # Two-axis recurrence vocabulary (recurrence redesign, step R2; plan
     # ``docs/plans/implementation_plan_recurrence_redesign.md``).  A rule

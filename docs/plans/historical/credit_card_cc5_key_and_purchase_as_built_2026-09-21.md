@@ -296,3 +296,253 @@ payment; four window cases in test_candidates asking the payment; the token roun
 settled row; two pane ids in test_statement_reconcile; three CC-5-3 cases). Stated in the question:
 "a row whose REVISION moved is refused" keeps its raw write (the payment's token carries the row's
 counter since the review's L2), nothing to confirm.
+
+## CC-5-5a `aa29d977`, ticked 2026-09-22: CC-5-5's specification, its `steps.md` row and ledger row CC-354 as they stood, then Blocks 1-6 VERBATIM (the card lane's record, `rulings_cc5_5.md`)
+
+- [ ] **CC-5-5** `fix(cards): a card in credit is the issuer owing` -- `R-CC41`: the five `abs()`
+      sites (`balance_at/_liability.py` `_spliced_owed_series` and `liability_owed_at_dates`,
+      `savings_dashboard_service/_net_worth.py`'s hero and trend series, `_debt_line.py`'s
+      no-payoff-model debt total) as ONE subject, the trend's index 0 still reconciling to the hero
+      by construction; `$0.00` on production (no card). Closes **CC-354**.
+
+| credit_card | CC-5-5 | -- | Fix the five net-worth sign sites (`_liability.py`'s spliced owed series and `liability_owed_at_dates`, `_net_worth.py`'s hero and trend, `_debt_line.py`'s debt total) as ONE subject so a card in credit reads as the issuer owing and the trend's index 0 still reconciles to the hero (**R-CC41**); `$0.00` on production. Closes **CC-354**. | #5 | -- | NOW |
+
+| credit_card | CC-354 (`credit_card:CC-3`'s trace 2026-09-18; the cut-b review's census the same night) | -- | **THE NET-WORTH SURFACES REPORT A CARD IN CREDIT AS OWED.** Five sites take `abs()` of a plain liability's fold: `balance_at/_liability.py:80` (`_spliced_owed_series`) and `:218` (`liability_owed_at_dates`), `savings_dashboard_service/_net_worth.py:291` (`compute_net_worth_today`, the hero) and `:370` (the trend series), `_debt_line.py:261` (the no-payoff-model debt total) -- and `_liability.py:137-140` states the band's index 0 reconciles to the hero "by construction", so a fix at one site alone breaks that. A card the issuer owes `$50.00` (a credit balance; the fold reads +50.00) reads `$50.00` OWED where `-$50.00` is true; CC-3's statement module keeps the ONE sign flip **R-CC29** rules (owed = minus the fold) and reads none of these | `$0.00` on production (no card exists); on a card in credit every surface reads net worth low by twice the credit | **OPEN, born with an owner** (developer 2026-09-18, ruled in the coordinator session) | CC-5-5 (developer, 2026-09-21: its own leaf under CC-5, **R-CC41**) |
+
+### Block 1 -- R-CC47 (Q1, the design)
+
+Question as asked (verbatim):
+
+> CC-5-5 (the card-in-credit sign fix): the net-worth screens take abs() of every liability because
+> the balance code reports in two signs. A loan with its terms set up reports what you OWE as
+> positive (Mortgage +$176,719.77); every other account, cards included, reports what it HOLDS (a
+> card owing $1,000 is -$1,000; a card holding a $50 credit is +$50), so abs() counts that $50
+> credit as $50 owed. Measured on your data plus a hypothetical Visa owing $1,000, Amex with a $50
+> credit, auto loan with no terms owing $5,000 and family loan owing $2,000: the hero says
+> liabilities $199,515.28 and net worth $227,242.71; the truth is $199,415.28 and $227,342.71 (low
+> by $100). Production is $0.00 either way (your two liabilities are set-up loans, never negative).
+> Every option gives the true figures; which design?
+
+PICKED: **"A: one sign, re-scoped now (Recommended)"**:
+
+> Every balance is what the account holds, negative when owed; a set-up loan reports -$176,719.77
+> like a card. 'Owed' is minus the balance, R-CC29's one flip moved into the balance seam. Net
+> worth is the plain sum of all balances with no sign branch left; the five abs() and the subtotal
+> defect go. Every loan screen and liability tile shows what is owed, so production's screens do
+> not change (a hypothetical card tile would read $1,000 where it reads -$1,000 today). CC-5-5 is
+> re-scoped to this: more than one leaf, the loan path re-signed, about 5 loan-balance readers
+> moved onto 'owed', and every loan test figure that flips sign is a rule-5 re-expression you
+> confirm. I propose the leaf cut before building.
+
+REFUSED:
+
+- "C now, A as its own later step": "CC-5-5 ships C now: the seam publishes one 'owed' figure whose
+  rule knows which calculation reports which sign (a set-up loan as is, everything else minus). The
+  five sites and the subtotal read it, and tiles are unchanged. A is minted as its own later step
+  that re-signs the loan path and deletes C's rule. Faster to ship, but it builds scaffolding that is
+  planned for deletion."
+- "B: one sign in the net-worth view": "Cards and liabilities without loan terms flip once inside the
+  seam's net-worth view, so every liability reads as owed there; loans are untouched. Same screens
+  as A and a smaller change. But a card's seam balance (+$1,000) then disagrees in sign with its own
+  grid (-$1,000), and every future sum across account types must remember to treat liabilities
+  differently."
+- "C only, no later step": "The seam's one 'owed' rule that knows which calculation reports which
+  sign, with no plan to unify the two signs. Smallest change. The two signs stay for good, so the
+  next screen that adds raw balances repeats the subtotal bug."
+
+Specifics in the picked text that the reader census must CONFIRM or CORRECT before the cut is
+approved (coordinator, 2026-09-22): "about 5 loan-balance readers" and "production's screens do
+not change".
+
+### Block 2 -- R-CC48 (Q2, the sixth site)
+
+Question as asked (verbatim):
+
+> CC-5-5 found a sixth site the ruling did not name: on /savings, the liability group subtotal
+> (which the chart legend prints beside the liability band) adds liability balances raw, with loans
+> positive and cards negative. With a hypothetical Visa owing $1,000, Amex with a $50 credit, auto
+> loan with no terms owing $5,000 and family loan owing $2,000 beside your two loans, it reads
+> $183,515.28 while the band beside it reads $199,515.28 (the truth is $199,415.28). It is $0.00 on
+> production, where both liabilities are loans. Fix it in CC-5-5?
+
+PICKED: **"Yes, same subject (Recommended)"**:
+
+> It is the same two-sign defect on the same screen, and the legend labels the band the hero
+> reconciles to. Designs A and B fix it with the same change; C needs one line reading 'owed'.
+
+REFUSED: "No, file it separately": "CC-5-5 stays at the five named sites. The subtotal becomes its
+own ledger row with an owner, and the coordinator grants the id."
+
+The site: `app/services/savings_dashboard_service/_display.py` `_compute_group_subtotals` (sums
+`ad.current_balance` per category group; its docstring claims "Liability groups sum the loan
+resolver's positive owed balances", false for any non-loan liability).
+
+### Block 3 -- R-CC49 (Q3, the revolving footer)
+
+Question as asked (verbatim):
+
+> The /savings footer 'Loans paid off <month>' adds 'excludes $X revolving' for liabilities with no
+> payoff date (cards, and liabilities without loan terms). With a Visa owing $1,000, an Amex
+> holding a $50 credit, an auto loan with no terms owing $5,000 and a family loan owing $2,000, it
+> says $8,050 today, counting the Amex credit as debt. Once the sign is fixed, what should X be?
+
+PICKED: **"$8,000: floored per account (Recommended)"**:
+
+> Each account's owed amount, floored at zero, then summed. A credit on one card is not debt and
+> does not pay down another card; the footer counts the debt a payoff date leaves out. This is the
+> same zero floor R-CC29 puts on the statement minimum.
+
+REFUSED: "$7,950: net of all of them": "The Amex credit offsets the debts, the way net worth counts
+it. Whenever a card holds a credit, the footer then understates the debt that has no payoff date."
+
+### The measurements the questions quoted (HEAD 4d97749e, clone shekel_cc55)
+
+- Production: 9 accounts; 2 liabilities, both CONFIGURED loans (Mortgage id 3, Van Loan id 8).
+  Current 176,719.77 / 14,745.51; dense map over 64 periods min 169,499.28 / 3,026.43; the forward
+  fold at every horizon sample (25, to 2049-12-31) and on EVERY day for 40 years: min 0.00, zero
+  negative days. So every option is $0.00 on production's net-worth figures.
+- Production as is: hero liabilities 191,465.28, net 235,292.71; 2y band and Horizon index 0 equal
+  the hero; legend subtotal 191,465.28; revolving footer 0.00.
+- Plus the four hypothetical liabilities (rolled back): hero 199,515.28 / 227,242.71; 2y band and
+  Horizon index 0 199,515.28; legend subtotal 183,515.28; footer 8,050.00; tiles Visa -1,000.00,
+  Amex 50.00, auto loan -5,000.00, family loan -2,000.00, Mortgage 176,719.77, Van Loan 14,745.51.
+- Baseline blob for the byte-identical grade: `verify_savings_producers.py` on HEAD 4d97749e
+  against shekel_cc55 -> `credit_card-2026-09-22/cc55/before_head.json` (77,009 bytes, 2 users).
+
+### Block 4 -- R-CC50, the LEAF CUT (asked ~17:5x 2026-09-22, after the reader census)
+
+Question as asked (verbatim):
+
+> CC-5-5 leaf cut (your ruling R-CC47: one sign, every balance is what the account holds, 'owed'
+> is minus it). The census CORRECTS two specifics you ruled: the loan-balance readers moving onto
+> 'owed' are 7, not 'about 5' (debt strategy; the loan pages' one balance property feeding the
+> dashboard and payoff/refinance calculators; home equity; on /savings a liability tile's figure,
+> its sparkline, and two debt-summary figures). 'Production's screens do not change' holds by
+> census, and a committed before/after screen diff will grade it. Order: CC-5-5 goes BEFORE
+> recurrence R16-c-2 (#5 vs #23; it moves no money and does not touch the loan stream R16-c-2
+> rewrites). The sign flip must be ONE commit: flipping loans before /savings moves breaks the
+> subtotal, tiles and debt figures, and moving /savings first needs the per-account-type rule you
+> refused. Which cut?
+
+PICKED: **"5a groundwork, then 5b flip (Recommended)"**:
+
+> CC-5-5a: R-CC29's one flip moves from card_statement into the balance seam, and the statement
+> reads it (byte-identical); the footer becomes each non-loan liability's owed amount floored at
+> zero, summed (R-CC49; those accounts already report held, so no loan re-sign; $0.00 on
+> production); a screen-diff instrument over /savings, the loan dashboard and its calculators, and
+> /debt-strategy on the clone, baselined on HEAD. CC-5-5b, one commit: the loan path reports held,
+> the hero, trend, band and subtotal read the sum of balances and 'owed', the 7 readers move onto
+> 'owed', liability tiles show owed, tests are re-signed after you confirm the classes with counts,
+> and 5a's diff must read byte-identical on production's screens.
+
+REFUSED: "One leaf, no container": "All of CC-5-5a and CC-5-5b in one commit and one PR: the flip's
+move into the seam, the footer floor, the screen-diff instrument, and the sign flip with every
+reader. Fewer ticks, but the grading instrument is not committed and baselined ahead of the change
+it grades, and the single session carries both."
+
+### Block 5 -- ledger row CC-357 (owned by credit_card:CC-11), the card tile's editor (asked with Block 4)
+
+Question as asked (verbatim):
+
+> A side effect of your ruling that liability tiles show what is owed: on /savings a card or
+> custom-liability tile would read $1,000 (owed) while its click-to-edit anchor editor still
+> pre-fills and takes the held figure, -$1,000.00. Loan tiles are unaffected, since the editor
+> refuses every loan type and they stay read-only. Production has no such account, so this is
+> latent. How should CC-5-5 handle it?
+
+PICKED: **"Report it for CC-11 (Recommended)"**:
+
+> CC-5-5 leaves the anchor editor alone and files a ledger row (id from the coordinator) owned by
+> CC-11, the card cockpit and grid affordances step, which designs that editor. The editor is a
+> WRITE door; changing the sign it takes is a behaviour change that belongs with the step designing
+> it.
+
+REFUSED: "Fix it inside CC-5-5b": "The anchor editor on a liability shows and takes what is owed,
+flipping once at the door through the same 'owed' function. This widens CC-5-5b into a write door
+(the true-up), so a sign mistake there would record a wrong balance assertion."
+
+Facts behind Block 5 (measured on HEAD 4d97749e): `routes/accounts/anchor.py` `anchor_form` refuses
+every AMORTIZING account (`_anchor_kind_refusal`), so loan tiles, configured or not, are read-only;
+it pre-fills `cash_ledger.resolve_anchor(account).balance`, the HELD figure, for a card or a custom
+(non-amortizing) liability.
+
+### Block 6 -- R-CC52, THE TYPED SIGN (asked ~18:3x 2026-09-22 after 5a's adversarial review, finding F1). AMENDS R-CC50 (the coordinator files R-CC50 with an "AMENDED 2026-09-22 BY R-CC52" head); CC-357's owner moves CC-11 -> CC-5-5b; names confirmed CC-5-5a / 5b (the doors) / 5c (the flip); next free card R-CC53 / CC-360
+
+Evidence (measured on clone shekel_cc55 / HEAD 4d97749e before asking): `templates/accounts/form.html:60-68`
+"Opening Balance" help text "The account's real-world balance." (no sign guidance);
+`budget.account_openings`: Mortgage (id 3, configured) +174,281.51, Van Loan (id 8) -531.94;
+`budget.account_anchor_history`: Mortgage +178,103.41 (2026-05-01), Van Loan 0.00;
+`tests/test_services/test_balance_at.py` builds a "Terms Never Entered" Mortgage at +150,000.00 and
+one test says the cash producer "owes exactly the anchor".
+
+Question as asked (verbatim):
+
+> CC-5-5's review found that the premise of your ruling R-CC47 ('every balance is what the account
+> holds, negative when owed') is not enforced where balances are TYPED. The account create form asks
+> 'Opening Balance: the account's real-world balance' with no sign guidance, and your own Mortgage
+> was typed positive (+$174,281.51 opening, +$178,103.41 anchor) while the Van Loan's opening is
+> -$531.94; the suite's 'terms never entered' Mortgage is +$150,000 and a test calls that owed. Cards
+> are ruled negative-when-owed (R-CC14/R-CC29), but a loan without terms or a custom liability
+> carries whatever sign the owner typed; abs() was hiding that. Worked case: an owner adds 'Car
+> loan' (terms not entered) and types 5,000.00. Today it counts as $5,000 owed; once R-CC47's flip
+> lands it counts as a $5,000 ASSET, net worth off by $10,000. Production has no such account. How
+> should the sign be fixed?
+
+PICKED: **"Doors ask 'owed' (Recommended)"**:
+
+> From scratch: every door that takes a balance for a LIABILITY account (the create form's opening
+> balance, the anchor editor, the books-opening door) asks for the amount OWED (positive = you owe;
+> a card's credit entered as a negative amount owed) and stores the held sign through the one
+> owed() flip, so the premise is true by construction. Typing 5,000.00 on the car loan stores
+> -5,000.00 and reads $5,000 owed. It is a write-door change, so it becomes its OWN leaf between 5a
+> and the flip (CC-5-5b the doors, CC-5-5c the flip), re-opening your cut (R-CC50) and folding
+> CC-357 (the tile editor you routed to CC-11) into it. 5a commits as built.
+
+REFUSED:
+
+- "Refuse a positive entry": "Keep 'held' as the stored convention and make the doors fail closed:
+  a positive balance typed on a liability that cannot hold a credit (a loan, a custom liability) is
+  REFUSED with 'enter what you owe as a negative amount'; a card may still be positive (a credit).
+  Typing 5,000.00 on the car loan is refused, and the owner re-types -5,000.00. Also a write-door
+  change, so its own leaf before the flip, same re-cut. An overpaid loan without terms could then not
+  be entered."
+- "Document 'held', add guidance": "Keep 'held' as the convention and only add sign guidance to the
+  doors' help text ('negative for something you owe', as the books-opening door already says); no
+  refusal and no flip at entry. The smallest change, but an owner who types 5,000.00 anyway, as the
+  Mortgage was typed, gets a $5,000 asset, silently. 5a commits as built and the cut stands."
+- "Sign by kind, not held": "Withdraw R-CC47's premise for liabilities other than cards: a card is
+  held (negative = owed); every other liability is read as a MAGNITUDE owed whatever sign was typed.
+  The car loan reads $5,000 owed either way. It brings back a per-account-type sign rule (the shape
+  you refused as 'C'), cannot represent an overpaid loan without terms, and 5a's footer must be
+  rebuilt for non-card liabilities."
+
+Consequences as ruled: the cut is now CC-5-5a (built) -> CC-5-5b (the liability doors ask owed;
+CC-357 folded in) -> CC-5-5c (the one-commit flip, formerly "5b"). R-CC50's "5b" text now describes
+CC-5-5c. OPEN for CC-5-5b's first question (not asked here): the EXISTING positive-typed liability
+entries (production: only the configured Mortgage's own cash-ledger opening and anchor, which feed no
+net-worth surface because the loan reads its schedule) -- re-sign in a migration, or leave.
+
+## CC-5-5a's tick review (2026-09-22, FIX-THEN-SHIP): the developer's two answers VERBATIM, as the coordinator relayed them
+
+The questions were asked by the coordinator after the fresh review of the tick and `aa29d977`; their text is the coordinator's record. The picked option's description is the ruling; the options' labels are as asked.
+
+### M1 -- the positive-typed liability and 5a's floored footer (R-CC49)
+
+The finding: 5a's floored footer TRUSTS the typed sign, so until CC-5-5b makes the doors enforce it, a non-loan liability typed POSITIVE (e.g. an 'Auto Loan' with no terms typed +$5,000) reads owed -5,000, floors to $0 and HIDES the caveat; at HEAD `abs()` would have counted it. The coordinator measured the 2026-09-22 17:06 pre-deploy dump: 9 accounts; the only 2 liabilities, Mortgage and Van Loan, both have LoanParams.
+
+PICKED: **"Ship 5a now, disclose (Recommended)"**:
+
+> Merge 5a now; the PR and the R-CC49 ruling row name the positive-typed case. The window is real only if you
+> create a card, a loan without terms, or a custom liability before 5b ships; I'll warn you until it does. No
+> production figure changes today.
+
+REFUSED: "Hold 5a until 5b"; "Revert the footer to abs until 5b".
+
+### L1 -- the recurrence:R16-c-2 wait over both new leaves (R-CC50, R-CC52)
+
+PICKED: **"Keep: after 5b and 5c (Recommended)"**:
+
+> R16-c-2 starts only after the flip ships, so its loan tests are written once, against the final sign. It's
+> unstaffed, so nothing waits today; I'll raise it again if a session frees up before 5c lands.
+
+REFUSED: "Only after 5c's design"; "Drop the wait".

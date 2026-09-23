@@ -7,20 +7,25 @@ cancelling, deleting, and restoring a transfer keep the append-only
 double-entry ledger in step WITHOUT any caller touching ``posting_service``
 directly.  These tests drive transfers END TO END through ``transfer_service``
 only (the way the mark-done / cancel / delete routes do) and assert the
-resulting ledger state, covering the full ``is_settled`` truth table:
+resulting ledger state.  **A settled transfer is TWO entries since plan step
+``balance:X-bi-6-3``** (rulings **R-BAL45** and **R-BAL101**): one per side's
+covering movement, each against the owner's Transfers-in-transit account, so
+every act below writes a PAIR of entries and every figure a real account
+carries is what the one-entry shape gave it; the cases were re-expressed for
+the pair when the shape moved (each docstring says how).  The truth table:
 
-  * ``projected -> done``       posts one balanced entry (+effect);
+  * ``projected -> done``       posts two balanced entries (+effect);
   * ``done -> settled``         is an idempotent no-op (already at target);
-  * ``done -> projected``       reverses it to net zero (append-only);
+  * ``done -> projected``       reverses them to net zero (append-only);
   * ``projected -> cancelled``  posts nothing (never settled);
   * soft-delete of a settled transfer reverses, and restore re-posts;
-  * hard-delete of a settled transfer reverses, then the immutable pair
-    survives with ``transfer_id`` SET NULL;
+  * hard-delete of a settled transfer reverses, then the immutable pairs
+    survive with their movement links SET NULL;
   * a double mark-done never double-posts;
-  * settling and setting ``actual_amount`` in ONE call posts the ACTUAL
-    effective amount (the reconcile runs after every kwarg is applied, NOT
-    inside the status-change helper -- the placement that makes the grid
-    shadow-edit path correct).
+  * settling and setting the figure in ONE call posts the RECORDED figure
+    (the reconcile runs after every kwarg is applied, NOT inside the
+    status-change helper -- the placement that makes the grid shadow-edit
+    path correct).
 
 After each mutation the per-account reconciliation invariant is asserted in
 its Build-Order Step 5 ABSOLUTE form: ``account_posting_total == opening
@@ -44,6 +49,8 @@ from app import ref_cache
 from app.enums import PostingSourceEnum, StatusEnum
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
+from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from app.utils.dates import display_today
@@ -51,6 +58,8 @@ from tests._test_helpers import (
     an_entered_day,
     create_account_of_type,
     linked_ledger_account,
+    transfer_family_journal_filter,
+    transit_ledger_account,
     typed,
 )
 from app.services import cash_ledger
@@ -68,13 +77,38 @@ def _ledger_id(account):
 
 
 def _entries_for_transfer(transfer_id):
-    """Return every journal entry still linked to *transfer_id*, oldest first."""
+    """Return every journal entry of the transfer's FAMILY, oldest first.
+
+    The per-movement entries linked to the shadows' covering movements (plan
+    step ``balance:X-bi-6-3``), plus anything still linked by ``transfer_id``
+    (``transfer_family_journal_filter``).
+    """
     return (
         _db.session.query(JournalEntry)
-        .filter_by(transfer_id=transfer_id)
+        .filter(transfer_family_journal_filter(transfer_id))
         .order_by(JournalEntry.id)
         .all()
     )
+
+
+def _transit_id(seed_user):
+    """Return the owner's Transfers-in-transit ledger account id (a lookup)."""
+    return transit_ledger_account(_db.session, seed_user["user"].id).id
+
+
+def _real_legs(entries, *ledger_ids):
+    """Return ``{ledger_account_id: net}`` over *entries*' legs on those ledgers.
+
+    A transfer family's per-REAL-account net is what the one-entry shape's
+    single entry used to state directly; over the pair it is the sum of each
+    side's leg, and it is what every figure below is asserted on.
+    """
+    nets = {ledger_id: Decimal("0.00") for ledger_id in ledger_ids}
+    for entry in entries:
+        for ledger_id, amount in _legs_by_ledger(entry.id).items():
+            if ledger_id in nets:
+                nets[ledger_id] += amount
+    return nets
 
 
 def _legs_by_ledger(entry_id):
@@ -172,11 +206,13 @@ class TestSettlePostsEntry:
     def test_mark_done_posts_one_balanced_entry(
         self, app, db, seed_user, savings,
     ):
-        """projected -> done posts one -100 / +100 entry; the ledger reconciles.
+        """projected -> done posts -100 / +100 via transit; the ledger reconciles.
 
-        Arithmetic: settling a $100 Checking -> Savings transfer posts -100.00
-        on Checking's ledger (money out, a credit) and +100.00 on Savings'
-        (money in, a debit), summing to zero.  The reconcile invariant holds:
+        Arithmetic: settling a $100 Checking -> Savings transfer posts two
+        entries (plan step ``balance:X-bi-6-3``): -100.00 on Checking's
+        ledger (money out, a credit) against +100.00 transit, and +100.00 on
+        Savings' (money in, a debit) against -100.00 transit; each sums to
+        zero and transit nets 0.00.  The reconcile invariant holds:
         account_posting_total(Savings) == 100.00 (opening) + 100.00 (effect)
         = 200.00.
         """
@@ -195,11 +231,17 @@ class TestSettlePostsEntry:
             _db.session.commit()
 
             entries = _entries_for_transfer(transfer.id)
-            assert len(entries) == 1
-            legs = _legs_by_ledger(entries[0].id)
-            assert legs[_ledger_id(checking)] == Decimal("-100.00")
-            assert legs[_ledger_id(savings)] == Decimal("100.00")
-            assert sum(legs.values()) == Decimal("0.00")
+            assert len(entries) == 2
+            for entry in entries:
+                assert sum(_legs_by_ledger(entry.id).values()) == Decimal("0.00")
+            assert _real_legs(
+                entries, _ledger_id(checking), _ledger_id(savings),
+                _transit_id(seed_user),
+            ) == {
+                _ledger_id(checking): Decimal("-100.00"),
+                _ledger_id(savings): Decimal("100.00"),
+                _transit_id(seed_user): Decimal("0.00"),
+            }
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("200.00")
@@ -211,9 +253,10 @@ class TestSettlePostsEntry:
         """done -> settled posts no second entry (already at target).
 
         Arithmetic: the settle posted +100 to Savings (total 200.00 on the
-        $100.00 opening); archiving Done -> Settled keeps is_settled True, so
-        target == current == +100, delta 0, no entry.  The ledger stays at one
-        transfer entry and still reconciles.
+        $100.00 opening); archiving Done -> Settled keeps both movements
+        dated under contributing parents, so target == current on each,
+        delta 0, no entry.  The ledger stays at the settle's two entries and
+        still reconciles.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -231,7 +274,7 @@ class TestSettlePostsEntry:
             )
             _db.session.commit()
 
-            assert len(_entries_for_transfer(transfer.id)) == 1
+            assert len(_entries_for_transfer(transfer.id)) == 2
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("200.00")
@@ -249,14 +292,16 @@ class TestRevertReverses:
     def test_revert_to_projected_reverses_to_zero(
         self, app, db, seed_user, savings,
     ):
-        """done -> projected appends a -100 reversal; Savings nets to zero.
+        """done -> projected appends the reversals; Savings nets to zero.
 
-        Arithmetic: the settle posted +100; reverting posts the delta to reach
-        the new target 0: 0 - 100 = -100 on Savings, +100 on Checking.  Two
-        entries survive (append-only -- the original is never edited).  The
-        reverted income shadow is no longer is_settled, so it drops from
-        settled_transfer_effect, and the Savings total lands back on its
-        $100.00 opening.
+        Arithmetic: the settle posted +100 on Savings and -100 on Checking
+        (each against transit); reverting UN-DATES both covering movements
+        (ruling **R-BAL61**), so each side's target is 0 and the door posts
+        the deltas: -100 on Savings against +100 transit, +100 on Checking
+        against -100 transit.  Four entries survive (append-only -- the
+        originals are never edited).  The reverted income shadow is no longer
+        is_settled, so it drops from settled_transfer_effect, and the Savings
+        total lands back on its $100.00 opening.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -276,10 +321,16 @@ class TestRevertReverses:
             _db.session.commit()
 
             entries = _entries_for_transfer(transfer.id)
-            assert len(entries) == 2
-            reversal_legs = _legs_by_ledger(entries[1].id)
-            assert reversal_legs[_ledger_id(savings)] == Decimal("-100.00")
-            assert reversal_legs[_ledger_id(checking)] == Decimal("100.00")
+            assert len(entries) == 4
+            reversals = entries[2:]
+            assert _real_legs(
+                reversals, _ledger_id(checking), _ledger_id(savings),
+                _transit_id(seed_user),
+            ) == {
+                _ledger_id(savings): Decimal("-100.00"),
+                _ledger_id(checking): Decimal("100.00"),
+                _transit_id(seed_user): Decimal("0.00"),
+            }
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")
@@ -339,10 +390,12 @@ class TestDeleteAndRestore:
     ):
         """Soft-delete reverses a settled transfer; restore re-posts it.
 
-        Arithmetic: settle +100 (1 entry); soft-delete reverses -100 (2
-        entries, Savings back on its 100.00 opening); restore re-posts +100
-        (3 entries, Savings 200.00).  Append-only throughout -- every
-        correction is a new entry, none edited.
+        Arithmetic: settle +100 (2 entries, one per side); soft-delete
+        reverses -100 through the teardown door (4 entries, Savings back on
+        its 100.00 opening); restore re-posts +100 (6 entries, Savings
+        200.00) -- the un-deleted shadows are contributing parents of dated
+        movements again.  Append-only throughout -- every correction is a
+        new entry, none edited.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -358,7 +411,7 @@ class TestDeleteAndRestore:
             # Soft-delete reverses the posted effect.
             transfer_service.delete_transfer(transfer.id, user_id, soft=True)
             _db.session.commit()
-            assert len(_entries_for_transfer(transfer.id)) == 2
+            assert len(_entries_for_transfer(transfer.id)) == 4
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")
@@ -368,21 +421,77 @@ class TestDeleteAndRestore:
             # Restore re-posts the confirmed effect.
             transfer_service.restore_transfer(transfer.id, user_id)
             _db.session.commit()
-            assert len(_entries_for_transfer(transfer.id)) == 3
+            assert len(_entries_for_transfer(transfer.id)) == 6
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("200.00")
             _assert_reconciles(scenario_id, checking, savings)
 
-    def test_hard_delete_settled_reverses_and_pair_survives_null_transfer_id(
+    def test_hard_delete_of_a_soft_deleted_pair_finds_the_ledger_at_zero(
         self, app, db, seed_user, savings,
     ):
-        """Hard-delete reverses, then the immutable pair survives, link nulled.
+        """Soft-delete then hard-delete: the second teardown writes nothing.
 
-        Arithmetic: settle +100 (1 entry); hard-delete first reverses -100 (2nd
-        entry), then removes the transfer row, SET-NULLing ``transfer_id`` on
-        both entries.  The immutable legs survive and the transfer row is gone.
-        This is the append-only correction proven through a hard delete.
+        The delete door is idempotent through ``allow_deleted=True``, and the
+        teardown it runs first must find a soft-deleted pair's postings
+        already at zero rather than reverse them AGAIN -- which is why the
+        teardown reads every shadow of the transfer, deleted or not (plan
+        step ``balance:X-bi-6-3``, ruling **R-BAL101**), and reconciles each
+        movement to an empty target.  Arithmetic: settle +100 (2 entries),
+        soft-delete -100 (4 entries), hard-delete: 0 more, the transfer row
+        gone, Savings on its 100.00 opening, transit at 0.00.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            transfer = _create_projected_transfer(
+                seed_user, seed_user["account"], savings, Decimal("100.00"),
+            )
+            _db.session.commit()
+            _settle(transfer, user_id)
+            _db.session.commit()
+            transfer_id = transfer.id
+            transit_ledger = _transit_id(seed_user)
+
+            transfer_service.delete_transfer(transfer_id, user_id, soft=True)
+            _db.session.commit()
+            assert len(_entries_for_transfer(transfer_id)) == 4
+
+            transfer_service.delete_transfer(transfer_id, user_id, soft=False)
+            _db.session.commit()
+
+            assert _db.session.get(Transfer, transfer_id) is None
+            movement_sourced = (
+                _db.session.query(JournalEntry)
+                .filter(
+                    JournalEntry.user_id == user_id,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
+                    ),
+                )
+                .all()
+            )
+            assert len(movement_sourced) == 4
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("100.00")
+            assert _db.session.query(
+                _db.func.coalesce(_db.func.sum(Posting.amount), 0)
+            ).filter(Posting.ledger_account_id == transit_ledger).scalar() == 0
+
+    def test_hard_delete_settled_reverses_and_pairs_survive_null_links(
+        self, app, db, seed_user, savings,
+    ):
+        """Hard-delete reverses, then the immutable pairs survive, links nulled.
+
+        Arithmetic: settle +100 (2 entries, one per side); hard-delete first
+        reverses -100 (2 more), then removes the transfer row -- its shadows
+        CASCADE, their covering movements CASCADE, and
+        ``journal_entries.transaction_entry_id`` is SET NULL on all four
+        entries.  The immutable legs survive and the transfer row is gone.
+        This is the append-only correction proven through a hard delete,
+        re-expressed for the pair at plan step ``balance:X-bi-6-3`` (the
+        entries linked ``transfer_id`` and nulled that).
 
         **The Savings LINKED ledger holds FIVE legs, and it held three until
         plan step X-f3c-2b.**  Its opening is now posted, reversed and
@@ -392,8 +501,8 @@ class TestDeleteAndRestore:
         to the ``$100.00`` opening exactly as the single leg did, so the ledger
         still reads ``+$100.00`` in total.  Both counts are asserted: the whole
         ledger, which is what catches an amount-NEUTRAL pair of extra legs
-        landing during the delete, and the TRANSFER-sourced pair alone, which
-        is the append-only correction this case is named for.
+        landing during the delete, and the TRANSFER-MOVEMENT-sourced pair
+        alone, which is the append-only correction this case is named for.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -413,23 +522,23 @@ class TestDeleteAndRestore:
 
             # The transfer row is gone.
             assert _db.session.get(Transfer, transfer_id) is None
-            # Both entries survive with transfer_id nulled (immutable
-            # history).  Filtered by the TRANSFER source kind: the openings
-            # the fixtures posted are also concrete-FK-less entries, but
-            # carry the account_opening source.
+            # All four entries survive with their movement link nulled
+            # (immutable history).  Filtered by the TRANSFER-MOVEMENT source
+            # kind: the openings the fixtures posted are also
+            # concrete-FK-less entries, but carry the account_opening source.
             assert _entries_for_transfer(transfer_id) == []
             surviving = (
                 _db.session.query(JournalEntry)
                 .filter(
                     JournalEntry.user_id == user_id,
-                    JournalEntry.transfer_id.is_(None),
+                    JournalEntry.transaction_entry_id.is_(None),
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                        PostingSourceEnum.TRANSFER,
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
                     ),
                 )
                 .all()
             )
-            assert len(surviving) == 2
+            assert len(surviving) == 4
             # THE WHOLE LEDGER first, which is the reading a source filter
             # cannot give: five legs -- the opening posted, reversed and
             # re-posted by the factory's restatement, plus the settle and its
@@ -447,7 +556,7 @@ class TestDeleteAndRestore:
                 leg.amount for leg in all_savings_legs
             ) == Decimal("100.00")
 
-            # THEN the TRANSFER-sourced pair alone (+100 settle, -100
+            # THEN the TRANSFER-MOVEMENT-sourced pair alone (+100 settle, -100
             # reversal), which is the append-only correction this case is named
             # for: it survives the parent's disposal and nets to zero.
             savings_legs = (
@@ -456,7 +565,7 @@ class TestDeleteAndRestore:
                 .filter(
                     Posting.ledger_account_id == savings_ledger,
                     JournalEntry.source_kind_id == ref_cache.posting_source_id(
-                        PostingSourceEnum.TRANSFER,
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
                     ),
                 )
                 .all()
@@ -466,6 +575,82 @@ class TestDeleteAndRestore:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")
+
+
+# ---------------------------------------------------------------------------
+# A $0.00 correction withdraws the movements and their legs
+# ---------------------------------------------------------------------------
+
+
+class TestZeroCorrectionWithdrawsTheLegs:
+    """Correcting a settled transfer to $0.00 reverses both sides' legs."""
+
+    def test_zero_figure_on_a_settled_transfer_reverses_both_sides(
+        self, app, db, seed_user, savings,
+    ):
+        """A settled $100 transfer corrected to $0.00 nets to zero everywhere.
+
+        The status seam WITHDRAWS a covering movement a ``$0.00`` record lands
+        on (no movement can carry a zero figure), and reverses its leg first
+        through ``posting_service.reverse_purchase_postings_before_delete`` --
+        the door that RETURNED for a shadow's movement through ruling
+        R-BAL45's interval and reaches it since plan step
+        ``balance:X-bi-6-3`` (ruling **R-BAL101**).  Arithmetic: settle +100
+        on Savings / -100 on Checking (two entries via transit); the
+        correction withdraws both movements and reverses both legs (four
+        ``transfer_movement`` entries, their movement links SET NULL by the
+        withdrawal, which is why they are read by source kind here); Savings
+        back on its 100.00 opening, Checking on its 1000.00, transit 0.00,
+        and the pair holds no covering movement.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario_id = seed_user["scenario"].id
+            checking = seed_user["account"]
+            transfer = _create_projected_transfer(
+                seed_user, checking, savings, Decimal("100.00"),
+            )
+            _db.session.commit()
+            _settle(transfer, user_id)
+            _db.session.commit()
+            assert len(_entries_for_transfer(transfer.id)) == 2
+
+            transfer_service.update_transfer(
+                transfer.id, user_id, figure=typed(Decimal("0.00")),
+            )
+            _db.session.commit()
+
+            movement_sourced = (
+                _db.session.query(JournalEntry)
+                .filter(
+                    JournalEntry.user_id == user_id,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER_MOVEMENT,
+                    ),
+                )
+                .all()
+            )
+            assert len(movement_sourced) == 4
+            assert {e.transaction_entry_id for e in movement_sourced} == {None}
+            assert _entries_for_transfer(transfer.id) == []
+            assert (
+                _db.session.query(TransactionEntry)
+                .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+                .filter(Transaction.transfer_id == transfer.id)
+                .count() == 0
+            )
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("100.00")
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("1000.00")
+            assert _db.session.query(
+                _db.func.coalesce(_db.func.sum(Posting.amount), 0)
+            ).filter(
+                Posting.ledger_account_id == _transit_id(seed_user),
+            ).scalar() == 0
+            _assert_reconciles(scenario_id, checking, savings)
 
 
 # ---------------------------------------------------------------------------
@@ -481,10 +666,11 @@ class TestDoubleMarkDoneIdempotent:
     ):
         """A second mark-done (done -> done) posts no second entry.
 
-        Arithmetic: the first mark-done posts +100; the identity re-submit
-        (done -> done is a legal idempotent transition) sees current == target
-        == +100, delta 0, and writes nothing.  The service-level
-        double-mark-done guard -- one entry, ledger reconciles.
+        Arithmetic: the first mark-done posts +100 (two entries, one per
+        side); the identity re-submit (done -> done is a legal idempotent
+        transition) sees current == target on each movement, delta 0, and
+        writes nothing.  The service-level double-mark-done guard -- the
+        settle's two entries, ledger reconciles.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -499,7 +685,7 @@ class TestDoubleMarkDoneIdempotent:
             _settle(transfer, user_id)
             _db.session.commit()
 
-            assert len(_entries_for_transfer(transfer.id)) == 1
+            assert len(_entries_for_transfer(transfer.id)) == 2
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("200.00")
@@ -525,11 +711,12 @@ class TestSettleWithActualSameCall:
         the END of ``update_transfer`` (NOT inside ``apply_status_to_all_three``), so
         it reads the FINAL income-shadow effective amount.
 
-        Arithmetic: nominal $100, settled actual $88.00 -> the income shadow's
-        effective_amount is $88.00, so the posting is -88.00 / +88.00, NOT
-        -100 / +100 (Savings total 100.00 opening + 88.00 = 188.00).  A
-        reconcile placed before ``actual_amount`` was applied would wrongly
-        post the $100 estimate -- the regression this guards.
+        Arithmetic: nominal $100, settled figure $88.00 -> each side's
+        covering movement records $88.00, so the postings are -88.00 on
+        Checking and +88.00 on Savings (each against transit), NOT -100 /
+        +100 (Savings total 100.00 opening + 88.00 = 188.00).  A reconcile
+        placed before the figure was applied would wrongly post the $100
+        estimate -- the regression this guards.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -545,10 +732,13 @@ class TestSettleWithActualSameCall:
             _db.session.commit()
 
             entries = _entries_for_transfer(transfer.id)
-            assert len(entries) == 1
-            legs = _legs_by_ledger(entries[0].id)
-            assert legs[_ledger_id(checking)] == Decimal("-88.00")
-            assert legs[_ledger_id(savings)] == Decimal("88.00")
+            assert len(entries) == 2
+            assert _real_legs(
+                entries, _ledger_id(checking), _ledger_id(savings),
+            ) == {
+                _ledger_id(checking): Decimal("-88.00"),
+                _ledger_id(savings): Decimal("88.00"),
+            }
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("188.00")
