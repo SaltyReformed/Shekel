@@ -39,16 +39,16 @@ WHICHEVER account the movement is on, which since ``credit_card:CC-5-3`` may
 be another account than the row's (a bill on checking paid FROM the card
 holds its movement on the card).  Offering the ROW for it, as this module did
 through ``CC-5-3``, left such a bill with no subject anywhere: the member key
-holds a row member to the row's account, and checking's feed never shows the
+held a row member to the row's account, and checking's feed never shows the
 money.  So :func:`_settlement_candidates` offers every covering movement on
 the screen's account, :func:`_transaction_candidates` offers only the
 Projected rows, and the two arms PARTITION on one predicate
 (:func:`~._valuation.row_is_offered_here`): a Projected row is offered as itself on its
 own account, and its kept movement -- a reverted row's, un-dated (ruling
 **R-CC42**) -- is offered where the row is not.  Every accepted act therefore
-names movements; the acts recorded before this step name rows, and the
-readers of an act carry both shapes until plan step ``credit_card:CC-5-4a-2``
-re-keys them and deletes the row column.
+names movements: the acts recorded before this step named rows until plan
+step ``credit_card:CC-5-4a-2`` re-keyed each onto its row's covering movement
+and dropped the row column (ruling **R-CC45**, migration ``2eabfa596ee0``).
 
 **What one candidate is WORTH is** :mod:`._valuation` **'s, in its own module
 since plan step ``credit_card:CC-5-4a-1``** (this one crossed the 1,000-line
@@ -111,31 +111,30 @@ class MatchedSubjects:
     them again to see an envelope whose purchase another match names.  Those
     are the same three sets, so a caller reads them once and threads them.
 
-    **A row is CLAIMED through either of its two homes, by any act of the
-    OWNER's** (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**): an act
-    recorded before that step names the row itself, and one recorded since
-    names the row's covering movement -- which since ``credit_card:CC-5-3``
-    may sit on ANOTHER account than the row (a checking bill's payment on the
-    card, matched on the card's screen).  :attr:`transactions` holds both,
-    across the owner's accounts, so a Projected row whose kept movement an
-    act still names is not offered again on ANY screen (the act shows on
-    that account's register as no longer holding, with its Undo), exactly as
-    a row member kept it off its own account's offer before; and
-    :func:`~._accept._reject_parent_and_its_own_purchase` reads one set for
-    "an envelope an act already names".  Read on one account alone (the
-    first cut), a reverted card-paid bill was offered on checking while the
-    card's act still named its payment, and accepting it there re-pointed
-    the payment and withdrew the card's act through a door that discloses
-    nothing (the neutral review of this leaf; ruling **R-CC46** says
-    disclosed).  :attr:`lines` and :attr:`entries` stay the account's own: a
-    line belongs to one account, and a movement is offered only where it is.
-    The row half goes with the column at plan step ``credit_card:CC-5-4a-2``.
+    **A row is CLAIMED through its PAYMENT, by any act of the OWNER's** (plan
+    steps ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``, rulings **R-CC43**,
+    **R-CC45**): every act names the row's covering movement rather than the
+    row, and that movement may sit on ANOTHER account than the row since
+    ``credit_card:CC-5-3`` (a checking bill's payment on the card, matched on
+    the card's screen).  :attr:`transactions` holds the parents of those
+    movements across the owner's accounts, so a Projected row whose kept
+    movement an act still names is not offered again on ANY screen (the act
+    shows on that account's register as no longer holding, with its Undo);
+    and :func:`~._accept._reject_parent_and_its_own_purchase` reads one set
+    for "an envelope an act already names".  Read on one account alone (a
+    first cut of ``CC-5-4a-1``), a reverted card-paid bill was offered on
+    checking while the card's act still named its payment, and accepting it
+    there re-pointed the payment and withdrew the card's act through a door
+    that discloses nothing (that leaf's neutral review; ruling **R-CC46**
+    says disclosed).  :attr:`lines` and :attr:`entries` stay the account's
+    own: a line belongs to one account, and a movement is offered only where
+    it is.
 
     Attributes:
         lines: The ``bank_statement_lines`` ids a match already explains.
         transactions: The ``transactions`` ids a match of the owner's already
-            names -- directly, or through the row's covering movement, on
-            any of the owner's accounts.
+            names through the row's covering movement, on any of the owner's
+            accounts.
         entries: The ``transaction_entries`` ids a match already names, a
             purchase's or a covering movement's.
     """
@@ -148,29 +147,35 @@ class MatchedSubjects:
 def act_still_names_a_row():
     """Return the EXISTS that makes a membership a live CLAIM.
 
-    **A match asserts that these bank lines ARE these app rows, and the app-row
-    keys CASCADE** (``fk_statement_match_members_transaction_account`` /
-    ``_entry_account``, ``ondelete="CASCADE"``).  So destroying the last app row
-    an act names leaves the act holding its LINE alone -- and the line went on
+    **A match asserts that these bank lines ARE these app rows, and the
+    movement key CASCADES** (``fk_statement_match_members_entry_account``,
+    ``ondelete="CASCADE"``).  So destroying the last movement an act names --
+    a purchase, or a row's payment with the row or on its own -- leaves the
+    act holding its LINE alone -- and the line went on
     reading as explained, permanently, because "explained" was membership and
     nothing else.  It could then never be offered or matched again, whatever
     the review screen showed.
 
-    **This is the invariant, and the writer beside it is the cleanup.**
-    :mod:`app.services.match_withdrawal` deletes such an act at the five doors
-    an owner presses, so the false record goes and the press can say which
-    lines it freed.  It cannot cover them all: ``routes/templates/crud``
-    hard-deletes and archives in BULK SQL, ``pay_period_write.retire_paydays``
-    removes transactions through a database cascade, and a sixth door written
-    next year will not know to call it.  A rule enforced by enumeration is a
-    rule the next door forgets; a predicate in the one query that decides is
-    not (adversarial review, 2026-08-25, which measured the template
-    hard-delete reaching the state from a shipped button).
+    **This is the invariant, and the writer beside it is the cleanup.**  The
+    one act that takes a movement off the books
+    (:mod:`app.services.movement_removal`, plan step ``credit_card:CC-5-4a-3``)
+    withdraws such an act at every door that removes a movement THROUGH it,
+    so the false record goes and the press can say which lines it freed.
+    Three doors remove movements without it: ``routes/templates/crud``'s
+    permanent delete and the account delete remove rows in BULK SQL, and
+    ``pay_period_write.retire_paydays`` through a database cascade (finding
+    **CC-363**; adversarial review, 2026-08-25, measured the template
+    hard-delete reaching the state from a shipped button).  A rule enforced
+    by enumeration is a rule the next door forgets, so until plan step
+    ``credit_card:CC-5-4a-4`` this predicate in the one query that decides is
+    what holds; that step ends it at the root (ruling **R-CC54**: a row
+    holding a movement is history those doors keep, and neither of a match's
+    keys cascades) and deletes it.
 
     **Applying it to the WHOLE member scan is exact rather than convenient.**
     The EXISTS is true for every member of an act that holds an app row, so
     filtering the scan changes only the LINE set -- an act with no app-side
-    member has no transaction or entry membership left to filter.
+    member has no movement membership left to filter.
 
     Returns:
         A correlated ``EXISTS`` over the outer
@@ -181,10 +186,7 @@ def act_still_names_a_row():
         db.session.query(sibling)
         .filter(
             sibling.match_id == StatementMatchMember.match_id,
-            db.or_(
-                sibling.transaction_id.isnot(None),
-                sibling.transaction_entry_id.isnot(None),
-            ),
+            sibling.transaction_entry_id.isnot(None),
         )
         .exists()
     )
@@ -226,18 +228,18 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
 
 
 def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
-    """Return every row an act of *account_id*'s OWNER names, through either home.
+    """Return every row an act of *account_id*'s OWNER names, through its payment.
 
-    One scan of the owner's members: a member naming a row directly (the
-    shape before plan step ``credit_card:CC-5-4a-1``), and a member naming a
-    row's covering movement (every act since, ruling **R-CC43**), whose
-    parent is read through an outer join onto the entry and only where that
-    entry is a payment record -- a purchase member's parent is NOT a claim on
-    the envelope (the envelope's figure is its purchases; ``_accept`` refuses
-    the pairing itself).  The OWNER's acts rather than the account's, for the
-    reason :class:`MatchedSubjects` states: a payment matched on the card
-    claims its checking row.  The owner is the account's, read in the query
-    rather than taken as a second parameter that could name someone else.
+    One scan of the owner's members naming a row's covering movement (ruling
+    **R-CC43**; every member since migration ``2eabfa596ee0``, ruling
+    **R-CC45**), whose parent is read through a join onto the entry and only
+    where that entry is a payment record -- a purchase member's parent is NOT
+    a claim on the envelope (the envelope's figure is its purchases;
+    ``_accept`` refuses the pairing itself).  The OWNER's acts rather than
+    the account's, for the reason :class:`MatchedSubjects` states: a payment
+    matched on the card claims its checking row.  The owner is the account's,
+    read in the query rather than taken as a second parameter that could name
+    someone else.
 
     Args:
         account_id: The account whose owner's claims to read.
@@ -245,38 +247,28 @@ def _claimed_rows_of_the_owner(account_id: int) -> "frozenset[int]":
     Returns:
         The claimed ``transactions`` ids.
     """
-    covering_parent = db.case(
-        (TransactionEntry.covers_settlement.is_(True),
-         TransactionEntry.transaction_id),
-        else_=None,
-    )
     owner = (
         db.session.query(Account.user_id)
         .filter(Account.id == account_id)
         .scalar_subquery()
     )
     rows = (
-        db.session.query(
-            StatementMatchMember.transaction_id,
-            covering_parent,
+        db.session.query(TransactionEntry.transaction_id)
+        .join(
+            StatementMatchMember,
+            StatementMatchMember.transaction_entry_id == TransactionEntry.id,
         )
         .join(
             StatementMatch,
             StatementMatch.id == StatementMatchMember.match_id,
         )
-        .outerjoin(
-            TransactionEntry,
-            TransactionEntry.id == StatementMatchMember.transaction_entry_id,
-        )
         .filter(
             StatementMatch.user_id == owner,
-            act_still_names_a_row(),
+            status_seam.covering_clause(),
         )
         .all()
     )
-    return frozenset(
-        row_id for row in rows for row_id in row if row_id is not None
-    )
+    return frozenset(row[0] for row in rows)
 
 
 def unmatched_rows(
@@ -295,16 +287,14 @@ def unmatched_rows(
     query for exactly that reason: the query is run once per pass and the claims
     move within it.
 
-    **A SETTLEMENT is claimed through EITHER of its row's two homes** (plan
-    step ``credit_card:CC-5-4a-1``, ruling **R-CC43**): by an act naming the
-    movement (every act since that step) or by one naming its ROW (every act
-    before it, until ``CC-5-4a-2`` re-keys them).  Measured on the
-    production clone of 2026-09-21 before this clause existed: 103 settled
-    rows that accepted acts name by row -- every row member on the books --
-    reappeared on Checking's "the bank never showed this" panel, because
-    their candidates were movements checked against the entry claims alone.
-    A TRANSACTION candidate needs no second test: :attr:`MatchedSubjects
-    .transactions` already carries a row claimed through its movement.
+    **A row is claimed through its PAYMENT, on any of the owner's accounts**
+    (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**): a TRANSACTION
+    candidate -- a Projected row, perhaps a reverted one whose kept movement
+    an act still names -- is claimed when its row is in
+    :attr:`MatchedSubjects.transactions`, and so is a SETTLEMENT, whose row
+    that set carries whichever account the act naming its movement is on.
+    A PURCHASE is claimed by its own id alone: its envelope is a container,
+    never named by it.
 
     Args:
         candidates: The pass's derived offer set.
@@ -320,7 +310,7 @@ def unmatched_rows(
 
 
 def _is_claimed(row: CandidateRow, matched: MatchedSubjects) -> bool:
-    """Return whether an accepted act already names *row*, by either home."""
+    """Return whether an accepted act already names *row*, or its row's payment."""
     if row.kind.names_an_entry and row.row_id in matched.entries:
         return True
     return (

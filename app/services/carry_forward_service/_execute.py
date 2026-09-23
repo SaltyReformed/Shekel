@@ -476,7 +476,17 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
     acceptable inside the surrounding ``no_autoflush`` block: an
     ``is_override`` row is index-safe in every intermediate state, and a
     placed row is written only after ``CLOSED`` has refused the states it
-    could collide with.
+    could collide with.  A THIRD since plan step ``credit_card:CC-5-4a-3``,
+    and only for a source holding a kept payment an accepted match still
+    names: the settle below takes that payment off the books
+    (``movement_removal.remove_movements``, ruling **R-CC54**), whose match
+    step flushes the withdrawn act, or the member taken out of a surviving
+    group act, before the payment goes.  An
+    unmatched kept payment flushes nothing, as before that step; a matched
+    one was measured on no production row (2026-09-22: 0 matched movements
+    under a non-settled row).  That this third flush is index-safe in every
+    intermediate state is READ, not measured: that leaf's review traced every
+    branch and found none it could break.
 
     Args:
         source_txn: A Projected, non-deleted, envelope-tracked transaction of

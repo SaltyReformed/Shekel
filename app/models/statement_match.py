@@ -6,8 +6,8 @@ WHICH of the app's own rows a recorded bank line IS.  Three tables, one subject
 
   * :class:`StatementMatch` -- one act of matching, reviewed and accepted by
     the owner.
-  * :class:`StatementMatchMember` -- one thing that act names: a bank line, a
-    transaction, or a purchase.
+  * :class:`StatementMatchMember` -- one thing that act names: a bank line or
+    a movement.
   * :class:`StatementMatchCreation` -- one thing that act brought into
     EXISTENCE, which is not the same set (plan step ``bank_import:X-f6f``,
     ruling **R-GG**).
@@ -164,31 +164,44 @@ class StatementMatch(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
 
 
 class StatementMatchMember(db.Model):
-    """One thing a match names -- a bank line, a transaction, or a purchase.
+    """One thing a match names -- a bank line or a movement.
 
-    **An EXCLUSIVE ARC of three typed foreign keys**, the shape plan step
+    **An EXCLUSIVE ARC of two typed foreign keys**, the shape plan step
     ``balance:X-ai-s`` states for ``journal_entries`` and
-    ``template_amount_versions`` already carries for two: exactly one of the
-    three is set, and ``ck_statement_match_members_one_subject`` is what says
-    so.  A single polymorphic ``(kind, id)`` pair would be a foreign key the
-    database cannot check, on a table whose whole job is to say that two real
-    rows are the same movement.
+    ``template_amount_versions`` already carries: exactly one of the two is
+    set, and ``ck_statement_match_members_one_subject`` is what says so.  A
+    single polymorphic ``(kind, id)`` pair would be a foreign key the database
+    cannot check, on a table whose whole job is to say that two real rows are
+    the same movement.
+
+    **The app's side is always a MOVEMENT** (plan steps
+    ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``, rulings **R-CC43** and
+    **R-CC45**): a person's purchase, or the covering movement a settle wrote
+    for a bill, a paycheck or a transfer leg -- which is what a settled row's
+    money IS (ruling **R-BAL80**), on whichever account it moved through.
+    The arc had a third arm, the ROW itself, until migration ``2eabfa596ee0``
+    re-keyed every row member onto its row's covering movement and dropped
+    the column: a row member held its act to the ROW's account, where a
+    card-paid bill's money never was, and a definition's account move over a
+    matched Projected row raised at that key (finding **CC-356**).  A row is
+    a candidate only while it is Projected, and a match settles it through
+    its own door and records the payment that settle wrote
+    (:func:`~app.services.statement_match._accept._as_recorded`).
 
     Columns:
         match_id -- the act this membership belongs to.
         account_id -- the account, held equal to the act's by
             ``fk_statement_match_members_match_account`` and to the SUBJECT's
-            by whichever of the three composite keys below applies.  That is
-            what makes a match to another account's row unwritable rather than
-            merely unoffered -- the same reason
+            by whichever of the two composite keys below applies.  That is
+            what makes a match to another account's movement unwritable rather
+            than merely unoffered -- the same reason
             ``fk_transactions_reconciled_by`` is composite (ruling **R-FL**).
         bank_statement_line_id -- the bank's line, when this member is one.
-        transaction_id -- the app's row, when this member is one.
-        transaction_entry_id -- the app's purchase, when this member is one.
+        transaction_entry_id -- the app's movement, when this member is one.
 
-    **Whichever of the three the arc carries is reachable as :attr:`line`,
-    :attr:`transaction` or :attr:`entry`**, joined on the composite key so the
-    account equality travels IN the join.  A reader that holds a member of an
+    **Whichever of the two the arc carries is reachable as :attr:`line` or
+    :attr:`entry`**, joined on the composite key so the account equality
+    travels IN the join.  A reader that holds a member of an
     act it has proved the owner's therefore cannot reach another account's row
     through one; see the relationships themselves for what that replaced.
 
@@ -205,13 +218,14 @@ class StatementMatchMember(db.Model):
     nowhere to put the one subject the undo most needed to reach.
 
     **Each subject belongs to at most ONE match, and that is structural.**  The
-    three partial unique indexes below are what make "already matched" a
+    two partial unique indexes below are what make "already matched" a
     question the database answers: without them a second review pass could
     explain one bank line twice, and the two acts would each look complete.
 
-    **The APP-ROW subject keys CASCADE, and the consequence is stated rather
-    than hidden.**  Deleting a purchase, or destroying a pay period and the
-    transactions under it, removes that member and leaves the act smaller --
+    **The MOVEMENT key CASCADES, and the consequence is stated rather than
+    hidden.**  Deleting a purchase, withdrawing a settle's covering movement,
+    or destroying a pay period and the transactions under it (their movements
+    go with them), removes that member and leaves the act smaller --
     so a group can stop balancing without anything raising.  Refusing instead
     would refuse an ordinary delete because of a record the user cannot see
     from the row they are deleting, which is the dead end finding **N-302**
@@ -227,10 +241,10 @@ class StatementMatchMember(db.Model):
     a bank, so :func:`~app.services.statement_match._accepted_view
     .accepted_groups` could not render it and no release button could ever
     exist for it -- while ``matched_subjects`` reads the members directly and
-    went on reporting its transactions as already matched, so those rows could
+    went on reporting its app rows as already matched, so those rows could
     never be offered or matched again.  MEASURED on a production clone
     2026-08-20: deleting one import took 361 lines and left the act standing
-    with 0 line members and 1 transaction member.  Nothing reached that state
+    with 0 line members and 1 app-row member.  Nothing reached that state
     before, because nothing deleted a line; X-f6a-4's repair door is what would
     have made it reachable, so the door RELEASES a match before it removes the
     lines and the database refuses to orphan one either way.  A whole-account
@@ -243,11 +257,11 @@ class StatementMatchMember(db.Model):
     __tablename__ = "statement_match_members"
     __table_args__ = (
         # THE EXCLUSIVE ARC: exactly one subject.  Summing the NULL tests is
-        # the spelling ``ck_transactions_one_pricing_link`` uses for three
-        # columns, where ``<>`` only reads as XOR for two.
+        # the spelling ``ck_statement_match_creations_one_subject`` uses for
+        # its own two columns, kept when the third went (migration
+        # ``2eabfa596ee0``) so the two tables state the rule alike.
         db.CheckConstraint(
             "(bank_statement_line_id IS NOT NULL)::int "
-            "+ (transaction_id IS NOT NULL)::int "
             "+ (transaction_entry_id IS NOT NULL)::int = 1",
             name="ck_statement_match_members_one_subject",
         ),
@@ -258,8 +272,8 @@ class StatementMatchMember(db.Model):
             name="fk_statement_match_members_match_account",
             ondelete="CASCADE",
         ),
-        # ...and IS its subject's, for whichever of the three it carries.
-        # ``MATCH SIMPLE`` (PostgreSQL's default) is what lets these three sit
+        # ...and IS its subject's, for whichever of the two it carries.
+        # ``MATCH SIMPLE`` (PostgreSQL's default) is what lets these two sit
         # beside one another: a member whose ``bank_statement_line_id`` is NULL
         # satisfies the line key whatever ``account_id`` says.
         # **No ``ondelete`` -- the default NO ACTION, deliberately.**  The
@@ -279,29 +293,18 @@ class StatementMatchMember(db.Model):
             name="fk_statement_match_members_line_account",
         ),
         db.ForeignKeyConstraint(
-            ["transaction_id", "account_id"],
-            ["budget.transactions.id", "budget.transactions.account_id"],
-            name="fk_statement_match_members_transaction_account",
-            ondelete="CASCADE",
-        ),
-        db.ForeignKeyConstraint(
             ["transaction_entry_id", "account_id"],
             ["budget.transaction_entries.id",
              "budget.transaction_entries.account_id"],
             name="fk_statement_match_members_entry_account",
             ondelete="CASCADE",
         ),
-        # One subject, at most one match.  Partial, because two of the three
-        # columns are NULL on every row and a NULL is not a claim.
+        # One subject, at most one match.  Partial, because one of the two
+        # columns is NULL on every row and a NULL is not a claim.
         db.Index(
             "uq_statement_match_members_line", "bank_statement_line_id",
             unique=True,
             postgresql_where=db.text("bank_statement_line_id IS NOT NULL"),
-        ),
-        db.Index(
-            "uq_statement_match_members_transaction", "transaction_id",
-            unique=True,
-            postgresql_where=db.text("transaction_id IS NOT NULL"),
         ),
         db.Index(
             "uq_statement_match_members_entry", "transaction_entry_id",
@@ -320,7 +323,6 @@ class StatementMatchMember(db.Model):
     match_id = db.Column(db.Integer, nullable=False)
     account_id = db.Column(db.Integer, nullable=False)
     bank_statement_line_id = db.Column(db.Integer)
-    transaction_id = db.Column(db.Integer)
     transaction_entry_id = db.Column(db.Integer)
 
     match = db.relationship(
@@ -344,15 +346,10 @@ class StatementMatchMember(db.Model):
     # projection of a key the database already holds, and a second, writable
     # path to the same column pair is exactly the drift this arc keeps
     # removing.  It is also what keeps SQLAlchemy from trying to manage one
-    # ``account_id`` through four overlapping relationships.
+    # ``account_id`` through three overlapping relationships.
     line = db.relationship(
         "BankStatementLine",
         foreign_keys=[bank_statement_line_id, account_id],
-        viewonly=True,
-    )
-    transaction = db.relationship(
-        "Transaction",
-        foreign_keys=[transaction_id, account_id],
         viewonly=True,
     )
     entry = db.relationship(
@@ -365,8 +362,6 @@ class StatementMatchMember(db.Model):
         subject = (
             f"line={self.bank_statement_line_id}"
             if self.bank_statement_line_id is not None
-            else f"txn={self.transaction_id}"
-            if self.transaction_id is not None
             else f"entry={self.transaction_entry_id}"
         )
         return f"<StatementMatchMember match={self.match_id} {subject}>"
@@ -411,7 +406,7 @@ class StatementMatchCreation(db.Model):
 
     Whichever of the two the arc carries is reachable as :attr:`transaction` or
     :attr:`entry`, joined on the composite key exactly as
-    :class:`StatementMatchMember`'s three are.
+    :class:`StatementMatchMember`'s two are.
 
     **The revision is the whole predicate, and that is why it is a version
     rather than a flag.**  "Still has no category and still holds the figure we
@@ -518,7 +513,7 @@ class StatementMatchCreation(db.Model):
         foreign_keys=[match_id, account_id],
     )
     # The same two-column join, for the same reason, as
-    # :class:`StatementMatchMember`'s three -- and here it does one more thing.
+    # :class:`StatementMatchMember`'s two -- and here it does one more thing.
     # The undo reached each subject with ``db.session.get`` and paid 478
     # queries folding 230 acts, so a bulk reader had to WARM the identity map
     # first and then HOLD the result, SQLAlchemy's identity map being weak.  A
