@@ -3,6 +3,9 @@
 Revision ID: c4a4e7d1b9f2
 Revises: 2eabfa596ee0
 Create Date: 2026-09-22 22:40:00.000000
+Review: developer, 2026-09-22 / 2026-09-23 (rulings R-CC54 parts (2) and (3),
+R-CC63..R-CC66, R-CC82: three foreign keys dropped and re-created NO ACTION,
+and the two refusals before them)
 
 Plan step ``credit_card:CC-5-4a-4``.  Rulings **R-CC54** parts (2) and (3)
 (developer 2026-09-22): *"The database stops cascading a row's delete to its

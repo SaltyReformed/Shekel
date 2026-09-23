@@ -337,8 +337,8 @@ def create_entry(
         NotFoundError: Transaction not found or not accessible by this
             user; or ``details.account_id`` names no account of the ROW's
             owner (:func:`_purchase_account_id`).
-        ValidationError: Transaction not entry-capable, is a transfer, is
-            income, or has a blocked status (Cancelled, Credit, the archive, or
+        ValidationError: Transaction deleted, not entry-capable, is a
+            transfer, is income, or has a blocked status (Cancelled, Credit, the archive, or
             a settled row whose figure is not its purchases -- see
             :func:`_reject_settled_addition`); the account is archived or a
             loan, or the ``CC`` flag is set beside an account other than the
@@ -356,6 +356,20 @@ def create_entry(
     # ``pay_calendar:C13-b``.
     if txn.user_id != owner_id:
         raise NotFoundError(f"Transaction {transaction_id} not found.")
+
+    # **A DELETED row takes no purchase** (plan step ``credit_card:CC-5-4a-4``,
+    # its second review, H1).  Deleting a recurring occurrence empties it and
+    # keeps it as a tombstone (ruling **R-CC75**: "A hidden row then never
+    # holds money"), and ``get_accessible_transaction`` does not filter
+    # ``is_deleted`` -- so a stale grid (a companion's open page) posting here
+    # put a purchase back under a row no screen shows, which locked its pay
+    # period with no row to delete it from.  The settle doors' own refusal of
+    # the same row (``transaction_service._row_rules.reject_unsettleable``).
+    if txn.is_deleted:
+        raise ValidationError(
+            f"Transaction {txn.id} was deleted; a purchase cannot be added "
+            "to it.  Reload the page.",
+        )
 
     # Entry-capable: purchase tracking must be enabled on the row's
     # DEFINITION (its ``is_envelope``).  Resolved by

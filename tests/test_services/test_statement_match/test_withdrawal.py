@@ -612,7 +612,7 @@ class TestKeptRowsCountsWhatSURVIVES:
         assert preview.matches == 1
         assert preview.kept_rows == 0, (
             "both creations are in the going set -- the envelope itself and "
-            "the purchase its foreign key cascades"
+            "the purchase the delete takes off through the one removal act"
         )
 
     def test_a_created_row_that_SURVIVES_is_reported_and_STAYS(

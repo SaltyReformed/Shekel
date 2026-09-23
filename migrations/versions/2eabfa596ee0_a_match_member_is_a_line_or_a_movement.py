@@ -3,6 +3,9 @@
 Revision ID: 2eabfa596ee0
 Revises: c7d1e9a4b2f8
 Create Date: 2026-09-22 17:01:33.000000
+Review: developer, 2026-09-22 (rulings R-CC43 / R-CC45: the row members
+re-keyed to movements, and the row column dropped with its key, index and
+check; the line added at plan step credit_card:CC-5-4a-4, text only)
 
 Plan step ``credit_card:CC-5-4a-2``.  Rulings **R-CC43** (the MOVEMENT is the
 subject of every settled match on every screen; a row is a candidate only
@@ -90,8 +93,12 @@ row is on checking).  So the column, its key, its unique index and the
 three-term check return, empty of row members.
 
 **Locking.**  The UPDATE rewrites the row members once (103 on production);
-each ``DROP`` is catalog-only; ``ADD CONSTRAINT ... CHECK`` scans the table
-once to validate.  Instantaneous at this table's size.
+``ADD CONSTRAINT ... CHECK`` scans the table once to validate.  Each ``DROP`` is
+a catalog change, but dropping ``fk_statement_match_members_transaction_account``
+also takes ACCESS EXCLUSIVE on its referenced table ``budget.transactions`` and
+checks it for pending trigger events -- that from the PostgreSQL source as the
+4a-2 release review read it, NOT measured here.  It was harmless at that
+deploy, which ran with the old app stopped.  Instantaneous at this table's size.
 
 **What grades this revision.**
 ``tests/test_models/test_cc5_4a2_member_rekey.py`` drives the shipped

@@ -288,10 +288,12 @@ class TestTheMigration:
             assert db.session.get(StatementMatch, created.match_id) is not None
             with pytest.raises(RuntimeError) as caught:
                 _run(_M.upgrade, db.session)
+            # Read in the SAME transaction, before the rollback: a refusal
+            # placed after the DDL would show the flipped keys here.
+            assert _keys(db.session) == _BEFORE
             db.session.rollback()
             assert f"ids [{created.match_id}]" in str(caught.value)
             assert "name no movement" in str(caught.value)
-            assert _keys(db.session) == _BEFORE
 
     def test_a_hidden_row_still_holding_a_purchase_refuses_the_upgrade(
         self, app, db, seed_user,
@@ -314,12 +316,13 @@ class TestTheMigration:
             db.session.commit()
             with pytest.raises(RuntimeError) as caught:
                 _run(_M.upgrade, db.session)
+            # Before the rollback, as the stranded-act test reads it.
+            assert _keys(db.session) == _BEFORE
             db.session.rollback()
             assert f"ids [{row.id}]" in str(caught.value)
             assert "hidden row(s) hold a recorded payment or purchase" in (
                 str(caught.value)
             )
-            assert _keys(db.session) == _BEFORE
 
     def test_a_hidden_transfer_leg_holding_its_payment_does_not_refuse(
         self, app, db, seed_user,
@@ -360,5 +363,32 @@ class TestTheMigration:
                 {"t": transfer.id},
             ).scalar()
             assert held == 2
+            _run(_M.upgrade, db.session)
+            assert _keys(db.session) == _AT_HEAD
+
+    def test_the_refusals_fire_only_on_what_they_name(
+        self, app, db, seed_user,
+    ):
+        """Neither refusal fires on the states beside the ones it names (review 2, L1).
+
+        Three controls in one upgrade, each the neighbour of a refusal's
+        predicate: a LIVE act naming its purchase (the stranded-act query's
+        ``NOT EXISTS``), a VISIBLE row holding a purchase (the hidden-row
+        query's ``is_deleted``) and a hidden row holding NOTHING (its
+        ``EXISTS``).  Dropping any one of those three clauses makes the
+        upgrade refuse here.
+        """
+        with app.app_context():
+            _home_improvement(seed_user)
+            _unmatched_purchase(seed_user)
+            empty = a_one_off_envelope(seed_user, name="Garage Sale")
+            _db.session.commit()
+            _run(_M.downgrade, db.session)
+            db.session.execute(
+                text("UPDATE budget.transactions SET is_deleted = TRUE "
+                     "WHERE id = :id"),
+                {"id": empty.id},
+            )
+            db.session.commit()
             _run(_M.upgrade, db.session)
             assert _keys(db.session) == _AT_HEAD

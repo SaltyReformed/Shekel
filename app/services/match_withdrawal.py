@@ -46,9 +46,10 @@ asymmetry is deliberate.  ``release_match`` is the owner's UNDO -- *withdraw
 this act, and take back what it made* -- and it refuses where the owner has
 edited a created row since.  This is a different act: the owner asked to delete
 ONE row, not to withdraw a decision.  What survives is COUNTED
-(:attr:`MatchWithdrawal.kept_rows`), and counted over the rows that ACTUALLY
-survive: a creation whose subject is in the going set is destroyed by the same
-press, and reporting it as kept is the *"Nothing moved."* shape this arc has
+(:attr:`MatchWithdrawal.kept_rows`), and counted over the rows the owner still
+has: a subject in the going set -- deleted by the same press, or a recurring
+occurrence the press empties and hides (ruling **R-CC84**) -- is not one, and
+reporting it as kept is the *"Nothing moved."* shape this arc has
 shipped once already (finding **N-336**).  A first build counted every creation
 of every withdrawn act, and both reviews measured it promising a `-$21.68`
 residual would stay while the press destroyed it.
@@ -175,8 +176,9 @@ class MatchWithdrawal:
     Attributes:
         matches: How many accepted acts are withdrawn.
         lines: The bank lines that become unexplained again.
-        kept_rows: How many rows those acts had CREATED that ACTUALLY survive
-            the press -- reported rather than silent, because a row the owner
+        kept_rows: How many rows those acts had CREATED that the owner still
+            has after the press (a deleted occurrence's hidden tombstone is not
+            one, ruling **R-CC84**) -- reported rather than silent, because a row the owner
             did not ask for and was not told about is exactly what a receipt is
             for.  **A creation whose subject is in the going set is NOT counted
             here**, and a first build counted it: both 2026-08-25 reviews
@@ -333,8 +335,10 @@ def _summarise(
 
     Args:
         acts: The acts, with ``members`` and ``creations`` loaded.
-        transaction_ids: Row ids about to leave the table, so a creation that
-            names one is not reported as staying.
+        transaction_ids: Row ids the press takes from the owner -- deleted,
+            or a recurring occurrence it empties and hides (ruling
+            **R-CC84**) -- so a creation that names one is not reported as
+            staying.
         entry_ids: Purchase ids about to leave the table, likewise.
 
     Returns:
@@ -512,8 +516,10 @@ def pending_for_movements(entries) -> MatchWithdrawal:
     Like the delete dialog it names the ACTS the removal empties and the
     lines those free; a GROUP act that keeps another row is not named here,
     and the act still takes this member out of it and turns its ``agrees``
-    flag amber on the register -- the same silence the purchase-delete
-    dialog keeps over a group, stated so it reads as a choice and not a fact.
+    flag amber on the register, stated so it reads as a choice and not a fact.
+    (The purchase X itself says nothing before its press yet -- finding
+    **CC-367**, built in plan step ``credit_card:CC-5-4a-5``, ruling
+    **R-CC80**.)
 
     Args:
         entries: The movements a screen is offering to remove or re-point.
@@ -565,9 +571,11 @@ def take_out_of_matches(
         owner_id: The owner under whose books the acts are filed.
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
-        rows_leaving: The rows going in the same press, when the caller is a
-            row delete -- so a creation that names one is not reported as
-            kept (:func:`_summarise`).  Empty when only movements go.
+        rows_leaving: The rows going in the same press, soft or hard (a
+            recurring occurrence's tombstone goes to the owner, ruling
+            **R-CC84**), when the caller is a row delete -- so a creation that
+            names one is not reported as kept (:func:`_summarise`).  Empty
+            when only movements go.
 
     Returns:
         What was withdrawn, as the dialog's read would have printed it.

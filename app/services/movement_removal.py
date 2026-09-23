@@ -119,9 +119,10 @@ def remove_movements(
             the books it changed.
         because: The withdrawal event's sentence
             (``match_withdrawal.LEFT_THE_BOOKS`` / ``RE_RECORDED``).
-        rows_leaving: The rows the caller deletes in the same press, when it
-            is a row delete -- so a creation record naming one is not
-            reported as kept.  Empty when the rows stay.
+        rows_leaving: The rows the caller deletes in the same press, soft or
+            hard (a recurring occurrence's tombstone counts, ruling
+            **R-CC84**), when it is a row delete -- so a creation record naming
+            one is not reported as kept.  Empty when no row is deleted.
 
     Returns:
         What the match step withdrew

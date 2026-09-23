@@ -110,6 +110,7 @@ from app.services import (
 )
 from app.services.match_withdrawal import MatchWithdrawal
 from app.services.transaction_service._row_rules import deletion_refusal
+from app.utils.balance_predicates import is_projected
 
 
 @dataclass(frozen=True)
@@ -146,12 +147,20 @@ class RowDeletion:
             ``balance:X-bi-7b``).  Carried so the dialog can say the ITEM
             goes and not only the row, off the same answer the press acts
             on (``definition_delete.is_last_row_of_its_definition``).
+        comes_back_on_unarchive: Whether archiving and then un-archiving the
+            row's item would bring this row back -- a soft delete of a row
+            still Projected (ruling **R-CC86**, developer 2026-09-23: "Whether
+            to show it is read from the same 'not yet paid' rule un-archive
+            uses").  ``balance_predicates.is_projected`` is the Python twin of
+            the ``is_projected_clause`` ``templates/crud.unarchive_template``
+            restores by, both stated in that one module.
     """
 
     soft: bool
     paybacks: "tuple[str, ...]"
     withdrawn: MatchWithdrawal
     disposes_definition: bool
+    comes_back_on_unarchive: bool
 
 
 def _leaves_the_books(txn: Transaction) -> "tuple[bool, list[Transaction]]":
@@ -214,6 +223,7 @@ def preview_deletion(
         paybacks=tuple(row.name for row in rows[1:]),
         withdrawn=match_withdrawal.pending_for_rows(rows),
         disposes_definition=last_row_of_definition,
+        comes_back_on_unarchive=soft and is_projected(txn),
     )
 
 
@@ -272,6 +282,8 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
 
     soft, rows = _leaves_the_books(txn)
     paybacks = tuple(row.name for row in rows[1:])
+    # Read before the delete, beside the other facts about the row itself.
+    comes_back = soft and is_projected(txn)
     # The definition is read off the row BEFORE the row is deleted: the
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
@@ -298,4 +310,5 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     return RowDeletion(
         soft=soft, paybacks=paybacks, withdrawn=withdrawn,
         disposes_definition=last_row_of_definition,
+        comes_back_on_unarchive=comes_back,
     )

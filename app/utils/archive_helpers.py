@@ -55,11 +55,15 @@ from app.models.transfer import Transfer
 def holds_a_movement():
     """Return the clause selecting a row that holds a payment or purchase.
 
-    **The ONE spelling of "does this row hold a movement"** (CC-5-4a-4's
-    first review, L4): the archives' :func:`holds_nothing` negates it, the
-    transfer archive's :func:`transfer_holds_nothing` asks it of each leg,
-    and the pay-period lock and reset gate
-    (``pay_period_locks``, ``pay_period_gates``) filter on it.  The
+    **The ONE spelling of the FILTER "does this row hold a movement"**
+    (CC-5-4a-4's first review, L4): the archives' :func:`holds_nothing`
+    negates it, the transfer archive's :func:`transfer_holds_nothing` asks it
+    of each leg, and the pay-period lock and reset gate
+    (``pay_period_locks``, ``pay_period_gates``) filter on it.  Two readers
+    ask more than it and join the movements themselves:
+    :func:`rows_holding_movements` aggregates WHICH kind they are, and
+    ``recurrence_engine._maintain``'s retire asks a wider question (an entry
+    OR a note).  The
     relationship's own ``EXISTS`` over ``budget.transaction_entries``, hidden
     rows included -- a row's ``is_deleted`` does not change what it holds.  A
     function rather than a module constant: building a relationship's clause
@@ -240,11 +244,28 @@ def transfer_template_holding_movements(template_id: int) -> HeldMovements:
     )
 
 
+def legs_of_transfers(*transfer_scope):
+    """Return the clause selecting the shadow rows of the transfers matching *transfer_scope*.
+
+    **The ONE spelling of a transfer's legs as a row scope** (CC-5-4a-4's
+    reviews, L4): :func:`transfers_holding_movements` and
+    :func:`account_holding_movements`' transfer arm both ask it.
+
+    Args:
+        *transfer_scope: ``Transfer`` filter clauses.
+
+    Returns:
+        An ``IN`` clause on ``Transaction.transfer_id``.
+    """
+    return Transaction.transfer_id.in_(
+        db.session.query(Transfer.id).filter(*transfer_scope)
+    )
+
+
 def transfers_holding_movements(*transfer_scope) -> HeldMovements:
     """Return what the legs of the transfers matching *transfer_scope* hold.
 
-    **The ONE spelling of a transfer's legs as a row scope** (CC-5-4a-4's
-    first review, L4): the recurring-transfer permanent delete's refusal
+    The recurring-transfer permanent delete's refusal
     (:func:`transfer_template_holding_movements`) and the transfer archive's
     receipt (``routes/transfers/lifecycle._archive``) both ask it.  Counted by
     TRANSFER, so a transfer whose two legs each hold its payment is one kept
@@ -257,9 +278,7 @@ def transfers_holding_movements(*transfer_scope) -> HeldMovements:
         The legs' :class:`HeldMovements`; falsy when none holds one.
     """
     return rows_holding_movements(
-        Transaction.transfer_id.in_(
-            db.session.query(Transfer.id).filter(*transfer_scope)
-        ),
+        legs_of_transfers(*transfer_scope),
         counted_by=Transaction.transfer_id,
     )
 
@@ -291,13 +310,11 @@ def account_holding_movements(account_id: int) -> HeldMovements:
                     TransactionTemplate.account_id == account_id,
                 )
             ),
-            Transaction.transfer_id.in_(
-                db.session.query(Transfer.id).filter(
-                    db.or_(
-                        Transfer.from_account_id == account_id,
-                        Transfer.to_account_id == account_id,
-                    )
-                )
+            legs_of_transfers(
+                db.or_(
+                    Transfer.from_account_id == account_id,
+                    Transfer.to_account_id == account_id,
+                ),
             ),
         ),
     )
@@ -522,10 +539,11 @@ def account_holds_other_rows_movements(account_id: int) -> bool:
     ``definition_delete.permanently_delete_definition``; guard 3 has already
     refused a recurring one), so a movement on this account under a row that
     is NEITHER -- a plan item that lives elsewhere and whose money crossed
-    here -- is what this counts, whatever its row's ``is_deleted`` says: a
-    checking envelope soft-deleted before ruling **R-CC75** (whose delete now
-    empties the row) may still hold its card swipe, the row is not checking's
-    ghost to hard-delete, and the swipe still names the card.  A
+    here -- is what this counts, whatever its row's ``is_deleted`` says (no
+    door leaves a hidden row holding one since rulings **R-CC63** / **R-CC75**,
+    and the release's migration refuses to inherit one, **R-CC82**; the count
+    does not rely on either): the row is not checking's ghost to hard-delete,
+    and the swipe still names the card.  A
     movement under a row the cleanup DOES remove is
     :func:`account_holding_movements`' (plan step ``credit_card:CC-5-4a-4``):
     until that step a ghost's movement cascaded with it

@@ -81,8 +81,11 @@ def rows_holding_purchase_postings(*scope):
     plan step ``credit_card:CC-5-4a-4``**: the archive and this module's
     delete no longer reach a row holding a movement (rulings **R-CC63**,
     **R-CC54**), and a row holds a posting only through one, so both loops
-    were deleted.  The restore keeps it for rows an archive hid before that
-    step.
+    were deleted.  The restore keeps it although it finds nothing since that
+    step: no door leaves a hidden row holding a movement (rulings **R-CC63**,
+    **R-CC75**) and the release's migration refuses to inherit one (**R-CC82**)
+    -- kept as the restore's own statement of what it re-posts rather than an
+    argument that nothing could.
 
     Args:
         *scope: The SQLAlchemy clauses selecting the rows the bulk statement is
