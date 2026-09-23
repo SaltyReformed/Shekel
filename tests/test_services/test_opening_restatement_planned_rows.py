@@ -262,8 +262,10 @@ class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
         # The developer dropped R-PC93's "or delete "Rent" for good" (the
         # round-3 review's M-1, 2026-09-23): the permanent delete refuses any
         # definition with payment history, so the clause was often false.
+        # Then "or move it later" (round 9's M1): no generated row can be moved
+        # past its books, and "it" is now the definition, by name.
         assert row.remedy() == (
-            "Unarchive it and mark it paid, cancel it or move it later"
+            'Unarchive "Rent", mark that item paid or cancel it'
         )
 
     def test_a_hidden_ENVELOPE_names_its_paychecks_last_day(self):
@@ -285,7 +287,9 @@ class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
         )
 
         assert row.described() == '"Rent" is still projected and due 2026-03-01'
-        assert row.remedy() == "Mark it paid, cancel it or move it later first"
+        # Round 9's M1 dropped "or move it later": a generated row's due day
+        # is its schedule's, so no move could clear the refusal.
+        assert row.remedy() == "Mark it paid or cancel it first"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────

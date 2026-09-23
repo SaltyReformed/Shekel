@@ -33,6 +33,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import pay_period_service
+from app.services.planned_rows_books import reject_revert_below_the_books
 from app.services.settle_day import (
     SettleDay,
     record_settle_day,
@@ -553,6 +554,14 @@ def apply_status_change(
         )
 
     verify_transition(row, new_status_id)
+    if isinstance(row, Transaction):
+        # A revert to Projected whose occurrence the row's books drop is
+        # refused (ruling **R-PC97**), ahead of any mutation like the refusals
+        # above.  A TRANSFER is asked at its own one status door,
+        # ``transfer_service.apply_status_to_all_three``, before either of its
+        # shadows is written; asked here as well, one revert would walk its
+        # definition twice.
+        reject_revert_below_the_books(row, new_status_id)
     # Read BEFORE the assignment, for the covering movement below: whether
     # this act moves the row's assertion at all is a question about the
     # status the row is LEAVING as well as the one it enters.

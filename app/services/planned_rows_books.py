@@ -14,8 +14,8 @@ ending on or after the edit's effective date (today unless the owner types an
 earlier one), a later pass for an older one.  A row holding the owner's
 records is retained with a notice instead; a record-free one is deleted and
 the forecast rises by its amount without a word.  The owner decides instead --
-marked paid it becomes a movement, cancelled it holds nothing, moved later it
-stays owed -- and the doors refuse the save until they have:
+marked paid it becomes a movement, cancelled it holds nothing -- and the doors
+refuse the save until they have:
 
 * the opening restatement, moving an account's books LATER (ruling
   **R-PC88**; ``opening_service._reject_books_open_on_or_after_planned_rows``);
@@ -25,6 +25,26 @@ stays owed -- and the doors refuse the save until they have:
   :func:`definition_edit_refusal`, asked by the transaction- and
   transfer-template edit routes AFTER the edit is applied, so it reads the
   state the save would leave.
+
+**A row the books already drop may not become unpaid again** (ruling
+**R-PC97**, developer 2026-09-23, the round-4 review's H2).  Another way a
+still-Projected row comes to answer an occurrence below the books is the
+REVERSE move: a paid, received, credited or cancelled row set back to
+Projected, which the database's books boundary cannot see (its movement
+trigger watches a row only while it carries a settle day, and a revert
+clears it) and which no door above asked about.  Measured: a cancelled row
+reverted onto its books day took $10.00 off the forecast (-90.00 ->
+-100.00), and such a row is one the maintain pass deletes without a word
+once a pass reaches its paycheck (plan step R10-a).  Round 9's door census
+found this and the conflict chooser (below) as the doors left for a
+recurring row; a census, not an argument, so a new writer is not covered by
+it.  :func:`reject_revert_below_the_books` asks the same
+walk the doors above ask, and the status seam refuses a revert it answers
+(``status_seam.apply_status_change`` for a transaction,
+``transfer_service.apply_status_to_all_three`` for a transfer, each row
+type's one status door).  **A stopgap by design**: plan step
+``recurrence:R22`` designs the model under which no unpaid copy is stored, so
+a revert only deletes a record and there is nothing to refuse.
 
 **An ARCHIVED definition's hidden rows count** (ruling **R-PC93**, developer
 2026-09-23).  Archiving hides a definition's still-Projected rows and
@@ -45,7 +65,10 @@ says so.  The scope leaves such a row out, so the refusal never names a row
 the unarchive would not restore.  **Two ways back are not covered**: an
 unarchive still restores a row deleted by hand ABOVE the books, and the
 conflict chooser's "use the template" un-deletes one without asking the walk
-(ledger rows **REC-536** and **REC-535**, the recurrence arc's).
+(ledger rows **REC-536** and **REC-535**, the recurrence arc's, both closed
+by plan step ``recurrence:R22``).  **Neither are rows added by hand** -- a
+rule-less definition's rows and link-less ones: no door bounds them by the
+books at all (ledger row **PC-519**).
 
 **The WALK decides, never a stored day** (the adversarial review of this
 step, finding H1).  :func:`first_row_below_the_books` asks
@@ -74,12 +97,14 @@ Services-boundary discipline (``CLAUDE.md`` Architecture): plain data and ORM
 reads in, a row or a sentence out; no Flask symbol, no writes, no clock.
 """
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import and_, or_
 
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transaction_template import TransactionTemplate
@@ -92,12 +117,14 @@ from app.services.balance_at import (
 )
 from app.services.definition_unarchive import (
     UnarchiveScope,
+    books_named,
     inside_the_books,
     rows_of,
+    scope_holding_nothing_back,
     unarchive_scope,
     unarchive_scope_on,
 )
-from app.services.pay_calendar import PayCalendar
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.services.recurrence import (
     RecurrenceGenerationError,
     RecurrenceResolutionError,
@@ -105,7 +132,9 @@ from app.services.recurrence import (
     recurrence_spec,
 )
 from app.services.recurring_definition import resolved_rule_of
-from app.utils.balance_predicates import is_projected_clause
+from app.utils.balance_predicates import is_projected_clause, reverts_to_projected
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,18 +190,22 @@ class StrandedRow:
         """Return what the owner does first, the clause every refusal ends on.
 
         Returns:
-            ``Mark it paid, cancel it or move it later first`` for a live row;
-            for a hidden one, ``Unarchive it and mark it paid, cancel it or
-            move it later`` -- the one door that reaches a row the owner
-            cannot see (ruling **R-PC93**).  R-PC93's words ended "or delete
-            "Rent" for good", which the permanent delete refuses for any
-            definition with payment history, a merchant rule or a row holding
-            a movement; the developer dropped the clause (2026-09-23, the
-            round-3 review's M-1), so the remedy is true for every definition.
+            ``Mark it paid or cancel it first`` for a live row; for a hidden
+            one, ``Unarchive "Rent", mark that item paid or cancel it`` --
+            the one door that reaches a row the owner cannot see (ruling
+            **R-PC93**), naming the definition so the sentence cannot be read
+            as unarchiving the opening or the row.  Both are true for every
+            row these refusals name (developer, 2026-09-23, round 9's M1):
+            R-PC88's "or move it later" could never work, since every such
+            row was made by a recurring schedule -- its due day is the
+            schedule's, which the form refuses to change, and a move to a
+            later paycheck keeps it, so the refusal came back unchanged -- and
+            R-PC93's "or delete "Rent" for good" is refused for any definition
+            with payment history (round 8's M-1).
         """
         if self.is_hidden:
-            return "Unarchive it and mark it paid, cancel it or move it later"
-        return "Mark it paid, cancel it or move it later first"
+            return f'Unarchive "{self.name}", mark that item paid or cancel it'
+        return "Mark it paid or cancel it first"
 
 
 @dataclass(frozen=True)
@@ -312,8 +345,9 @@ def restorable_before_the_edit(
     once the edit is whole: that refusal grades the state the save would
     LEAVE, and the rows an unarchive would restore are a fact about the
     state it would REPLACE.  Read after the edit, the scope would already
-    leave out every row the edit moves below the books, and the refusal
-    could never fire for an archived definition.
+    leave out every hidden row the edit moves below the books, and the
+    refusal could never fire over one (it would still fire over an archived
+    definition's LIVE row, which no scope reads).
 
     **A stored rule the recurrence package cannot walk counts every hidden
     row** (the scope of an unarchive that holds nothing back), because the
@@ -338,7 +372,12 @@ def restorable_before_the_edit(
     try:
         return unarchive_scope_on(template, ctx)
     except (RecurrenceResolutionError, RecurrenceGenerationError):
-        return unarchive_scope(template, None, ctx.calendar())
+        logger.warning(
+            "Counting every hidden row of archived %s %d: its stored "
+            "recurrence rule cannot be walked.",
+            type(template).__name__, template.id, exc_info=True,
+        )
+        return scope_holding_nothing_back(template)
 
 
 def first_row_an_opening_strands(
@@ -444,6 +483,115 @@ def _recurring_definitions_moving_money_in(account_id: int) -> list:
     return definitions
 
 
+def reject_revert_below_the_books(row, new_status_id: int) -> None:
+    """Refuse setting *row* back to Projected when its books drop its occurrence.
+
+    **Ruling R-PC97's one refusal** (developer 2026-09-23, the C18-a
+    round-4 review's H2), asked by each row type's one status door ahead of
+    any write -- ``status_seam.apply_status_change`` for a transaction,
+    ``transfer_service.apply_status_to_all_three`` for a transfer, before
+    either shadow is written -- and acting only on a REVERT: a paid,
+    received, credited or cancelled row about to go back to Projected.  A
+    row whose occurrence its definition's books drop may not:
+    unpaid, it would sit inside the opening balance, and the maintain pass
+    deletes a still-Projected row its rule no longer names without a word
+    once a pass reaches its paycheck (plan step R10-a).  The question is the
+    one the books refusals above ask -- which occurrences the walk drops
+    (:func:`~app.services.definition_unarchive.inside_the_books`), a row
+    matched to its occurrence by ``occurs_on`` -- over the definition's walk
+    as it stands, composed by the ONE composition the opening door takes
+    (:func:`~app.services.balance_at.resolved_with_books` over
+    :func:`~app.services.balance_at.definition_books`).
+
+    **Its known cost, stated rather than rounded off**: reverting is the only
+    way to correct a paid row's amount or paycheck
+    (``state_machine.finalised_edit_rejection``), so a paid row due on or
+    before its books but settled after them can no longer be corrected until
+    the books are restated to open before its due day.  Production held FIVE
+    such recurring rows on 2026-09-23 -- transactions 781, 865 and 1069 (due
+    2026-03-26, settled 2026-03-27), transfer 322 (due 2026-04-22, settled
+    2026-04-23) and transfer 102 (due 2026-03-26, settled 2026-04-06, inside
+    its destination's books of 2026-04-05).  The cancelled row 788 is NOT
+    held, and the ruling's own question is why: it answers 2026-03-01, which
+    falls before the owner's first paycheck, where the walk places nothing
+    and so drops nothing (``recurrence._placement._lands_inside_the_books``
+    keeps an unplaced occurrence), so it can be reactivated as before.
+    **A stopgap by design**: plan step
+    ``recurrence:R22`` designs the model in which no unpaid copy is stored,
+    under which a revert deletes a record and this refuses nothing.
+
+    **A schedule the recurrence package cannot walk refuses the revert**:
+    with no walk there is no telling whether the books hold the row, and the
+    edit form is the door that repairs such a rule.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer` whose status is about to
+            change, not yet changed.  A transfer's shadow has no definition
+            of its own and is never held here: its transfer is, at the
+            transfer's own door.
+        new_status_id: The ``ref.statuses.id`` it is moving to.
+
+    Raises:
+        ValidationError: When the move is a revert to Projected and the
+            books drop the row's occurrence, or its schedule cannot be
+            walked.  Nothing is refused for a row no recurring definition
+            names (a rule-less item's row, a link-less row: ledger row
+            **PC-519**'s, bounded by no door), for an owner with no pay
+            periods, or for a row whose occurrence the books do not drop.
+    """
+    if not reverts_to_projected(row, new_status_id):
+        return
+    refusal = _revert_refusal(row)
+    if refusal is not None:
+        raise ValidationError(refusal)
+
+
+def _revert_refusal(row) -> str | None:
+    """Return why reverting *row* to Projected is refused, or ``None``.
+
+    Args:
+        row: See :func:`reject_revert_below_the_books`.
+
+    Returns:
+        The refusal's sentence, or ``None`` when nothing refuses it.
+    """
+    definition = row.template
+    if definition is None or not definition.recurs:
+        return None
+    calendar = calendar_for(definition.user_id)
+    try:
+        resolved = resolved_with_books(
+            recurrence_spec(definition.recurrence_rule), calendar,
+            definition_books(definition, {}),
+        )
+        compared = inside_the_books(resolved, calendar)
+    except (RecurrenceResolutionError, RecurrenceGenerationError):
+        logger.warning(
+            "Refusing to revert %s %d to Projected: its definition's stored "
+            "recurrence rule cannot be walked.",
+            type(row).__name__, row.id, exc_info=True,
+        )
+        return (
+            f'"{row.name}" cannot be set back to projected while the '
+            f'schedule of "{definition.name}" cannot be read: repair its '
+            "schedule first."
+        )
+    if row.occurs_on not in compared:
+        return None
+    day = compared[row.occurs_on].isoformat()
+    where = (
+        f"in the paycheck ending {day}" if resolved.is_envelope
+        else f"due {day}"
+    )
+    return (
+        f'"{row.name}" is {where}, on or before '
+        f"{books_named(definition, resolved.books_opened_on)} books, which "
+        f"open {resolved.books_opened_on.isoformat()}, so it cannot be "
+        "planned as unpaid."
+    )
+
+
 def definition_edit_refusal(
     template, ctx, restorable: UnarchiveScope | None,
 ) -> str | None:
@@ -507,5 +655,6 @@ __all__ = [
     "definition_edit_refusal",
     "first_row_an_opening_strands",
     "first_row_below_the_books",
+    "reject_revert_below_the_books",
     "restorable_before_the_edit",
 ]

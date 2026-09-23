@@ -82,7 +82,7 @@ class TestATransactionDefinitionsHiddenRows:
                 "would bring back"
             ) in message
             assert (
-                "Unarchive it and mark it paid, cancel it or move it later, "
+                'Unarchive "Recurring rent", mark that item paid or cancel it, '
                 "then restate the books."
             ) in message
             assert "for good" not in message, "M-1: the clause was dropped"
@@ -136,12 +136,14 @@ class TestATransactionDefinitionsHiddenRows:
         """
         with app.app_context():
             account, rows = _account_with_projected_rows(seed_user, seed_periods)
-            first = min(rows, key=lambda row: row.due_date)
-            first.is_deleted = True
             _db.session.commit()
+            first = min(rows, key=lambda row: row.due_date)
             template_id, first_id, first_due = (
                 first.template_id, first.id, first.due_date,
             )
+            assert auth_client.delete(
+                f"/transactions/{first_id}",
+            ).status_code == 200
             assert auth_client.post(
                 f"/templates/{template_id}/archive",
             ).status_code == 302
@@ -212,7 +214,7 @@ class TestATransactionDefinitionsHiddenRows:
 
             assert ceiling.day == first_due - _ONE_DAY
             assert "is archived and still holds" in ceiling.said
-            assert "Unarchive it and mark it paid" in ceiling.said
+            assert 'Unarchive "Recurring rent", mark that item paid' in ceiling.said
 
 
 class TestATransferDefinitionsHiddenRows:
@@ -520,6 +522,8 @@ class TestAnUnarchiveOfAnActiveDefinitionRestoresNothing:
                 auth_client, seed_user, seed_periods,
             )
             template_id = _db.session.get(Transaction, first_id).template_id
+            template = _db.session.get(TransactionTemplate, template_id)
+            version = template.version_id
             forecast = _forecast(seed_user, account)
 
             resp = auth_client.post(
@@ -534,6 +538,9 @@ class TestAnUnarchiveOfAnActiveDefinitionRestoresNothing:
             assert _db.session.get(Transaction, first_id).is_deleted
             assert {row.id for row in _live_rows(template_id)} == others
             assert _forecast(seed_user, account) == forecast
+            template = _db.session.get(TransactionTemplate, template_id)
+            assert template.is_active
+            assert template.version_id == version, "the definition was not written"
 
     def test_the_transfer_door(
         self, app, auth_client, seed_user, seed_periods,
@@ -548,6 +555,9 @@ class TestAnUnarchiveOfAnActiveDefinitionRestoresNothing:
             assert auth_client.delete(
                 f"/transfers/instance/{first_id}",
             ).status_code == 200
+            live = {row.id for row in _transfers(template_id, deleted=False)}
+            version = _db.session.get(TransferTemplate, template_id).version_id
+            forecast = _forecast(seed_user, savings)
 
             resp = auth_client.post(
                 f"/transfers/{template_id}/unarchive", follow_redirects=True,
@@ -559,6 +569,138 @@ class TestAnUnarchiveOfAnActiveDefinitionRestoresNothing:
             ) in resp.data
             _db.session.expire_all()
             assert _db.session.get(Transfer, first_id).is_deleted
+            assert {
+                row.id for row in _transfers(template_id, deleted=False)
+            } == live
+            template = _db.session.get(TransferTemplate, template_id)
+            assert template.is_active
+            assert template.version_id == version, "the definition was not written"
+            assert _forecast(seed_user, savings) == forecast
+
+
+class TestARowNoWalkNamesIsJudgedByItsOwnDay:
+    """Ruling R-PC96 (the round-4 review's H1): no occurrence to look up, so its own day.
+
+    A rule-less definition's rows and a recurring definition's UNDATED rows
+    (``occurs_on`` ``NULL``, which plan step R19-a retains and dev held 598 of)
+    answer no occurrence, so the walk the unarchive asks never names them.
+    Measured before the fix: every such hidden row was restored, one due ON
+    the books included.  No regeneration re-dates such a row, so its stored
+    day is compared -- and the books move itself stays allowed, as for any
+    item that does not repeat.
+    """
+
+    def test_a_transfer_that_stopped_repeating_while_archived(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The review's probe P9b, through the routes: $50.00 no longer counted twice."""
+        with app.app_context():
+            savings = _account_opened_early(seed_user, name="Unrepeat savings")
+            template_id = _monthly_save_into(seed_user, seed_periods, savings).id
+            first = min(_transfers(template_id), key=lambda row: row.due_date)
+            first_id, first_due = first.id, first.due_date
+            assert auth_client.post(
+                f"/transfers/{template_id}/archive",
+            ).status_code == 302
+            _db.session.expire_all()
+            template = _db.session.get(TransferTemplate, template_id)
+            assert auth_client.post(f"/transfers/{template_id}", data={
+                "recurrence_unit": "",
+                "version_id": str(template.version_id),
+                "effective_from": seed_periods[4].start_date.isoformat(),
+            }).status_code in (200, 302)
+            _db.session.expire_all()
+            assert not _db.session.get(TransferTemplate, template_id).recurs
+            hidden = {row.id for row in _transfers(template_id, deleted=True)}
+            assert first_id in hidden, "precondition: the rows are still hidden"
+            _restate_directly(savings, first_due)
+            forecast = _forecast(seed_user, savings)
+
+            resp = auth_client.post(
+                f"/transfers/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                f"{len(hidden) - 1} projected transfer(s) restored. 1 item due "
+                f"{first_due.isoformat()} stays deleted: it falls inside "
+                f"Unrepeat savings's books, which open {first_due.isoformat()}."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transfer, first_id).is_deleted
+            assert all(
+                shadow.is_deleted
+                for shadow in _db.session.query(Transaction).filter(
+                    Transaction.transfer_id == first_id,
+                )
+            )
+            assert {
+                row.id for row in _transfers(template_id, deleted=False)
+            } == hidden - {first_id}
+            assert _forecast(seed_user, savings) == (
+                forecast + Decimal("50.00") * (len(hidden) - 1)
+            )
+
+    def test_an_undated_hidden_row_ABOVE_the_books_is_restored(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The round-4 review's M2: the undated arm was untested, and a mutation survived.
+
+        The books must drop SOME occurrence for the arm to be asked at all, so
+        the first row is deleted by hand and the books moved onto its day;
+        the undated row is a later one, above them.
+        """
+        with app.app_context():
+            account, rows = _account_with_projected_rows(seed_user, seed_periods)
+            first, _second, third = sorted(rows, key=lambda row: row.due_date)[:3]
+            third.occurs_on = None
+            _db.session.commit()
+            template_id, first_id, first_due, undated_id = (
+                first.template_id, first.id, first.due_date, third.id,
+            )
+            assert auth_client.delete(
+                f"/transactions/{first_id}",
+            ).status_code == 200
+            _restate_directly(account, first_due)
+            assert auth_client.post(
+                f"/templates/{template_id}/archive",
+            ).status_code == 302
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                f"1 item due {first_due.isoformat()} stays deleted"
+            ) in resp.data, "precondition: the books drop an occurrence"
+            _db.session.expire_all()
+            assert not _db.session.get(Transaction, undated_id).is_deleted
+            assert _db.session.get(Transaction, first_id).is_deleted
+
+    def test_an_undated_hidden_row_on_its_books_stays_deleted_and_is_named(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """No occurrence to match, so its own due day: on the books, it stays."""
+        with app.app_context():
+            account, template_id, undated_id, due = _rent_with_an_undated_row(
+                seed_user, seed_periods,
+            )
+            _restate_directly(account, due)
+            assert auth_client.post(
+                f"/templates/{template_id}/archive",
+            ).status_code == 302
+            restorable = len(_hidden_rows(template_id)) - 1
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/unarchive", follow_redirects=True,
+            )
+
+            assert _flashed(
+                f"{restorable} projected transaction(s) restored. 1 item due "
+                f"{due.isoformat()} stays deleted: it falls inside "
+                f"Planned-rows account's books, which open {due.isoformat()}."
+            ) in resp.data
+            _db.session.expire_all()
+            assert _db.session.get(Transaction, undated_id).is_deleted
 
 
 class TestAnArchivedDefinitionsLIVERowCounts:
@@ -594,6 +736,39 @@ class TestAnArchivedDefinitionsLIVERowCounts:
                 f"{first_due.isoformat()}"
             ) in message
             assert "is archived" not in message
+
+
+class TestAnUnwalkableRuleCountsEveryHiddenRow:
+    """The round-4 review's L1: the edit door's fallback was reached by no test and logged nothing."""
+
+    def test_the_edit_doors_capture_holds_nothing_back_and_logs_why(
+        self, app, auth_client, seed_user, seed_periods, monkeypatch, caplog,
+    ):
+        """With no walk, every hidden row counts, and the log says which definition."""
+        with app.app_context():
+            _account, template_id, _first_due = _archived_rent(
+                auth_client, seed_user, seed_periods,
+            )
+            hidden = {row.id for row in _hidden_rows(template_id)}
+
+            def refusing(*_args, **_kwargs):
+                raise RecurrenceResolutionError("a rule no door writes")
+
+            monkeypatch.setattr(planned_rows_books, "unarchive_scope_on", refusing)
+            template = _db.session.get(TransactionTemplate, template_id)
+
+            scope = planned_rows_books.restorable_before_the_edit(
+                template, BalanceContext.build(seed_user["user"].id),
+            )
+
+            assert {
+                row_id for (row_id,) in _db.session.query(Transaction.id)
+                .filter(*scope.restores())
+            } == hidden
+            assert (
+                f"Counting every hidden row of archived TransactionTemplate "
+                f"{template_id}"
+            ) in caplog.text
 
 
 class TestAnUnwalkableRuleCostsTheCardNotThePage:
@@ -659,6 +834,24 @@ def _rent_with_a_row_deleted_below_the_books(auth_client, seed_user, seed_period
     assert auth_client.delete(f"/transactions/{first_id}").status_code == 200
     _restate_directly(account, first_due)
     return account, first_id, first_due, others
+
+
+def _rent_with_an_undated_row(seed_user, seed_periods):
+    """A recurring rent whose FIRST row answers no occurrence (``occurs_on`` ``NULL``).
+
+    The state plan step R19-a retains rather than retires (dev held 598 such
+    rows on the day it shipped); stated directly, because it is a state and
+    not a door under test.
+
+    Returns:
+        ``(account, template_id, undated_id, due)`` -- the undated row's id
+        and its stored due day.
+    """
+    account, rows = _account_with_projected_rows(seed_user, seed_periods)
+    first = min(rows, key=lambda row: row.due_date)
+    first.occurs_on = None
+    _db.session.commit()
+    return account, first.template_id, first.id, first.due_date
 
 
 def _forecast(seed_user, account):

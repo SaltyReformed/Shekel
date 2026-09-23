@@ -198,7 +198,7 @@ def unarchive_transfer_template(template_id):
     """Unarchive a transfer template.
 
     Restores the transfers the archive hid, and their shadow transactions,
-    less any the books now drop (rulings **R-PC93** and **R-PC95**,
+    less any the books now drop (rulings **R-PC93**, **R-PC95** and **R-PC96**,
     :class:`~app.services.definition_unarchive.UnarchiveScope`): a transfer
     its owner deleted by hand is soft-deleted exactly as the archive hides
     one, and one the books have passed would come back inside the opening
