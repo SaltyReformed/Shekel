@@ -5,7 +5,9 @@
 # runner per replicate (tools/xgy_measure/run_all.sh).  Round 2 adds the
 # ``shard`` job: the FULL suite (docker tests included, as CI runs it) split
 # six ways by tools/xgy_measure/xgy_shard.py, each shard on its own runner
-# through scripts/test.sh at -n auto.
+# through scripts/test.sh at -n auto.  Round 3 keys a test's shard by its
+# xdist_group when it has one, prints every executed node id (-v), and adds a
+# plain full collection on the runner to diff the shards' union against.
 
 name: CI
 
@@ -61,7 +63,7 @@ jobs:
           PYTHONPATH: tools/xgy_measure
         run: |
           start=$(date +%s.%N)
-          XGY_SHARD="${SHARD}/6" ./scripts/test.sh -p xgy_shard -n auto -m "" --tb=short -q --durations=40
+          XGY_SHARD="${SHARD}/6" ./scripts/test.sh -p xgy_shard -n auto -m "" --tb=short --durations=40
           echo "XGY SHARD ${SHARD} wall=$(python3 -c "print(f'{$(date +%s.%N)-$start:.1f}')")s"
 
       - name: Audit-trigger benchmarks (serial), shard 0 only
@@ -71,33 +73,11 @@ jobs:
           ./scripts/test.sh tests/test_performance -q -n 0 -p no:randomly --override-ini=addopts=
           echo "XGY PERF wall=$(python3 -c "print(f'{$(date +%s.%N)-$start:.1f}')")s"
 
-  measure:
+  collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix:
-        replicate: [1, 2]
-
-    # Byte-for-byte today's lint-and-test service container: arms A12/A8/A4.
-    services:
-      postgres:
-        image: postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd
-        env:
-          POSTGRES_USER: shekel_test
-          POSTGRES_PASSWORD: shekel_test
-          POSTGRES_DB: shekel_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+    timeout-minutes: 30
     env:
       TZ: Pacific/Kiritimati
-
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,57 +102,5 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Runner capacity
-        run: |
-          echo "XGY cores: $(nproc)"
-          lscpu | sed 's/^/XGY lscpu /'
-          free -h | sed 's/^/XGY free /'
-          df -h / /tmp | sed 's/^/XGY df /'
-          docker info --format 'XGY docker driver={{.Driver}} root={{.DockerRootDir}}'
-          findmnt -no SOURCE,FSTYPE,OPTIONS / | sed 's/^/XGY mount root /'
-
-      - name: CPU benchmark
-        run: python tools/xgy_measure/cpu_bench.py 7 | sed 's/^/XGY /'
-
-      - name: Prepare the service cluster exactly as ci.yml does
-        env:
-          TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
-        run: |
-          python - <<'PY'
-          import os
-          import time
-
-          import psycopg2
-
-          GUCS = ("fsync", "full_page_writes", "synchronous_commit")
-          DSN = os.environ["TEST_ADMIN_DATABASE_URL"]
-          conn = psycopg2.connect(DSN)
-          conn.autocommit = True
-          with conn.cursor() as cur:
-              for guc in GUCS:
-                  cur.execute(f"ALTER SYSTEM SET {guc} = off")
-              cur.execute("SELECT pg_reload_conf()")
-          conn.close()
-          deadline = time.monotonic() + 10
-          while True:
-              conn = psycopg2.connect(DSN)
-              with conn.cursor() as cur:
-                  cur.execute("SELECT name, setting FROM pg_settings WHERE name = ANY(%s)", (list(GUCS),))
-                  applied = dict(cur.fetchall())
-              conn.close()
-              if all(v == "off" for v in applied.values()):
-                  break
-              if time.monotonic() > deadline:
-                  raise SystemExit(f"GUCs did not apply: {applied}")
-              time.sleep(0.2)
-          print(f"XGY service cluster: {applied}")
-          PY
-          start=$(date +%s.%N)
-          python scripts/build_test_template.py
-          echo "XGY service template build: $(python3 -c "print(f'{$(date +%s.%N)-$start:.1f}')")s"
-          python tools/xgy_measure/db_bench.py | sed 's/^/XGY DB service-tcp /'
-
-      - name: Arms
-        env:
-          REPLICATE: ${{ matrix.replicate }}
-        run: bash tools/xgy_measure/run_all.sh "${REPLICATE}"
+      - name: Plain full collection on the runner (no shard plugin)
+        run: ./scripts/test.sh --collect-only -qq -n 0 -m "" | sed 's/^/XGY COLLECT /'
