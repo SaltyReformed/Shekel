@@ -28,7 +28,11 @@ The helpers fall into two groups:
   ``category_id`` (``_validate_account_type_boundary_edit``) that
   crosses the amortizing or Asset/Liability boundary is refused while
   the affected account(s) carry ledger postings -- see
-  ``_crosses_posting_boundary`` for why exactly those two boundaries.
+  ``_crosses_posting_boundary`` for why exactly those two boundaries.  Both
+  also refuse moving an account between savings and debt while an active
+  savings goal is on it, or between a loan type and a card-style debt (plan
+  step credit_card:CC-5-5d, rulings R-CC87 and R-CC91):
+  ``_refuse_goal_crossing``.
 
 The Marshmallow schema singletons (``_anchor_schema``,
 ``_create_schema``, ``_update_schema``, ``_type_create_schema``,
@@ -50,6 +54,7 @@ from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType
+from app.models.savings_goal import SavingsGoal
 from app.schemas.validation import (
     AccountCreateSchema,
     AccountTypeCreateSchema,
@@ -60,6 +65,7 @@ from app.schemas.validation import (
     AppreciationParamsUpdateSchema,
     InterestParamsUpdateSchema,
 )
+from app.services.account_category import is_liability_category
 from app.services.ledger_account_service import ledger_class_id_for_category
 from app.utils import archive_helpers
 
@@ -232,6 +238,80 @@ def _crosses_posting_boundary(old_type, new_amortization, new_category_id):
     )
 
 
+#: Rulings R-CC87 / R-CC91's refusal, as a ready-to-``flash``
+#: ``(message, category)`` pair, for re-typing an account -- or editing its
+#: custom type -- between savings and debt, or between a loan type and a
+#: card-style debt, while an active goal is on it.
+GOAL_BLOCKS_DEBT_CROSSING = (
+    "A goal is on this account, and its type cannot change between savings "
+    "and debt, or between a loan type and a card-style debt, while the goal "
+    "is on it.  Delete the goal first, then change the type.",
+    "warning",
+)
+
+
+def _goal_kind(category_id, has_amortization):
+    """Return what a goal on an account of this type IS: ``(is_debt, is_loan_type)``.
+
+    The two facts a goal's meaning hangs on (plan step credit_card:CC-5-5d):
+    whether it is a milestone to get under at all (a liability, ruling R-CC69),
+    and, for a debt, whether its start is re-read from the books (a loan type,
+    whose tile reads the day) or recorded when the goal was created (any
+    other debt, whose tile reads the pay period's end; ruling R-CC91).  A
+    savings type's amortization flag is not part of it.
+
+    Args:
+        category_id: The type's ``ref.account_type_categories`` id.
+        has_amortization: The type's ``has_amortization`` flag.
+
+    Returns:
+        ``(is_debt, is_loan_type)``, the second ``False`` for a savings type.
+    """
+    is_debt = is_liability_category(category_id)
+    return is_debt, is_debt and bool(has_amortization)
+
+
+def _refuse_goal_crossing(account_ids, was, becomes):
+    """Refuse changing what a goal on these accounts IS while a goal is on one.
+
+    Rulings **R-CC87** ("Re-typing an account between savings and debt is also
+    refused while a goal is on it") and **R-CC91** ("Changing an account
+    between a card-style and a loan-style type is then refused while a goal is
+    on it, so a saved start can never land on a loan"), plan step
+    credit_card:CC-5-5d.  A savings goal has no start; a loan goal re-reads its
+    start from the books on its creation day; a card-style goal RECORDED its
+    start when it was created.  A goal whose account changed kind under it
+    would read a start it does not have, or one from a rule that was not its
+    own.  The goal door refuses the same move when the GOAL is edited
+    (:mod:`app.services.savings_goal_door`); this is the other door to it,
+    through the account's type.
+
+    Only an ACTIVE goal refuses: a deleted goal is deactivated, and no save
+    re-activates one (its update form carries no ``is_active``).
+
+    Args:
+        account_ids: The accounts whose type would change.
+        was: :func:`_goal_kind` of their type now.
+        becomes: :func:`_goal_kind` of their type after the change.
+
+    Returns:
+        :data:`GOAL_BLOCKS_DEBT_CROSSING` when the change alters what a goal
+        on them is and an active goal is on one of the accounts; ``None``
+        otherwise.
+    """
+    if was == becomes or not account_ids:
+        return None
+    goal_on_them = (
+        db.session.query(SavingsGoal.id)
+        .filter(
+            SavingsGoal.account_id.in_(account_ids),
+            SavingsGoal.is_active.is_(True),
+        )
+        .first()
+    )
+    return None if goal_on_them is None else GOAL_BLOCKS_DEBT_CROSSING
+
+
 def _validate_account_type_change(account, new_type_id):
     """Refuse a boundary-crossing re-type of an account with posted history.
 
@@ -246,6 +326,14 @@ def _validate_account_type_change(account, new_type_id):
     route then re-classes the empty linked row and re-syncs the
     corrections.
 
+    **A change of what a goal on the account IS -- savings to debt, or a loan
+    type to a card-style debt -- is refused FIRST while an active goal is on
+    it** (:func:`_refuse_goal_crossing`, rulings R-CC87 and R-CC91), posted
+    history or not: that rule is about what the goal means, not about the
+    ledger, and it is asked before the posting boundary so it does not depend
+    on the ledger's Asset/Liability class agreeing with the category's
+    liability test.
+
     Args:
         account: The :class:`~app.models.account.Account` being re-typed
             (its ``account_type`` is the CURRENT type).
@@ -258,6 +346,16 @@ def _validate_account_type_change(account, new_type_id):
         ``(message, category)`` tuple ready for :func:`flask.flash`.
     """
     new_type = db.session.get(AccountType, new_type_id)
+    goal_refusal = _refuse_goal_crossing(
+        [account.id],
+        _goal_kind(
+            account.account_type.category_id,
+            account.account_type.has_amortization,
+        ),
+        _goal_kind(new_type.category_id, new_type.has_amortization),
+    )
+    if goal_refusal is not None:
+        return goal_refusal
     if not _crosses_posting_boundary(
         account.account_type, new_type.has_amortization, new_type.category_id,
     ):
@@ -287,6 +385,12 @@ def _validate_account_type_boundary_edit(account_type, data):
     have empty ledgers pass; the route then re-classes those linked rows
     and re-syncs their corrections.
 
+    **An edit changing what a goal on the type's accounts IS (its category
+    between savings and debt, or a debt's amortization flag) is refused first
+    while an active goal is on any of them** (:func:`_refuse_goal_crossing`,
+    rulings R-CC87 and R-CC91), for the reason
+    :func:`_validate_account_type_change` gives.
+
     Args:
         account_type: The owner's custom :class:`~app.models.ref.AccountType`
             being edited.
@@ -300,11 +404,16 @@ def _validate_account_type_boundary_edit(account_type, data):
     ANY account of this type carry postings", so the unscoped query is free
     defense-in-depth against pre-C-28 legacy cross-user rows.
     """
-    if not _crosses_posting_boundary(
-        account_type,
-        data.get("has_amortization", account_type.has_amortization),
-        data.get("category_id", account_type.category_id),
-    ):
+    new_category_id = data.get("category_id", account_type.category_id)
+    new_amortization = data.get(
+        "has_amortization", account_type.has_amortization,
+    )
+    was = _goal_kind(account_type.category_id, account_type.has_amortization)
+    becomes = _goal_kind(new_category_id, new_amortization)
+    crosses_posting = _crosses_posting_boundary(
+        account_type, new_amortization, new_category_id,
+    )
+    if not crosses_posting and was == becomes:
         return None
     account_ids = [
         row[0] for row in
@@ -312,6 +421,11 @@ def _validate_account_type_boundary_edit(account_type, data):
         .filter_by(account_type_id=account_type.id)
         .all()
     ]
+    goal_refusal = _refuse_goal_crossing(account_ids, was, becomes)
+    if goal_refusal is not None:
+        return goal_refusal
+    if not crosses_posting:
+        return None
     for account_id in account_ids:
         if archive_helpers.account_has_ledger_postings(account_id):
             return (
