@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "_withdrawal_macros.html" import frees_lines %}
 {# Anchored action card -- renders inside the #txn-popover container
    (rebuild decision 2, docs/design/grid_audit.md): ONE card replaces
    the old three-tier edit system.  Layout, top to bottom: header +
@@ -145,6 +146,23 @@
     </button>
     {% endif %}
   </div>
+  {#- **What Paid WITHDRAWS on a row whose purchases replace its payment**
+      (plan step credit_card:CC-5-4a-3, rulings R-CC54 / R-CC56).  A reverted
+      row keeps its payment un-dated (R-BAL61), and an accepted match may
+      still name it; once the row holds purchases it settles FROM them, a
+      purchases record the status seam answers by taking the kept payment off
+      the books -- so every match naming the payment is withdrawn, said here
+      beside Paid before the press.  `not correctable` is exactly "this row
+      settles from its purchases" (the route's `amount_correctable`), and
+      `payment_withdraws` is the route's one read of what the payment's
+      leaving frees; the grid's one-click Mark Paid has no caption and
+      withdraws and logs it all the same. -#}
+  {%- if txn.status_id == STATUS_PROJECTED and not correctable
+        and payment_withdraws and payment_withdraws.frees_a_line %}
+  <div class="form-text mb-2" id="purchases-withdraws-{{ txn.id }}">
+    Marking this paid from its purchases {{ frees_lines(payment_withdraws) }}.
+  </div>
+  {%- endif %}
 
   <form hx-patch="{{ url_for('transactions.update_transaction', txn_id=txn.id) }}"
         hx-target="#txn-cell-{{ txn.id }}"
@@ -290,6 +308,17 @@
                min="0" max="10000000"
                class="form-control form-control-sm"
                title="What your bank actually took. Correct it if your statement shows a different amount -- you do not need to set the row back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">
+        {#- **What $0.00 here WITHDRAWS** (plan step credit_card:CC-5-4a-3,
+            rulings R-CC54 / R-CC56, finding CC-358).  A payment of nothing
+            is not a movement, so the status seam takes the row's payment off
+            the books, and every match naming it is withdrawn -- said here,
+            under the box, before the Save.  `payment_withdraws` is the
+            route's one read of what the payment's leaving frees. -#}
+        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
+        <div class="form-text" id="zero-withdraws-{{ txn.id }}">
+          Recording $0.00 {{ frees_lines(payment_withdraws) }}.
+        </div>
+        {%- endif %}
       </div>
       {% endif %}
       {# **PAID FROM: which account the money moved through** (plan step
@@ -321,14 +350,14 @@
             the account it moved through, so re-pointing the payment withdraws
             the match and its bank line is unexplained again -- said here,
             beside the control, before the pick, as the delete dialog says it
-            before the press.  `tender_withdraws` is the route's read of the
-            same derivation the door acts on (`_tender_withdrawal`); it renders
+            before the press.  `payment_withdraws` is the route's read of the
+            same derivation the door acts on (`_payment_withdrawal`); it renders
             nothing when no match names the payment -- and nothing for a GROUP
             act the pick only shrinks (the register flags it), the silence the
             delete dialog keeps over the same case. -#}
-        {%- if tender_withdraws and tender_withdraws.frees_a_line %}
+        {%- if payment_withdraws and payment_withdraws.frees_a_line %}
         <div class="form-text" id="tender-withdraws-{{ txn.id }}">
-          Picking another account withdraws {{ tender_withdraws.matches }} accepted match{{ '' if tender_withdraws.matches == 1 else 'es' }}, so {{ tender_withdraws.lines | length }} bank line{{ '' if tender_withdraws.lines | length == 1 else 's' }} {{ 'is' if tender_withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in tender_withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.
+          Picking another account {{ frees_lines(payment_withdraws) }}.
         </div>
         {%- endif %}
       </div>
@@ -715,7 +744,7 @@ Delete &quot;{{ txn.name }}&quot;{% if txn.entries %} and the {{ txn.entries | l
 {% if recorded is not none %}Your books record {{ money(recorded) }} as having {{ 'arrived in' if txn.is_income else 'left' }} your account for it.{% else %}Your balance still expects {{ money(budgets[txn.id]) }} to {{ 'arrive' if txn.is_income else 'leave' }} for it.{% endif %}
 {% if preview.paybacks %}Its CC payback{{ '' if preview.paybacks | length == 1 else 's' }} go{{ 'es' if preview.paybacks | length == 1 else '' }} with it: {% for name in preview.paybacks %}{{ name }}{{ ', ' if not loop.last }}{% endfor %}.
 {% endif %}{% if preview.soft %}This occurrence will not come back, and the recurring transaction behind it keeps generating the others.{% elif preview.disposes_definition %}This is the item's only occurrence, so the item itself goes with it. This cannot be undone.{% else %}This cannot be undone.{% endif %}
-{% if withdraws and withdraws.frees_a_line %}It also withdraws {{ withdraws.matches }} accepted match{{ '' if withdraws.matches == 1 else 'es' }}, so {{ withdraws.lines | length }} bank line{{ '' if withdraws.lines | length == 1 else 's' }} {{ 'is' if withdraws.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in withdraws.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}.{% if withdraws.kept_rows %} {{ withdraws.kept_rows }} row{{ '' if withdraws.kept_rows == 1 else 's' }} {{ 'that match' if withdraws.matches == 1 else 'those matches' }} created stay{{ 's' if withdraws.kept_rows == 1 else '' }} in your books.{% endif %}{% endif %}
+{% if withdraws and withdraws.frees_a_line %}It also {{ frees_lines(withdraws) }}.{% if withdraws.kept_rows %} {{ withdraws.kept_rows }} row{{ '' if withdraws.kept_rows == 1 else 's' }} {{ 'that match' if withdraws.matches == 1 else 'those matches' }} created stay{{ 's' if withdraws.kept_rows == 1 else '' }} in your books.{% endif %}{% endif %}
   {%- endset -%}
   <button type="button" class="btn btn-sm btn-outline-danger w-100"
           hx-delete="{{ url_for('transactions.delete_transaction', txn_id=txn.id) }}"

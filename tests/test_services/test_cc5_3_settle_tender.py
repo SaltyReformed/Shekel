@@ -951,10 +951,17 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
         asked for checking's, nothing -- which is also what the accept
         door's re-price answers for a payment re-pointed elsewhere since the
         screen offered it, so that act is refused rather than written
-        against the member key.  The accepted register's readers carry the
-        account for the same reason, for a member naming the row and for
-        one naming its payment alike.  Through ``CC-5-3`` this pinned the
-        row-pricer's settled arm, which R-CC43 deleted.
+        against the member key.  The accepted register's reader carries the
+        account for the same reason, for a member naming the payment -- the
+        one member shape since ``CC-5-4a-2`` (ruling **R-CC45**), which
+        deleted the row-member lines this case asserted beside it.  Through
+        ``CC-5-3`` this pinned the row-pricer's settled arm, which R-CC43
+        deleted.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."  And, for the four register(txn, ...) row-valuation
+        lines this deleted: "Confirm the 4 row-valuation lines -- deleting the 4 register(txn, ...)
+        lines is a rule-5 re-expression under R-CC45. The paired register(movement, ...) lines,
+        with the same -$120.00 / $0.00 figures, carry the assertion."
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -976,8 +983,6 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
             assert _valuation.repriced(on_card, calendar, basis, card.id) == on_card
             assert _valuation.repriced(on_card, calendar, basis, checking.id) is None
             register = _accepted_view._accepted_row  # pylint: disable=protected-access
-            assert register(txn, txn.settled_on, card.id).cash_amount == -_HOTEL
-            assert register(txn, txn.settled_on, checking.id).cash_amount == Decimal("0")
             assert register(movement, txn.settled_on, card.id).cash_amount == -_HOTEL
             assert register(movement, txn.settled_on, checking.id).cash_amount == Decimal("0")
 
@@ -987,8 +992,14 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
         """The accepted register and the accept door's re-price agree: the match stops holding.
 
         Graded on the member shape every act records since plan step
-        ``credit_card:CC-5-4a-1`` (ruling **R-CC43**: the payment), beside the
-        row member the acts before it hold.
+        ``credit_card:CC-5-4a-1`` (ruling **R-CC43**: the payment) -- the one
+        shape since ``CC-5-4a-2`` re-keyed the acts before it and dropped the
+        row-member lines this case asserted beside it (ruling **R-CC45**).
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."  And, for the four register(txn, ...) row-valuation
+        lines this deleted: "Confirm the 4 row-valuation lines -- deleting the 4 register(txn, ...)
+        lines is a rule-5 re-expression under R-CC45. The paired register(movement, ...) lines,
+        with the same -$120.00 / $0.00 figures, carry the assertion."
         """
         with app.app_context():
             checking = seed_user["account"]
@@ -1004,12 +1015,10 @@ class TestAStatementScreenPricesARowWhereItsMoneyMoved:
             )
             assert candidate is not None
             register = _accepted_view._accepted_row  # pylint: disable=protected-access
-            assert register(txn, txn.settled_on, checking.id).cash_amount == -_HOTEL
             assert register(movement, txn.settled_on, checking.id).cash_amount == -_HOTEL
             assert _valuation.repriced(candidate, calendar, basis, checking.id) is not None
 
             _correct_tender(txn, card.id)
 
-            assert register(txn, txn.settled_on, checking.id).cash_amount == Decimal("0")
             assert register(movement, txn.settled_on, checking.id).cash_amount == Decimal("0")
             assert _valuation.repriced(candidate, calendar, basis, checking.id) is None

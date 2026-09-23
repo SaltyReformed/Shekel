@@ -17,8 +17,11 @@ and the refusals leaf write nothing at all.
 Split out of the single ``status_seam`` module at plan step **X-au-c3**; see
 :mod:`._record` for the ground the split was made on.
 
-Mutates the passed row in place; does NOT flush or commit -- the caller owns the
-session boundary.  No Flask imports.
+Mutates the passed row in place and does NOT commit -- the caller owns the
+session boundary.  It flushes EXPLICITLY only where the covering movement's
+own writes must (``_covering``: a payment re-pointed, or taken off the books
+through ``movement_removal``); a lazy load of ``row.entries`` may autoflush
+outside a caller's ``no_autoflush``.  No Flask imports.
 """
 
 from datetime import date
@@ -357,13 +360,21 @@ def apply_status_change(
          not do this before X-aj1 and held only because every route commits
          before it renders.
 
-    It deliberately does NOT post to the ledger and does NOT flush or commit:
+    It deliberately does NOT reconcile the ledger and does NOT commit:
     ledger emission is reconciled at the END of each handler, after every
     effect field is applied, never at the status flip (Build-Order Step 3,
     Commit 6 -- the same placement ``transfer_service.update_transfer`` uses;
     the PATCH handler's UNLOCK order, ruling **R-BAL58**, runs the status verb
     before its field writes and reconciles again after them); the caller owns
-    the session boundary.
+    the session boundary.  **The two exceptions are the covering movement's
+    own**, and each may FLUSH: a payment a ``$0.00`` or ``purchases`` record
+    takes off the books has its legs reversed and its matches withdrawn
+    before it is deleted (``_covering._withdraw`` through
+    ``movement_removal.remove_movements``, plan step
+    ``credit_card:CC-5-4a-3``), because those legs and members must go while
+    the rows they link still exist; and a re-pointed payment leaves its
+    matches before its account moves (``_covering._re_point``), because the
+    member's composite key would refuse the account change while it stands.
 
     Args:
         row: The :class:`~app.models.transaction.Transaction` or

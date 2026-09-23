@@ -38,7 +38,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch
-from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, status_seam
 from app.utils.log_events import (
     ERROR,
@@ -269,22 +269,17 @@ def accepted_groups(
         ]
         posts_on = max(line.posted_on for line in match_lines)
         rows = [
-            _accepted_row(
-                member.transaction
-                if member.transaction_id is not None else member.entry,
-                posts_on, match.account_id,
-            )
+            _accepted_row(member.entry, posts_on, match.account_id)
             for member in match.members
-            if member.transaction_id is not None
-            or member.transaction_entry_id is not None
+            if member.transaction_entry_id is not None
         ]
         # **Asked where both relations are loaded**, which is only here: what
         # an act NAMES and what it MADE are two tables
         # (:class:`~app.models.statement_match.StatementMatchCreation`), and
         # every reader downstream has the labels rather than the ids.  What
-        # it names is read through :func:`~._acts.named_rows` (plan step
-        # ``credit_card:CC-5-4a-1``): a member naming a row's covering
-        # movement names THAT ROW and not a purchase, so a residual the act
+        # it names is read through :func:`~._acts.named_rows` (plan steps
+        # ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``): a member naming a row's
+        # covering movement names THAT ROW and not a purchase, so a residual the act
         # minted -- created as a row, named as its payment -- still meets
         # its creation here, and a payment member is never mistaken for a
         # purchase the act would have had to create.
@@ -522,7 +517,9 @@ def accepted_register(
     )
 
 
-def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
+def _accepted_row(
+    entry: TransactionEntry, posts_on: date, account_id: int,
+) -> AcceptedRow:
     """Return one member of an accepted match, valued as it stands NOW.
 
     **The valuation is the cash ledger's, and it is what makes a soft-deleted
@@ -540,30 +537,24 @@ def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
     for re-review rather than the page raising (finding **N-302**'s shape);
     the arithmetic says the same thing now.
 
-    **And for one whose payment was moved onto ANOTHER account** (plan step
-    ``credit_card:CC-5-3``, ruling **R-CC40**): a member's row is on the
-    match's account by the member key, and its covering movement is worth
-    something on that account only while it is ON it -- a "Paid from"
-    correction onto the card since the match was accepted reads ``0.00`` by
-    the same arithmetic, and the match stops holding.
-
-    **A member that names a row's PAYMENT is the same subject read from the
-    other home** (plan step ``credit_card:CC-5-4a-1``, ruling **R-CC43**):
-    every act recorded since that step names the covering movement rather
-    than the row, and the member key holds the MOVEMENT to the act's account.
-    It is valued exactly as the row member is -- the row's payment on this
-    account, ``covered_cash_leg`` -- which for a member on this account is
-    this movement while it is dated and ``0.00`` once a revert un-dates it
-    (a "Paid from" correction cannot leave it here: the member goes with
-    the re-point, ruling **R-CC46**); and it is labelled by the row it pays,
-    as the row member was.  The row arm goes with the column at plan step
-    ``credit_card:CC-5-4a-2``; the payment arm is the register's shape from
-    then on.
+    **A member that names a row's PAYMENT is valued as that row's payment ON
+    THIS ACCOUNT** (plan steps ``credit_card:CC-5-4a-1`` / ``CC-5-4a-2``,
+    rulings **R-CC43**, **R-CC45**): every act names the covering movement
+    rather than the row, and the member key holds the MOVEMENT to the act's
+    account.  ``covered_cash_leg`` is that movement while it is dated and
+    ``0.00`` once a revert un-dates it (a "Paid from" correction cannot leave
+    it here: the member goes with the re-point, ruling **R-CC46**); and it is
+    labelled by the row it pays.  The acts recorded before ``CC-5-4a-1``
+    named the ROW and were valued by the same ``covered_cash_leg`` on the
+    row, so migration ``2eabfa596ee0`` re-keyed them onto the payment
+    without moving a label or a figure.  The DAY (and so the agreement) is
+    the payment's, which reads as the row's wherever the seam's mirror holds
+    -- 103 of 103 on production's shape; the migration counts and prints any
+    member whose payment is dated on another day.
 
     Args:
-        row: The :class:`~app.models.transaction.Transaction` or
-            :class:`~app.models.transaction_entry.TransactionEntry` the member
-            names.
+        entry: The :class:`~app.models.transaction_entry.TransactionEntry`
+            the member names -- a person's purchase or a row's payment.
         posts_on: The day the match asserted.
         account_id: The match's account -- the statement the member was
             matched on, and the account a row's payment is valued ON.
@@ -571,22 +562,16 @@ def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
     Returns:
         Its :class:`AcceptedRow`.
     """
-    if isinstance(row, Transaction):
+    if entry.covers_settlement:
         return AcceptedRow(
-            label=row.name, settled_on=row.settled_on,
+            label=entry.transaction.name, settled_on=entry.settled_on,
             # What the row's covering movement moves ON THIS ACCOUNT (rulings
             # **R-BAL81**, **R-CC40**) -- the same valuation the offer and
             # the post-apply check use.
-            cash_amount=status_seam.covered_cash_leg(row, account_id),
-            agrees=row.settled_on == posts_on,
-        )
-    if row.covers_settlement:
-        return AcceptedRow(
-            label=row.transaction.name, settled_on=row.settled_on,
             cash_amount=status_seam.covered_cash_leg(
-                row.transaction, account_id,
+                entry.transaction, account_id,
             ),
-            agrees=row.settled_on == posts_on,
+            agrees=entry.settled_on == posts_on,
         )
     # **A CARD purchase moves no cash through THIS account at all** -- it
     # leaves later through its own CC Payback sibling, which is why
@@ -597,12 +582,12 @@ def _accepted_row(row, posts_on: date, account_id: int) -> AcceptedRow:
     # stopped being on this statement.  Found by adversarial financial review
     # 2026-08-17.
     return AcceptedRow(
-        label=row.description, settled_on=row.settled_on,
+        label=entry.description, settled_on=entry.settled_on,
         # The ONE valuation of a movement (plan step X-bi-3b): its figure in
         # its parent's direction, ``0.00`` for a card purchase or one under a
         # non-contributing parent -- the three clauses this spelled inline.
-        cash_amount=cash_ledger.movement_cash_leg(row.transaction, row),
-        agrees=row.settled_on == posts_on,
+        cash_amount=cash_ledger.movement_cash_leg(entry.transaction, entry),
+        agrees=entry.settled_on == posts_on,
     )
 
 

@@ -279,7 +279,7 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         # A statement is one bank's record of ONE account, so a rule pointing
         # at another account's recurring envelope is not a destination at all.
         # Composite rather than a bare ``template_id`` FK for the reason
-        # ``fk_statement_match_members_transaction_account`` is composite:
+        # ``fk_statement_match_members_entry_account`` is composite:
         # otherwise "is this template on this account" is a reader's check that
         # can be forgotten, and the row it protects is one a crafted request
         # reaches.  ``MATCH SIMPLE`` (PostgreSQL's default) is what lets it sit
@@ -326,7 +326,7 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     merchant_id = db.Column(db.Integer, nullable=False)
     # No direct single-column keys on either arm: both are reached through a
     # composite key that also holds the owner or the account equal.  Same
-    # shape, same reason, as ``statement_match_members``' three subject keys.
+    # shape, same reason, as ``statement_match_members``' two subject keys.
     template_id = db.Column(db.Integer)
     envelope_name = db.Column(db.String(200))
     category_id = db.Column(db.Integer)
@@ -359,8 +359,8 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     # **The composite key is NOT the reason**, and this comment said it was
     # until plan step ``bank_import:X-gf-2``: a composite-key relationship is
     # perfectly expressible and its sibling
-    # :class:`~app.models.statement_match.StatementMatchMember` now carries
-    # three of them, joined on ``(subject_id, account_id)`` and loaded whole
+    # :class:`~app.models.statement_match.StatementMatchMember` carries two
+    # of them, joined on ``(subject_id, account_id)`` and loaded whole
     # with the act.  What that step ALSO did was delete ``_reads._by_id``,
     # which this comment cited as the shape it followed -- so the argument was
     # refuted and its citation resolved to nothing in the same commit.  A
