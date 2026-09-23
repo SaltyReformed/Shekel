@@ -169,12 +169,12 @@ is on that step's own entry.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
-- [x] **X-gy** `fe1de448` -- CI's one job became `scope`, `plan-gate` (its own job, not in `lint` as
-      specified: `registry-only` skips `lint`), `lint`, six `test` shards (`tests/_shard.py`) via
+- [x] **X-gy** `fe1de448` -- CI's one `lint-and-test` job became `scope`, `plan-gate` (its own job,
+      not in `lint` as specified: `registry-only` skips `lint`), `lint`, six `test` shards via
       `scripts/test.sh` at `-n logical` and a fail-closed `lint-and-test`: ~10 min a PR, cap 50 s
-      (**R-BI38**..**R-BI41**). Closed **BI-496**: its 5-13x is CONSISTENT WITH oversubscription x a
-      slower core (3.1x x 1.2-2.1x = 3.7-6.5x; SMT fits the top, unmeasured), not the database or
-      disk. **A LATER STEP OBEYS**: tests sharing one session share an `xdist_group`.
+      (**R-BI38**..**R-BI41**). **BI-496** closed: its 5-13x is CONSISTENT WITH oversubscription x a
+      slower core (3.1x x 1.2-2.1x), not a database or disk defect. **A LATER STEP OBEYS**: tests
+      that MUST share one session share an `xdist_group` (`.claude/rules/testing.md`).
 - [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
       both classes in `_outcome.py`, built from the field names so a counter on one side and not the
       other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).
