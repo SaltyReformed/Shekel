@@ -371,7 +371,8 @@ def query_shadow_income(account_id: int, scenario_id: int, *, options: tuple):
     the authority on what its callers would traverse, and a producer cannot know
     that.  Both directions of the mistake are live in this codebase: FOUR of this
     query's SEVEN consumers never touch the pricing chain they paid five
-    statements for -- ``loan_posting_service._reader`` (two columns),
+    statements for -- ``loan_posting_service._reader`` (two columns; the
+    module was deleted at plan step ``balance:X-bi-6-3``),
     ``loan_ledger.confirmed_shadows_through`` (a settle day),
     ``loan_ledger.walk_loan_ledger`` (dates plus the settlement columns) and
     ``_terms._settled_payment_due_dates`` (a due date) -- while finding **N-296**

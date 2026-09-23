@@ -629,12 +629,18 @@ class TestWalkAccountLedger:
         """Walking one account reads its OWN shadow's link, not the other's.
 
         **The defect this closes was not in ruling R-FL's own amendment**; it
-        was found tracing the loader at plan step X-f3a-1.
-        ``_transfer_source_days`` resolved the transfer's INCOME shadow whatever
-        account was being walked, which is harmless for the DAY -- Transfer
-        Invariant 3 mirrors ``settled_on`` onto both legs -- and wrong for the
-        LINK, because clearing is deliberately NOT mirrored: a transfer leaves
-        one bank and arrives at another, and each statement reports its own leg.
+        was found tracing the loader at plan step X-f3a-1.  The walk's transfer
+        loader (``_transfer_source_days``, deleted at ``balance:X-bi-6-3``
+        when a transfer's legs became its two covering movements' own entries,
+        read by the movement loader off the movement on THIS account) resolved
+        the transfer's INCOME shadow whatever account was being walked, which
+        is harmless for the DAY -- Transfer Invariant 3 mirrors ``settled_on``
+        onto both legs -- and wrong for the LINK, because clearing is
+        deliberately NOT mirrored: a transfer leaves one bank and arrives at
+        another, and each statement reports its own leg.  The property is
+        structural now (a movement sits on one account and carries its own
+        link, mirrored from the shadow on that account by the seam) and this
+        test pins it as such.
 
         The fixture makes the two answers differ.  A $200.00 Checking ->
         Savings transfer settles the day AFTER Savings' origination.  The

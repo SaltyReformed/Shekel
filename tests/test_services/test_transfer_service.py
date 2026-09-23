@@ -37,16 +37,17 @@ from app.services.row_valuation import settled_figure
 from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
-    typed,
-    record_paydays_across_a_hole,
-    rhythm_of,
-    write_past_the_amount_seam,
     add_anchor_history,
     an_entered_day,
+    cover_bare_settled_row,
     create_loan_account,
     generate_transfer_of,
-    cover_bare_settled_row,
+    record_paydays_across_a_hole,
+    rhythm_of,
     shadow_amount,
+    transfer_family_journal_filter,
+    typed,
+    write_past_the_amount_seam,
 )
 from app.services.settle_day import record_settle_day
 from app.services.state_machine import allowed_transitions
@@ -110,7 +111,7 @@ def _ledger_nets_for_transfer(transfer_id):
     rows = (
         db.session.query(Posting.ledger_account_id, Posting.amount)
         .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(JournalEntry.transfer_id == transfer_id)
+        .filter(transfer_family_journal_filter(transfer_id))
         .all()
     )
     nets = {}
@@ -1339,8 +1340,9 @@ class TestRestoreTransfer:
         simply took the first leg holding a record would ALWAYS take the expense
         leg -- here the reverted one, carrying a stale ``$25.00``.  Writing that
         onto the income leg would price the pair at a figure one of them had
-        already stopped claiming, and the posted ledger reads that figure
-        (``posting_service._settle_effective``).
+        already stopped claiming, and the posted ledger reads that figure (each
+        leg's covering movement is posted as its own entry since plan step
+        ``balance:X-bi-6-3``, through ``_posting_purchases.emit_purchase_deltas``).
 
         The two legs are given DIFFERENT records on purpose: with equal ones the
         preference is unobservable, which is why the shape survived a suite
@@ -2054,9 +2056,10 @@ class TestDueDateAndSettleDayShadows:
 
         The ``settled_on`` edit door (ruling **R-ED**): the user read their
         statement and the money moved on a day other than the one the settle
-        was recorded on.  Both shadows take the SAME day, which
-        ``posting_service._entry_date`` depends on -- it reads the income
-        shadow's day for the pair.
+        was recorded on.  Both shadows take the SAME day (Transfer Invariant
+        3, until ``X-bi-6-4`` lets the two days part); since plan step
+        ``balance:X-bi-6-3`` the posting writer files each side's entry under
+        that side's own covering movement's day, so the two land together.
         """
         with app.app_context():
             td = transfer_data
@@ -2870,9 +2873,12 @@ class TestMovingATransferBetweenAccounts:
         ``PostingError: Ledger account N holds a nonzero net for transfer ids
         [...] but no active shadow on account M resolves them; Transfer
         Invariant 1 is broken`` -- measured on a production clone before the
-        order was fixed.  What THIS case pins is the pre-move split reversal:
-        remove it and the loan keeps a correction for a payment it no longer
-        has.
+        order was fixed.  What THIS case pins is the vacated loan's re-sync
+        AFTER the move (``_loan_posting._resync_vacated_loan``): remove it and
+        the loan keeps a correction for a payment it no longer has.  Through
+        plan step ``balance:X-bi-6-1b`` it pinned a split reversal BEFORE the
+        move as well; the split links no row since ``X-bi-6-3`` (ruling
+        R-BAL102), so the after-resync alone reverses the departed key.
         """
         with app.app_context():
             td = transfer_data

@@ -1,7 +1,7 @@
 """A match member is a bank line or a movement
 
 Revision ID: 2eabfa596ee0
-Revises: 9900b309f0b0
+Revises: c7d1e9a4b2f8
 Create Date: 2026-09-22 17:01:33.000000
 
 Plan step ``credit_card:CC-5-4a-2``.  Rulings **R-CC43** (the MOVEMENT is the
@@ -79,13 +79,15 @@ all the same, the payment being the subject (ruling **R-CC43**), and its
 register reading then follows the payment's day.
 
 **The DOWNGRADE restores the SCHEMA and re-keys NOTHING, deliberately.**  The
-revision below this one is plan step ``CC-5-4a-1``'s code, which WRITES
-movement members and reads both shapes, so every member this upgrade leaves is
-already a state that revision holds.  Re-keying "back" could not even be
-total: an act recorded on the card names a checking bill's payment ON the
-card, and no row member can hold it there (the row is on checking).  So the
-column, its key, its unique index and the three-term check return, empty of
-row members.
+revision below this one is plan step ``balance:X-bi-6-3``'s ``c7d1e9a4b2f8``
+(this revision was re-parented onto it at the merge; the two touch disjoint
+tables), and the code at that revision already carries plan step
+``CC-5-4a-1``'s writer, which WRITES movement members and reads both shapes,
+so every member this upgrade leaves is already a state that revision holds.
+Re-keying "back" could not even be total: an act recorded on the card names a
+checking bill's payment ON the card, and no row member can hold it there (the
+row is on checking).  So the column, its key, its unique index and the
+three-term check return, empty of row members.
 
 **Locking.**  The UPDATE rewrites the row members once (103 on production);
 each ``DROP`` is catalog-only; ``ADD CONSTRAINT ... CHECK`` scans the table
@@ -105,7 +107,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "2eabfa596ee0"
-down_revision = "9900b309f0b0"
+down_revision = "c7d1e9a4b2f8"
 branch_labels = None
 depends_on = None
 

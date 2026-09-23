@@ -155,24 +155,13 @@ is on that step's own entry.
 - [ ] **X-gu** `fix(import): the delete door locks its lines in the shared order` -- **BI-492**.
       `lock_lines` over the import's lines before `delete_import` deletes the row, so the cascade
       cannot cross a press; the cross-resource half is `balance:X-bn`'s. Minted 2026-09-12.
-- [x] **X-gv** `88f38feb` -- `locked_for_write` composes `populate_existing()` beside the mode, so a
-      door reads the row the lock holds rather than the one `review_set` hydrated before it; vacuous
-      on `lock_lines` (id column only), acting at `load_lines` and `_line_on`. Closed **BI-493**,
-      REPRODUCED first at both doors: a skip landed on a line whose merchant now paid an account the
-      owner holds (**R-JI**), and a purchase took its posting day over a stated transaction day.
-      Graded by `test_locked_read_refresh.py` (4 cases, one firing control).
-- [x] **X-gx** `c2e22790` -- `FiledMerchant` on `CreatedPurchase` and `AppliedItem`;
-      `rules_worth_offering` takes the applied items and drops `review`; the press builds
-      `RuleDoorAccepts` off `RuleView.build` and no longer runs `review_set`. Closed **BI-495**,
-      REPRODUCED first (the door applied, the receipt offered nothing). Graded by
-      `test_offered_rules.py` (BI-495 class + the real door behind every case) and `test_batch.py`
-      (only the create arm names a merchant).
-- [x] **X-gz** `08a66901` -- the match pane shows the dates a human verifies by (**R-BI9** and its
-      two sub-rulings; closed **BI-498**; outcome O0 delivered 2026-09-16): each candidate row
-      carries its BUDGETED placement and, for an envelope entry, its `purchased_on`, every date
-      labelled by kind in the paycheck register's MM/DD, the gap to the bank's date printed, the
-      settle day never shown (`.rec-row-day` now names the per-fact span, `accounts.css:1205-1211`);
-      `CandidateRow` carries `period` and `purchased_on`; `_dating.py` presents; `_caveat.py` split.
+- [x] **X-gv** `88f38feb` -- a door reads the row its lock holds (`populate_existing()` beside the
+      mode). Closed **BI-493**.
+- [x] **X-gx** `c2e22790` -- the receipt offers rules from the applied items, not `review_set`.
+      Closed **BI-495**.
+- [x] **X-gz** `08a66901` -- the match pane shows the dates a human verifies by (**R-BI9**); outcome
+      O0 delivered 2026-09-16. Closed **BI-498**. The three entries in full:
+      `historical/bank_import_shipped_entries_condensed_2026-09-22.md`.
 - [ ] **X-hb** `fix(import): the delete confirmation names the placement that leaves` -- **BI-501**
       (was balance:BAL-489, re-homed 2026-09-18): the confirmation and the receipt read the level
       relation `balance:X-bj-1` built and say this import's own placement leaves and which import
@@ -180,11 +169,12 @@ is on that step's own entry.
 - [ ] **X-ha** `perf(import): the reconcile screen's per-request cost` -- **BI-500**. Render 650-850
       ms, Apply of 22 cards 1.65 s / 974 KB, preview 560-650 ms x9 (2026-09-15, `slow_request` +
       nginx); the step names the query or payload each pays for. Performance only; upkeep tier.
-- [ ] **X-gy** `chore(ci): the suite's CI clock is measured, then fixed` -- **BI-496**. CI runs a
-      database-bound test 5-13x slower than the host and only ~2x of it is accounted for; a matched
-      A/B on the runner names the rest, the fix lands with its measurement, and `pytest.ini`'s cap
-      is re-sized from CI's own `--durations` table. Minted 2026-09-13 by the developer from the
-      coordinator's triage of PR #337's timeout.
+- [x] **X-gy** `fe1de448` -- CI's one `lint-and-test` job became `scope`, `plan-gate` (its own job,
+      not in `lint` as specified: `registry-only` skips `lint`), `lint`, six `test` shards via
+      `scripts/test.sh` at `-n logical` and a fail-closed `lint-and-test`: ~10 min a PR, cap 50 s
+      (**R-BI38**..**R-BI41**). **BI-496** closed: its 5-13x is CONSISTENT WITH oversubscription x a
+      slower core (3.1x x 1.2-2.1x), not a database or disk defect. **A LATER STEP OBEYS**: tests
+      that MUST share one session share an `xdist_group` (`.claude/rules/testing.md`).
 - [ ] **X-gw** `refactor(import): the tally freezes itself` -- **BI-494**. `Tally.frozen()` beside
       both classes in `_outcome.py`, built from the field names so a counter on one side and not the
       other refuses loudly; `apply_reviewed` returns it (`X-gx`, queued ahead, edits the same file).

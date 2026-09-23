@@ -140,29 +140,54 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
 - [ ] **CC-5-4** `feat(cards): the card's line meets the bill it paid` -- design 3.2 and `R-CC40`'s
       HALF 2: the DECOMPOSED parent, split 2026-09-21 by the developer (`R-CC45`) into 4a-1 (the
       writer), 4a-2 (the re-key migration; the member table's bill column dropped) and 4b (the card
-      panel's settlements arm, `R-CC44`); ticks with its last leaf. Must land before any card import
-      exists.
+      panel's settlements arm, `R-CC44`), and on 2026-09-22 given 4a-3 (one act takes a movement off
+      the books; the popovers' captions; `R-CC51`), 4a-4 (a row holding a movement is history;
+      neither member subject key cascades; `R-CC55`) and, on 2026-09-23, 4a-5 (the reconcile panel
+      and carry-forward say what they free first; `R-CC76`); ticks with its last leaf. Must land
+      before any card import exists.
   - [x] **CC-5-4a-1** `079524b0` -- the payment MOVEMENT is the matcher's subject on every screen
         (`R-CC43`): `RowKind.SETTLEMENT` (the movement's identity, the row's record: priced as a
         movement when dated, the row's paycheck as its window, dated through the row's own door with
         the screen's account as tender); a settled row offered as its payment; a settling match
         records the payment its settle wrote; a re-pointed payment withdraws the matches naming it,
         disclosed (`R-CC46`); both member shapes still read until 4a-2.
-- [ ] **CC-5-4a-2** `feat(cards): a member is a bank line or a movement` -- `R-CC45`'s second half:
-      a migration re-keys every accepted act's row member (103 row members on the 2026-09-21 dump;
-      221 acts at the 08-27 count) onto that bill's payment after a census on the newest production
-      dump and an ASSERT of one act per row; a member with no payment to re-key onto (a bill closed
-      from its purchases, a `$0.00` close, a Credit or Cancelled bill matched before today's
-      refusals) REFUSES the migration and the developer rules it; then
-      `statement_match_members.transaction_id` goes with its key and unique index, and the six
-      bill-member readers (`_candidates.matched_subjects`, `_candidates._is_claimed`,
-      `_accepted_view._accepted_row`, `_acts.named_rows`, `match_withdrawal`,
-      `bank_agreement._rows_on`) lose that arm; with the row-member shape gone a definition's
-      account move touches no member's subject (closes **CC-356**), and
-      `status_seam/_covering.py:36-40`'s stale module docstring (it names `_candidates._price`,
-      gone) is this leaf's to correct (announce-first, balance's region). Its own PR and release,
-      graded byte-identical on production's shape first; rehearsal base the clone `shekel_cc54` (the
-      2026-09-21 10:33 dump at `9900b309f0b0`).
+  - [x] **CC-5-4a-2** `550cc9ce` -- migration `2eabfa596ee0` (re-parented onto `c7d1e9a4b2f8` at
+        `62bf0e35`) re-keyed the 103 row members onto their payments, refusing a member with no
+        payment, one on another account or one another member names, and dropped
+        `statement_match_members.transaction_id` with its key and unique index; its readers lost
+        that arm (`R-CC45`), closing **CC-356**. Deploys with 4a-3 (`R-CC51`); suite 15144/0.
+  - [x] **CC-5-4a-3** `175b192d` -- `movement_removal.remove_movements`, ONE act taking a payment or
+        purchase off the books (reversed, out of every match, deleted; `R-CC54` part 1), called by
+        the six doors that removed a movement one by one, the status seam's `$0.00` / purchases
+        record among them (**CC-358**'s popover path); the bill popover's two captions (`R-CC56`)
+        and the transfer popover's (`R-CC59`) read `match_withdrawal.pending_for_movements`.
+        **CC-359** measured not a defect. No migration; suite 15167/0.
+- [ ] **CC-5-4a-4** `fix(cards): a row holding a payment or purchase is history` -- `R-CC54` parts
+      (2) and (3), its own leaf by `R-CC55`: a row's delete stops cascading to its payments and
+      purchases, so a row holding one is history -- the template and account permanent deletes
+      archive instead, the archive keeps such a row where today it hides it and its purchase leaves
+      the fold (**CC-363**: template 19 'Clothes' holds movement 343, `$107.57`, which either door
+      drops on production's copy), and truncate / regenerate lock its period; a match's key to its
+      payment or purchase stops cascading, like its key to the bank line, and the leftover-match
+      check `_candidates.act_still_names_a_row` (read by `matched_subjects` and `_undisposed`) is
+      deleted, which makes `bank_agreement._lines_on`'s membership read exact (**CC-358**). A
+      migration on `2eabfa596ee0`, its own release after the 4a-2 + 4a-3 release; its entry's own
+      design questions (2026-09-22, extending part (2) to the archive, the object layer and the
+      reset and transfer doors) are filed at its tick. Closes **CC-358**, **CC-363**.
+- [ ] **CC-5-4a-5** `fix(cards): the panel and carry-forward say what they free first` -- `R-CC76`:
+      the two doors that reach the status seam's `$0.00` / purchases withdrawal and undo a statement
+      match with no caption (**CC-364**) name the bank lines they would free BEFORE the press, from
+      the same read they act on, as the popovers do (`match_withdrawal.pending_for_movements`;
+      `R-CC56`, `R-CC59`). The reconcile panel (`accounts/_reconcile_panel.html`) says it on a row
+      whose kept payment an accepted match names: its per-row `settled_amount-<id>` box at `$0.00`,
+      a reverted envelope's tick (the seam's purchases arm) and a transfer row's box at `$0.00`,
+      which takes both legs' payments off as the transfer popover's Actual box does. Carry-forward's
+      confirmation (`grid/_carry_forward_preview_modal.html`) says it for each envelope
+      `settle_from_entries` would settle. Of the seam's doors only the grid's one-click Mark Paid
+      stays silent (`R-CC56`); the doors OUTSIDE the seam that withdraw a match with no caption (the
+      purchase delete, Undo CC, the popover's Status leaving Credit, the account and
+      recurring-transfer permanent deletes) are **CC-367**, and whether `R-CC76` reaches them,
+      widening this step, is the developer's question. After 4a-4 (`R-CC76`). Closes **CC-364**.
 - [ ] **CC-5-4b** `feat(cards): the card's panel lists the bill it paid` -- `R-CC44`: a FOURTH arm
       of the reconcile panel, settlements -- un-dated payments on this account whose bill is on
       another, listed under the bill's name in its paycheck block, ticked through the bill's own
@@ -170,11 +195,64 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       link and the bill does not, so `status_seam.record_clearing` learns which account's statement
       it records; the panel template and POST gain a field. After 4a-2; balance / bank-import's
       package, announce-first.
-- [ ] **CC-5-5** `fix(cards): a card in credit is the issuer owing` -- `R-CC41`: the five `abs()`
-      sites (`balance_at/_liability.py` `_spliced_owed_series` and `liability_owed_at_dates`,
-      `savings_dashboard_service/_net_worth.py`'s hero and trend series, `_debt_line.py`'s
-      no-payoff-model debt total) as ONE subject, the trend's index 0 still reconciling to the hero
-      by construction; `$0.00` on production (no card). Closes **CC-354**.
+- [ ] **CC-5-5** `fix(cards): one sign for every balance` -- `R-CC47` (re-scoping `R-CC41`; the
+      sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
+      minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
+      `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
+      flip); ticks with its last leaf. `$0.00` on production's net-worth figures (both liabilities
+      are configured loans).
+  - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
+        into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
+        non-loan liability's owed amount floored at zero, summed (`R-CC49`);
+        `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
+        `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
+        shape.
+- [ ] **CC-5-5b** `fix(accounts): a liability's balance is asked as owed` -- `R-CC52`: every door
+      that takes a LIABILITY's balance asks for the amount OWED (positive = you owe; a card's credit
+      a negative amount owed) and stores the held sign through `balance_at.owed`, one crossing per
+      door (the form speaks owed, the service stores held; the schema tier may not branch on account
+      class, as `schemas/validation/accounts.py` states): the account create form's opening balance
+      (`templates/accounts/form.html`, its route, `AccountCreateSchema`,
+      `account_service.create_account`), the anchor editor (`routes/accounts/anchor.py`
+      `anchor_form` and its PATCH, `grid/_anchor_edit.html`; amortizing accounts stay refused) and
+      the books-opening door (`routes/accounts/opening.py`, `opening_service`,
+      `accounts/_books_opening.html`), each entered and shown as owed, the pre-fill and a 422
+      redisplay included; the tile editor's held pre-fill (**CC-357**) closes with it. FIRST, a
+      census of every STORED liability balance on the newest production dump
+      (`account_openings.opening_equity`, `account_anchor_history.anchor_balance`, any other
+      books-opening or assertion row), each read under `R-CC47`, and of what reads them: the
+      Mortgage's `+174,281.51` opening and `+178,103.41` anchor were typed as owed, so wrong-signed
+      (both a configured loan's, feeding no net-worth figure; its cash fold and the posted ledger's
+      Balance Sheet are what to trace). A wrong-signed stored value is a MONEY question to the
+      developer, with worked dollars, BEFORE 5c; any backfill is an Alembic migration, which makes
+      this leaf migration-bearing and its own release. Before 5b grades with it, 5a's instrument
+      gains `/grid?account_id=<id>` for each non-amortizing liability (the balance line the anchor
+      door opens from). Graded by 5a's instrument: every ASSET screen byte-identical, a liability
+      form's label change a declared change. Closes **CC-357**.
+- [ ] **CC-5-5c** `fix(cards): a card in credit is the issuer owing` -- `R-CC47` and `R-CC48`, ONE
+      commit: the seam's two configured-loan arms report the HELD sign (`positions()` and the loan
+      domain's producers stay owed), each arm converting through the one flip and never an inline
+      `-positions(...)` (CLAUDE.md rule 14) -- so FIRST `owed` MOVES out of `_liability.py`, which
+      imports `_inputs` and `_kind_correct` (the two arms), to a module with no seam imports (e.g.
+      `balance_at/_sign.py`; the public name `balance_at.owed` stays), and its docstring names the
+      seam's other NON-held outputs (`liability_owed_at_dates`' magnitudes for every liability,
+      `positions`, `secured_loan_series`), none of which may be passed to it; the hero and trend
+      read the plain sum of balances with liabilities as `owed`, the band drops its `abs` and the
+      liability subtotal (`_display._compute_group_subtotals`, `R-CC48`) reads `owed`; the seven
+      loan-balance readers move onto `owed` (debt strategy; the loan pages' `current_balance`
+      property feeding the dashboard, the payoff and refinance calculators and the true-up pre-fill;
+      home equity; on /savings the liability tile's figure, its sparkline and two debt-summary
+      figures) and liability tiles show owed. The flip also decides what a savings goal backed by a
+      LIABILITY reads (**CC-360**: `_goal_form_context` offers any active account, a loan included,
+      and `_goals._goal_account_balance` reads a configured loan's OWED figure as progress today and
+      its held balance once the loan arm is re-signed): 5c either gains that reader, the goal
+      reading `owed()`, or refuses a liability as a goal's account, a design question the lane puts
+      to the developer with worked dollars before building; and the footer's "revolving" caption,
+      whose sum also counts an amortizing account with no loan terms and a custom liability, is
+      corrected (**CC-361**). Every loan test figure that flips sign is a rule-5 re-expression the
+      developer confirms, its classes with counts, before the commit. Graded by 5a's
+      `tests/manual/verify_liability_screens.py` per its docstring's procedure: production's screens
+      byte-identical. Closes **CC-354**, **CC-360**, **CC-361**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else

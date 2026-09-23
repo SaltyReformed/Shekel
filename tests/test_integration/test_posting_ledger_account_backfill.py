@@ -60,6 +60,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     load_init_database_module,
     load_migration_module,
+    transfer_family_journal_filter,
 )
 
 
@@ -265,11 +266,12 @@ class TestBackfillPostsHistoricalCorrection:
 
             _clear_account_corrections()
 
-            # The cash entry (transfer_id) survives; the opening is gone, so the
+            # The cash entries (the transfer's two per-movement entries, plan
+            # step ``balance:X-bi-6-3``) survive; the opening is gone, so the
             # total dropped from the go-forward figure.
-            assert db.session.query(JournalEntry).filter_by(
-                transfer_id=xfer.id,
-            ).count() == 1
+            assert db.session.query(JournalEntry).filter(
+                transfer_family_journal_filter(xfer.id),
+            ).count() == 2
             total_cleared = posting_service.account_posting_total(
                 savings.id, scenario_id,
             )
@@ -281,9 +283,9 @@ class TestBackfillPostsHistoricalCorrection:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == total_goforward
-            assert db.session.query(JournalEntry).filter_by(
-                transfer_id=xfer.id,
-            ).count() == 1
+            assert db.session.query(JournalEntry).filter(
+                transfer_family_journal_filter(xfer.id),
+            ).count() == 2
 
     def test_backfill_restores_opening_and_trueup_for_multi_anchor_account(
         self, app, db, seed_user,
@@ -648,12 +650,13 @@ class TestDowngradeReversible:
             )
             db.session.commit()
 
-            # Go-forward: opening correction + anchor_equity twin + cash entry.
+            # Go-forward: opening correction + anchor_equity twin + the
+            # transfer's two cash entries (plan step ``balance:X-bi-6-3``).
             assert _entry_count_for_source(PostingSourceEnum.ACCOUNT_OPENING) >= 1
             assert _anchor_equity_account(db.session, savings.id) is not None
-            assert db.session.query(JournalEntry).filter_by(
-                transfer_id=xfer.id,
-            ).count() == 1
+            assert db.session.query(JournalEntry).filter(
+                transfer_family_journal_filter(xfer.id),
+            ).count() == 2
             # Two ledger rows for the account: linked + anchor_equity.
             assert len(ledger_accounts_for_account(db.session, savings.id)) == 2
 
@@ -667,10 +670,10 @@ class TestDowngradeReversible:
             # Only the linked ledger row remains for the account.
             assert len(ledger_accounts_for_account(db.session, savings.id)) == 1
             assert linked_ledger_account(db.session, savings.id) is not None
-            # The Step-2 cash entry survives untouched.
-            assert db.session.query(JournalEntry).filter_by(
-                transfer_id=xfer.id,
-            ).count() == 1
+            # The transfer's two cash entries survive untouched.
+            assert db.session.query(JournalEntry).filter(
+                transfer_family_journal_filter(xfer.id),
+            ).count() == 2
 
     def test_downgrade_leaves_loan_genesis_intact(
         self, app, db, seed_user, monkeypatch,

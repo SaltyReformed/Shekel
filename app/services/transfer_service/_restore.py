@@ -19,7 +19,6 @@ import logging
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
-from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.services import posting_service
 from app.services.transfer_service._loan_posting import (
@@ -226,14 +225,13 @@ def restore_transfer(transfer_id, user_id):
     # ── Posting ledger reconcile (Build-Order Step 2) ──────────────
     # Re-post the confirmed effect when the restored transfer is settled: a
     # settled transfer that was soft-deleted had its effect reversed by
-    # ``delete_transfer``, so restoring re-syncs the ledger to its current
-    # status.  Runs AFTER the shadows are un-deleted above, so the income
-    # shadow's effective amount is readable.  A no-op for a restored projected
-    # transfer (the common path -- nothing was posted to restore).
-    restored_status = db.session.get(Status, xfer.status_id)
-    posting_service.sync_transfer_postings(
-        xfer, settled=restored_status.is_settled,
-    )
+    # ``delete_transfer``, so restoring re-syncs the ledger to what its
+    # movements now say.  Runs AFTER the shadows are un-deleted above, so each
+    # covering movement's parent is contributing again and a dated one posts
+    # (plan step ``balance:X-bi-6-3``, ruling **R-BAL101**: the door reads the
+    # movements, it is told no settled sense).  A no-op for a restored
+    # projected transfer (the common path -- its movements are un-dated).
+    posting_service.sync_transfer_postings(xfer)
     # Posting ledger: re-reconcile the loan's genesis ledger for a restored,
     # settled loan payment -- its split correction plus the opening / true-up
     # corrections (a no-op for a restored projected or non-loan transfer).

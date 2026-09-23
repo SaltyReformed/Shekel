@@ -112,21 +112,24 @@ direction -- the expense shadow's ``-figure`` off the from-account, the
 income shadow's ``+figure`` into the to-account -- through the same producer
 a bill's and a paycheck's read.
 
-**A transfer's movements POST nowhere until the ledger takes its ruled
-shape** (ruling **R-BAL45**, developer 2026-09-16).  The posted ledger books
-a settled transfer as ONE journal entry ``{from -figure, to +figure}`` off the
-income shadow's record (``posting_service.sync_transfer_postings``), and every
-purchase-posting door returns for a shadow's entries; so through the interval
-the walk reads a covered leg as ``0 + movement`` and the ledger as the row's
-record, and the two agree because this module mirrors one record into both
-homes (the same interval ruling **R-BAL40** accepts for a bill).  The ruled
-endpoint is two entries per transfer, one per movement on its own bank day,
-each against a transfers-in-transit clearing account -- which needs per-leg
-settle days and so waits for ``X-bi-6``, the step that deletes the shadow
-mirror and Transfer Invariant 3's one-day-per-pair clause with it.  Posting a
-shadow's movement through the purchase source was rejected there: that
-source's counter leg is the parent's CATEGORY account, and a transfer between
-two of the owner's accounts is neither income nor expense.
+**A transfer's movements POST, each as its own entry, since plan step
+``balance:X-bi-6-3``** (ruling **R-BAL45**'s shape C, built under
+**R-BAL101**).  The posted ledger books each shadow's covering movement on
+its own day against the owner's Transfers-in-transit account -- ``{from-side
+account -figure, transit +figure}`` and ``{to-side account +figure, transit
+-figure}`` -- through the ONE movement writer every purchase and covering
+movement posts through (``_posting_purchases``, the counter leg dispatched by
+the parent's shape), so the walk and the ledger read one movement each and
+nothing is mirrored between them.  Through ``X-bi-6-1b`` the ledger booked
+the pair as ONE entry off the income shadow's record and every
+purchase-posting door returned for a shadow's entries -- the interval ruling
+**R-BAL45** accepted, closed when that step gave the writer its per-movement
+shape.  The pair applier still keeps the two days equal (Transfer Invariant
+3) until ``X-bi-6-4`` deletes the mirror; the writer no longer depends on it.
+Posting a shadow's movement through the purchase source with a CATEGORY
+counter was rejected at R-BAL45: a transfer between two of the owner's
+accounts is neither income nor expense, which is what the transit counter
+says.
 
 **A movement's account is its own -- where its money moved** (rulings
 **R-BAL46**, **R-BAL75**, **R-BAL76**).  The co-located key that held it to
@@ -158,7 +161,9 @@ the parent posts nothing of its own since plan step ``balance:X-bi-4a``
 (ruling **R-BAL80**), so the movement's legs are the whole of what a revert
 reverses -- every production revert of a transaction reaches
 the seam through ``transaction_service.apply_requested_status``, and a
-transfer's shadows post nowhere (R-BAL45); ``scripts/integrity_check.py``'s
+transfer's through ``transfer_service`` and the pair's own door
+(``posting_service.sync_transfer_postings``, which reads each movement's
+state since plan step ``balance:X-bi-6-3``); ``scripts/integrity_check.py``'s
 DC-10 grades the state a caller of the bare seam would leave.  Money is
 ``Decimal`` throughout, read off the
 :class:`~app.services.status_seam._record.Settlement` the seam was handed.

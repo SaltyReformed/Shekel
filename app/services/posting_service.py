@@ -3,8 +3,8 @@ Shekel Budget App -- Posting Service
 
 The sole writer of the append-only double-entry posting ledger
 (``budget.journal_entries`` + ``budget.account_postings``, Build-Order
-Step 2; see :mod:`app.models.journal_entry`).  Step 2 pilots the mechanism
-on settled transfers; later Build-Order steps add cash, loan, and paycheck
+Step 2; see :mod:`app.models.journal_entry`).  Step 2 piloted the mechanism
+on settled transfers; later Build-Order steps added cash, loan, and paycheck
 sources by calling the same private balanced-write path
 (:func:`_emit_balanced_entry`), so an unbalanced entry can never be written
 from any source.
@@ -15,13 +15,12 @@ imports ``request`` / ``session``.  It **flushes but never commits** -- the
 caller (the transfer service in Commit 5, a test, or a future source
 writer) owns the transaction boundary.
 
-**Reconcile-to-target, not append-blindly.**  :func:`sync_transfer_postings`
-makes the ledger's NET posted effect for a transfer equal a single target
-(the transfer's settled effect, or zero), by emitting one balanced delta
-entry PER PAY PERIOD for the difference between the target and what is
-already posted there.  That one design is idempotent and covers every
-transfer lifecycle path -- settle, revert, archive, cancel, delete, restore
--- through a single call:
+**Reconcile-to-target, not append-blindly.**  Every sync here makes the
+ledger's NET posted effect for a source equal a single target, by emitting
+one balanced delta entry PER (PAY PERIOD, ENTRY DATE) for the difference
+between the target and what is already posted there.  That one design is
+idempotent and covers every lifecycle path -- settle, revert, archive,
+cancel, delete, restore -- through a single call:
 
 * a repeat sync computes zero deltas and writes nothing (no double-post);
 * a revert / delete reverses *exactly what was posted* (read back from the
@@ -45,45 +44,57 @@ zero whether a leg lands on an asset or a liability ledger account.  The
 builder never branches on account class (see the
 :mod:`app.models.journal_entry` module docstring).
 
-**The amount is what the SHADOW RECORDED, not ``transfers.amount``.**
-A settled transfer's effect is read as the income shadow's
-:func:`~app.services.posting_reads.settled_figure_clause` -- the same
-expression the balance calculator and the reconciliation oracle read, and the
-one the Python tier answers through ``row_valuation.settled_figure`` (plan step
-X-au-c3; it was ``COALESCE(actual_amount, estimated_amount)``).  The two differ
-whenever a settle books a figure the parent's own amount does not hold, which a
-correction and a derive-mode loan payment both do; posting ``transfers.amount``
-instead would silently desynchronise the go-forward postings from both the
-backfill and the oracle.
+**A transfer is TWO movements, each posted on its own bank day against the
+owner's Transfers-in-transit account** (plan step ``balance:X-bi-6-3``,
+rulings **R-BAL45** and **R-BAL101**).  Through that step the ledger booked
+a settled transfer as ONE entry ``{from -figure, to +figure}`` off the income
+shadow's record and settle day, which was sufficient only because the
+transfer service mirrored one day onto both shadows (Transfer Invariant 3);
+the ruled shape lets each side post when ITS bank shows it.  So a transfer's
+legs are its shadows' covering movements, and they post through the same
+movement writer every purchase and covering movement posts through
+(:mod:`app.services._posting_purchases`, the counter leg dispatched by the
+parent's shape) -- :func:`sync_transfer_postings` is the pair's door, not a
+second writer.  The one-entry ``transfer`` source is LEGACY: the deploy's
+first resync reverses whatever it posted, once, and every later sync leaves
+it at zero (the shape ``balance:X-bi-4a`` gave the transaction source); its
+arm is the leaf :mod:`app.services._posting_legacy`, which ``X-bi-6-5``
+deletes whole with the source.  The
+amount is still what the shadow RECORDED and never ``transfers.amount``: a
+movement's figure is the record, and ``cash_ledger.movement_cash_leg`` is
+the one producer of its signed cash.
 """
 
 import logging
-from datetime import date
-from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
-from app import ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum
+from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transfer import Transfer
 from app.services import posting_reads
-from app.services.posting_reads import PostingError, _ledger_account_for
+from app.services.cash_ledger import movements_with_parents
+from app.services.posting_reads import PostingError
 from app.services.user_write_lock import lock_every_user_writes
+from app.services._posting_legacy import (
+    legacy_transfer_entry_exists_clause,
+    reverse_legacy_transfer_entry,
+    transfers_holding_a_legacy_net,
+)
 from app.services._posting_purchases import (
+    dated_transfer_movement_exists_clause,
     emit_purchase_deltas,
     posted_purchase_exists_clause,
     purchase_posts,
 )
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
-    emit_source_deltas,
     emit_typed_source_deltas,
-    source_entry_builder,
 )
-from app.utils.balance_predicates import settled_day, settled_status_ids
+from app.utils.balance_predicates import settled_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -91,164 +102,21 @@ logger = logging.getLogger(__name__)
 # :mod:`app.services.posting_reads` when this module crossed the size gate
 # (the sibling-split convention); the ledger's one public surface stays HERE,
 # so the oracles and the loan posting package keep reading them off the
-# writer module.  ``PostingError`` / ``_ledger_account_for`` above are
-# re-exports of the same kind (this module also uses them itself), and so are
-# the balanced-write primitives imported from the
+# writer module.  ``PostingError`` above is a re-export of the same kind (this
+# module also uses it itself); ``_ledger_account_for`` is one too, stated
+# here since plan step ``balance:X-bi-6-3`` deleted this module's own last
+# reader of it (the transfer target builds inside the movement writer now),
+# and so are the balanced-write primitives imported from the
 # :mod:`app.services._posting_write` leaf (held below every writer so the
 # correction packages can share them without importing this module -- see
 # that module's docstring for the cycle this breaks).
+# Pylint: ``protected-access`` -- a re-export, not a reach-in: the chart lookup
+# is this module's public surface and the loan package reads it here.
+# pylint: disable-next=protected-access
+_ledger_account_for = posting_reads._ledger_account_for
 account_posting_total = posting_reads.account_posting_total
 settled_transfer_effect = posting_reads.settled_transfer_effect
 posted_purchase_effect = posting_reads.posted_purchase_effect
-
-
-# ── Private helpers ────────────────────────────────────────────────
-
-
-def _settle_effective(xfer: Transfer) -> Decimal:
-    """Return what the transfer's income leg RECORDED as having moved.
-
-    The income shadow lives on the to-account (``_build_shadow`` in
-    ``transfer_service``), and what it recorded is
-    :func:`~app.services.posting_reads.settled_figure_clause` -- the same
-    expression the two reconciliation folds read and the Python tier answers
-    through ``row_valuation.settled_figure``, so the ledger and the balance
-    cannot come to price one leg two ways.
-
-    **Its query states its own preconditions now, and that is findings N-242 and
-    N-298** (plan step X-au-c3).  It filtered on ``transfer_id`` /
-    ``account_id`` / ``is_deleted`` alone, and its settled-ness was a CALLER
-    convention its own docstring named -- while the balance README carried the
-    stronger claim that every SQL-tier reader of the settled figure was safe
-    because it filtered to settled statuses, which was true of
-    ``posting_reads`` and not of this one.  Two consequences it could not
-    distinguish, and both are now impossible rather than merely unobserved:
-
-    * **no status predicate.**  An unsettled shadow records nothing, so the
-      expression above answered ``0`` for one -- a silent zero where a caller
-      asked what moved.  The predicate makes the query answer only about a row
-      that has settled, and the refusal below turns "nothing to answer" into an
-      error rather than a zero.  Through ``X-bi-4a`` the expression was a
-      ``CASE`` on the basis answering ``NULL`` for a settled row recording
-      nothing, so "no such shadow" and "a shadow with no record" arrived as
-      one ``None``; since plan step ``balance:X-bi-4b-1`` the record is the
-      shadow's covering movement and a settled row with no entry is the
-      ``$0.00`` record (ruling **R-BAL82**), so ``None`` means exactly "no
-      settled, active income shadow" and the refusal names that;
-    * **no ``.limit(1)``.**  A second active shadow on the to-account raises
-      ``MultipleResultsFound`` from ``.scalar()``; the sibling reader at
-      ``models/transfer.py`` added ``.limit(1)`` for exactly that.  Transfer
-      Invariant 1 makes two shadows a broken state rather than a supported one,
-      so this takes the first deterministically -- by ``id``, so a repeated read
-      answers the same leg -- and leaves surfacing the breakage to the invariant's
-      own repair path instead of failing here with an error about SQL.
-
-    Args:
-        xfer: The transfer being posted.
-
-    Returns:
-        The income shadow's recorded figure as a ``Decimal``.
-
-    Raises:
-        PostingError: If the transfer has no SETTLED, active income shadow on
-            its to-account -- a Transfer-Invariant-1 violation, or a caller
-            posting a settled effect for a pair that has not settled.
-    """
-    effective = (
-        db.session.query(posting_reads.settled_figure_clause())
-        .filter(
-            Transaction.transfer_id == xfer.id,
-            Transaction.account_id == xfer.to_account_id,
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
-        )
-        .order_by(Transaction.id)
-        .limit(1)
-        .scalar()
-    )
-    if effective is None:
-        raise PostingError(
-            f"Transfer {xfer.id} has no settled, active income shadow on "
-            f"account {xfer.to_account_id}; cannot post its settled effect "
-            "(Transfer Invariant 1, or a caller posting a settled effect for "
-            "a pair that has not settled)."
-        )
-    return effective
-
-
-def _entry_date(xfer: Transfer) -> date:
-    """Return the civil date to stamp on a transfer's journal entry.
-
-    The transfer's INCOME shadow's stored ``settled_on`` (the ``Transfer`` model
-    has no such column of its own), read through the shared
-    :func:`app.utils.balance_predicates.settled_day` -- the ONE accessor for
-    "which civil day did this cash move", which the read fold, the posting walk
-    and the confirmed-statement reader all ask the same question through, so the
-    STORED ``entry_date`` this writes and the day any fold counts the settle on
-    cannot drift (balance step C2).
-
-    **It DERIVED the day from ``paid_at`` until plan step X-f1** (ruling R-EC):
-    a display-timezone conversion of the click instant, falling back to the pay
-    period's ``start_date`` when the instant was NULL.  Both are gone -- the day
-    is a stored fact, and a settled shadow carrying none is refused rather than
-    dated by a fallback, because ``entry_date`` is NOT NULL and a fabricated
-    value here would file real money on a day nothing recorded.
-
-    **The query survives the conversion, and its reason narrowed.**  It used to
-    exist partly to force a server-side ``db.func.now()`` to materialise; a
-    stored ``date`` is never an unresolved SQL expression, so what remains is
-    the real reason -- this reads a DIFFERENT row from the one it is given.  Its
-    transaction twin dropped its query entirely for exactly that difference.
-
-    Args:
-        xfer: The transfer being posted.
-
-    Returns:
-        The civil day the transfer's cash moved.
-
-    Raises:
-        PostingError: When no active income shadow resolves (Transfer
-            Invariant 1 broken).
-        UndatedSettleError: When that shadow carries no ``settled_on``
-            (propagated from :func:`~app.utils.balance_predicates.settled_day`).
-    """
-    # Read the to-account (income) shadow.  The from-account (expense) shadow
-    # carries the same day -- the transfer service mirrors it onto both
-    # (Transfer Invariant 3) -- so the entry date is identical either way.
-    shadow = (
-        db.session.query(Transaction.id, Transaction.settled_on)
-        .filter(
-            Transaction.transfer_id == xfer.id,
-            Transaction.account_id == xfer.to_account_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .first()
-    )
-    if shadow is None:
-        raise PostingError(
-            f"Transfer {xfer.id} has no active income shadow, so the day its "
-            "money moved cannot be resolved; Transfer Invariant 1 is broken."
-        )
-    return settled_day(shadow.id, shadow.settled_on)
-
-
-def _transfer_description(xfer: Transfer) -> str:
-    """Return the human label for a transfer's journal entry.
-
-    ``"Transfer: <from> to <to>"``, truncated to the description column
-    width, matching the Commit-3 backfill byte-for-byte.  Display only --
-    never read for logic.
-
-    Args:
-        xfer: The transfer being posted (its ``from_account`` / ``to_account``
-            relationships supply the names).
-
-    Returns:
-        The truncated description string.
-    """
-    return (
-        f"Transfer: {xfer.from_account.name} to {xfer.to_account.name}"
-    )[:_MAX_DESCRIPTION_LENGTH]
 
 
 # ── Transaction (cash) posting helpers (Build-Order Step 3) ────────
@@ -262,7 +130,11 @@ def _self_heal_account_anchor_corrections(
     The Build-Order Step 5 effect-time self-heal, shared by the tails of
     :func:`sync_transfer_postings` and :func:`sync_transaction_postings`
     (which every settle / revert / delete path routes through, including
-    :func:`reverse_postings_before_delete`): when the emitted deltas touch a
+    :func:`reverse_postings_before_delete` and
+    :func:`reverse_transfer_postings_before_delete`), and called ONCE per
+    scenario by :func:`resync_all_cash_postings` after its whole loop with
+    every entry that loop emitted (ruling **R-BAL103**): when the emitted
+    deltas touch a
     non-loan account whose latest anchor assertion sits at-or-after the
     earliest emitted ``entry_date``, that account's opening / true-up
     corrections are reconciled again in the same transaction -- see
@@ -293,111 +165,212 @@ def _self_heal_account_anchor_corrections(
 # ── Public API ─────────────────────────────────────────────────────
 
 
-def sync_transfer_postings(
-    xfer: Transfer, *, settled: bool
-) -> list[JournalEntry]:
-    """Reconcile a transfer's posted ledger effect to its target, idempotently.
+def sync_transfer_postings(xfer: Transfer) -> list[JournalEntry]:
+    """Reconcile a transfer's posted ledger effect to its movements, idempotently.
 
-    Ensures the NET amount posted for *xfer* equals the target -- the
-    transfer's settled effective amount in its CURRENT pay period when
-    *settled*, else zero everywhere -- by emitting one balanced delta journal
-    entry PER PAY PERIOD whose posted legs differ from the target
-    (:func:`~app.services._posting_write.emit_source_deltas`).  A no-op
-    (returns ``[]``) when the ledger is already at target.  See the module
-    docstring for the reconcile-to-target rationale and the debit-positive sign
-    convention.
+    The PAIR's door (plan step ``balance:X-bi-6-3``, rulings **R-BAL45** and
+    **R-BAL101**): a settled transfer is two entries, one per side's covering
+    movement on its own bank day, each against the owner's Transfers-in-transit
+    account -- ``{from-side account -figure, transit +figure}`` on the day the
+    from-side bank showed it and ``{to-side account +figure, transit -figure}``
+    on the day the to-side bank showed it, the transit account netting to zero
+    once both have cleared.  Each movement posts through the ONE movement
+    writer (:func:`~app.services._posting_purchases.emit_purchase_deltas`,
+    keyed by ``transaction_entry_id`` and dated by the movement's own
+    ``settled_on``), exactly as a bill's covering movement or an envelope's
+    purchase does; what this door adds is reaching both sides from the parent,
+    reversing the LEGACY one-entry shape, and healing both endpoints' anchor
+    corrections.
 
-    Every transfer lifecycle path is one call to this function:
+    **It takes no ``settled`` flag, and that is the point.**  Through
+    ``X-bi-6-1b`` this was told whether to post or reverse, because the ONE
+    entry it booked had no fact of its own to read.  A movement has: it posts
+    iff it is dated under a contributing parent
+    (:func:`~app.services._posting_purchases.purchase_posts`), a settle dates
+    it and a revert UN-DATES it (ruling **R-BAL61**), a cancel or a soft delete
+    makes its parent non-contributing.  So every transfer lifecycle path is
+    one call with no argument to get wrong:
 
-    ========================================  ========  ====================
-    Transition / action                       settled   Net effect
-    ========================================  ========  ====================
-    projected -> done (mark done)             True      post +effective
-    done -> projected (revert)                False     reverse to zero
-    done -> settled (archive)                 True      no-op (at target)
-    projected -> cancelled                    False     no-op (target 0)
-    delete of a settled transfer              False     reverse to zero
-    restore of a settled, soft-deleted xfer   True      re-post +effective
-    ========================================  ========  ====================
+    ==========================================  ==============================
+    Transition / action                         Net effect
+    ==========================================  ==============================
+    projected -> done (mark done)               both movements dated: post
+    done -> projected (revert)                  both un-dated: reverse to zero
+    done -> settled (archive)                   no-op (at target)
+    projected -> cancelled                      no-op (nothing posted)
+    restore of a settled, soft-deleted xfer     re-post (shadows contributing)
+    settled ``settled_on`` edit (N-13)          reverse at the old day, post at
+                                                the new (two keys, one pass)
+    ==========================================  ==============================
 
-    The target's magnitude is the income shadow's effective amount (read
-    fresh each call), so a revert -> edit-amount -> re-settle sequence posts
-    the new amount.  The reversal's magnitude is read back from the ledger
-    per ``(period, entry date)``
-    (:func:`~app.services._posting_write.posted_by_period`), so it negates
-    exactly what was posted regardless of any later edit to *xfer* -- and
-    lands in the PERIOD of the postings it reverses AT THEIR OWN DATE (the
-    2026-07-02 adversarial review's R2 attribution rule, per-date since plan
-    step E1a): a revert-and-move PATCH therefore reverses into the ORIGINAL
-    period, so the net-zero pair never straddles periods and a later period
-    truncate cannot strand half of it.  The per-date key also makes a settled
-    ``settled_on`` edit reconcile (finding N-13): the entry at the old settle
-    date reverses and the effect re-posts at the new one, converging in one
-    pass.  Idempotency rests on this delta math plus the transfer's
-    ``version_id`` optimistic lock (a concurrent double mark-done collides on
-    the version and surfaces as a 409); a repeat sync sees zero deltas and
-    writes nothing.
+    A DELETE is not here: it must reverse BEFORE the flag flips, on every
+    shadow deleted or not, and that is
+    :func:`reverse_transfer_postings_before_delete` -- the teardown twin the
+    transaction side has had since plan step X-f3b, for the same reason.
+
+    **The legacy arm.**  Whatever the one-entry ``transfer`` source posted for
+    *xfer* is reconciled to ZERO here, at its own ``(period, entry date)``, on
+    every call
+    (:func:`~app.services._posting_legacy.reverse_legacy_transfer_entry`, in
+    the leaf that holds the one-entry shape until ``X-bi-6-5``): the deploy's
+    first resync after this step reverses every production legacy entry once
+    (19 transfers on the 2026-09-22 17:06 dump), and every later sync finds
+    nothing to do.  The reversal and the two per-movement
+    entries land on the same day for every one of them (measured on the
+    2026-09-20 restore: every movement's day equals its old entry's), so each
+    real account's net per day is unchanged and the loan checked-projection
+    assert holds through the move.
+
+    **It reads every shadow of the transfer, deleted or not**
+    (:func:`_transfer_family_movements`).  A soft-deleted shadow is a
+    non-contributing parent, so its movement's target is empty and any leg
+    it still holds reverses -- which is what lets the loan lineage probe hand
+    a soft-deleted payment here and get its cash reversed (the E1a review's
+    H2 case), and what a pair soft-deleted and rebuilt needs: the dead pair's
+    legs go, the live pair's post.
 
     Flushes but does not commit (the caller owns the transaction).
 
     Args:
-        xfer: The transfer to reconcile.  Must be flushed (``xfer.id`` set)
-            with its two shadows present.
-        settled: Whether the transfer's confirmed effect should be posted
-            (its ``is_settled`` truth for the lifecycle action).  The caller
-            passes ``False`` for revert / cancel / delete even when the row's
-            status is still settled, so the effect is reversed.
+        xfer: The transfer to reconcile.  Must be flushed (``xfer.id`` set).
 
     Returns:
-        The new delta :class:`~app.models.journal_entry.JournalEntry` list,
-        one per (period, entry date) reconciled -- in practice a single entry,
-        since the R2 attribution rule keeps every prior key netted to zero --
+        The new delta :class:`~app.models.journal_entry.JournalEntry` list --
+        any legacy reversal and the per-movement entries, in emission order --
         or ``[]`` when the ledger is already at target (an idempotent no-op).
 
     Raises:
-        PostingError: If a from/to ledger-account pairing is missing, or
-            (when *settled*) the income shadow is absent.
+        PostingError: If a movement's account has no linked ledger account.
     """
-    targets: "dict[tuple[int, date], dict[int, Decimal]]" = {}
-    if settled:
-        from_ledger = _ledger_account_for(xfer.from_account_id)
-        to_ledger = _ledger_account_for(xfer.to_account_id)
-        # from leg: money leaving the from-account -> a credit -> negative.
-        # to leg:   money entering the to-account  -> a debit  -> positive.
-        effective = _settle_effective(xfer)
-        # The target lives at the transfer's current period AND its settle
-        # date (step C2's one clock): a posting at any other (period, date)
-        # is stale and reconciles away at its own key.
-        targets[(xfer.pay_period_id, _entry_date(xfer))] = {
-            from_ledger.id: -effective,
-            to_ledger.id: effective,
-        }
-    # Each delta entry carries its key's period and date: the settle-side entry
-    # the settle instant, a reversal the exact date of the postings it reverses
-    # (the R2 attribution rule, per-date since step E1a).  Everything else is
-    # this source's, stated once for all three sources in
-    # ``_posting_write.source_entry_builder``.  An empty result means the ledger
-    # is already at target: settling an already-posted transfer, reverting an
-    # already-reversed one, cancelling a never-posted one.
-    entries = emit_source_deltas(
-        targets=targets,
-        source_filter=JournalEntry.transfer_id == xfer.id,
-        kind_id=ref_cache.posting_kind_id(PostingKindEnum.TRANSFER),
-        build_entry=source_entry_builder(
-            user_id=xfer.user_id,
-            scenario_id=xfer.scenario_id,
-            source_kind_id=ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSFER
-            ),
-            description=_transfer_description(xfer),
-            transfer_id=xfer.id,
-        ),
-        log_label=f"transfer {xfer.id} (settled={settled})",
-    )
-    _self_heal_account_anchor_corrections(
-        (xfer.from_account_id, xfer.to_account_id), xfer.scenario_id, entries,
-    )
+    return _reconcile_transfer_family(xfer, purchase_posts)
+
+
+def reverse_transfer_postings_before_delete(xfer: Transfer) -> None:
+    """Reverse a transfer's ledger postings before its rows are deleted.
+
+    The transfer twin of :func:`reverse_postings_before_delete`, and it exists
+    for the identical reason: a delete -- soft or hard -- must bring the pair's
+    WHOLE posted family to zero FIRST, while every row still exists.  It cannot
+    be :func:`sync_transfer_postings`, which reads each movement's own state
+    and would find, at the moment the delete door calls it, two live,
+    contributing, dated movements and leave them posted; and it must not stop
+    at the LIVE shadows, because an idempotent hard delete of an already
+    soft-deleted pair (``delete_transfer(allow_deleted=True)``) must find its
+    postings already at zero, and a pair whose shadows were flagged without
+    this reversal (Transfer Invariant 4 drift) must still be reversed rather
+    than stranded when the hard delete SET-NULLs the movement link.  So it
+    reads every covering movement of EVERY shadow of *xfer*, deleted or not,
+    and reverses each (``posted=False``), plus the legacy one-entry source.
+
+    Idempotent no-op for a transfer that never posted.  Flushes but does not
+    commit (the caller owns the transaction).
+
+    Args:
+        xfer: The transfer about to be deleted.  Must still be flushed
+            (``xfer.id`` set) so the reversals can read the posted legs back.
+    """
+    _reconcile_transfer_family(xfer, _never_posts)
+
+
+def _never_posts(_shadow: Transaction, _movement) -> bool:
+    """Return ``False``: the teardown's answer to "does this movement post"."""
+    return False
+
+
+def _reconcile_transfer_family(xfer: Transfer, posts) -> "list[JournalEntry]":
+    """Reconcile every movement of every shadow of *xfer*, plus the legacy source.
+
+    The one body :func:`sync_transfer_postings` and
+    :func:`reverse_transfer_postings_before_delete` share; they differ in
+    nothing but *posts* -- the movement's own rule for the sync, ``False`` for
+    the teardown -- so the two doors cannot drift on which movements a
+    transfer's family holds or on the legacy arm and the self-heal that
+    follow.  The transfer twin of the loop in :func:`sync_transaction_postings`
+    / :func:`reverse_postings_before_delete`, which walk ``txn.entries`` the
+    same way.
+
+    Args:
+        xfer: The transfer whose family to reconcile.
+        posts: ``(shadow, movement) -> bool``, whether the ledger should hold
+            the movement's leg.
+
+    Returns:
+        The emitted delta entries, in emission order; ``[]`` at target.
+    """
+    entries, accounts = _rebook_transfer_family(xfer, posts)
+    _self_heal_account_anchor_corrections(accounts, xfer.scenario_id, entries)
     return entries
+
+
+def _rebook_transfer_family(xfer: Transfer, posts) -> "tuple[list[JournalEntry], tuple]":
+    """Bring *xfer*'s family to target; re-check no anchor correction.
+
+    :func:`_reconcile_transfer_family`'s first half.  The deploy resync runs it
+    for every transfer and re-checks the anchors ONCE after its loop (ruling
+    **R-BAL103**; :func:`resync_all_cash_postings` says why).  *posts* is
+    ``(shadow, movement) -> bool``; returns ``(entries, accounts)``, the
+    emitted deltas (``[]`` at target) and every real account their linked
+    legs can touch.
+    """
+    movements = _transfer_family_movements(xfer)
+    entries = reverse_legacy_transfer_entry(xfer)
+    for movement in movements:
+        shadow = movement.transaction
+        entries.extend(
+            emit_purchase_deltas(
+                movement, shadow, posted=posts(shadow, movement),
+            )
+        )
+    return entries, _transfer_family_accounts(xfer, movements)
+
+
+def _transfer_family_movements(xfer: Transfer) -> "list[TransactionEntry]":
+    """Return every covering movement of EVERY shadow of *xfer*, parent loaded.
+
+    Deleted shadows included, deliberately, and that is why this is not the
+    grid's :func:`~app.services.transfer_legs.covering_movements_by_leg`
+    (which answers a LEG's record and so reads live shadows alone): the
+    ledger must reverse what a dead pair still holds -- an idempotent hard
+    delete of an already soft-deleted pair must find nothing left, a pair
+    whose shadows were flagged without the reversal (Transfer Invariant 4
+    drift) must still reverse rather than strand its legs when the hard
+    delete SET-NULLs the movement link, and a pair soft-deleted and rebuilt
+    holds a dead pair beside the live one.  Each movement's parent is loaded
+    in the same statement (:func:`~app.services.cash_ledger.movements_with_parents`,
+    the ONE join of a movement to its parent), so the loop reads no
+    relationship lazily.  Ordered by id so a run's entries are deterministic.
+
+    Args:
+        xfer: The transfer.
+
+    Returns:
+        The movements, ascending by id.
+    """
+    return (
+        movements_with_parents(
+            Transaction.transfer_id == xfer.id,
+            TransactionEntry.covers_settlement.is_(True),
+        )
+        .order_by(TransactionEntry.id)
+        .all()
+    )
+
+
+def _transfer_family_accounts(xfer: Transfer, movements) -> tuple:
+    """Return every real account a transfer family's legs can touch.
+
+    The transfer twin of :func:`_family_accounts`: both endpoints (the legacy
+    entry's legs, and the shadows' accounts) and each movement's own account
+    (its leg lands there, ruling **R-BAL75**; one with the endpoint until the
+    settle door takes a tender of its own).  Deduplicated, in first-seen
+    order, so the anchor self-heal visits an account once.
+    """
+    seen: dict[int, None] = {
+        xfer.from_account_id: None, xfer.to_account_id: None,
+    }
+    for movement in movements:
+        seen.setdefault(movement.account_id, None)
+    return tuple(seen)
 
 
 def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
@@ -465,12 +438,17 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
     made worthless.  The ``settled`` flag this took through ``X-bi-3e`` chose
     the row's OWN target, and a row has none.
 
-    A transfer shadow (``transfer_id`` set) is a no-op: Step 2 owns transfer
-    postings, which link by ``transfer_id`` (this reads / writes the
-    ``transaction_id`` linkage), so the guard keeps a shadow from being
-    double-posted as an ordinary transaction.  Idempotency rests on the delta
-    math plus the transaction's ``version_id`` optimistic lock (a concurrent
-    double mark-done collides on the version, surfacing as a 409).
+    A transfer shadow (``transfer_id`` set) is a row like any other here since
+    plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**): its own TRANSACTION
+    source target is empty as every row's is, and its covering movement posts
+    through the movement writer against the owner's transit account.  The
+    guard that returned ``[]`` for a shadow (ruling **R-BAL45**'s interval)
+    is gone with the interval, so a door that reaches a shadow's family
+    reconciles it rather than skipping it; the pair's own door,
+    :func:`sync_transfer_postings`, reaches both sides from the parent.
+    Idempotency rests on the delta math plus the row's ``version_id``
+    optimistic lock (a concurrent double mark-done collides on the version,
+    surfacing as a 409).
 
     Flushes but does not commit (the caller owns the transaction).
 
@@ -490,24 +468,20 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
         PostingError: If a movement's account (or its resolved category
             account) has no ledger account.
     """
-    # A transfer shadow is Step 2's responsibility and links by transfer_id, not
-    # transaction_id.  No production path hands a shadow here (transaction
-    # handlers act on the primary row; transfers go through transfer_service), so
-    # this is defense-in-depth -- but a settled shadow that slipped through would
-    # otherwise be given a second, transaction-sourced entry and double-counted
-    # against the transfer posting, so the guard stays.  **It also holds the
-    # purchase arm off a shadow's COVERING MOVEMENT, and that is a ruling
-    # rather than a gap** (plan step ``balance:X-bi-3c``, ruling **R-BAL45**):
-    # a settled shadow carries one from that step, the transfer path books the
-    # pair whole off the shadow's record, and the movement posts nowhere until
-    # ``X-bi-6`` gives the ledger its ruled shape -- one entry per movement on
-    # its own bank day, against a transfers-in-transit clearing account.
-    # Posting it through the purchase source was rejected there: that source's
-    # counter leg is the parent's CATEGORY account, and a transfer between two
-    # of the owner's accounts is neither income nor expense.
-    if txn.transfer_id is not None:
-        return []
+    entries = _rebook_transaction_family(txn)
+    _self_heal_account_anchor_corrections(
+        _family_accounts(txn), txn.scenario_id, entries,
+    )
+    return entries
 
+
+def _rebook_transaction_family(txn: Transaction) -> "list[JournalEntry]":
+    """Bring *txn*'s family to target; re-check no anchor correction.
+
+    :func:`sync_transaction_postings`' first half, run by the deploy resync
+    for every row before its one anchor re-check (ruling **R-BAL103**).
+    Returns the emitted deltas, ``[]`` at target.
+    """
     entries = _emit_transaction_deltas(txn)
     for purchase in txn.entries:
         entries.extend(
@@ -515,9 +489,6 @@ def sync_transaction_postings(txn: Transaction) -> list[JournalEntry]:
                 purchase, txn, posted=purchase_posts(txn, purchase),
             )
         )
-    _self_heal_account_anchor_corrections(
-        _family_accounts(txn), txn.scenario_id, entries,
-    )
     return entries
 
 
@@ -584,21 +555,20 @@ def reverse_purchase_postings_before_delete(entry) -> None:
     posted walk can only absorb, never explain.  Reversing FIRST leaves the
     original entry and its reversal as an immutable net-zero pair.
 
-    Idempotent no-op for a purchase that never posted (no recorded posting day,
-    a card purchase, a non-contributing parent).
+    Idempotent no-op for a movement that never posted (no recorded posting
+    day, a card purchase, a non-contributing parent).
 
     Args:
-        entry: The purchase about to be deleted.  Must still be flushed
+        entry: The movement about to be deleted -- a purchase, or a covering
+            movement the seam withdraws.  Must still be flushed
             (``entry.id`` set) so the reversal can read its posted legs back.
     """
     txn = entry.transaction
-    # A shadow's covering movement never posted (ruling **R-BAL45**, plan step
-    # ``balance:X-bi-3c``), so its withdrawal -- a ``$0.00`` or ``purchases``
-    # record landing on the leg, the seam's delete arm -- has nothing to
-    # reverse here.  (A REVERT keeps the movement since plan step
-    # ``balance:X-bi-3e-2`` and reaches no delete at all.)
-    if txn.transfer_id is not None:
-        return
+    # A shadow's covering movement posts against the transit account since
+    # plan step ``balance:X-bi-6-3`` (ruling **R-BAL101**), so its withdrawal
+    # -- a ``$0.00`` record landing on a settled leg, the seam's delete arm --
+    # reverses here like any movement's; the guard that returned for a shadow
+    # (ruling **R-BAL45**'s interval) is gone with the interval.
     entries = emit_purchase_deltas(entry, txn, posted=False)
     _self_heal_account_anchor_corrections(
         (entry.account_id,), txn.scenario_id, entries,
@@ -622,8 +592,11 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     reconciliation.  Reversing first leaves each original entry and its reversal
     as an immutable net-zero pair (their links SET-NULL together on the delete),
     so every ledger account still nets correctly.  The transaction analog of
-    ``transfer_service.delete_transfer``'s ``sync_transfer_postings(xfer,
-    settled=False)`` reverse-before-delete.
+    :func:`reverse_transfer_postings_before_delete`, which
+    ``transfer_service.delete_transfer`` runs first for the same reason.  A
+    transfer shadow reaching here (``transfer_id`` set) is reversed like any
+    row since plan step ``balance:X-bi-6-3``; the guard that returned for one
+    (ruling **R-BAL45**'s interval) is gone with the interval.
 
     **It is NOT :func:`sync_transaction_postings`, and since plan step X-f3b
     it cannot be.**  That reconcile leaves a DATED movement posted whatever
@@ -647,22 +620,39 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
             ``transaction_id`` / ``transaction_entry_id`` and read the
             already-posted legs back.
     """
-    # A transfer shadow carries no transaction-sourced postings, and the one
-    # entry it can carry -- its covering movement, since plan step
-    # ``balance:X-bi-3c`` -- posted nothing to reverse (ruling **R-BAL45**);
-    # the guard mirrors ``sync_transaction_postings``' so both doors refuse the
-    # same row rather than one of them doing work for a row the other drops.
-    # It said "rather than one of them reading ``pay_period`` for a row it will
-    # do nothing with" until plan step ``pay_calendar:C13-b`` moved the owner
-    # read onto the row's own column, which reads no relationship at all.
-    if txn.transfer_id is not None:
-        return
     entries = _emit_transaction_deltas(txn)
     for purchase in txn.entries:
         entries.extend(emit_purchase_deltas(purchase, txn, posted=False))
     _self_heal_account_anchor_corrections(
         _family_accounts(txn), txn.scenario_id, entries,
     )
+
+
+def _hold_for_the_re_check(held: dict, scenario_id: int, accounts, entries) -> None:
+    """Add one source's re-book to :func:`resync_all_cash_postings`' one re-check.
+
+    *held* maps a scenario id to (accounts touched, entries emitted).
+    """
+    held_accounts, held_entries = held.setdefault(scenario_id, (set(), []))
+    held_accounts.update(accounts)
+    held_entries.extend(entries)
+
+
+def _skip_reasons(skipped: "dict[int, str]") -> str:
+    """Return the resync's skipped transfers and each one's reason, as one line.
+
+    Shared by the skip warning and the ruling **R-BAL104** refusal, so the
+    two tell the operator the same thing.  *skipped* maps a transfer id to
+    the ``PostingError`` message its family raised; it is empty when the
+    pass skipped nothing, and a refusal can still find a holder then, which
+    the refusal measures rather than rules out.
+    """
+    if not skipped:
+        return "No transfer was skipped this pass."
+    return "Why: " + "; ".join(
+        f"transfer {transfer_id}: {reason.rstrip('.')}"
+        for transfer_id, reason in skipped.items()
+    ) + "."
 
 
 def resync_all_cash_postings() -> tuple[int, int]:
@@ -675,17 +665,17 @@ def resync_all_cash_postings() -> tuple[int, int]:
     every journal entry the app writes.  It exists because those two do NOT
     reach an ordinary transaction or a NON-loan transfer: the loan package's
     staleness detector is scoped to one loan's linked ledger
-    (``loan_posting_service._sync._resync_stale_transfers``) and the anchor
+    (``loan_posting_service._sync._reconcile_lineage_transfer_entries``) and the anchor
     backfill reconciles only the corrections, so a checking-to-savings transfer
     and every ordinary settled row were maintained per-mutation and by nothing
     else.
 
     **What it is FOR, and why it is a permanent hook rather than a one-off**
     (ruling R-DH (b), ``docs/audits/balance_architecture/archive/anchor_settle_partition.md``).
-    ``journal_entries.entry_date`` is the movement's own ``settled_on`` for a
-    purchase-sourced entry (``_posting_purchases.emit_purchase_deltas``) and
-    :func:`_entry_date` for a transfer's, both of which moved from the UTC
-    civil day to the user's on 2026-07-31.  Every entry written before that
+    ``journal_entries.entry_date`` is the movement's own ``settled_on`` for
+    every movement-sourced entry (``_posting_purchases.emit_purchase_deltas``;
+    a transfer's two since plan step ``balance:X-bi-6-3``), a day that moved
+    from the UTC civil day to the user's on 2026-07-31.  Every entry written before that
     carries the old day, so the STORED ledger and the two folds that now read
     the new one disagree for any settle recorded between midnight UTC and the
     user's midnight -- on production, one ``$1,910.95`` mortgage payment
@@ -698,7 +688,45 @@ def resync_all_cash_postings() -> tuple[int, int]:
     zero** (ruling **R-BAL80**): a plan row posts nothing of its own, so the
     legs that source wrote before this step -- an envelope's close booking
     its un-dated purchases on the close day -- are reversed on the first
-    deploy of this tree and left at zero after, by the same reconcile.
+    deploy of this tree and left at zero after, by the same reconcile.  **And
+    since plan step ``balance:X-bi-6-3`` it is what RE-BOOKS every settled
+    transfer into its ruled shape** (rulings **R-BAL45**, **R-BAL98**): the
+    one-entry ``transfer`` source is reversed to zero and the two per-movement
+    entries are posted against the owner's transit account, by
+    :func:`sync_transfer_postings`' re-book half -- the code every settle runs,
+    so the re-book is the go-forward posting by construction and no SQL
+    restates it.  The first deploy of that tree logs every settled transfer
+    as changed (19 on the 2026-09-22 17:06 production dump); every later one
+    logs zero.
+
+    **It re-books EVERY source first and re-checks the anchor corrections
+    ONCE, after both arms** (ruling **R-BAL103**, developer 2026-09-22).  The
+    per-source doors re-check at once, right for one settle and wrong for a
+    batch: a transfer not yet reached still holds its legacy one-entry
+    posting, which the account walk does not read (the ``transfer_id IS
+    NULL`` exclusion ``X-bi-6-5`` deletes), so a walk inside the loop books a
+    true-up for money only waiting its turn and that transfer's own re-check
+    reverses it -- both permanent in an append-only ledger, 40 of the 97
+    entries the first 6-3 deploy wrote on its rehearsal over the 2026-09-22
+    production dump.  So both arms run the doors' re-book halves
+    (:func:`_rebook_transaction_family`, :func:`_rebook_transfer_family`) and
+    the one re-check per scenario (one owner; the self-heal locks the owner
+    off the entries) reads the finished ledger.  The union's earliest day can
+    only make the re-check run where one source alone would skip it.
+
+    **Until ``X-bi-6-5`` it REFUSES to finish while any transfer still holds a
+    nonzero legacy net** (ruling **R-BAL104**, amended by **R-BAL105**): a
+    family it skips (below) keeps its legacy posting, which the account walk
+    cannot see, so a later true-up would book a wrong correction.  After the
+    transfer loop, before the one re-check, it asks
+    :func:`~app.services._posting_legacy.transfers_holding_a_legacy_net` and
+    raises naming every holder, the skipped transfers and why each was
+    skipped; ``scripts/init_database.py`` exits before its own commit.
+    **That is NOT an automatic rollback**: it can fire only on a deploy that
+    has already committed migration ``c7d1e9a4b2f8``, which the previous
+    image cannot resolve, so the site is down until an operator intervenes
+    (``transfers_holding_a_legacy_net``'s docstring has the argument, the
+    ruled recovery and the gate).
 
     It stays wired on every deploy rather than being deleted after one run, for
     the same reason its two siblings are: reconcile-to-target makes it a no-op
@@ -708,7 +736,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     Idempotent and self-healing.  A settled row already at target posts nothing;
     a row whose target DATE moved gets its old-date legs reversed and its new
-    -date legs posted in one balanced pair by
+    -date legs posted in one balanced pair by the re-book halves of
     :func:`sync_transaction_postings` / :func:`sync_transfer_postings`, which
     reconcile over the ``(period, entry_date)`` keys already in the ledger
     unioned with the target (plan step E1a's per-date attribution) -- so a
@@ -717,9 +745,14 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     Loan payment transfers are re-synced here too and that is deliberate
     duplication of effort, not of RULE: the loan package would reach the same
-    ones through its own detector, and both paths call this module's
-    :func:`sync_transfer_postings`, so whichever runs first leaves the other at
-    target.
+    ones through its own detector, and both paths reach this module's
+    :func:`_rebook_transfer_family`, so whichever runs first leaves the other at
+    target.  **Its transfer half is total over the family the ledger holds
+    for the same reason its transaction half is** (below): it walks every
+    live transfer that is settled OR holds a dated covering movement on a
+    live shadow, PLUS every transfer -- live or not -- the legacy one-entry
+    source ever posted for, and hands each to the pair's door, which reads
+    each movement's own state and brings the legacy source to zero.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary
     (``scripts.init_database.resync_all_cash_postings_after_migration``, which
@@ -736,13 +769,17 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     **The re-date is ONE-WAY, and that is a stated risk rather than a
     discovered one.**  ``entrypoint.sh`` runs ``set -eEuo pipefail`` and calls
-    ``scripts/init_database.py``, so a failure here aborts the container and the
-    auto-rollback fires before anything commits.  But if the healthcheck fails
-    AFTER this commits, the rolled-back image reads a display-dated ledger with
-    the previous image's UTC rules, and only the entries whose two days differ
-    are affected (on production at the cutover: one payment, one day).  Rolling
-    back ACROSS a dating change therefore needs this hook re-run under the old
-    image, not just a container swap.
+    ``scripts/init_database.py``, so a failure here aborts the container
+    before this hook commits -- though NOT before the release's migrations
+    have (they run first): ``deploy/shekel-deploy.sh`` re-pins the previous
+    image only when that image can resolve the stamp the database now holds,
+    and otherwise names the pre-deploy dump and stops.  And if the healthcheck
+    fails AFTER this commits, the rolled-back image reads a display-dated
+    ledger with the previous image's UTC rules, and only the entries whose two
+    days differ are affected (on production at the cutover: one payment, one
+    day).  Rolling back ACROSS a re-date or a re-book therefore follows
+    ``deploy/shekel-deploy.sh``'s rollback instructions; for a
+    migration-bearing release that is the pre-deploy dump it names.
 
     **It is the THIRD multi-owner transaction, and it takes every per-user
     write lock up front** (plan step X-f1c3c, finding N-193).  It iterates every
@@ -766,6 +803,15 @@ def resync_all_cash_postings() -> tuple[int, int]:
     Returns:
         ``(transactions_changed, transfers_changed)`` -- how many sources this
         pass actually re-posted, for the deploy log.
+
+    Raises:
+        PostingError: If, after the transfer loop, any transfer still holds a
+            nonzero legacy one-entry posting on some ``(period, date)``
+            (ruling **R-BAL104**); if a ROW's family cannot post (the
+            transaction arm does not skip); or if the one anchor re-check
+            refuses an account (anchor history with no linked ledger, or a
+            posted net whose source it cannot resolve).  In every case the
+            caller's transaction must not commit.
     """
     lock_every_user_writes()
     settled_ids = settled_status_ids()
@@ -815,48 +861,130 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .order_by(Transaction.id)
         .all()
     )
-    transactions_changed = sum(
-        1 for txn in transactions if sync_transaction_postings(txn)
-    )
+    # Every source's re-book is HELD for the one anchor re-check after both
+    # arms (ruling **R-BAL103**): scenario -> (accounts touched, entries).
+    held: dict[int, tuple[set[int], list[JournalEntry]]] = {}
+    transactions_changed = 0
+    for txn in transactions:
+        entries = _rebook_transaction_family(txn)
+        if entries:
+            transactions_changed += 1
+            _hold_for_the_re_check(
+                held, txn.scenario_id, _family_accounts(txn), entries,
+            )
 
     transfers = (
         db.session.query(Transfer)
-        .options(joinedload(Transfer.pay_period))
         .filter(
-            Transfer.is_deleted.is_(False),
-            Transfer.status_id.in_(settled_ids),
+            db.or_(
+                # LIVE and SETTLED, or live and holding a dated covering
+                # movement on a live shadow (plan step ``balance:X-bi-6-3``,
+                # ruling **R-BAL101**) -- the transaction arm's totality
+                # argument: this reaches every transfer that could hold a
+                # leg today.
+                db.and_(
+                    Transfer.is_deleted.is_(False),
+                    db.or_(
+                        Transfer.status_id.in_(settled_ids),
+                        dated_transfer_movement_exists_clause(),
+                    ),
+                ),
+                # Or carrying ANY entry of the legacy one-entry ``transfer``
+                # source, live or not: a reverted or soft-deleted transfer
+                # whose pre-E1a settle / reversal pair straddles two dates
+                # nets zero in total and not per date (the E1a review's H2
+                # residue), and the loan lineage probe stopped reading that
+                # source when it re-keyed onto the movement -- so the legacy
+                # arm of the pair's door is what brings every such pair to
+                # zero per (period, date), and this disjunct is what makes it
+                # reach every transfer the legacy source ever posted for.
+                # After the first deploy it walks the same rows as no-ops
+                # (the leaf-1 adversarial review of that step, finding 5).
+                legacy_transfer_entry_exists_clause(),
+            ),
         )
         .order_by(Transfer.id)
         .all()
     )
-    # **A broken PAIR is skipped and reported, not allowed to abort the batch**
-    # (developer ruling, 2026-08-17).  This selects transfers by the PARENT's
-    # status and tells :func:`sync_transfer_postings` the pair is settled;
-    # ``_settle_effective`` then refuses -- correctly -- when the income shadow
-    # is not settled or records nothing, which is a Transfer-Invariant-4 drift
-    # that ``restore_transfer`` exists to repair.
+    # **A broken FAMILY is skipped and reported, not allowed to abort the
+    # batch** (developer ruling, 2026-08-17).  The pair's door raises
+    # ``PostingError`` -- correctly -- for a movement whose account has no
+    # linked ledger account, a broken chart-of-accounts pairing.
     #
     # That refusal is right for a SINGLE write path, where a caller asking about
-    # one transfer must not get a fabricated figure.  It is wrong for a batch
+    # one transfer must not get a fabricated posting.  It is wrong for a batch
     # self-heal that walks every row in the database and runs at container start
     # (``scripts/init_database.py``): one repairable row would make the app
     # unbootable for every user, and the operator could not even reach the
     # screen that shows which row it was.  Skipping keeps the failure loud in
-    # the log and bounded to the pair that caused it.
+    # the log and bounded to the family that caused it -- EXCEPT while the
+    # skipped family still holds a LEGACY net (ruling **R-BAL104**, developer
+    # 2026-09-22): the account walk cannot see that money, so the resync
+    # refuses after this loop (below) until the pairing is repaired.  The
+    # skip holds for every other family.
+    #
+    # **Skipped WHOLE, under a SAVEPOINT** (the leaf-1 adversarial review of
+    # plan step ``balance:X-bi-6-3``, finding 1).  The pair's door writes in
+    # sequence -- the legacy reversal, then one side, then the other -- and a
+    # refusal on the second side would otherwise leave the first side and the
+    # reversal committed by this hook: the from-account debited into transit
+    # with nothing arriving, a trial balance that still closes, and no reader
+    # to trip.  The one-entry door resolved every input before its first
+    # write, so its skip was clean by construction; a per-movement door has no
+    # such moment, and the savepoint gives the batch the atomicity the door
+    # cannot.
     transfers_changed = 0
-    skipped: list[int] = []
+    # Transfer id -> why its family could not post: the door's own message
+    # (which names the account whose pairing is broken) is the operator's
+    # only pointer to the repair, so it is carried to the log and the refusal.
+    skipped: dict[int, str] = {}
     for xfer in transfers:
         try:
-            if sync_transfer_postings(xfer, settled=True):
-                transfers_changed += 1
-        except PostingError:
-            skipped.append(xfer.id)
+            with db.session.begin_nested():
+                entries, accounts = _rebook_transfer_family(xfer, purchase_posts)
+        except PostingError as exc:
+            skipped[xfer.id] = str(exc)
+            continue
+        if entries:
+            transfers_changed += 1
+            _hold_for_the_re_check(held, xfer.scenario_id, accounts, entries)
+    # **Until X-bi-6-5 a legacy net left standing refuses the whole resync**
+    # (ruling **R-BAL104**; the docstring says why).  Asked BEFORE the one
+    # re-check, so no true-up is ever computed against a walk that cannot
+    # see the net, and the refusal names the root cause rather than whatever
+    # the re-check would trip on next.
+    legacy_holders = transfers_holding_a_legacy_net()
+    if legacy_holders:
+        raise PostingError(
+            f"Cash posting resync refused (ruling R-BAL104): transfer(s) "
+            f"{legacy_holders} still hold a nonzero legacy one-entry "
+            f"posting, which the account walk cannot see (skipped this "
+            f"pass: {list(skipped)}).  {_skip_reasons(skipped)}  Repair "
+            "each skipped transfer's movement-account ledger pairing before "
+            "deploying again; a holder that was NOT skipped is a re-book "
+            "defect, not a pairing: do not deploy.  If this deploy applied a "
+            "migration the previous image cannot resolve, shekel-deploy will "
+            "not re-pin it, and the ruled recovery is the pre-deploy dump it "
+            "names (ruling R-BAL105)."
+        )
+    # The ONE anchor re-check, after every source is re-booked (ruling
+    # **R-BAL103**; the docstring says why).  Outside the per-transfer
+    # SAVEPOINT on purpose: the walk refuses only for the ACCOUNT
+    # (anchor history with no linked ledger, or a posted net whose source it
+    # cannot resolve), never for one transfer's re-book, and the deploy's third
+    # hook walks every non-loan account with no skip
+    # (``account_posting_service.backfill_all_account_anchor_postings``), so
+    # such an account aborts the deploy there regardless.
+    for scenario_id, (accounts, entries) in sorted(held.items()):
+        _self_heal_account_anchor_corrections(
+            tuple(sorted(accounts)), scenario_id, entries,
+        )
     if skipped:
         logger.warning(
-            "Cash posting resync skipped %d transfer(s) whose shadow pair is "
-            "broken: %s.  Each is a Transfer Invariant 3/4 drift -- repair it "
-            "with transfer_service.restore_transfer, then re-run the resync.",
-            len(skipped), skipped,
+            "Cash posting resync skipped %d transfer(s) whose family could not "
+            "be posted: %s.  %s  Each is a broken chart-of-accounts pairing on "
+            "a movement's account -- repair it, then re-run the resync.",
+            len(skipped), list(skipped), _skip_reasons(skipped),
         )
 
     return transactions_changed, transfers_changed

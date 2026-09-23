@@ -24,6 +24,13 @@ balance never reached the net-worth horizon.  Two rules are left here: the
 SPLICE (today reads the caller's confirmed figure, the future reads the
 producer) and the NO-BASELINE hold (no scenario, no plan to fold, every
 liability flat), which predates CC-1 and is named in the function's docstring.
+
+**It is also the home of the seam's ONE sign flip**, :func:`owed` (plan step
+credit_card:CC-5-5a, ruling R-CC47): what an account owes is minus the balance
+it holds.  The flip was ``card_statement.owed`` (ruling R-CC29), written for a
+statement producer no ``app/`` module calls yet; R-CC47 moved it here so the
+net-worth surfaces and that producer read ONE flip rather than two spellings
+of it.
 """
 
 from datetime import date
@@ -34,6 +41,72 @@ from ._context import BalanceContext
 
 from ._inputs import ZERO
 from ._kind_correct import balance_at_dates
+
+
+def owed(balance: Decimal) -> Decimal:
+    """Return what an account OWES for the balance it HOLDS -- the ONE sign flip.
+
+    A balance here is what the account holds: positive for money in it,
+    negative for money owed on it.  So what it owes is ``-balance``: positive
+    when the owner owes, NEGATIVE when the account holds a credit -- a card the
+    issuer owes ``$50.00`` reads ``+50.00`` held and ``-50.00`` owed, which is
+    the answer ledger row CC-354 says the net-worth surfaces get wrong.
+
+    **Ruling R-CC29 ruled the flip for the card statement** ("ONE sign flip, in
+    the module every consumer reads"), and it lived in
+    :mod:`app.services.card_statement` as ``owed`` until plan step
+    credit_card:CC-5-5a moved it here under ruling **R-CC47** ("'Owed' is minus
+    the balance, R-CC29's one flip moved into the balance seam").  A statement
+    producer will state its figures as ``owed(cash_balance_at(...))`` (none is
+    wired in ``app/`` yet); today's one reader is the savings cockpit's
+    revolving-debt footer
+    (:func:`app.services.savings_dashboard_service._debt_line.debt_without_payoff_model`,
+    ruling R-CC49).
+
+    **Which balances are HELD today, precisely** -- in the seam's arithmetic.
+    The kind-correct seam's for every account that is NOT a configured loan (a
+    Credit Card, a loan with no ``LoanParams``, a custom liability, every
+    asset), and the cash fold's for every account that is NOT a configured loan.
+    Two exclusions, both measured on the production-shape clone at CC-5-5a:
+
+    * A CONFIGURED loan's kind-correct balance
+      (:func:`~app.services.balance_at.balance_at` and the period maps) is
+      reported as an OWED figure -- the Mortgage's ``176,719.77`` -- which is why
+      :func:`liability_owed_at_dates` and the net-worth hero still take ``abs``
+      rather than this.  Plan step credit_card:CC-5-5c re-signs that arm to the
+      held sign (R-CC47) and moves those readers onto this flip.
+    * A configured loan's CASH fold is not a balance of the loan in EITHER
+      sign, and never becomes one: it is the account-level assertion as typed
+      plus each whole payment INTO the loan (interest and escrow included),
+      with no interest accrued -- the same Mortgage's ``cash_balance_at`` reads
+      ``+185,747.21``, and the Van Loan's ``2,127.76`` is its ``0.00``
+      assertion plus four ``531.94`` payments.  Plan step CC-5-5c re-signs the
+      kind-correct arm only, so this stays true after it: a configured loan's
+      cash fold is NEVER an input to this function.
+
+    Until CC-5-5c a caller must not hand this the first figure, and it must
+    never hand it the second.  **What an owner TYPED is a further question the
+    arithmetic cannot answer**: of the doors that take a liability's balance,
+    the create form asks for "The account's real-world balance." with no sign,
+    the grid's anchor editor carries no help text at all, and only the
+    books-opening door says "Negative for something you owe." -- and the
+    Mortgage above was typed positive, so a liability with no loan terms
+    carries whatever sign was entered.  The developer ruled the
+    remedy after CC-5-5a's review (ruling R-CC52): those doors ask for the
+    amount OWED and store the held sign through this flip (plan step
+    credit_card:CC-5-5b), so the premise is true by construction rather than
+    by the owner's reading of a help text.
+
+    Args:
+        balance: A HELD balance (see above for which balances are).
+
+    Returns:
+        ``-balance``: positive when the owner owes, negative when the account
+        holds a credit, and an unsigned ``0.00`` at zero (``decimal`` negates a
+        zero to a positive zero outside ``ROUND_FLOOR``, which nothing here
+        sets).
+    """
+    return -balance
 
 
 def _spliced_owed_series(

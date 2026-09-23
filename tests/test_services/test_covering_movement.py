@@ -115,8 +115,6 @@ from app.services.settle_day import SettleDay, recorded_settle_day
 from app.services.transaction_service._row_rules import settles_from_entries
 from app.services.transaction_service._settle import settle_from_entries
 from tests._test_helpers import (
-    observed,
-    typed,
     create_loan_account,
     create_savings_account,
     create_settled_transfer,
@@ -125,10 +123,13 @@ from tests._test_helpers import (
     linked_ledger_account,
     make_expense_template,
     make_income_template,
+    observed,
     one_off_row_of,
     planted_basis,
     posted_loan_balance_at,
     state_template_price,
+    transit_ledger_account,
+    typed,
 )
 
 
@@ -1229,17 +1230,21 @@ class TestATransferIsCoveredOnBothLegs:
                 assert status_seam.covered_cash_leg(leg, leg.account_id) == Decimal("0")
                 assert _per_day(settled_cash_facts(account_id, scenario_id)) == {}
 
-    def test_the_ledger_books_the_pair_whole_and_the_movements_nowhere(
+    def test_the_ledger_books_each_movement_against_transit_and_nothing_whole(
         self, app, seed_user, seed_periods,
     ):
-        """Ruling R-BAL45 as the ledger shows it, graded by the oracle.
+        """Ruling R-BAL45's ENDPOINT as the ledger shows it, graded by the oracle.
 
-        The cash nets move by exactly the figure on each account (the ONE
-        transfer entry), no journal entry links either movement, the oracle's
-        per-account identity holds on both, and the deploy resync -- which
-        walks every settled source -- finds nothing to post.  A movement
-        posted anywhere would read ``$1,000.00`` against the oracle's
-        ``$500.00`` on that account.
+        Re-expressed from ``test_the_ledger_books_the_pair_whole_and_the_
+        movements_nowhere`` at plan step ``balance:X-bi-6-3`` (ruling
+        **R-BAL101**), which pinned the interval that step closes.  The cash
+        nets move by exactly the figure on each account, each MOVEMENT links
+        its own entry (two, against the owner's Transfers-in-transit
+        account), NO entry links the transfer whole, the oracle's per-account
+        identity holds on both, transit nets to zero, and the deploy resync --
+        which walks every settled source -- finds nothing to post.  A
+        movement posted beside a whole-pair entry would read ``$1,000.00``
+        against the oracle's ``$500.00`` on that account.
         """
         with app.app_context():
             # Opened BEFORE the settle day, so the pair rides on top of the
@@ -1265,12 +1270,16 @@ class TestATransferIsCoveredOnBothLegs:
             }
             assert after[accounts[0].id] - before[accounts[0].id] == Decimal("-500.00")
             assert after[savings.id] - before[savings.id] == Decimal("500.00")
-            # ONE entry for the pair, linked by the transfer, and none by a movement.
+            # ONE entry per MOVEMENT, and none linked by the transfer whole.
             pair_entries = (
                 db.session.query(JournalEntry).filter_by(transfer_id=xfer.id).all()
             )
-            assert len(pair_entries) == 1
-            assert _movement_entries(movement_ids) == []
+            assert pair_entries == []
+            assert len(_movement_entries(movement_ids)) == 2
+            transit = transit_ledger_account(db.session, seed_user["user"].id)
+            assert db.session.query(
+                db.func.coalesce(db.func.sum(Posting.amount), 0)
+            ).filter(Posting.ledger_account_id == transit.id).scalar() == 0
             for account in accounts:
                 opening = Decimal(str(cash_ledger.resolve_anchor(account).balance))
                 assert posting_service.account_posting_total(account.id, scenario_id) == (
@@ -1280,7 +1289,7 @@ class TestATransferIsCoveredOnBothLegs:
                 )
             db.session.commit()
             assert posting_service.resync_all_cash_postings() == (0, 0)
-            assert _movement_entries(movement_ids) == []
+            assert len(_movement_entries(movement_ids)) == 2
 
     def test_a_revert_un_dates_both_movements_and_the_ledger_reverses_the_pair(
         self, app, seed_user, seed_periods,
