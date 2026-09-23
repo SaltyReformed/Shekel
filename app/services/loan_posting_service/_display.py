@@ -1,43 +1,40 @@
 """Loan-detail display read producers: the Loop B rebuild's measured surfaces.
 
-The display read side of the genesis loan sub-ledger, split from the core
-readers (:mod:`._reader`) as the loan-detail rebuild's producers landed and the
-reader approached the module-size limit.  Where :mod:`._reader` answers what one
-payment's posted legs attribute to interest / escrow / principal, this module
-shapes those attributions into the loan DETAIL page's two measured surfaces:
+The display read side of the genesis loan sub-ledger: the loan DETAIL page's
+two measured surfaces, both shaped from the ONE walk the postings are
+reconciled from (:func:`app.services.loan_ledger.walk_loan_ledger`):
 
 * the confirmed payment-history table (:func:`confirmed_loan_payment_history`,
   each payment's real cash / principal / interest / escrow split); and
 * the balance-anchors drift scorecard (:func:`loan_balance_anchor_history`, each
   opening / true-up paired with what the ledger had computed just before it).
 
-The paid-in-year chips moved OFF the postings onto the fold at step C6c
-(:func:`app.services.balance_at.loan_interest_paid_in_year` /
-:func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module no
-longer answers them.  Every producer here reuses the reader's shared per-shadow /
-linked helpers and the walk the postings derive from, so no display surface can
-drift from the legs the ledger actually carries.  Reads only -- no writes, no
-commit.
+**The payment table reads the WALK, not the ledger's legs** (plan step
+``balance:X-bi-6-3``, ruling **R-BAL102**).  Through that step a reader
+module beside this one (``_reader``, deleted) summed each payment's posted
+interest / escrow / principal legs back out of the ledger by the loan-side
+shadow's ``transaction_id``, so the table would "cross-check the writer".  The
+split is a date-keyed correction with no row link now, and two payments on
+one day in one period share ONE entry, so the ledger cannot say which payment
+paid what -- and never needed to: the E1a write-time assert
+(:func:`._sync._assert_checked_projection`) already grades the posted ledger
+against this same walk per date, and a display-side second grade was a
+checker.  The paid-in-year chips moved OFF the postings onto the fold at step
+C6c (:func:`app.services.balance_at.loan_interest_paid_in_year` /
+:func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module
+no longer answers them.  Reads only -- no writes, no commit.
 """
 
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.enums import LedgerAccountKindEnum
-from app.services.loan_ledger import walk_loan_ledger
-from app.services.loan_loaders import load_loan_params, loan_payment_due_date
-from app.services.row_valuation import settled_contribution
+from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
+from app.services.loan_loaders import load_loan_params
+from app.services.posting_service import _ledger_account_for
 from app.utils.money import round_money
 
-from ._reader import (
-    _confirmed_history_inputs,
-    _interest_net_by_shadow,
-    _net_by_shadow_for_kind,
-    _principal_net_by_shadow,
-)
-
-_ZERO_MONEY = Decimal("0.00")
+from ._linked_ledger import _has_opening_posting
 
 
 @dataclass(frozen=True)
@@ -45,15 +42,16 @@ class LoanPaymentHistoryRow:
     """One confirmed loan payment, split into its real economic parts.
 
     The display row of :func:`confirmed_loan_payment_history`: a single confirmed
-    payment read from the genesis ledger, carrying the ACTUAL cash paid and its
-    real principal / interest / escrow split (the posted legs, not the schedule's
-    contractual replay -- so an extra or short payment shows honestly).  Every
-    row is confirmed by construction (the producer bounds to payments whose CASH
-    had moved by ``as_of``), so the table renders a Confirmed badge on each.
+    payment's outcome in the genesis walk, carrying the ACTUAL cash paid and its
+    real principal / interest / escrow split (the walk's allocation of what
+    moved, not the schedule's contractual replay -- so an extra or short
+    payment shows honestly).  Every row is confirmed by construction (the
+    producer bounds to payments whose CASH had moved by ``as_of``), so the
+    table renders a Confirmed badge on each.
 
     ``cash`` is the payment's full cash (the loan-side income shadow's
-    :func:`~app.services.row_valuation.settled_contribution`); ``principal +
-    interest + escrow`` equals it for an
+    :func:`~app.services.row_valuation.settled_contribution`, read once by the
+    walk's event); ``principal + interest + escrow`` equals it for an
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
@@ -71,10 +69,12 @@ class LoanPaymentHistoryRow:
         cash: The full cash paid (the income shadow's
             :func:`~app.services.row_valuation.settled_contribution`),
             cent-quantized.
-        principal: The real debt paid down (the payment's net on the loan's
-            linked ledger), cent-quantized; may be negative for an underpayment.
-        interest: The real interest the payment's split posted, cent-quantized.
-        escrow: The real escrow the payment's split posted, cent-quantized.
+        principal: The real debt paid down, cent-quantized; may be negative
+            for an underpayment, and equals the payment's net on the loan's
+            linked ledger by the split's construction (``cash - interest -
+            escrow - refund``, capped at payoff).
+        interest: The real interest the payment cleared, cent-quantized.
+        escrow: The real escrow the payment cleared, cent-quantized.
     """
 
     due_date: date
@@ -131,26 +131,30 @@ def confirmed_loan_payment_history(
     """Return a loan's confirmed payments split into their real economic parts.
 
     One :class:`LoanPaymentHistoryRow` per confirmed payment whose SETTLED date
-    has arrived by *as_of* (plan step C2's one clock, applied through
-    :func:`~app.services.loan_ledger.confirmed_shadows_through`) -- the same
-    confirmed cut the balance readers and the seam's confirmed view apply, so the
-    table agrees with the balance and the schedule --
-    chronological, each carrying the ACTUAL cash paid and its real principal /
-    interest / escrow split read from the posted ledger legs, never the
-    schedule's contractual replay.
+    has arrived by *as_of* (plan step C2's one clock: the outcome's
+    ``visible_on``, the same cut the balance readers and the seam's confirmed
+    view apply through :func:`~app.services.loan_ledger.confirmed_shadows_through`,
+    so the table agrees with the balance and the schedule) -- chronological by
+    installment, each carrying the ACTUAL cash paid and its real principal /
+    interest / escrow split as the ONE walk allocated it
+    (:func:`~app.services.loan_ledger.walk_loan_ledger`), never the schedule's
+    contractual replay.
 
-    ``cash`` is the loan-side income shadow's
-    :func:`~app.services.row_valuation.settled_contribution` -- the accessor for a
-    reader whose rows have all SETTLED, which
-    :func:`~app.services.loan_ledger.confirmed_shadows_through` guarantees by
-    narrowing ``settled_income_shadows`` further still; ``principal``
-    is its net on the loan's linked ledger
-    (:func:`._reader._principal_net_by_shadow`); ``interest`` and ``escrow`` are
-    its net ``loan_interest`` / ``loan_escrow`` legs.  For an ordinary payment
-    ``principal + interest + escrow == cash``; a payoff overpayment's surplus is
-    a lender refund excluded from all three (see :class:`LoanPaymentHistoryRow`).
+    **ONE walk, ONE load** (ruling **R-BAL102**).  Through plan step
+    ``balance:X-bi-6-3`` this loaded the confirmed shadows once for the rows
+    and summed each payment's posted legs back out of the ledger by the
+    loan-side shadow's ``transaction_id`` in three more reads; the split has no
+    row link now and the walk the ledger is reconciled from already holds
+    every figure this table shows, so the walk is the table's one producer.
+    ``cash`` is the outcome's (the income shadow's
+    :func:`~app.services.row_valuation.settled_contribution`, read once by the
+    walk's event); ``principal`` equals the payment's net on the loan's linked
+    ledger by the split's construction; for an ordinary payment ``principal +
+    interest + escrow == cash``; a payoff overpayment's surplus is a lender
+    refund excluded from all three (see :class:`LoanPaymentHistoryRow`).
 
-    Returns ``None`` when the loan has no :class:`LoanParams` or no OPENING
+    Returns ``None`` when the loan has no
+    :class:`~app.models.loan_params.LoanParams` or no OPENING
     posting in the scenario (unconfigured / un-backfilled), so the caller hides
     the section rather than showing a misleading empty table -- the same fallback
     contract as the balance reader beside it.
@@ -162,9 +166,8 @@ def confirmed_loan_payment_history(
         scenario_id: The budget scenario to scope to.
         as_of: The display boundary; must be on or before ``date.today()``.  A
             payment whose cash has not moved by it is a forward projection,
-            excluded (:func:`app.services.loan_ledger.confirmed_shadows_through`,
-            which bounds on the SETTLED day -- not the pay period, which this
-            said until plan step X-an corrected it).
+            excluded on the SETTLED day -- not the pay period, which this said
+            until plan step X-an corrected it.
 
     Returns:
         The chronological confirmed payment rows (possibly empty for a configured
@@ -175,58 +178,71 @@ def confirmed_loan_payment_history(
         ValueError: If *as_of* is after ``date.today()`` (out of the confirmed
             reader's domain -- a future date is a forward projection).
         PostingError: If the loan account has no linked ledger account (from
-            :func:`._ledger_account_for`).
+            :func:`~app.services.posting_service._ledger_account_for`).
     """
     if as_of > date.today():
         raise ValueError(
             f"confirmed_loan_payment_history answers only as_of <= today; got "
             f"{as_of.isoformat()}.  A future date is a forward projection."
         )
-    inputs = _confirmed_history_inputs(loan_account_id, scenario_id, as_of)
-    if inputs is None:
+    walk = _configured_loan_walk(loan_account_id, scenario_id)
+    if walk is None:
         return None
-    params, _linked, shadows = inputs
-
-    # Per-shadow economics read from the posted legs, keyed by shadow id.  The
-    # principal map covers every settled payment; indexing it by the
-    # confirmed-through-as_of shadows is what keeps this table's split on the
-    # same cut as the balance and schedule.
-    principal_by_shadow = _principal_net_by_shadow(loan_account_id, scenario_id)
-    interest_by_shadow = _interest_net_by_shadow(loan_account_id, scenario_id)
-    escrow_by_shadow = _net_by_shadow_for_kind(
-        loan_account_id, scenario_id, LedgerAccountKindEnum.LOAN_ESCROW,
-    )
     # Sorted by the INSTALLMENT the payment satisfies, matching how the ledger
     # seam's confirmed view orders its rows and how the amortization table
-    # reads.  The shadows arrive in PAY-PERIOD order,
-    # which is a different sequence once settlement timing is a first-class case:
-    # a payment pre-paid for a later installment sits in an earlier period than
-    # one paid late for an earlier installment, so iterating the shadows verbatim
-    # would render the due dates out of order and disagree with the schedule.
-    # ``shadow.id`` breaks a tie (two payments against one installment) with the
-    # stable recording order.
+    # reads.  The walk's outcomes arrive in CONTRACT order already, but a
+    # payment pre-paid for a later installment and one paid late for an
+    # earlier one are ordered here by the same key the schedule rows by, and
+    # ``shadow.id`` breaks a tie (two payments against one installment) with
+    # the stable recording order.
     by_installment = sorted(
-        shadows,
-        key=lambda shadow: (
-            loan_payment_due_date(shadow, params.payment_day), shadow.id,
+        (
+            outcome for outcome in walk.settled_splits
+            if outcome.visible_on <= as_of
         ),
+        key=lambda outcome: (outcome.due_date, outcome.source.id),
     )
     return [
         LoanPaymentHistoryRow(
-            due_date=loan_payment_due_date(shadow, params.payment_day),
-            cash=round_money(settled_contribution(shadow)),
-            principal=round_money(
-                principal_by_shadow.get(shadow.id, _ZERO_MONEY)
-            ),
-            interest=round_money(
-                interest_by_shadow.get(shadow.id, _ZERO_MONEY)
-            ),
-            escrow=round_money(
-                escrow_by_shadow.get(shadow.id, _ZERO_MONEY)
-            ),
+            due_date=outcome.due_date,
+            cash=round_money(outcome.cash),
+            principal=round_money(outcome.principal),
+            interest=round_money(outcome.interest),
+            escrow=round_money(outcome.escrow),
         )
-        for shadow in by_installment
+        for outcome in by_installment
     ]
+
+
+def _configured_loan_walk(
+    loan_account_id: int, scenario_id: int,
+) -> LoanLedgerWalk | None:
+    """Walk a CONFIGURED loan's ledger, or return ``None`` when it cannot answer.
+
+    The entry guard behind the payment-history table
+    (:func:`confirmed_loan_payment_history`): a configured loan
+    (:class:`~app.models.loan_params.LoanParams`) with an OPENING posting in the
+    scenario, then the ONE walk.  ``None`` when the ledger cannot answer -- no
+    params, or no opening posting -- so the surface hides on the identical
+    condition the balance reader beside it hides on.
+
+    Args:
+        loan_account_id: The loan account to walk.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`, or
+        ``None`` when the loan is unconfigured / not opened in the scenario.
+
+    Raises:
+        PostingError: If the loan account has no linked ledger account.
+    """
+    if load_loan_params(loan_account_id) is None:
+        return None
+    linked = _ledger_account_for(loan_account_id)
+    if not _has_opening_posting(linked.id, scenario_id):
+        return None
+    return walk_loan_ledger(loan_account_id, scenario_id)
 
 
 def loan_balance_anchor_history(
@@ -255,7 +271,8 @@ def loan_balance_anchor_history(
     rows say: an anchor's ``owed_before`` is the running balance of the events
     BEFORE it, which admitting a LATER anchor cannot move.
 
-    Returns ``None`` when the loan has no :class:`LoanParams` (unconfigured -- not
+    Returns ``None`` when the loan has no
+    :class:`~app.models.loan_params.LoanParams` (unconfigured -- not
     a loan yet), so the caller hides the card.  A configured loan always has at
     least the synthesized origination opening -- though a loan that has not
     originated by *as_of* correctly shows NO rows: nothing has happened to it yet.

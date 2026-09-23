@@ -19,19 +19,19 @@ its migration jointly guarantee:
     empty account is deleted, while the ``class_id`` RESTRICT refuses to
     drop a referenced accounting class;
   * (Step 3) ``uq_ledger_accounts_category`` keys one category ledger
-    account per (owner, category, class) and ``uq_ledger_accounts_uncategorized``
-    one *fallback* per (owner, class) (keyed ``WHERE is_fallback``); those
+    account per (owner, category, class) and ``uq_ledger_accounts_owner_bucket``
+    one *fallback* per (owner, class) (keyed ``WHERE is_owner_bucket``); those
     plus ``uq_ledger_accounts_account_kind`` constrain the linked / category /
-    fallback kinds, while deleted-category *orphans* (``is_fallback`` False,
+    fallback kinds, while deleted-category *orphans* (``is_owner_bucket`` False,
     NULL/NULL) carry no unique and coexist freely;
   * (Step 3) ``ck_ledger_accounts_account_or_category_null`` forbids a row
     setting BOTH ``account_id`` and ``category_id``, and
-    ``ck_ledger_accounts_fallback_shape`` forbids ``is_fallback`` on
+    ``ck_ledger_accounts_owner_bucket_shape`` forbids ``is_owner_bucket`` on
     anything but the NULL/NULL shape (so the flag stays a true discriminator);
   * (Step 3) ``category_id`` is SET NULL on a category delete -- the
     posted-to ledger account survives as an orphan with its ``name``
     snapshot intact, coexisting with the fallback rather than colliding with
-    it (the H1 regression the ``is_fallback`` flag closes);
+    it (the H1 regression the ``is_owner_bucket`` flag closes);
   * the table is registered for auditing and its trigger fires.
 """
 from __future__ import annotations
@@ -147,9 +147,9 @@ class TestPartialUnique:
         by ``uq_ledger_accounts_category``, and coexist.
 
         (Step 3 note: only two *fallback* rows -- same class, both
-        ``is_fallback`` True -- collide, on the
-        ``uq_ledger_accounts_uncategorized`` singleton; two NULL/NULL
-        *orphans* (``is_fallback`` False) instead coexist freely.  Both are
+        ``is_owner_bucket`` True -- collide, on the
+        ``uq_ledger_accounts_owner_bucket`` singleton; two NULL/NULL
+        *orphans* (``is_owner_bucket`` False) instead coexist freely.  Both are
         asserted by ``TestCategoryFallbackUniques`` below; here we use
         distinct category rows to isolate the *linked* unique's exclusion of
         non-linked rows.)
@@ -343,7 +343,7 @@ class TestForeignKeyActions:
         survive its budgeting category's deletion: the ``category_id`` FK is
         ``ON DELETE SET NULL`` (mirroring ``transactions.category_id``) and
         the ``name`` snapshot is retained, leaving the row identifiable as an
-        **orphan** -- ``is_fallback`` stays False (it is NOT promoted to the
+        **orphan** -- ``is_owner_bucket`` stays False (it is NOT promoted to the
         Uncategorized fallback), which is what lets it coexist with the
         fallback (see ``test_category_delete_with_fallback_present_does_not_collide``).
         The ``category`` relationship then resolves to None.
@@ -382,7 +382,7 @@ class TestForeignKeyActions:
             assert reloaded.category_id is None, (
                 "the category back-link must be SET NULL, not cascaded"
             )
-            assert reloaded.is_fallback is False, (
+            assert reloaded.is_owner_bucket is False, (
                 "a deleted-category row becomes an orphan, NOT the fallback"
             )
             assert reloaded.name == snapshot, (
@@ -400,11 +400,11 @@ class TestForeignKeyActions:
         a category ledger account and the Uncategorized fallback of the same
         class both exist; deleting the budget category SET-NULLs the category
         row into the ``(account_id NULL, category_id NULL)`` space.  Because
-        the orphan keeps ``is_fallback`` False, it does NOT collide with the
-        fallback (``is_fallback`` True) on
-        ``uq_ledger_accounts_uncategorized`` -- so the category delete
+        the orphan keeps ``is_owner_bucket`` False, it does NOT collide with the
+        fallback (``is_owner_bucket`` True) on
+        ``uq_ledger_accounts_owner_bucket`` -- so the category delete
         SUCCEEDS, the orphan and the fallback both survive, and the fallback
-        singleton is untouched.  Without the ``is_fallback`` discriminator
+        singleton is untouched.  Without the ``is_owner_bucket`` discriminator
         this delete raised an IntegrityError (a 500 on the ordinary "delete a
         category that has posted history" action).
         """
@@ -417,14 +417,14 @@ class TestForeignKeyActions:
             fallback = LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             )
             # ... and a category ledger account of the SAME class.
             category_row = LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.CATEGORY),
-                account_id=None, category_id=category_id, is_fallback=False,
+                account_id=None, category_id=category_id, is_owner_bucket=False,
                 name=category.display_name,
             )
             _db.session.add_all([fallback, category_row])
@@ -441,10 +441,10 @@ class TestForeignKeyActions:
 
             orphan = _db.session.get(LedgerAccount, category_row_id)
             assert orphan is not None and orphan.category_id is None
-            assert orphan.is_fallback is False
+            assert orphan.is_owner_bucket is False
             surviving_fallback = _db.session.get(LedgerAccount, fallback_id)
             assert surviving_fallback is not None
-            assert surviving_fallback.is_fallback is True
+            assert surviving_fallback.is_owner_bucket is True
             # Both coexist in the NULL/NULL space, told apart by the flag.
             null_null = (
                 _db.session.query(LedgerAccount)
@@ -462,11 +462,11 @@ class TestCategoryFallbackUniques:
     """The Step-3 partial uniques key the category / fallback rows.
 
     ``uq_ledger_accounts_category`` (one row per owner+category+class) and
-    ``uq_ledger_accounts_uncategorized`` (one *fallback* per owner+class,
-    keyed ``WHERE is_fallback``) are the natural keys of the per-category
+    ``uq_ledger_accounts_owner_bucket`` (one *fallback* per owner+class,
+    keyed ``WHERE is_owner_bucket``) are the natural keys of the per-category
     chart of accounts.  Their predicates are disjoint from each other and
     from ``uq_ledger_accounts_account_kind``, and deleted-category *orphans*
-    (``is_fallback`` False, NULL/NULL) fall outside every unique, so all four
+    (``is_owner_bucket`` False, NULL/NULL) fall outside every unique, so all four
     row kinds coexist correctly.
     """
 
@@ -538,10 +538,10 @@ class TestCategoryFallbackUniques:
     ):
         """A duplicate (owner, class) FALLBACK row trips the singleton.
 
-        ``uq_ledger_accounts_uncategorized`` (keyed ``WHERE is_fallback``)
+        ``uq_ledger_accounts_owner_bucket`` (keyed ``WHERE is_owner_bucket``)
         enforces exactly one fallback per owner per class; a second
-        ``is_fallback`` row of the same class must raise on that index.  Only
-        rows flagged ``is_fallback`` are constrained -- orphans of the same
+        ``is_owner_bucket`` row of the same class must raise on that index.  Only
+        rows flagged ``is_owner_bucket`` are constrained -- orphans of the same
         class (tested separately) are not.
         """
         with app.app_context():
@@ -550,7 +550,7 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             ))
             _db.session.commit()
@@ -558,11 +558,11 @@ class TestCategoryFallbackUniques:
                 _db.session.add(LedgerAccount(
                     user_id=user_id, class_id=class_id,
                     kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                    account_id=None, category_id=None, is_fallback=True,
+                    account_id=None, category_id=None, is_owner_bucket=True,
                     name="Uncategorized Expense",
                 ))
                 _db.session.commit()
-            assert "uq_ledger_accounts_uncategorized" in str(excinfo.value), (
+            assert "uq_ledger_accounts_owner_bucket" in str(excinfo.value), (
                 str(excinfo.value)
             )
             _db.session.rollback()
@@ -575,29 +575,103 @@ class TestCategoryFallbackUniques:
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.INCOME),
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Income",
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id,
                 class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             ))
             _db.session.commit()
             assert (
                 _db.session.query(LedgerAccount)
-                .filter(LedgerAccount.is_fallback.is_(True))
+                .filter(LedgerAccount.is_owner_bucket.is_(True))
                 .filter_by(user_id=user_id)
                 .count() == 2
+            )
+
+    def test_second_transit_row_same_owner_rejected(self, app, db, seed_user):
+        """A duplicate (owner, Asset, transit) row trips the same singleton.
+
+        Ruling **R-BAL99** (plan step ``balance:X-bi-6-3``): the owner-bucket
+        key ``(user_id, class_id, kind_id) WHERE is_owner_bucket`` holds the
+        Transfers-in-transit account to one per owner exactly as it holds
+        each Uncategorized fallback -- one index, a second bucket KIND, no
+        schema of its own.  A second flagged ``transit`` row for the owner
+        must raise on that index.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            class_id = _class_id(LedgerAccountClassEnum.ASSET)
+            _db.session.add(LedgerAccount(
+                user_id=user_id, class_id=class_id,
+                kind_id=_kind_id(LedgerAccountKindEnum.TRANSIT),
+                account_id=None, category_id=None, is_owner_bucket=True,
+                name="Transfers in transit",
+            ))
+            _db.session.commit()
+            with pytest.raises(IntegrityError) as excinfo:
+                _db.session.add(LedgerAccount(
+                    user_id=user_id, class_id=class_id,
+                    kind_id=_kind_id(LedgerAccountKindEnum.TRANSIT),
+                    account_id=None, category_id=None, is_owner_bucket=True,
+                    name="Transfers in transit",
+                ))
+                _db.session.commit()
+            assert "uq_ledger_accounts_owner_bucket" in str(excinfo.value), (
+                str(excinfo.value)
+            )
+            _db.session.rollback()
+
+    def test_transit_and_fallbacks_coexist_under_one_key(
+        self, app, db, seed_user,
+    ):
+        """The transit row and both fallbacks coexist: three buckets, one owner.
+
+        The key is per (owner, class, kind), so the Asset-class ``transit``
+        bucket sits beside the Income- and Expense-class ``fallback`` buckets
+        with no collision -- and an ORPHAN (unflagged, all-NULL) beside all
+        three, outside the key as ever.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            for kind, ledger_class, name in (
+                (LedgerAccountKindEnum.TRANSIT, LedgerAccountClassEnum.ASSET,
+                 "Transfers in transit"),
+                (LedgerAccountKindEnum.FALLBACK, LedgerAccountClassEnum.INCOME,
+                 "Uncategorized Income"),
+                (LedgerAccountKindEnum.FALLBACK, LedgerAccountClassEnum.EXPENSE,
+                 "Uncategorized Expense"),
+            ):
+                _db.session.add(LedgerAccount(
+                    user_id=user_id, class_id=_class_id(ledger_class),
+                    kind_id=_kind_id(kind),
+                    account_id=None, category_id=None, is_owner_bucket=True,
+                    name=name,
+                ))
+            _db.session.add(LedgerAccount(
+                user_id=user_id,
+                class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
+                kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
+                account_id=None, category_id=None, is_owner_bucket=False,
+                name="Old: Gone",
+            ))
+            _db.session.commit()
+            assert (
+                _db.session.query(LedgerAccount)
+                .filter(LedgerAccount.is_owner_bucket.is_(True))
+                .filter_by(user_id=user_id)
+                .count() == 3
             )
 
     def test_category_and_fallback_coexist(self, app, db, seed_user):
         """A category row and the fallback of the same class coexist.
 
         Proves the partial-unique predicates are disjoint (``category_id IS
-        NOT NULL AND account_id IS NULL`` vs. ``is_fallback``): a same
+        NOT NULL AND account_id IS NULL`` vs. ``is_owner_bucket``): a same
         (owner, class) pair lands in different indexes, so the category and
         fallback kinds never collide.  A single commit of both rows raising
         no IntegrityError is the proof.
@@ -615,7 +689,7 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             ))
             _db.session.commit()
@@ -630,9 +704,9 @@ class TestCategoryFallbackUniques:
         """The fallback and an orphan of the SAME class coexist (H1 unit lock).
 
         Both are ``(account_id NULL, category_id NULL)`` and same class; the
-        ``is_fallback`` flag (True for the fallback, False for the orphan) is
+        ``is_owner_bucket`` flag (True for the fallback, False for the orphan) is
         the only difference, and it keeps the orphan outside the
-        ``WHERE is_fallback`` singleton.  This is the unit-level proof of the
+        ``WHERE is_owner_bucket`` singleton.  This is the unit-level proof of the
         property the end-to-end ``test_category_delete_with_fallback_present_does_not_collide``
         relies on: a commit of both, raising no IntegrityError.
         """
@@ -642,13 +716,13 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
-                account_id=None, category_id=None, is_fallback=True,
+                account_id=None, category_id=None, is_owner_bucket=True,
                 name="Uncategorized Expense",
             ))
             _db.session.add(LedgerAccount(  # the orphan
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
-                account_id=None, category_id=None, is_fallback=False,
+                account_id=None, category_id=None, is_owner_bucket=False,
                 name="Family: Groceries",
             ))
             _db.session.commit()
@@ -666,7 +740,7 @@ class TestCategoryFallbackUniques:
         """Two orphans of the same class coexist -- orphans carry no unique.
 
         A user can retire two expense categories that both had posted
-        history; each leaves an orphan (``is_fallback`` False, NULL/NULL).
+        history; each leaves an orphan (``is_owner_bucket`` False, NULL/NULL).
         Nothing constrains them, so both persist -- the "second retired
         category of a class" case the old NULL/NULL singleton wrongly forbade.
         """
@@ -676,13 +750,13 @@ class TestCategoryFallbackUniques:
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
-                account_id=None, category_id=None, is_fallback=False,
+                account_id=None, category_id=None, is_owner_bucket=False,
                 name="Family: Groceries",
             ))
             _db.session.add(LedgerAccount(
                 user_id=user_id, class_id=class_id,
                 kind_id=_kind_id(LedgerAccountKindEnum.ORPHAN),
-                account_id=None, category_id=None, is_fallback=False,
+                account_id=None, category_id=None, is_owner_bucket=False,
                 name="Home: Rent",
             ))
             _db.session.commit()
@@ -691,7 +765,7 @@ class TestCategoryFallbackUniques:
                 .filter(
                     LedgerAccount.account_id.is_(None),
                     LedgerAccount.category_id.is_(None),
-                    LedgerAccount.is_fallback.is_(False),
+                    LedgerAccount.is_owner_bucket.is_(False),
                 )
                 .filter_by(user_id=user_id, class_id=class_id)
                 .count() == 2
@@ -754,17 +828,17 @@ class TestAccountOrCategoryExclusiveCheck:
 
 
 class TestFallbackShapeCheck:
-    """``ck_ledger_accounts_fallback_shape`` -- is_fallback only on NULL/NULL.
+    """``ck_ledger_accounts_owner_bucket_shape`` -- is_owner_bucket only on NULL/NULL.
 
-    ``is_fallback`` may be True only on a row with neither a real account nor
+    ``is_owner_bucket`` may be True only on a row with neither a real account nor
     a category (the genuine Uncategorized bucket).  Forbidding it on any other
     shape keeps the flag a true discriminator, so the fallback singleton index
-    (``WHERE is_fallback``) cannot be subverted by a linked or category row
-    flagged ``is_fallback``.
+    (``WHERE is_owner_bucket``) cannot be subverted by a linked or category row
+    flagged ``is_owner_bucket``.
     """
 
     def test_fallback_with_category_id_rejected(self, app, db, seed_user):
-        """``is_fallback`` True on a row that ALSO sets category_id is refused."""
+        """``is_owner_bucket`` True on a row that ALSO sets category_id is refused."""
         with app.app_context():
             with pytest.raises(IntegrityError) as excinfo:
                 _db.session.add(LedgerAccount(
@@ -773,20 +847,20 @@ class TestFallbackShapeCheck:
                     kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                     account_id=None,
                     category_id=seed_user["categories"]["Groceries"].id,
-                    is_fallback=True,
+                    is_owner_bucket=True,
                     name="bad fallback",
                 ))
                 _db.session.commit()
-            assert "ck_ledger_accounts_fallback_shape" in str(excinfo.value), (
+            assert "ck_ledger_accounts_owner_bucket_shape" in str(excinfo.value), (
                 str(excinfo.value)
             )
             _db.session.rollback()
 
     def test_fallback_with_account_id_rejected(self, app, db, seed_user):
-        """``is_fallback`` True on a row that ALSO links a real account is refused.
+        """``is_owner_bucket`` True on a row that ALSO links a real account is refused.
 
         The account's auto-paired linked row is removed first so the only
-        constraint a (linked AND is_fallback) row can violate is the
+        constraint a (linked AND is_owner_bucket) row can violate is the
         fallback-shape CHECK, not ``uq_ledger_accounts_account_kind``.
         """
         with app.app_context():
@@ -810,11 +884,11 @@ class TestFallbackShapeCheck:
                     kind_id=_kind_id(LedgerAccountKindEnum.FALLBACK),
                     account_id=account.id,
                     category_id=None,
-                    is_fallback=True,
+                    is_owner_bucket=True,
                     name=None,
                 ))
                 _db.session.commit()
-            assert "ck_ledger_accounts_fallback_shape" in str(excinfo.value), (
+            assert "ck_ledger_accounts_owner_bucket_shape" in str(excinfo.value), (
                 str(excinfo.value)
             )
             _db.session.rollback()
@@ -836,7 +910,7 @@ class TestLoanLedgerShapeAndUnique:
         """A well-formed per-loan interest row commits and coexists with linked.
 
         ``loan_account_id`` set, ``account_id`` / ``category_id`` NULL,
-        ``is_fallback`` False, a snapshot ``name``, the ``loan_interest`` kind,
+        ``is_owner_bucket`` False, a snapshot ``name``, the ``loan_interest`` kind,
         Expense class -- the shape the Step-4 resolver will create.  It coexists
         with the loan account's own linked row (different shape, different
         index), proving the loan unique does not collide with
@@ -907,13 +981,13 @@ class TestLoanLedgerShapeAndUnique:
             )
             _db.session.rollback()
 
-    def test_loan_row_with_is_fallback_rejected(self, app, db, seed_user):
-        """A per-loan row flagged ``is_fallback`` trips the loan-shape CHECK.
+    def test_loan_row_with_is_owner_bucket_rejected(self, app, db, seed_user):
+        """A per-loan row flagged ``is_owner_bucket`` trips the loan-shape CHECK.
 
-        ``loan_account_id`` set with ``is_fallback`` True violates
-        ``ck_ledger_accounts_loan_shape`` (which requires ``NOT is_fallback`` on
+        ``loan_account_id`` set with ``is_owner_bucket`` True violates
+        ``ck_ledger_accounts_loan_shape`` (which requires ``NOT is_owner_bucket`` on
         a loan row); ``account_id`` / ``category_id`` stay NULL so the sibling
-        ``ck_ledger_accounts_fallback_shape`` is satisfied and the loan-shape
+        ``ck_ledger_accounts_owner_bucket_shape`` is satisfied and the loan-shape
         CHECK is the surface.
         """
         with app.app_context():
@@ -926,7 +1000,7 @@ class TestLoanLedgerShapeAndUnique:
                     class_id=_class_id(LedgerAccountClassEnum.EXPENSE),
                     kind_id=_kind_id(LedgerAccountKindEnum.LOAN_ESCROW),
                     loan_account_id=loan.id,
-                    is_fallback=True,
+                    is_owner_bucket=True,
                     name="bad loan fallback",
                 ))
                 _db.session.commit()

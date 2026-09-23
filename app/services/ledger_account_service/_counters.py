@@ -20,7 +20,7 @@ dispatch over the account's projection kind
   below the net-income line so a revaluation is never read as earnings.
 
 All three share one column shape (``account_id`` set, ``category_id`` /
-``loan_account_id`` NULL, ``is_fallback`` False) and one natural key,
+``loan_account_id`` NULL, ``is_owner_bucket`` False) and one natural key,
 ``uq_ledger_accounts_account_kind``'s ``(account_id, kind_id)`` -- so they
 coexist with the ``linked`` row and with each other under an index that already
 existed, and no new index is needed.  Unlike a linked row each ALWAYS snapshots
@@ -216,7 +216,7 @@ def get_or_create_account_counter_account(
     would otherwise reject a duplicate).  The created row sets ``account_id``
     (sharing the column with the account's ``linked`` row and with its other
     counter kinds -- all coexist under that key), leaves ``category_id`` /
-    ``loan_account_id`` NULL and ``is_fallback`` False, and ALWAYS snapshots a
+    ``loan_account_id`` NULL and ``is_owner_bucket`` False, and ALWAYS snapshots a
     display ``name`` (``"<account name> -- Opening|Interest Income|Unrealized
     Gain / Loss"``, clipped to the column width): the COALESCE display rule is
     the LINKED-row rule, so readers branch on ``kind_id`` and render this
