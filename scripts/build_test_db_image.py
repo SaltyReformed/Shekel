@@ -177,6 +177,9 @@ KEY_INPUTS = key_inputs()
 _READY_TIMEOUT_SECONDS = 60
 _BUILD_USER = "shekel_user"
 _BUILD_PASSWORD = "shekel_pass"
+# How much of the template builder's own log a failure report quotes: enough to
+# show the last migration revision it ran and whatever it logged after that.
+_FAILED_BUILD_LOG_LINES = 40
 
 
 class BuildError(RuntimeError):
@@ -563,6 +566,32 @@ def _import_constant(module: str, name: str, *, length: bool = False) -> int:
     return len(value) if length else int(value)
 
 
+def _builder_failure(stdout: str, stderr: str) -> str:
+    """Return the report for a failed ``build_test_template.py`` run.
+
+    BOTH streams (ruling **R-BAL121**).  The builder runs the chain through the
+    deploy's own runner, so ``migrations/env.py`` leaves its logging to the
+    app: each migration revision is logged as the app's JSON on STDOUT, and
+    the traceback goes to stderr.  Quoting only stderr would drop the line
+    that names the revision that was running when the build failed.
+
+    Args:
+        stdout: The builder's standard output.
+        stderr: Its standard error.
+
+    Returns:
+        The last :data:`_FAILED_BUILD_LOG_LINES` lines of stdout, then stderr.
+    """
+    log_tail = stdout.strip().splitlines()[-_FAILED_BUILD_LOG_LINES:]
+    return (
+        "build_test_template.py failed.\n"
+        f"Its log (stdout, last {_FAILED_BUILD_LOG_LINES} lines):\n"
+        + "\n".join(log_tail)
+        + "\nIts error (stderr):\n"
+        + stderr.strip()
+    )
+
+
 def _verify_image(tag: str) -> None:
     """Start the committed image and re-run the builder's own assertions.
 
@@ -813,10 +842,7 @@ def build(tag: str) -> None:
             check=False,
         )
         if builder.returncode != 0:
-            raise BuildError(
-                "build_test_template.py failed:\n"
-                + (builder.stderr or builder.stdout).strip()
-            )
+            raise BuildError(_builder_failure(builder.stdout, builder.stderr))
         # Quote the builder's own verification line rather than inferring
         # success from a zero exit.  It prints the counts it checked; a
         # build that somehow produced nothing would still exit 0 if its

@@ -582,7 +582,7 @@ class TestDeployHookCommitsBackfill:
         migrations and the other two hooks (plan step balance:X-cv).  A
         SEPARATE database connection -- which under READ COMMITTED sees only
         COMMITTED rows -- must observe the restored correction, proving the
-        deploy's one ``db.session.commit()`` ran: a deploy that merely flushed
+        deploy's one commit ran: a deploy that merely flushed
         would leave the correction invisible to that connection, so this fails
         loud if the commit is ever dropped (the silent-persistence-loss failure
         mode).  Until X-cv the hook committed on its own and this test called it

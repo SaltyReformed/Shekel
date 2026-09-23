@@ -15,11 +15,12 @@ from alembic import context
 # Alembic Config object -- access to .ini file values.
 config = context.config
 
-# The deploy's ONE connection, when a caller hands one over (plan step
-# balance:X-cv).  ``scripts/init_database.py`` runs the migrations, ref_cache and
-# the three deploy hooks in one transaction on it, so a hook that refuses leaves
-# the stamp where it was.  ``None`` for ``flask db`` and
-# ``scripts/build_test_template.py``, which let this file open its own.
+# The caller's connection, when one is handed over (plan step balance:X-cv):
+# ``app.migration_runner``, the one runner the deploy and the test-template
+# build share (ruling R-BAL114).  ``scripts/init_database.py`` runs the
+# migrations, ref_cache and the three deploy hooks in one transaction on it, so
+# a hook that refuses leaves the stamp where it was.  ``None`` for ``flask db``,
+# which lets this file open its own.
 shared_connection = config.attributes.get("connection")
 
 # Set up Python logging from alembic.ini if it exists -- only when Alembic owns

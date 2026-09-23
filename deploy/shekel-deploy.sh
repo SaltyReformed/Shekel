@@ -62,10 +62,13 @@
 # re-pins the previous image even for a migration-bearing release.  Only a
 # failure AFTER step 3 has committed (a later entrypoint step, or the health
 # check) leaves the new stamp, and that is the case the refusal still meets.
-# Nothing here changed for it: the re-read stamp was already the only question.
-# Before re-pinning, the failed container's log is saved beside the dump,
-# because re-pinning recreates the container and `docker logs` then shows the
-# previous image instead (`save_failed_container_log`).
+# The re-read stamp is still the only question; since X-cv it is read only
+# after the target image's container has been STOPPED, and FOR SHARE, so a
+# step 3 still in flight cannot commit behind the read
+# (`stop_failed_container`, `db_stamped_revisions`).  Before
+# re-pinning, the failed container's log is saved beside the dump, because
+# re-pinning recreates the container and `docker logs` then shows the previous
+# image instead (`save_failed_container_log`).
 #
 # Shekel's prod image is pinned in /opt/docker/shekel/.env via
 # SHEKEL_IMAGE_DIGEST (the compose override consumes it as
@@ -260,8 +263,20 @@ db_stamped_revisions() {
     # This row is the authority: `CommandError: Can't locate revision` names
     # this value, so "can image X boot against this database" is decidable
     # from it plus X's migration listing.
+    #
+    # FOR SHARE, so the read waits for a transaction that holds the row (plan
+    # step balance:X-cv, ruling R-BAL115).  Alembic stamps with an UPDATE, so
+    # a step 3 that migrated holds the row lock until it ends; a COMMIT its
+    # container sent before being stopped still completes on the server, and
+    # this read then returns what it committed rather than the old value.  A
+    # step 3 cut off mid-statement aborts at its next read from the dead
+    # client, so the wait is one statement at most -- a count, not a time:
+    # nothing bounds that statement (statement_timeout is 0), so a step 3
+    # stuck behind another session's lock holds this read as long.  The
+    # re-read logs before it waits (`repin_is_safe`).  The pre-flight's read,
+    # with nothing migrating, never waits.
     docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
-        "SELECT version_num FROM public.alembic_version"
+        "SELECT version_num FROM public.alembic_version FOR SHARE"
 }
 
 image_resolves_revisions() {
@@ -321,16 +336,62 @@ preflight_migrations() {
     fi
 }
 
+stop_failed_container() {
+    # Make the stamp read that follows FINAL (plan step balance:X-cv, rulings
+    # R-BAL115 and R-BAL119).  A container running the TARGET image may still
+    # be inside entrypoint step 3, whose one transaction could commit the new
+    # stamp after it is read, so that container is stopped first: once stopped
+    # it can start no NEW commit, and a COMMIT it had already sent is what the
+    # read's FOR SHARE waits for (`db_stamped_revisions`).  It runs
+    # `restart: unless-stopped`, so a manual stop holds.
+    #
+    # Only the target image's container, told apart by IMAGE ID, not by the
+    # reference spelling the compose file happens to use.  An absent container
+    # moves nothing, and on the compose-failure path compose can fail BEFORE
+    # replacing the running previous container, which cannot move the stamp and
+    # is still serving: stopping either would buy no finality, only downtime.
+    # A target whose ID cannot be read is no reason to skip the stop, so the
+    # container is stopped then: downtime is the cheaper error.
+    #
+    # Returns 1 when a target-image container could not be stopped.  That is
+    # the one case whose read is not final, and the caller refuses to re-pin
+    # on it.  A container whose image cannot be read counts as absent: if the
+    # daemon is down, the stamp read after this fails too, which already
+    # refuses.  Stated, not closed: a failure of this one inspect that the
+    # daemon recovers from before the read skips the stop, and that read is
+    # then as final as every read was before X-cv.
+    local running target
+    running=$(docker inspect --format '{{.Image}}' "$CONTAINER_NAME" 2>/dev/null || true)
+    if [ -z "$running" ]; then
+        log "no ${CONTAINER_NAME} container to stop."
+        return 0
+    fi
+    target=$(docker image inspect --format '{{.Id}}' "${IMAGE_REPO}@${new_digest}" 2>/dev/null || true)
+    if [ -n "$target" ] && [ "$running" != "$target" ]; then
+        log "${CONTAINER_NAME} runs another image than ${new_short}; left running."
+        return 0
+    fi
+    log "stopping ${CONTAINER_NAME} (running ${new_short}, or an image whose ID could not be read) so the stamp read is final ..."
+    if ! docker stop "$CONTAINER_NAME" >/dev/null; then
+        log "could not stop ${CONTAINER_NAME}."
+        return 1
+    fi
+    return 0
+}
+
 repin_is_safe() {
     # 0 when the previously-pinned image can resolve whatever revision the
     # database is stamped at NOW.  Asked AFTER a failure rather than before:
     # the deploy may have migrated before falling over, and this is the only
     # question whose answer decides whether re-pinning recovers or kills.
+    # Asked after `stop_failed_container` too, and read FOR SHARE, so the
+    # answer cannot change behind it.
     # It also distinguishes the failure cases for free -- a container that
     # never started, or whose entrypoint step 3 failed (one transaction since
     # plan step balance:X-cv), migrated nothing that stuck, so the stamp is
     # unchanged and the ordinary rollback still applies.
     local stamped
+    log "re-reading the stamp (waits for any step-3 transaction still ending) ..."
     # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
     if ! stamped=$(db_stamped_revisions) || [ -z "$stamped" ]; then
         log "could not re-read public.alembic_version after the failure;"
@@ -450,8 +511,11 @@ refuse_to_repin() {
     # The first instruction is to STOP the container, and that ordering is not
     # cosmetic: the app runs `restart: unless-stopped` and re-runs
     # `alembic upgrade head` on every start, so an operator who begins with
-    # pg_restore is restoring underneath a crash-looping container that is
-    # concurrently migrating.
+    # pg_restore is restoring underneath a container that is concurrently
+    # migrating.  `stop_failed_container` has usually stopped it already, but
+    # not on every path here -- a daemon that could not be asked leaves both
+    # the container and the stamp unread -- so the instruction stays first
+    # and unconditional.
     local why="$1"
     log ""
     log "REFUSING to roll back."
@@ -504,6 +568,38 @@ refuse_to_repin() {
 
     ntfy_notify 5 "Shekel deploy FAILED, rollback REFUSED" \
         "${new_short} committed its migrations, then did not come up, and ${old_short} cannot resolve the schema the database is now at, so re-pinning cannot work. Pin left at ${new_short}. FIRST run: docker compose stop ${COMPOSE_SERVICE} (it re-migrates on every restart). Dump: ${DUMP_PATH}"
+    exit 1
+}
+
+refuse_unstoppable() {
+    # Ruling R-BAL119's refusal: the target image's container could not be
+    # stopped, so its entrypoint step 3 may still commit a migration and no
+    # stamp read is final yet.  Re-pinning on such a read can produce the F-8
+    # pair of dead containers, so the pin stays and the operator re-runs the
+    # decision once the container is down -- through this script's own
+    # pre-flight, the one place that question is asked before anything is
+    # written, which refuses up front and names the restore if the previous
+    # image cannot resolve the stamp.
+    local why="$1"
+    log ""
+    log "REFUSING to roll back."
+    log "  ${why}"
+    log ""
+    log "  ${CONTAINER_NAME} could not be stopped, and it may be running"
+    log "  ${new_short}'s entrypoint step 3, which may still commit a migration:"
+    log "  the stamp cannot be read as final.  The pin is left at ${new_short}."
+    log ""
+    log "  Stop it, then roll back through this script, whose pre-flight"
+    log "  re-reads the stamp and refuses up front if ${old_short} cannot"
+    log "  resolve it:"
+    log "    docker stop ${CONTAINER_NAME}"
+    log "    $0 ${old_digest}"
+    log ""
+    log "  Pre-deploy dump:"
+    log "    ${DUMP_PATH}"
+
+    ntfy_notify 5 "Shekel deploy FAILED, rollback REFUSED" \
+        "${new_short} did not come up and its container could not be stopped, so the stamp read would not be final. Pin left at ${new_short}. Stop ${CONTAINER_NAME}, then run: shekel-deploy ${old_digest}. Dump: ${DUMP_PATH}"
     exit 1
 }
 
@@ -705,7 +801,12 @@ if ! compose_up; then
     # never started, so nothing migrated -- but it also covers one that
     # started and exited having reached entrypoint step 3.  Rather than guess
     # from the exit status, ask the database: if the stamp is still something
-    # ${old_short} can resolve, the ordinary revert is correct.
+    # ${old_short} can resolve, the ordinary revert is correct.  Asked once a
+    # target-image container is stopped, so the answer is final.
+    # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
+    if ! stop_failed_container; then
+        refuse_unstoppable "docker compose up rejected ${new_short}."
+    fi
     # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
     if ! repin_is_safe; then
         refuse_to_repin "docker compose up rejected ${new_short}."
@@ -736,7 +837,13 @@ fi
 # entrypoint step 3 COMMITTED its migrations before something later failed --
 # has no working rollback, so it gets the refusal instead of a second dead
 # container.  A step-3 failure left the stamp unmoved (plan step X-cv) and
-# re-pins below.
+# re-pins below.  The container is stopped before the stamp is read, and the
+# read waits for any commit it already sent, so a step 3 still in flight cannot
+# commit behind the read (ruling R-BAL115).
+# shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
+if ! stop_failed_container; then
+    refuse_unstoppable "${new_short} did not report healthy within ${HEALTH_TIMEOUT_S}s."
+fi
 # shellcheck disable=SC2310 ## boolean predicate, failure is the branch.
 if ! repin_is_safe; then
     refuse_to_repin "${new_short} did not report healthy within ${HEALTH_TIMEOUT_S}s."

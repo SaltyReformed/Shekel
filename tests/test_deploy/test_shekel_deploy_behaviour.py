@@ -33,12 +33,18 @@ and run in CI like any other.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
+import re
 import subprocess
 import textwrap
+import threading
+import time
+from unittest import mock
 
 import pytest
+from sqlalchemy import text
 
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -46,6 +52,25 @@ _DEPLOY_SCRIPT = _REPO_ROOT / "deploy" / "shekel-deploy.sh"
 
 _OLD = "sha256:" + "a" * 64
 _NEW = "sha256:" + "b" * 64
+
+
+def _image_id(digest: str) -> str:
+    """Return the local image ID the stub reports for the image at *digest*.
+
+    ``stop_failed_container`` tells the target's container apart by image ID
+    (``docker inspect --format '{{.Image}}'`` on the container against
+    ``docker image inspect --format '{{.Id}}'`` on the pulled target), never by
+    reference spelling.  The stub's IDs are derived from the digest but differ
+    from it, so a script that compared an ID with a digest would be seen.
+
+    Args:
+        digest: A ``sha256:...`` image digest.
+
+    Returns:
+        A ``sha256:...`` image ID unique to that digest.
+    """
+    return "sha256:" + hashlib.sha256(digest.encode("ascii")).hexdigest()
+
 
 #: What a readable ``pg_dump -Fc`` archive starts with.  The stub writes it and
 #: the stub's ``pg_restore -l`` requires it, so "the dump is validated before
@@ -72,7 +97,16 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
         info) exit 0 ;;
         pull) exit 0 ;;
         image)
-            # `docker image inspect <ref> --format ...` -- resolving :latest.
+            # `docker image inspect <ref> --format ...`: the target's image ID
+            # (an empty FAKE_TARGET_IMAGE_ID models one that cannot be read),
+            # or resolving :latest to its digest.
+            for arg in "$@"; do
+                if [ "$arg" = '{{{{.Id}}}}' ]; then
+                    [ -z "$FAKE_TARGET_IMAGE_ID" ] && exit 1
+                    printf '%s\\n' "$FAKE_TARGET_IMAGE_ID"
+                    exit 0
+                fi
+            done
             printf 'ghcr.io/saltyreformed/shekel@%s\\n' "$FAKE_LATEST_DIGEST"
             exit 0
             ;;
@@ -87,14 +121,26 @@ def _write_fake_docker(bin_dir: pathlib.Path) -> None:
             exit 0
             ;;
         inspect)
-            # Two callers: the db running-check and the health poll.
+            # The db running-check, the health poll, and the app container's
+            # image ID (an empty FAKE_CONTAINER_IMAGE_ID models no container).
             for arg in "$@"; do
                 case "$arg" in
                 *State.Running*) printf '%s\\n' "$FAKE_DB_RUNNING"; exit 0 ;;
                 *State.Health*)  printf '%s\\n' "$FAKE_HEALTH";     exit 0 ;;
+                '{{{{.Image}}}}')
+                    [ -z "$FAKE_CONTAINER_IMAGE_ID" ] && exit 1
+                    printf '%s\\n' "$FAKE_CONTAINER_IMAGE_ID"
+                    exit 0
+                    ;;
                 esac
             done
             exit 0
+            ;;
+        stop)
+            # Stopping the failed container before the stamp is re-read
+            # (plan step balance:X-cv).  FAKE_STOP_RC models a daemon that
+            # refuses.
+            exit "$FAKE_STOP_RC"
             ;;
         exec)
             for arg in "$@"; do
@@ -234,7 +280,9 @@ class _Stack:
             stamped_after: str | None = None, dry_run: bool = False,
             compose_rc: str = "0",
             container_log: str = "fake container log",
-            logs_rc: str = "0") -> subprocess.CompletedProcess:
+            logs_rc: str = "0", container_image_id: str | None = None,
+            target_image_id: str | None = None,
+            stop_rc: str = "0") -> subprocess.CompletedProcess:
         """Run the real deploy script against this stack.
 
         Args:
@@ -254,6 +302,13 @@ class _Stack:
             compose_rc: Exit status for ``docker compose``.
             container_log: What ``docker logs`` prints for the container.
             logs_rc: Exit status for ``docker logs`` (non-zero: no log).
+            container_image_id: The image ID the app container runs, as
+                ``docker inspect`` reports it; ``""`` for no container.
+                Defaults to the TARGET's, the container a failed deploy
+                leaves.
+            target_image_id: The pulled target's image ID; ``""`` for one
+                that cannot be read.  Defaults to the TARGET's.
+            stop_rc: Exit status for ``docker stop``.
 
         Returns:
             The completed process, with stdout and stderr captured together.
@@ -285,6 +340,15 @@ class _Stack:
             "FAKE_COMPOSE_RC": compose_rc,
             "FAKE_CONTAINER_LOG": container_log,
             "FAKE_LOGS_RC": logs_rc,
+            "FAKE_CONTAINER_IMAGE_ID": (
+                _image_id(target) if container_image_id is None
+                else container_image_id
+            ),
+            "FAKE_TARGET_IMAGE_ID": (
+                _image_id(target) if target_image_id is None
+                else target_image_id
+            ),
+            "FAKE_STOP_RC": stop_rc,
         })
         argv = ["bash", str(_DEPLOY_SCRIPT), "--no-verify"]
         if dry_run:
@@ -629,6 +693,122 @@ class TestAStep3RefusalRollsBack:
         assert list(stack.backup_dir.glob("*.failed-container.log")) == []
 
 
+def _last_stamp_read(calls: list[str]) -> int:
+    """Return the index of the last ``alembic_version`` read among *calls*.
+
+    Args:
+        calls: The stub's invocation log, in order.
+
+    Returns:
+        The position of the latest stamp read: after a failure, the re-read.
+    """
+    reads = [i for i, call in enumerate(calls) if "alembic_version" in call]
+    assert reads, calls
+    return reads[-1]
+
+
+def _compose_ups(calls: list[str]) -> list[int]:
+    """Return the positions of every ``docker compose up`` among *calls*.
+
+    Args:
+        calls: The stub's invocation log, in order.
+
+    Returns:
+        The deploy's own ``compose up`` first, then any re-pin's.
+    """
+    return [i for i, call in enumerate(calls) if call.startswith("compose up")]
+
+
+_FAILURE_PATHS = pytest.mark.parametrize(
+    "failure", [{"health": "unhealthy"}, {"compose_rc": "1"}],
+    ids=["health-check", "compose"],
+)
+
+
+class TestTheStampIsReadOnceTheTargetIsStopped:
+    """Plan step balance:X-cv, rulings R-BAL115 and R-BAL119: the re-read is final.
+
+    A container running the TARGET image may still be inside entrypoint step 3,
+    whose one transaction can commit the new stamp after the script has read
+    the old one, and the re-pin would then meet finding F-8's second dead
+    container.  So on both failure paths that container is stopped first, and
+    the ruled order is pinned: stop, read the stamp, save the log, re-pin.  A
+    container that does not run the target (absent, or the previous one that
+    compose failed before replacing) cannot move the stamp and is left alone.
+    """
+
+    @_FAILURE_PATHS
+    def test_it_stops_then_reads_then_saves_then_re_pins(self, stack, failure):
+        """Both failure paths run the four steps in the ruled order.
+
+        And the re-read asks FOR SHARE, so it waits for a COMMIT the stopped
+        container had already sent (the stub cannot model the lock, so this
+        pins that the question is asked that way).
+        """
+        result = stack.run(**failure, **_STEP_3_ROLLED_BACK)
+        calls = stack.invocations
+        assert stack.pin == _OLD, result.stdout + result.stderr
+        stopped_at = calls.index("stop probe-app")
+        saved_at = calls.index("logs probe-app")
+        re_pinned_at = _compose_ups(calls)[-1]
+        read_at = _last_stamp_read(calls)
+        assert stopped_at < read_at < saved_at < re_pinned_at, calls
+        assert calls[read_at].endswith("FROM public.alembic_version FOR SHARE")
+
+    def test_a_target_whose_id_cannot_be_read_is_still_stopped(self, stack):
+        """No target ID to compare with: stop, since downtime is the cheaper error."""
+        result = stack.run(
+            health="unhealthy", target_image_id="", **_STEP_3_ROLLED_BACK,
+        )
+        calls = stack.invocations
+        assert calls.index("stop probe-app") < _last_stamp_read(calls), calls
+        assert stack.pin == _OLD, result.stdout + result.stderr
+
+    def test_the_previous_container_compose_never_replaced_keeps_serving(
+        self, stack,
+    ):
+        """Compose failed before replacing it: it is not stopped, and the decision runs."""
+        result = stack.run(
+            compose_rc="1", container_image_id=_image_id(_OLD),
+            **_STEP_3_ROLLED_BACK,
+        )
+        calls = stack.invocations
+        assert "stop probe-app" not in calls
+        assert _last_stamp_read(calls) > _compose_ups(calls)[0], calls
+        assert stack.pin == _OLD, result.stdout + result.stderr
+
+    def test_an_absent_container_is_not_stopped(self, stack):
+        """No container to stop: the stamp is read and the re-pin runs."""
+        result = stack.run(
+            compose_rc="1", container_image_id="", **_STEP_3_ROLLED_BACK,
+        )
+        calls = stack.invocations
+        assert "stop probe-app" not in calls
+        assert _last_stamp_read(calls) > _compose_ups(calls)[0], calls
+        assert stack.pin == _OLD, result.stdout + result.stderr
+
+    @_FAILURE_PATHS
+    def test_a_target_container_that_will_not_stop_refuses_the_re_pin(
+        self, stack, failure,
+    ):
+        """Its step 3 may still commit, so no read is final: the pin stays, loudly.
+
+        No stamp is read after the failed stop, and nothing is re-pinned.  The
+        refusal names the roll-back through this script, whose pre-flight asks
+        the stamp question again once the container is down.
+        """
+        result = stack.run(stop_rc="1", **failure, **_STEP_3_ROLLED_BACK)
+        output = result.stdout + result.stderr
+        calls = stack.invocations
+        assert result.returncode == 1
+        assert "REFUSING to roll back" in output
+        assert "could not be stopped" in output
+        assert stack.pin == _NEW
+        assert _last_stamp_read(calls) < calls.index("stop probe-app"), calls
+        assert len(_compose_ups(calls)) == 1, calls
+        assert f"{_DEPLOY_SCRIPT} {_OLD}" in _flat(output)
+
+
 class TestTheDowngradeCaseTheOldDesignCalledSAFE:
     """A target OLDER than the database adds nothing, and cannot boot.
 
@@ -708,6 +888,7 @@ class TestInitDatabaseStillRaises:
         # Pylint: ``import-outside-toplevel`` -- the module is loaded by path
         # (scripts/ is not a package), and only this test needs it.
         # pylint: disable=import-outside-toplevel
+        from app import migration_runner
         from tests._test_helpers import load_init_database_module
 
         module = load_init_database_module()
@@ -716,6 +897,76 @@ class TestInitDatabaseStillRaises:
             """Stand in for a revision Alembic cannot locate."""
             raise RuntimeError("Can't locate revision identified by 'deadbeef'")
 
-        monkeypatch.setattr(module.command, "upgrade", _boom)
+        # Alembic's own ``upgrade``, which the one migration runner calls, so
+        # the error starts where a real one would.  It raises before the
+        # config's connection is used, so a stand-in that is already inside a
+        # transaction (the one question the runner asks of it) takes its place.
+        monkeypatch.setattr(migration_runner.command, "upgrade", _boom)
+        in_a_transaction = mock.Mock(**{"in_transaction.return_value": True})
         with pytest.raises(RuntimeError, match="Can't locate revision"):
-            module.migrate_existing_database()
+            module.migrate_existing_database(in_a_transaction)
+
+
+def _the_script_s_stamp_read() -> str:
+    """Return the SQL ``db_stamped_revisions`` sends, read from the script itself.
+
+    Returns:
+        The one ``SELECT ... public.alembic_version ...`` statement the script
+        holds, exactly as ``docker exec psql -c`` would send it.
+    """
+    found = re.findall(
+        r'"(SELECT version_num FROM public\.alembic_version[^"]*)"',
+        _DEPLOY_SCRIPT.read_text(encoding="utf-8"),
+    )
+    assert len(found) == 1, found
+    return found[0]
+
+
+class TestTheStampReadWaitsForAStep3StillEnding:
+    """Plan step balance:X-cv, ruling R-BAL115: the re-read's SQL, on real PostgreSQL.
+
+    The stub above can pin only how the stamp question is SPELLED.  This runs
+    the script's own statement against the test database while another
+    connection holds an uncommitted stamp UPDATE -- the state a stopped
+    container's entrypoint step 3 leaves when its COMMIT is still on the
+    wire -- and measures that the read WAITS for it (PostgreSQL reports the
+    reader blocked on a lock) and then returns the COMMITTED stamp, not the
+    one it would have read past.
+    """
+
+    def test_the_read_waits_then_returns_what_step_3_committed(self, app, db):
+        """Blocked while the UPDATE is open; the new stamp once it commits."""
+        engine = db.engine
+        sql = _the_script_s_stamp_read()
+        read = {}
+
+        def _read_the_stamp():
+            """Run the script's read on a connection of its own."""
+            with engine.connect() as reader:
+                read["stamp"] = reader.execute(text(sql)).scalar_one()
+
+        with engine.connect() as step_3, engine.connect() as watcher:
+            step_3.execute(text(
+                "UPDATE public.alembic_version SET version_num = 'xcvwaits0001'"
+            ))
+            reader_thread = threading.Thread(target=_read_the_stamp)
+            reader_thread.start()
+            deadline = time.monotonic() + 10
+            while not watcher.execute(text(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() "
+                "  AND pid <> pg_backend_pid() AND wait_event_type = 'Lock' "
+                "  AND query LIKE '%public.alembic_version%'"
+            )).scalar_one():
+                watcher.rollback()
+                assert time.monotonic() < deadline, (
+                    f"the stamp read never waited on step 3's lock; it read "
+                    f"{read.get('stamp')!r} past it"
+                )
+                time.sleep(0.05)
+            assert "stamp" not in read
+            step_3.commit()
+            reader_thread.join(timeout=10)
+
+        assert not reader_thread.is_alive()
+        assert read["stamp"] == "xcvwaits0001"
