@@ -34,7 +34,7 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services import account_service, balance_at
+from app.services import account_service, balance_at, liability_sign
 from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
@@ -124,9 +124,10 @@ def _load_debt_accounts(user_id):
         .all()
     )
 
-    # ONE read pass: each loan is resolved once, and its BALANCE comes from the
-    # seam (``balance_at.balance_at``) rather than off a ``LoanState`` -- this
-    # page renders that balance, so it is a balance-at-T consumer like any other.
+    # ONE read pass: each loan is resolved once, and what it OWES comes from the
+    # seam (``balance_at.balance_at``, through ``liability_sign.owed``) rather
+    # than off a ``LoanState`` -- this page renders that figure, so it is a
+    # balance-at-T consumer like any other.
     ctx = BalanceContext.build(user_id)
 
     debt_accounts = []
@@ -137,7 +138,12 @@ def _load_debt_accounts(user_id):
         if terms is None:
             # Account exists but loan details not yet configured.
             continue
-        current_balance = balance_at.balance_at(account, ctx, ctx.as_of)
+        # The seam reports the loan HELD since plan step credit_card:CC-5-5c
+        # (ruling R-CC47); read raw, every loan would fail the owes-nothing
+        # test below and vanish from this page.
+        current_owed = liability_sign.owed(
+            balance_at.balance_at(account, ctx, ctx.as_of),
+        )
 
         if terms.is_arm:
             has_arm = True
@@ -146,7 +152,7 @@ def _load_debt_accounts(user_id):
         # off or degenerate loan parameters).  Seam-derived values: a
         # settled-to-zero loan disappears here.
         if (
-            current_balance <= Decimal("0")
+            current_owed <= Decimal("0")
             or terms.monthly_payment <= Decimal("0")
         ):
             continue
@@ -163,7 +169,7 @@ def _load_debt_accounts(user_id):
         debt_accounts.append(DebtAccount(
             account_id=account.id,
             name=account.name,
-            current_principal=current_balance,
+            current_principal=current_owed,
             interest_rate=terms.current_rate,
             minimum_payment=terms.monthly_payment,
         ))

@@ -102,3 +102,15 @@ def door_meaning_preview_refusal(account: Account, asked_owed: bool) -> str | No
         "box would be refused. Open the balance again to see what it now "
         "asks for."
     )
+
+
+#: The kind refusal the anchor editor's save and form GET (``accounts.anchor``)
+#: and the difference preview (``accounts.difference``) share: a loan's balance
+#: is asserted on the loan's own page, never as a cash anchor (ruling D4 / step
+#: A1, finding B-15).  Here rather than in ``anchor`` by ruling R-CC78: the
+#: preview importing ``anchor`` closed a loop once ``anchor`` imported the cash
+#: page's draw (``detail`` -> ``outstanding`` -> ``difference`` -> ``anchor``).
+LOAN_ANCHOR_REFUSAL = (
+    "A loan's balance is not a cash anchor. Record a balance true-up "
+    "on the loan's own page instead."
+)

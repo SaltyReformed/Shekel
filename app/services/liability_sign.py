@@ -7,13 +7,15 @@ and this module answers both:
 
 * **What does it owe?**  :func:`owed`, minus the balance -- ruling R-CC29's one
   flip.
-* **What does a balance DOOR speak?**  A door that takes a liability's balance
-  asks for the amount OWED and stores the held sign (ruling **R-CC52**), on
-  every surface it opens from (ruling **R-CC57**); a door on any other account
-  speaks the balance itself.  :func:`entered_figure` is the figure a door shows
-  or pre-fills for a held balance, and :func:`held_balance` is the held balance
-  it stores for a figure typed into it -- the same crossing, because the flip
-  is its own inverse.
+* **What does an owed-speaking surface show?**  A door that takes a
+  liability's balance asks for the amount OWED and stores the held sign
+  (ruling **R-CC52**), on every surface it opens from (ruling **R-CC57**), and
+  the /savings cockpit shows every liability figure as owed (ruling R-CC47:
+  "every loan screen and liability tile shows what is owed").  On any other
+  account both speak the balance itself.  :func:`shown_figure` is the figure
+  such a surface shows or pre-fills for a held balance, and
+  :func:`held_balance` is the held balance a door stores for a figure typed
+  into it -- the same crossing, because the flip is its own inverse.
 
 **Why a module of its own** (plan step credit_card:CC-5-5b).  The flip lived in
 :mod:`app.services.card_statement` (R-CC29), then in the balance seam's
@@ -21,9 +23,9 @@ and this module answers both:
 DOORS became its callers, for two reasons.  The rule a door needs -- is this
 account a liability? -- is account metadata, which
 :mod:`app.services.account_category` owns and the seam deliberately does not.
-And the seam's own configured-loan arms will read the flip at plan step
-CC-5-5c while ``_liability`` imports those arms, so a flip living there would be
-a circular import.  This module imports :mod:`app.services.account_category`
+And the seam's own configured-loan arms read the flip (plan step CC-5-5c)
+while ``_liability`` imports those arms, so a flip living there would be a
+circular import.  This module imports :mod:`app.services.account_category`
 and nothing of the seam, so every layer can reach it.
 
 Boundary discipline (``CLAUDE.md``): no Flask import, no database access.  All
@@ -51,35 +53,26 @@ def owed(balance: Decimal) -> Decimal:
     ("'Owed' is minus the balance, R-CC29's one flip moved into the balance
     seam"); plan step CC-5-5b moved it here (see the module docstring).  A
     statement producer will state its figures as ``owed(cash_balance_at(...))``
-    (none is wired in ``app/`` yet).  Today's readers are the savings cockpit's
-    revolving-debt footer
-    (:func:`app.services.savings_dashboard_service._debt_line.debt_without_payoff_model`,
-    ruling R-CC49) and the balance doors, through :func:`entered_figure`.
+    (none is wired in ``app/`` yet).  Since plan step CC-5-5c it is every
+    owed figure the app shows: the seam's two configured-loan arms report the
+    held sign through it (:func:`app.services.balance_at.balance_at_dates`'s
+    loan arm and the per-period map's), and the liability band, the net-worth
+    hero, the debt summary, /debt-strategy, the loan pages, home equity and
+    the archived drawer read what a debt owes through it -- directly, or through
+    :func:`shown_figure`.
 
-    **Which balances are HELD today, precisely** -- in the seam's arithmetic.
-    The kind-correct seam's for every account that is NOT a configured loan (a
-    Credit Card, a loan with no ``LoanParams``, a custom liability, every
-    asset), and the cash fold's for every account that is NOT a configured loan.
-    Two exclusions, both measured on the production-shape clone at CC-5-5a:
-
-    * A CONFIGURED loan's kind-correct balance
-      (:func:`~app.services.balance_at.balance_at` and the period maps) is
-      reported as an OWED figure -- the Mortgage's ``176,719.77`` -- which is why
-      :func:`~app.services.balance_at.liability_owed_at_dates` and the net-worth
-      hero still take ``abs`` rather than this.  Plan step credit_card:CC-5-5c
-      re-signs that arm to the held sign (R-CC47) and moves those readers onto
-      this flip.
-    * A configured loan's CASH fold is not a balance of the loan in EITHER
-      sign, and never becomes one: it is the account-level assertion as typed
-      plus each whole payment INTO the loan (interest and escrow included),
-      with no interest accrued -- the same Mortgage's ``cash_balance_at`` reads
-      ``+185,747.21``, and the Van Loan's ``2,127.76`` is its ``0.00``
-      assertion plus four ``531.94`` payments.  Plan step CC-5-5c re-signs the
-      kind-correct arm only, so this stays true after it: a configured loan's
-      cash fold is NEVER an input to this function.
-
-    Until CC-5-5c a caller must not hand this the first figure, and it must
-    never hand it the second.
+    **Every balance the seam reports is HELD since plan step CC-5-5c** --
+    the kind-correct seam's for every account, a configured loan included
+    (its arms turn the loan domain's owed ``positions()`` into the held sign
+    here, R-CC47), and the cash fold's for every account that is NOT a
+    configured loan.  One exclusion remains, measured on the production-shape
+    clone at CC-5-5a: a configured loan's CASH fold is not a balance of the
+    loan in EITHER sign, and never becomes one.  It is the account-level
+    assertion as typed plus each whole payment INTO the loan (interest and
+    escrow included), with no interest accrued -- the Mortgage's
+    ``cash_balance_at`` read ``+185,747.21`` where it owed ``176,719.77``, and
+    the Van Loan's ``2,127.76`` is its ``0.00`` assertion plus four ``531.94``
+    payments.  A caller must never hand this function that figure.
 
     **What an owner TYPED is held by construction since plan step CC-5-5b**
     (ruling R-CC52): every door that takes a liability's balance stores
@@ -88,16 +81,18 @@ def owed(balance: Decimal) -> Decimal:
     of this function -- one structural, one only measured:
 
     * **Structural, for a CONFIGURED loan.**  Every door that crosses a
-      STORED figure through :func:`entered_figure` refuses or skips an
+      STORED figure through :func:`shown_figure` refuses or skips an
       AMORTIZING account (the anchor editor and its preview refuse one; the
       books-opening card is not built for one), except the loan setup page,
-      which renders only while a loan has NO terms; and the loan's read-only
-      anchor cell reads no assertion at all (ruling **R-CC53**).  (The create
-      door does cross a new loan's figure, but a TYPED one, never a stored
-      row.)  So the production Mortgage's owed-typed opening
-      (``+174,281.51``) and assertion (``+178,103.41``) reach no crossing.
+      which renders only while a loan has NO terms; the loan's read-only
+      anchor cell reads no assertion at all (ruling **R-CC53**); and the
+      archived drawer reads a debt's seam balance, never its assertion
+      (ruling **R-CC67**).  (The create door does cross a new loan's figure,
+      but a TYPED one, never a stored row.)  So the production Mortgage's
+      owed-typed opening (``+174,281.51``) and assertion (``+178,103.41``)
+      reach no crossing.
     * **Measured only, for everything else.**  A non-amortizing liability or
-      a loan still without terms, typed in the owed sign before this step,
+      a loan still without terms, typed in the owed sign before CC-5-5b,
       WOULD be an input: a legacy terms-less Auto Loan asserted
       ``+5,000.00`` would open its setup page on ``-5000.00``, which that
       box's ``min="0"`` refuses.  The census of the 2026-09-22 17:06
@@ -123,9 +118,10 @@ def asks_owed(account_type) -> bool:
     The one decision every door's words and every crossing read: the "Amount
     owed" labels (the anchor editor, the books-opening card, the create form's
     option marks), the stale-form guard (ruling **R-CC61**) and
-    :func:`entered_figure` itself -- so a door cannot label a box owed and
-    cross it as a balance, or the reverse.  A liability asks owed (ruling
-    **R-CC52**); every other account asks its balance.
+    :func:`shown_figure` itself -- so a door cannot label a box owed and cross
+    it as a balance, or the reverse, and the /savings cockpit cannot show a
+    figure in words its editor does not ask in.  A liability asks owed
+    (ruling **R-CC52**); every other account asks its balance.
 
     Args:
         account_type: The account's :class:`~app.models.ref.AccountType`.
@@ -136,26 +132,33 @@ def asks_owed(account_type) -> bool:
     return is_liability_type(account_type)
 
 
-def entered_figure(account_type, balance: Decimal) -> Decimal:
-    """Return the figure a balance DOOR shows for a HELD *balance*.
+def shown_figure(account_type, balance: Decimal) -> Decimal:
+    """Return the figure an owed-speaking surface shows for a HELD *balance*.
 
     For a LIABILITY it is the amount OWED (ruling **R-CC52**: "every door that
-    takes a balance for a LIABILITY account ... asks for the amount OWED"), so a
-    card holding ``-1,000.00`` pre-fills ``1,000.00`` and one holding a
-    ``+50.00`` credit pre-fills ``-50.00``.  For every other account it is the
-    balance unchanged, so an asset's door reads exactly what it did before
-    CC-5-5b.
+    takes a balance for a LIABILITY account ... asks for the amount OWED";
+    ruling R-CC47: "every loan screen and liability tile shows what is owed"),
+    so a card holding ``-1,000.00`` shows ``1,000.00`` and one holding a
+    ``+50.00`` credit shows ``-50.00``.  For every other account it is the
+    balance unchanged.
 
-    **The doors, and only the doors.**  Every PRE-FILL, and every echo of a
-    STORED figure, reads this: the anchor editor on each of the surfaces it
-    opens from, its difference preview and its acknowledgement; the
+    **Which surfaces speak owed.**  The balance DOORS: every pre-fill and
+    every echo of a STORED figure -- the anchor editor on each of the surfaces
+    it opens from, its difference preview and its acknowledgement; the
     books-opening card; the loan setup page's "Balance today".  An echo of a
     figure just TYPED -- the editor's rejection redisplay, the restatement's
     flash messages -- is shown back as typed, uncrossed, because it is already
-    in the door's words.  The surfaces the editor opens FROM keep their own
-    sign (ruling **R-CC57**): a card's grid, cash page and dashboard show the
-    held balance its rows are summed in, and only the figure a door asks for
-    speaks owed.
+    in the door's words.  And the /savings cockpit (plan step CC-5-5c): each
+    tile's figure, its projected caption and its sparkline, and the group
+    subtotal, read through
+    :attr:`~app.services.savings_dashboard_service._types.AccountProjection.shown_balance`.
+    The surfaces a door opens FROM elsewhere keep their own sign (ruling
+    **R-CC57**): a card's grid, cash page and dashboard show the held balance
+    its rows are summed in.
+
+    It was ``entered_figure`` until plan step CC-5-5c, named for the doors
+    that were its only callers; the cockpit's figure is the same crossing, so
+    it is renamed rather than spelled twice.
 
     Args:
         account_type: The account's :class:`~app.models.ref.AccountType` --
@@ -164,7 +167,7 @@ def entered_figure(account_type, balance: Decimal) -> Decimal:
         balance: A HELD balance.
 
     Returns:
-        :func:`owed` of *balance* where the door :func:`asks_owed`, else
+        :func:`owed` of *balance* where the account :func:`asks_owed`, else
         *balance*.
     """
     if asks_owed(account_type):
@@ -175,8 +178,8 @@ def entered_figure(account_type, balance: Decimal) -> Decimal:
 def held_balance(account_type, entered: Decimal) -> Decimal:
     """Return the HELD balance a door stores for the figure *entered* into it.
 
-    The inverse of :func:`entered_figure`, and the same crossing: the flip is
-    its own inverse, so this is :func:`entered_figure` rather than a second
+    The inverse of :func:`shown_figure`, and the same crossing: the flip is
+    its own inverse, so this is :func:`shown_figure` rather than a second
     spelling of it.  Typing ``5,000.00`` on a car loan with no terms stores
     ``-5,000.00``, which reads ``$5,000.00`` owed (R-CC52's own worked case);
     typing ``-50.00`` on a card stores a ``+50.00`` credit.
@@ -194,4 +197,4 @@ def held_balance(account_type, entered: Decimal) -> Decimal:
     Returns:
         The held balance to store.
     """
-    return entered_figure(account_type, entered)
+    return shown_figure(account_type, entered)

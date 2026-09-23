@@ -140,12 +140,14 @@ def account_type_category(acct_type) -> AcctCategoryEnum | None:
 def is_liability_account(account) -> bool:
     """Return whether an account's type is in the LIABILITY category.
 
-    The asset-vs-liability rule the net-worth sum depends on: assets add their
-    balance, liabilities accumulate their POSITIVE magnitude, and net worth is
-    the difference.  Every net-worth surface classifies through this one home --
-    the cockpit's today figures, its trend, its Horizon band, the revolving-debt
-    figure and the per-cell danger ink -- so an account can never count as an
-    asset on one surface and a liability on another.
+    The asset-vs-liability rule the net-worth figures depend on: net worth is
+    the plain sum of every balance (each HELD, negative when owed; ruling
+    R-CC47), and the liability total is what the liabilities OWE,
+    :func:`app.services.liability_sign.owed` summed.  Every net-worth surface
+    classifies through this one home -- the cockpit's today figures, its trend,
+    its Horizon band, the no-payoff-date debt figure and the per-cell danger ink
+    -- so an account can never count as an asset on one surface and a
+    liability on another.
 
     DERIVED from :func:`account_category`'s one read since plan step X-z
     (ruling R-CP, finding N-118), where it was a second, independent comparison

@@ -21,11 +21,14 @@ prose off a measured claim.  X-f2-a's own commit predicted this one: its
 difference-preview family is what took ``anchor`` from 916 to the ceiling in
 the first place.
 
-The bodies are unchanged.  Two names stayed in ``anchor`` and are imported
-here rather than copied: ``LOAN_ANCHOR_REFUSAL`` is the write door's own
-copy for "a loan's balance is not a cash anchor" (ruling D4 / step A1, finding
-B-15), and a message with readers in two modules is part of the interface --
-finding **N-33**'s shape stated rather than fenced by convention.  Plan step
+The bodies are unchanged.  ``LOAN_ANCHOR_REFUSAL`` is imported rather than
+copied -- the one sentence for "a loan's balance is not a cash anchor" (ruling
+D4 / step A1, finding B-15), and a message with readers in two modules is part
+of the interface, finding **N-33**'s shape stated rather than fenced by
+convention.  It is read from :mod:`app.routes.accounts._door_meaning`, not from
+``anchor``, by ruling **R-CC78**: importing ``anchor`` here closed a loop once
+``anchor`` imported the cash page's draw, through ``detail`` and
+``outstanding`` back to this module.  Plan step
 credit_card:CC-5-5b's stale-form rule (ruling R-CC61) is not in ``anchor``: the
 save, this preview and the books-opening POST all read it from
 :mod:`app.routes.accounts._door_meaning`, one predicate with a sentence for
@@ -53,7 +56,7 @@ from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._door_meaning import door_meaning_preview_refusal
-from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL
+from app.routes.accounts._door_meaning import LOAN_ANCHOR_REFUSAL
 from app.services import anchor_service, balance_at, liability_sign
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -299,9 +302,9 @@ def _anchor_difference_context(account: Account) -> dict:
     return {
         "refusal": None,
         "observed_on": day,
-        "records": liability_sign.entered_figure(acct_type, records),
+        "records": liability_sign.shown_figure(acct_type, records),
         "recorded": recorded,
-        "difference": liability_sign.entered_figure(acct_type, difference),
+        "difference": liability_sign.shown_figure(acct_type, difference),
         "verdict": difference_verdict(difference),
     }
 

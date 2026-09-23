@@ -38,8 +38,10 @@ chart.  Including it under today's model would mean nobody carrying a
 card balance ever gets a date; the ruling is to keep the derivation over the
 debts that HAVE a payoff model and to caption the result as what it measures.
 **Those captions SHIPPED at plan step X-q3** (`bad97e6a`, closing finding
-N-99): the cockpit footer reads "Loans paid off <mon>" and names the revolving
-balance it excludes, the dashboard debt track reads "loans paid off <mon>", and
+N-99): the cockpit footer reads "Loans paid off <mon>" and names the debt it
+excludes, "with no payoff date" since plan step credit_card:CC-5-5c (ruling
+R-CC68; it said "revolving" until then, for a figure that also counts a loan
+with no terms and a custom liability), the dashboard debt track reads "loans paid off <mon>", and
 the Horizon's flag reads "All loans paid off".  (A milestone carried a machine
 ``kind`` beside that label until plan step X-s1 deleted it at both ends for
 having no consumer; the label is the flag's only identity now, and the ruling on
@@ -56,7 +58,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.services.liability_sign import owed
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
@@ -281,8 +282,8 @@ def debt_without_payoff_model(
     configured loans, excluded here).
 
     Args:
-        account_data: The per-account projections (each answering
-            ``is_liability`` and carrying a ``current_balance``).
+        account_data: The per-account projections (the sum reads each one's
+            ``is_liability``, ``loan`` and ``owed``).
 
     Returns:
         The total owed on liabilities with no payoff model, each floored at
@@ -290,7 +291,7 @@ def debt_without_payoff_model(
     """
     return sum(
         (
-            max(owed(ad.current_balance), ZERO) for ad in account_data
+            max(ad.owed, ZERO) for ad in account_data
             if ad.is_liability and ad.loan is None
         ),
         ZERO,

@@ -1227,7 +1227,7 @@ class TestBackDatedTrueUpReBasesTheLedger:
             outcome = anchor_service.apply_anchor_true_up(
                 account=savings, new_balance=Decimal("700.00"),
                 observed_on=opening_day + timedelta(days=10),
-            )
+            ).outcome
 
             assert outcome is AnchorTrueUpOutcome.COMMITTED
             # The ledger lands on the LATEST anchor, read through the

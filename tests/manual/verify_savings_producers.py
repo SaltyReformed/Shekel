@@ -273,7 +273,14 @@ def _debt_summary(summary):
             _get(summary, "total_monthly_payments"),
         ),
         "weighted_avg_rate": _money(_get(summary, "weighted_avg_rate")),
-        "revolving_debt": _money(_get(summary, "revolving_debt")),
+        # RENAMED from ``revolving_debt`` at plan step credit_card:CC-5-5c
+        # (ruling R-CC68), so both spellings are read -- the same tolerance
+        # the archived rows carry below, so the blob compares across the rename.
+        "debt_without_payoff_date": _money(
+            _get(summary, "debt_without_payoff_date")
+            if _get(summary, "debt_without_payoff_date") is not None
+            else _get(summary, "revolving_debt"),
+        ),
         "payoff_outlook": _outlook(_get(summary, "payoff_outlook")),
         "principal_paid_fraction": _money(_principal_fraction(summary)),
         "dti_ratio": _money(_get(dti, "ratio")),
@@ -504,9 +511,13 @@ def _dump_user(user_id):
         # measuring, which is what lets it produce the same blob on the HEAD
         # tree and the new one.  It goes when plan step X-x deletes X-w's
         # tolerances, exactly as this file's header requires.
+        # An archived DEBT is an ``ArchivedDebt`` carrying ``owed`` since plan
+        # step credit_card:CC-5-5c (ruling R-CC67); dumped under its own key so
+        # a debt's figure never compares against an asset's assertion.
         "archived_accounts": [
             {
                 "account_id": _get(row, "account").id,
+                "owed": _money(_get(row, "owed")),
                 "current_balance": _money(
                     _get(row, "last_anchor_balance")
                     if _get(row, "last_anchor_balance") is not None

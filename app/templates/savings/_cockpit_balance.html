@@ -1,20 +1,21 @@
 {% from "_money_macros.html" import money %}
 {# Cockpit per-card balance cell: the click-to-edit anchor control for one
-   account in the Net Worth Cockpit grid.  Rendered both inside the grid
-   (savings/_cockpit.html) and standalone by savings.cockpit_balance (the
-   Cancel / Escape and 409-retry revert target).
+   account in the Net Worth Cockpit grid.  Rendered inside the grid
+   (savings/_cockpit.html) and standalone by savings.render_cockpit_balance,
+   which answers both the Cancel / Escape revert (savings.cockpit_balance) and
+   an anchor save opened from the card (rulings R-CC74 / R-CC77).
 
    Context: ad -- ONE AccountProjection (the service value object), carrying
-   ad.account, ad.current_balance (Decimal, never None since plan step X-v2 --
-   the resolver as-of-today
-   balance the card shows; None when no current period resolves a figure,
-   rendered as a non-editable dash) and ad.is_liability (the account's
-   category is LIABILITY, so the figure takes the danger token the group
-   subtotal / chip / bar segment already do; keyed on category, never the
-   figure's sign -- polish audit P-AC4).
+   ad.account, ad.shown_balance (the figure the card shows: the seam's
+   as-of-today balance, never None since plan step X-v2, in the words the
+   account's editor speaks -- what a LIABILITY owes, every other account's
+   balance; ruling R-CC47, plan step credit_card:CC-5-5c) and ad.is_liability
+   (the account's category is LIABILITY, so the figure takes the danger token
+   the group subtotal / chip / bar segment already do; keyed on category, never
+   the figure's sign -- polish audit P-AC4).
 
    Both render paths pass the SAME object (plan step X-t1, finding N-111):
-   the grid loop's own ``ad``, and the ``savings.cockpit_balance`` revert's
+   the grid loop's own ``ad``, and ``savings.render_cockpit_balance``'s
    ``compute_account_balance_cell`` return.  The revert used to copy three
    fields into a dict of its own, so this contract was stated in three places
    and held because the copies agreed.
@@ -29,7 +30,8 @@
    that reason (plan step X-t5, out of X-t's adversarial design review).
 
    Its rows are frozen ArchivedAccount(account, last_anchor_balance) values as
-   of plan step X-w2 (ruling R-CH) -- they were {account, current_balance} dicts,
+   of plan step X-w2 (ruling R-CH), and ArchivedDebt(account, owed) for a debt
+   since plan step CC-5-5c (ruling R-CC67) -- they were {account, current_balance} dicts,
    and the RENAME is what closes the hazard this paragraph describes: the
    balance there is the account's latest cash ASSERTION (which finding N-103
    says is not a loan's balance at all), so it no longer answers to the name this
@@ -46,9 +48,11 @@
        Cancel / Escape revert here via savings.cockpit_balance; a save
        fires balanceChanged and the enclosing #cockpit-section re-renders,
        re-syncing this cell with the hero and the group subtotals.
-     * The editor edits the RAW anchor balance; this cell DISPLAYS the
-       resolver current_balance.  They re-sync on the section refresh --
-       the same display-vs-edit split the dashboard hero uses.
+     * The editor edits the anchor balance in the same words this cell
+       shows it (a liability's owed, ruling R-CC52/R-CC57); this cell
+       DISPLAYS the resolver's balance, the editor the ASSERTION.  They
+       re-sync on the section refresh -- the same display-vs-edit split the
+       dashboard hero uses.
    The id is account-scoped so N cards never collide, and the cell is
    raised above the card's .stretched-link (accounts.css) so the click
    opens the editor instead of following the card link.
@@ -63,21 +67,21 @@
    produced it: a user whose balances the app cannot answer now gets the
    setup-recovery card instead of a page of dashes. #}
 {% if ad.account.account_type.has_amortization %}
-<div class="acct-card__num font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}">
-  {{ money(ad.current_balance) }}
+<div class="acct-card__num font-mono{% if ad.shown_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}">
+  {{ money(ad.shown_balance) }}
 </div>
 {% else %}
 <div id="acct-balance-{{ ad.account.id }}"
-     class="acct-card__num acct-card__num--edit font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}"
+     class="acct-card__num acct-card__num--edit font-mono{% if ad.shown_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}"
      hx-get="{{ url_for('accounts.anchor_form', account_id=ad.account.id, revert='accounts') }}"
      hx-target="this"
      hx-swap="outerHTML"
      role="button"
      tabindex="0"
      data-keyboard-activate
-     aria-label="{{ ad.account.name }} balance: {{ money(ad.current_balance, cents=false) }}. Click to edit."
+     aria-label="{{ ad.account.name }} {{ 'owed' if ad.is_liability else 'balance' }}: {{ money(ad.shown_balance, cents=false) }}. Click to edit."
      title="Click to update balance">
-  {{ money(ad.current_balance) }}
+  {{ money(ad.shown_balance) }}
   <i class="bi bi-pencil-square acct-card__edit-icon" aria-hidden="true"></i>
 </div>
 {% endif %}

@@ -10,7 +10,7 @@
    EDIT MODE SPEAKS OWED FOR A LIABILITY (plan step credit_card:CC-5-5b,
    rulings R-CC52 / R-CC57): ``asks_owed`` (bool) labels the box "Amount owed",
    and the route pre-fills it with the owed figure
-   (``liability_sign.entered_figure``) and stores the held sign.  A card
+   (``liability_sign.shown_figure``) and stores the held sign.  A card
    showing -$1,000 on its grid opens on 1,000.00.  The label is VISIBLE and is
    the box's accessible name, so the owed branch gives the input an ``id`` for
    it and NO aria-label -- the one-name rule the "Balance as of" label below
@@ -72,8 +72,9 @@
    anchor_display so a render without ``revert_url`` in context (the
    grid path) is byte-for-byte unchanged.
 
-   The hx-patch carries the same ``revert`` token (dashboard only) so the
-   true_up handler re-renders into the surface that opened the editor. #}
+   The hx-patch carries the same ``revert`` token (every surface but the grid)
+   so the true_up handler answers with the display of the surface that opened
+   the editor (rulings R-CC74 / R-CC77). #}
 {% set revert_url = revert_url
    or url_for('accounts.anchor_display', account_id=account.id) %}
 {% if revert_token %}

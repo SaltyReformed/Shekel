@@ -12,10 +12,17 @@ It lives with its consumer in ``savings_dashboard_service._net_worth``
 covered on the live path by ``test_savings_dashboard_service.py``:
 ``test_assets_minus_liabilities`` and
 ``test_total_liabilities_is_positive_magnitude`` for the reduction, plus one
-control per ``abs`` site for a negatively-stored liability --
+control per site that crosses a negatively-held liability to what it owes
+(``liability_sign.owed``; both sites took ``abs`` until plan step
+credit_card:CC-5-5c, ruling R-CC47) --
 
     hero            test_a_negative_balance_liability_still_adds_its_magnitude
     per-period band test_series_liability_band_holds_a_negative_balance_magnitude
+
+Those two cannot tell ``owed()`` from ``abs()`` -- they agree on a liability
+that owes.  The card holding a credit in
+``tests/test_services/test_one_liability_sign.py`` is the control that parts
+them at both sites.
 
 The kernel's own
 ``sum_net_worth_at_period`` was deleted as dead code: it had no production

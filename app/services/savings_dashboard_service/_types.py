@@ -16,6 +16,7 @@ carries what that container cost.
 from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import ClassVar
 
 from app.models.account import Account
 from app.models.escrow_line import EscrowLine
@@ -24,6 +25,7 @@ from app.models.investment_params import InvestmentParams
 from app.models.loan_params import LoanParams
 from app.services.balance_at import LoanFigures
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed, shown_figure
 from app.services.pay_calendar import DerivedPeriod
 from app.enums import AcctCategoryEnum
 
@@ -310,8 +312,13 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
     Attributes:
         account: The :class:`~app.models.account.Account` this projects.
         current_balance: The account's balance today, from the
-            :mod:`app.services.balance_at` seam -- the SAME figure the hero, the
-            grid cell and the group subtotal render.
+            :mod:`app.services.balance_at` seam -- the figure the hero sums and
+            the grid cell and the group subtotal render through
+            :attr:`shown_balance`.  It is HELD for every kind, a configured
+            loan included since plan step credit_card:CC-5-5c (ruling
+            **R-CC47**): negative when the account owes, so the Mortgage owing
+            ``176,719.77`` carries ``-176,719.77`` here and :attr:`owed` is what
+            it owes.
 
             **It stopped being nullable at plan step X-v2** (ruling R-CA).  It
             was ``Decimal | None``, and SEVEN reducers in this package turned
@@ -333,6 +340,7 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             the net-worth trend, its per-category composition split and the
             card sparklines reduce over -- and, for every kind but a loan,
             where :attr:`current_balance` and :attr:`projected` are read from.
+            HELD, like :attr:`current_balance`.
 
             **It is carried for EVERY kind, loans included** (plan step X-w).
             A loan's tile reads no map, but the net-worth trend and the
@@ -450,15 +458,69 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
         """
         return self.category is AcctCategoryEnum.LIABILITY
 
+    @property
+    def owed(self) -> Decimal:
+        """What the account OWES today: :func:`~app.services.liability_sign.owed` of its balance.
+
+        The debt summary's figure for a loan (its principal and its paid
+        fraction) and the no-payoff-model footer's per-account amount.
+        :attr:`current_balance` is HELD for every kind since plan step
+        credit_card:CC-5-5c (ruling R-CC47), so what a debt owes is ONE
+        crossing of it, in the module that holds the flip -- never an ``abs``,
+        which would read a credit as debt (ledger row CC-354).  Meaningful for a
+        liability; an asset "owes" minus its balance, which no reader asks.
+
+        Returns:
+            ``-current_balance``: positive when the owner owes, negative when
+            the account holds a credit.
+        """
+        return owed(self.current_balance)
+
+    @property
+    def shown_balance(self) -> Decimal:
+        """The figure the cockpit SHOWS for this account today: owed for a debt.
+
+        Ruling **R-CC47** ("every loan screen and liability tile shows what is
+        owed"): a liability's tile, and its group subtotal, speak the amount
+        owed, and every other account its balance -- the SAME crossing a
+        liability's balance editor speaks in (ruling R-CC52), so the tile a
+        click opens that editor from reads in the editor's words.  It is
+        :func:`app.services.liability_sign.shown_figure`, not a copy of its
+        branch.  The hero does NOT read this: net worth is the plain sum of
+        :attr:`current_balance`.
+
+        Returns:
+            :attr:`owed` for a liability, else :attr:`current_balance`.
+        """
+        return shown_figure(self.account.account_type, self.current_balance)
+
+    @property
+    def shown_projected(self) -> dict[str, Decimal]:
+        """:attr:`projected` in the words the tile speaks (see :attr:`shown_balance`).
+
+        The tile's caption renders the last horizon beside the figure, so a
+        liability's caption states what it is projected to OWE, in the same
+        sign as the figure above it.
+
+        Returns:
+            ``{label: shown figure}``, in :attr:`projected`'s order.
+        """
+        return {
+            label: shown_figure(self.account.account_type, balance)
+            for label, balance in self.projected.items()
+        }
+
 
 @dataclass(frozen=True)
 class ArchivedAccount:
-    """One archived account's drawer row: the account and its last anchor.
+    """One archived NON-DEBT account's drawer row: the account and its last anchor.
 
-    What :func:`.._data._load_archived_accounts` returns, and the ONLY per-account
-    shape on this page that is not an :class:`AccountProjection` -- deliberately,
-    because an archived account receives no projection at all: no engine call, no
-    seam read, no goal calculation.  It is history.
+    What :func:`.._data._load_archived_accounts` returns for an account that is
+    not a liability; an archived DEBT is an :class:`ArchivedDebt` (ruling
+    **R-CC67**).  With it, the ONLY per-account shapes on this page that are not
+    an :class:`AccountProjection` -- deliberately, because an archived account
+    receives no projection: no engine call, no goal calculation, and for this
+    kind no seam read.  It is history.
 
     **The figure is named for what it IS** (plan step X-w2, ruling R-CH, finding
     N-114).  It was an untyped ``{account, current_balance}`` dict, and
@@ -474,14 +536,14 @@ class ArchivedAccount:
     one key on one page is the shape this arc keeps finding; the key now says
     which one this is.
 
-    **Whether the line should be RENDERED for such an account is finding
-    N-103's question**, re-pointed to plan step X-f1c3a when the column this
-    line used to read was deleted.  Measured at X-w's trace: no archived loan
-    exists on either database (both archived accounts are cash), while the
-    ACTIVE Van Loan's latest cash assertion is ``$0.00`` against ``$15,663.59``
-    owed -- so the figure is already wrong for a loan today, and archiving one
-    is all it takes to put that on screen.  Deleting the cache column did not
-    change that: the assertion it mirrored says the same thing.
+    **A loan is never this row** (ledger row CC-362, rulings R-CC53 and
+    R-CC67, plan step credit_card:CC-5-5c).  Finding N-103 asked whether the
+    line belonged on a loan at all: the ACTIVE Van Loan's latest cash
+    assertion read ``$0.00`` against ``$15,663.59`` owed at X-w's trace, and
+    on the 2026-09-22 17:06 production dump an archived Mortgage would have
+    read its typed ``$178,103.41`` where it owed ``$176,719.77``.  Every
+    archived liability is an :class:`ArchivedDebt` now, which carries no
+    assertion to render.
 
     Attributes:
         account: The archived :class:`~app.models.account.Account`.
@@ -494,8 +556,43 @@ class ArchivedAccount:
             deleted eight of.
     """
 
+    is_debt: ClassVar[bool] = False
+
     account: Account
     last_anchor_balance: Decimal
+
+
+@dataclass(frozen=True)
+class ArchivedDebt:
+    """One archived DEBT's drawer row: the account and what it owes today.
+
+    Ruling **R-CC67** (with R-CC53 for a loan, ledger row CC-362, plan step
+    credit_card:CC-5-5c): "Every archived debt (card, loan, other liability)
+    shows what it owes today from the same calculation as a live /savings
+    tile ... For a debt the figure is captioned 'Owed' instead of 'Last
+    Balance'."  So its figure is the seam's balance today crossed through
+    :func:`app.services.liability_sign.owed` -- a configured loan's
+    ``positions()``, a card's fold -- exactly the figure
+    :attr:`AccountProjection.shown_balance` renders on a live liability tile,
+    and never the typed assertion :class:`ArchivedAccount` carries: a card
+    last typed as owing ``$1,000.00`` with ``$200.00`` of purchases recorded
+    after reads ``$1,200.00`` here.
+
+    A class of its own rather than a second optional field on
+    :class:`ArchivedAccount`: the two rows carry two different facts, and one
+    record holding either would make "both set" and "neither set"
+    representable.  The drawer branches on :attr:`is_debt`.
+
+    Attributes:
+        account: The archived liability :class:`~app.models.account.Account`.
+        owed: What it owes today -- positive when the owner owes, negative when
+            it holds a credit.
+    """
+
+    is_debt: ClassVar[bool] = True
+
+    account: Account
+    owed: Decimal
 
 
 @dataclass(frozen=True)

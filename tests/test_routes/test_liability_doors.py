@@ -36,7 +36,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.account_opening import AccountOpening
 from app.models.ref import AccountType
-from app.routes.accounts.anchor import LOAN_ANCHOR_REFUSAL
+from app.routes.accounts._door_meaning import LOAN_ANCHOR_REFUSAL
 from app.services import cash_ledger
 from app.utils.dates import display_today
 from tests._test_helpers import create_account_of_type

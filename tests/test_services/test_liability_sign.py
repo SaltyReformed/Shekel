@@ -25,7 +25,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum
-from app.services.liability_sign import entered_figure, held_balance, owed
+from app.services.liability_sign import shown_figure, held_balance, owed
 
 #: Every category that is NOT a liability -- each must pass through the door.
 _NON_LIABILITY = [
@@ -66,7 +66,7 @@ class TestALiabilityDoorSpeaksOwed:
         """Held -1,000.00 (the card owes 1,000.00) shows as 1,000.00."""
         with app.app_context():
             liability = _type_in(AcctCategoryEnum.LIABILITY)
-            assert entered_figure(liability, Decimal("-1000.00")) == Decimal(
+            assert shown_figure(liability, Decimal("-1000.00")) == Decimal(
                 "1000.00",
             )
 
@@ -76,7 +76,7 @@ class TestALiabilityDoorSpeaksOwed:
         """Held +50.00 (the issuer owes the owner) shows as -50.00 owed."""
         with app.app_context():
             liability = _type_in(AcctCategoryEnum.LIABILITY)
-            assert entered_figure(liability, Decimal("50.00")) == Decimal(
+            assert shown_figure(liability, Decimal("50.00")) == Decimal(
                 "-50.00",
             )
 
@@ -122,13 +122,13 @@ class TestAnAssetDoorPassesThrough:
         with app.app_context():
             acct_type = _type_in(category)
             for figure in (Decimal("-1000.00"), Decimal("2500.00")):
-                assert entered_figure(acct_type, figure) == figure
+                assert shown_figure(acct_type, figure) == figure
                 assert held_balance(acct_type, figure) == figure
 
     def test_a_type_with_no_category_is_unchanged(self, app, db, seed_user):
         """No type at all is not a liability, so the figure is untouched."""
         with app.app_context():
-            assert entered_figure(None, Decimal("-1000.00")) == Decimal(
+            assert shown_figure(None, Decimal("-1000.00")) == Decimal(
                 "-1000.00",
             )
             assert held_balance(None, Decimal("-1000.00")) == Decimal(
@@ -143,13 +143,13 @@ class TestTheCrossingIsItsOwnInverse:
     def test_typed_then_shown_is_what_was_typed(
         self, app, db, seed_user, category,
     ):
-        """entered_figure(held_balance(x)) == x and the converse."""
+        """shown_figure(held_balance(x)) == x and the converse."""
         with app.app_context():
             acct_type = _type_in(category)
             for figure in (Decimal("1234.56"), Decimal("-50.00")):
-                assert entered_figure(
+                assert shown_figure(
                     acct_type, held_balance(acct_type, figure),
                 ) == figure
                 assert held_balance(
-                    acct_type, entered_figure(acct_type, figure),
+                    acct_type, shown_figure(acct_type, figure),
                 ) == figure

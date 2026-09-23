@@ -78,7 +78,7 @@ logger = logging.getLogger(__name__)
 #: opening is ``LoanParams.original_principal`` and nothing reads its
 #: ``budget.account_openings`` row while the loan is configured, so a door here
 #: would report success and move no figure -- the twin of
-#: ``anchor.LOAN_ANCHOR_REFUSAL`` one fact over.
+#: ``_door_meaning.LOAN_ANCHOR_REFUSAL`` one fact over.
 LOAN_OPENING_REFUSAL = (
     "A loan's opening is its original principal, recorded with the loan's "
     "terms. Correct it on the loan's own page."
@@ -302,7 +302,7 @@ def books_opening_context(account: Account) -> "dict | None":
         # R-CC52): a liability's card states and pre-fills what its books
         # opened OWING, so a card opened at -1,000.00 held reads 1,000.00 owed.
         # An asset's figure is its equity as stored.
-        "equity": liability_sign.entered_figure(
+        "equity": liability_sign.shown_figure(
             account.account_type, opening.opening_equity,
         ),
         "asks_owed": liability_sign.asks_owed(account.account_type),
