@@ -236,6 +236,10 @@ class TestABalancedMatchIsRecorded:
         Developer confirmation 2026-09-21 (rule 5): "Confirm A, B and C as rule-5 re-expressions
         under R-CC43 -- the member names the payment; a day moves through the seam that mirrors it;
         a settled row is ticked as its payment."
+        Since ``CC-5-4a-2`` the member table has no row column, so "no member
+        names the row" is the schema's; the assertion that said so went with it.
+        Developer confirmation 2026-09-22 (rule 5): "Confirm all four groups -- all four are
+        rule-5 re-expressions under R-CC45."
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
@@ -250,7 +254,6 @@ class TestABalancedMatchIsRecorded:
         )
         assert len(members) == 2
         assert {m.bank_statement_line_id for m in members} == {line.id, None}
-        assert {m.transaction_id for m in members} == {None}
         (movement,) = txn.covering_movements
         assert {m.transaction_entry_id for m in members} == {movement.id, None}
         assert movement.settled_on == line.posted_on

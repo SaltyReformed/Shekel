@@ -1,0 +1,13 @@
+{% from "_money_macros.html" import money %}
+{#- **The clause every withdrawal disclosure shares** (plan step
+    credit_card:CC-5-4a-3): what a press withdraws, named by its bank lines.
+    The bill popover's "Paid from" pick, its Actual box's $0.00, its Paid on
+    a row whose purchases replace its payment and its delete dialog, and the
+    transfer popover's Actual box's $0.00 all say it (rulings R-CC46 /
+    R-CC56 / R-CC59) -- one spelling here rather than one per screen; the
+    delete dialog and the pick spelled it twice until this step.  `w` is a
+    match_withdrawal.MatchWithdrawal; the caller supplies the verb's subject
+    before it and the full stop after. -#}
+{% macro frees_lines(w) -%}
+withdraws {{ w.matches }} accepted match{{ '' if w.matches == 1 else 'es' }}, so {{ w.lines | length }} bank line{{ '' if w.lines | length == 1 else 's' }} {{ 'is' if w.lines | length == 1 else 'are' }} unexplained again on your statement screen: {% for line in w.lines %}{{ line.posted_on.strftime('%-m/%-d') }} {{ line.description }} {{ money(line.amount) }}{{ '; ' if not loop.last }}{% endfor %}
+{%- endmacro %}

@@ -178,16 +178,20 @@ def get_full_edit(txn_id):
     tender_accounts, tender_account_id = _tender_picker(txn)
     return render_template(
         "grid/_transaction_full_edit.html",
-        # **What a different pick would WITHDRAW** (plan step
-        # ``credit_card:CC-5-4a-1``, ruling **R-CC46**): every accepted match
-        # names the row's payment, and a payment re-pointed onto another
-        # account leaves the match it was matched in (the seam withdraws it
-        # at ``_re_point``), so the picker says what that frees BEFORE the
-        # pick -- the disclosure a delete makes through its dialog, read
-        # through the same twin (``match_withdrawal``'s pending read) the
-        # door's own write uses.  ``None`` for a row holding no payment; a
-        # withdrawal freeing nothing renders nothing.
-        tender_withdraws=_tender_withdrawal(txn),
+        # **What taking the row's payment out of its matches would WITHDRAW**
+        # -- read once, for the card's three captions: a different "Paid
+        # from" pick re-points the payment (plan step
+        # ``credit_card:CC-5-4a-1``, ruling **R-CC46**), and a ``$0.00``
+        # Actual or Paid on a row whose purchases replace its payment takes
+        # it off the books (plan step ``credit_card:CC-5-4a-3``, rulings
+        # **R-CC54** / **R-CC56**).  Every accepted match names the row's
+        # payment, and none of the three keeps it named, so all three free
+        # the same lines -- said BEFORE the press, the disclosure a delete
+        # makes through its dialog, read through the same twin
+        # (``match_withdrawal.pending_for_movements``) the doors' own write
+        # uses.  ``None`` for a row holding no payment; a withdrawal freeing
+        # nothing renders nothing.
+        payment_withdraws=_payment_withdrawal(txn),
         txn=txn,
         categories=categories,
         # The row's OWN paycheck, as the DERIVED value (plan step C4-a-5).  The
@@ -292,25 +296,29 @@ def get_full_edit(txn_id):
     )
 
 
-def _tender_withdrawal(txn):
-    """Return what re-pointing *txn*'s kept payment would withdraw, or ``None``.
+def _payment_withdrawal(txn):
+    """Return what taking *txn*'s payment out of its matches would withdraw, or ``None``.
 
-    The read twin of the seam's write (``status_seam._covering._re_point``
-    calls ``match_withdrawal.withdraw_for_moved_movement``), so the caption
-    under the "Paid from" picker and the act itself come from one derivation
-    -- the shape the delete dialog has over ``preview_deletion``.
+    The read twin of the seam's two writes on the payment -- the re-point
+    (``status_seam._covering._re_point`` calls
+    ``match_withdrawal.withdraw_for_moved_movement``) and the removal a
+    ``$0.00`` or ``purchases`` record makes (``_covering._withdraw`` calls
+    ``movement_removal.remove_movements``) -- so each caption on the card and
+    the act under it come from one derivation, the shape the delete dialog
+    has over ``preview_deletion``.  One read serves all three, because an act
+    names the MOVEMENT and none of the three keeps it named.
 
     Args:
         txn: The row the popover is drawn for, with ``entries`` loaded.
 
     Returns:
         A :class:`~app.services.match_withdrawal.MatchWithdrawal`, or
-        ``None`` when the row holds no payment to re-point.
+        ``None`` when the row holds no payment.
     """
     movement = status_seam.covering_movement_of(txn)
     if movement is None:
         return None
-    return match_withdrawal.pending_for_moved_movement(movement)
+    return match_withdrawal.pending_for_movements([movement])
 
 
 def _tender_picker(txn):

@@ -60,9 +60,10 @@ class RowKind(enum.Enum):
     ``credit_card:CC-5-3`` a settled row was offered as a TRANSACTION on its
     own account and priced by its movement there, which left a bill charged
     to the card (its movement on the card, its row on checking) with no
-    subject on either screen: the card's key
-    (``fk_statement_match_members_transaction_account``) refuses a row on
-    another account, and checking's feed never shows the money.
+    subject on either screen: the card's row-member key
+    (``fk_statement_match_members_transaction_account``, dropped with its
+    column at plan step ``credit_card:CC-5-4a-2``) refused a row on another
+    account, and checking's feed never shows the money.
 
     **It is TAGGED by the reader that produced the candidate, never derived
     downstream**, which is the rule :class:`OfferKind` states one package over

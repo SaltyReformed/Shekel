@@ -549,16 +549,32 @@ class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
     intermediate the migration itself creates before it adds them. DDL is
     transactional in PostgreSQL, so the rollback each case ends with restores
     them.
+
+    **The member table's row column is RESTORED for the duration too**, for
+    the same reason: the backfill's observed arm reads
+    ``statement_match_members.transaction_id``, which existed at this
+    revision and was dropped at plan step ``credit_card:CC-5-4a-2`` (migration
+    ``2eabfa596ee0``, ruling **R-CC45**).  The frozen SQL is graded against
+    the schema it was written for; no case stages a member, so the column is
+    empty and changes no answer.
     """
 
     @staticmethod
     def _unpair(db):
-        """Drop both pairing CHECKs, so the pre-backfill state is expressible."""
+        """Drop both pairing CHECKs and restore the row column the backfill reads.
+
+        So the pre-backfill state is expressible and the frozen arms run
+        against the schema of their own revision (class docstring).
+        """
         for table in ("transactions", "transaction_entries"):
             db.session.execute(sqlalchemy.text(
                 f"ALTER TABLE budget.{table} "
                 f"DROP CONSTRAINT ck_{table}_settle_day_basis_pairing"
             ))
+        db.session.execute(sqlalchemy.text(
+            "ALTER TABLE budget.statement_match_members "
+            "ADD COLUMN transaction_id integer"
+        ))
 
     @staticmethod
     def _basis_names(db):
