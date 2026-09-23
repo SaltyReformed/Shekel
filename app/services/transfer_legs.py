@@ -98,9 +98,14 @@ predicates, the reference cache and the date arithmetic, and no service.
 **The SETTLED half reads its legs here too since leaf ``X-bi-6-4a``** (ruling
 **R-BAL106**): :func:`transfer_movement_rows` / :func:`recorded_transfer_legs`
 hand the cash fold, the ledger oracle and the savings metric each paid
-transfer's covering movement with its transfer and side, so this module is
-the one place a movement is reached through a shadow row, and
-``X-bi-6-4d`` moves that reach once.
+transfer's covering movement with its transfer and side.  For THOSE readers
+this module is the one place a movement is reached through a shadow row.
+**Other readers still reach it themselves until their leaf moves them** and
+``X-bi-6-4d`` must find each: the posting writer
+(``posting_service._transfer_family_movements``,
+``_posting_purchases.dated_transfer_movement_exists_clause``: 6-4a leaf 2),
+the loan family and contributions (6-4b), statement match and the reconcile
+panel (6-4c), and DC-11's raw-SQL leg arm (``scripts/integrity_check.py``).
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -439,8 +444,9 @@ def leg_of(
 ) -> TransferLeg:
     """Return *transfer*'s leg on *account_id*, refusing an account on neither side.
 
-    The ONE construction of a leg, so which side is income is decided in one
-    place.  ``ck_transfers_different_accounts`` makes the two sides distinct,
+    A leg from an ACCOUNT asking for it (the other door, from a movement's
+    link, is :func:`recorded_transfer_legs`); both build through
+    :func:`_leg_on_side`.  ``ck_transfers_different_accounts`` makes the two sides distinct,
     so an account is on at most one of them and the answer is never ambiguous.
 
     Args:
@@ -587,8 +593,8 @@ def _covering_movements_query():
     (ruling **R-BAL106**) every settled-half reader through
     :func:`transfer_movement_rows` -- so when the movement re-parents onto
     ``budget.transfers`` (``X-bi-6-4d``, ruling **R-BAL88**) the join and
-    those two expressions move HERE, once, and nothing outside this module
-    names the shadow to reach a leg's money.
+    those two expressions move HERE for every reader built on them; the
+    readers not yet on them are named in the module docstring.
 
     A deleted shadow's movement is not a leg's record: a transfer whose pair
     was soft-deleted and rebuilt holds the live pair's, and the query says so

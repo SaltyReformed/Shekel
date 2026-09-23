@@ -310,9 +310,9 @@ class CashSourceFact:  # pylint: disable=too-many-instance-attributes
 
     Pylint: ``too-many-instance-attributes`` (8/7) -- one movement, its two
     parent links (a plan row's, a transfer's) and what the fold reads of it.
-    The table beside it takes the same exactly-one-parent shape at
-    ``X-bi-6-4d`` (ruling **R-BAL88**), and ``transaction_id`` leaves a leg
-    there; merging the two links into one tagged field would hide the shape.
+    A leg's fact carries both until ``X-bi-6-4d`` (its shadow's id and its
+    transfer's); from then the table takes an exactly-one-parent shape
+    (ruling **R-BAL88**), and one tagged field would hide it.
 
     The ACTUAL half of the event stream: cash that really moved.  ONE kind of
     row produces one (plan step ``balance:X-bi-4a``, ruling **R-BAL80**): a
@@ -367,10 +367,11 @@ class CashSourceFact:  # pylint: disable=too-many-instance-attributes
         transaction_id: The movement's own ``transaction_id`` column: the
             plan row it records money for (ruling **R-BAL35**; never a fact
             of its own).  For a transfer leg it is the shadow the movement
-            still hangs off, NULL from ``X-bi-6-4d``; nothing reads a leg's
-            parent through it -- only the sort's tie-break and the
-            bank-agreement screen's names (``bank_agreement._row_names``),
-            which key on the same column.
+            still hangs off, NULL from ``X-bi-6-4d``; the fold reads no
+            parent through it.  Its readers: the sort's tie-break (6-4d must
+            re-key it, a ``None`` beside an ``int`` does not sort) and the
+            bank-agreement screen's names and match state
+            (``bank_agreement._rows_on`` / ``_row_names``).
         transfer_id: The transfer the movement is a LEG of, ``None`` for a
             plan row's (leaf ``X-bi-6-4a``): what the far-leg exclusion
             (``balance_at._cash_periods._budget_legs``) asks.

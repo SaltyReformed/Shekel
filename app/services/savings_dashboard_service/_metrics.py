@@ -425,8 +425,8 @@ def _recent_settled_expenses_monthly(
         return Decimal("0.00")
 
     recent_period_ids = [p.period_id for p in recent_periods]
-    # Both halves of "settled checking EXPENSE" are asked in SQL, not in a
-    # Python ``if`` a later edit could reorder (plan step X-au-c2), so each
+    # "Settled checking EXPENSE" is asked in the queries (a leg's side by
+    # ``expense_legs``), not a later ``if`` beside the sum (X-au-c2), so each
     # accessor below sees only what SETTLED and answers from its RECORD (X-au-c3).
     # ``settled_status_ids()`` is the ``is_settled`` set (Paid, Received).
     recent_txns = (

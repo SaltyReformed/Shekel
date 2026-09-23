@@ -735,11 +735,11 @@ def check_data_consistency(session):
     # migration ``45f10b870c8b``, which refused any row where the two
     # disagreed, and a settled row with no movement is the ``$0.00`` record
     # since, ruling **R-BAL82**.)
-    # A settled TRANSFER is graded as its LEGS since leaf ``X-bi-6-4a``
-    # (ruling **R-BAL106**; the UNION's second arm): the TRANSFER's status and
-    # each leg's movement day, one row per undated leg, never a shadow's own
-    # columns.  A transfer stores no day (ruling **R-BAL90**), so a ``$0.00``
-    # close passes; the arm's ``sh`` join is the one ``X-bi-6-4d`` moves.
+    # A settled TRANSFER's money is graded as its LEGS since leaf ``X-bi-6-4a``
+    # (ruling **R-BAL106**; the UNION's second arm, one row per undated leg,
+    # its ``sh`` join a second spelling ``X-bi-6-4d`` must move).  A SHADOW's
+    # own missing day stays on the row arm until ``X-bi-6-4b``: the loan
+    # readers still call ``settled_day`` on it (``loan_ledger._visible``).
     results.append(_run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "
@@ -756,10 +756,10 @@ def check_data_consistency(session):
                  AS undated_covering_movements
         FROM budget.transactions t
         JOIN ref.statuses s ON s.id = t.status_id
-        WHERE s.is_settled AND NOT t.is_deleted AND t.transfer_id IS NULL
+        WHERE s.is_settled AND NOT t.is_deleted
           AND (
             t.settled_on IS NULL
-            OR EXISTS (
+            OR t.transfer_id IS NULL AND EXISTS (
               SELECT 1 FROM budget.transaction_entries e
               WHERE e.transaction_id = t.id AND e.covers_settlement
                 AND e.settled_on IS NULL

@@ -1276,11 +1276,10 @@ class TestDataConsistency:
         """DC-11's LEG arm (leaf ``balance:X-bi-6-4a``, ruling **R-BAL106**).
 
         The fold reads a paid transfer's money as its legs' movements under
-        the TRANSFER's status, so the alarm grades those and never a shadow's
-        own columns: the shadows' day pairs cleared by SQL fire nothing
-        (through ``X-bi-6-3`` the row arm named both shadows), and one leg's
-        movement un-dated fires one row naming the transfer and that leg's
-        account, which the fold now silently drops.
+        the TRANSFER's status, so a leg's undated movement fires one row naming
+        the transfer and that leg's account, which the fold silently drops.  A
+        shadow's own missing day still fires on the ROW arm until ``X-bi-6-4b``,
+        because the loan readers still read it (``loan_ledger._visible``).
         """
         # pylint: disable=import-outside-toplevel  -- the module convention.
         import sqlalchemy
@@ -1307,6 +1306,16 @@ class TestDataConsistency:
             "UPDATE budget.transactions "
             "SET settled_on = NULL, settled_day_basis_id = NULL "
             "WHERE transfer_id = :id"
+        ), {"id": transfer.id})
+        fired = dc11()
+        assert sorted(
+            (row["transfer_id"], row["account_id"]) for row in fired.details
+        ) == [(None, checking.id), (None, savings.id)]
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transactions t SET settled_on = e.settled_on, "
+            "settled_day_basis_id = e.settled_day_basis_id "
+            "FROM budget.transaction_entries e WHERE e.transaction_id = t.id "
+            "AND e.covers_settlement AND t.transfer_id = :id"
         ), {"id": transfer.id})
         assert dc11().passed
 

@@ -214,10 +214,12 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
     scope and direction are the transfer's.  Through ``X-bi-6-3`` this summed
     the settled SHADOW rows' records (``settled_figure_clause``) signed by the
     shadow's type -- the same movements under Transfer Invariant 3, read
-    through the row ``X-bi-6-4d`` detaches them from.  The sign is still
-    restated here rather than shared with the writer
-    (``cash_ledger.movement_cash_leg``): an oracle that imported the rule it
-    grades could not grade it.
+    through the row ``X-bi-6-4d`` detaches them from.  The SIGN is restated
+    here rather than shared with the writer (``cash_ledger.movement_cash_leg``):
+    an oracle that imported the rule it grades could not grade it.  The JOIN,
+    scope and side are shared with the writer once 6-4a's leaf 2 moves it onto
+    the same loader, so from then this is independent in its sign alone; the
+    integration suites keep a raw-table restatement for the rest.
 
     Args:
         account_id: The real account whose settled transfer legs to sum.
