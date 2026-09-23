@@ -281,7 +281,14 @@ def _register_context_processors(app):
 
     @app.context_processor
     def inject_onboarding():
-        """Inject onboarding status so base.html can show/hide the welcome banner."""
+        """Inject the welcome checklist so base.html can show/hide the banner.
+
+        Hands the template an
+        :class:`~app.services.onboarding_service.OnboardingChecklist`, which
+        queries nothing until the template reads a fact (ruling
+        ``balance:R-BAL117``, ledger row N-328): a fragment that never draws
+        the layout asks none of them.
+        """
         # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
         # context processor (app-factory pattern), kept out of ``app``-package
         # import.
@@ -293,9 +300,9 @@ def _register_context_processors(app):
         # Onboarding is meaningless for companion users -- they share the
         # linked owner's budget data via linked_owner_id and cannot create
         # their own accounts, categories, pay periods, salary profiles, or
-        # templates.  Omit the dict entirely so the banner's `onboarding is
-        # defined` guard in base.html evaluates False, and skip the five
-        # exists() queries that would otherwise run on every companion page.
+        # templates.  Omit the checklist entirely so the banner's `onboarding
+        # is defined` guard in base.html evaluates False, and no checklist
+        # fact is ever asked on a companion page.
         #
         # Pylint: ``import-outside-toplevel`` -- imported inside the request-time
         # context processor (app-factory pattern), kept out of ``app``-package
@@ -309,59 +316,20 @@ def _register_context_processors(app):
                 return {}
         except (RuntimeError, KeyError):
             # ref_cache not yet initialized (e.g. during migration).  Fall
-            # through to the existing query path; owner users are the common
-            # case during those windows and the queries still give the right
+            # through to the checklist; owner users are the common case
+            # during those windows and its queries still give the right
             # answer.
             pass
 
-        # Pylint: ``import-outside-toplevel`` -- the onboarding-exists() lookups
-        # are imported inside the request-time context processor (app-factory
-        # pattern); the models below pull in the ``app.models`` graph, kept out of
-        # ``app``-package import.
-        from sqlalchemy import exists  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- Account imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- Category imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.category import Category  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- PayPeriod imported lazily here for
-        # the same app-factory deferral as the imports above.
-        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- SalaryProfile imported lazily here
-        # for the same app-factory deferral as the imports above.
-        from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
-        # Pylint: ``import-outside-toplevel`` -- TransactionTemplate imported lazily
-        # here for the same app-factory deferral as the imports above.
-        from app.models.transaction_template import TransactionTemplate  # pylint: disable=import-outside-toplevel
+        # Pylint: ``import-outside-toplevel`` -- the checklist's service pulls in
+        # the ``app.models`` graph, so it is imported inside the request-time
+        # context processor (app-factory pattern), kept out of ``app``-package
+        # import.
+        from app.services.onboarding_service import (  # pylint: disable=import-outside-toplevel
+            OnboardingChecklist,
+        )
 
-        uid = current_user.id
-        has_account = db.session.query(
-            exists().where(Account.user_id == uid, Account.is_active.is_(True))
-        ).scalar()
-        has_categories = db.session.query(
-            exists().where(Category.user_id == uid)
-        ).scalar()
-        has_periods = db.session.query(
-            exists().where(PayPeriod.user_id == uid)
-        ).scalar()
-        has_salary = db.session.query(
-            exists().where(SalaryProfile.user_id == uid)
-        ).scalar()
-        has_templates = db.session.query(
-            exists().where(TransactionTemplate.user_id == uid)
-        ).scalar()
-
-        return {
-            "onboarding": {
-                "has_account": has_account,
-                "has_categories": has_categories,
-                "has_periods": has_periods,
-                "has_salary": has_salary,
-                "has_templates": has_templates,
-                "complete": has_periods and has_salary and has_templates,
-            }
-        }
+        return {"onboarding": OnboardingChecklist(current_user.id)}
 
     @app.context_processor
     def inject_role_ids():
