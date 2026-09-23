@@ -89,6 +89,10 @@
 #     from.  Their single spellings now live as constants in
 #     ``tests/conftest.py``, ``scripts/build_test_template.py`` and
 #     ``scripts/build_test_db_image.py``, which must agree.
+#     LC_ALL is EXPORTED too, over any value the caller had: ``create_app``
+#     refuses to start under anything but production's locale (ruling
+#     recurrence:R-R92), so the suite -- and CI, which runs it through here --
+#     always runs under that locale.
 #
 # Exit codes:
 #     Whatever pytest returns, in the ordinary case.  A bootstrap failure
@@ -108,6 +112,12 @@ READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-15}"
 # Resolved via BASH_SOURCE, not the invoker's cwd, so a run from outside the
 # repo root still finds the project (OPS/SH-26).
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Production's locale (ruling recurrence:R-R92; the Dockerfile sets the same
+# value).  Exported HERE, before anything below builds the app: the image
+# builder further down runs ``scripts/build_test_template.py``, which calls
+# ``create_app``, and passes this value through its scrubbed environment.
+export LC_ALL=C.UTF-8
 
 # The image builder imports app.ref_seeds and app.audit_infrastructure to
 # read the counts it verifies against, so it needs the project's
