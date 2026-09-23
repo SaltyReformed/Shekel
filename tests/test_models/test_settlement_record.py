@@ -478,10 +478,10 @@ class TestTheSQLTierReadsTheSameHomeAsPython:
     had no firing control at all, and this class became one.  Through
     ``X-bi-4a`` the two tiers disagreed on exactly ONE row, a settled row
     recording NOTHING (Python refused, SQL had to be made to answer ``NULL``
-    rather than ``0``), and that difference was money:
-    ``posting_service._settle_effective`` is a LOOKUP, not a fold -- it
-    refuses a ``None`` and posts nothing, where a ``0`` is a figure it would
-    post.
+    rather than ``0``), and that difference was money: the one-entry
+    transfer writer's figure read (deleted at plan step
+    ``balance:X-bi-6-3``) was a LOOKUP, not a fold -- it refused a ``None``
+    and posted nothing, where a ``0`` was a figure it would post.
 
     **Since plan step ``balance:X-bi-4b-1`` both tiers read the row's ENTRIES**
     (ruling **R-BAL80**), and a settled row holding none is the ``$0.00``

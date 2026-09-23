@@ -142,3 +142,11 @@ both relations, and the emptied-feed assertion was shown to fire.
   `implementation_plan_recurrence_redesign.md` because the new leaf names it;
   a new module can move ANOTHER arc's marker, and CI runs the plan gate in
   every scope.
+
+## The README entry as it stood before the 2026-09-22 condensing (`balance:X-bi-6-3`'s tick), verbatim
+
+Condensed to one line under `docs/plans/conventions.md` rule 5, the README standing at 1,310 of its 1,330 lines with `X-cu` and `X-cv` to specify. Carried WITHOUT re-verification.
+
+  * [x] **X-bi-6a** `323400d9` -- every PROJECTED-shadow READER re-pointed onto the parent's derived
+    legs (**R-BAL13**, ruled **R-BAL38**, the status drift disclosed and pinned under **R-BAL42**;
+    five readers, `$0.00` measured). Record: `archive/x_bi_6a_as_built_2026-09-15.md`.

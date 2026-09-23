@@ -1784,6 +1784,44 @@ def ledger_account_of_kind(db_session, account_id, kind_enum):
     )
 
 
+def transit_ledger_account(db_session, user_id):
+    """Return the owner's Transfers-in-transit ledger row, or ``None``.
+
+    A LOOKUP, never a create -- the writer mints the ``transit`` owner bucket
+    on the owner's first settled transfer
+    (``ledger_account_service.get_or_create_transit_ledger_account``, plan
+    step ``balance:X-bi-6-3``, ruling **R-BAL99**), so a suite that finds
+    none has caught the writer not booking against it.  Keyed exactly as
+    ``uq_ledger_accounts_owner_bucket`` is: the owner, the ``transit`` kind
+    and the flag; the class is a function of the kind for a bucket.
+
+    Args:
+        db_session: The test ``db.session``.
+        user_id: The owner's id.
+
+    Returns:
+        The ``transit`` :class:`~app.models.ledger_account.LedgerAccount`, or
+        ``None`` when no transfer of the owner's has posted yet.
+    """
+    # pylint: disable=import-outside-toplevel  -- same collection-time-safety
+    # convention as the helpers above (no app symbols at module load).
+    from app import ref_cache
+    from app.enums import LedgerAccountKindEnum
+    from app.models.ledger_account import LedgerAccount
+
+    return (
+        db_session.query(LedgerAccount)
+        .filter_by(
+            user_id=user_id,
+            kind_id=ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.TRANSIT,
+            ),
+            is_owner_bucket=True,
+        )
+        .one_or_none()
+    )
+
+
 def linked_ledger_account(db_session, account_id):
     """Return the account's LINKED ledger row, never its anchor-equity twin.
 
@@ -1813,10 +1851,11 @@ def linked_ledger_account(db_session, account_id):
     )
 
 
-def make_balanced_entry(
+def make_balanced_entry(  # pylint: disable=too-many-arguments
     session, seed_user, *, from_ledger_id, to_ledger_id,
     amount=Decimal("100.00"), transfer_id=None, transaction_id=None,
-    source_kind=None, posting_kind=None, period_id=None,
+    transaction_entry_id=None, source_kind=None, posting_kind=None,
+    period_id=None,
 ):
     """Create and commit one balanced journal entry (two legs summing to zero).
 
@@ -1846,6 +1885,10 @@ def make_balanced_entry(
         amount: The leg magnitude (Decimal).
         transfer_id: Optional ``budget.transfers`` back-link.
         transaction_id: Optional ``budget.transactions`` back-link.
+        transaction_entry_id: Optional ``budget.transaction_entries``
+            back-link (a movement's).  A test planting a DUAL-linked entry --
+            the shape no writer produces -- passes this beside
+            *transaction_id* to grade the readers' partition.
         source_kind: :class:`~app.enums.PostingSourceEnum` member, or
             ``None`` for TRANSFER.
         posting_kind: :class:`~app.enums.PostingKindEnum` member, or
@@ -1877,6 +1920,7 @@ def make_balanced_entry(
         source_kind_id=ref_cache.posting_source_id(source_kind),
         transfer_id=transfer_id,
         transaction_id=transaction_id,
+        transaction_entry_id=transaction_entry_id,
         description="Test entry",
     )
     session.add(entry)
@@ -1894,36 +1938,102 @@ def make_balanced_entry(
     return entry
 
 
-def loan_correction_entries(db_session, shadow_id):
-    """Return the Build-Order Step 4 loan_payment corrections under a shadow.
+def loan_correction_entries(db_session, shadow):
+    """Return the loan_payment corrections booked at a payment's KEY.
 
-    The ``budget.journal_entries`` rows the loan-payment posting service books
-    under an income shadow's ``transaction_id`` (``source_kind = loan_payment``),
-    ordered by id.  Shared by the Step-4 split-service suite and the Step-4
-    wiring suite so both read a payment's corrections the same way (a
-    duplicate-code finding otherwise).
+    The ``budget.journal_entries`` rows the loan posting package books for one
+    settled payment's split, ordered by id.  **Re-expressed at plan step
+    ``balance:X-bi-6-3`` (ruling R-BAL102, a rule-5 class (a) re-expression
+    Josh confirmed 2026-09-21):** the split is a DERIVATION keyed
+    ``(loan_payment kind, the payment's pay period, its visible day)`` on the
+    loan's own chart rows and links NO row, so "the corrections under this
+    shadow" is now "the corrections at this payment's key" -- selected by
+    source kind, the shadow's ``pay_period_id``, its settled day and a leg on
+    the loan's chart rows.  Through that step the split carried the shadow's
+    ``transaction_id`` and this read it by that link.  A shadow with no settled
+    day has no key and is REFUSED rather than answered ``[]`` (the leaf-2
+    adversarial review: an empty answer for a reverted shadow would let
+    "after the revert the split is gone" pass without reading the ledger);
+    a test that holds a reverted or deleted payment reads
+    :func:`loan_correction_entries_at` with the key it captured before the
+    act.  Shared by the split-service, wiring, backfill and reconciliation
+    suites so all read a payment's corrections the same way.
 
     Args:
         db_session: The test ``db.session``.
-        shadow_id: The loan-side income shadow's id whose corrections to fetch.
+        shadow: The loan-side income shadow :class:`~app.models.transaction.
+            Transaction` whose payment's corrections to fetch (``account_id``,
+            ``pay_period_id`` and ``settled_on`` are read).
 
     Returns:
         list[:class:`~app.models.journal_entry.JournalEntry`] -- the correction
-        entries booked under *shadow_id*, ascending by id (empty when none).
+        entries at the payment's key, ascending by id (empty when none).
+
+    Raises:
+        ValueError: If *shadow* carries no settled day (it has no key).
+    """
+    if shadow.settled_on is None:
+        raise ValueError(
+            f"loan_correction_entries: shadow {shadow.id} carries no settled "
+            f"day and so no split key; read loan_correction_entries_at with "
+            f"the key captured before the act that released the day."
+        )
+    return loan_correction_entries_at(
+        db_session, shadow.account_id, shadow.scenario_id,
+        shadow.pay_period_id, shadow.settled_on,
+    )
+
+
+def loan_correction_entries_at(
+    db_session, loan_account_id, scenario_id, period_id, day,
+):
+    """Return the loan_payment corrections at ONE key on a loan's chart rows.
+
+    The key form of :func:`loan_correction_entries`, for a test that holds the
+    payment's period and day but no longer holds a settled shadow -- after a
+    revert (the shadow's day is released, the correction stays at the day it
+    was posted), after a hard delete (the shadow is gone), or for a key the
+    walk merged two payments into.  The ``loan_payment`` journal entries in
+    *period_id* dated *day* with a leg on any of the loan's own chart rows
+    (:func:`app.services._posting_reconcile.account_chart_row_ids`: its linked
+    row and its per-loan interest / escrow / refund / opening-equity rows) in
+    *scenario_id* (postings are scenario-scoped, and a loan paid in two
+    scenarios holds one split per scenario at the same key), ascending by id.
+
+    Args:
+        db_session: The test ``db.session``.
+        loan_account_id: The loan whose chart rows scope the read.
+        scenario_id: The budget scenario the split was posted in.
+        period_id: The key's ``pay_period_id``.
+        day: The key's ``entry_date``.
+
+    Returns:
+        list[:class:`~app.models.journal_entry.JournalEntry`], ascending by id
+        (empty when nothing is posted at the key).
     """
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
     from app.enums import PostingSourceEnum
-    from app.models.journal_entry import JournalEntry
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.services._posting_reconcile import account_chart_row_ids
 
+    on_loan_rows = (
+        db_session.query(Posting.journal_entry_id)
+        .filter(Posting.ledger_account_id.in_(
+            account_chart_row_ids(loan_account_id),
+        ))
+    )
     return (
         db_session.query(JournalEntry)
-        .filter_by(
-            transaction_id=shadow_id,
-            source_kind_id=ref_cache.posting_source_id(
+        .filter(
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
                 PostingSourceEnum.LOAN_PAYMENT
             ),
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.pay_period_id == period_id,
+            JournalEntry.entry_date == day,
+            JournalEntry.id.in_(on_loan_rows),
         )
         .order_by(JournalEntry.id)
         .all()
@@ -4460,6 +4570,81 @@ def figure_source_columns(member=None):
 
     chosen = MovementFigureSourceEnum.TYPED if member is None else member
     return {"figure_source_id": ref_cache.movement_figure_source_id(chosen)}
+
+
+def transfer_family_journal_filter(transfer_id):
+    """Return the SQL clause selecting the journal entries of a TRANSFER's family.
+
+    **A settled transfer's money is posted under its two covering movements
+    since plan step ``balance:X-bi-6-3``** (rulings **R-BAL45** and
+    **R-BAL101**): one entry per side, linked by
+    ``journal_entries.transaction_entry_id`` to the shadow's covering movement
+    on that side, each against the owner's Transfers-in-transit account.  A
+    suite that reads "the transfer's postings" by ``JournalEntry.transfer_id``
+    alone reads only the LEGACY one-entry shape, which the pair's door reverses
+    to zero and which no go-forward settle writes.  This is the ONE spelling
+    of the transfer family read -- the movements of EVERY shadow of the
+    transfer, deleted or not (a dead pair's reversed legs are part of the
+    family's history), plus whatever still links the transfer directly -- so
+    the cases the developer confirmed when the shape moved widen their subject
+    the same way and no figure per real account moves.
+
+    Args:
+        transfer_id: The ``budget.transfers`` id.
+
+    Returns:
+        A SQLAlchemy boolean clause over ``JournalEntry``.
+    """
+    # pylint: disable=import-outside-toplevel -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry
+    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
+
+    movement_ids = (
+        db.session.query(TransactionEntry.id)
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(Transaction.transfer_id == transfer_id)
+    )
+    return db.or_(
+        JournalEntry.transfer_id == transfer_id,
+        JournalEntry.transaction_entry_id.in_(movement_ids),
+    )
+
+
+def transfer_side_journal_filter(transfer_id, account_id):
+    """Return the SQL clause selecting ONE side's entries of a transfer's family.
+
+    The entries linked to the covering movement of the transfer's shadow on
+    *account_id* -- the loan-side cash entry of a loan payment, or either
+    side of a cash transfer -- since plan step ``balance:X-bi-6-3`` (a side
+    is an entry of its own, rulings **R-BAL45** and **R-BAL101**).  The
+    per-side twin of :func:`transfer_family_journal_filter`.
+
+    Args:
+        transfer_id: The ``budget.transfers`` id.
+        account_id: The account the side is on.
+
+    Returns:
+        A SQLAlchemy boolean clause over ``JournalEntry``.
+    """
+    # pylint: disable=import-outside-toplevel -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry
+    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
+
+    movement_ids = (
+        db.session.query(TransactionEntry.id)
+        .join(Transaction, TransactionEntry.transaction_id == Transaction.id)
+        .filter(
+            Transaction.transfer_id == transfer_id,
+            Transaction.account_id == account_id,
+        )
+    )
+    return JournalEntry.transaction_entry_id.in_(movement_ids)
 
 
 def family_journal_filter(txn):
@@ -7431,12 +7616,24 @@ def make_investment_account(
 
 
 # The frozen 7d63 counter-account column list, and the same list with the
-# Step-4 ``kind_id`` added.  Module-level so :func:`inject_cash_backfill_kind_id`
-# reuses a single source for both Pass-A INSERTs.
+# Step-4 ``kind_id`` added AND the bucket flag under the name plan step
+# ``balance:X-bi-6-3`` gave it (``is_fallback`` -> ``is_owner_bucket``, ruling
+# R-BAL99).  Module-level so :func:`inject_cash_backfill_kind_id` reuses a
+# single source for both Pass-A INSERTs.
 _FROZEN_COUNTER_COLUMNS = "(user_id, class_id, category_id, is_fallback, name) "
 _KIND_INJECTED_COUNTER_COLUMNS = (
-    "(user_id, class_id, category_id, is_fallback, name, kind_id) "
+    "(user_id, class_id, category_id, is_owner_bucket, name, kind_id) "
 )
+# The frozen fallback INSERT's conflict target and Pass B's fallback join, each
+# re-homed onto the HEAD schema's owner-bucket key by the same injector: the
+# singleton is ``(user_id, class_id, kind_id) WHERE is_owner_bucket`` since
+# ``X-bi-6-3``, and an ``ON CONFLICT`` must name an index that exists.
+_FROZEN_FALLBACK_CONFLICT = "ON CONFLICT (user_id, class_id) WHERE is_fallback DO NOTHING"
+_HEAD_FALLBACK_CONFLICT = (
+    "ON CONFLICT (user_id, class_id, kind_id) WHERE is_owner_bucket DO NOTHING"
+)
+_FROZEN_FALLBACK_JOIN = "AND counter_ledger.is_fallback = TRUE) ) "
+_HEAD_FALLBACK_JOIN = "AND counter_ledger.is_owner_bucket = TRUE) ) "
 
 
 def _inject_pass_a_kind(frozen_sql, name_expr_tail, kind_name):
@@ -7476,7 +7673,7 @@ def _inject_pass_a_kind(frozen_sql, name_expr_tail, kind_name):
 
 
 def inject_cash_backfill_kind_id(monkeypatch, migration_module):
-    """Inject the Step-4 ``kind_id`` into a 7d63 migration's frozen Pass-A SQL.
+    """Re-home a 7d63 migration's frozen SQL onto the HEAD chart schema.
 
     Step 4, Commit 2 (``efca4315bf81``) added a NOT NULL
     ``budget.ledger_accounts.kind_id``, so the frozen 7d63 Pass-A INSERTs --
@@ -7484,7 +7681,14 @@ def inject_cash_backfill_kind_id(monkeypatch, migration_module):
     HEAD.  In production 7d63 ran at its own revision (before ``kind_id``
     existed) and the Step-4 migration then backfilled each row's kind from its
     column shape (category rows -> ``category``, fallback rows -> ``fallback``);
-    at HEAD the two are fused because ``kind_id`` is already NOT NULL.
+    at HEAD the two are fused because ``kind_id`` is already NOT NULL.  Plan
+    step ``balance:X-bi-6-3`` (ruling **R-BAL99**) moved the schema under the
+    frozen text a second time -- ``is_fallback`` became ``is_owner_bucket`` and
+    the fallback singleton ``(user_id, class_id) WHERE is_fallback`` became
+    ``(user_id, class_id, kind_id) WHERE is_owner_bucket`` -- so the same
+    injector re-homes the column list, the fallback INSERT's ``ON CONFLICT``
+    target and Pass B's fallback join too, each anchored on the frozen text so a
+    change to the shipped constant fails loudly here.
 
     This swaps the two frozen, immutable Pass-A SQL constants on
     *migration_module* for kind-injected equivalents -- reusing the shipped
@@ -7508,13 +7712,27 @@ def inject_cash_backfill_kind_id(monkeypatch, migration_module):
             "category",
         ),
     )
+    fallback_sql = _inject_pass_a_kind(
+        migration_module._CREATE_FALLBACK_LEDGER_ACCOUNTS_SQL,
+        "ELSE 'Uncategorized Expense' END ",
+        "fallback",
+    )
+    assert _FROZEN_FALLBACK_CONFLICT in fallback_sql, (
+        "the frozen 7d63 fallback ON CONFLICT changed; update the anchor in "
+        "tests/_test_helpers.py"
+    )
     monkeypatch.setattr(
         migration_module, "_CREATE_FALLBACK_LEDGER_ACCOUNTS_SQL",
-        _inject_pass_a_kind(
-            migration_module._CREATE_FALLBACK_LEDGER_ACCOUNTS_SQL,
-            "ELSE 'Uncategorized Expense' END ",
-            "fallback",
-        ),
+        fallback_sql.replace(_FROZEN_FALLBACK_CONFLICT, _HEAD_FALLBACK_CONFLICT),
+    )
+    backfill_sql = migration_module._SETTLED_TRANSACTION_BACKFILL_SQL
+    assert _FROZEN_FALLBACK_JOIN in backfill_sql, (
+        "the frozen 7d63 Pass-B fallback join changed; update the anchor in "
+        "tests/_test_helpers.py"
+    )
+    monkeypatch.setattr(
+        migration_module, "_SETTLED_TRANSACTION_BACKFILL_SQL",
+        backfill_sql.replace(_FROZEN_FALLBACK_JOIN, _HEAD_FALLBACK_JOIN),
     )
 
 

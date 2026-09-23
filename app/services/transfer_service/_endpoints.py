@@ -65,9 +65,9 @@ class _Endpoints(NamedTuple):
             update moves it, else ``None``.
         vacated_destination_id: The account it used to ARRIVE at, when this
             update moves it, else ``None``.  Named apart from the source
-            because only the DESTINATION can be a loan, and a loan payment's
-            split correction has to be reversed while the pair is still on it
-            (:func:`._loan_posting._reverse_loan_payment_before_it_leaves`).
+            because only the DESTINATION can be a loan, and a loan a payment
+            just left is re-reconciled after the move
+            (:func:`._loan_posting._resync_vacated_loan`).
     """
 
     from_account: Account

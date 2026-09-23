@@ -32,7 +32,6 @@ from app.services.transfer_service._endpoints import (
 from app.services.transfer_service._loan_posting import (
     _POSTING_RELEVANT_INSTALLMENT_FIELDS,
     _reject_installment_move_before_loan,
-    _reverse_loan_payment_before_it_leaves,
 )
 from app.services.transfer_service._placed import (
     re_place_and_grade_the_day,
@@ -722,16 +721,14 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # same reason: the settle dispatch below reads which account the transfer
     # is left pointing AT.  See :func:`_apply_endpoint_move`.
     #
-    # A loan payment's SPLIT correction is reversed FIRST, while the pair is
-    # still on the loan -- the same reverse-before / resync-after sequence the
-    # DELETE path runs, and for the same reason: the loan-side reconcile finds
-    # a loan's payments through the account its income shadow sits on, so a
-    # correction whose shadow has already moved is invisible to every later
-    # pass.  See :func:`._loan_posting._reverse_loan_payment_before_it_leaves`
-    # for the `-$4.17` that measured it.  The resync half is in
-    # :func:`_reconcile_postings_after_update`.
-    if endpoints.vacated_destination_id is not None:
-        _reverse_loan_payment_before_it_leaves(rows.transfer)
+    # A loan payment moved OFF a loan owes that loan a re-sync AFTER the move
+    # (:func:`_reconcile_postings_after_update`) and nothing before it: its
+    # split correction links no row and is keyed on the loan's own chart rows
+    # (ruling **R-BAL102**), so the vacated loan's walk finds the departed
+    # payment's key with no target and reverses it.  Through plan step
+    # ``balance:X-bi-6-3`` the split was reversed HERE, first, because it was
+    # keyed by the income shadow the move was about to hide from the loan's
+    # reconcile (the R10-b `-$4.17` that measured it).
     _apply_endpoint_move(rows, endpoints)
 
     # ── WHO OWNS each of the three rows' figure ────────────────────

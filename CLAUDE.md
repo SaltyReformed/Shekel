@@ -254,17 +254,17 @@ A task is NOT complete until ALL of these are true:
    leg a balance folds is one side of the parent transfer -- the from-side an expense, the to-side
    an income, each worth `resolve_transfer_amount` on the parent -- and no balance reader reads a
    projected shadow row. A SETTLED leg is its shadow's DATED covering movement since
-   `balance:X-bi-4a` (**R-BAL80**: the cash fold reads movements and no row; the posted ledger still
-   books the pair whole off the income shadow's record, **R-BAL45**, until `X-bi-6`); no amount is
-   read off budget.transfers for a row that has settled. Since `recurrence:R16-b-2` (**R-R66**) the
-   forward loan plan also reads budget.transfers for OCCURRENCE IDENTITY -- which occurrences a
-   definition's rows already answer, in any state. A PROJECTED shadow cannot be counted beside its
-   leg (the plan excludes it by the same `transfer_id` test that identifies it); a plan leg is
-   emitted only for a side whose dated movement does not exist (**R-BAL79**), so a SETTLED shadow
-   under a still-Projected parent -- a status drift, which invariants 3 and 4 forbid and no door
-   writes -- is counted ONCE, by whichever half holds it, and the reverse drift by neither. Pinned
-   in `tests/test_services/test_transfer_legs.py`; the structural end is `X-bi-6`, status in ONE
-   row.
+   `balance:X-bi-4a` (**R-BAL80**: the cash fold reads movements and no row; the posted ledger books
+   each side's movement as its own entry against the owner's Transfers-in-transit account since
+   `balance:X-bi-6-3`, **R-BAL45** / **R-BAL101**); no amount is read off budget.transfers for a row
+   that has settled. Since `recurrence:R16-b-2` (**R-R66**) the forward loan plan also reads
+   budget.transfers for OCCURRENCE IDENTITY -- which occurrences a definition's rows already answer,
+   in any state. A PROJECTED shadow cannot be counted beside its leg (the plan excludes it by the
+   same `transfer_id` test that identifies it); a plan leg is emitted only for a side whose dated
+   movement does not exist (**R-BAL79**), so a SETTLED shadow under a still-Projected parent -- a
+   status drift, which invariants 3 and 4 forbid and no door writes -- is counted ONCE, by whichever
+   half holds it, and the reverse drift by neither. Pinned in
+   `tests/test_services/test_transfer_legs.py`; the structural end is `X-bi-6`, status in ONE row.
 
 **Invariant 3 is rule 14's known instance**: one value kept in two homes by a maintenance contract,
 and invariant 5's record half is why the mirror still exists at all. Which clauses are already

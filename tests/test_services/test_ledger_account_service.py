@@ -39,7 +39,7 @@ constraints themselves are covered by ``test_models/test_ledger_account``):
 correct category-row shape and name snapshot; idempotency; the
 mixed-category two-class case; the Uncategorized fallback (creation,
 naming, per-(owner, class) singleton, and the H1 property that its lookup
-keys on ``is_fallback`` so it never returns a deleted-category orphan); and
+keys on ``is_owner_bucket`` so it never returns a deleted-category orphan); and
 the input guards (class must be Income/Expense; a non-NULL category id must
 exist).
 
@@ -74,6 +74,7 @@ from app.services.account_projection import AccountProjectionKind
 # the private module by name rather than asking for a re-export that would
 # exist only for a test.
 from app.services.ledger_account_service import _common as _chart_common
+from app.services.ledger_account_service._buckets import get_or_create_owner_bucket
 from tests._test_helpers import (
     create_account_of_type,
     ledger_accounts_for_account,
@@ -271,7 +272,7 @@ class TestCategoryLedgerAccountResolver:
 
         Shape contract for a category ledger account: ``account_id`` NULL (it
         is a counter account, not a real-account mirror); ``category_id``
-        points at the budget category; ``is_fallback`` False; ``class_id`` is
+        points at the budget category; ``is_owner_bucket`` False; ``class_id`` is
         the Expense class; ``kind_id`` is the ``category`` kind; ``name``
         snapshots the category's display label ("Family: Groceries");
         ``user_id`` is the owner; the row is flushed (``id`` assigned).
@@ -287,7 +288,7 @@ class TestCategoryLedgerAccountResolver:
             assert row.id is not None
             assert row.account_id is None
             assert row.category_id == groceries.id
-            assert row.is_fallback is False
+            assert row.is_owner_bucket is False
             assert row.class_id == _expense_class_id()
             assert row.kind_id == ref_cache.ledger_account_kind_id(
                 LedgerAccountKindEnum.CATEGORY,
@@ -367,7 +368,7 @@ class TestCategoryLedgerAccountResolver:
 
         The ``category_id`` FK is SET NULL, so deleting the budget category
         turns the resolver's row into an orphan: ``category_id`` goes NULL,
-        ``is_fallback`` stays False, and the ``name`` snapshot persists so the
+        ``is_owner_bucket`` stays False, and the ``name`` snapshot persists so the
         row stays identifiable in posted history.  Complements the model-level
         SET-NULL test by proving the RESOLVER's output (not a hand-built row)
         participates correctly.
@@ -393,7 +394,7 @@ class TestCategoryLedgerAccountResolver:
             orphan = _db.session.get(LedgerAccount, row_id)
             assert orphan is not None
             assert orphan.category_id is None
-            assert orphan.is_fallback is False
+            assert orphan.is_owner_bucket is False
             assert orphan.name == snapshot
 
     def test_long_category_name_truncated_to_fit_column(
@@ -442,9 +443,9 @@ class TestUncategorizedFallbackResolver:
     def test_null_category_creates_fallback(
         self, app, db, seed_user, ledger_class, expected_name,
     ):
-        """A NULL category resolves to the fallback with ``is_fallback`` True.
+        """A NULL category resolves to the fallback with ``is_owner_bucket`` True.
 
-        Shape: ``account_id`` NULL, ``category_id`` NULL, ``is_fallback``
+        Shape: ``account_id`` NULL, ``category_id`` NULL, ``is_owner_bucket``
         True, ``class_id`` the requested class, ``kind_id`` the ``fallback``
         kind, ``name`` the canonical "Uncategorized {Income|Expense}" label.
         Parametrized across both classes.
@@ -458,7 +459,7 @@ class TestUncategorizedFallbackResolver:
 
             assert row.account_id is None
             assert row.category_id is None
-            assert row.is_fallback is True
+            assert row.is_owner_bucket is True
             assert row.class_id == ref_cache.ledger_account_class_id(ledger_class)
             assert row.kind_id == ref_cache.ledger_account_kind_id(
                 LedgerAccountKindEnum.FALLBACK,
@@ -469,7 +470,7 @@ class TestUncategorizedFallbackResolver:
     def test_fallback_is_idempotent_singleton(self, app, db, seed_user):
         """Repeated NULL-category calls return the one fallback per (owner, class).
 
-        ``uq_ledger_accounts_uncategorized`` (``WHERE is_fallback``) permits
+        ``uq_ledger_accounts_owner_bucket`` (``WHERE is_owner_bucket``) permits
         one fallback per owner per class; the resolver returns the same row on
         re-call, and the Expense-fallback count for the owner stays one.
         """
@@ -487,7 +488,7 @@ class TestUncategorizedFallbackResolver:
             assert (
                 _db.session.query(LedgerAccount)
                 .filter_by(
-                    user_id=user_id, is_fallback=True,
+                    user_id=user_id, is_owner_bucket=True,
                     class_id=_expense_class_id(),
                 )
                 .count() == 1
@@ -498,13 +499,13 @@ class TestUncategorizedFallbackResolver:
     ):
         """The fallback lookup never returns a deleted-category orphan (H1).
 
-        An orphan (``is_fallback`` False, ``account_id`` NULL, ``category_id``
+        An orphan (``is_owner_bucket`` False, ``account_id`` NULL, ``category_id``
         NULL) of the Expense class already exists -- the remnant of a deleted
         category.  A NULL-category resolve must NOT return that orphan (which
         would commingle this transaction's posting with the deleted category's
-        history); it must create a fresh ``is_fallback`` True fallback,
+        history); it must create a fresh ``is_owner_bucket`` True fallback,
         distinct from the orphan.  Service-level proof that the lookup keys on
-        ``is_fallback``, not ``category_id IS NULL``.
+        ``is_owner_bucket``, not ``category_id IS NULL``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -515,7 +516,7 @@ class TestUncategorizedFallbackResolver:
                 kind_id=ref_cache.ledger_account_kind_id(
                     LedgerAccountKindEnum.ORPHAN,
                 ),
-                account_id=None, category_id=None, is_fallback=False,
+                account_id=None, category_id=None, is_owner_bucket=False,
                 name="Family: Groceries",
             )
             _db.session.add(orphan)
@@ -529,7 +530,7 @@ class TestUncategorizedFallbackResolver:
             )
 
             assert fallback.id != orphan_id
-            assert fallback.is_fallback is True
+            assert fallback.is_owner_bucket is True
             assert fallback.name == "Uncategorized Expense"
             # The orphan is untouched; two NULL/NULL Expense rows now coexist.
             assert (
@@ -541,7 +542,7 @@ class TestUncategorizedFallbackResolver:
                 .filter_by(user_id=user_id, class_id=expense_class_id)
                 .count() == 2
             )
-            assert _db.session.get(LedgerAccount, orphan_id).is_fallback is False
+            assert _db.session.get(LedgerAccount, orphan_id).is_owner_bucket is False
 
     def test_fallback_is_per_user(
         self, app, db, seed_user, seed_second_user,
@@ -549,7 +550,7 @@ class TestUncategorizedFallbackResolver:
         """Each owner gets their own Expense fallback (user-scoped singleton).
 
         The fallback singleton is keyed (user_id, class_id) ``WHERE
-        is_fallback``, so two users each have their own.  The resolver's
+        is_owner_bucket``, so two users each have their own.  The resolver's
         lookup filters by ``user_id``, so user B's resolve must NOT return
         user A's fallback -- it creates B's own, distinct row.  (Forgetting
         the ``user_id`` filter would leak A's fallback to B, a cross-tenant
@@ -573,6 +574,148 @@ class TestUncategorizedFallbackResolver:
             assert fallback_a.id != fallback_b.id
             assert fallback_a.user_id == user_a
             assert fallback_b.user_id == user_b
+
+
+class TestTransitLedgerAccountResolver:
+    """``get_or_create_transit_ledger_account`` -- the owner's clearing account.
+
+    Ruling **R-BAL99** (plan step ``balance:X-bi-6-3``): the Transfers-in-
+    transit account is the second OWNER-BUCKET kind beside the fallbacks, one
+    resolver keyed ``(user, class, kind)`` over the ``is_owner_bucket`` flag,
+    so a bucket kind needs an enum member, a ref row and a label -- and no
+    schema.  These pin the row's shape, the singleton, the orphan trap and the
+    refusal of a ``(kind, class)`` pair no ruling named.
+    """
+
+    def test_creates_the_transit_bucket_with_the_asset_class(
+        self, app, db, seed_user,
+    ):
+        """The transit row: all-NULL links, flagged, Asset, ``transit`` kind.
+
+        Shape: ``account_id`` / ``category_id`` / ``loan_account_id`` NULL,
+        ``is_owner_bucket`` True, ``class_id`` Asset (money in flight between
+        the owner's own accounts is the owner's, and a debit balance while it
+        is out), ``kind_id`` the ``transit`` kind, ``name`` the canonical
+        "Transfers in transit" label.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+
+            row = ledger_account_service.get_or_create_transit_ledger_account(
+                user_id,
+            )
+
+            assert row.account_id is None
+            assert row.category_id is None
+            assert row.loan_account_id is None
+            assert row.is_owner_bucket is True
+            assert row.class_id == ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.ASSET,
+            )
+            assert row.kind_id == ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.TRANSIT,
+            )
+            assert row.name == "Transfers in transit"
+            assert row.user_id == user_id
+
+    def test_transit_is_an_idempotent_singleton_per_owner(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """Repeated calls return the one transit row; a second owner gets its own.
+
+        ``uq_ledger_accounts_owner_bucket`` permits one ``transit`` row per
+        owner; the resolver returns the same row on re-call, and an owner's
+        transit count stays one while another owner resolves a row of their
+        own under the same key.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            other_id = seed_second_user["user"].id
+
+            first = ledger_account_service.get_or_create_transit_ledger_account(
+                user_id,
+            )
+            second = ledger_account_service.get_or_create_transit_ledger_account(
+                user_id,
+            )
+            theirs = ledger_account_service.get_or_create_transit_ledger_account(
+                other_id,
+            )
+
+            assert second.id == first.id
+            assert theirs.id != first.id
+            transit_kind = ref_cache.ledger_account_kind_id(
+                LedgerAccountKindEnum.TRANSIT,
+            )
+            assert (
+                _db.session.query(LedgerAccount)
+                .filter_by(user_id=user_id, kind_id=transit_kind)
+                .count() == 1
+            )
+
+    def test_transit_lookup_ignores_a_preexisting_orphan(
+        self, app, db, seed_user,
+    ):
+        """The transit lookup never returns a deleted-category orphan.
+
+        An orphan (unflagged, all-NULL) of ANY class shares the transit row's
+        column shape; the lookup keys on the flag and the kind, never on
+        ``category_id IS NULL``, so the orphan is left alone and a fresh
+        flagged ``transit`` row is created beside it -- the H1 trap, for the
+        second bucket kind.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            orphan = LedgerAccount(
+                user_id=user_id,
+                class_id=ref_cache.ledger_account_class_id(
+                    LedgerAccountClassEnum.ASSET,
+                ),
+                kind_id=ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ORPHAN,
+                ),
+                account_id=None, category_id=None, is_owner_bucket=False,
+                name="Old: Gone",
+            )
+            _db.session.add(orphan)
+            _db.session.commit()
+            orphan_id = orphan.id
+
+            transit = ledger_account_service.get_or_create_transit_ledger_account(
+                user_id,
+            )
+
+            assert transit.id != orphan_id
+            assert transit.is_owner_bucket is True
+            assert _db.session.get(LedgerAccount, orphan_id).is_owner_bucket is False
+
+    def test_the_bucket_resolver_refuses_an_unnamed_kind_class_pair(
+        self, app, db, seed_user,
+    ):
+        """A ``(kind, class)`` pair the label map does not name is refused.
+
+        No database CHECK pins a bucket's class to its kind, so the resolver's
+        label map is the app's only guard against minting a malformed bucket
+        -- a Liability-class transit, an Asset-class fallback.  Refused before
+        any row is written.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            with pytest.raises(ValueError, match="no owner bucket is defined"):
+                get_or_create_owner_bucket(
+                    user_id, LedgerAccountKindEnum.TRANSIT,
+                    LedgerAccountClassEnum.LIABILITY,
+                )
+            with pytest.raises(ValueError, match="no owner bucket is defined"):
+                get_or_create_owner_bucket(
+                    user_id, LedgerAccountKindEnum.FALLBACK,
+                    LedgerAccountClassEnum.ASSET,
+                )
+            assert (
+                _db.session.query(LedgerAccount)
+                .filter_by(user_id=user_id, is_owner_bucket=True)
+                .count() == 0
+            )
 
 
 class TestCategoryResolverValidation:
@@ -690,7 +833,7 @@ class TestLoanLedgerAccountResolver:
         """Each loan kind creates one correctly-shaped row with the right class.
 
         Shape contract for a per-loan ledger account: ``loan_account_id`` points
-        at the loan; ``account_id`` / ``category_id`` NULL and ``is_fallback``
+        at the loan; ``account_id`` / ``category_id`` NULL and ``is_owner_bucket``
         False (the per-loan column shape); ``kind_id`` the requested loan kind;
         ``class_id`` the class that kind implies (interest/escrow -> Expense,
         refund -> Asset, equity_opening -> Equity); ``name`` snapshots
@@ -714,7 +857,7 @@ class TestLoanLedgerAccountResolver:
             assert row.loan_account_id == loan.id
             assert row.account_id is None
             assert row.category_id is None
-            assert row.is_fallback is False
+            assert row.is_owner_bucket is False
             assert row.kind_id == ref_cache.ledger_account_kind_id(kind)
             assert row.class_id == ref_cache.ledger_account_class_id(
                 expected_class,
@@ -1004,7 +1147,7 @@ class TestAccountCounterResolver:
 
         Shape contract: ``account_id`` points at the account (shared with the
         linked row); ``category_id`` / ``loan_account_id`` NULL and
-        ``is_fallback`` False; ``class_id`` the class that kind implies;
+        ``is_owner_bucket`` False; ``class_id`` the class that kind implies;
         ``kind_id`` the requested kind; ``name`` snapshots
         "<account> -- <suffix>" (unlike a linked row -- the COALESCE display
         rule is the LINKED-row rule, so readers render this snapshot);
@@ -1029,7 +1172,7 @@ class TestAccountCounterResolver:
             assert row.account_id == account.id
             assert row.category_id is None
             assert row.loan_account_id is None
-            assert row.is_fallback is False
+            assert row.is_owner_bucket is False
             assert row.class_id == ref_cache.ledger_account_class_id(
                 expected_class,
             )

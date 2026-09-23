@@ -324,10 +324,13 @@
        ``xfer.settled_on`` is the model's read of the pair's shared day (it is
        not a column).  The box renders for ANY settled transfer, INCLUDING one
        whose pair carries no day -- and the condition excluded that case until a
-       neutral review named the consequence: an undated settled transfer is
-       exactly the shape that makes ``posting_service._entry_date`` raise
-       ``UndatedSettleError``, i.e. a 500 on the grid, and hiding the box left
-       that row with no way to state the day it ACTUALLY moved.  A second review
+       neutral review named the consequence: an undated settled transfer made
+       the posting writer before plan step ``balance:X-bi-6-3`` raise
+       ``UndatedSettleError``, i.e. a 500 on the grid.  The one movement writer
+       now posts NOTHING for an undated movement
+       (``_posting_purchases.purchase_posts``), so such a pair's money is in no
+       journal entry at all.  Either way, hiding the box left that row with no
+       way to state the day it ACTUALLY moved.  A second review
        corrected the first's wording: a repair path did already exist, because an
        identity-status Save falls back to ``display_today()``
        (``transfer_service._status.apply_status_to_all_three``) -- but it repairs to

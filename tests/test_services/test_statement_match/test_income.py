@@ -291,7 +291,7 @@ class TestItMovesTheMoney:
 
         recorded = _record(seed_user, line)
 
-        # **Named by ACCOUNT, never grouped by ``is_fallback``.**  This owner
+        # **Named by ACCOUNT, never grouped by ``is_owner_bucket``.**  This owner
         # holds more than one non-fallback ledger account -- the checking ASSET
         # and a ``Checking -- Opening`` EQUITY row among them -- so a grouping
         # by that flag reads the same whether the debit lands on the cash
@@ -326,7 +326,7 @@ class TestItMovesTheMoney:
             db.session.query(LedgerAccount.id)
             .filter(
                 LedgerAccount.user_id == seed_user["user"].id,
-                LedgerAccount.is_fallback.is_(True),
+                LedgerAccount.is_owner_bucket.is_(True),
                 LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                     LedgerAccountClassEnum.INCOME,
                 ),
@@ -356,7 +356,7 @@ class TestItMovesTheMoney:
             db.session.query(LedgerAccount)
             .filter(
                 LedgerAccount.user_id == seed_user["user"].id,
-                LedgerAccount.is_fallback.is_(True),
+                LedgerAccount.is_owner_bucket.is_(True),
                 LedgerAccount.class_id == ref_cache.ledger_account_class_id(
                     LedgerAccountClassEnum.INCOME,
                 ),

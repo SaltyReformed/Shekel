@@ -319,10 +319,9 @@ def transfer_settlement_amounts(
     the correction door writes first.  Either would answer the same (Transfer
     Invariant 3 -- both legs carry the same record), and naming one means the
     choice is not made twice.  It is deliberately NOT the income leg
-    ``Transfer.settled_on`` reads: that one matches ``posting_service._entry_date``,
-    which is a fact about the DAY, and pinning each read to the function it must
-    agree with is what keeps either from silently becoming "whichever row came
-    back first".
+    ``Transfer.settled_on`` reads: that one is a fact about the DAY, and
+    pinning each read to the function it must agree with is what keeps either
+    from silently becoming "whichever row came back first".
 
     **It answers for a SOFT-DELETED transfer**, where the pair loader it used
     to call refused one: the transfers page's cell reaches here on the stale

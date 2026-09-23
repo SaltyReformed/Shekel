@@ -494,7 +494,7 @@ def check_data_consistency(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks DC-02 through DC-11.
+        List of CheckResult for checks DC-02 through DC-12.
 
     Note:
         DC-01 ("done/received transactions without actual_amount") was
@@ -761,6 +761,45 @@ def check_data_consistency(session):
                 AND e.settled_on IS NULL
             )
           )
+        ORDER BY t.id
+        """,
+    )))
+
+    # DC-12: A live transfer whose live shadows number other than two
+    # (critical).
+    #
+    # Transfer Invariant 1: every transfer has exactly two linked shadow
+    # rows, one expense and one income.  Through plan step ``balance:X-bi-6-3``
+    # the posting writer was the app's only DETECTOR of a broken pair: it
+    # read the INCOME shadow's record to book the pair as one entry and
+    # refused when that shadow was missing, and the deploy resync warned
+    # about such pairs.  Under ruling **R-BAL45**'s shape C each side's
+    # covering movement posts on its own against the owner's
+    # Transfers-in-transit account (ruling **R-BAL101**), so a pair with one
+    # side is the honest in-transit state to the writer -- money left one
+    # account and has not arrived -- and no door polices the count.  Which is
+    # right for the writer and wrong for the app as a whole: a transfer whose
+    # income shadow vanished would leave its cash sitting in transit with
+    # nothing to arrive, visible nowhere.  So the invariant lives here, where
+    # the states that are nobody's door to police already live (DC-10, DC-11),
+    # read by the operator's integrity run and never by the writer.  Developer
+    # ruling 2026-09-21 (the leaf's adversarial review, finding 2).  Counts
+    # LIVE shadows of LIVE transfers: a soft-deleted pair carries its flag on
+    # all three rows, and a hard-deleted transfer takes its shadows with it
+    # (CASCADE).  Dies with the shadow rows at ``X-bi-6-5``.
+    results.append(_run_check(session, CheckSpec(
+        "DC-12", "consistency", "critical",
+        "Live transfers whose live shadow rows number other than two",
+        """
+        SELECT t.id AS transfer_id, t.user_id, t.from_account_id,
+               t.to_account_id,
+               (SELECT COUNT(*) FROM budget.transactions sh
+                 WHERE sh.transfer_id = t.id AND NOT sh.is_deleted)
+                 AS live_shadows
+        FROM budget.transfers t
+        WHERE NOT t.is_deleted
+          AND (SELECT COUNT(*) FROM budget.transactions sh
+                WHERE sh.transfer_id = t.id AND NOT sh.is_deleted) <> 2
         ORDER BY t.id
         """,
     )))

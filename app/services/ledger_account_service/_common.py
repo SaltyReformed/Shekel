@@ -1,16 +1,20 @@
 """The pieces every chart-of-accounts resolver in this package shares.
 
-Four resolvers materialise ``budget.ledger_accounts`` rows -- the linked
-Asset/Liability row (:mod:`._linked`), the per-category Income/Expense rows and
-their Uncategorized fallback (:mod:`._categories`), the per-loan rows
-(:mod:`._loans`), and the per-account counter-leg rows (:mod:`._counters`).
+Five resolvers materialise ``budget.ledger_accounts`` rows -- the linked
+Asset/Liability row (:mod:`._linked`), the per-category Income/Expense rows
+(:mod:`._categories`), the owner buckets -- the Uncategorized fallbacks and
+Transfers in transit (:mod:`._buckets`) -- the per-loan rows (:mod:`._loans`),
+and the per-account counter-leg rows (:mod:`._counters`).
 What they genuinely share lives here so no resolver re-spells it (a
 ``duplicate-code`` finding) and all four agree exactly:
 
 * :data:`LEDGER_ACCOUNT_NAME_MAX_LEN` -- the display-``name`` column width,
   read off the column so a snapshot clip can never drift from the schema.
 * :func:`add_or_reuse` -- the natural-key race handler every RACEABLE
-  get-or-create defers to.
+  get-or-create defers to, and :func:`resolve_chart_row` -- the find-first
+  skeleton around it that every raceable resolver in the package IS (the
+  ``duplicate-code`` gate measured the third copy when the bucket family
+  arrived at plan step ``balance:X-bi-6-3``).
 * :func:`get_or_create_chart_row` -- the get-or-create SKELETON the two
   account-LINKED families share (:mod:`._loans`, :mod:`._counters`), keyed by
   ``(user, link, kind)`` and parameterised by :class:`ChartRowLink`.
@@ -48,7 +52,9 @@ LEDGER_ACCOUNT_NAME_MAX_LEN = LedgerAccount.__table__.columns["name"].type.lengt
 
 # Every partial-unique index that makes a ledger account's NATURAL key unique,
 # read off the live catalog rather than recalled: ``\di budget.ledger_accounts``
-# on a production clone 2026-08-04.  They are the arbiters
+# on a production clone 2026-08-04, the owner-bucket key re-named and re-keyed
+# by plan step ``balance:X-bi-6-3``'s migration (it was
+# ``uq_ledger_accounts_uncategorized``).  They are the arbiters
 # :func:`add_or_reuse` defers to when two concurrent requests both find no row
 # and both try to create one; naming them means an unrelated IntegrityError
 # still propagates rather than being read as "someone else won the race".
@@ -57,7 +63,7 @@ _LEDGER_ACCOUNT_NATURAL_KEYS = (
     "uq_ledger_accounts_account_kind",
     "uq_ledger_accounts_category",
     "uq_ledger_accounts_loan",
-    "uq_ledger_accounts_uncategorized",
+    "uq_ledger_accounts_owner_bucket",
 )
 
 
@@ -67,10 +73,10 @@ def add_or_reuse(ledger_account: LedgerAccount, find_existing) -> LedgerAccount:
     **Every get-or-create in this package that two requests can RACE FOR is a
     check-then-INSERT, and that is a race.**  Two requests can both find no row
     for a natural key and both try to create one; the loser's flush hits
-    ``uq_ledger_accounts_account_kind`` (or its category twin) and, uncaught,
-    surfaces as a 500 on an operation that in fact succeeded -- the winner's
-    row is exactly the row the loser wanted.  Three resolvers consume this:
-    the per-account counter, category and loan ones.
+    ``uq_ledger_accounts_account_kind`` (or its category / bucket twin) and,
+    uncaught, surfaces as a 500 on an operation that in fact succeeded -- the
+    winner's row is exactly the row the loser wanted.  Four resolvers consume
+    this: the per-account counter, category, owner-bucket and loan ones.
 
     **``create_ledger_account_for_account`` is deliberately NOT converted, and
     an earlier version of this docstring said "every get-or-create in this
@@ -138,6 +144,40 @@ def add_or_reuse(ledger_account: LedgerAccount, find_existing) -> LedgerAccount:
         )
         return existing
     return ledger_account
+
+
+def resolve_chart_row(
+    find_existing: Callable[[], LedgerAccount | None],
+    build_row: Callable[[], LedgerAccount],
+) -> LedgerAccount:
+    """Return the row *find_existing* answers, else insert *build_row*'s.
+
+    The ONE get-or-create skeleton every RACEABLE chart resolver is (the
+    linked row's creator is deliberately not one, for the reason
+    :func:`add_or_reuse` states): look the natural key up; when a row exists
+    return it unchanged; otherwise build the row and hand it to
+    :func:`add_or_reuse`, which inserts it or, on a lost race, re-runs the
+    SAME lookup and returns the winner's.  *build_row* is a
+    callable, and that is the whole reason it is not a row: a display
+    snapshot needs a load (a category's label, a loan's name) that each
+    family's own guard may REFUSE, so computing it eagerly would put that
+    query and that refusal in front of every hit on an existing row.  Called
+    at most once, only when a row is actually being created.
+
+    Args:
+        find_existing: The zero-argument natural-key lookup, keyed exactly as
+            the family's partial unique index is.
+        build_row: The zero-argument builder of the UNFLUSHED row for that
+            key, its ``name`` already clipped to the column.
+
+    Returns:
+        The existing, newly flushed, or race-winning
+        :class:`~app.models.ledger_account.LedgerAccount`.
+    """
+    existing = find_existing()
+    if existing is not None:
+        return existing
+    return add_or_reuse(build_row(), find_existing)
 
 
 @dataclass(frozen=True)
@@ -224,17 +264,13 @@ def get_or_create_chart_row(
     def _find_existing():
         return db.session.query(LedgerAccount).filter_by(**natural_key).first()
 
-    existing = _find_existing()
-    if existing is not None:
-        return existing
-
-    ledger_account = add_or_reuse(
-        LedgerAccount(
+    ledger_account = resolve_chart_row(
+        _find_existing,
+        lambda: LedgerAccount(
             class_id=class_id,
             name=name_for()[:LEDGER_ACCOUNT_NAME_MAX_LEN],
             **natural_key,
         ),
-        _find_existing,
     )
     # "Resolved", not "Created": :func:`add_or_reuse` returns the row a
     # concurrent request won when this one lost the natural-key race, and that

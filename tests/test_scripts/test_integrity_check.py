@@ -19,6 +19,8 @@ from tests._test_helpers import (
     add_txn,
     bare_expense_template,
     cover_bare_settled_row,
+    create_account_of_type,
+    create_settled_transfer,
     definition_firing_twice_in_a_paycheck,
     generate_row_of,
     make_expense_template,
@@ -569,15 +571,17 @@ class TestDataConsistency:
     def test_clean_database_passes(self, app, db, seed_user, seed_periods):
         """All consistency checks pass on a properly seeded database.
 
-        DC-02 through DC-11: DC-01 was removed 2026-06-11 (settling
+        DC-02 through DC-12: DC-01 was removed 2026-06-11 (settling
         without a manual actual is a designed legal state -- see the
         ``check_data_consistency`` docstring); the remaining IDs keep
         their historical numbers.  DC-11 arrived at plan step
         ``balance:X-bi-4a`` with the alarm the cash walk's row read used to
-        raise (a settled row the fold cannot see).
+        raise (a settled row the fold cannot see); DC-12 at
+        ``balance:X-bi-6-3`` with the one the posting writer stopped raising
+        (Transfer Invariant 1, a pair missing a shadow).
         """
         results = check_data_consistency(db.session)
-        assert len(results) == 10
+        assert len(results) == 11
         # Critical checks must pass on clean data.
         critical_results = [r for r in results if r.severity == "critical"]
         assert all(r.passed for r in critical_results), (
@@ -1103,6 +1107,66 @@ class TestDataConsistency:
         assert dc10.passed
         assert movement.settled_on is None, "the movement is still un-dated and kept"
 
+    def test_dc12_detects_a_transfer_missing_a_shadow(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """DC-12 grades the Invariant-1 alarm the posting writer lost at X-bi-6-3.
+
+        Ruling **R-BAL101**: the writer books each side's movement on its own
+        against transit and polices no pair, so a transfer whose income shadow
+        is gone posts its half into transit and refuses nothing -- the honest
+        in-transit state to the ledger, and a broken invariant to the app.
+        Planted as the hazard is: a settled transfer through the service
+        passes; its income shadow deleted by SQL (no door writes that) fires
+        the check naming the transfer with ``live_shadows = 1``; a
+        SOFT-deleted pair (all three rows flagged) is not a live transfer and
+        does not fire.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        import sqlalchemy
+        from app.services import transfer_service
+
+        def dc12():
+            return next(
+                r for r in check_data_consistency(db.session)
+                if r.check_id == "DC-12"
+            )
+
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "DC-12 Savings",
+        )
+        db.session.commit()
+        transfer = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods[0], amount=Decimal("100.00"),
+        )
+        db.session.commit()
+        assert dc12().passed
+
+        db.session.execute(sqlalchemy.text(
+            "DELETE FROM budget.transactions "
+            "WHERE transfer_id = :t AND account_id = :a"
+        ), {"t": transfer.id, "a": savings.id})
+        db.session.commit()
+        result = dc12()
+        assert not result.passed
+        assert result.severity == "critical"
+        assert [row["transfer_id"] for row in result.details] == [transfer.id]
+        assert result.details[0]["live_shadows"] == 1
+
+        # A soft-deleted pair is not a live transfer: the flag rides on all
+        # three rows, so the check reads nothing to count.
+        other = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], savings,
+            seed_periods[1], amount=Decimal("40.00"),
+        )
+        db.session.commit()
+        transfer_service.delete_transfer(
+            other.id, seed_user["user"].id, soft=True,
+        )
+        db.session.commit()
+        assert [row["transfer_id"] for row in dc12().details] == [transfer.id]
+
     def test_dc11_detects_a_settled_row_the_fold_cannot_see(
         self, app, db, seed_user, seed_periods,
     ):
@@ -1282,5 +1346,7 @@ class TestRunAllChecks:
         # ``end_date`` and ``period_index`` and took BA-03, BA-04 and BA-07
         # with them -- an ordinal gap, a span overlap and an uncovered day are
         # all unexpressible once a period is one payday.  It rose to 29 at
-        # balance:X-bi-3e-2 (DC-10) and to 30 at balance:X-bi-4a (DC-11).
-        assert len(results) == 30
+        # balance:X-bi-3e-2 (DC-10), to 30 at balance:X-bi-4a (DC-11) and to
+        # 31 at balance:X-bi-6-3 (DC-12, Transfer Invariant 1, the alarm the
+        # posting writer stopped raising).
+        assert len(results) == 31
