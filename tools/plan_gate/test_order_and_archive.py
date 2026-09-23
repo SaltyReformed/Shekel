@@ -515,9 +515,7 @@ class TestEveryRegistryIsUnderItsCap:
     ledger's was raised three times and the fourth time it bound a finding was
     written into a code docstring to get around it; the index's bound on
     ``recurrence:R7d``'s seven-leaf split with no shipped row free to archive.
-    The arms both kept are a per-ROW cap and, since 2026-09-23, a bound on the
-    rows ONE CHANGE may add (``_growth``, balance:R-BAL128), which replaced the
-    absolute "runaway backstop" each carried.
+    The arms both kept are a per-ROW cap and a runaway backstop.
     """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
@@ -565,11 +563,10 @@ class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
     """What replaced ``ledger.md``'s line cap (developer ruling 2026-08-25).
 
     Three arms, and the split between them is the ruling: a row may not become
-    a specification (graded elsewhere, ``LEDGER_ROW_CAP``); one change adding
-    more rows than any real batch is an accident (``test_growth.py``,
-    balance:R-BAL128, which on 2026-09-23 replaced a 400-row total graded
-    here); and the backlog itself is REPORTED rather than gated, because
-    refusing to record a measured defect is what the dropped cap did.
+    a specification (graded elsewhere, ``LEDGER_ROW_CAP``); a table larger than
+    any real backlog is an accident (graded here); and the backlog itself is
+    REPORTED rather than gated, because refusing to record a measured defect is
+    what the dropped cap did.
     """
 
     def test_the_ledger_carries_no_line_cap(self):
@@ -578,6 +575,19 @@ class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
             "ledger.md's line cap was dropped 2026-08-25; putting it back is a "
             "developer ruling, not something a merge does quietly"
         )
+
+    def test_the_real_ledger_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.ledger_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "LEDGER_RUNAWAY_ROWS", 1)
+        violation = registry.ledger_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
 
     def test_the_backlog_is_reported_per_arc_and_sums_to_the_table(self):
         """The signal the cap was standing in for, and it must be complete.
@@ -696,12 +706,10 @@ class TestTheIndexIsBOUNDEDRatherThanCAPPED:
 
     The same three-way split :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED`
     records, one registry over: a ROW may not become a specification (graded by
-    rule 14's description cap); one change adding more rows than any real batch
-    is an accident (``test_growth.py``, balance:R-BAL128, which on 2026-09-23
-    replaced a 400-row total graded here); and what the file's LENGTH was ever a
-    proxy for -- can a cold reader find the next step -- is graded directly by
-    rule 3's counts and rule 14's dense ranks, which do not care how long the
-    table is.
+    rule 14's description cap); a table larger than any real plan is an accident
+    (graded here); and what the file's LENGTH was ever a proxy for -- can a cold
+    reader find the next step -- is graded directly by rule 3's counts and rule
+    14's dense ranks, which do not care how long the table is.
     """
 
     def test_the_index_carries_no_line_cap(self):
@@ -710,6 +718,19 @@ class TestTheIndexIsBOUNDEDRatherThanCAPPED:
             "steps.md's line cap was dropped 2026-08-25; putting it back is a "
             "developer ruling, not something a merge does quietly"
         )
+
+    def test_the_real_index_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.steps_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "STEPS_RUNAWAY_ROWS", 1)
+        violation = registry.steps_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
 
 
 class TestTheOrderTableIsSorted:

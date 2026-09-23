@@ -768,14 +768,12 @@ def blocked_by_violations() -> list[str]:
 #: the ledger to shrink, it forced a measured defect out of the registry that
 #: exists to hold it.
 #:
-#: **What replaces it, and why each piece.**  :data:`LEDGER_ROW_CAP` stays as
-#: rule 4's per-ROW arm for this file -- the arm that actually prevents the
-#: failure the line cap was reached for, a row swelling into the arc
-#: document's argument.  An accident that duplicates the table still fails, on
-#: the one-id-one-row arm (:func:`unique_key_violations`); the 400-row total
-#: that stood beside it as a "runaway backstop" became, on 2026-09-23, a bound
-#: on how many rows ONE CHANGE may add (:mod:`_growth`, balance:R-BAL128).
-#: And :func:`open_findings_by_arc` puts the backlog in the FILE, where
+#: **What replaces it, and why each piece.**  :data:`LEDGER_ROW_CAP` stays and
+#: is now the whole of rule 4 for this file -- it is the arm that actually
+#: prevents the failure the line cap was reached for, a row swelling into the
+#: arc document's argument.  :data:`LEDGER_RUNAWAY_ROWS` is a backstop set far
+#: above any real backlog, so an accident that duplicates the table still
+#: fails.  And :func:`open_findings_by_arc` puts the backlog in the FILE, where
 #: :func:`stated_arc_counts_violation` grades that the number is true -- because
 #: the thing worth forcing was never the file's length: it is that the pile is
 #: looked at.  *This said the function "PRINTS the backlog every run" until
@@ -801,15 +799,14 @@ def blocked_by_violations() -> list[str]:
 #: the file is 178 table rows against 44 lines of prose -- there is nothing
 #: else in it to trim.
 #:
-#: **What replaces it.**  :data:`~_order.DESCRIPTION_CAP` is rule 4's per-ROW
-#: arm for this file -- it prevents the failure a line cap was reached for, a
-#: row swelling into the arc document's specification.
-#: :mod:`_growth` bounds how many rows one change may add (balance:R-BAL128,
-#: 2026-09-23, which replaced a 400-row total here).  And what the length was
-#: ever a proxy for is graded directly and always was: rule 3's four counts in
-#: the header, and rule 14's dense ranks, which keep "the first row that is not
-#: done" the answer however long the table grows.  Nobody reads this file end
-#: to end; they read row one.
+#: **What replaces it.**  :data:`~_order.DESCRIPTION_CAP` is the per-ROW cap and
+#: is now the whole of rule 4 for this file -- it prevents the failure a line
+#: cap was reached for, a row swelling into the arc document's specification.
+#: :data:`STEPS_RUNAWAY_ROWS` is the runaway backstop a dropped cap owes.  And
+#: what the length was ever a proxy for is graded directly and always was: rule
+#: 3's four counts in the header, and rule 14's dense ranks, which keep "the
+#: first row that is not done" the answer however long the table grows.  Nobody
+#: reads this file end to end; they read row one.
 REGISTRY_CAPS = {
     # **RAISED by the developer 2026-09-05 on rule 4's terms**: lessons.md
     # 200 -> 280, conventions.md 280 -> 320.  Each had come to REST on its own
@@ -822,6 +819,24 @@ REGISTRY_CAPS = {
     "verification.md": 120,
     "lessons.md": 340,
 }
+
+#: The number of ``steps.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes: a
+#: duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 157 steps the index held when the cap was dropped, so it
+#: can never bind on a real decomposition.
+STEPS_RUNAWAY_ROWS = 400
+
+#: The number of ``ledger.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes:
+#: a duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 227 rows the ledger held when the cap was dropped, so it
+#: can never bind on a real finding.
+LEDGER_RUNAWAY_ROWS = 400
 
 #: The widest a single ``ledger.md`` row may be, in characters.
 #:
@@ -869,6 +884,44 @@ def registry_line_cap_violations() -> list[str]:
             "Do not raise the cap and do not trim a live row."
         )
     return problems
+
+
+def ledger_runaway_violation() -> "str | None":
+    """The backstop a dropped line cap owes.
+
+    Returns:
+        The message when ``ledger.md`` holds more rows than any real backlog
+        could, or ``None``.
+    """
+    rows = len(ledger_rows())
+    if rows <= LEDGER_RUNAWAY_ROWS:
+        return None
+    return (
+        f"ledger.md holds {rows} rows against the {LEDGER_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
+
+
+def steps_runaway_violation() -> "str | None":
+    """The backstop ``steps.md``'s dropped line cap owes.
+
+    Returns:
+        The message when ``steps.md`` holds more step rows than any real plan
+        could, or ``None``.
+    """
+    rows = len(step_rows())
+    if rows <= STEPS_RUNAWAY_ROWS:
+        return None
+    return (
+        f"steps.md holds {rows} steps against the {STEPS_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
 
 
 def open_findings_by_arc() -> "list[tuple[str, int]]":

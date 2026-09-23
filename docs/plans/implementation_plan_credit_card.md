@@ -213,7 +213,7 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
         (`R-CC58`), the anchor editor on every surface (`R-CC57` as amended by `R-CC60`), the
         books-opening card; a stale form refused and re-opened as a fresh click (`R-CC61`,
         `R-CC62`); no stored row re-signed, a loan's anchor cell a link (`R-CC53`). Two commits,
-        `ef4f6782` first; closed **CC-357**; suite 15186/0.
+        `ef4f6782` first; closed **CC-357**; suite 15186/0 at `ef4f6782`.
   - [x] **CC-5-5c** `6daa3048` -- ONE commit (`R-CC50`): the configured-loan arms report HELD
         through `liability_sign.owed`; net worth the plain sum; band, trend, subtotal (`R-CC48`),
         tiles, debt summary, loan readers and archived drawer (`R-CC67`) read `owed`; the footer's
@@ -233,17 +233,18 @@ index's. Money movers own their PR. When each leaf may start is `steps.md`'s ans
       `ck_savings_goals_positive_target` (`target_amount > 0`) relaxed by an Alembic migration, the
       app refusing `$0.00` on a savings goal (`R-CC72`). The card shows when the debt is projected
       to fall below the target, from the forward figures the loan page reads, and whether that is on
-      pace for the goal's date, with no required-per-period figure (`R-CC73`: July 2027). The
-      readers: `routes/savings.py` `_goal_form_context` (every active account, debts included),
+      pace for the goal's date, with no required-per-period figure (`R-CC73`: July 2027) and no
+      manual per-period field (`R-CC90`). The readers: `routes/savings.py` `_goal_form_context`
+      (every active account, debts included),
       `savings_dashboard_service/_goals._goal_account_balance` (since 5c a debt's HELD balance, so
       `percent_complete` holds a goal on a loan at `0%`) and
-      `savings_goal_service.calculate_trajectory`. Its FIRST question (**CC-371**): an archived
-      debt's drawer figure is the day's balance while a live non-loan tile shows its current
-      period's end -- which one rule both read. OPEN too, asked at its entry: an EDIT that moves a
-      goal between a savings account and a debt starts it on a day it was no debt goal -- refused,
-      or re-anchored. Its OWN PR and OWN release after 5b and 5c's (the coordinator's call), the
-      migration re-parented at merge. `$0.00` on production: its one goal is on the Money Market.
-      Closes **CC-360**, **CC-371**.
+      `savings_goal_service.calculate_trajectory`. **CC-371** (an archived debt's drawer figure is
+      the day's balance while a live non-loan tile shows its current period's end) is answered by
+      `R-CC88`: ONE rule, what the tile shows for day D, read by the live tile, the archived list
+      and every debt-goal figure. The goal move is answered by `R-CC87`: refused, and re-typing an
+      account across savings and debt is refused while a goal is on it. Its OWN PR and OWN release
+      after 5b and 5c's (the coordinator's call), the migration re-parented at merge. `$0.00` on
+      production: its one goal is on the Money Market. Closes **CC-360**, **CC-371**.
 - [ ] **CC-6** `feat(cards): the payment is one recurring transfer with a mode` -- design 3.5
       (`R-CC18` as amended by `R-CC22`): `card_payment_settings` with the four modes and a unique
       key over the card; the transfer setup flow, seated under `recurrence:R7f` once ruled (else

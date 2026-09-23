@@ -89,14 +89,8 @@ _DISCLAIMED = re.compile(
 )
 
 
-def git(*args: str) -> subprocess.CompletedProcess[str]:
-    """Run one git command at the repository root and return the finished process.
-
-    Public because :mod:`_growth` reads history through it too: one runner, so
-    both git-reading modules ask the root a scratch control re-points
-    (``registry.REPO``), under the environment :func:`test_shipped_against_git._isolate`
-    pins.
-    """
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one git command at the repository root and return the finished process."""
     return subprocess.run(
         ("git", *args),
         cwd=registry.REPO,
@@ -120,9 +114,9 @@ def history_is_gradeable() -> bool:
     tree -- a shallow CI checkout fails that assertion rather than quietly
     grading nothing.
     """
-    if git("rev-parse", "--git-dir").returncode:
+    if _git("rev-parse", "--git-dir").returncode:
         return False
-    return git("rev-parse", "--is-shallow-repository").stdout.strip() != "true"
+    return _git("rev-parse", "--is-shallow-repository").stdout.strip() != "true"
 
 
 def graded_heads() -> tuple[str, ...]:
@@ -140,7 +134,7 @@ def graded_heads() -> tuple[str, ...]:
     that file.  Stated rather than handled: this history holds no such merge,
     and the house resync is a two-parent ``git merge origin/dev``.
     """
-    if git("rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}").returncode:
+    if _git("rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}").returncode:
         return ("HEAD",)
     return ("HEAD", "MERGE_HEAD")
 
@@ -152,14 +146,14 @@ def is_carried(sha: str, heads: tuple[str, ...] | None = None) -> bool:
     through every row, rather than re-asking git per shipped row.
     """
     return any(
-        not git("merge-base", "--is-ancestor", sha, head).returncode
+        not _git("merge-base", "--is-ancestor", sha, head).returncode
         for head in (heads or graded_heads())
     )
 
 
 def _commits() -> list[tuple[str, str]]:
     """Return ``(sha, whole message)`` for every commit reachable from :func:`graded_heads`."""
-    out = git("log", *graded_heads(), "--format=%H%x01%s%x02%b%x03").stdout
+    out = _git("log", *graded_heads(), "--format=%H%x01%s%x02%b%x03").stdout
     commits = []
     for record in out.split("\x03"):
         record = record.strip("\n")
@@ -190,7 +184,7 @@ def shipped_commit_violations() -> list[str]:
         if not row.shipped:
             continue
         sha = row.commit.strip().strip("`")
-        if git("cat-file", "-e", f"{sha}^{{commit}}").returncode:
+        if _git("cat-file", "-e", f"{sha}^{{commit}}").returncode:
             problems.append(
                 f"{row.key} is SHIPPED at `{sha}`, which is not a commit in this "
                 f"repository.  A tick names the commit a reader can go and read "

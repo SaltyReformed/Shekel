@@ -202,29 +202,34 @@ RULINGS_HEADING_RX = re.compile(
     re.IGNORECASE,
 )
 
-# **No LINE cap and no size TOTAL.**  Rule 4 gives ``ledger.md`` and
-# ``steps.md`` no line cap on one argument the developer accepted twice on
-# 2026-08-25: a cap on a registry holding ONE LINE PER THING caps how many of
-# that thing the project may have.  A ruling is the same shape -- a decision
-# somebody has TAKEN -- so this file is capped the way its siblings are.  The
-# absolute "runaway backstop" of 600 rows that stood here, set in 2026-08 "far
-# above" the 182 rulings then expected and said to be unable to bind, was
-# reached by real work on 2026-09-23; with its two siblings in :mod:`_registry`
-# it became a bound on how many rows ONE CHANGE may add (:mod:`_growth`,
-# balance:R-BAL128).
+#: The number of rows that can only be an accident.
+#:
+#: **Not a forcing function.**  Rule 4 gives ``ledger.md`` and ``steps.md`` no
+#: LINE cap on one argument the developer accepted twice on 2026-08-25: a cap
+#: on a registry holding ONE LINE PER THING caps how many of that thing the
+#: project may have, and a gate may not refuse to record a defect somebody has
+#: measured.  A ruling is the same shape -- a decision somebody has TAKEN --
+#: so this file is capped the same way its siblings are, which is not at all.
+#: This is the runaway backstop a dropped cap owes: a duplicated table or a
+#: generator loop fails loudly instead of committing.  It was set at 600, far
+#: above the 182 rulings the five arcs held when the registry was created (105
+#: lifted, 77 still to come), and said to be unable to bind on real work; real
+#: work reached it on 2026-09-23 (608 rows).  The developer raised it to 700 as
+#: an INTERIM (balance:R-BAL131), until balance:R-BAL130's redesign -- a plan
+#: that holds open work only -- deletes the totals.
+RULINGS_RUNAWAY_ROWS = 700
 
 #: The widest a single ruling row may be, in characters.
 #:
-#: **Rule 4's per-ROW arm for this file, and the reason the line cap could
+#: **Rule 4's whole content for this file, and the reason the line cap could
 #: go.**  The developer's 2026-08-25 rulings on ``ledger.md`` and ``steps.md``
 #: were a SWAP and not a removal: the line cap went BECAUSE a per-row cap
-#: replaced it, and ``_registry.LEDGER_ROW_CAP``'s own note said it "is now the
+#: replaced it, and ``_registry.LEDGER_ROW_CAP``'s own note says it "is now the
 #: whole of rule 4 for this file -- it is the arm that actually prevents the
 #: failure the line cap was reached for, a row swelling into the arc document's
-#: argument" (it names the per-ROW arm now that rule 4 also holds
-#: :mod:`_growth`'s bound, balance:R-BAL128).  The first draft of this registry
-#: took the first half of that precedent and not the second; an adversarial
-#: review measured what that cost and the developer ruled the cap comes across.
+#: argument".  The first draft of this registry took the first half of that
+#: precedent and not the second; an adversarial review measured what that cost
+#: and the developer ruled the cap comes across.
 #:
 #: Set to the ledger's own 2,000 rather than to a number that fits today's
 #: file, which is what rule 4 forbids.
@@ -323,6 +328,23 @@ def stated_count_violation() -> str | None:
     return (
         f"rulings.md says it stands at {stated} rows and the table holds "
         f"{actual} (conventions.md rule 3)"
+    )
+
+
+def runaway_violation() -> str | None:
+    """Return the backstop's message, or ``None``.
+
+    Returns:
+        The message when the table holds more rows than any real corpus could.
+    """
+    actual = len(ruling_rows())
+    if actual <= RULINGS_RUNAWAY_ROWS:
+        return None
+    return (
+        f"rulings.md holds {actual} rows against a {RULINGS_RUNAWAY_ROWS}-row "
+        f"runaway backstop. This is not a forcing function and rule 5 is not "
+        f"the answer: a count this size is a duplicated table or a generator "
+        f"loop, not work somebody did"
     )
 
 
