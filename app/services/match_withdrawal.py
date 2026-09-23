@@ -572,7 +572,7 @@ def take_out_of_matches(
         because: The event's sentence (:data:`LEFT_THE_BOOKS`,
             :data:`RE_RECORDED`, :data:`MOVED_ACCOUNTS`).
         rows_leaving: The rows going in the same press, soft or hard (a
-            recurring occurrence's tombstone goes to the owner, ruling
+            recurring occurrence's tombstone counts as gone, ruling
             **R-CC84**), when the caller is a row delete -- so a creation that
             names one is not reported as kept (:func:`_summarise`).  Empty
             when only movements go.

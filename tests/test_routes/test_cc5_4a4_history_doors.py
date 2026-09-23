@@ -57,6 +57,7 @@ from app.utils.archive_helpers import HeldMovements
 from tests._test_helpers import (
     add_entry,
     create_account_of_type,
+    create_settled_transfer,
     generate_row_of,
     generate_transfer_of,
     make_expense_template,
@@ -253,45 +254,58 @@ def _settle_and_revert(seed_user, txn):
 
 
 class TestTheAccountDoor:
-    """A hidden row still holding a purchase archives the account."""
+    """A hidden row still holding a payment archives the account."""
 
-    def test_a_ghost_holding_a_purchase_archives_the_account(
+    def test_a_hidden_transfer_leg_holding_its_payment_archives_the_account(
         self, app, db, auth_client, seed_user,
     ):
-        """Ruling R-CC65: the cleanup deleted the ghost AND its purchase.
+        """Ruling R-CC65: the cleanup deleted the hidden row AND its money.
 
-        The ghost is the state an archive left before this step: a one-off
-        on Savings, soft-deleted with its purchase inside.  No live row, no
-        Paid row -- so the history arms said nothing, and step 2's bulk
-        DELETE took the purchase.
+        No live row, no Paid row -- so the history arms say nothing, and step
+        1's transfer delete would take the kept payment off the books.  **The
+        hidden row is a transfer's leg because no other can hold money**
+        (ruling **R-CC92**): this was a one-off envelope on Savings,
+        soft-deleted with its purchase inside, the state an archive left
+        before this step.  A transfer's soft delete still hides its legs
+        holding their payments (finding **balance:BAL-532**, closed by plan
+        step ``balance:X-bi-6-4``); an ad-hoc one, because a recurring
+        transfer's definition refuses the account first (guard 2).
+        Re-expressed under rule 5, developer-confirmed 2026-09-23.
         """
         with app.app_context():
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Savings",
                 anchor_balance=Decimal("0.00"),
             )
-            row = one_off_row_of(
-                seed_user["bootstrap_period"], name="Gift", amount="60.00",
-                user_id=seed_user["user"].id, account_id=savings.id,
-                scenario_id=seed_user["scenario"].id,
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                is_envelope=True,
-            )
-            add_entry(db.session, seed_user, row, Decimal("60.00"), _day(seed_user))
-            row.is_deleted = True
             db.session.commit()
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_user["bootstrap_period"], amount=Decimal("60.00"),
+                settled_on=_day(seed_user),
+            )
+            db.session.commit()
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            leg_ids = [
+                leg.id for leg in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id,
+                )
+            ]
 
             auth_client.post(f"/accounts/{savings.id}/hard-delete")
 
             assert _flashes(auth_client) == [
-                "'Savings' holds a recorded purchase and cannot be permanently "
+                "'Savings' holds a recorded payment and cannot be permanently "
                 "deleted. It has been archived instead."
             ]
             db.session.expire_all()
             assert db.session.get(Account, savings.id) is not None
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=row.id,
-            ).count() == 1
+            assert db.session.get(Transfer, xfer.id).is_deleted is True
+            assert db.session.query(TransactionEntry).filter(
+                TransactionEntry.transaction_id.in_(leg_ids),
+            ).count() == 2
 
 
 def _kept_transfer_payment(seed_user):

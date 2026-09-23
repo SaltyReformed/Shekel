@@ -1216,13 +1216,37 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
 
         A soft-deleted row keeps its recorded day, so every ``agrees`` test
         that compared days alone reported this group as still explaining the
-        bank's `$2,573.38` -- while the row contributes `$0.00` to any balance
+        bank's `$75.00` -- while the row contributes `$0.00` to any balance
         and the two sides no longer sum.
+
+        **The member is a transfer's leg because no other row can be hidden
+        still holding its payment** (ruling **R-CC92**): a row's delete takes
+        the payment off and withdraws the match it empties (ruling **R-CC75**),
+        so its act no longer stands to be asked.  A transfer's soft delete
+        withdraws nothing and hides both legs holding their payments (finding
+        **balance:BAL-532**, closed by plan step ``balance:X-bi-6-4``).  This
+        hid a matched Salary with its payment inside and never committed.
+        Re-expressed under rule 5, developer-confirmed 2026-09-23.
         """
-        salary, _ = self._accepted_pair(db, seed_user)
+        # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service
+
+        shadow = TestATransferShadowIsMatchedThroughItsService._a_transfer_shadow(
+            db, seed_user, settled=True,
+        )
+        line = a_bank_line(
+            seed_user, an_import(seed_user), amount="-75.00",
+            posted_on=shadow.settled_on,
+        )
+        _submit(seed_user, lines=[line], transactions=[shadow])
+        db.session.commit()
         assert self._groups(seed_user)[0].agrees is True
-        salary.is_deleted = True
-        db.session.flush()
+
+        transfer_service.delete_transfer(
+            shadow.transfer_id, seed_user["user"].id, soft=True,
+        )
+        db.session.commit()
+        assert shadow.is_deleted is True and shadow.entries
 
         group = self._groups(seed_user)[0]
 

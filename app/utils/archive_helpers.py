@@ -247,9 +247,11 @@ def transfer_template_holding_movements(template_id: int) -> HeldMovements:
 def legs_of_transfers(*transfer_scope):
     """Return the clause selecting the shadow rows of the transfers matching *transfer_scope*.
 
-    **The ONE spelling of a transfer's legs as a row scope** (CC-5-4a-4's
-    reviews, L4): :func:`transfers_holding_movements` and
-    :func:`account_holding_movements`' transfer arm both ask it.
+    **This module's one spelling of a transfer's legs as a row scope**
+    (CC-5-4a-4's reviews, L4): :func:`transfers_holding_movements` and
+    :func:`account_holding_movements`' transfer arm both ask it.  Not the
+    application's: ``reconcile_service/_transfers.py`` and
+    ``statement_match/_candidates.py`` spell the same ``IN`` inline.
 
     Args:
         *transfer_scope: ``Transfer`` filter clauses.

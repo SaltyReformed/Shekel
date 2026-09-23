@@ -32,9 +32,9 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import (
     account_service,
     cash_ledger,
-    pay_period_write,
     reconcile_service,
     status_seam,
+    transaction_service,
     transfer_service,
 )
 from app.services.cash_ledger import derived_amount_basis
@@ -388,20 +388,30 @@ class TestTheOutstandingSet:
                 TransactionEntry, entry.id,
             ).settled_on == _OBSERVED_ON
 
-    def test_a_purchase_on_a_soft_deleted_parent_matches_nothing(
+    def test_a_purchase_on_a_cancelled_parent_matches_nothing(
         self, app, db, seed_user, seed_periods, seed_entry_template,
     ):
-        """A deleted row is not in the plan, so its purchases are not either.
+        """A Cancelled row is not in the plan, so its purchases are not either.
 
-        Its entries survive on the row (the delete is soft), so without the
-        filter they would be offered for a bill the user has already removed
-        from their budget.
+        Its purchase survives on the row (cancelling takes nothing off the
+        books), so without the contributing filter it would be offered for an
+        envelope the user has already cancelled.  **This graded a SOFT-DELETED
+        parent until plan step** ``credit_card:CC-5-4a-4``: the database now
+        refuses a row hidden while it holds a purchase (ruling **R-CC92**),
+        and a row's delete takes its purchases off first (ruling **R-CC75**),
+        so no deleted parent holds one to offer.  The filter's other half is
+        the one a parent can still reach.  Re-expressed under rule 5,
+        developer-confirmed 2026-09-23.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
-            db.session.get(Transaction, txn.id).is_deleted = True
+            transaction_service.apply_requested_status(
+                db.session.get(Transaction, txn.id),
+                ref_cache.status_id(StatusEnum.CANCELLED),
+            )
             db.session.commit()
+            assert db.session.get(TransactionEntry, entry.id) is not None
 
             assert self._listed(seed_user) == []
             assert self._reconcile(seed_user, [entry.id]) == 0

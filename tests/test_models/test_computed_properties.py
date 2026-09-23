@@ -155,14 +155,39 @@ class TestTransactionEffectiveAmount:
         The last of the property's four branches, and the only one no test
         here covered: a soft-deleted row is worth nothing even when its status
         is a settled one and it recorded a figure.
+
+        **The row is a transfer's leg because no other can be hidden still
+        recording money** (ruling **R-CC92**): the database refuses a commit
+        leaving any other row hidden while it holds its payment, and a row
+        whose payment is gone records no figure for this branch to zero.
+        This flagged a Paid $75.00 row hidden with its payment inside and
+        never committed.  A settled transfer's soft delete still hides its
+        legs holding their payments (finding **balance:BAL-532**, closed by
+        plan step ``balance:X-bi-6-4``).  Re-expressed under rule 5,
+        developer-confirmed 2026-09-23.
         """
+        # pylint: disable=import-outside-toplevel
+        from app.services import transfer_service
+        from tests._test_helpers import create_settled_transfer
+
         with app.app_context():
-            txn = self._make_txn(
-                seed_user, seed_periods, "Paid",
-                Decimal("100.00"), actual=Decimal("75.00"),
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
             )
-            txn.is_deleted = True
-            db.session.flush()
+            xfer = create_settled_transfer(
+                seed_user, db.session, seed_user["account"], savings,
+                seed_periods[0], amount=Decimal("100.00"),
+                settled_amount=Decimal("75.00"),
+            )
+            db.session.commit()
+            transfer_service.delete_transfer(
+                xfer.id, seed_user["user"].id, soft=True,
+            )
+            db.session.commit()
+            txn = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, account_id=seed_user["account"].id,
+            ).one()
+            assert txn.is_deleted and txn.status.is_settled and txn.entries
 
             assert settled_contribution(txn) == Decimal("0")
 

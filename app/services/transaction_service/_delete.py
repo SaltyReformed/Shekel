@@ -163,8 +163,10 @@ class RowDeletion:
     comes_back_on_unarchive: bool
 
 
-def _leaves_the_books(txn: Transaction) -> "tuple[bool, list[Transaction]]":
-    """Return whether *txn* stays as a tombstone, and every row this press takes off the books.
+def _leaves_the_books(
+    txn: Transaction,
+) -> "tuple[bool, bool, list[Transaction]]":
+    """Return *txn*'s two delete facts and every row this press takes off the books.
 
     **ONE set, on either arm** (rulings **R-CC75**, **R-CC84**): *txn* and its
     live CC-payback chain -- every row whose payments and purchases leave the
@@ -185,14 +187,27 @@ def _leaves_the_books(txn: Transaction) -> "tuple[bool, list[Transaction]]":
     that outlived a soft-deleted source would inflate the next period with no
     offsetting credit row.
 
+    **Whether un-archiving would bring it back is asked HERE, once** (ruling
+    **R-CC86**; CC-5-4a-4's third review, L2): the dialog's read and the
+    press both call this, so the value has one producer rather than a copy
+    in each.  Read before anything is written, while the row's status is the
+    one the owner saw.
+
     Args:
         txn: The row being deleted.
 
     Returns:
-        ``(soft, rows)`` -- whether the row stays as a tombstone, and every
-        row whose movements go (*txn* first).
+        ``(soft, comes_back_on_unarchive, rows)`` -- whether the row stays as
+        a tombstone, whether archiving and then un-archiving its item would
+        bring it back (a soft delete of a row still Projected), and every row
+        whose movements go (*txn* first).
     """
-    return txn.recurs, [txn, *credit_workflow.live_payback_chain(txn)]
+    soft = txn.recurs
+    return (
+        soft,
+        soft and is_projected(txn),
+        [txn, *credit_workflow.live_payback_chain(txn)],
+    )
 
 
 def preview_deletion(
@@ -217,13 +232,13 @@ def preview_deletion(
     """
     if last_row_of_definition is None:
         last_row_of_definition = definition_delete.is_last_row_of_its_definition(txn)
-    soft, rows = _leaves_the_books(txn)
+    soft, comes_back, rows = _leaves_the_books(txn)
     return RowDeletion(
         soft=soft,
         paybacks=tuple(row.name for row in rows[1:]),
         withdrawn=match_withdrawal.pending_for_rows(rows),
         disposes_definition=last_row_of_definition,
-        comes_back_on_unarchive=soft and is_projected(txn),
+        comes_back_on_unarchive=comes_back,
     )
 
 
@@ -280,10 +295,8 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     if refusal is not None:
         raise ValidationError(refusal)
 
-    soft, rows = _leaves_the_books(txn)
+    soft, comes_back, rows = _leaves_the_books(txn)
     paybacks = tuple(row.name for row in rows[1:])
-    # Read before the delete, beside the other facts about the row itself.
-    comes_back = soft and is_projected(txn)
     # The definition is read off the row BEFORE the row is deleted: the
     # relationship may not be loaded yet, and a lazy load on an instance the
     # session has already deleted is not a read this door may rely on.
@@ -291,7 +304,7 @@ def delete_transaction(txn: Transaction, owner_id: int) -> RowDeletion:
     for row in rows:
         posting_service.reverse_postings_before_delete(row)
     # Over every row, on both arms (rulings R-CC75, R-CC84): a tombstone keeps
-    # its place in the table and nothing it held, and goes to the owner.
+    # its place in the table and nothing it held, and counts as gone.
     withdrawn = movement_removal.remove_movements(
         [movement for row in rows for movement in row.entries],
         owner_id, because=match_withdrawal.LEFT_THE_BOOKS, rows_leaving=rows,

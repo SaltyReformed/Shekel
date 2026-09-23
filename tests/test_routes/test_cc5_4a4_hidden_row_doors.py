@@ -47,21 +47,13 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import (
     entry_service,
     pay_period_gates,
-    statement_match,
     transaction_service,
 )
 from app.services.pay_calendar import calendar_for
 from app.services.pay_period_locks import PeriodLockReason, classify_schedule_locks
 from app.services.settle_day import SettleDay
-from app.services.statement_match import NewEnvelope, PurchaseCreation
 from app.services.transaction_service import settle_transaction
 from app.utils.dates import display_today
-# Pylint: ``shekel-private-module-import`` -- the statement-match builders and
-# the create door's per-request minted-envelope register are the one way a
-# test stages an act that MINTS an envelope as the app does (the convention
-# ``test_cc5_4a3_captions`` keeps).
-# pylint: disable=shekel-private-module-import
-from app.services.statement_match import _create
 from tests._test_helpers import (
     generate_row_of,
     make_every_period_rule,
@@ -69,11 +61,12 @@ from tests._test_helpers import (
     typed,
 )
 from tests.test_routes._statement_forms import ReconcileFormReader
+# Pylint: ``shekel-private-module-import`` -- the statement-match builders are
+# the one way a test stages an act that MINTS an envelope as the app does (the
+# convention ``test_cc5_4a3_captions`` keeps).
+# pylint: disable=shekel-private-module-import
 from tests.test_services.test_statement_match._builders import (
-    a_bank_line,
-    a_scope,
-    an_answers,
-    an_import,
+    a_purchase_in_a_minted_envelope,
 )
 
 
@@ -474,24 +467,7 @@ class TestATombstoneCountsAsLeaving:
         the receipt agree on 0, and the act and both creation records go.
         """
         with app.app_context():
-            statement = an_import(seed_user)
-            line = a_bank_line(
-                seed_user, statement, amount="-25.00",
-                posted_on=seed_user["bootstrap_period"].start_date,
-            )
-            created = statement_match.create_purchase_from_line(
-                PurchaseCreation(
-                    line_id=line.id,
-                    new_envelope=NewEnvelope(
-                        name="Public Library",
-                        category_id=seed_user["categories"]["Groceries"].id,
-                    ),
-                ),
-                a_scope(seed_user),
-                _create.MintedEnvelopes.none_yet(),
-                an_answers(seed_user),
-                applied_by_rule=False,
-            )
+            _line, created = a_purchase_in_a_minted_envelope(seed_user)
             db.session.commit()
             envelope = db.session.get(Transaction, created.transaction_id)
             assert db.session.query(StatementMatchCreation).filter_by(

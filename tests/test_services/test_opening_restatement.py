@@ -55,6 +55,7 @@ from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.account_opening import AccountOpening
 from app.models.transaction_entry import TransactionEntry
+from app.services import match_withdrawal, movement_removal
 from app.services.cash_ledger import (
     account_opening_fact,
     earliest_assertion_day,
@@ -630,6 +631,30 @@ class TestTheDaysItRefuses:
             assert _opening_count(loan) == before
 
 
+def _deleted_as_the_door_leaves_it(seed_user, db, period, account, name):
+    """A settled $25.00 row, its payment taken off, then hidden: a delete's result.
+
+    The row keeps its own recorded day, which is the movement the boundary
+    counts; the removal act runs first because the database refuses a row
+    hidden while it holds a payment (ruling **R-CC92**).
+
+    Returns:
+        The hidden row, holding nothing.
+    """
+    txn = create_settled_cash_transaction(
+        seed_user, db.session, period, Decimal("25.00"),
+        account=account, name=name,
+    )
+    movement_removal.remove_movements(
+        list(txn.entries), seed_user["user"].id,
+        because=match_withdrawal.LEFT_THE_BOOKS,
+    )
+    txn.is_deleted = True
+    db.session.flush()
+    assert not txn.entries and txn.settled_on is not None
+    return txn
+
+
 class TestTheTwoTiersAgree:
     """The service refuses EXACTLY what the database constraint refuses.
 
@@ -650,16 +675,21 @@ class TestTheTwoTiersAgree:
         un-deleting is an ``UPDATE`` of ``is_deleted`` alone and the movement
         trigger fires ``UPDATE OF settled_on, account_id``, so a restored
         pre-books row would pass every tier untouched.
+
+        Built as the delete leaves it (ruling **R-CC75**): its payment taken
+        off through the one removal act, then the row hidden, keeping its own
+        recorded day -- the database refuses a row hidden while it still
+        holds one (ruling **R-CC92**), which this flagged with its payment
+        inside and never committed.  Re-expressed under rule 5,
+        developer-confirmed 2026-09-23.
         """
         with app.app_context():
             account = _cash_account(seed_user, "SoftDeleted")
-            txn = create_settled_cash_transaction(
-                seed_user, db.session, seed_periods[1], Decimal("25.00"),
-                account=account, name="Deleted movement",
+            txn = _deleted_as_the_door_leaves_it(
+                seed_user, db, seed_periods[1], account, "Deleted movement",
             )
             settled_on = txn.settled_on
-            txn.is_deleted = True
-            db.session.flush()
+            db.session.commit()
 
             assert earliest_recorded_movement_day(account.id) == settled_on
             with pytest.raises(ValidationError, match=r"already records money"):
@@ -742,16 +772,15 @@ class TestTheTwoTiersAgree:
         It goes around the door on purpose -- a direct ``AccountOpening``
         INSERT -- because the point is what the deferred constraint trigger
         does when the service is not there to have refused first.  The refusal
-        arrives at COMMIT, which is why the flush alone is not enough.
+        arrives at COMMIT, which is why the flush alone is not enough.  The
+        row is built as the delete leaves it, as the case above says why.
         """
         with app.app_context():
             account = _cash_account(seed_user, "DatabaseTier")
-            txn = create_settled_cash_transaction(
-                seed_user, db.session, seed_periods[1], Decimal("25.00"),
-                account=account, name="Soft-deleted movement",
+            txn = _deleted_as_the_door_leaves_it(
+                seed_user, db, seed_periods[1], account, "Soft-deleted movement",
             )
             settled_on = txn.settled_on
-            txn.is_deleted = True
             db.session.commit()
 
             db.session.add(AccountOpening(

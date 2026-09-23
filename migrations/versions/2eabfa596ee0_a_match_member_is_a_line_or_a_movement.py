@@ -3,7 +3,7 @@
 Revision ID: 2eabfa596ee0
 Revises: c7d1e9a4b2f8
 Create Date: 2026-09-22 17:01:33.000000
-Review: developer, 2026-09-22 (rulings R-CC43 / R-CC45: the row members
+Review: developer, 2026-09-21 (rulings R-CC43 / R-CC45: the row members
 re-keyed to movements, and the row column dropped with its key, index and
 check; the line added at plan step credit_card:CC-5-4a-4, text only)
 

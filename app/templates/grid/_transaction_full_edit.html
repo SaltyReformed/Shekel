@@ -739,10 +739,12 @@
       more attributes on the button, so the dialog asked "Delete" and named
       neither the figure nor the bank lines. -#}
   {%- set recorded = settled[txn.id] -%}
-  {#- PURCHASES only: a settled row's own payment record (``covers_settlement``)
-      is what the "Your books record" sentence below already describes, and
-      calling it a purchase filed under the row misstated a Paid bill
-      (CC-5-4a-4's second review). -#}
+  {#- PURCHASES only: the row's own payment record (``covers_settlement``) is
+      not a purchase filed under it, and calling it one misstated a Paid bill
+      (CC-5-4a-4's second review).  On a settled row the "Your books record"
+      sentence below names its money; a row reverted to Projected keeps its
+      record un-dated (ruling R-BAL68), which the cash fold reads in neither
+      tier, so no sentence here names it (CC-5-4a-4's third review, L1). -#}
   {%- set purchases = txn.entries | rejectattr('covers_settlement') | list -%}
   {%- set question -%}
 Delete &quot;{{ txn.name }}&quot;{% if purchases %} and the {{ purchases | length }} purchase{{ '' if purchases | length == 1 else 's' }} filed under it{% endif %}?

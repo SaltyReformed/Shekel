@@ -57,10 +57,6 @@ from app.models.statement_match import (
 )
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services.statement_match import (
-    NewEnvelope,
-    PurchaseCreation,
-)
 from app.services import (
     account_service,
     credit_workflow,
@@ -71,22 +67,16 @@ from app.services import (
     transfer_service,
 )
 
-# Pylint: protected-access -- ``MintedEnvelopes`` is an internal collaboration
-# between two PRIVATE modules of this package and has no importer outside it;
-# a test for the module reaches into it, which is the allowance every sibling
-# here takes (see ``test_release.py``).
-from app.services.statement_match import _create  # pylint: disable=protected-access
-
 from tests._test_helpers import open_books_before_the_first_assertion, typed
 from ._builders import (
     a_bank_line,
     a_later_period,
     a_purchase,
+    a_purchase_in_a_minted_envelope,
     a_scope,
     a_submission,
     a_transaction,
     accepted_acts,
-    an_answers,
     an_import,
 )
 from app.models.amount_ownership import AmountOwnership
@@ -573,35 +563,11 @@ class TestKeptRowsCountsWhatSURVIVES:
     books"* while the press destroyed both.
     """
 
-    @staticmethod
-    def _recorded_into_a_new_envelope(seed_user, amount="-25.00"):
-        """Record one bank line as a purchase in an envelope the door mints."""
-        statement = an_import(seed_user)
-        line = a_bank_line(
-            seed_user, statement, amount=amount,
-            posted_on=seed_user["bootstrap_period"].start_date,
-        )
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
-        )
-        db.session.flush()
-        return line, created
-
     def test_a_created_row_the_press_destroys_is_NOT_reported_as_kept(
         self, app, db, seed_user,
     ):
         """Deleting the envelope takes its purchase too, so nothing stays."""
-        _, created = self._recorded_into_a_new_envelope(seed_user)
+        _, created = a_purchase_in_a_minted_envelope(seed_user)
         envelope = db.session.get(Transaction, created.transaction_id)
         assert db.session.query(StatementMatchCreation).count() == 2, (
             "the door records the purchase AND the container it minted"
@@ -632,7 +598,7 @@ class TestKeptRowsCountsWhatSURVIVES:
         already calls a surviving container *"an ordinary row the owner deletes
         in one click"*.  Since ``X-gb`` that click exists.
         """
-        _, created = self._recorded_into_a_new_envelope(seed_user)
+        _, created = a_purchase_in_a_minted_envelope(seed_user)
         purchase_id = created.entry_id
         envelope_id = created.transaction_id
         purchase = db.session.get(TransactionEntry, purchase_id)
@@ -728,25 +694,7 @@ class TestReleasingAnActDoesNotWithdrawTwice:
         self, app, db, seed_user,
     ):
         """The act minted an envelope, so releasing it takes that row back."""
-        statement = an_import(seed_user)
-        line = a_bank_line(
-            seed_user, statement, amount="-25.00",
-            posted_on=seed_user["bootstrap_period"].start_date,
-        )
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
-        )
-        db.session.flush()
+        line, created = a_purchase_in_a_minted_envelope(seed_user)
 
         released = statement_match.release_match(
             created.match_id, seed_user["user"].id, seed_user["account"].id,
@@ -780,21 +728,9 @@ class TestReleasingAnActDoesNotWithdrawTwice:
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(seed_user, statement, amount="-25.00", posted_on=day)
-        created = statement_match.create_purchase_from_line(
-            PurchaseCreation(
-                line_id=line.id,
-                new_envelope=NewEnvelope(
-                    name="Public Library",
-                    category_id=seed_user["categories"]["Groceries"].id,
-                ),
-            ),
-            a_scope(seed_user),
-            _create.MintedEnvelopes.none_yet(),
-            an_answers(seed_user),
-            applied_by_rule=False,
+        line, created = a_purchase_in_a_minted_envelope(
+            seed_user, statement=statement,
         )
-        db.session.flush()
         envelope = db.session.get(Transaction, created.transaction_id)
         version_before = envelope.version_id
         hand = entry_service.create_entry(

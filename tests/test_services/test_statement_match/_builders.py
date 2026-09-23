@@ -45,6 +45,7 @@ from app.services.statement_match import (
     MerchantAnswers,
     MatchSubmission,
     MintedEnvelopes,
+    NewEnvelope,
     PurchaseCreation,
     RuleSubmission,
     ReviewScope,
@@ -1022,6 +1023,45 @@ def an_answers(seed_user, account=None):
     return MerchantAnswers.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
+
+
+def a_purchase_in_a_minted_envelope(seed_user, amount="-25.00", statement=None):
+    """Record one bank line as a purchase in an envelope the create door mints.
+
+    A one-off "Public Library" Groceries envelope, minted by
+    ``statement_match.create_purchase_from_line`` with the line's purchase
+    filed in it: the act, its two creation records, the envelope and the
+    purchase, as the door writes them.  The staging the withdrawal and
+    row-delete cases share (CC-5-4a-4's third review, L5).  Flushes.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        amount: The bank line's signed amount.
+        statement: The import that shows the line; a new one when ``None``,
+            so a case adding a second line to the same statement passes it.
+
+    Returns:
+        ``(line, created)`` -- the bank line and the door's result.
+    """
+    line = a_bank_line(
+        seed_user, statement or an_import(seed_user), amount=amount,
+        posted_on=seed_user["bootstrap_period"].start_date,
+    )
+    created = statement_match.create_purchase_from_line(
+        PurchaseCreation(
+            line_id=line.id,
+            new_envelope=NewEnvelope(
+                name="Public Library",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        ),
+        a_scope(seed_user),
+        MintedEnvelopes.none_yet(),
+        an_answers(seed_user),
+        applied_by_rule=False,
+    )
+    db.session.flush()
+    return line, created
 
 
 def a_basis(seed_user):
