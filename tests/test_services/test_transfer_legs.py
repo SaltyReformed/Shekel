@@ -24,6 +24,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text as sa_text
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -40,6 +41,7 @@ from app.services.loan_ledger import payment_installments
 from app.services.cash_ledger import (
     planned_cash_rows,
     planned_leg_contribution,
+    settled_cash_facts,
     sum_projected,
 )
 from app.services.recorded_contributions import (
@@ -76,6 +78,7 @@ from app.services.transfer_legs import (
     leg_label,
     leg_of,
     planned_transfer_legs,
+    recorded_transfer_legs,
 )
 from app.services.transfer_service import (
     TransferSpec,
@@ -1440,3 +1443,101 @@ class TestALegsDisplayProjections:
         assert expense.name == "Transfer to Emergency Fund"
         assert expense.template_id is None and expense.recurs is False
         assert expense.record is None
+
+
+class TestTheSettledHalfReadsTheLegOffItsTransfer:
+    """Leaf ``balance:X-bi-6-4a`` (ruling **R-BAL106**): a paid leg's money through ONE loader."""
+
+    def test_recorded_legs_carry_their_transfer_side_and_movement(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """One leg per covering movement: the side is the link's, the account its endpoint."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_amount=Decimal("240.00"),
+                settled_on=date(2026, 2, 3),
+            )
+            create_transfer(
+                seed_user, db.session, checking, savings, seed_periods[3],
+                amount=_AMOUNT,
+            )
+            db.session.commit()
+
+            legs = recorded_transfer_legs(Transfer.from_account_id == checking.id)
+
+            assert [
+                (leg.transfer.id, leg.account_id, leg.is_income,
+                 leg.record.account_id, leg.record.amount, leg.record.settled_on)
+                for leg in legs
+            ] == [
+                (settled.id, checking.id, False, checking.id,
+                 Decimal("240.00"), date(2026, 2, 3)),
+                (settled.id, savings.id, True, savings.id,
+                 Decimal("240.00"), date(2026, 2, 3)),
+            ]
+            assert all(
+                leg.record.covers_settlement and leg.pay_period_id == settled.pay_period_id
+                for leg in legs
+            )
+
+    def test_a_legs_fact_names_its_transfer_and_a_rows_names_none(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The fold's two arms: a leg's fact carries ``transfer_id``, signed by its side."""
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+
+            [out_fact] = settled_cash_facts(checking.id, scenario_id)
+            [in_fact] = settled_cash_facts(savings.id, scenario_id)
+
+            assert (out_fact.transfer_id, out_fact.is_income, out_fact.delta) == (
+                settled.id, False, -_AMOUNT,
+            )
+            assert (in_fact.transfer_id, in_fact.is_income, in_fact.delta) == (
+                settled.id, True, _AMOUNT,
+            )
+            assert out_fact.pay_period_id == settled.pay_period_id
+
+    def test_a_legs_budget_column_is_its_transfers_not_its_shadows(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """R-JA, the parent decides: a shadow moved to another period around the service moves no fact.
+
+        The shadow's ``pay_period_id`` is rewritten by SQL (Transfer Invariant
+        3 drift, which no door writes); the fold files the leg's money under
+        the TRANSFER's period.  Through ``X-bi-6-3`` it read the shadow's, so
+        this is red on the tree before the leaf.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            savings = _savings(seed_user)
+            settled = create_settled_transfer(
+                seed_user, db.session, checking, savings, seed_periods[2],
+                amount=_AMOUNT, settled_on=date(2026, 2, 3),
+            )
+            db.session.commit()
+            shadow = _shadow_on(settled, checking)
+            db.session.execute(
+                sa_text(
+                    "UPDATE budget.transactions SET pay_period_id = :p "
+                    "WHERE id = :id"
+                ),
+                {"p": seed_periods[4].id, "id": shadow.id},
+            )
+            db.session.commit()
+            db.session.expire_all()
+
+            [fact] = settled_cash_facts(checking.id, seed_user["scenario"].id)
+
+            assert fact.pay_period_id == seed_periods[2].id
+            assert fact.transfer_id == settled.id

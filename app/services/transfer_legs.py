@@ -92,8 +92,15 @@ INTO a loan (its projected payments); and ``cash_ledger`` imports
 the cash ledger without closing that cycle -- ``cyclic-import`` traces a
 call-time import too.  A leaf both tiers reach is the shape
 :mod:`app.services.row_valuation` and :mod:`app.utils.amount_relationships`
-already take, for the same reason.  It names four models, the shared status
-predicates and the amount model's eager-load leaf, and no service.
+already take, for the same reason.  It names models, the shared status
+predicates, the reference cache and the date arithmetic, and no service.
+
+**The SETTLED half reads its legs here too since leaf ``X-bi-6-4a``** (ruling
+**R-BAL106**): :func:`transfer_movement_rows` / :func:`recorded_transfer_legs`
+hand the cash fold, the ledger oracle and the savings metric each paid
+transfer's covering movement with its transfer and side, so this module is
+the one place a movement is reached through a shadow row, and
+``X-bi-6-4d`` moves that reach once.
 
 **A database VIEW for this pair was refuted at the ruling**: a derive-mode loan
 payment's leg cannot be priced without the amortization engine, so the pair
@@ -110,8 +117,9 @@ from dataclasses import dataclass
 from datetime import date
 
 from sqlalchemy import or_
-from sqlalchemy.orm import selectinload
 
+from app import ref_cache
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -328,16 +336,15 @@ class TransferLeg:
         readers that ask both shapes when a bill was paid
         (``spending_analysis.payment_timeliness_from_txns``).
 
-        **One settled state has NO day here and a day on a row: the $0.00
-        close** (ruling **R-BAL82**, a close with no movement), which a
-        transfer reaches through its popover's ``settled_amount`` of ``0.00``.
-        Its shadow rows carry the assertion's day in their column and a
-        $0.00-closed ROW keeps its own, so the timeliness metric counts the
-        row and not the leg.  A transfer has no day of its own until plan step
-        ``X-bi-6-4``'s Fork B decides where one lives (the interval's answer
-        is pinned in ``test_spending_report_service.py``, the review of leaf
-        ``X-bi-6-1b``); reading the shadow's here would be the read this leaf
-        exists to delete.
+        **One settled state has NO day here: the $0.00 close** (ruling
+        **R-BAL82**, a close with no movement), which a transfer reaches
+        through its popover's ``settled_amount`` of ``0.00``.  That is the
+        standing answer, not the interval's (ruling **R-BAL90**): nothing was
+        paid on any day, a transfer stores no day of its own, and the
+        timeliness metric asks the RECORD of a row and a leg alike since leaf
+        ``X-bi-6-4a`` (``spending_analysis._holds_a_record``), so a
+        $0.00-closed row stops counting as a timed bill too.  Reading the
+        shadow's column here would be the read leaf ``X-bi-6-1`` deleted.
         """
         if self.record is None:
             return None
@@ -453,19 +460,45 @@ def leg_of(
             on the wrong balance.
     """
     if account_id == transfer.to_account_id:
-        return TransferLeg(
-            transfer=transfer, account_id=account_id, is_income=True,
-            record=record,
-        )
+        return _leg_on_side(transfer, is_income=True, record=record)
     if account_id == transfer.from_account_id:
-        return TransferLeg(
-            transfer=transfer, account_id=account_id, is_income=False,
-            record=record,
-        )
+        return _leg_on_side(transfer, is_income=False, record=record)
     raise ValueError(
         f"account {account_id} is on neither side of transfer {transfer.id} "
         f"(from {transfer.from_account_id} to {transfer.to_account_id}): "
         "there is no leg of it for that account to fold"
+    )
+
+
+def _leg_on_side(
+    transfer: Transfer, *, is_income: bool, record: TransactionEntry | None,
+) -> TransferLeg:
+    """Return *transfer*'s leg on one SIDE, its account that side's endpoint.
+
+    The one construction of a :class:`TransferLeg` (leaf ``X-bi-6-4a``).
+    Its two callers reach a side two ways, because they start from two
+    different facts: :func:`leg_of` from an ACCOUNT asking for its leg (the
+    plan half, which has no movement to ask), and
+    :func:`recorded_transfer_legs` from a MOVEMENT whose link names its side
+    (:func:`_leg_is_income`).  Either way the account is the endpoint on
+    that side, so ``ck_transfers_different_accounts`` keeps the pair
+    ``(transfer, account)`` a leg's identity (:attr:`TransferLeg.cell_key`).
+
+    Args:
+        transfer: The parent transfer.
+        is_income: ``True`` for the to-side, ``False`` for the from-side.
+        record: The leg's covering movement, or ``None``.
+
+    Returns:
+        The :class:`TransferLeg`.
+    """
+    return TransferLeg(
+        transfer=transfer,
+        account_id=(
+            transfer.to_account_id if is_income else transfer.from_account_id
+        ),
+        is_income=is_income,
+        record=record,
     )
 
 
@@ -515,7 +548,7 @@ def planned_transfer_legs(
     dated_leg = (
         _covering_movements_query()
         .filter(
-            Transaction.transfer_id == Transfer.id,
+            _leg_transfer_id() == Transfer.id,
             TransactionEntry.account_id == account_id,
             TransactionEntry.settled_on.isnot(None),
         )
@@ -547,10 +580,15 @@ def _covering_movements_query():
     **The ONE join from a transfer to a leg's record**, through the interval
     before ``X-bi-6``'s last leaf: a movement hangs off the transfer's shadow
     row on that account (``transaction_entries.transaction_id``), so reaching
-    it from the parent walks ``transactions.transfer_id``.  Both readers of a
-    leg's record build on this -- the fold's ``dated_leg`` predicate above and
-    the grid's :func:`covering_movements_by_leg` -- so when the movement
-    re-parents onto ``budget.transfers`` the join moves HERE, once.
+    it from the parent walks ``transactions.transfer_id``.  Every reader of a
+    leg's record builds on this with :func:`_leg_transfer_id` and
+    :func:`_leg_is_income` -- the fold's ``dated_leg`` predicate above, the
+    grid's :func:`covering_movements_by_leg`, and since leaf ``X-bi-6-4a``
+    (ruling **R-BAL106**) every settled-half reader through
+    :func:`transfer_movement_rows` -- so when the movement re-parents onto
+    ``budget.transfers`` (``X-bi-6-4d``, ruling **R-BAL88**) the join and
+    those two expressions move HERE, once, and nothing outside this module
+    names the shadow to reach a leg's money.
 
     A deleted shadow's movement is not a leg's record: a transfer whose pair
     was soft-deleted and rebuilt holds the live pair's, and the query says so
@@ -569,6 +607,95 @@ def _covering_movements_query():
             TransactionEntry.covers_settlement.is_(True),
         )
     )
+
+
+def _leg_transfer_id():
+    """Return the column naming a covering movement's TRANSFER, over the join.
+
+    The first of the two things :func:`_covering_movements_query`'s join is
+    for: which transfer a movement is one leg of.  Through the interval it is
+    the shadow's ``transfer_id``; at ``X-bi-6-4d`` it is whichever of the
+    movement's two side links is set (ruling **R-BAL88**).
+    """
+    return Transaction.transfer_id
+
+
+def _leg_is_income():
+    """Return the SQL truth of "this covering movement is its transfer's to-side".
+
+    The second thing the join is for: which SIDE a movement is, stated by its
+    link rather than inferred from its account.  Through the interval the link
+    is the shadow, and the shadow's TYPE is its side -- the transfer service
+    writes the income shadow on the to-account and the expense shadow on the
+    from-account (``transfer_service._create``), and it is the type the fold
+    and the ledger signed a transfer movement by before leaf ``X-bi-6-4a``, so
+    reading it here moves no figure in any state.  At ``X-bi-6-4d`` the side
+    is which link column is set (ruling **R-BAL88**: ``income_transfer_id``
+    keyed to the to-account, ``expense_transfer_id`` to the from-account).
+    """
+    return Transaction.transaction_type_id == ref_cache.txn_type_id(
+        TxnTypeEnum.INCOME,
+    )
+
+
+def transfer_movement_rows(*filters):
+    """Return every transfer leg's covering movement WITH its transfer and side.
+
+    **The settled half's ONE loader** (leaf ``X-bi-6-4a``, ruling
+    **R-BAL106**): each row is ``(movement, transfer, is_income)`` --
+    the :class:`~app.models.transaction_entry.TransactionEntry`, its parent
+    :class:`~app.models.transfer.Transfer` and its side -- over
+    :func:`_covering_movements_query`'s join, narrowed by the caller's
+    *filters*.  A reader takes a movement's period, scenario, status,
+    soft-delete and direction from the TRANSFER and the SIDE, never from the
+    shadow the movement still hangs off, so the fold, the ledger oracle, the
+    savings metric and every later reader of a paid transfer's money move off
+    the shadows in one place when ``X-bi-6-4d`` moves the join.  A LOADER, not
+    a producer: it selects and returns, and every figure is the caller's
+    (``cash_ledger.movement_cash_leg`` for the fold, the oracle's own sign).
+
+    Args:
+        *filters: The caller's clauses over ``TransactionEntry`` and the joined
+            ``Transfer`` -- the movement's account and day, the parent's
+            scenario, status and soft-delete.  Never the shadow's columns:
+            this function is where the shadow is named, and a caller that
+            filtered on it would be a second place ``X-bi-6-4d`` must find.
+
+    Returns:
+        An unexecuted ``Query`` of ``(TransactionEntry, Transfer, bool)``
+        rows, ordered by the movement's id so a caller that emits in load
+        order is deterministic.
+    """
+    return (
+        _covering_movements_query()
+        .join(Transfer, _leg_transfer_id() == Transfer.id)
+        .add_entity(Transfer)
+        .add_columns(_leg_is_income())
+        .filter(*filters)
+        .order_by(TransactionEntry.id)
+    )
+
+
+def recorded_transfer_legs(*filters) -> list[TransferLeg]:
+    """Return a :class:`TransferLeg` per matching covering movement, record attached.
+
+    :func:`transfer_movement_rows` as legs: the value the grid and the plan
+    half already hold a transfer's side as, carrying its movement as
+    :attr:`~TransferLeg.record` (leaf ``X-bi-6-4a``).  A leg is its parent,
+    so everything :func:`app.services.cash_ledger.movement_cash_leg` asks of a
+    movement's parent -- its type, soft-delete and status -- the leg answers
+    off the transfer.
+
+    Args:
+        *filters: As :func:`transfer_movement_rows`.
+
+    Returns:
+        The legs in movement-id order; ``[]`` when none match.
+    """
+    return [
+        _leg_on_side(transfer, is_income=is_income, record=movement)
+        for movement, transfer, is_income in transfer_movement_rows(*filters)
+    ]
 
 
 def covering_movements_by_leg(
@@ -596,15 +723,17 @@ def covering_movements_by_leg(
     ids = list(transfer_ids)
     if not ids:
         return {}
+    # The transfer rides as a column of the ONE join rather than through the
+    # shadow's relationship, so nothing here reads the shadow row.
     movements = (
         _covering_movements_query()
-        .filter(Transaction.transfer_id.in_(ids))
-        .options(selectinload(TransactionEntry.transaction))
+        .add_columns(_leg_transfer_id())
+        .filter(_leg_transfer_id().in_(ids))
         .all()
     )
     return {
-        (movement.transaction.transfer_id, movement.account_id): movement
-        for movement in movements
+        (transfer_id, movement.account_id): movement
+        for movement, transfer_id in movements
     }
 
 

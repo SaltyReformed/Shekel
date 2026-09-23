@@ -20,6 +20,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     escrow_calculator,
@@ -32,7 +33,11 @@ from app.services.savings_dashboard_service._debt_line import (
     loan_payoff_outlook,
 )
 from app.services.pay_calendar import PayCadence, PayCalendar, PeriodWindow
-from app.services.row_valuation import settled_contribution
+from app.services.row_valuation import (
+    leg_settled_contribution,
+    settled_contribution,
+)
+from app.services.transfer_legs import expense_legs, recorded_transfer_legs
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     _DashboardCoreData,
@@ -380,9 +385,11 @@ def _recent_settled_expenses_monthly(
     as :func:`_committed_expense_floor` (DH-#29) so the two operands of
     :func:`_compute_avg_monthly_expenses`'s ``max()`` measure the same
     "outflow from checking" universe -- a settled expense on a
-    non-checking account (e.g. a transfer's expense shadow on a
-    savings/HSA source) is excluded here just as it is from the floor,
-    rather than inflating only the historical operand.
+    non-checking account (e.g. a transfer out of a savings/HSA source) is
+    excluded here just as it is from the floor, rather than inflating only
+    the historical operand.  A transfer OUT of checking is one of its
+    expenses, read as its transfer's from-side LEG since leaf
+    ``balance:X-bi-6-4a`` (ruling **R-BAL106**), never as its shadow row.
 
     Args:
         checking_ids: IDs of the user's checking accounts (the
@@ -403,14 +410,9 @@ def _recent_settled_expenses_monthly(
         periods.
 
     **This function took the nullable SCENARIO OBJECT and answered
-    ``Decimal("0.00")`` for a user with no baseline** -- a fabricated monthly
-    expense feeding the emergency-fund runway, and the THIRD surviving guard
-    in a step whose ruling R-BY says exactly two survive.  Both of X-v2's
-    adversarial reviews found it independently.  It is also the site finding
-    N-112's own row named as the reason the census "wants an AST pass", and
-    the AST census X-v built STILL missed it -- because the predicate arrives
-    as a PARAMETER, not as an attribute or a local alias.  The census that
-    replaces a grep needs the same scepticism the grep earned.
+    ``Decimal("0.00")`` for a user with no baseline** (a fabricated expense
+    feeding the runway; the THIRD guard where ruling R-BY allows two).  X-v's
+    AST census missed it because the predicate arrives as a PARAMETER (N-112).
     """
     if current_period is None or not checking_ids:
         return Decimal("0.00")
@@ -423,16 +425,10 @@ def _recent_settled_expenses_monthly(
         return Decimal("0.00")
 
     recent_period_ids = [p.period_id for p in recent_periods]
-    # Both halves of "settled checking EXPENSE" are asked in SQL rather than in
-    # a Python ``if`` beside the valuation (plan step X-au-c2).  They were, and
-    # the row set was every status: the loop's guard was what kept a Projected
-    # row away from the amount read, so the accessor's precondition rested on a
-    # conditional a later edit could reorder rather than on the query.  Asking
-    # here makes it structural -- ``settled_contribution`` below can only ever see
-    # a row that has SETTLED, which answers from the settlement it RECORDED
-    # (plan step X-au-c3) rather than from its plan -- and loads only the rows
-    # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
-    # set it replaces (``ref_seeds``: Paid, Received).
+    # Both halves of "settled checking EXPENSE" are asked in SQL, not in a
+    # Python ``if`` a later edit could reorder (plan step X-au-c2), so each
+    # accessor below sees only what SETTLED and answers from its RECORD (X-au-c3).
+    # ``settled_status_ids()`` is the ``is_settled`` set (Paid, Received).
     recent_txns = (
         db.session.query(Transaction)
         .filter(
@@ -440,6 +436,7 @@ def _recent_settled_expenses_monthly(
             Transaction.account_id.in_(checking_ids),
             Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
+            Transaction.transfer_id.is_(None),
             Transaction.transaction_type_id == ref_cache.txn_type_id(
                 TxnTypeEnum.EXPENSE,
             ),
@@ -454,10 +451,17 @@ def _recent_settled_expenses_monthly(
         .options(selectinload(Transaction.entries))
         .all()
     )
+    legs = expense_legs(recorded_transfer_legs(
+        Transfer.from_account_id.in_(checking_ids),
+        Transfer.pay_period_id.in_(recent_period_ids),
+        Transfer.scenario_id == scenario_id,
+        Transfer.is_deleted.is_(False),
+        Transfer.status_id.in_(settled_status_ids()),
+    ))
 
     total_expenses = sum(
         (settled_contribution(txn) for txn in recent_txns), Decimal("0.00"),
-    )
+    ) + sum((leg_settled_contribution(leg) for leg in legs), Decimal("0.00"))
 
     per_period = total_expenses / len(recent_periods)
     return pay_cadence.per_paycheck_to_monthly(per_period)

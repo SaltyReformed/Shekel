@@ -47,7 +47,10 @@ defined once rather than re-implemented per surface (coding-standards rule
   figures and the Spending hero's vs-prior / vs-average chips.
 * :func:`payment_timeliness_from_txns` -- the on-time / late / average
   days-before-due rule, given the already window-attributed settled
-  expenses.
+  expenses.  Its gate asks each item whether it RECORDS a payment
+  (``_holds_a_record``, a row's entries or a leg's record, leaf
+  ``balance:X-bi-6-4a``): a fourth row-or-leg router, for a predicate
+  rather than a figure.
 
 Pure-function module -- no Flask imports; the only side effects are the two
 read queries, :func:`query_settled_expenses` and
@@ -633,22 +636,37 @@ def payment_timeliness_from_txns(txns: list[PlanItem]) -> dict | None:
     (ruling R-EC) -- one arithmetic, :func:`app.utils.dates
     .days_paid_before_due`.
 
+    **An item that RECORDS nothing is not a timed bill, for a row as for a
+    leg** (ruling **R-BAL90**, finding **BAL-528**, leaf
+    ``balance:X-bi-6-4a``): a ``$0.00`` close holds no movement (ruling
+    **R-BAL82**), nothing was paid on any day, so "days paid before due"
+    has no subject.  A leg says so already -- its day IS its movement's and
+    it has none -- while a ``$0.00``-closed ROW keeps a ``settled_on``
+    column, so through ``X-bi-6-1b`` the row was timed and the leg was not:
+    two shapes, two answers.  The gate reads the RECORD for both
+    (:func:`_holds_a_record`), so they answer alike; a row with a record
+    keeps its own ``settled_on`` as the day, and no figure but the count of
+    such closes moves.
+
     The caller supplies transactions already attributed to the reporting
     window (the year-end section pre-filters by attribution year; the
     Spending report supplies the chosen window's settled expenses), so this
     core owns only the paid-at/due-date gate and the counting.
 
     Args:
-        txns: Settled expense items attributed to the window.
+        txns: Settled expense items attributed to the window, a row's
+            ``entries`` loaded (both loaders here load them).
 
     Returns:
         A dict with ``total_bills_paid``, ``paid_on_time``, ``paid_late``,
         and ``avg_days_before_due`` (a 2-dp ``Decimal``), or ``None`` when
-        no transaction has both ``settled_on`` and ``due_date``.
+        no item records a payment and carries both ``settled_on`` and
+        ``due_date``.
     """
     applicable = [
         txn for txn in txns
         if txn.settled_on is not None and txn.due_date is not None
+        and _holds_a_record(txn)
     ]
     if not applicable:
         return None
@@ -674,3 +692,24 @@ def payment_timeliness_from_txns(txns: list[PlanItem]) -> dict | None:
         "paid_late": paid_late,
         "avg_days_before_due": avg_days,
     }
+
+
+def _holds_a_record(item: PlanItem) -> bool:
+    """Return whether *item* RECORDS a payment: a movement, not a ``$0.00`` close.
+
+    The record of a settled item is its movements (ruling **R-BAL80**): a
+    leg's is its covering movement (:attr:`~app.services.transfer_legs
+    .TransferLeg.record`), a row's its family -- a bill's or a paycheck's
+    covering movement, an envelope's purchases.  A ``$0.00`` close is a close
+    with NO entries (ruling **R-BAL82**), which is the one settled item that
+    answers ``False`` (leaf ``balance:X-bi-6-4a``, ruling **R-BAL90**).
+
+    Args:
+        item: A settled row, its ``entries`` loaded, or a leg.
+
+    Returns:
+        ``True`` when a movement records what the item paid.
+    """
+    if isinstance(item, TransferLeg):
+        return item.record is not None
+    return bool(item.entries)

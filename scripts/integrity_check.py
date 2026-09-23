@@ -735,13 +735,18 @@ def check_data_consistency(session):
     # migration ``45f10b870c8b``, which refused any row where the two
     # disagreed, and a settled row with no movement is the ``$0.00`` record
     # since, ruling **R-BAL82**.)
+    # A settled TRANSFER is graded as its LEGS since leaf ``X-bi-6-4a``
+    # (ruling **R-BAL106**; the UNION's second arm): the TRANSFER's status and
+    # each leg's movement day, one row per undated leg, never a shadow's own
+    # columns.  A transfer stores no day (ruling **R-BAL90**), so a ``$0.00``
+    # close passes; the arm's ``sh`` join is the one ``X-bi-6-4d`` moves.
     results.append(_run_check(session, CheckSpec(
         "DC-11", "consistency", "critical",
         "Settled rows the fold cannot see: no settle day, or a covering "
-        "movement with no day",
+        "movement with no day; settled transfers holding an undated leg",
         """
-        SELECT t.id AS transaction_id, t.account_id, s.name AS status,
-               t.settled_on,
+        SELECT t.id AS transaction_id, NULL::integer AS transfer_id,
+               t.account_id, s.name AS status, t.settled_on,
                (SELECT COUNT(*) FROM budget.transaction_entries e
                  WHERE e.transaction_id = t.id AND e.covers_settlement)
                  AS covering_movements,
@@ -751,8 +756,7 @@ def check_data_consistency(session):
                  AS undated_covering_movements
         FROM budget.transactions t
         JOIN ref.statuses s ON s.id = t.status_id
-        WHERE s.is_settled
-          AND NOT t.is_deleted
+        WHERE s.is_settled AND NOT t.is_deleted AND t.transfer_id IS NULL
           AND (
             t.settled_on IS NULL
             OR EXISTS (
@@ -761,7 +765,15 @@ def check_data_consistency(session):
                 AND e.settled_on IS NULL
             )
           )
-        ORDER BY t.id
+        UNION ALL
+        SELECT NULL::integer, x.id, e.account_id, s.name, NULL::date, 1, 1
+        FROM budget.transfers x
+        JOIN ref.statuses s ON s.id = x.status_id
+        JOIN budget.transactions sh ON sh.transfer_id = x.id AND NOT sh.is_deleted
+        JOIN budget.transaction_entries e
+          ON e.transaction_id = sh.id AND e.covers_settlement
+        WHERE s.is_settled AND NOT x.is_deleted AND e.settled_on IS NULL
+        ORDER BY transaction_id NULLS LAST, transfer_id, account_id
         """,
     )))
 

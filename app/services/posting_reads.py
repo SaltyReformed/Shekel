@@ -34,7 +34,9 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
 from app.services import ledger_account_service
+from app.services.transfer_legs import transfer_movement_rows
 from app.utils.balance_predicates import (
     balance_excluded_status_ids,
     settled_status_ids,
@@ -45,9 +47,12 @@ def settled_figure_clause():
     """Return the SQL for what a SETTLED transaction records as having moved.
 
     The query-tier twin of :func:`app.services.row_valuation.settled_figure`, and
-    the ONE spelling of it in SQL (plan step **X-au-c3**): one reader asks it
-    -- :func:`settled_transfer_effect` -- and two copies of a money rule is
-    this arc's own root cause 1.  (``settled_transaction_effect`` went at
+    the ONE spelling of it in SQL (plan step **X-au-c3**); two copies of a
+    money rule is this arc's own root cause 1.  **It has no reader in
+    ``app/`` since leaf ``balance:X-bi-6-4a``**, whose oracle
+    (:func:`settled_transfer_effect`) reads a transfer's legs off the
+    transfer rather than its shadows' records; only its parity test with
+    ``settled_figure`` calls it.  (``settled_transaction_effect`` went at
     plan step ``balance:X-bi-4a`` with the row's own leg;
     ``posting_service._settle_effective`` at ``balance:X-bi-6-3``, when a
     transfer's legs became its movements' own entries and the writer stopped
@@ -190,27 +195,36 @@ def account_posting_total(account_id: int, scenario_id: int) -> Decimal:
 
 
 def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
-    """Return an account's net effect from its settled transfer shadows.
+    """Return an account's net effect from its settled transfers' legs.
 
     The balance-side expectation the Commit-6 oracle reconciles the ledger
-    against: over the account's settled (``status.is_settled``), non-deleted
-    transfer shadows in *scenario_id*, sum ``+``:func:`settled_figure_clause`
-    for an income shadow (money in) and the negation for an expense shadow
-    (money out) -- exactly the debit-positive net
-    :func:`account_posting_total` accumulates.  It read
-    ``COALESCE(actual_amount, estimated_amount)`` until plan step X-au-c3
-    renamed that column and made a settled row's figure its own RECORD, so the
-    shadow's plan is no longer consulted for it at all;
-    settled statuses are non-excluded by construction (``settled_status_ids``
-    is disjoint from the balance-excluded set), so no excluded-status guard is
-    needed.
+    against: over every covering movement ON the account (its own
+    ``account_id``, ruling **R-BAL75**) of a live transfer in *scenario_id*
+    whose status is settled (``status.is_settled``), ``+amount`` on the
+    to-side (money in) and ``-amount`` on the from-side (money out) --
+    exactly the debit-positive net :func:`account_posting_total`
+    accumulates.  A transfer closed at ``$0.00`` holds no movement and adds
+    nothing (ruling **R-BAL82**).  Settled statuses are non-excluded by
+    construction (``settled_status_ids`` is disjoint from the
+    balance-excluded set), so no excluded-status guard is needed.
+
+    **The legs come off their TRANSFER since leaf ``X-bi-6-4a``** (ruling
+    **R-BAL106**): the movement, its parent and its side through
+    :func:`app.services.transfer_legs.transfer_movement_rows`, so status,
+    scope and direction are the transfer's.  Through ``X-bi-6-3`` this summed
+    the settled SHADOW rows' records (``settled_figure_clause``) signed by the
+    shadow's type -- the same movements under Transfer Invariant 3, read
+    through the row ``X-bi-6-4d`` detaches them from.  The sign is still
+    restated here rather than shared with the writer
+    (``cash_ledger.movement_cash_leg``): an oracle that imported the rule it
+    grades could not grade it.
 
     Args:
-        account_id: The real account whose settled transfer shadows to sum.
+        account_id: The real account whose settled transfer legs to sum.
         scenario_id: The scenario to scope to.
 
     Returns:
-        The signed net effect of the account's settled transfer shadows as a
+        The signed net effect of the account's settled transfer legs as a
         ``Decimal``.
 
     Raises:
@@ -221,24 +235,18 @@ def settled_transfer_effect(account_id: int, scenario_id: int) -> Decimal:
             "settled_transfer_effect requires a scenario_id (transactions "
             "are scenario-scoped); got None."
         )
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    effective = settled_figure_clause()
-    signed_effect = case(
-        (Transaction.transaction_type_id == income_type_id, effective),
-        else_=-effective,
-    )
-    return (
-        db.session.query(
-            db.func.coalesce(db.func.sum(signed_effect), Decimal("0"))
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.transfer_id.isnot(None),
-            Transaction.is_deleted.is_(False),
-            Transaction.status_id.in_(settled_status_ids()),
-        )
-        .scalar()
+    rows = transfer_movement_rows(
+        TransactionEntry.account_id == account_id,
+        Transfer.scenario_id == scenario_id,
+        Transfer.is_deleted.is_(False),
+        Transfer.status_id.in_(settled_status_ids()),
+    ).all()
+    return sum(
+        (
+            movement.amount if is_income else -movement.amount
+            for movement, _transfer, is_income in rows
+        ),
+        Decimal("0"),
     )
 
 

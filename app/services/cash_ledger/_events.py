@@ -18,11 +18,15 @@ that stream.  Two kinds of fact enter it, and nothing else:
   its record less its own dated movements, and the two homes agreed by
   ruling R-FM's identity because the seam mirrored one record into both;
   the row's record is the stale cache ``X-bi-4b`` deletes.  A SETTLED
-  transfer's effect arrives as each shadow's covering movement -- the RECORD
+  transfer's effect arrives as each LEG's covering movement -- the RECORD
   half of Transfer Invariant 5 as restated at plan step X-bi-6a (ruling
-  R-BAL13) -- until ``X-bi-6`` re-parents those movements onto
-  ``budget.transfers``.  A still-PROJECTED transfer's legs are derived from
-  the parent (:mod:`app.services.transfer_legs`) by the plan half below.
+  R-BAL13) -- read with its transfer and side
+  (:func:`app.services.transfer_legs.recorded_transfer_legs`, leaf
+  ``X-bi-6-4a``), so its budget column, direction and contributing gate are
+  the TRANSFER's and nothing here reads the shadow row the movement still
+  hangs off until ``X-bi-6-4d`` re-parents it onto ``budget.transfers``.
+  A still-PROJECTED transfer's legs are derived from the parent
+  (:mod:`app.services.transfer_legs`) by the plan half below.
 
 **PLANNED (still-Projected) rows are deliberately NOT here** (ruling R-G).  A
 plan cannot have already happened, so a projected row's effective date is
@@ -110,6 +114,8 @@ from app.models.account import AccountAnchorHistory
 from app.models.account_opening import AccountOpening
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.transfer import Transfer
+from app.services.transfer_legs import recorded_transfer_legs
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     owner_declared_clause,
@@ -299,8 +305,14 @@ class CashAnchorFact:
 
 
 @dataclass(frozen=True)
-class CashSourceFact:
+class CashSourceFact:  # pylint: disable=too-many-instance-attributes
     """One dated movement's signed effect on the account, when, and whose column.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- one movement, its two
+    parent links (a plan row's, a transfer's) and what the fold reads of it.
+    The table beside it takes the same exactly-one-parent shape at
+    ``X-bi-6-4d`` (ruling **R-BAL88**), and ``transaction_id`` leaves a leg
+    there; merging the two links into one tagged field would hide the shape.
 
     The ACTUAL half of the event stream: cash that really moved.  ONE kind of
     row produces one (plan step ``balance:X-bi-4a``, ruling **R-BAL80**): a
@@ -323,11 +335,15 @@ class CashSourceFact:
     booked on the close day.  Ruling **R-BAL77** reads those as movements in
     flight (:class:`InFlightMovement`), so no row has a leg of its own and
     the stream is movements alone.  A transfer's two legs are its two
-    shadows' covering movements, each on its own account and in its own
-    direction, until ``X-bi-6-4`` re-parents them; the posted ledger books
-    each of them as its own entry against the owner's transit account since
-    plan step ``balance:X-bi-6-3`` (``posting_service.sync_transfer_postings``,
-    ruling **R-BAL45**), so the fold and the ledger read one movement each.
+    covering movements, each on its own account and in its own direction,
+    and since leaf ``X-bi-6-4a`` (ruling **R-BAL106**) each is read as a LEG
+    of its transfer -- budget column, type and contributing gate the
+    TRANSFER's and its side's, never the shadow row's -- through
+    :func:`app.services.transfer_legs.recorded_transfer_legs`; the posted
+    ledger books each of them as its own entry against the owner's transit
+    account since plan step ``balance:X-bi-6-3``
+    (``posting_service.sync_transfer_postings``, ruling **R-BAL45**), so the
+    fold and the ledger read one movement each.
 
     **It carries TWO clocks, and the second one is not decoration** (plan step
     X-c1).  :attr:`settled_on` is the CASH clock -- the day the money moved,
@@ -348,11 +364,16 @@ class CashSourceFact:
     lossy function.
 
     Attributes:
-        transaction_id: The plan row the movement satisfies -- the envelope a
-            purchase was recorded against, the bill or paycheck a covering
-            movement records, the shadow of a transfer leg.  The parent is
-            what a movement's direction, budget column and type are read from
-            (ruling **R-BAL35**); it is never a fact of its own.
+        transaction_id: The movement's own ``transaction_id`` column: the
+            plan row it records money for (ruling **R-BAL35**; never a fact
+            of its own).  For a transfer leg it is the shadow the movement
+            still hangs off, NULL from ``X-bi-6-4d``; nothing reads a leg's
+            parent through it -- only the sort's tie-break and the
+            bank-agreement screen's names (``bank_agreement._row_names``),
+            which key on the same column.
+        transfer_id: The transfer the movement is a LEG of, ``None`` for a
+            plan row's (leaf ``X-bi-6-4a``): what the far-leg exclusion
+            (``balance_at._cash_periods._budget_legs``) asks.
         entry_id: The ``budget.transaction_entries`` row.  ``(transaction_id,
             entry_id)`` is the fact's identity: an envelope's posted purchases
             are distinct movements sharing one parent, and the sort breaks
@@ -406,6 +427,7 @@ class CashSourceFact:
     """
 
     transaction_id: int
+    transfer_id: "int | None"
     entry_id: int
     pay_period_id: int
     is_income: bool
@@ -693,14 +715,14 @@ def movements_with_parents(*filters):
 
 
 def _movements_of(account_id: int, scenario_id: int, *narrowing):
-    """Return the account's movements WITH their parents, scoped once.
+    """Return the account's PLAN-ROW movements WITH their parents, scoped once.
 
-    The ONE statement of what the movement stream is scoped by -- shared by
-    the SETTLED tier (:func:`settled_cash_facts`, the dated movements) and
-    the IN-FLIGHT tier (:func:`in_flight_movements`, the un-dated ones) so
-    the two are a PARTITION of the same set rather than two filters that
-    could disagree about which movements exist at all (plan step
-    ``balance:X-bi-4a``).  Three clauses, each load-bearing:
+    The ONE statement of what the plan-row movement stream is scoped by --
+    shared by the SETTLED tier (:func:`settled_cash_facts`, the dated
+    movements) and the IN-FLIGHT tier (:func:`in_flight_movements`, the
+    un-dated ones) so the two are a PARTITION of the same set rather than two
+    filters that could disagree about which movements exist at all (plan step
+    ``balance:X-bi-4a``).  Four clauses, each load-bearing:
 
     * ``TransactionEntry.account_id == account_id`` -- **the MOVEMENT's own
       account, never its parent's** (ruling **R-BAL75**): a movement is
@@ -718,6 +740,11 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
       :func:`~app.utils.balance_predicates.balance_contributing_clause`, so a
       soft-deleted or Credit / Cancelled parent's movements are worth nothing
       here, as they post nothing (``_posting_purchases.purchase_posts``).
+    * the parent is a PLAN ROW, not a transfer's shadow (leaf ``X-bi-6-4a``):
+      a leg's movement is read with its transfer by :func:`settled_cash_facts`'
+      other arm.  A shadow takes no purchase (``tracks_purchases`` is
+      ``False``), so the in-flight tier loses nothing; the clause excludes
+      nothing from ``X-bi-6-4d`` and goes with the shadows at ``X-bi-6-5``.
 
     Deliberately NOT narrowed by the parent's STATUS: a dated purchase
     against a still-Projected envelope has left the bank exactly as one
@@ -742,6 +769,7 @@ def _movements_of(account_id: int, scenario_id: int, *narrowing):
         TransactionEntry.account_id == account_id,
         Transaction.scenario_id == scenario_id,
         balance_contributing_clause(),
+        Transaction.transfer_id.is_(None),
         TransactionEntry.is_credit.is_(False),
         *narrowing,
     ).all()
@@ -776,6 +804,13 @@ def settled_cash_facts(
     them (:func:`in_flight_movements`).  So the row's own leg is nothing on
     every kind of row, and this stream reads movements alone.  The row's
     record columns are the stale cache ``X-bi-4b`` deletes.
+
+    **Two arms** (leaf ``X-bi-6-4a``, ruling **R-BAL106**): a plan row's
+    movements (:func:`_movements_of`), and each transfer LEG's
+    (:func:`app.services.transfer_legs.recorded_transfer_legs`) under the
+    same scope stated over the TRANSFER, its period and side read there and
+    never off the shadow -- which Transfer Invariant 3 holds equal, so the
+    arm moved no figure.
 
     **Three narrowings, each load-bearing** (:func:`_movements_of` holds the
     account, scenario and contributing gate):
@@ -814,23 +849,54 @@ def settled_cash_facts(
         defect even where it is arithmetically inert.
     """
     facts = [
-        CashSourceFact(
-            transaction_id=entry.transaction_id,
-            entry_id=entry.id,
-            pay_period_id=entry.transaction.pay_period_id,
-            is_income=entry.transaction.is_income,
-            settled_on=entry.settled_on,
-            reconciled_by_id=entry.reconciled_by_id,
-            delta=movement_cash_leg(entry.transaction, entry),
-        )
+        _source_fact(entry, entry.transaction, transfer_id=None)
         for entry in _movements_of(
             account_id, scenario_id, TransactionEntry.settled_on.isnot(None),
         )
     ]
+    facts.extend(
+        _source_fact(leg.record, leg, transfer_id=leg.transfer.id)
+        for leg in recorded_transfer_legs(
+            TransactionEntry.account_id == account_id,
+            Transfer.scenario_id == scenario_id,
+            balance_contributing_clause(Transfer),
+            TransactionEntry.is_credit.is_(False),
+            TransactionEntry.settled_on.isnot(None),
+        )
+    )
     facts.sort(
         key=lambda fact: (fact.settled_on, fact.transaction_id, fact.entry_id),
     )
     return facts
+
+
+def _source_fact(entry, parent, *, transfer_id: "int | None") -> CashSourceFact:
+    """Return ONE dated movement as a fact, its parent a plan row or a leg.
+
+    The construction both arms of :func:`settled_cash_facts` share: the
+    movement gives its day, clearing link and identity; the PARENT (a row, or
+    a :class:`~app.services.transfer_legs.TransferLeg` answering off its
+    transfer and side) gives the budget column, the type and, through
+    :func:`movement_cash_leg`, the direction and gate (ruling **R-BAL35**).
+
+    Args:
+        entry: The dated movement.
+        parent: Its plan row, or the transfer leg whose record it is.
+        transfer_id: The leg's transfer, ``None`` for a plan row's movement.
+
+    Returns:
+        The :class:`CashSourceFact`.
+    """
+    return CashSourceFact(
+        transaction_id=entry.transaction_id,
+        transfer_id=transfer_id,
+        entry_id=entry.id,
+        pay_period_id=parent.pay_period_id,
+        is_income=parent.is_income,
+        settled_on=entry.settled_on,
+        reconciled_by_id=entry.reconciled_by_id,
+        delta=movement_cash_leg(parent, entry),
+    )
 
 
 @dataclass(frozen=True)

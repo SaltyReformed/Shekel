@@ -1270,6 +1270,62 @@ class TestDataConsistency:
         assert fired.details[0]["settled_on"] is not None
         assert fired.details[0]["undated_covering_movements"] == 1
 
+    def test_dc11_grades_a_settled_transfer_by_its_legs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """DC-11's LEG arm (leaf ``balance:X-bi-6-4a``, ruling **R-BAL106**).
+
+        The fold reads a paid transfer's money as its legs' movements under
+        the TRANSFER's status, so the alarm grades those and never a shadow's
+        own columns: the shadows' day pairs cleared by SQL fire nothing
+        (through ``X-bi-6-3`` the row arm named both shadows), and one leg's
+        movement un-dated fires one row naming the transfer and that leg's
+        account, which the fold now silently drops.
+        """
+        # pylint: disable=import-outside-toplevel  -- the module convention.
+        import sqlalchemy
+
+        def dc11():
+            return next(
+                r for r in check_data_consistency(db.session)
+                if r.check_id == "DC-11"
+            )
+
+        checking = seed_user["account"]
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "DC-11 Savings",
+        )
+        db.session.commit()
+        transfer = create_settled_transfer(
+            seed_user, db.session, checking, savings, seed_periods[0],
+            amount=Decimal("250.00"),
+        )
+        db.session.commit()
+        assert dc11().passed
+
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transactions "
+            "SET settled_on = NULL, settled_day_basis_id = NULL "
+            "WHERE transfer_id = :id"
+        ), {"id": transfer.id})
+        assert dc11().passed
+
+        db.session.execute(sqlalchemy.text(
+            "UPDATE budget.transaction_entries e "
+            "SET settled_on = NULL, settled_day_basis_id = NULL, "
+            "reconciled_by_id = NULL "
+            "FROM budget.transactions sh "
+            "WHERE e.transaction_id = sh.id AND sh.transfer_id = :id "
+            "AND e.covers_settlement AND e.account_id = :account"
+        ), {"id": transfer.id, "account": savings.id})
+        fired = dc11()
+        assert not fired.passed
+        assert [
+            (row["transaction_id"], row["transfer_id"], row["account_id"],
+             row["settled_on"], row["undated_covering_movements"])
+            for row in fired.details
+        ] == [(None, transfer.id, savings.id, None, 1)]
+
 
 # ── run_all_checks ───────────────────────────────────────────────
 

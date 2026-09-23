@@ -1721,17 +1721,16 @@ class TestATransferIsALegOfItsParent:
             assert report.hero.spent_total == Decimal("0")
             assert report.surprises.rows == []
 
-    def test_a_zero_record_transfer_is_spend_of_nothing_and_not_a_timed_bill_on_this_tree(
+    def test_a_zero_record_transfer_is_spend_of_nothing_and_not_a_timed_bill(
         self, app, seed_user, seed_periods, db,
     ):
         """A transfer settled at $0.00 (ruling R-BAL82: a close with no
-        movement) is $0.00 of spend on both shapes, and on THIS tree its leg
-        has no settle DAY -- ``TransferLeg.settled_on`` is its movement's and
-        it has none -- where a $0.00-closed ROW keeps its own column and is
-        timed.  That divergence is the interval's (the review of leaf
-        X-bi-6-1b, finding M1): the day's home for a transfer is what plan
-        step X-bi-6-4's Fork B decides, and this pins the tree's answer until
-        it does rather than inventing one."""
+        movement) is $0.00 of spend, and its leg has no settle DAY --
+        ``TransferLeg.settled_on`` is its movement's and it has none -- so it
+        is not a timed bill.  The STANDING answer since ruling R-BAL90 (finding
+        BAL-528, leaf X-bi-6-4a), which ruled the interval control this was
+        (the review of leaf X-bi-6-1b, finding M1) permanent and renamed it;
+        its row twin is the next test."""
         with app.app_context():
             checking = seed_user["account"]
             savings = create_savings_account(
@@ -1757,6 +1756,41 @@ class TestATransferIsALegOfItsParent:
             )
             assert report.hero.spent_total == Decimal("0")
             assert report.hero.payment_timing is None
+
+    def test_a_zero_record_row_is_not_a_timed_bill_and_a_recorded_one_is(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """R-BAL90's row half (finding BAL-528, leaf X-bi-6-4a): a ROW closed
+        at $0.00 holds no entry (ruling R-BAL82) and is not a timed bill,
+        though it keeps its own ``settled_on`` -- the metric reads the RECORD
+        of a row as of a leg.  The same row with a record is timed, which
+        is what shows the gate is the record and not the day.  Through leaf
+        X-bi-6-1b the $0.00 row counted, one day early."""
+        with app.app_context():
+            period = seed_periods[0]
+            due = period.start_date + timedelta(days=1)
+            _txn(
+                db, seed_user, period, "Water", "Rent", "45.00",
+                actual="0.00", due_date=due, settled_on=period.start_date,
+            )
+            db.session.commit()
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.payment_timing is None
+
+            _txn(
+                db, seed_user, period, "Power", "Rent", "60.00",
+                due_date=due, settled_on=period.start_date,
+            )
+            db.session.commit()
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(period), user_settings=None,
+            )
+            assert report.hero.payment_timing == {
+                "total_bills_paid": 1, "paid_on_time": 1, "paid_late": 0,
+                "avg_days_before_due": Decimal("1.00"),
+            }
 
     def test_tied_surprises_rank_rows_before_legs_by_a_total_order(
         self, app, seed_user, seed_periods, db,
