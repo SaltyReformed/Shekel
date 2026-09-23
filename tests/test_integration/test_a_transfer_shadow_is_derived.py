@@ -51,6 +51,7 @@ from tests._test_helpers import (
     create_transfer,
     generate_transfer_of,
     make_every_period_rule,
+    open_books_before_the_first_assertion,
     shadow_amount,
 )
 from tests.test_integration.test_transfer_settle_freeze import (
@@ -183,6 +184,13 @@ def _generated_pair(seed_user, seed_periods, series="500.00"):
         ),
     )
     _db.session.flush()
+    # RE-EXPRESSED at plan step pay_calendar:C18-a under CLAUDE.md rule 5,
+    # developer-confirmed 2026-09-22 ("Yes: open books before rows"): the
+    # destination's books open before the schedule, as the seeded account's
+    # do.  ``create_account`` opens them TODAY, after the first paycheck this
+    # case generates into, and since ruling R-PC85 a definition's occurrences
+    # start above the books of every account it moves money in.
+    open_books_before_the_first_assertion(_db.session, savings)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,

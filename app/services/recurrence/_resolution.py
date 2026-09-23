@@ -117,6 +117,7 @@ from app.services.recurrence._row_day import (
     cadence_scheduled_day,
     date_row,
 )
+from app.utils.books_boundary import row_books_day
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
 
 #: The domain ``ck_recurrence_rules_due_dom`` bounds its column to.  Named once,
@@ -203,16 +204,17 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     the pay-period normalisation and the cycle phase, both stated in the module
     docstring.
 
-    Pylint: ``too-many-instance-attributes`` (11/7) -- these eleven ARE what one
+    Pylint: ``too-many-instance-attributes`` (12/7) -- these twelve ARE what one
     recurrence means, read as a flat unit by a single consumer, and the plan's
     END-state table (section 3) carries all but ``offset_periods``; the ninth,
     ``max_per_month``, joined at plan step salary:R15-a as the cadence's third
     value and is read flat for the reason ``interval_n`` and ``unit`` are.  The
-    tenth and eleventh, ``due_day_of_month`` and ``books_opened_on``, joined at
-    plan step ``pay_calendar:C18-a`` (rulings **R-PC85**, **R-PC86**): the day
-    a row is due and the day before which no row may land, the two the walk
-    compares, and flat because :attr:`closing` -- their mirror at the other
-    end -- is one field too.  Pairing
+    tenth, eleventh and twelfth, ``due_day_of_month``, ``books_opened_on`` and
+    ``is_envelope``, joined at plan step ``pay_calendar:C18-a`` (rulings
+    **R-PC85**, **R-PC86**, **R-PC89**): the day a row is due, the day before
+    which no row may land, and which of a row's days the two are compared on
+    -- what the walk compares, and flat because :attr:`closing` -- their
+    mirror at the other end -- is one field too.  Pairing
     ``starts_on`` with ``nominal_day`` was weighed and rejected: it would make
     every consumer unwrap a two-field object to ask for a date, and since this
     step the pair cannot disagree, so there is nothing for a wrapper to police.
@@ -323,6 +325,15 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             and must not become one**: an opening is restated (the owner's
             Van Loan moved 05-21 -> 04-22 on the data this was measured on),
             and a stored copy would need a reconciler (``CLAUDE.md`` rule 14).
+        is_envelope: Whether the definition is an ENVELOPE -- a spending
+            budget whose row takes purchases, the template's
+            ``is_envelope`` -- so the walk compares its paycheck's LAST day
+            with the books rather than its due day (ruling **R-PC89**, plan
+            step ``pay_calendar:C18-a``; :meth:`books_day`).  Attached beside
+            :attr:`books_opened_on` by the same composition
+            (``BalanceContext.resolved_for``) and for the same reason
+            :func:`resolve` leaves it ``False``: it is a fact about the
+            DEFINITION, not the rule.  A transfer is never one.
     """
 
     offset_periods: int
@@ -336,6 +347,7 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     max_per_month: int | None
     due_day_of_month: int | None = None
     books_opened_on: date | None = None
+    is_envelope: bool = False
 
     def __post_init__(self) -> None:
         """Refuse a value whose first occurrence and nominal day disagree.
@@ -429,6 +441,34 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
             ),
             self.due_day_of_month,
             period,
+        )
+
+    def books_day(self, period: DerivedPeriod) -> date:
+        """Return the day of a row in *period* that the books are compared with.
+
+        :func:`~app.utils.books_boundary.row_books_day` over this value's own
+        row date and *period*'s last day (plan step ``pay_calendar:C18-a``):
+        the due day for a bill (ruling **R-PC86**), the paycheck's last day
+        for an envelope (ruling **R-PC89**).  The picker lives in that leaf,
+        not here, because the doors refusing to strand a planned row
+        (``app.services.planned_rows_books``) ask it of a STORED row, which
+        is not a resolved value.
+
+        Args:
+            period: The pay period the row is placed in, saved or projected.
+
+        Returns:
+            The day the walk hands
+            :func:`~app.utils.books_boundary.books_hold`.
+
+        Raises:
+            RecurrenceResolutionError: See :meth:`row_date`, asked first
+                for an envelope too, so a value whose unit cannot date a row
+                is refused whatever it is compared on.
+        """
+        return row_books_day(
+            self.row_date(period), period.end_date,
+            is_envelope=self.is_envelope,
         )
 
 
@@ -921,8 +961,8 @@ def resolve(spec: RecurrenceSpec, calendar: PayCalendar) -> ResolvedRecurrence:
         # count, and the ceiling is the third of them (plan step salary:R15-a).
         max_per_month=cadence.max_per_month,
         due_day_of_month=spec.due_day_of_month,
-        # ``books_opened_on`` stays ``None``: a fact about ACCOUNTS, read
-        # from the database by the read pass that attaches it
-        # (``BalanceContext.resolved_for``), for the reason the closing's
-        # derived half is left empty above.
+        # ``books_opened_on`` stays ``None`` and ``is_envelope`` ``False``:
+        # facts about the DEFINITION and its ACCOUNTS, read by the read pass
+        # that attaches both (``BalanceContext.resolved_for``), for the
+        # reason the closing's derived half is left empty above.
     )

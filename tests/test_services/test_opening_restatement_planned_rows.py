@@ -215,6 +215,77 @@ class TestAProjectedRecurringRowBoundsTheRestatement:
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
+class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
+    """R-PC88 under R-PC89: an envelope's day is its paycheck's LAST day.
+
+    The refusal asks the walk's own picker, so it refuses exactly the
+    restatements that would strand the row -- not the ones between its due
+    day and its paycheck's end, which the walk still names.
+    """
+
+    def test_the_envelope_rows_DUE_day_is_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Books opening on the first envelope row's payday strand nothing.
+
+        The envelope is spent across its paycheck, which ends after the new
+        opening, so the walk still names it; a bill's due day would refuse.
+        """
+        with app.app_context():
+            account, rows = _account_with_projected_rows(
+                seed_user, seed_periods, is_envelope=True,
+            )
+            day = min(row.due_date for row in rows)
+
+            outcome = apply_opening_restatement(
+                account=account, opening=BooksOpening(day, Decimal("0.00")),
+            )
+
+            assert outcome is OpeningRestatementOutcome.COMMITTED
+
+    def test_the_envelope_paychecks_LAST_day_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Opening ON the paycheck's last day puts the whole envelope inside it.
+
+        The refusal names the paycheck's end, the day the owner has to move
+        the row past, not its due day.
+        """
+        with app.app_context():
+            account, _rows = _account_with_projected_rows(
+                seed_user, seed_periods, is_envelope=True,
+            )
+            last_day = seed_periods[1].start_date - _ONE_DAY
+            before = _opening_count(account)
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=account,
+                    opening=BooksOpening(last_day, Decimal("0.00")),
+                )
+
+            message = str(refused.value)
+            assert '"Groceries" is still projected in the paycheck ending' in message
+            assert last_day.isoformat() in message
+            assert _opening_count(account) == before
+
+    def test_the_day_BEFORE_the_paychecks_last_day_is_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The other side of the boundary, so ``>=`` for ``>`` fails one."""
+        with app.app_context():
+            account, _rows = _account_with_projected_rows(
+                seed_user, seed_periods, is_envelope=True,
+            )
+            day = seed_periods[1].start_date - 2 * _ONE_DAY
+
+            outcome = apply_opening_restatement(
+                account=account, opening=BooksOpening(day, Decimal("0.00")),
+            )
+
+            assert outcome is OpeningRestatementOutcome.COMMITTED
+
+
 def _opening_count(account):
     """Return how many opening records *account* carries."""
     return _db.session.query(AccountOpening).filter_by(
@@ -248,16 +319,22 @@ def _schedule(seed_user, seed_periods):
     )
 
 
-def _account_with_projected_rows(seed_user, seed_periods):
-    """Return an early-opened account and the Projected rows its rule generated."""
+def _account_with_projected_rows(seed_user, seed_periods, *, is_envelope=False):
+    """Return an early-opened account and the Projected rows its rule generated.
+
+    Every paycheck, so each row is dated on its payday; *is_envelope* makes
+    the definition an envelope, whose rows the books compare on their
+    paycheck's LAST day instead (ruling R-PC89).
+    """
     account = _account_opened_early(seed_user)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=account.id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        name="Recurring rent",
+        name="Groceries" if is_envelope else "Recurring rent",
         default_amount=Decimal("10.00"),
+        is_envelope=is_envelope,
     )
     _db.session.add(template)
     _db.session.flush()

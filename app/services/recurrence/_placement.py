@@ -271,12 +271,19 @@ def _lands_inside_the_books(
     below the books let the rules fill it, measured on a production clone at
     ``$531.94`` + ``$100.00`` dated before Checking's opening.
 
-    **The day compared is the ROW's cash day, not the occurrence** (R-PC86):
-    :meth:`~._resolution.ResolvedRecurrence.row_date`, the day
-    ``compute_due_date`` stamps on the written row, through the one strict
-    comparison :func:`~app.utils.books_boundary.books_hold` states -- so a bill
-    scheduled before the books but due after them is kept, and one due ON the
-    opening day is not.
+    **The day compared is a ROW's, not the occurrence's**, and which of the
+    row's days is :meth:`~._resolution.ResolvedRecurrence.books_day`'s one
+    answer (:func:`~app.utils.books_boundary.row_books_day`): for a bill its
+    cash day (R-PC86), :meth:`~._resolution.ResolvedRecurrence.row_date`, the
+    day ``compute_due_date`` stamps on the written row -- so a bill scheduled
+    before the books but due after them is kept, and one due ON the opening
+    day is not; for an ENVELOPE its paycheck's last day (ruling **R-PC89**),
+    because its money is spent across the paycheck, so the envelope of the
+    paycheck the books open inside is kept.  Compared through the one strict
+    :func:`~app.utils.books_boundary.books_hold`.  The doors that refuse to
+    strand a still-projected row below the books
+    (``app.services.planned_rows_books``) ask the same picker of a stored row,
+    so each refuses exactly what this would stop naming.
 
     **An UNPLACED occurrence is kept**, because it has no row day to compare
     and no row: ``period`` is ``None`` only below the owner's first payday
@@ -296,7 +303,7 @@ def _lands_inside_the_books(
     floor = resolved.books_opened_on
     if floor is None or placement.period is None:
         return True
-    return books_hold(floor, resolved.row_date(placement.period))
+    return books_hold(floor, resolved.books_day(placement.period))
 
 
 def projected_occurrence_placements(

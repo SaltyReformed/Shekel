@@ -406,6 +406,173 @@ class TestGenerationStopsAtTheBooks:
             )
 
 
+class TestAnEnvelopeComparesItsPaychecksLastDay:
+    """Ruling R-PC89: an envelope's row is bounded by its paycheck's END.
+
+    The prepended calendar's first paycheck is 03-12..03-25; an every-
+    paycheck rule dates its row on the payday, 03-12.  Books opening 03-20
+    open INSIDE that paycheck: a bill dated 03-12 is inside the opening, an
+    envelope spent across 03-12..03-25 is still owed from 03-21 on.
+    """
+
+    @staticmethod
+    def _every_paycheck(*, books: date, is_envelope: bool):
+        """Return an every-paycheck value bounded at *books*, envelope or not."""
+        calendar = build_calendar(
+            first_payday=_PREPENDED, cadence_days=14, count=12,
+        )
+        resolved = resolve(
+            RecurrenceSpec(
+                user_id=_USER_ID,
+                unit=RecurrenceUnitEnum.PERIOD,
+                starts_on=_PREPENDED,
+            ),
+            calendar,
+        )
+        return calendar, replace(
+            resolved, books_opened_on=books, is_envelope=is_envelope,
+        )
+
+    def test_the_envelope_of_the_paycheck_the_books_open_inside_is_walked(self):
+        """Books 03-20: the envelope's paycheck ends 03-25, after them -- kept."""
+        calendar, envelope = self._every_paycheck(
+            books=date(2026, 3, 20), is_envelope=True,
+        )
+
+        assert _dates(occurrence_placements(envelope, calendar))[0] == _PREPENDED
+
+    def test_a_BILL_in_the_same_paycheck_is_not_walked(self):
+        """The same rule as a bill: its row's due day 03-12 is inside the books."""
+        calendar, bill = self._every_paycheck(
+            books=date(2026, 3, 20), is_envelope=False,
+        )
+
+        assert _dates(occurrence_placements(bill, calendar))[0] == (
+            date(2026, 3, 26)
+        )
+
+    def test_an_envelope_whose_paycheck_ENDS_ON_the_opening_is_not_walked(self):
+        """R-HG's strict reading on the paycheck's last day: 03-25 is inside."""
+        calendar, envelope = self._every_paycheck(
+            books=date(2026, 3, 25), is_envelope=True,
+        )
+
+        assert _dates(occurrence_placements(envelope, calendar))[0] == (
+            date(2026, 3, 26)
+        )
+
+    def test_an_envelope_whose_paycheck_ends_the_day_AFTER_is_walked(self):
+        """The other side of the boundary, so ``>=`` for ``>`` fails one."""
+        calendar, envelope = self._every_paycheck(
+            books=date(2026, 3, 24), is_envelope=True,
+        )
+
+        assert _dates(occurrence_placements(envelope, calendar))[0] == _PREPENDED
+
+    def test_the_PROJECTED_walk_agrees_for_an_envelope(self):
+        """The loan estimate's walk takes the same picker as generation's."""
+        calendar, envelope = self._every_paycheck(
+            books=date(2026, 3, 20), is_envelope=True,
+        )
+        horizon = calendar.horizon()
+
+        assert _dates(
+            projected_occurrence_placements(envelope, calendar, through=horizon),
+        ) == _dates(occurrence_placements(envelope, calendar))
+
+
+class TestTheEnvelopeFlagIsTheDefinitions:
+    """The read pass attaches the definition's envelope flag beside its floor."""
+
+    def test_an_envelope_and_a_bill_stating_one_spec_resolve_APART(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The memo keys on the flag: a bill never walks an envelope's value.
+
+        Two templates on one account, one cadence each, the same spec: they
+        share the floor and differ in the flag, so they are two values -- a
+        memo keyed by (spec, floor) alone would hand the second the first's.
+        """
+        with app.app_context():
+            opened = seed_periods[3].start_date
+            account = _account_opened_on(seed_user, "Later books", opened)
+            envelope = _transaction_template(
+                seed_user, "Groceries", account_id=account.id, is_envelope=True,
+            )
+            bill = _transaction_template(
+                seed_user, "Phone", account_id=account.id,
+            )
+            envelope_rule = _monthly_rule(envelope, seed_periods[0].start_date)
+            bill_rule = _monthly_rule(bill, seed_periods[0].start_date)
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            as_envelope = ctx.resolved_recurrence_of(envelope_rule)
+            as_bill = ctx.resolved_recurrence_of(bill_rule)
+
+            assert as_envelope.is_envelope is True
+            assert as_bill.is_envelope is False
+            assert as_envelope.books_opened_on == as_bill.books_opened_on == opened
+            assert replace(as_envelope, is_envelope=False) == as_bill
+
+    def test_a_transfer_is_never_an_envelope(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A transfer template carries no flag; it compares its due day."""
+        with app.app_context():
+            ctx = BalanceContext.build(seed_user["user"].id)
+            spec = RecurrenceSpec(
+                user_id=seed_user["user"].id,
+                unit=RecurrenceUnitEnum.MONTH,
+                starts_on=seed_periods[0].start_date,
+            )
+
+            class _Transfer:  # pylint: disable=too-few-public-methods
+                """A definition naming two accounts and no envelope flag."""
+
+                from_account_id = seed_user["account"].id
+                to_account_id = seed_user["account"].id
+
+            assert ctx.resolved_for(spec, _Transfer()).is_envelope is False
+
+    def test_generation_writes_the_envelope_of_the_straddled_paycheck(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Books opening INSIDE the fourth paycheck: the envelope's row is written.
+
+        The bill on the same account and cadence starts one paycheck later,
+        because its row is dated on the payday, which the books already hold.
+        """
+        with app.app_context():
+            opened = seed_periods[3].start_date + timedelta(days=3)
+            account = _account_opened_on(seed_user, "Mid-paycheck books", opened)
+            envelope = _every_paycheck_template(
+                seed_user, "Groceries", account.id, seed_periods,
+                is_envelope=True,
+            )
+            bill = _every_paycheck_template(
+                seed_user, "Phone", account.id, seed_periods,
+            )
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(seed_user["user"].id),
+                {period.id for period in seed_periods},
+            )
+
+            for template in (envelope, bill):
+                recurrence_engine.generate_for_template(
+                    template, schedule, seed_user["scenario"].id,
+                )
+            _db.session.flush()
+
+            def first_due(template):
+                return min(
+                    row.due_date for row in _db.session.query(Transaction)
+                    .filter_by(template_id=template.id, is_deleted=False)
+                )
+
+            assert first_due(envelope) == seed_periods[3].start_date
+            assert first_due(bill) == seed_periods[4].start_date
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -424,7 +591,7 @@ def _account_opened_on(seed_user, name, opened_on):
     return account
 
 
-def _transaction_template(seed_user, name, *, account_id=None):
+def _transaction_template(seed_user, name, *, account_id=None, is_envelope=False):
     """Create a live, priced expense template on *account_id* (default seeded)."""
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -433,6 +600,7 @@ def _transaction_template(seed_user, name, *, account_id=None):
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=Decimal("10.00"),
+        is_envelope=is_envelope,
     )
     _db.session.add(template)
     _db.session.flush()
@@ -452,9 +620,13 @@ def _monthly_rule(template, starts_on, *, due_day_of_month=None):
     return rule
 
 
-def _every_paycheck_template(seed_user, name, account_id, seed_periods):
+def _every_paycheck_template(
+    seed_user, name, account_id, seed_periods, *, is_envelope=False,
+):
     """Create a template on *account_id* recurring every paycheck."""
-    template = _transaction_template(seed_user, name, account_id=account_id)
+    template = _transaction_template(
+        seed_user, name, account_id=account_id, is_envelope=is_envelope,
+    )
     make_cadence_rule(
         template, EVERY_PERIOD, starts_on=seed_periods[0].start_date,
     )

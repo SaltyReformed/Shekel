@@ -2,7 +2,10 @@
 Shekel Budget App -- The Books Boundary
 
 ONE comparison: whether an account whose books open on a day may record money
-on another day (ruling **balance:R-HG**).  Pure date arithmetic -- no Flask, no
+on another day (ruling **balance:R-HG**) -- and, beside it, the one statement
+of WHICH day of a planned row that comparison is asked of
+(:func:`row_books_day`, rulings **R-PC86** and **R-PC89**).  Pure date
+arithmetic -- no Flask, no
 SQLAlchemy, no clock -- so it imports cleanly into the recurrence package,
 which is pure by design, and into :mod:`app.services.cash_ledger` alike.
 
@@ -67,3 +70,39 @@ def books_hold(opened_on: date, day: date) -> bool:
         outside the opening equity and may be recorded.
     """
     return day > opened_on
+
+
+def row_books_day(due_on: date, period_end: date, *, is_envelope: bool) -> date:
+    """Return the day of a planned row that the books are compared with.
+
+    **THE one statement of which day that is** (plan step
+    ``pay_calendar:C18-a``), asked by every reader that bounds a planned row
+    by its accounts' books: the recurrence walk
+    (``recurrence._placement._lands_inside_the_books``, through
+    ``ResolvedRecurrence.books_day``) and the two doors that refuse to strand
+    a still-projected row below them (``app.services.planned_rows_books``:
+    the opening restatement, ruling **R-PC88**, and a recurring definition's
+    edit, rulings **R-PC90** / **R-PC91**).  One picker is what makes each
+    refusal fire exactly when the walk would stop naming the row: a refusal
+    choosing its own day would let a save the walk strands through, or
+    refuse one it does not.
+
+    **A bill is compared on its DUE day** (ruling **R-PC86**): the day its
+    money lands, so a bill due on or before the opening is already inside
+    the opening balance.  **An envelope is compared on its paycheck's LAST
+    day** (ruling **R-PC89**): its row is dated on one day but its money is
+    spent across the whole paycheck, so an envelope in the paycheck the books
+    open inside is still owed from the opening onward.  The ruling accepted
+    the cost: whatever of it was spent before the opening sits inside the
+    opening balance too, reserved twice until the owner lowers it.
+
+    Args:
+        due_on: The row's due day -- the cash day the generator stamps.
+        period_end: The last day of the paycheck the row lives in.
+        is_envelope: Whether the row's definition is an envelope (a
+            spending budget whose row takes purchases).  A transfer never is.
+
+    Returns:
+        The day :func:`books_hold` is asked of.
+    """
+    return period_end if is_envelope else due_on

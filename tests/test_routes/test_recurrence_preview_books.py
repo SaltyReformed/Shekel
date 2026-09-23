@@ -8,6 +8,7 @@ the transfer form's ``from_account_id`` ride on the request beside
 ``to_account_id``, each through the ownership gate -- 404 for a missing or a
 foreign account, the house rule.
 """
+from datetime import timedelta
 from decimal import Decimal
 
 from app.enums import RecurrenceUnitEnum
@@ -94,6 +95,39 @@ class TestThePreviewTakesTheBooks:
             assert resp.status_code == 200
             assert _listed(seed_periods[0]) not in resp.data
             assert _listed(seed_periods[3]) in resp.data
+
+    def test_the_ENVELOPE_box_lists_the_paycheck_the_books_open_inside(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Ruling R-PC89 in the preview: the box decides which dates saving writes.
+
+        Books opening three days into the third paycheck: as a bill its row
+        (dated on the payday) is inside them and not listed; with the box
+        ticked the envelope's paycheck ends after them and it is listed --
+        exactly what saving each would generate.
+        """
+        with app.app_context():
+            straddled = seed_periods[2]
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Mid-paycheck books",
+                    anchor_balance=Decimal("0.00"),
+                    observed_on=straddled.start_date + timedelta(days=3),
+                ),
+            )
+            db.session.commit()
+
+            bill = _preview(auth_client, seed_periods, account_id=account.id)
+            envelope = _preview(
+                auth_client, seed_periods, account_id=account.id, is_envelope="1",
+            )
+
+            assert bill.status_code == envelope.status_code == 200
+            assert _listed(straddled) not in bill.data
+            assert _listed(straddled) in envelope.data
+            assert _listed(seed_periods[1]) not in envelope.data
 
     def test_another_owners_account_is_404_on_every_account_control(
         self, app, db, auth_client, seed_user, seed_periods,

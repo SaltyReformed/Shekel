@@ -68,7 +68,10 @@ from app.routes._recurrence_form_helpers import (
     recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
-from app.routes._recurrence_form_refusals import RecurrenceFormContext
+from app.routes._recurrence_form_refusals import (
+    RecurrenceFormContext,
+    refuse_stranding_save,
+)
 from app.routes._recurrence_form_render import (
     create_form_recurrence_state,
     edit_form_recurrence_state,
@@ -397,6 +400,7 @@ def update_template(template_id):
     # recurrence key from ``data`` so the field-update loop below sees
     # none.  The pass is the PRE-WRITE one the refusals read (plan step
     # R7d-f); regeneration below builds its own after the write.
+    pass_ctx = BalanceContext.build(current_user.id)
     redirect_response = resolve_recurrence_rule_for_update(
         template,
         data,
@@ -408,7 +412,7 @@ def update_template(template_id):
             ),
             include_due_day_of_month=True,
         ),
-        pass_ctx=BalanceContext.build(current_user.id),
+        pass_ctx=pass_ctx,
     )
     if redirect_response is not None:
         return redirect_response
@@ -467,8 +471,14 @@ def update_template(template_id):
 
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
-    # chooser rolls the pending edit back; its Apply re-runs this same edit).
-    diverted = regenerate_or_conflict_chooser(
+    # chooser rolls the pending edit back; its Apply re-runs this same edit)
+    # -- unless the save would strand a still-projected row on or before its
+    # books, whatever field changed (rulings R-PC90 / R-PC91), which is
+    # refused first: the edit is whole now, and regeneration would retire it.
+    diverted = refuse_stranding_save(
+        template, pass_ctx,
+        RedirectTarget("templates.edit_template", {"template_id": template_id}),
+    ) or regenerate_or_conflict_chooser(
         template, before, effective_from, _TXN_TEMPLATE_KIND,
         amount_drives_instances=not template_amount_service.is_salary_linked_template(
             template,

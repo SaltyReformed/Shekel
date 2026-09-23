@@ -345,7 +345,11 @@ def _submitted_definition() -> UnsavedDefinition:
     form's ``account_id`` and the transfer form's ``from_account_id`` beside
     its ``to_account_id`` -- every account the definition moves money in,
     whose books the walk may not write below.  A save bounds by them, so a
-    preview that did not would list a date saving would not generate.
+    preview that did not would list a date saving would not generate.  The
+    transaction form's envelope box rides for the same reason (ruling
+    **R-PC89**: an envelope's row is compared with the books on its
+    paycheck's last day); it is a flag, not an id, so no gate applies, and
+    an absent or unreadable value is the unticked box.
 
     **An untrusted id becomes a row through the ownership gate and nowhere
     else.**  A missing account and another owner's account are both answered
@@ -367,6 +371,7 @@ def _submitted_definition() -> UnsavedDefinition:
         to_account_id=_submitted_account_id("to_account_id"),
         account_id=_submitted_account_id("account_id"),
         from_account_id=_submitted_account_id("from_account_id"),
+        is_envelope=request.args.get("is_envelope") == "1",
     )
 
 

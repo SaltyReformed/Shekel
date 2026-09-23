@@ -11,7 +11,12 @@ before an account's opening day is already inside its opening equity (ruling
 :func:`definition_books_opened_on`, read by
 :meth:`~app.services.balance_at.BalanceContext.resolved_for` and attached to
 the resolved value the recurrence walk then bounds by
-(``recurrence._placement._lands_inside_the_books``).
+(``recurrence._placement._lands_inside_the_books``) -- beside the one fact
+about the DEFINITION that walk also asks, whether it is an envelope, whose
+row the books compare on its paycheck's last day rather than its due day
+(ruling **R-PC89**).  :func:`definition_books` reads both as ONE value, so
+the pass's memo keys on the pair and cannot serve an envelope's walk to a
+bill stating the same cadence over the same accounts.
 
 **Why this is a fact about ACCOUNTS and never about the rule.**  A rule's
 ``starts_on`` is its first occurrence (ruling **R-R16**) -- the rhythm's
@@ -35,6 +40,7 @@ plain values out; no Flask symbol, no writes, no clock.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 
 from app.services.cash_ledger import governing_account_opening
@@ -50,6 +56,53 @@ from app.services.cash_ledger import governing_account_opening
 #: package's own owner contract is duck-typed
 #: (:data:`~app.services.recurrence.RecurrenceOwner`).
 _MONEY_ACCOUNT_ATTRIBUTES = ("account_id", "from_account_id", "to_account_id")
+
+
+@dataclass(frozen=True)
+class DefinitionBooks:
+    """Where a definition's books bound its rows, and which row day they compare.
+
+    The two facts :meth:`~app.services.balance_at.BalanceContext.resolved_for`
+    attaches to a resolved recurrence (plan step ``pay_calendar:C18-a``), held
+    as one hashable value because the pass memoises by it: two definitions
+    stating one cadence share a resolution only when BOTH agree.
+
+    Attributes:
+        opened_on: The latest governing opening among the accounts the
+            definition moves money in (:func:`definition_books_opened_on`),
+            or ``None`` for no floor.
+        is_envelope: The definition's ``is_envelope`` (ruling **R-PC89**):
+            ``True`` compares a row's paycheck's LAST day with the books.
+            ``False`` for anything without the attribute -- a transfer
+            template, which is never an envelope, and a payroll line's rule.
+    """
+
+    opened_on: date | None
+    is_envelope: bool
+
+
+def definition_books(
+    definition: object | None, memo: "dict[int, date | None]",
+) -> DefinitionBooks:
+    """Return *definition*'s :class:`DefinitionBooks`, reading each opening once.
+
+    Args:
+        definition: What moves the money, as :func:`definition_money_accounts`
+            takes it.
+        memo: The pass's ``account_id -> opened_on`` memo.
+
+    Returns:
+        The floor and the envelope flag.  ``is_envelope`` is read by name,
+        as the accounts are, and through ``bool``: a template built and not
+        yet flushed holds ``None`` until the column default applies, which
+        means ``False``.
+    """
+    return DefinitionBooks(
+        opened_on=definition_books_opened_on(
+            definition_money_accounts(definition), memo,
+        ),
+        is_envelope=bool(getattr(definition, "is_envelope", False)),
+    )
 
 
 def definition_money_accounts(definition: object | None) -> tuple[int, ...]:

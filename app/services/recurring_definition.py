@@ -156,11 +156,18 @@ class UnsavedDefinition:
             owner's, by the same gate.
         from_account_id: The account a transfer form draws from, or ``None``.
             The owner's, by the same gate.
+        is_envelope: Whether a transaction form's envelope box is ticked
+            (ruling **R-PC89**): an envelope's row is compared with the books
+            on its paycheck's LAST day, a bill's on its due day, so the box
+            decides which dates saving would generate.  Named as the
+            template names it, for the reason the accounts are.  ``False``
+            on the transfer form, which has no box.
     """
 
     to_account_id: int | None
     account_id: int | None = None
     from_account_id: int | None = None
+    is_envelope: bool = False
 
 
 def resolved_definition(

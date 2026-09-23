@@ -79,10 +79,7 @@ from app.services.recurrence import (
 )
 from app.services.scenario_resolver import get_baseline_scenario
 
-from ._definition_books import (
-    definition_books_opened_on,
-    definition_money_accounts,
-)
+from ._definition_books import DefinitionBooks, definition_books
 from ._memoize import _memoize_once, require_scenario
 
 if TYPE_CHECKING:
@@ -285,8 +282,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
             exactly as :meth:`calendar` and :meth:`amounts` are for the two
             memos above.
         _recurrences: The pass's rule-resolution memo, keyed by the rule's
-            SPEC and books floor (what it authors and where its accounts'
-            books open, not which row it is; :meth:`resolved_for`).  Private
+            SPEC and its definition's BOOKS (what it authors, where its
+            accounts' books open and whether it is an envelope, not which row
+            it is; :meth:`resolved_for`).  Private
             because this module owns the derivation (it imports the pure resolver, a leaf below the
             seam), and a ``None`` value is a MEMOIZED "the owner has no pay
             periods", not an empty slot.
@@ -331,9 +329,9 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _recurrences: "dict[tuple[RecurrenceSpec, date | None], ResolvedRecurrence | None]" = field(
-        default_factory=dict, repr=False, compare=False,
-    )
+    _recurrences: (
+        "dict[tuple[RecurrenceSpec, DefinitionBooks], ResolvedRecurrence | None]"
+    ) = field(default_factory=dict, repr=False, compare=False)
     _placements: "dict[ResolvedRecurrence, tuple[OccurrencePlacement, ...]]" = (
         field(default_factory=dict, repr=False, compare=False)
     )
@@ -743,10 +741,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         :meth:`resolved_recurrence_of`, and the form preview's unsaved
         definition (``recurring_definition.resolved_submission``).
 
-        Memoised by ``(spec, floor)``: two definitions stating one spec
-        over accounts that open on one day share one value (so repeated
-        reads are the SAME object, which the walk memo keys by), and over
-        different openings they mean different occurrences and walk apart.
+        Memoised by ``(spec, books)``: two definitions stating one spec
+        over accounts that open on one day, both envelopes or neither, share
+        one value (so repeated reads are the SAME object, which the walk
+        memo keys by); over different openings, or an envelope beside a bill
+        (ruling **R-PC89**), they mean different occurrences and walk apart.
         The floor is read first -- a memo hit per account -- so a foreign
         spec costs one opening read before the resolver refuses it; nothing
         is stored for it, and the refusal still names the rule.
@@ -758,22 +757,20 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
                 line's rule, which creates no row of its own).
 
         Returns:
-            The resolved value with ``books_opened_on`` set, or ``None`` when
-            the owner has no pay periods.
+            The resolved value with ``books_opened_on`` and ``is_envelope``
+            set, or ``None`` when the owner has no pay periods.
 
         Raises:
             RecurrenceResolutionError: See
                 :func:`~app.services.recurrence.resolved_spec`.
         """
-        books = definition_books_opened_on(
-            definition_money_accounts(definition), self._books_opened_on,
-        )
+        books = definition_books(definition, self._books_opened_on)
         key = (spec, books)
         if key not in self._recurrences:
             resolved = resolved_spec(spec, self.calendar())
-            self._recurrences[key] = (
-                None if resolved is None
-                else replace(resolved, books_opened_on=books)
+            self._recurrences[key] = None if resolved is None else replace(
+                resolved, books_opened_on=books.opened_on,
+                is_envelope=books.is_envelope,
             )
         return self._recurrences[key]
 

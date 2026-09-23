@@ -22,6 +22,11 @@ they can be asked in:
 4. no edit may leave the rule stopping before it starts
    (:func:`refuse_inverted_window`).
 
+A FIFTH is asked later, by each door once its edit is applied, because it
+grades the state the save would LEAVE rather than the submission: no edit may
+strand a still-projected row of the definition on or before its books
+(:func:`refuse_stranding_save`, plan step ``pay_calendar:C18-a``).
+
 **:class:`RecurrenceFormContext` is DEFINED here**, one layer below the
 authoring helpers that also take it, and that is what keeps the split a
 boundary rather than a pair of modules that need each other.  Until plan step
@@ -44,12 +49,13 @@ from typing import Any
 
 from flask import Response, flash
 
+from app.extensions import db
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import (
     RECURRENCE_STARTS_ON_KEY,
     end_bound_before_start_message,
 )
-from app.services import loan_loaders
+from app.services import loan_loaders, planned_rows_books
 from app.services.cash_ledger import is_loan_payment_definition
 from app.services.balance_at import (
     BalanceContext,
@@ -659,6 +665,47 @@ def refuse_recurrence_update(
     return None
 
 
+def refuse_stranding_save(
+    template: Any, pass_ctx: BalanceContext, redirect: RedirectTarget,
+) -> Response | None:
+    """Refuse an edit whose SAVED state strands a still-projected row below the books.
+
+    Rulings **R-PC90** / **R-PC91** (developer, 2026-09-22; plan step
+    ``pay_calendar:C18-a``): a recurring definition's edit is refused when
+    the state it would save leaves a live, still-projected row of that
+    definition on or before its books, WHATEVER field changed -- an account
+    moved onto books that open later, the envelope box unticked -- because
+    the regeneration after it would retire that row without a word.  The
+    predicate is :func:`app.services.planned_rows_books
+    .definition_edit_refusal`'s; this is the door half both edit doors share
+    (``routes/templates/crud.update_template``, and
+    ``routes/transfers/templates._regenerate_and_commit_template``).
+
+    **Asked once the edit is whole and before regeneration**, unlike the four
+    rules above, because it reads what the save would LEAVE.  So the session
+    holds the edit, and a refusal ROLLS IT BACK before it flashes.
+
+    Args:
+        template: The edited definition -- rule, amount and fields applied,
+            not committed.
+        pass_ctx: The door's PRE-WRITE read pass.  It serves this read
+            because each memo it reads is keyed by its input -- the edited
+            spec and accounts miss and resolve afresh -- and an edit moves no
+            opening and no payday.
+        redirect: The edit form to send the owner back to.
+
+    Returns:
+        The edit form with the refusal flashed and the edit rolled back, or
+        ``None`` when the save strands nothing.
+    """
+    stranded = planned_rows_books.definition_edit_refusal(template, pass_ctx)
+    if stranded is None:
+        return None
+    db.session.rollback()
+    flash(stranded, "danger")
+    return redirect.to_response()
+
+
 __all__ = [
     "LOAN_PAYMENT_BOUND_IS_DERIVED",
     "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
@@ -670,4 +717,5 @@ __all__ = [
     "would_be_standing_payment",
     "refuse_inverted_window",
     "refuse_recurrence_update",
+    "refuse_stranding_save",
 ]
