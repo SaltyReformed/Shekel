@@ -76,6 +76,7 @@ from app.models.account import Account
 from app.models.account_opening import AccountOpening
 from app.services import account_posting_service, cash_ledger, planned_rows_books
 from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceGenerationError, RecurrenceResolutionError
 from app.services.user_write_lock import lock_user_writes
 from app.utils.dates import display_today
 
@@ -262,7 +263,8 @@ def _reject_restatement_day(
             account already records money moving, on or after a day it has
             matched a bank line on, after a day it has asserted a balance
             for, or where it would strand a still-projected recurring row
-            of a definition that moves money in it.
+            of a definition that moves money in it -- or where no walk can
+            tell, because such a definition's stored rule cannot be read.
     """
     _reject_future_opening(opened_on)
     cash_ledger.reject_books_open_on_or_after_movements(account_id, opened_on)
@@ -315,6 +317,16 @@ def _reject_books_open_on_or_after_planned_rows(
     No figure is named: the refusal is about a DAY, so the opening door's
     HELD-figure contract (ruling **R-CC52**) is untouched.
 
+    **A stored rule the walk cannot read REFUSES the restatement** (the
+    step's adversarial review, L7).  With no walk there is no telling whether
+    the new books strand a row, so the door fails closed -- the answer
+    :func:`~app.services.planned_rows_books.reject_revert_below_the_books`
+    gives the same state (ruling **R-PC97**) -- where the recurrence error
+    used to reach the owner as a 500.  No door writes such a rule, so the log
+    carries the error for the repair.  The sentence names no item: the
+    producer walks every definition moving money in the account and its error
+    carries no definition.
+
     Args:
         account_id: The account whose books are being restated.
         user_id: Its owner, whose pay calendar every walk places on.
@@ -322,11 +334,25 @@ def _reject_books_open_on_or_after_planned_rows(
 
     Raises:
         ValidationError: When books opening on *opened_on* would strand a
-            still-projected recurring row, live or hidden by an archive.
+            still-projected recurring row, live or hidden by an archive, or
+            when a recurring definition moving money in the account has a
+            stored rule the walk cannot read.
     """
-    stranded = planned_rows_books.first_row_an_opening_strands(
-        account_id, opened_on, calendar_for(user_id),
-    )
+    try:
+        stranded = planned_rows_books.first_row_an_opening_strands(
+            account_id, opened_on, calendar_for(user_id),
+        )
+    except (RecurrenceResolutionError, RecurrenceGenerationError) as exc:
+        logger.warning(
+            "Refusing to restate account %d's books: a recurring definition "
+            "moving money in it has a stored rule that cannot be walked.",
+            account_id, exc_info=True,
+        )
+        raise ValidationError(
+            f"These books cannot open on {opened_on.isoformat()} while a "
+            "recurring item moving money in this account has a schedule that "
+            "cannot be read: repair its schedule first."
+        ) from exc
     if stranded is None:
         return
     raise ValidationError(
@@ -498,7 +524,9 @@ def apply_opening_restatement(
             (:func:`_reject_restatement_day`): in the future, on or after a
             recorded movement or a matched bank line, after an assertion, or
             where it would strand a still-projected recurring row (ruling
-            **R-PC88**).  Raised before anything is staged.
+            **R-PC88**) -- or where no walk can tell, because a recurring
+            definition's stored rule cannot be read.  Raised before anything
+            is staged.
     """
     acct_type = account.account_type
     if acct_type is not None and acct_type.has_amortization:

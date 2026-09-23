@@ -422,7 +422,10 @@ def restate_opening(account_id):
     ``anchor._true_up_request_gates`` gives: an account's KIND is EDITABLE, so
     a card rendered while the account was cash can be submitted after it became
     a loan, and the service's own refusal is a ``ValueError`` that would reach
-    the owner as a 500.
+    the owner as a 500.  The route's second gate is the card's MEANING
+    (``_door_meaning.door_meaning_refusal``, ruling **R-CC61**): a card
+    rendered under the other of asset and liability is refused before the
+    figure is crossed into its held sign.
 
     **It tells the owner what a restatement does NOT do**, and that sentence is
     measured rather than cautious: the account's later assertions still say

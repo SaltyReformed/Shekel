@@ -26,7 +26,12 @@ from app.extensions import db as _db
 from app.models.account_opening import AccountOpening
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.services import recurrence_engine, status_seam, transfer_recurrence
+from app.services import (
+    planned_rows_books,
+    recurrence_engine,
+    status_seam,
+    transfer_recurrence,
+)
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import account_opening_fact
 from app.services.generation_schedule import GenerationSchedule
@@ -36,6 +41,10 @@ from app.services.opening_service import (
     apply_opening_restatement,
 )
 from app.services.planned_rows_books import StrandedRow
+from app.services.recurrence import (
+    RecurrenceGenerationError,
+    RecurrenceResolutionError,
+)
 from tests._test_helpers import (
     account_never_asserted,
     make_cadence_rule,
@@ -292,9 +301,6 @@ class TestAHiddenRowIsNamedAsTheArchivedDefinitions:
         assert row.remedy() == "Mark it paid or cancel it first"
 
 
-# ── helpers ──────────────────────────────────────────────────────────────
-
-
 class TestAnEnvelopeBoundsTheRestatementByItsPaychecksEnd:
     """R-PC88 under R-PC89: an envelope's day is its paycheck's LAST day.
 
@@ -410,6 +416,54 @@ class TestTheDefinitionsAccountsBoundItsRows:
                 )
 
             assert f"and due {first.due_date.isoformat()}" in str(refused.value)
+
+
+class TestAScheduleThatCannotBeWalkedRefusesTheRestatement:
+    """The step's review, L7: a stored rule no walk can read reached the owner as a 500.
+
+    Both of the producer's failure points are driven -- resolving a
+    definition's rule and walking it -- each on the day BEFORE the first
+    row's due day, which the walkable schedule ACCEPTS
+    (``test_the_day_BEFORE_the_rows_due_day_is_accepted``), so the refusal
+    here is the unread schedule's and nothing else's.
+    """
+
+    @pytest.mark.parametrize(("seam", "error"), [
+        ("resolved_with_books", RecurrenceResolutionError),
+        ("inside_the_books", RecurrenceGenerationError),
+    ])
+    def test_it_is_refused_logged_and_nothing_is_written(
+        self, app, db, seed_user, seed_periods, monkeypatch, caplog, seam, error,
+    ):  # pylint: disable=unused-argument
+        """Fail closed: R-PC97's words, the opening unchanged, the log saying why."""
+        with app.app_context():
+            account, rows = _account_with_projected_rows(seed_user, seed_periods)
+            day = min(row.due_date for row in rows) - _ONE_DAY
+            before = _opening_count(account)
+
+            def refusing(*_args, **_kwargs):
+                raise error("a rule no door writes")
+
+            monkeypatch.setattr(planned_rows_books, seam, refusing)
+
+            with pytest.raises(ValidationError) as refused:
+                apply_opening_restatement(
+                    account=account, opening=BooksOpening(day, Decimal("0.00")),
+                )
+
+            assert str(refused.value) == (
+                f"These books cannot open on {day.isoformat()} while a "
+                "recurring item moving money in this account has a schedule "
+                "that cannot be read: repair its schedule first."
+            )
+            assert _opening_count(account) == before
+            assert account_opening_fact(account.id).opened_on == _EARLY_OPENING
+            assert (
+                f"Refusing to restate account {account.id}'s books"
+            ) in caplog.text
+
+
+# ── helpers ──────────────────────────────────────────────────────────────
 
 
 def _opening_count(account):
