@@ -570,11 +570,13 @@ class ArchivedDebt:
     credit_card:CC-5-5c): "Every archived debt (card, loan, other liability)
     shows what it owes today from the same calculation as a live /savings
     tile ... For a debt the figure is captioned 'Owed' instead of 'Last
-    Balance'."  So its figure is the seam's balance today crossed through
-    :func:`app.services.liability_sign.owed` -- a configured loan's
-    ``positions()``, a card's fold -- exactly the figure
+    Balance'."  So its figure is what the debt's tile would show today
+    (:func:`._tile.tile_balance_on` -- a configured loan's ``positions()`` on
+    the day, any other debt's fold at the end of the current pay period, since
+    plan step CC-5-5d closed ledger row CC-371) crossed through
+    :func:`app.services.liability_sign.owed`: exactly the figure
     :attr:`AccountProjection.shown_balance` renders on a live liability tile,
-    and never the typed assertion :class:`ArchivedAccount` carries: a card
+    and never the typed assertion :class:`ArchivedAccount` carries.  A card
     last typed as owing ``$1,000.00`` with ``$200.00`` of purchases recorded
     after reads ``$1,200.00`` here.
 

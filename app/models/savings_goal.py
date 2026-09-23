@@ -8,6 +8,15 @@ Supports two goal modes:
     Income-Relative    -- target is computed on read as
                           income_multiplier * net_pay_per_unit.
                           target_amount is NULL for these goals.
+
+A goal on a DEBT (its account's category is Liability) is a milestone to get
+UNDER rather than a balance to reach (plan step credit_card:CC-5-5d, rulings
+R-CC69..R-CC73): Fixed mode only, a target below what the debt owes when it is
+saved, and ``$0.00`` allowed.  Nothing on this row says which kind a goal is;
+the account does.  ``start_owed`` is set only for a goal created on a card or
+other non-loan debt (ruling R-CC91), and it cannot come to disagree with the
+account: the account's type cannot change kind under an active goal (R-CC87,
+R-CC91), and no goal is set on a loan type before its terms exist (R-CC93).
 """
 
 from app.extensions import db
@@ -47,13 +56,22 @@ class SavingsGoal(
 
     __tablename__ = "savings_goals"
     __table_args__ = (
+        # ``>= 0`` since plan step credit_card:CC-5-5d (ruling R-CC72): a
+        # DEBT goal may target $0.00 (paid off).  A savings goal's target must
+        # still be above zero, which the table cannot say -- a goal is a debt
+        # goal by its account's category, two tables away -- so the one goal
+        # door (``app.services.savings_goal_door``) refuses it there.
         db.CheckConstraint(
-            "target_amount > 0",
-            name="ck_savings_goals_positive_target",
+            "target_amount >= 0",
+            name="ck_savings_goals_nonnegative_target",
         ),
         db.CheckConstraint(
             "contribution_per_period IS NULL OR contribution_per_period > 0",
             name="ck_savings_goals_positive_contribution",
+        ),
+        db.CheckConstraint(
+            "start_owed IS NULL OR start_owed > 0",
+            name="ck_savings_goals_positive_start_owed",
         ),
         db.CheckConstraint(
             "income_multiplier IS NULL OR income_multiplier > 0",
@@ -75,6 +93,14 @@ class SavingsGoal(
     target_amount = db.Column(db.Numeric(12, 2), nullable=True)
     target_date = db.Column(db.Date)
     contribution_per_period = db.Column(db.Numeric(12, 2))
+    # What a NON-LOAN debt's /savings tile showed it owing when this goal was
+    # created (plan step credit_card:CC-5-5d, ruling R-CC91, refining
+    # R-CC71): recorded by the goal door, because that tile values the debt at
+    # its pay period's END and a later re-read would take in everything recorded
+    # in the rest of that period.  NULL for a savings goal (no start) and for a
+    # goal on a CONFIGURED loan, whose tile reads the day and whose start is
+    # therefore re-read from the books.
+    start_owed = db.Column(db.Numeric(12, 2), nullable=True)
     # is_active: from IsActiveMixin.
 
     # Income-relative goal columns (5.4-2).

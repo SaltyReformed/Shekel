@@ -480,13 +480,28 @@ class TestSavingsGoalCreateSchema:
         })
         assert data["target_amount"] == Decimal("10000.00")
 
-    def test_zero_target_rejected(self):
-        """target_amount=0 fails Range(min=0, min_inclusive=False)."""
+    def test_zero_target_loads_and_a_negative_one_is_rejected(self):
+        """target_amount=0 loads: the schema's bound is the table's ``>= 0``.
+
+        Ruling R-CC72 (plan step credit_card:CC-5-5d): a DEBT goal may target
+        $0.00, and whether a goal is a debt goal is its account's category,
+        which a schema cannot read -- so the "above $0.00 for a SAVINGS goal"
+        refusal is the goal door's (``TestTheGoalDoor`` in
+        ``tests/test_services/test_debt_goals.py``).  Re-expressed with the
+        developer's rule-5 confirmation (2026-09-23); a NEGATIVE target is
+        still refused here.
+        """
+        data = SavingsGoalCreateSchema().load({
+            "account_id": "1",
+            "name": "Zero Goal",
+            "target_amount": "0",
+        })
+        assert data["target_amount"] == Decimal("0")
         with pytest.raises(ValidationError) as exc:
             SavingsGoalCreateSchema().load({
                 "account_id": "1",
-                "name": "Zero Goal",
-                "target_amount": "0",
+                "name": "Below Zero",
+                "target_amount": "-0.01",
             })
         assert "target_amount" in exc.value.messages
 
@@ -524,11 +539,20 @@ class TestSavingsGoalUpdateSchema:
         assert data["target_amount"] is None
 
     def test_valid_partial_update(self):
-        """Partial update with is_active loads correctly."""
+        """A partial update carrying ``is_active`` loads WITHOUT it.
+
+        Deleting a goal is the only writer of ``is_active`` since plan step
+        credit_card:CC-5-5d (review M1): an edit that re-activated a deleted
+        goal could bring it back onto an account whose type changed while no
+        guard counted it.  Re-expressed with the developer's rule-5
+        confirmation (2026-09-23): the unknown field is dropped, as every other
+        unknown field is.
+        """
         data = SavingsGoalUpdateSchema().load({
+            "name": "Renamed",
             "is_active": "false",
         })
-        assert data["is_active"] is False
+        assert data == {"name": "Renamed"}
 
 
 class TestSavingsGoalCreateSchemaGoalMode:

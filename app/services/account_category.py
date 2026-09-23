@@ -151,8 +151,11 @@ def is_liability_account(account) -> bool:
 
     DERIVED from :func:`account_category`'s one read since plan step X-z
     (ruling R-CP, finding N-118), where it was a second, independent comparison
-    of the same column against the same cached id; since plan step
-    credit_card:CC-5-5b both reach that read through
+    of the same column against the same cached id.  It reads
+    :func:`is_liability_type`, which since plan step credit_card:CC-5-5d asks
+    :func:`is_liability_category` of the type's category id -- the ONE
+    comparison against the cached LIABILITY member -- while
+    :func:`account_category` reaches the same cached map through
     :func:`account_type_category`.  An account with no modelled category (see
     :func:`account_category` for the two states that produces) is not a
     liability.
@@ -183,4 +186,25 @@ def is_liability_type(acct_type) -> bool:
     Returns:
         ``True`` when the type's category is LIABILITY, ``False`` otherwise.
     """
-    return account_type_category(acct_type) is AcctCategoryEnum.LIABILITY
+    return acct_type is not None and is_liability_category(acct_type.category_id)
+
+
+def is_liability_category(category_id) -> bool:
+    """Return whether a ``ref.account_type_categories`` id is the LIABILITY one.
+
+    The rule asked of a bare category id, which is what a CUSTOM account type's
+    in-place edit submits before any type carries it -- the one caller that
+    has no type to ask (plan step credit_card:CC-5-5d: an edit moving a type's
+    accounts between savings and debt is refused while a goal is on one of
+    them, ruling R-CC87).  :func:`is_liability_type` reads this, so the
+    comparison against the cached LIABILITY member is written once.
+
+    Args:
+        category_id: A ``ref.account_type_categories`` id.
+
+    Returns:
+        ``True`` when it names the LIABILITY category; ``False`` for any other,
+        including an id the application does not model (the safe direction
+        :func:`account_category` names).
+    """
+    return ref_cache.acct_category_member(category_id) is AcctCategoryEnum.LIABILITY
