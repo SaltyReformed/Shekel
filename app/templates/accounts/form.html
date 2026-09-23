@@ -33,7 +33,8 @@
         <select id="account_type_id" name="account_type_id" class="form-select" required>
           {% for at in account_types %}
           <option value="{{ at.id }}"
-            {{ 'selected' if account and account.account_type_id == at.id else '' }}>
+            {{ 'selected' if account and account.account_type_id == at.id else '' }}
+            {%- if not account and at.id in owed_type_ids %} data-asks-owed{% endif %}>
             {{ at.name }}
           </option>
           {% endfor %}
@@ -56,8 +57,23 @@
          editor the grid, dashboard, cockpit, investment hero and cash hero all
          open -- one door, one meaning. #}
       {% if not account %}
-      <div class="mb-3">
-        <label for="anchor_balance" class="form-label">Opening Balance</label>
+      {# THE BOX ASKS A LIABILITY FOR THE AMOUNT OWED (plan step
+         credit_card:CC-5-5b, rulings R-CC52 / R-CC58).  The create route stores
+         the held sign by the TYPE picked, whatever this label says -- typing
+         5,000.00 on a car loan stores -5,000.00, $5,000.00 owed -- so the words
+         here are what makes the owner type the figure the route expects.
+         ``js/account_form.js`` relabels the box as the type changes, choosing
+         between the two wordings carried on this div; the route marks each
+         liability type's option ``data-asks-owed``.  Rendered without the
+         script, the box keeps "Opening Balance" and help naming both cases:
+         the refused option's text, which R-CC58 made the picked option's
+         no-script fallback. #}
+      <div class="mb-3" id="opening-balance-field"
+           data-owed-label="Amount owed"
+           data-owed-help="What you owe today. A card holding a credit: a negative number."
+           data-held-label="Opening balance"
+           data-held-help="What the account holds today.">
+        <label for="anchor_balance" id="anchor-label" class="form-label">Opening Balance</label>
         <div class="input-group">
           <span class="input-group-text">$</span>
           <input type="number" step="0.01" id="anchor_balance" name="anchor_balance"
@@ -65,7 +81,7 @@
                  aria-describedby="anchor-help">
         </div>
         <div id="anchor-help" class="form-text">
-          The account's real-world balance. Projected balances are calculated forward from this amount.
+          What the account holds today. For a loan or credit card, enter the amount you OWE; a card holding a credit is a negative number.
         </div>
         {# It ASKS rather than inventing, which is ruling R-EX's sentence about
            the registration payday applied to the other figure nobody can
@@ -157,3 +173,12 @@
   </div>
 </div>
 {% endblock content %}
+
+{#- The create form's one script (plan step credit_card:CC-5-5b, ruling
+    R-CC58), and none on the edit form, which asks no balance.  The block is
+    written INLINE: this project sets no ``trim_blocks``, so block tags on
+    lines of their own would add blank lines to every EDIT page, which must
+    render byte-identical to before that step. -#}
+{% block scripts %}{% if not account %}
+<script src="{{ url_for('static', filename='js/account_form.js') }}"></script>
+{% endif %}{% endblock scripts %}

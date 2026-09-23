@@ -617,14 +617,17 @@ def _liability_band(
     living in a presentation module is the exact pattern the balance seam exists
     to prevent, and this band held half of one until the seam grew the liability
     view (``followup_fence_loan_owed_at_dates.md``).  The seam also owns the
-    ``abs`` owed-magnitude convention and the today point, so index 0 is each
-    liability's ledger-confirmed current balance by construction.
+    sign -- what each liability OWES, ``owed()`` of its HELD balance, a credit
+    counting negative (ruling R-CC47, plan step credit_card:CC-5-5c; it took
+    ``abs`` until then) -- and the today point, so index 0 is what each
+    liability owes on its ledger-confirmed current balance by construction,
+    the hero's liability total.
 
     Args:
         account_data: The per-account projections (each carrying an
             ``account``, answering ``is_liability``, and carrying the
-            ``current_balance`` -- the already-resolved balance the hero
-            renders, threaded into the seam rather than re-resolved).
+            HELD ``current_balance`` -- the already-resolved balance the hero
+            sums, threaded into the seam rather than re-resolved).
         core: The loaded dashboard core data (its ``scenario`` scopes the loan
             resolver; ``None`` is a valid no-baseline state the seam handles by
             holding every liability flat).
@@ -635,8 +638,8 @@ def _liability_band(
             rather than racing across a midnight boundary.
 
     Returns:
-        The liability band's Decimal series over ``frame.sample_dates`` (a
-        positive owed total per point).
+        The liability band's Decimal series over ``frame.sample_dates`` (what
+        the liabilities owe in total at each point).
     """
     band = _zero_series(frame)
     liability_ads = [ad for ad in account_data if ad.is_liability]

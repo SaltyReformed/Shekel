@@ -37,6 +37,7 @@ from app.services import (
     balance_at,
     cash_ledger,
     escrow_calculator,
+    liability_sign,
     loan_resolver,
 )
 from app.services.amortization_engine import AmortizationRow
@@ -111,9 +112,11 @@ def render_loan_setup(account, account_type):
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
     so the two prefills are spelled once: the "balance today" field opens on
-    the account's latest cash assertion
+    what the account's latest cash assertion
     (:func:`app.services.cash_ledger.resolve_anchor`, the ONE answer to "what
-    balance has this account been asserted to hold"; plan step X-f1c3a), and
+    balance has this account been asserted to hold"; plan step X-f1c3a) says
+    it OWES (:func:`app.services.liability_sign.shown_figure`, plan step
+    credit_card:CC-5-5b), and
     its "as of" date on today, the setup date (plan step ``recurrence:R20``,
     ruling **R-R72** part 3: the stated balance is a dated assertion, dated by
     the owner and defaulting to the day it is typed).  Today is the DISPLAY
@@ -131,7 +134,15 @@ def render_loan_setup(account, account_type):
         "loan/setup.html",
         account=account,
         account_type=account_type,
-        anchor_balance=cash_ledger.resolve_anchor(account).balance,
+        # The field is the loan's balance OWED (``min="0"``, and the loan
+        # domain's store is positive-owed), while the assertion it opens on is
+        # HELD since plan step credit_card:CC-5-5b -- a car loan created owing
+        # 5,000.00 holds -5,000.00 -- so the pre-fill crosses through the
+        # door's one function (ruling R-CC52) and opens on 5,000.00.  Read
+        # raw, it would pre-fill a negative figure the box refuses.
+        anchor_balance=liability_sign.shown_figure(
+            account_type, cash_ledger.resolve_anchor(account).balance,
+        ),
         today_iso=display_today().isoformat(),
     )
 
@@ -191,9 +202,9 @@ class _RouteLoanContext:
       * ``figures`` -- the seam's :class:`LoanFigures` (payment, rate, payoff,
         arm), carrying deliberately NO balance.
 
-    The balance is a property that reads the seam on demand; the figures fields
-    are exposed as properties so the dashboard / calculators read typed
-    attributes (``ctx.current_balance`` / ``ctx.monthly_payment`` /
+    What the loan owes is a property that reads the seam on demand; the figures
+    fields are exposed as properties so the dashboard / calculators read typed
+    attributes (``ctx.current_owed`` / ``ctx.monthly_payment`` /
     ``ctx.current_rate`` / ``ctx.payoff_date``) exactly as they read the old
     ``ctx.state.*``.
     """
@@ -204,17 +215,25 @@ class _RouteLoanContext:
     figures: LoanFigures
 
     @property
-    def current_balance(self) -> Decimal:
-        """The loan's balance-at-today from the seam (the fold, plan C4).
+    def current_owed(self) -> Decimal:
+        """What the loan OWES today, from the seam (the fold, plan C4).
 
-        Reads :func:`app.services.balance_at.balance_at` at the pass's ``as_of``
-        (today) -- the same seam entry the /savings tile, the net-worth hero,
-        and /debt-strategy read, so the loan card's balance is now produced in
-        the one tested place instead of off a private resolver.
+        :func:`app.services.liability_sign.owed` of
+        :func:`app.services.balance_at.balance_at` at the pass's ``as_of``
+        (today) -- the same seam entry and the same flip the /savings tile, the
+        net-worth hero and /debt-strategy read, so the loan card's figure is
+        produced in the one tested place instead of off a private resolver.
+
+        It was ``current_balance`` and returned the seam's figure raw until
+        plan step credit_card:CC-5-5c, when that figure was the loan's owed
+        amount; the seam reports a configured loan HELD since then (ruling
+        R-CC47), so the property is named for what every consumer reads it as
+        -- the balance hero, the true-up pre-fill, the payment summary and the
+        payoff / refinance calculators' principal.
         """
-        return balance_at.balance_at(
+        return liability_sign.owed(balance_at.balance_at(
             self.account, self.balance_ctx, self.balance_ctx.as_of,
-        )
+        ))
 
     @property
     def monthly_payment(self) -> Decimal:
@@ -330,8 +349,8 @@ def _load_route_context(account, params) -> _RouteLoanContext:
     come from the same memoized resolution -- and loads the service
     :class:`LoanContext` (payments / escrow / rate) the route's own schedule
     composer and escrow card need.  It no longer runs the private resolver seeding
-    the pre-C4 route did: the balance is the seam's fold
-    (:attr:`_RouteLoanContext.current_balance`), and the payment / rate / payoff
+    the pre-C4 route did: what it owes is the seam's fold
+    (:attr:`_RouteLoanContext.current_owed`), and the payment / rate / payoff
     are the seam's figures, so the loan tile is no longer the one surface whose
     balance was produced outside the seam.
 
@@ -579,8 +598,8 @@ def build_baseline_scenarios(loan_inputs, account, balance_ctx):
     recorded events since plan step E1d-b, the SAME producer the seam's whole-loan
     read seeds every resolution with -- and threads it into the composer as
     ``confirmed_view``, so the chart / summary derive from the same real owed
-    balance AND confirmed history the loan card's seam balance
-    (:attr:`_RouteLoanContext.current_balance`) shows.  They cannot desync
+    balance AND confirmed history the loan card's seam figure
+    (:attr:`_RouteLoanContext.current_owed`) shows.  They cannot desync
     off-schedule, and a loan whose posting cache is cold no longer drops to the
     money-blind anchor replay here (finding B-12).
 

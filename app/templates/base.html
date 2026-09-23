@@ -326,40 +326,27 @@
             <a href="{{ url_for('categories.list_categories') }}">Set up budget categories</a>
             {% endif %}
           </li>
-          {# Step 3: Pay periods #}
-          <li class="mb-1">
-            {% if onboarding.has_periods %}
-            <i class="bi bi-check-circle-fill text-success"></i>
-            <span class="text-muted text-decoration-line-through">Generate pay periods</span>
-            {% else %}
-            <i class="bi bi-calendar-range text-primary"></i>
-            <a href="{{ url_for('pay_periods.generate_form') }}">Generate pay periods</a>
-            {% endif %}
-          </li>
-          {# Step 4: Salary (locked until pay periods exist) #}
+          {# No pay-period step (ruling balance:R-BAL116): registration writes
+             the paydays, and "no period covers today" is told by the page that
+             needs a period, never by this checklist beside it. #}
+          {# Step 3: Salary #}
           <li class="mb-1">
             {% if onboarding.has_salary %}
             <i class="bi bi-check-circle-fill text-success"></i>
             <span class="text-muted text-decoration-line-through">Set up a salary profile</span>
-            {% elif onboarding.has_periods %}
+            {% else %}
             <i class="bi bi-cash-coin text-primary"></i>
             <a href="{{ url_for('salary.cockpit') }}">Set up a salary profile</a>
-            {% else %}
-            <i class="bi bi-lock text-secondary"></i>
-            <span class="text-muted">Set up a salary profile <small>(generate pay periods first)</small></span>
             {% endif %}
           </li>
-          {# Step 5: Recurring transactions (locked until pay periods exist) #}
+          {# Step 4: Recurring transactions #}
           <li>
             {% if onboarding.has_templates %}
             <i class="bi bi-check-circle-fill text-success"></i>
             <span class="text-muted text-decoration-line-through">Set up recurring transactions</span>
-            {% elif onboarding.has_periods %}
+            {% else %}
             <i class="bi bi-arrow-repeat text-primary"></i>
             <a href="{{ url_for('templates.list_templates') }}">Set up recurring transactions</a>
-            {% else %}
-            <i class="bi bi-lock text-secondary"></i>
-            <span class="text-muted">Set up recurring transactions <small>(generate pay periods first)</small></span>
             {% endif %}
           </li>
         </ul>

@@ -191,7 +191,7 @@ class _EvidenceCopy:
 #: same fact about the same anchor.  A message with two readers is part of
 #: the interface, which is finding **N-33**'s shape stated rather than left
 #: to a convention (:mod:`app.routes.accounts.difference` imports
-#: ``LOAN_ANCHOR_REFUSAL`` from ``anchor`` for the same reason).
+#: ``LOAN_ANCHOR_REFUSAL`` from ``_door_meaning`` for the same reason).
 EVIDENCE_COPY = {
     StatementBalanceEvidenceEnum.FILE_CHAIN: _EvidenceCopy(
         label="proved by the file",

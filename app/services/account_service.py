@@ -345,7 +345,7 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
         account=account,
         new_balance=anchor_balance,
         observed_on=observed_on,
-    ):
+    ).staged:
         raise RuntimeError(
             f"create_account: no origination assertion was appended for "
             f"account id={account.id} (${anchor_balance} on {observed_on.civil_day}) "

@@ -1899,7 +1899,7 @@ class TestSyncEntryPoints:
             outcome = anchor_service.apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("350.00"),
-            )
+            ).outcome
             assert outcome is AnchorTrueUpOutcome.COMMITTED
             assert posting_service.account_posting_total(
                 account.id, scenario_id,

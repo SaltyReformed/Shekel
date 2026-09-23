@@ -161,6 +161,7 @@ from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
+from app.services.liability_sign import owed
 from tests._test_helpers import (
     independent_settled_figure,
     rhythm_of,
@@ -2859,7 +2860,7 @@ class TestReadSwitchProductionPath:
     def test_production_path_reads_the_ledger_off_schedule(
         self, app, db, seed_user, seed_periods,
     ):
-        """The seam scalar == the ledger / reader, NOT the schedule replay.
+        """What the seam scalar owes == the ledger / reader, NOT the schedule replay.
 
         Two identical $100,000 @ 6% loans (interest 500.00, so one scheduled P&I
         governs both deltas).  An EXTRA $2,000 payment books real principal 1,500
@@ -2891,13 +2892,20 @@ class TestReadSwitchProductionPath:
 
             # The production read path every displayed loan balance flows
             # through: the balance_at seam scalar (the fold; the seeded
-            # resolver's balance field died at plan step D2a).
+            # resolver's balance field died at plan step D2a).  The seam
+            # reports the balance HELD -- negative for a loan, ruling R-CC47 --
+            # so each figure below is what the loan OWES, read through
+            # ``owed()``: the sign the ledger, the reader and the replay state.
             bctx = BalanceContext(
                 user_id=extra_loan.user_id, scenario=seed_user["scenario"],
                 as_of=_AS_OF,
             )
-            extra_production = balance_at.balance_at(extra_loan, bctx, _AS_OF)
-            short_production = balance_at.balance_at(short_loan, bctx, _AS_OF)
+            extra_production = owed(
+                balance_at.balance_at(extra_loan, bctx, _AS_OF),
+            )
+            short_production = owed(
+                balance_at.balance_at(short_loan, bctx, _AS_OF),
+            )
 
             # The flip: production == ledger == reader (the hand-computed balances).
             assert extra_production == Decimal("98500.00")
@@ -2983,6 +2991,8 @@ class TestReadSwitchProductionPath:
         path, the un-seeded replay, and the ledger all agree.  This guards against
         the seed perturbing the on-schedule case (a regression that would show a
         loan card drifting from its schedule even when the user pays exactly).
+        The seam reports the balance HELD (negative for a loan, ruling R-CC47),
+        so ``production`` is what the loan owes, read through ``owed()``.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2998,7 +3008,7 @@ class TestReadSwitchProductionPath:
                 user_id=loan.user_id, scenario=seed_user["scenario"],
                 as_of=_AS_OF,
             )
-            production = balance_at.balance_at(loan, bctx, _AS_OF)
+            production = owed(balance_at.balance_at(loan, bctx, _AS_OF))
             assert production == _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert production == _ledger_balance(loan.id, scenario_id)
 
@@ -3088,6 +3098,10 @@ class TestLatePaidPaymentDating:
         date-basis scalar walked past it and read the loan's PRE-payment balance
         while the ledger had already booked the paydown -- the divergence that
         surfaced as a mortgage that appeared to GROW.
+
+        The seam reports the balance HELD (negative for a loan, ruling R-CC47),
+        so its scalar and its map are compared through ``owed()``: what the loan
+        OWES, the sign the ledger and the reader state.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -3121,18 +3135,18 @@ class TestLatePaidPaymentDating:
             #   balance   = 100000.00 - 500.00 = 99,500.00
             assert ledger == Decimal("99500.00")
             assert reader == ledger
-            assert scalar == ledger
-            assert period_map[current_period.id] == ledger
+            assert owed(scalar) == ledger
+            assert owed(period_map[current_period.id]) == ledger
             # The paydown is real: the balance is strictly below the anchor.
             assert ledger < _ANCHOR_BALANCE
 
     def test_projected_liability_map_never_increases(
         self, app, db, seed_user, seed_periods,
     ):
-        """A loan's per-period balance is monotonically non-increasing.
+        """What a loan OWES per period is monotonically non-increasing.
 
         The general invariant that makes this whole bug class impossible to ship
-        again: a loan amortizes, so it cannot GROW.  This is the defect the
+        again: a loan amortizes, so its debt cannot GROW.  This is the defect the
         operator saw plotted -- a mortgage that rose $276.72 for one period and
         then fell back -- and it needed BOTH halves of the bug to appear, so this
         reproduces both.
@@ -3151,7 +3165,8 @@ class TestLatePaidPaymentDating:
           reads the post-payment balance...
         * ...while the next period (2026-05-22 .. 06-04) ENDS BEFORE 2026-06-05,
           so the pre-fix projection walked back to the April row and handed that
-          period the loan's OLDER, higher balance.  The plotted liability rose.
+          period the loan's OLDER balance, which owed more.  The plotted
+          liability rose.
         """
         with app.app_context():
             loan = _make_loan(seed_user, name="Monotonic Loan", payment_day=5)
@@ -3200,7 +3215,10 @@ class TestLatePaidPaymentDating:
                 [loan], BalanceContext.build(seed_user["user"].id),
             )[loan.id]
 
-            series = [period_map[p.id] for p in periods]
+            # The seam's map is HELD -- negative for a loan, ruling R-CC47 -- so
+            # a paydown moves it UP toward zero.  The invariant is on what the
+            # loan OWES, read through ``owed()``: that series must never rise.
+            series = [owed(period_map[p.id]) for p in periods]
             rises = [
                 (periods[i].start_date, series[i - 1], series[i])
                 for i in range(1, len(series))
@@ -3227,7 +3245,12 @@ class TestTrueUpAfterLastPaymentIsRead:
     def test_scalar_reads_the_ledger_not_the_stale_last_payment_row(
         self, app, db, seed_user, seed_periods,
     ):
-        """balance_at == ledger, though the last schedule row predates the true-up."""
+        """owed(balance_at) == ledger, though the last schedule row predates the true-up.
+
+        The seam reports the balance HELD (negative for a loan, ruling R-CC47),
+        so the scalar is compared through ``owed()``: what the loan owes, the
+        sign the ledger and the reader state.
+        """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             scenario = seed_user["scenario"]
@@ -3255,10 +3278,11 @@ class TestTrueUpAfterLastPaymentIsRead:
                 [loan], bctx,
             )[loan.id]
 
-            # The true-up IS the balance; the reader and scalar both report it.
+            # The true-up IS the balance; the reader and scalar both report it
+            # (the scalar HELD, so it is read through ``owed()``).
             assert ledger == Decimal("96000.00")
             assert reader == ledger
-            assert scalar == ledger
+            assert owed(scalar) == ledger
 
             # Non-vacuity: the schedule's last CONFIRMED row still carries the
             # pre-true-up balance, so a walk over it would have read HIGHER --
@@ -3313,10 +3337,12 @@ class TestDueDateEditReconcilesTheLedger:
             assert posted_after == _ANCHOR_BALANCE
 
             # And every reader agrees with the ledger -- the edit reconciled,
-            # rather than leaving the posted numbers behind.
+            # rather than leaving the posted numbers behind.  The seam reports
+            # the balance HELD (negative for a loan, ruling R-CC47), so it is
+            # compared through ``owed()``: what the loan owes.
             bctx = BalanceContext(
                 user_id=loan.user_id, scenario=seed_user["scenario"],
                 as_of=_AS_OF,
             )
-            assert balance_at.balance_at(loan, bctx, _AS_OF) == posted_after
+            assert owed(balance_at.balance_at(loan, bctx, _AS_OF)) == posted_after
             assert _posted_balance(loan.id, scenario_id) == posted_after

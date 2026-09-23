@@ -29,10 +29,11 @@ February, and never decays to the 30th for good.
 2026-09-18): positive when the owner owes, negative when the card holds a
 credit.  The seam reports a card's cash balance NEGATIVE when money is owed
 (the card is a plain liability riding the cash fold, **R-CC14**), and the ONE
-flip from that held balance to an owed figure is the seam's
-:func:`app.services.balance_at.owed` -- it lived here as ``owed`` until plan
+flip from that held balance to an owed figure is
+:func:`app.services.liability_sign.owed` -- it lived here as ``owed`` until plan
 step credit_card:CC-5-5a moved it into the balance seam (ruling **R-CC47**),
-so the net-worth surfaces and the statement read ONE flip.  The statement
+and plan step CC-5-5b moved it out again beside the balance doors that read
+it, so the net-worth surfaces, the doors and the statement read ONE flip.  The statement
 balance is ``owed(cash_balance_at(account, ctx, window.valuation_date))`` for
 the producer that will state it (no ``app/`` module calls this one yet); a
 payday row's base under **R-CC22** is the same flip of the fold at the end of
@@ -210,7 +211,7 @@ def minimum_payment(
 
     Args:
         balance: The statement balance as an OWED figure
-            (:func:`app.services.balance_at.owed`).
+            (:func:`app.services.liability_sign.owed`).
         percent: The minimum's fraction of the balance
             (:attr:`~app.models.credit_card_params.CreditCardParams.min_payment_percent`,
             ``Decimal("0.0250")`` for 2.5%).

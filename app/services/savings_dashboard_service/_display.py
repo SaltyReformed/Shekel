@@ -149,17 +149,25 @@ def _compute_group_subtotals(grouped_accounts):
     template reads ``group_subtotals[label]`` alongside its
     ``grouped_accounts.items()`` loop.
 
-    Each subtotal is the ``Decimal`` sum of the group's per-account
+    Each subtotal is the ``Decimal`` sum of the figures the group's tiles
+    show (:attr:`~._types.AccountProjection.shown_balance`), built on
     ``current_balance``, which is never ``None`` since plan step X-v2
     (ruling R-CA): the ``is not None`` test this loop used to carry was the
     EIGHTH reducer treating "the app cannot answer this balance" as ``$0.00``,
     and the field stopped being nullable when the one state that produced a
     ``None`` stopped rendering.
 
-    Liability groups sum the loan resolver's positive owed balances, so a
-    liability subtotal is the positive total owed; the template colors it
-    with the danger token (color is a display decision keyed on the
-    category, not encoded in the figure's sign).
+    A liability group sums what its accounts OWE (ruling **R-CC48**, plan
+    step credit_card:CC-5-5c), the figure each of its tiles shows, so the
+    subtotal the chart legend prints beside the liability band reconciles to
+    that band -- a card holding a credit lowers both.  It summed
+    ``current_balance`` raw until then, with a configured loan reporting owed
+    and a card held: beside two loans, a Visa owing ``$1,000``, an Amex holding
+    a ``$50`` credit, an auto loan with no terms owing ``$5,000`` and a family
+    loan owing ``$2,000`` it read ``$183,515.28`` where the band read
+    ``$199,515.28`` and the truth is ``$199,415.28``.  The template colors it
+    with the danger token (color is a display decision keyed on the category,
+    not encoded in the figure's sign).
 
     Args:
         grouped_accounts: The ``OrderedDict`` from
@@ -173,6 +181,6 @@ def _compute_group_subtotals(grouped_accounts):
     subtotals = OrderedDict()
     for cat_label, cat_accounts in grouped_accounts.items():
         subtotals[cat_label] = sum(
-            (ad.current_balance for ad in cat_accounts), ZERO,
+            (ad.shown_balance for ad in cat_accounts), ZERO,
         )
     return subtotals

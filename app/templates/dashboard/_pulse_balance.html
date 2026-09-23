@@ -6,14 +6,16 @@
        anchor editor, which REPLACES this element (hx-swap="outerHTML")
        and carries ``?revert=dashboard`` so Cancel / Escape restore it
        via ``dashboard.balance_section`` rendering THIS partial.
-     * The PATCH success path re-renders the enclosing pulse region via
-       the ``balanceChanged`` listener on #pulse-section; its OOB
-       snippet targets #anchor-as-of, which lives in _pulse.html's
-       caption line.
+     * A save answers with THIS partial too, through
+       ``dashboard.render_balance_section`` -- the draw Cancel reads
+       (rulings R-CC74 / R-CC77) -- and its ``balanceChanged`` re-renders
+       the enclosing pulse region via the listener on #pulse-section.  No
+       #anchor-as-of snippet rides along: that out-of-band caption is the
+       grid's alone (plan step X-f1e3).
 
    Context: ``pulse.hero`` -- a dict (see _pulse.html for the full
    contract) or ``None``.  ``None`` reaches here only via
-   ``dashboard.balance_section`` when no account / scenario resolves
+   ``dashboard.render_balance_section`` when no account / scenario resolves
    (e.g. the account was deactivated while the anchor editor was open and
    Cancel / Escape reverts here): there is no balance to show and no
    account to edit, so this renders a neutral, non-editable display that
