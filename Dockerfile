@@ -111,6 +111,21 @@ WORKDIR /home/shekel/app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
+# THE PROCESS LOCALE IS PINNED HERE (ruling recurrence:R-R92, extending R-R54;
+# closes finding F-15).  Month and weekday names from ``strftime`` and
+# ``calendar`` follow the process locale.  This image set no locale variable,
+# so they read English: CPython's PEP 538 coercion sets only LC_CTYPE (to
+# C.UTF-8) and LC_TIME stays C -- even a ``setlocale(LC_ALL, "")`` resolved to
+# C.  That held by the ABSENCE of a setting, which any future environment line
+# (a LANG in a compose file, a base image that sets one) could end.  Pinning
+# LC_ALL makes ``setlocale(LC_ALL, "")`` resolve to C.UTF-8 whatever else is
+# set, and ``create_app`` refuses to start under any other value, so every
+# locale-sensitive site -- and every future one -- is covered by this line
+# instead of by each call site remembering.  Measured 2026-09-23 in the
+# production container: its installed locales are C, C.utf8 and POSIX, so
+# C.UTF-8 is the one UTF-8 locale this image can adopt.
+ENV LC_ALL=C.UTF-8
+
 # Copy application code.  entrypoint.sh ships in the build context (see
 # .dockerignore -- it is a must-ship file), so this single COPY already
 # places it at /home/shekel/app/entrypoint.sh with shekel ownership; no

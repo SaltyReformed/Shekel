@@ -211,9 +211,10 @@ class RecurrenceDescription:
             :data:`app.utils.dates._MONTH_NAMES_ABBR` is spelled out to escape.
             **That is a HAZARD rather than a measured failure**, and an
             adversarial review of this step corrected an earlier note here for
-            claiming otherwise: CPython never calls ``setlocale``, nothing in
-            ``app/`` does either, and ``%b`` measured English under
-            ``LANG=de_DE.UTF-8`` in this repo's own venv.  What makes the move
+            claiming otherwise: CPython sets only ``LC_CTYPE`` at startup and
+            never calls ``setlocale`` for ``LC_TIME``, nothing in ``app/``
+            calls it either, and since ruling ``recurrence:R-R92`` the process
+            locale is pinned and asserted at startup.  What makes the move
             load-bearing is the totality above; the locale is why it was worth
             doing in the same pass rather than a reason of its own.
     """
@@ -282,10 +283,11 @@ def _coordinate(resolved: ResolvedRecurrence) -> str:
     """
     if resolved.unit is RecurrenceUnitEnum.WEEK:
         # Through the shared table, NOT ``%A``: that delegates to the platform
-        # ``strftime`` and follows ``LC_TIME``, which nothing in ``deploy/``
-        # pins -- the same locale dependence the month names moved to
-        # ``app.utils.dates`` to escape.  The plural is the honest reading: the
-        # rule fires on that weekday every ``interval_n`` weeks.
+        # ``strftime`` and follows ``LC_TIME`` -- the same locale dependence
+        # the month names moved to ``app.utils.dates`` to escape, and a hazard
+        # the process locale pinned at startup now covers too (ruling
+        # ``recurrence:R-R92``).  The plural is the honest reading: the rule
+        # fires on that weekday every ``interval_n`` weeks.
         return f"{weekday_name(resolved.starts_on)}s"
     day = resolved.day_of_month
     if day is None:
