@@ -295,7 +295,7 @@ from ._outstanding import (
     CashOutstandingDifference,
     cash_outstanding_difference,
 )
-from ._plan_fold import installments_payoff
+from ._plan_fold import first_installment_at_most, installments_payoff
 from ._positions import (
     loan_installments,
     loan_payoff_date,
@@ -358,6 +358,7 @@ __all__ = [
     "GridRowFlags",
     "LoanFigures",
     "LoanTerms",
+    "first_installment_at_most",
     "installments_payoff",
     "SecuredLoanSeries",
     "TIER_CONFIRMED",

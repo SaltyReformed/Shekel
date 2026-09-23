@@ -52,6 +52,38 @@ _CENTS = Decimal("0.01")
 _EXTRA_SEARCH_DOUBLINGS = 20
 
 
+def first_installment_at_most(
+    installments: list[PaymentOutcome],
+    owed_at_most: Decimal,
+) -> PaymentOutcome | None:
+    """Return the first installment leaving at most *owed_at_most* owed, or ``None``.
+
+    The ONE statement of "when does this trajectory get the loan down to X",
+    whose DUE date is the payoff at ``X = 0.00`` (:func:`installments_payoff`)
+    and whose VISIBLE date is a debt goal's projected day (plan step
+    credit_card:CC-5-5d, rulings R-CC73 and R-CC88: the day the loan's tile,
+    which folds on the visible date, first shows the balance at or under the
+    goal's target).  One walk, one predicate, two readings of the installment
+    it finds -- the two dates differ only for an installment that is overdue
+    and still projected, whose visible date ruling D1 clamps to the day after
+    the pass's.  Public through :mod:`app.services.balance_at`.
+
+    Args:
+        installments: A timeline's projected outcomes
+            (:attr:`~app.services.loan_ledger.LoanLedgerWalk.projected_splits`),
+            in walk order.
+        owed_at_most: The balance the trajectory must reach.
+
+    Returns:
+        The first installment whose ``balance_after`` is ``<= owed_at_most``, or
+        ``None`` when none is (the plan never gets there, or there is none).
+    """
+    for installment in installments:
+        if installment.balance_after <= owed_at_most:
+            return installment
+    return None
+
+
 def installments_payoff(installments: list[PaymentOutcome]) -> date | None:
     """Return the DUE date of the first installment whose balance reaches zero.
 
@@ -60,7 +92,9 @@ def installments_payoff(installments: list[PaymentOutcome]) -> date | None:
     already holding the timeline's projected outcomes (the loan page's
     pay-off-sooner lever, plan step R7d-g-3), so a caller with the split in
     hand does not replay the loan a second time to learn what it already holds.
-    Public through :mod:`app.services.balance_at`.
+    Public through :mod:`app.services.balance_at`.  It is
+    :func:`first_installment_at_most` at ``0.00``, read on its due date
+    (contract time, the month the payoff has always keyed on).
 
     Args:
         installments: A timeline's projected outcomes
@@ -71,10 +105,8 @@ def installments_payoff(installments: list[PaymentOutcome]) -> date | None:
         The DUE date the balance first reaches ``<= 0``, or ``None`` when no
         installment does (the plan never clears the loan, or there is none).
     """
-    for installment in installments:
-        if installment.balance_after <= _ZERO_MONEY:
-            return installment.due_date
-    return None
+    installment = first_installment_at_most(installments, _ZERO_MONEY)
+    return None if installment is None else installment.due_date
 
 
 def owed_at(walk: LoanLedgerWalk, as_of: date) -> Decimal:

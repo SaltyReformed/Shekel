@@ -1324,3 +1324,204 @@ governs this just-created account"), so it was offered as a non-recommended opti
 REFUSED: "Door passes its read in" (adds a read to the account-creation door); "Restate the claim" (the refused
 17a shape). Final suite on the tree BEFORE this change: 15322 passed / 0 failed, exit 0 (17:06), after merging dev
 28fdfcc9 (merge 836c4ebf).
+
+## CC-5-5d `8f8b056d`, ticked 2026-09-23 with the CC-5-5 container: the CC-5-5 entry with 5d's specification and the `steps.md` rows as they stood, the ledger rows closed, then Blocks 19-24 VERBATIM (the card lane's record, `rulings_cc5_5.md`)
+
+CC-5-5d reaches dev in its OWN pull request and deploys in its OWN release (the coordinator's call with **R-CC69**..**R-CC73**); its migration `764461215480` sits on `2eabfa596ee0`. Its last leaf shipped, CC-5-5 ticks with it (5a `aa29d977`, 5b `3d9d0c1a`, 5c `6daa3048`, 5d `8f8b056d`). Filed at this tick: **R-CC91** (Block 21), **R-CC93** and **R-CC94** (Block 23), **R-CC95** (Block 24, granted by the coordinator after the block was written, whose header still reads "grant pending"); **R-CC87**, **R-CC88** and **R-CC90** (Blocks 19-20) were filed at the 5b + 5c tick (`79dea057`), and R-CC89 (Block 20's header) and R-CC92 (the gap between R-CC91 and R-CC93) are CC-5-4a-4's. **Block 22 is a rule-5 CONFIRMATION and takes no ruling id** (CC-5-4a-2's Confirmations 8 / 8a and Blocks 13 Q1 / 16 are the precedent): the developer confirmed all four re-expressed tests -- the `GoalProgress` field set gains `start_owed`, the KeyError contract re-pointed from the deleted `_current_balance_from_map` to `_tile.tile_balance_on`, the create schema loads a `$0.00` target with the savings-only refusal tested at the goal door, and the edit schema drops `is_active`. The build's three reports became **CC-373** (a deleted goal's name), **CC-374** ("configured loan" asked two ways) and **CC-375** (the fixed-target rule's two homes), owner `operator`. The commits are the record; the build logs, probes and reviews are `~/projects/shekel-handoffs/HANDOFF-credit-card-CC-5-5.md` and `credit_card-2026-09-23/cc55d/`.
+
+### The CC-5-5 entry and 5d's specification as they stood, verbatim
+
+- [ ] **CC-5-5** `fix(cards): one sign for every balance` -- `R-CC47` (re-scoping `R-CC41`; the
+      sixth site `R-CC48`): every balance is what the account HOLDS, negative when owed, and owed is
+      minus it; the DECOMPOSED parent, split 2026-09-22 by the developer (`R-CC50` as amended by
+      `R-CC52`) into 5a (the groundwork), 5b (the liability doors ask owed) and 5c (the one-commit
+      flip), and given 2026-09-23 5d (the debt goals the flip's goal question became,
+      `R-CC69`..`R-CC73`); ticks with its last leaf. `$0.00` on production's net-worth figures (both
+      liabilities are configured loans).
+  - [x] **CC-5-5a** `aa29d977` -- `balance_at.owed(balance) = -balance`, R-CC29's one flip moved
+        into the seam (`card_statement.owed` deleted); the /savings revolving footer is each
+        non-loan liability's owed amount floored at zero, summed (`R-CC49`);
+        `tests/manual/verify_liability_screens.py`, the screen-diff instrument (178 responses plus a
+        `tree.json` app digest) that grades 5b and 5c; 178 screens byte-identical on production's
+        shape.
+  - [x] **CC-5-5b** `3d9d0c1a` -- every liability balance door asks OWED and stores held through
+        `liability_sign.held_balance` (`owed()` moved out of the seam; `R-CC52`): the create form
+        (`R-CC58`), the anchor editor on every surface (`R-CC57` as amended by `R-CC60`), the
+        books-opening card; a stale form refused and re-opened as a fresh click (`R-CC61`,
+        `R-CC62`); no stored row re-signed, a loan's anchor cell a link (`R-CC53`). Two commits,
+        `ef4f6782` first; closed **CC-357**; suite 15186/0 at `ef4f6782`.
+  - [x] **CC-5-5c** `6daa3048` -- ONE commit (`R-CC50`): the configured-loan arms report HELD
+        through `liability_sign.owed`; net worth the plain sum; band, trend, subtotal (`R-CC48`),
+        tiles, debt summary, loan readers and archived drawer (`R-CC67`) read `owed`; the footer's
+        words (`R-CC68`); an anchor save answers its opener's display (`R-CC74`, `R-CC77`, `R-CC78`)
+        from the door's report (`R-CC79`, `R-CC85`). Rule-5 re-signs confirmed; closed **CC-354**,
+        **CC-361**, **CC-362**, **CC-365**; suite 15323/0.
+- [ ] **CC-5-5d** `feat(goals): a goal on a debt is a milestone to get under` -- `R-CC69`..`R-CC73`.
+      Asked at 5c what a savings goal on a debt means, the developer refused all three readings
+      offered (`R-CC69`) and ruled a milestone to get UNDER: a fixed amount only (no income-relative
+      'months of salary' mode), below what the debt owes when the goal is saved (the Van Loan: under
+      `$10,000` while it owes `$14,745.51`). Progress runs from what it owed when the goal was set
+      down to the target (`R-CC70`: `0.00%` today, `39.24%` on 2027-01-01 with `$1,862.31` of
+      `$4,745.51` paid down, `100%` at `$10,000`); that start is RE-READ from the books each time,
+      what they now say it owed on the goal's set day (its `created_at`), never stored (`R-CC71`: a
+      back-dated correction moves it; a debt whose early history is missing reads its opening). A
+      debt goal may target `$0.00` while a savings goal still needs more:
+      `ck_savings_goals_positive_target` (`target_amount > 0`) relaxed by an Alembic migration, the
+      app refusing `$0.00` on a savings goal (`R-CC72`). The card shows when the debt is projected
+      to fall below the target, from the forward figures the loan page reads, and whether that is on
+      pace for the goal's date, with no required-per-period figure (`R-CC73`: July 2027) and no
+      manual per-period field (`R-CC90`). The readers: `routes/savings.py` `_goal_form_context`
+      (every active account, debts included),
+      `savings_dashboard_service/_goals._goal_account_balance` (since 5c a debt's HELD balance, so
+      `percent_complete` holds a goal on a loan at `0%`) and
+      `savings_goal_service.calculate_trajectory`. A debt goal on a card or any other non-loan debt
+      reads its tile's figure for its start, its current figure and the target check (`R-CC88`).
+      **CC-371** (an archived debt's drawer figure is the day's balance while a live non-loan tile
+      shows its current period's end) is NOT yet ruled: `R-CC67` says what it owes today, and the
+      question is with the developer, asked by the CC-5-5d lane 2026-09-23. The goal move is
+      answered by `R-CC87`: refused, and re-typing an account across savings and debt is refused
+      while a goal is on it. Its OWN PR and OWN release after 5b and 5c's (the coordinator's call),
+      the migration re-parented at merge. `$0.00` on production: its one goal is on the Money
+      Market. Closes **CC-360**, **CC-371**.
+
+### The `steps.md` rows as they stood, verbatim
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| credit_card | CC-5-5d | -- | Make a goal on a DEBT a milestone to get UNDER (**R-CC69**): a fixed target below what it owes when saved, `$0.00` allowed by a CHECK migration (**R-CC72**), progress from what it owed when set, re-read from the books (**R-CC70**, **R-CC71**), a projected date only (**R-CC73**); own PR and release, an edit moving a goal across savings and debt refused (**R-CC87**). Closes **CC-360**, **CC-371**. | #4 | -- | NOW / credit_card:CC-5-5c (shipped; the coordinator's call with R-CC69..R-CC73: the debt goals follow the flip that makes a debt's balance held) |
+| credit_card | CC-5-5 | -- | The DECOMPOSED parent of ONE SIGN FOR EVERY BALANCE (**R-CC47**, re-scoping **R-CC41**; the sixth site **R-CC48**), split 2026-09-22 by the developer (**R-CC50** as amended by **R-CC52**) into the groundwork (5a), the liability doors that ask for the amount owed (5b) and the one-commit flip (5c), and given 2026-09-23 the debt goals (5d, **R-CC69**..**R-CC73**); ticks with its last leaf. | container | -- | ticks with #4 |
+
+### Ledger rows CLOSED at this tick
+
+**CC-360** CLOSED at `credit_card:CC-5-5d` `8f8b056d`: a goal on a liability is a DEBT goal (**R-CC69**..**R-CC73**). `savings_dashboard_service/_goals._compute_goal_progress` routes it to `_build_debt_goal_datum` (`_goals.py:571` at `6d7f45ac`, the dev merge this tick sits on), whose percentage runs from its start down to its target, `percent_complete(start_owed - owed_now, start_owed - resolved_target)` (`:513`), the start recorded for a non-loan debt (**R-CC91**) or re-read for a loan (**R-CC71**); `_goal_account_balance` is gone (no match in `app/` or `tests/`), and `routes/savings.py` `_goal_form_accounts`, on an edit, offers only what **R-CC87**'s move rule admits. Pinned by `tests/test_services/test_debt_goals.py::TestALoanGoalReReadsItsStart::test_a_loan_goal_runs_from_what_it_owed_the_day_it_was_set` and `tests/test_services/test_debt_goals.py::TestACardGoalKeepsTheStartItRecorded::test_the_card_worked_example_reads_zero_then_57_14`.
+
+**CC-371** CLOSED at `credit_card:CC-5-5d` `8f8b056d` under **R-CC95**: the archived list reads `owed(tile_balance_on(acct, ctx, ctx.as_of))` (`_data.py:235`), the one rule the live tile reads too (`_projections.py:179` for a loan, `:294` otherwise; `_tile.py:69`) (save a terms row left on a non-amortizing type, where the archived list's loan test and the live tile's part: **CC-374**), and `_current_balance_from_map` survives only in two docstrings (`_tile.py:109` and `tests/test_services/test_savings_dashboard_service.py:5957`). Pinned by `tests/test_services/test_debt_goals.py::TestTheTileRuleHasOneHome::test_an_archived_card_shows_what_its_live_tile_showed`.
+
+| arc | id | also | finding (one line) | worst measured | status | owner |
+|---|---|---|---|---|---|---|
+| credit_card | CC-360 (`credit_card:CC-5-5a`'s build 2026-09-22, the lane's handoff s.0.5; filed by the coordinator at the CC-5-5a tick) | -- | **A SAVINGS GOAL BACKED BY A DEBT READS THE DEBT'S HELD, NEGATIVE BALANCE AS SAVED, SO ITS PROGRESS SITS AT `0%` HOWEVER MUCH IS PAID DOWN.** `routes/savings.py` `_goal_form_context` offers every active account (`account_service.list_active_accounts`) as a goal's account, a loan or card included, and `savings_dashboard_service/_goals._goal_account_balance` hands the backing account's `AccountProjection.current_balance` to the goal's progress (`percent_complete`, clamped to `[0, 100]`). Since `credit_card:CC-5-5c` (`6daa3048`, **R-CC47**) that balance is HELD for every account, a configured loan included (the Mortgage `-176,719.77`), where until then a configured loan's OWED figure counted as saved. Asked at 5c, the developer refused every reading offered (**R-CC69**) and ruled DEBT GOALS instead: a milestone to get under, progress from what the debt owed when the goal was set, re-read from the books, a `$0.00` target allowed, a projected date only (**R-CC70**..**R-CC73**) | `$0.00` on production (its one goal is on the Money Market); reachable by any goal set on a debt | **OPEN, born with an owner** (coordinator 2026-09-22, rule 1, at CC-5-5a's tick; RE-OWNED 2026-09-23 at the 5b + 5c tick to the leaf the coordinator minted for **R-CC69**..**R-CC73**, 5c having left `_goals.py` and the goal routes untouched) | CC-5-5d |
+| credit_card | CC-371 (the coordinator's trace of `credit_card:CC-5-5c` 2026-09-23, then measured) | -- | **AN ARCHIVED DEBT'S 'OWED' IS THE DAY'S BALANCE WHILE A LIVE NON-LOAN TILE SHOWS ITS CURRENT PERIOD'S END, SO R-CC67'S "SAME CALCULATION AS A LIVE /SAVINGS TILE" HOLDS FOR LOANS ONLY.** **R-CC67** has an archived debt show what it owes today "from the same calculation as a live /savings tile", and `savings_dashboard_service/_data.py:224` (`_load_archived_accounts`, `6daa3048`) reads `owed(balance_at.balance_at(acct, ctx, ctx.as_of))`, the DAY. A live LOAN tile reads the same day (`_projections.py:222`, `_compute_loan_account`), but with a current period a live NON-loan tile reads `balances[ctx.current_period.period_id]` (`_projections.py:173`, `_current_balance_from_map`), which `balance_at/_cash_fold.py:640` `period_balances` samples at each period's END date, the fold holding every still-Projected row at `max(its date, as_of + 1)` (`balance:R-G`, `_cash_fold.py:943`) -- so a card tile shows what it will owe at the period's end. The two diverge for an archived card or custom liability holding a still-Projected row the fold places on or before the current period's end (an overdue one lands tomorrow); archiving cancels no row (`routes/accounts/crud.py:523` `archive_account` sets `is_active` alone, after refusing an account an active recurring transfer names) | `$0.00` on production: no non-loan liability and no archived debt (the 2026-09-22 17:06 census). MEASURED on a synthetic fixture at `6daa3048` (a scratch probe, not a test in the tree): as_of 2026-02-15, period 02-13..02-26, a Credit Card anchored at -$1,000.00 with a projected $200.00 one-off due 02-23 holds -$1,200.00 at the period END, which its tile shows as $1,200.00, and -$1,000.00 by the day, so archived it shows 'Owed $1,000.00' | **OPEN, born with an owner** (granted at the 5b + 5c tick); NOT yet ruled (**R-CC67** says today; the question is with the developer, asked by the CC-5-5d lane 2026-09-23) | CC-5-5d |
+
+### Block 19 -- CC-5-5d's first questions (asked by lane credit-extra [a6edea], fresh context, ~09:3x 2026-09-23 EDT (`date` read 09:36:52 just after the answer), in ONE AskUserQuestion after the 5d trace on 6daa3048). Ids GRANTED by the coordinator shekel-d1 (~09:4x 2026-09-23): **R-CC87** (Q1) and **R-CC88** (Q2). Next free card R-CC89 / CC-373. CC-371 (the archived list reads the DAY, a live non-loan tile the period END) and CC-372 (a savings goal on an ARCHIVED account reads $0.00 saved) were granted by the coordinator the same morning, ride the 5b+5c tick, and CC-371's owner is CC-5-5d
+
+Trace facts behind them (6daa3048): a non-loan /savings tile reads `balances[current_period.period_id]`
+(`_projections._current_balance_from_map`), which `_cash_fold.period_balances` samples at the period's END date; a
+configured loan's tile reads `balance_at(acct, ctx, as_of)` (the day). The archived list (R-CC67) reads
+`owed(balance_at(acct, ctx, ctx.as_of))` (the day). The goal update route checks ownership but not `is_active` on an
+account change (create checks both). Account re-type across Asset/Liability is allowed while the account has no
+posted history (`account_validation._validate_account_type_change`); a custom type's category edit likewise
+(`_validate_account_type_boundary_edit`). Archive (`crud.archive_account`) leaves projected rows and goals active.
+
+#### Q1 (an edit that moves a goal) -- **R-CC87** -- PICKED "Refuse the move (Recommended)"
+
+> Debt goals (your rulings R-CC69..R-CC73) measure progress from what the debt owed on the day the goal was set. What should happen when an EDIT changes a goal's account, moving it between a savings account and a debt, or from one debt to another? (Re-typing an account between savings and debt while a goal is on it is the same question. That is only possible for an account with nothing posted yet.) Worked example on your Van Loan, figures measured Sep 22: it owes $14,745.51 today, read $32,402.45 on Apr 6 before its May true-up, and is projected to owe $12,883.20 on Jan 1 2027. A savings goal created Apr 6 with a $10,000 target is edited today to point at the Van Loan. Your one real goal (Emergency Fund on the Money Market) is unaffected by every option.
+
+PICKED text: "A goal can move only from one savings account to another. Moving between savings and a debt, or to a
+different debt, is refused with 'create a new goal instead'. Re-typing an account between savings and debt is also
+refused while a goal is on it. A new 'Van Loan under $10,000' goal made today reads 0.00% now and 39.24% on Jan 1
+2027. A goal's start is always the day it was created, so no new date is stored."
+
+REFUSED: "Restart on the move" (the day it moved onto the debt becomes its start, saved as a new date on every goal
+in the same database change as the $0 target; same 0.00% / 39.24%; re-typing still refused); "Allow, start when
+created" (the start is the debt's figure on the CREATION day: the Van Loan's Apr 6 opening $32,402.45, reading
+78.82% the moment it is pointed at the loan and 87.13% on Jan 1 2027).
+
+#### Q2 (which figure a card goal measures) -- **R-CC88** -- PICKED "Same as its tile (Recommended)"
+
+> On /savings, a credit card's tile (or any other non-loan debt's tile) shows what it will owe at the END of the current pay period, counting purchases and payments already planned later in the period. A loan's tile shows what it owes today. Which figure should a debt goal on a card use, for its start, its current figure and the 'target must be below what it owes' check? Hypothetical example (production has no card): a Visa owes $1,000.00 today, and a $200.00 purchase is planned for later this pay period, so its tile shows $1,200.00. A goal 'Visa under $500' is set today, and a $400.00 payment is planned for Oct 9, in the next pay period. Loans read the same under both options. (Taking the start from the day and the current figure from the tile was rejected: set today, it would start at $1,000.00 while owing $1,200.00, and a $1,100 target would be allowed above its own start.)
+
+PICKED text: "The goal uses the card's tile figure. It starts at $1,200.00 and reads 0.00% today, and the target must
+be under $1,200.00. From the first day of next period it reads $800.00 owed, which is 57.14%. The goal and the tile
+above it always show the same figure, which is the rule savings goals already follow."
+
+REFUSED: "What it owes that day" (starts at $1,000.00, target under $1,000.00 while the tile reads $1,200.00; 0% after
+the purchase; 40.00% on Oct 9 after the payment).
+
+CONSEQUENCE (the lane's, stated with the question's recommendation): ONE rule, "what the tile shows for day D" (a
+configured loan: the day; any other account: the end of the pay period containing D, or D when no period contains
+it), read by the live tile, the archived list (CC-371 resolved in 5d) and every debt-goal figure (start, current,
+the save check). Applied WITHOUT a question because earlier rulings decide them (stated to Josh before the question):
+a debt goal's TARGET edit must be below what it owes at the edit (Block 11's own words, "less than the current amount
+owed") and never moves the start; a goal on an ARCHIVED debt reads what it owes (R-CC67), never $0.00 / "Goal met!";
+debt goals show no "Recommended per paycheck" (R-CC73) and so no false "Past target date"; create and edit are ONE
+door (the edit route skips create's active-account check today).
+
+### Block 20 -- the manual per-period field on a debt goal (asked by lane credit-extra [a6edea] ~09:4x 2026-09-23 EDT (`date` read 09:44:23 just after the answer), ONE AskUserQuestion, after Block 19). Id GRANTED by the coordinator: **R-CC90** (R-CC89 went to the 4a-4 lane's Round 7 at 09:4x; this lane had pre-guessed R-CC89 and was corrected)
+
+#### Q1 -- **R-CC90** -- PICKED "Not on debt goals (Recommended)"
+
+> The goal form has an optional 'Manual Contribution per Period' field. Its help text reads 'Override the auto-calculated recommendation', and the savings goal card shows it as 'Manual target $X/period' beside 'Recommended per paycheck'. Your ruling R-CC73 gives a DEBT goal no per-period figure: it shows only the projected date it falls under the target, and whether that is on pace. What should that field do on a debt goal? Example: 'Van Loan under $10,000', with $500.00 typed into the field.
+
+PICKED text: "The form hides the field when a debt is picked, and a save that carries it on a debt goal is refused.
+The debt goal card shows no per-period figure at all, consistent with R-CC73. What moves a debt goal is the loan or
+card's own planned payments, which the projected date already reads. Savings goals keep the field unchanged."
+
+REFUSED: "Keep it as a note" (the field stays; the card shows 'Manual target $500.00/period' as a reminder nothing
+reads; help text changes for debts).
+
+### Block 21 -- the adversarial review's H1: a card goal's start (asked by lane credit-extra [a6edea] ~11:0x 2026-09-23 EDT (`date` read 11:05:59 just after the answer), ONE AskUserQuestion, after the neutral review of the 5d diff). Id GRANTED by the coordinator (11:0x): **R-CC91**. REFINES R-CC71 (for non-loan debts) and R-CC88
+
+Review finding H1 (traced by the lane in `_goals._build_debt_goal_datum`; measured by the reviewer): a non-loan
+debt goal's start is `tile_balance_on(set day)` = the END of the set day's pay period, RE-READ with today's books
+(R-CC71), so every row dated later in that period -- a payment or purchase recorded after the goal was set --
+lands inside the start. Loans are unaffected (their tile reads the day).
+
+> A card goal's start behaves wrongly for card and other non-loan debts; loans are fine. A card's /savings tile shows what it will owe at the END of the pay period. Your R-CC71 re-reads a goal's start from the books every time, as that end-of-period figure for the day the goal was set, so anything recorded later in that same pay period lands inside the start. Example (hypothetical; production has no card): a Visa owes $1,000 today, a $200 purchase is planned later this period, so the tile shows $1,200. Goal 'Visa under $500' is set today. On day 5 of the same period you pay $300; next period you pay another $100. How should a card goal's start work?
+
+PICKED "Record it for cards (Recommended)": "A card or other non-loan debt goal SAVES its start when created:
+$1,200. The day-5 payment reads 42.86% ($300 of $700) and the next payment 57.14%. Loans keep re-reading their
+start from the books (R-CC71), because a loan's tile reads the day itself, so a later back-dated correction still
+moves a loan goal's start. Needs a saved start amount (same database change as the $0 target). Changing an
+account between a card-style and a loan-style type is then refused while a goal is on it, so a saved start can
+never land on a loan."
+
+REFUSED: "Record it for every debt" (loans stored too; the Van Loan $205.63 correction would read as progress);
+"Keep re-reading, say so" (0.00% after the day-5 payment, 25.00% after the next; a $300 day-5 purchase raises the
+start to $1,500); "Read the day, not the tile" (start $1,000, 60.00% after the payment, the tile reads $900).
+
+### Block 22 -- CC-5-5d's rule-5 CONFIRMATION (asked by lane credit-extra [a6edea] ~12:3x 2026-09-23 EDT (`date` read 12:34:05 just after the answer), ONE AskUserQuestion, multi-select; no ruling id, the shape of Block 13 Q1 / Block 16). CONFIRMED ALL FOUR
+
+(1) `tests/test_services/test_savings_dashboard_service.py::TestIncomeRelativeGoalDashboard::test_dashboard_goal_data_includes_new_keys`
+-- the pinned field set gains `start_owed` (read by the debt goal card). (2) `::TestTheDenseMapIsTotalAndSaysSo::
+test_the_projection_read_raises_on_a_missing_current_period` -- re-pointed from the deleted `_current_balance_from_map`
+to `_tile.tile_balance_on`, the same KeyError-on-a-missing-column contract. (3) `tests/test_schemas/test_validation.py::
+TestSavingsGoalCreateSchema::test_zero_target_rejected` -- the create schema loads a $0 target (R-CC72); the
+savings-only refusal is tested at the goal door. (4) `::TestSavingsGoalUpdateSchema::test_valid_partial_update` --
+the edit schema drops `is_active` (review M1); the test asserts it is ignored.
+
+### Block 23 -- the DELTA review's HIGH-1 and MEDIUM-1 (asked by lane credit-extra [a6edea] ~13:0x 2026-09-23 EDT, ONE AskUserQuestion, two questions). Ids GRANTED by the coordinator: **R-CC93** (Q1) and **R-CC94** (Q2); both file at 5d's tick with R-CC91
+
+HIGH-1 (measured by the reviewer: route create then route loan setup, 0% loan, frozen 2026-03-20): a loan-TYPE
+account with no terms reads as a card to the goal door, so a goal on it RECORDED its start; entering the terms made
+it a configured loan read by the day, and the recorded start then read 40.00% with no payment -- R-CC91's "a saved
+start can never land on a loan" broke through the loan-setup door (`routes/loan/params.py`).
+
+#### Q1 -- **R-CC93** -- PICKED "No goal until terms (Recommended)"
+> A second review found a hole in your R-CC91 ('a saved start can never land on a loan'). A loan-type account (e.g. an Auto Loan) can exist before its loan terms are entered. Until then it is treated like a card, so a goal on it RECORDS its start. Entering the terms later makes it a real loan read by the day, and the recorded start then sits against it. Measured: an Auto Loan typed as owing $20,000 with no terms; goal 'Auto under $15,000' set, start recorded $20,000; you then enter the terms, stating it owes $18,000 today. The goal reads (20,000 - 18,000) / (20,000 - 15,000) = 40.00% with no payment made. Production has no such account or goal. What should happen?
+
+PICKED text: "A goal cannot be set on a loan-type account until its loan terms are entered ('Enter this loan's terms
+before setting a goal on it'). After setup the goal is an ordinary loan goal: its start is re-read from the books,
+$18,000, 0.00%. Then 'loan type' and 'real loan' mean the same thing for every account that carries a goal, so the
+terms screen needs no new check."
+REFUSED: "Block entering the terms" (refuse setup while a goal is on it); "Drop the start at setup" (a goal set a week
+before setup reads 70.00% with no payment); "Keep it as built" (40.00%).
+
+#### Q2 -- **R-CC94** -- PICKED "On the edit page (Recommended)"
+> The goal refusals tell you to 'delete the goal first' (re-typing an account under a goal) or 'create a new goal instead' (moving a goal to another debt). But no screen has a button to delete a goal: the delete action exists, nothing links to it, and that was already true before this work. Since the review's fix, deleting is also the only way a goal ever stops. Should a goal get a delete button?
+
+PICKED text: "The goal's edit page gets a 'Delete goal' button with a confirm prompt, posting to the existing delete
+action (it deactivates the goal; the record is kept for the audit log). One small form, no new route."
+REFUSED: "On each goal card"; "Both places"; "Not in this step" (a ledger row instead).
+
+### Block 24 -- what an ARCHIVED card shows (CC-371's own ruling; asked by lane credit-extra [a6edea] ~14:0x 2026-09-23 EDT (`date` read 14:08:33 just after the answer) at the coordinator's word, after its review of the 5b+5c fix found R-CC88's filed text and CC-371 treating the archived list as ruled when Block 19 Q2 asked only about a debt goal's figure). ONE AskUserQuestion. Id REQUESTED from the coordinator (grant pending)
+
+> Your R-CC67 says every archived debt 'shows what it owes today from the same calculation as a live /savings tile'. For a card with a purchase planned later in the current pay period those are two different figures, and I picked one without asking you. Example: an archived Visa owes $1,000.00 today, and a $200.00 purchase is still planned later this period. Its live tile (before archiving) showed $1,200.00, because a card tile reads the END of the pay period. The just-committed debt-goal work makes the archived list show 'Owed $1,200.00'. Before it, the list showed 'Owed $1,000.00'. Loans read the same either way. Production has no archived debt. What should an archived card show?
+
+PICKED "Its tile's figure (Recommended)": "'Owed $1,200.00': the same rule the live tile and a debt goal use (R-CC88),
+so a card shows one figure whether live, archived or behind a goal. This is what is committed (8f8b056d); nothing
+changes."
+REFUSED: "Today's owed" ("'Owed $1,000.00': what it owes on the day, ignoring the purchase still planned in the
+period, as R-CC67's 'owes today' reads. The archived list then differs from the card's live tile by the planned
+rows. Needs a follow-up commit to switch the list back.").
+CONSEQUENCE: 8f8b056d stands as committed (no follow-up); R-CC67 takes an "AMENDED BY" head naming this ruling (its
+"owes today" read by the tile's rule for a non-loan debt); CC-371 closes citing it.
