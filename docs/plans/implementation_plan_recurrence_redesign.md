@@ -284,7 +284,7 @@ loan payment shadow's stored value moves to `due_on` (it is the installment the 
 `loan_posting_service.backfill_all_loan_postings()`, the caveat `c4e91a7b2d38` already carries. Own
 PR. It also deletes a false claim: `compute_due_date`'s docstring names a "due-date backfill script"
 that no longer exists anywhere in `scripts/`. Scope, re-measured 2026-08-08 rather than inherited:
-**The Python files NAMING `due_date` in code** (census 62 code files `due_date` in `app/**/*.py`) --
+**The Python files NAMING `due_date` in code** (census 63 code files `due_date` in `app/**/*.py`) --
 a SUPERSET of those touching the column, since the identifier is also a local and a kwarg, and the
 narrower AST census this once stated as 20 is not reproducible by a pattern -- more naming it only
 in prose, and templates render it (two carrying `<input name="due_date">`, so the wire format moves
@@ -621,6 +621,43 @@ is identity-paired with a row in another arc (rule 11), so their entries stay he
       owner's backdated paydays against the ordinal rule R15-b retired. Revisits the 2026-09-11
       schedule bound (**R-R64**) for stated owners only.
 
+- [ ] **R22 -- the plan is computed, only the owner's acts are stored** (a DESIGN step: an audit,
+      then forks to the developer with worked dollars, BEFORE any build; asked for by the developer
+      at `pay_calendar:C18-a` round 9, 2026-09-23: "The from scratch design needs to be a step in
+      the plan"). **Today** every occurrence a recurring schedule names inside the saved paychecks
+      is a STORED row (Projected until settled), so an unpaid copy can be stranded, revived or
+      re-dated by any door that writes rows, and each such door has grown its own fence: the books
+      refusals (**R-PC88**, **R-PC90**, **R-PC91**, **R-PC93**), the unarchive guard (**R-PC95**,
+      refined by **R-PC96**), the revert stopgap (**R-PC97**), and three open rows -- **REC-534** (a
+      day change deletes an unpaid row with only "updated"), **REC-535** (the conflict chooser
+      revives a deleted row the schedule no longer names), **REC-536** (a hand delete and the
+      archive share `is_deleted`). **The from-scratch model**: the schedule's occurrences are
+      COMPUTED on every read (the balance seam already projects them past the saved paychecks for
+      the loan estimates), and only what the owner DID is stored -- a payment (the record half), a
+      skipped or cancelled occurrence (an exception on the rule, REC-536's own remedy), a price or
+      paycheck change to one occurrence. A revert then deletes a record and the schedule says
+      whether anything is still owed; an occurrence inside the books is owed nothing
+      (**R-PC85**/**R-PC86**), so there is no unpaid copy to strand. **What the audit must map**:
+      every reader and writer of a template-linked Projected row (the census at C18 round 9 is a
+      start: generation, the maintain pass, the status seam, carry-forward, statement match's
+      container rows, the grid, envelopes and the purchases an envelope row carries, card paybacks,
+      the forecast and `/savings`); where an envelope's purchases attach when its occurrence is not
+      a row; how the balance arc's transfer work (`balance:X-bi-6`, status in one row) meets it.
+      **HYPOTHESES FOR THE AUDIT, NOT RULINGS** (the lane's option text asserted more than was
+      measured): (1) it deletes R-PC97's stopgap and R-PC95's guard for rows a schedule names --
+      plausible, because no unpaid copy exists to revert or restore; (2) it deletes what
+      R-PC88/R-PC90/R-PC91/R-PC93 police -- DOUBTFUL as stated: moving the books past an UNRECORDED
+      occurrence would drop it from the plan at once, which is R-PC88's REJECTED "delete it with the
+      move" (the forecast rising at once), so R-PC88's refuse-first question may survive, COMPUTED
+      from the schedule rather than read off rows; (3) R-PC96 judges rows NO schedule names (a
+      rule-less item's rows, a carried-forward leftover) by their own day, and those stay stored
+      under this model, so R-PC96 may survive too. Hand-added rows' own books gap is **PC-519**, a
+      separate row. Closes **REC-534**, **REC-535**, **REC-536** (each re-owned here at
+      `pay_calendar:C18-a`'s tick). Those ids, and **R-PC85**, **R-PC86**, **R-PC88**, **R-PC90**,
+      **R-PC91**, **R-PC93**, **R-PC95**, **R-PC96**, **R-PC97** and **PC-519**, are
+      `pay_calendar:C18-a`'s and file at its tick, and this step waits on `pay_calendar:C18` until
+      they do.
+
 - [ ] **R16-c -- the PAST and the FUTURE become ONE event STREAM**, the DECOMPOSED parent of two
       leaves (**R-R90**, 2026-09-19): the MERGE first (c-1, a pure restructure), then the CALENDAR
       (c-2, the money move). Ticks with its last leaf.
@@ -719,16 +756,40 @@ backfill does not guess. **The card's finance charge is priced by this same prod
 consumes it per constant-balance segment), and `credit_card:R-CC19` ranks that leaf AFTER this
 one -- no loan step is pulled forward for the card.
 
-- [ ] **R16-e -- walk 3 is DELETED** (ruling **R-R53**; finding **D60**).
-      `rate_period_engine.replay_schedule` is the THIRD walk over a loan: it charges a month per
-      payment RECORD and applies the CONTRACTUAL P&I rather than the actual cash, and its balance
-      has exactly ONE consumption site -- `loan_resolver._payoff._build_forward_inputs`'s
+- [ ] **R16-e -- walk 3 and the payment list that feeds it are DELETED** (rulings **R-R53**,
+      **R-R93**; findings **D60**, **N-409**). `rate_period_engine.replay_schedule` is the THIRD
+      walk over a loan: it charges a month per payment RECORD and applies the CONTRACTUAL P&I rather
+      than the actual cash, and its balance has exactly ONE consumption site --
+      `loan_resolver._payoff._build_forward_inputs`'s
       `replay.balance_as_of if confirmed_view is None` -- which every production read bypasses since
       plan step E1d-b. On a due-month collision it differs from walks 1 and 2 by one month's
       interest, pinned by mechanism in
       `test_biweekly_due_month_collision_reconciles_and_only_row_dates_differ`. What survives its
       balance is two CALENDAR scalars that need no walk; the walk goes, after `R16-c` has made the
       past and the future one stream. Deletion; `$0.00` on production, which never reads it.
+      **Widened 2026-09-23 by R-R93, when `balance:X-au-g-2c-3b-3` was WITHDRAWN into it:** in the
+      same act the step deletes the whole list that exists only to feed walk 3 --
+      `LoanContext.payments`, `LoanInputs.payments`, `get_payment_history`,
+      `prepare_payments_for_engine` (the escrow-subtraction FLOOR, **N-409**:
+      `amount - min(escrow, amount - contractual_pi)`, a SECOND allocation rule that reports a short
+      payment as exactly on schedule where the fold's `apply_payment_cash` takes the full escrow),
+      `compute_contractual_pi`, `LoanContext.contractual_pi` and `PaymentRecord` -- and the list's
+      two yes/no readers re-read the one stream: a retired loan with a confirmed payment
+      (`balance_at/_loan_figures.py`) and the payoff calculator's `has_plan`
+      (`routes/loan/calculators.py`). Measured at the withdrawal on `6de21895`: `project_forward`
+      has taken no payments since `R7d-g-3`, the feed's AMOUNTS have had no reader in `app/` since
+      `a1c5082f` deleted `_build_monthly_override`, and a full suite with the amounts stripped
+      failed only the one test known to read them; until this step ships the floor stays in the
+      code, read by nothing. `compute_contractual_pi` has one call site (`_context.py`), which
+      passes `date.today()`, so its deletion takes a process-clock read off the loan context
+      (**R-IJ**'s direction). `$0.00`. **Unruled, for this step's session** (the balance lane's
+      trace): (a) with the list gone, `amortization_engine.slotted_dates` and `schedule_dates` have
+      no production caller (today only `_engine_prep.py` calls `slotted_dates`), which bears on
+      **BAL-472** and `balance:X-cb`; (b) **R-BAL7**'s refusal of a dates-only feed lost its stated
+      reason, the forward override, at `R7d-g-3`; (c) `loan_payment_service/_context.py` names
+      **N-409**'s owner as `balance:X-au-g-2c-3` twice, in the docstring at :79-80 and the comment
+      at :222 -- both false since `R-R93`, and both go with this step's deletion of
+      `contractual_pi`.
 - [ ] **R16-f -- walk 4 is re-expressed over the ONE replay** (ruling **R-R53**; finding **D60**).
       `amortization_engine.project_forward` is the FOURTH walk, the contractual schedule the payoff
       and what-if surfaces read. It becomes the one replay (`loan_ledger.replay_loan_events`,

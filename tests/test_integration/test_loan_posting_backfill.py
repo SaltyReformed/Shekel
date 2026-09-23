@@ -563,26 +563,30 @@ class TestBackfillLeavesNonLoansAlone:
 
 
 # ---------------------------------------------------------------------------
-# The production deploy hook posts AND commits the backfill
+# The production deploy posts AND commits the backfill
 # ---------------------------------------------------------------------------
 
 
 class TestDeployHookCommitsBackfill:
-    """The post-migration deploy hook posts the backfill and commits it durably."""
+    """The deploy runs the backfill hook and commits it durably, in ONE commit."""
 
     def test_hook_posts_and_commits_via_separate_connection(
         self, app, db, seed_user, seed_periods,
     ):
-        """The deploy hook restores a missing correction AND commits it durably.
+        """The deploy restores a missing correction AND commits it durably.
 
         Reproduces the production deploy: a payment settled before the wiring
         (its correction cleared) is backfilled by the hook
-        ``backfill_loan_payment_postings_after_migration``.  A SEPARATE database
-        connection -- which under READ COMMITTED sees only COMMITTED rows -- must
-        observe the restored correction, proving the hook's terminal
-        ``db.session.commit()`` ran: a hook that merely flushed would leave the
-        correction invisible to that connection, so this fails loud if the commit
-        is ever dropped (the silent-persistence-loss failure mode).
+        ``backfill_loan_payment_postings_after_migration``, which the deploy
+        (``initialise_database``) runs inside its ONE transaction with the
+        migrations and the other two hooks (plan step balance:X-cv).  A
+        SEPARATE database connection -- which under READ COMMITTED sees only
+        COMMITTED rows -- must observe the restored correction, proving the
+        deploy's one commit ran: a deploy that merely flushed
+        would leave the correction invisible to that connection, so this fails
+        loud if the commit is ever dropped (the silent-persistence-loss failure
+        mode).  Until X-cv the hook committed on its own and this test called it
+        alone; the developer confirmed the re-expression (rule 5, 2026-09-22).
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -598,10 +602,10 @@ class TestDeployHookCommitsBackfill:
             _clear_corrections()
             assert loan_correction_entries(db.session, shadow) == []
 
-            _INIT_DB.backfill_loan_payment_postings_after_migration()
+            _INIT_DB.initialise_database()
 
             # A fresh connection sees only COMMITTED rows: the correction is
-            # visible only if the hook committed (not merely flushed).  Read at
+            # visible only if the deploy committed (not merely flushed).  Read at
             # the split's KEY -- its scenario, period and day (ruling R-BAL102:
             # the split links no row; it was read by ``transaction_id`` here
             # until plan step ``balance:X-bi-6-3``).

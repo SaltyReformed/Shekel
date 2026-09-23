@@ -57,7 +57,8 @@ from app.enums import AccountOpeningSourceEnum
 from app.exceptions import ValidationError
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.services import cash_ledger, opening_service
+from app.routes.accounts._door_meaning import door_meaning_refusal
+from app.services import cash_ledger, liability_sign, opening_service
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -80,7 +81,7 @@ logger = logging.getLogger(__name__)
 #: opening is ``LoanParams.original_principal`` and nothing reads its
 #: ``budget.account_openings`` row while the loan is configured, so a door here
 #: would report success and move no figure -- the twin of
-#: ``anchor.LOAN_ANCHOR_REFUSAL`` one fact over.
+#: ``_door_meaning.LOAN_ANCHOR_REFUSAL`` one fact over.
 LOAN_OPENING_REFUSAL = (
     "A loan's opening is its original principal, recorded with the loan's "
     "terms. Correct it on the loan's own page."
@@ -294,7 +295,9 @@ def books_opening_context(account: Account) -> "dict | None":
             Caller owns the ownership check.
 
     Returns:
-        The card's context -- ``opened_on``, ``equity``, ``declared``
+        The card's context -- ``opened_on``, ``equity`` (the amount OWED for a
+        liability, whose card speaks owed: ``asks_owed``, plan step
+        credit_card:CC-5-5b), ``declared``
         (whether a human stated the standing figure or the X-f3c-2a
         migration derived it) and ``ceiling``, the binding
         :class:`OpeningCeiling` carrying the date box's ``max`` and the
@@ -347,7 +350,14 @@ def books_opening_context(account: Account) -> "dict | None":
         return None
     return {
         "opened_on": opening.opened_on,
-        "equity": opening.opening_equity,
+        # In the DOOR's language (plan step credit_card:CC-5-5b, ruling
+        # R-CC52): a liability's card states and pre-fills what its books
+        # opened OWING, so a card opened at -1,000.00 held reads 1,000.00 owed.
+        # An asset's figure is its equity as stored.
+        "equity": liability_sign.shown_figure(
+            account.account_type, opening.opening_equity,
+        ),
+        "asks_owed": liability_sign.asks_owed(account.account_type),
         # Whether a HUMAN stated the standing figure.  The card says so,
         # because a ``migration_derived`` opening is the pre-X-f3c-2a inference
         # frozen and may be WRONG -- findings **N-275** and **N-379** measure
@@ -435,6 +445,14 @@ def restate_opening(account_id):
             account_id, flatten_schema_errors(errors),
         )
     data = _opening_schema.load(request.form)
+    # Ruling R-CC61: a card rendered under the other meaning (the account
+    # crossed asset <-> liability in another tab) is refused before anything is
+    # written, and the edit page it returns to re-renders the card under the
+    # meaning the account has now.
+    stale = door_meaning_refusal(account, data["asks_owed"])
+    if stale is not None:
+        return _restatement_failure(account_id, stale)
+    asks_owed = data["asks_owed"]
 
     try:
         outcome = opening_service.apply_opening_restatement(
@@ -444,13 +462,21 @@ def restate_opening(account_id):
                 # ``Decimal(str(...))`` rather than the schema's own object,
                 # the construction ``anchor.true_up`` uses for the same reason:
                 # the project builds money from a STRING so nothing can hand a
-                # binary float into a monetary path.
-                equity=Decimal(str(data["opening_equity"])),
+                # binary float into a monetary path.  Then the ONE crossing
+                # this door makes (plan step credit_card:CC-5-5b, ruling
+                # R-CC52): a liability's card asks what the books opened OWING,
+                # and the service stores the held sign.
+                equity=liability_sign.held_balance(
+                    account.account_type,
+                    Decimal(str(data["opening_equity"])),
+                ),
             ),
         )
     except ValidationError as exc:
         return _restatement_failure(account_id, str(exc))
 
+    # Both messages echo the figure as TYPED, which on a liability is the
+    # amount owed -- so they say "owed" / "owing" rather than "holding".
     if outcome is OpeningRestatementOutcome.UNCHANGED:
         # Ruling R-EQ idempotent success: the submission states the opening
         # that already stands, so nothing was written and the service rolled
@@ -459,14 +485,15 @@ def restate_opening(account_id):
         # which would be false.
         flash(
             "These books already open on "
-            f"{data['opened_on'].isoformat()} at ${data['opening_equity']}. "
-            "Nothing was changed.",
+            f"{data['opened_on'].isoformat()} at ${data['opening_equity']}"
+            f"{' owed' if asks_owed else ''}. Nothing was changed.",
             "info",
         )
     else:
         flash(
             "Books restated: this account now opens on "
-            f"{data['opened_on'].isoformat()} holding "
+            f"{data['opened_on'].isoformat()} "
+            f"{'owing' if asks_owed else 'holding'} "
             f"${data['opening_equity']}. Balances you recorded afterwards are "
             "unchanged, so the difference shows up as a correction against "
             "them -- reported as a gain or as interest on a savings, "

@@ -685,7 +685,7 @@ class TestTheFactoryRefusesToLeaveAnAccountAnchorless:
     def test_a_declining_write_door_raises_instead_of_returning(
         self, app, db, monkeypatch, seed_user, seed_periods_today,
     ):
-        """A ``False`` from the stager is a refusal, not a silent success.
+        """A ``staged=False`` report from the stager is a refusal, not a silent success.
 
         Forces the decline by patching the write door, which is the only way in:
         the compare it makes cannot find a governing assertion for an account
@@ -702,7 +702,9 @@ class TestTheFactoryRefusesToLeaveAnAccountAnchorless:
         with app.app_context():
             monkeypatch.setattr(
                 anchor_service, "stage_anchor_true_up",
-                lambda **_kwargs: False,
+                lambda **_kwargs: anchor_service.AnchorStageReport(
+                    staged=False, latest=None,
+                ),
             )
             checking_type_id = _db.session.query(AccountType).filter_by(
                 name="Checking",

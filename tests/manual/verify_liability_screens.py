@@ -38,6 +38,9 @@ listed here.
   re-signed pre-fill is a wrong assertion one click away, and no figure-only
   harness sees it; CC-5-5b must move these for a LIABILITY and leave them
   byte-identical for an asset);
+* the GRID of every liability with no amortization schedule (a card, a custom
+  liability), the surface the anchor editor opens from beside the held balance
+  its rows are summed in -- added at plan step CC-5-5b (ruling R-CC57);
 * the read-only POST calculators that price a loan's owed balance -- the payoff
   calculator in both modes and the refinance comparison for every loan, and the
   debt strategy in both orders.  None of them writes: each validates its form
@@ -107,6 +110,7 @@ from app.extensions import db, login_manager  # noqa: E402
 from app.models.account import Account  # noqa: E402
 from app.models.loan_params import LoanParams  # noqa: E402
 from app.models.user import User  # noqa: E402
+from app.services.account_category import is_liability_account  # noqa: E402
 # pylint: enable=wrong-import-position
 
 #: The whole-page and fragment GETs that render a liability figure.
@@ -120,6 +124,15 @@ ROUTES = [
     "/analytics/balance-sheet",
     "/accounts/new",
 ]
+
+#: The GRID of every account that is a liability WITHOUT an amortization
+#: schedule -- a card, a custom liability -- which is where the anchor editor
+#: opens from beside the held balance its rows are summed in (plan step
+#: credit_card:CC-5-5b, ruling R-CC57; the CC-5-5a tick review's L6).  A loan's
+#: grid is refused (``resolve_grid_account``'s amortizing gate), so it is not
+#: listed; production held no such account on 2026-09-22, so this adds no
+#: response there and grades a clone that carries one.
+LIABILITY_GRID_ROUTE = "/grid?account_id={}"
 
 #: The per-account GETs, formatted with each account id in turn: the cockpit
 #: tile, every surface ``verify_render_surfaces.py`` probes, the loan page's
@@ -334,8 +347,10 @@ def _owner_ids(app):
         app: The Flask application.
 
     Returns:
-        ``(user_id, account_ids, loan_ids)`` -- the loans being the accounts
-        that carry a ``LoanParams`` row, each list ordered by id.
+        ``(user_id, account_ids, loan_ids, grid_liability_ids)`` -- the loans
+        being the accounts that carry a ``LoanParams`` row, and the grid
+        liabilities the liabilities with no amortization schedule
+        (:data:`LIABILITY_GRID_ROUTE`), each list ordered by id.
     """
     with app.app_context():
         user = db.session.query(User).order_by(User.id).first()
@@ -352,7 +367,14 @@ def _owner_ids(app):
             .filter(LoanParams.account_id.in_(account_ids))
             .order_by(LoanParams.account_id).all()
         ]
-        return user.id, account_ids, loan_ids
+        grid_liability_ids = [
+            row.id for row in
+            db.session.query(Account).filter_by(user_id=user.id)
+            .order_by(Account.id).all()
+            if is_liability_account(row)
+            and not row.account_type.has_amortization
+        ]
+        return user.id, account_ids, loan_ids, grid_liability_ids
 
 
 def _forged_client(app, user_id):
@@ -378,17 +400,23 @@ def _forged_client(app, user_id):
     return client
 
 
-def _render(client, snapshot, account_ids, loan_ids):
+def _render(client, snapshot, owned):
     """Request every listed surface and save each response into *snapshot*.
 
     Args:
         client: The logged-in test client.
         snapshot: The run's :class:`_Snapshot`.
-        account_ids: Every account of the user, for the per-account GETs.
-        loan_ids: The configured loans, for the calculator POSTs.
+        owned: ``(account_ids, loan_ids, grid_liability_ids)`` from
+            :func:`_owner_ids`: every account (the per-account GETs), the
+            configured loans (the calculator POSTs) and the liabilities with no
+            schedule (their grids).
     """
+    account_ids, loan_ids, grid_liability_ids = owned
     for route in ROUTES:
         snapshot.save("GET", route, client.get(route, headers=_headers(route)))
+    for account_id in grid_liability_ids:
+        route = LIABILITY_GRID_ROUTE.format(account_id)
+        snapshot.save("GET", route, client.get(route))
     for account_id in account_ids:
         for template in ACCOUNT_ROUTES:
             route = template.format(account_id)
@@ -420,9 +448,12 @@ def main(out_path):
     app = create_app()
     app.config["WTF_CSRF_ENABLED"] = False
     login_manager.session_protection = None
-    user_id, account_ids, loan_ids = _owner_ids(app)
+    user_id, account_ids, loan_ids, grid_liability_ids = _owner_ids(app)
     snapshot = _Snapshot(out_dir)
-    _render(_forged_client(app, user_id), snapshot, account_ids, loan_ids)
+    _render(
+        _forged_client(app, user_id), snapshot,
+        (account_ids, loan_ids, grid_liability_ids),
+    )
     snapshot.write_index()
     identity = _tree_identity()
     (out_dir / "tree.json").write_text(
@@ -431,7 +462,8 @@ def main(out_path):
     server_errors = snapshot.server_errors()
     print(
         f"wrote {out_dir}: {len(snapshot.index)} responses "
-        f"({len(account_ids)} accounts, {len(loan_ids)} loans), "
+        f"({len(account_ids)} accounts, {len(loan_ids)} loans, "
+        f"{len(grid_liability_ids)} liability grids), "
         f"{len(server_errors)} server errors; rendered {identity['app_package']} "
         f"at {identity['git_head'][:10]}"
         f"{' (app/ dirty)' if identity['app_dirty'] else ''}, "

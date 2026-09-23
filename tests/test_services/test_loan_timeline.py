@@ -31,6 +31,7 @@ from app.enums import StatusEnum
 from app.models.amount_ownership import AmountOwnership
 from app.services import balance_at, transfer_service
 from app.services.balance_at import BalanceContext
+from app.services.liability_sign import owed
 from app.services.loan_ledger import installment_slot
 from tests._test_helpers import (
     create_loan_account,
@@ -83,7 +84,11 @@ def _projected(seed_user, loan, period, due):
 
 
 class TestSkippedMonthsBehindASettledPayment:
-    """The plan's charges for skipped months interleave with their catch-ups."""
+    """The plan's charges for skipped months interleave with their catch-ups.
+
+    The seam's balance is HELD, negative when owed (ruling R-CC47), so each
+    case reads what the loan owes through ``owed()``.
+    """
 
     def test_two_catch_ups_walk_charge_pay_charge_pay(
         self, app, db, seed_user, seed_periods, monkeypatch,
@@ -105,8 +110,8 @@ class TestSkippedMonthsBehindASettledPayment:
 
         Both charges applied first would accrue May's interest on a balance
         April's catch-up had not reduced (992.46 + 992.46 = 1,984.92 standing,
-        the April catch-up paying -484.92 of principal), and the balance on
-        06-16 would read 197,477.41: the +2.54 the review measured.
+        the April catch-up paying -484.92 of principal), and the loan would
+        owe 197,477.41 on 06-16: the +2.54 the review measured.
         """
         with app.app_context():
             freeze_today(monkeypatch, _AS_OF)
@@ -122,10 +127,10 @@ class TestSkippedMonthsBehindASettledPayment:
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
-            assert balance_at.balance_at(loan, ctx, _AS_OF) == (
+            assert owed(balance_at.balance_at(loan, ctx, _AS_OF)) == (
                 Decimal("198492.49")
             )
-            assert balance_at.balance_at(loan, ctx, date(2026, 6, 16)) == (
+            assert owed(balance_at.balance_at(loan, ctx, date(2026, 6, 16))) == (
                 Decimal("197474.87")
             )
 
@@ -171,7 +176,7 @@ class TestSkippedMonthsBehindASettledPayment:
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
 
-            assert balance_at.balance_at(loan, ctx, _AS_OF) == (
+            assert owed(balance_at.balance_at(loan, ctx, _AS_OF)) == (
                 Decimal("197984.95")
             )
             [may, *_rest] = balance_at.loan_installments(loan, ctx)
@@ -183,7 +188,11 @@ class TestSkippedMonthsBehindASettledPayment:
 
 
 class TestThePassSeesTheFactsVisibleByItsAsOf:
-    """Ruling R-R91: the pass's walk is bounded at the load, the opening always in."""
+    """Ruling R-R91: the pass's walk is bounded at the load, the opening always in.
+
+    The seam's balance is HELD, negative when owed (ruling R-CC47), so each
+    case reads what the loan owes through ``owed()``.
+    """
 
     def test_a_true_up_dated_after_the_read_is_not_folded(
         self, app, db, seed_user, monkeypatch,
@@ -208,7 +217,7 @@ class TestThePassSeesTheFactsVisibleByItsAsOf:
             assert [r.is_opening for r in before.loan_walk(loan).stream.resets] == [
                 True,
             ]
-            assert balance_at.balance_at(loan, before, date(2026, 6, 10)) == (
+            assert owed(balance_at.balance_at(loan, before, date(2026, 6, 10))) == (
                 _PRINCIPAL
             )
             assert balance_at.loan_figures(loan, before).is_retired is False
@@ -216,7 +225,7 @@ class TestThePassSeesTheFactsVisibleByItsAsOf:
 
             after = BalanceContext.build(owner, date(2026, 6, 20))
             assert len(after.loan_walk(loan).stream.resets) == 2
-            assert balance_at.balance_at(loan, after, date(2026, 6, 20)) == (
+            assert owed(balance_at.balance_at(loan, after, date(2026, 6, 20))) == (
                 Decimal("0.00")
             )
             assert balance_at.loan_figures(loan, after).is_retired is True
@@ -248,7 +257,7 @@ class TestThePassSeesTheFactsVisibleByItsAsOf:
             assert (only.interest, only.principal) == (
                 Decimal("1000.00"), Decimal("500.00"),
             )
-            assert balance_at.balance_at(loan, mid, date(2026, 2, 1)) == (
+            assert owed(balance_at.balance_at(loan, mid, date(2026, 2, 1))) == (
                 Decimal("199500.00")
             )
 
@@ -260,7 +269,7 @@ class TestThePassSeesTheFactsVisibleByItsAsOf:
             assert (second.interest, second.principal) == (
                 Decimal("0.00"), Decimal("1500.00"),
             )
-            assert balance_at.balance_at(loan, later, date(2026, 2, 13)) == (
+            assert owed(balance_at.balance_at(loan, later, date(2026, 2, 13))) == (
                 Decimal("198000.00")
             )
 
@@ -280,10 +289,10 @@ class TestThePassSeesTheFactsVisibleByItsAsOf:
 
             [opening] = ctx.loan_walk(loan).stream.resets
             assert opening.is_opening and opening.on_date == date(2026, 4, 15)
-            assert balance_at.balance_at(loan, ctx, date(2026, 3, 20)) == (
+            assert owed(balance_at.balance_at(loan, ctx, date(2026, 3, 20))) == (
                 Decimal("0.00")
             )
-            assert balance_at.balance_at(loan, ctx, date(2026, 4, 15)) == (
+            assert owed(balance_at.balance_at(loan, ctx, date(2026, 4, 15))) == (
                 _PRINCIPAL
             )
             assert balance_at.loan_figures(loan, ctx).is_retired is False

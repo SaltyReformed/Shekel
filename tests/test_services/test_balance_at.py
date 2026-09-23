@@ -62,6 +62,7 @@ from app.services import (
     balance_at,
     cash_ledger,
     income_service,
+    liability_sign,
     template_amount_service,
 )
 from app.services.account_projection import (
@@ -232,15 +233,21 @@ def _make_hysa(db, seed_user, anchor_period, balance):
 
 
 def _owed_today(account, ctx) -> Decimal:
-    """The seam's balance for *account* on the pass's read day.
+    """What *account* OWES on the pass's read day, per the seam.
 
     What ``DebtSchedule.projection_seed`` WAS -- the settled fold's balance at
     ``ctx.as_of``, from which the forward fold started -- until plan step
     recurrence:R16-c-1 replayed a loan's whole timeline from its origination and
     deleted the field with the second fold it seeded.  The assertions below that
     graded the seed grade the same figure through the public scalar.
+
+    **The scalar reports what the loan HOLDS, negative when owed** (ruling
+    R-CC47, plan step credit_card:CC-5-5c), so this reads it through
+    ``liability_sign.owed`` -- the one flip -- and returns the positive owed
+    figure every caller compares against owed dollars and schedule rows'
+    ``remaining_balance``.
     """
-    return balance_at.balance_at(account, ctx, ctx.as_of)
+    return liability_sign.owed(balance_at.balance_at(account, ctx, ctx.as_of))
 
 
 def _make_mortgage(
@@ -601,13 +608,17 @@ class TestBalanceMapLoan:
         splits on the date the balance was ASSERTED:
 
         * A period that had not ended when the true-up landed, and that still
-          precedes the first scheduled payment, reports the trued-up
-          current_balance ($200,000) held flat -- NEVER the $240,000 original
+          precedes the first scheduled payment, owes the trued-up
+          current_balance ($200,000) flat -- NEVER the $240,000 original
           principal.
-        * A period that ENDED before the true-up reports what the fold knew then:
+        * A period that ENDED before the true-up owes what the fold knew then:
           the $240,000 opening, undisturbed, because not one payment was ever
           recorded.  The past belongs to the fold, and the trued-up balance is
           not back-projected across it.
+
+        The map reports what the loan HOLDS, negative when owed (ruling R-CC47,
+        plan step credit_card:CC-5-5c), so every figure here is read through
+        ``liability_sign.owed``: the dollars above are what the loan owes.
 
         Both halves are verified against the real dev clone, where the Mortgage's
         past periods likewise step down at each recorded event rather than
@@ -662,7 +673,9 @@ class TestBalanceMapLoan:
                 if anchor_date <= last_covered_day(p) < first_payment
             ]
             assert post_anchor, "expected a post-anchor pre-first-payment period"
-            assert seam[post_anchor[0].id] == _owed_today(mortgage, bctx)
+            assert liability_sign.owed(
+                seam[post_anchor[0].id],
+            ) == _owed_today(mortgage, bctx)
             # ...which is the trued-up current balance, never the original
             # principal (the PR #44 / aba0242 boundary bug).
             assert _owed_today(mortgage, bctx) == Decimal("200000.00")
@@ -674,7 +687,9 @@ class TestBalanceMapLoan:
             # back-projected over the past.
             pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
-            assert seam[pre_anchor[-1].id] == Decimal("240000.00")
+            assert liability_sign.owed(
+                seam[pre_anchor[-1].id],
+            ) == Decimal("240000.00")
 
     def test_paid_off_empty_schedule_uses_current_balance(
         self, app, db, seed_user, seed_periods_today,
@@ -727,9 +742,11 @@ class TestBalanceMapLoan:
 
         The map's FORWARD region, pinned by VALUE.  For a period after today whose
         end is past the loan's first scheduled payment, the seam reads the forward
-        projection: the schedule's ``remaining_balance`` for the LAST installment
-        due by that period's end -- a specific reduced balance, strictly below the
-        seed.  Independently recomputes the expected row here (last unconfirmed row
+        projection: the loan owes the schedule's ``remaining_balance`` for the LAST
+        installment due by that period's end -- a specific reduced balance,
+        strictly below the seed.  The map reports what the loan HOLDS, negative
+        when owed (ruling R-CC47, plan step credit_card:CC-5-5c), so it is read
+        through ``liability_sign.owed`` before it meets that owed row.  Independently recomputes the expected row here (last unconfirmed row
         on-or-before the period end) rather than trusting the producer, so a
         regression in the map's forward SAMPLING (wrong period date) or the walk's
         row SELECTION would fire.  Restores at the seam the after-payment forward
@@ -776,7 +793,7 @@ class TestBalanceMapLoan:
             expected = max(
                 due_by_end, key=lambda row: row.payment_date,
             ).remaining_balance
-            assert seam[fp.id] == expected
+            assert liability_sign.owed(seam[fp.id]) == expected
             # A real reduction: strictly below the $200,000 seed, still owing.
             assert Decimal("0.00") < expected < _owed_today(loan, bctx)
             assert _owed_today(loan, bctx) == Decimal("200000.00")
@@ -1633,6 +1650,10 @@ class TestBalanceAt:
         capitalizes the shortfall (see
         ``TestLiabilityOwedAtDates.test_forward_owed_credits_only_future_installments_not_overdue_ones``).
         This asserted ``seam <= projection_seed`` until then.
+
+        The scalar reports what the loan HOLDS, negative when owed (ruling
+        R-CC47, plan step credit_card:CC-5-5c), so what the seam owes is read
+        through ``liability_sign.owed`` before it meets the owed schedule rows.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1666,8 +1687,8 @@ class TestBalanceAt:
             # The seam credits none of the overdue installments, so it owes MORE
             # than the contractual walk -- and, charging every one of the skipped
             # months (R-R71), more than its seed.
-            assert seam > contractual_walk
-            assert seam > _owed_today(mortgage, bctx)
+            assert liability_sign.owed(seam) > contractual_walk
+            assert liability_sign.owed(seam) > _owed_today(mortgage, bctx)
 
     def test_investment_is_date_precise_and_meets_the_map_at_period_ends(
         self, app, db, seed_user, seed_periods_today,
@@ -1875,6 +1896,10 @@ class TestMultiLoanIsolation:
         period ($240,000 / $180,000), its own trued-up balance at the anchor period
         ($200,000 / $50,000), and its own forward projection -- which must still
         straddle the two loans' wildly different balances after today.
+
+        Every one of those figures is what the loan OWES.  The maps report what
+        each loan HOLDS, negative when owed (ruling R-CC47, plan step
+        credit_card:CC-5-5c), so each is read through ``liability_sign.owed``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1906,16 +1931,24 @@ class TestMultiLoanIsolation:
             )
             # The period the true-ups landed in -> each loan's OWN trued-up
             # balance (both are still pre-first-payment there).
-            assert seam_maps[loan_a.id][anchor_period.id] == Decimal("200000.00")
-            assert seam_maps[loan_b.id][anchor_period.id] == Decimal("50000.00")
+            assert liability_sign.owed(
+                seam_maps[loan_a.id][anchor_period.id],
+            ) == Decimal("200000.00")
+            assert liability_sign.owed(
+                seam_maps[loan_b.id][anchor_period.id],
+            ) == Decimal("50000.00")
 
             # A period that ended before the true-ups -> each loan's OWN ledger
             # opening (no payment was recorded against either).
             pre_anchor = [p for p in periods if last_covered_day(p) < anchor_date]
             assert pre_anchor, "expected a pre-anchor period"
             earlier = pre_anchor[-1].id
-            assert seam_maps[loan_a.id][earlier] == Decimal("240000.00")
-            assert seam_maps[loan_b.id][earlier] == Decimal("180000.00")
+            assert liability_sign.owed(
+                seam_maps[loan_a.id][earlier],
+            ) == Decimal("240000.00")
+            assert liability_sign.owed(
+                seam_maps[loan_b.id][earlier],
+            ) == Decimal("180000.00")
 
             # The FUTURE tail -- the only region that consumes the per-loan
             # DebtSchedule bundle, and so the only one where a positional/shared
@@ -1925,8 +1958,8 @@ class TestMultiLoanIsolation:
             future = [p for p in periods if p.start_date > anchor_date]
             assert future, "expected a future period"
             later = future[-1].id
-            a_future = seam_maps[loan_a.id][later]
-            b_future = seam_maps[loan_b.id][later]
+            a_future = liability_sign.owed(seam_maps[loan_a.id][later])
+            b_future = liability_sign.owed(seam_maps[loan_b.id][later])
             # A was trued up to 200k and B to 50k; a few biweekly periods of
             # amortization cannot move either near the other.
             assert Decimal("190000.00") < a_future <= Decimal("200000.00"), (
@@ -4272,16 +4305,19 @@ class TestLiabilityOwedAtDates:
                 date(today.year + 2, 12, 31),
             ]
 
+            # The caller hands the HELD balance (ruling R-CC47, plan step
+            # credit_card:CC-5-5c): -200,000.00 is what a loan owing $200,000
+            # holds, and the band returns what it owes.
             owed = balance_at.liability_owed_at_dates(
                 [acct], bctx, samples,
-                {acct.id: Decimal("200000.00")},
+                {acct.id: Decimal("-200000.00")},
             )
 
             series = owed[acct.id]
             assert len(series) == len(samples)
-            # Today is the caller's confirmed balance; each later year end has
-            # had another year of scheduled principal applied, so the owed
-            # balance falls monotonically.
+            # Today is what the caller's confirmed balance owes; each later
+            # year end has had another year of scheduled principal applied, so
+            # the owed balance falls monotonically.
             assert series[0] == Decimal("200000.00")
             assert series[1] < series[0]
             assert series[2] < series[1]
@@ -4298,7 +4334,10 @@ class TestLiabilityOwedAtDates:
         due-basis rows stay in the forward walk), UNDERSTATING the debt.
 
         Pinned by passing a current balance the schedule could not possibly
-        produce: it must come back verbatim at index 0.
+        produce: what it owes must come back at index 0.  The balance is passed
+        HELD (ruling R-CC47, plan step credit_card:CC-5-5c) -- ``-sentinel``, a
+        loan owing the sentinel -- and the band returns what it owes, the
+        sentinel itself.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -4312,7 +4351,7 @@ class TestLiabilityOwedAtDates:
             sentinel = Decimal("123456.78")
 
             owed = balance_at.liability_owed_at_dates(
-                [acct], bctx, [date.today()], {acct.id: sentinel},
+                [acct], bctx, [date.today()], {acct.id: -sentinel},
             )
 
             assert owed[acct.id] == [sentinel]
@@ -4328,10 +4367,13 @@ class TestLiabilityOwedAtDates:
         to its asserted ``-500.00`` on every day, so the figures here are the
         ones the old flat hold gave -- which is exactly why this case alone
         cannot tell the two rules apart, and the sibling with planned rows can.
-        Also pins the sign convention: a card's cash balance is NEGATIVE, and
-        the seam returns the POSITIVE owed magnitude (matching the net-worth
-        reduction's liability-minus rule, ``abs(bal)`` subtracted from the
-        asset side).
+        Also pins the sign convention: a card owing $500 HOLDS ``-500.00``, and
+        the seam returns what it OWES, ``liability_sign.owed`` of the held
+        balance (ruling R-CC47, plan step credit_card:CC-5-5c) -- the same
+        ``owed()`` the net-worth hero sums into its liability total.  It took
+        ``abs`` until then, which agrees on a card that owes, so this case
+        cannot tell the two apart; the card holding a credit in
+        ``tests/test_services/test_one_liability_sign.py`` can.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -4349,8 +4391,8 @@ class TestLiabilityOwedAtDates:
                 [card], bctx, samples, {card.id: Decimal("-500.00")},
             )
 
-            # abs(-500) at every sample: today from the caller, the future from
-            # a fold that holds no row to move it.
+            # owed(-500.00) = 500.00 at every sample: today from the caller, the
+            # future from a fold that holds no row to move it.
             assert owed[card.id] == [Decimal("500.00")] * 3
 
     def test_a_cards_planned_rows_move_it_across_the_horizon(
@@ -4371,7 +4413,10 @@ class TestLiabilityOwedAtDates:
         in period 6 and a ``$200.00`` payment (an income row on the card) in
         period 8; the samples are today, the START of period 7 (after the
         purchase, before the payment) and the year end after next (after
-        both).  Hand-computed, owed magnitude = ``abs(fold)``::
+        both).  Hand-computed, what the card owes is ``liability_sign.owed``
+        of the held fold -- minus it (ruling R-CC47, plan step
+        credit_card:CC-5-5c; it read ``abs(fold)`` until then, which agrees on
+        a card that owes and parts on one holding a credit)::
 
             today                 caller's -500.00              ->  500.00
             period 7 start        -500.00 - 120.00 = -620.00    ->  620.00
@@ -4427,9 +4472,12 @@ class TestLiabilityOwedAtDates:
                 Decimal("500.00"), Decimal("620.00"), Decimal("420.00"),
             ]
             # The same producer answers the scalar, so the band's future
-            # points ARE the account page's figures for those days.
-            for sample, magnitude in zip(samples[1:], owed[card.id][1:]):
-                assert magnitude == abs(balance_at.balance_at(card, bctx, sample))
+            # points ARE what the account page's figures for those days owe --
+            # the one flip of the held scalar, not its magnitude.
+            for sample, owed_on in zip(samples[1:], owed[card.id][1:]):
+                assert owed_on == liability_sign.owed(
+                    balance_at.balance_at(card, bctx, sample),
+                )
 
     def test_no_baseline_holds_a_card_with_planned_rows_flat(
         self, app, db, seed_user, seed_periods_today,
@@ -4529,9 +4577,11 @@ class TestLiabilityOwedAtDates:
                 _asset_fold, "fold_asset_balances", counting_fold,
             )
 
+            # Both current balances are HELD (R-CC47): the loan owing $200,000
+            # holds -200,000.00, the card owing $500 holds -500.00.
             owed = balance_at.liability_owed_at_dates(
                 [mortgage, card], bctx, samples,
-                {mortgage.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
+                {mortgage.id: Decimal("-200000.00"), card.id: Decimal("-500.00")},
             )
 
             assert positions_calls == [future], positions_calls
@@ -4559,8 +4609,9 @@ class TestLiabilityOwedAtDates:
             today = date.today()
             samples = [today, date(today.year + 1, 12, 31)]
 
+            # Passed HELD (R-CC47): a loan owing $200,000 holds -200,000.00.
             owed = balance_at.liability_owed_at_dates(
-                [acct], _no_baseline(user_id), samples, {acct.id: Decimal("200000.00")},
+                [acct], _no_baseline(user_id), samples, {acct.id: Decimal("-200000.00")},
             )
 
             assert owed[acct.id] == [Decimal("200000.00")] * 2
@@ -4606,10 +4657,12 @@ class TestLiabilityOwedAtDates:
             )
             yesterday = date.today() - timedelta(days=1)
 
+            # Passed HELD (R-CC47), like every caller's current balance: a
+            # loan owing $200,000 holds -200,000.00.
             with pytest.raises(ValueError, match="FORWARD"):
                 balance_at.liability_owed_at_dates(
                     [acct], bctx, [yesterday, date.today()],
-                    {acct.id: Decimal("200000.00")},
+                    {acct.id: Decimal("-200000.00")},
                 )
 
     def test_projection_is_joined_by_date_not_by_position(
@@ -4639,10 +4692,11 @@ class TestLiabilityOwedAtDates:
             plus_one = date(today.year + 1, 12, 31)
             plus_two = date(today.year + 2, 12, 31)
 
-            # Deliberately unsorted: today, +2y, +1y.
+            # Deliberately unsorted: today, +2y, +1y.  The current balance is
+            # passed HELD (R-CC47): a loan owing $200,000 holds -200,000.00.
             owed = balance_at.liability_owed_at_dates(
                 [acct], bctx, [today, plus_two, plus_one],
-                {acct.id: Decimal("200000.00")},
+                {acct.id: Decimal("-200000.00")},
             )
 
             series = owed[acct.id]
@@ -4683,9 +4737,11 @@ class TestLiabilityOwedAtDates:
             today = date.today()
             samples = [today, date(today.year + 1, 12, 31)]
 
+            # Both current balances are HELD (R-CC47): the loan owing $200,000
+            # holds -200,000.00, the card owing $500 holds -500.00.
             owed = balance_at.liability_owed_at_dates(
                 [acct, card], bctx, samples,
-                {acct.id: Decimal("200000.00"), card.id: Decimal("-500.00")},
+                {acct.id: Decimal("-200000.00"), card.id: Decimal("-500.00")},
             )
 
             assert set(owed) == {acct.id, card.id}
@@ -4719,6 +4775,14 @@ class TestLiabilityOwedAtDates:
         amortizes below today's balance"), which was B-9's "an overdue slot
         with no record holds flat" -- a rule about what an unpaid installment
         PAYS that had been read as a rule about what an unpaid month CHARGES.
+
+        The caller hands the band the balance the loan HOLDS (ruling R-CC47,
+        plan step credit_card:CC-5-5c): ``-200,000.00``, a loan owing
+        $200,000.  Handed ``+200,000.00`` -- the owed sign this case passed
+        until then -- the band reads a $200,000 CREDIT at today, ``-200,000.00``
+        owed, and the "owes more than today" assertion below holds for any
+        forward figure above that.  The today point is pinned first so the
+        comparison cannot go vacuous that way again.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -4731,10 +4795,15 @@ class TestLiabilityOwedAtDates:
             today = date.today()
             far_out = date(today.year + 1, 12, 31)
 
+            # Passed HELD (R-CC47): a loan owing $200,000 holds -200,000.00.
             owed = balance_at.liability_owed_at_dates(
                 [acct], bctx, [today, far_out],
-                {acct.id: Decimal("200000.00")},
+                {acct.id: Decimal("-200000.00")},
             )
+            # Non-vacuity: today's point is the $200,000 the loan owes, so the
+            # comparison with the forward point below measures arrears and not
+            # the sign of the caller's figure.
+            assert owed[acct.id][0] == Decimal("200000.00")
 
             debt = net_worth_kernel.generate_debt_schedules(
                 [acct], bctx,
@@ -4807,8 +4876,10 @@ class TestLiabilityOwedAtDates:
                 "a schedule walk at today should understate the debt here"
             )
 
+            # ``confirmed`` is what the loan OWES; the caller hands the band the
+            # balance it HOLDS (R-CC47), which is its negation.
             owed = balance_at.liability_owed_at_dates(
-                [acct], bctx, [today], {acct.id: confirmed},
+                [acct], bctx, [today], {acct.id: -confirmed},
             )
 
             # The seam reports what is OWED, not what the schedule wishes was paid.
@@ -4867,7 +4938,12 @@ class TestLoanNotYetOriginated:
     def test_scalar_owes_nothing_before_origination_then_its_opening(
         self, app, db, seed_user, seed_periods,
     ):
-        """balance_at across all four regions of the trajectory."""
+        """balance_at across all four regions of the trajectory.
+
+        Every figure is what the loan OWES.  The scalar reports what it HOLDS,
+        negative when owed (ruling R-CC47, plan step credit_card:CC-5-5c), so
+        each read goes through ``liability_sign.owed``.
+        """
         with app.app_context():
             periods = seed_periods
             acct = self._upcoming_mortgage(seed_user, db.session, periods)
@@ -4877,22 +4953,22 @@ class TestLoanNotYetOriginated:
             # 1. The PAST, before it exists.  The ledger has no opening posting
             #    for it -- correctly, nothing has happened -- and the projection
             #    answers the honest zero.
-            assert balance_at.balance_at(
-                acct, bctx, date(2026, 2, 1)) == self.ZERO
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, date(2026, 2, 1))) == self.ZERO
             # ...including TODAY.  This read $200,000.00 before the fix.
-            assert balance_at.balance_at(
-                acct, bctx, bctx.as_of) == self.ZERO
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, bctx.as_of)) == self.ZERO
             # 2. The FUTURE, still before it exists.
-            assert balance_at.balance_at(
-                acct, bctx, date(2026, 4, 14)) == self.ZERO
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, date(2026, 4, 14))) == self.ZERO
             # 3. Originated, before the first payment: the full opening balance.
-            assert balance_at.balance_at(
-                acct, bctx, date(2026, 4, 20)) == self.OPENING
-            assert balance_at.balance_at(
-                acct, bctx, date(2026, 4, 30)) == self.OPENING
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, date(2026, 4, 20))) == self.OPENING
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, date(2026, 4, 30))) == self.OPENING
             # 4. After the first payment (2026-05-01): amortizing.
-            assert balance_at.balance_at(
-                acct, bctx, date(2026, 5, 7)) == self.AFTER_FIRST_PAYMENT
+            assert liability_sign.owed(balance_at.balance_at(
+                acct, bctx, date(2026, 5, 7))) == self.AFTER_FIRST_PAYMENT
 
     def test_period_map_owes_nothing_before_origination(
         self, app, db, seed_user, seed_periods,
@@ -4902,6 +4978,10 @@ class TestLoanNotYetOriginated:
         Periods 0-5 have BEGUN (they start on or before the frozen today), so
         they read the ledger -- which knows nothing about this loan, and whose
         zero is TRUE here: the loan did not exist in any of them.
+
+        The map reports what the loan HOLDS, negative when owed (ruling R-CC47,
+        plan step credit_card:CC-5-5c), so each period is read through
+        ``liability_sign.owed`` -- the figures below are what it owes.
         """
         with app.app_context():
             periods = seed_periods
@@ -4913,16 +4993,20 @@ class TestLoanNotYetOriginated:
             # $200,000.00 before the fix.
             for period in periods[:6]:
                 assert period.start_date <= bctx.as_of
-                assert bmap[period.id] == self.ZERO
+                assert liability_sign.owed(bmap[period.id]) == self.ZERO
             # Period 6 (2026-03-27..2026-04-09): future, still pre-origination.
-            assert bmap[periods[6].id] == self.ZERO
+            assert liability_sign.owed(bmap[periods[6].id]) == self.ZERO
             # Period 7 (2026-04-10..2026-04-23): contains the 2026-04-15
             # origination, and its end precedes the first payment (2026-05-01),
             # so the loan owes exactly its opening balance.
-            assert bmap[periods[7].id] == self.OPENING
+            assert liability_sign.owed(bmap[periods[7].id]) == self.OPENING
             # Periods 8-9: the first payment (2026-05-01) has landed.
-            assert bmap[periods[8].id] == self.AFTER_FIRST_PAYMENT
-            assert bmap[periods[9].id] == self.AFTER_FIRST_PAYMENT
+            assert liability_sign.owed(
+                bmap[periods[8].id],
+            ) == self.AFTER_FIRST_PAYMENT
+            assert liability_sign.owed(
+                bmap[periods[9].id],
+            ) == self.AFTER_FIRST_PAYMENT
 
     def test_current_period_agrees_with_the_hero_when_origination_is_inside_it(
         self, app, db, seed_user, seed_periods,
@@ -5140,6 +5224,10 @@ class TestLoanNotYetOriginated:
         sibling tests the clock stays at 2026-03-20, where the whole schedule is
         still ahead, so every installment is a projected ESTIMATED slot and the
         05-01 one DOES pay down -- hence ``AFTER_FIRST_PAYMENT`` there.)
+
+        Both entries report what the loan HOLDS, negative when owed (ruling
+        R-CC47, plan step credit_card:CC-5-5c), so each is read through
+        ``liability_sign.owed`` to meet the $200,000.00 it owes.
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import freeze_today
@@ -5152,10 +5240,12 @@ class TestLoanNotYetOriginated:
             bctx = BalanceContext.build(seed_user["user"].id)
             assert bctx.as_of == date(2026, 5, 7)
 
-            assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.OPENING
-            assert balance_at.balance_map(acct, bctx)[
+            assert liability_sign.owed(
+                balance_at.balance_at(acct, bctx, bctx.as_of),
+            ) == self.OPENING
+            assert liability_sign.owed(balance_at.balance_map(acct, bctx)[
                 periods[-1].id
-            ] == self.OPENING
+            ]) == self.OPENING
 
 
 class TestUpcomingLoanDoesNotCorruptTheSurfaces:
@@ -5373,11 +5463,15 @@ class TestBrokenLoanFailsLoud:
 
         The $240,000 loan originated 2024-09-01 and never paid; its posting ledger
         is cleared.  The scalar folds the loan's SOURCE facts -- the synthesized
-        origination anchor ($240,000) plus its (empty) settled shadows -- and
-        returns $240,000.00 held flat: the honest balance of a loan borrowed and
+        origination anchor ($240,000) plus its (empty) settled shadows -- and the
+        loan owes $240,000.00, flat: the honest balance of a loan borrowed and
         never paid down.  The missing posting is a repairable cache miss (plan E1),
         not the read-time outage the old fail-loud raised, and NOT the
         schedule-walk's phantom $236,544.21 paid down by installments never made.
+
+        The scalar reports what the loan HOLDS, negative when owed (ruling
+        R-CC47, plan step credit_card:CC-5-5c), so it is read through
+        ``liability_sign.owed``.
         """
         with app.app_context():
             periods = seed_periods
@@ -5386,9 +5480,9 @@ class TestBrokenLoanFailsLoud:
 
             # Originated 2024-09-01, no payments: the fold holds the origination
             # principal flat -- no debt paid, because no cash moved.
-            assert balance_at.balance_at(acct, bctx, bctx.as_of) == (
-                Decimal("240000.00")
-            )
+            assert liability_sign.owed(
+                balance_at.balance_at(acct, bctx, bctx.as_of),
+            ) == Decimal("240000.00")
 
     def test_map_folds_source_events_when_the_posting_ledger_is_missing(
         self, app, db, seed_user, seed_periods,
@@ -5398,9 +5492,11 @@ class TestBrokenLoanFailsLoud:
         The per-period map cut over to :func:`~app.services.balance_at.positions`
         at step C3b3, so it no longer raises for a broken loan -- it folds the same
         SOURCE facts the scalar does.  Originated 2024-09-01, never paid: every
-        begun period holds the origination principal ($240,000.00) flat, no debt
+        begun period owes the origination principal ($240,000.00) flat, no debt
         paid because no cash moved.  Same E1 repairable-cache decision as C3b1's
-        scalar.
+        scalar.  The map reports what the loan HOLDS, negative when owed (ruling
+        R-CC47, plan step credit_card:CC-5-5c), so it is read through
+        ``liability_sign.owed``.
         """
         with app.app_context():
             periods = seed_periods
@@ -5410,9 +5506,11 @@ class TestBrokenLoanFailsLoud:
             result = balance_at.balance_map(acct, bctx)
             begun = [p for p in periods if p.start_date <= bctx.as_of]
             assert begun, "expected a begun period"
-            # No payment ever recorded -> the origination principal held flat, the
-            # same $240,000.00 the scalar folds (not a fail-loud raise).
-            assert result[begun[-1].id] == Decimal("240000.00")
+            # No payment ever recorded -> the origination principal owed flat,
+            # the same $240,000.00 the scalar folds (not a fail-loud raise).
+            assert liability_sign.owed(
+                result[begun[-1].id],
+            ) == Decimal("240000.00")
 
     def test_broken_loan_figures_follow_the_fold_not_the_replay(
         self, app, db, seed_user, seed_periods,
@@ -5499,6 +5597,13 @@ class TestBrokenLoanFailsLoud:
 
         Without that ordering the fail-loud raise would 500 the /savings page for a
         user who did nothing wrong.
+
+        The account is seeded owing $150,000.00, which it HOLDS as
+        ``-150,000.00`` (ruling R-CC47; every door that takes a liability's
+        balance stores the held sign, ruling R-CC52, plan step
+        credit_card:CC-5-5b).  It was seeded ``+150,000.00`` until plan step
+        credit_card:CC-5-5c, which under the one sign is a $150,000 CREDIT --
+        the opposite of the debt the assertions below describe.
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import create_account_of_type
@@ -5506,7 +5611,7 @@ class TestBrokenLoanFailsLoud:
         with app.app_context():
             acct = create_account_of_type(
                 seed_user, db.session, "Mortgage", "Terms Never Entered",
-                anchor_balance=Decimal("150000.00"),
+                anchor_balance=Decimal("-150000.00"),
             )
             db.session.commit()
             bctx = BalanceContext.build(seed_user["user"].id)
@@ -5517,25 +5622,29 @@ class TestBrokenLoanFailsLoud:
                 acct.id, bctx.scenario.id, bctx.as_of) is None
 
             # And it degrades to the cash producer instead of raising -- pinned
-            # by VALUE, not by ``is not None``.  The account carries a
-            # $150,000.00 anchor and no transactions, so the cash producer owes
-            # exactly the anchor; asserting only non-None would have passed on
-            # any number the fallback invented, including a $0.00 that would
-            # render this Mortgage debt-free (B-21).
-            assert balance_at.balance_at(
+            # by VALUE, not by ``is not None``.  The account holds a
+            # -$150,000.00 anchor and no transactions, so the cash producer
+            # holds exactly the anchor and the account owes $150,000.00 (the
+            # held figure through ``liability_sign.owed``, ruling R-CC47);
+            # asserting only non-None would have passed on any number the
+            # fallback invented, including a $0.00 that would render this
+            # Mortgage debt-free (B-21).
+            assert liability_sign.owed(balance_at.balance_at(
                 acct, bctx, bctx.as_of,
-            ) == Decimal("150000.00")
+            )) == Decimal("150000.00")
 
             # The per-period MAP degrades identically (C3b3 hazard 1): the seam's
             # map dispatch reads ``_resolution.configured_loan``, which is None for
             # an unconfigured loan, so it falls through to the cash producer
             # rather than reaching positions()'s fail-loud for a schedule-less
-            # loan.  Pinned by value at the current period ($150,000.00 anchor,
-            # held flat).
+            # loan.  Pinned by value at the current period (the -$150,000.00
+            # anchor held flat, which owes $150,000.00).
             current = current_pay_period(seed_user["user"].id)
             loan_map = balance_at.balance_map(acct, bctx)
             assert loan_map is not None
-            assert loan_map[current.id] == Decimal("150000.00")
+            assert liability_sign.owed(
+                loan_map[current.id],
+            ) == Decimal("150000.00")
 
 
 class TestScalarAndMapAgree:
@@ -5727,6 +5836,10 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
         the 03-01 payment row would report $248,496.25 -- the balance the loan owed
         three weeks BEFORE the true-up, and $48,496.25 too much -- which is exactly
         the stale-row answer the fold's seeding avoids.
+
+        The scalar reports what the loan HOLDS, negative when owed (ruling
+        R-CC47, plan step credit_card:CC-5-5c), so both of its reads below go
+        through ``liability_sign.owed`` before they meet the owed figures.
         """
         with app.app_context():
             periods = seed_periods
@@ -5750,9 +5863,9 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
             assert confirmed[-1].payment_date == date(2026, 3, 1)
             stale = confirmed[-1].remaining_balance
             assert stale == PAID_LOAN_LAST_CONFIRMED_REMAINING
-            assert balance_at.balance_at(
+            assert liability_sign.owed(balance_at.balance_at(
                 loan, bctx, bctx.as_of,
-            ) == PAID_LOAN_TRUED_UP_TO
+            )) == PAID_LOAN_TRUED_UP_TO
 
             # The probe sits just AFTER the resolver's now and BEFORE the next
             # installment falls due, so the fold has no record to apply in the
@@ -5760,7 +5873,7 @@ class TestForwardFoldSeedsFromTheConfirmedPresent:
             probe = date(2026, 3, 25)
             assert bctx.as_of < probe < unconfirmed[0].payment_date
 
-            owed = balance_at.balance_at(loan, bctx, probe)
+            owed = liability_sign.owed(balance_at.balance_at(loan, bctx, probe))
 
             # THE CONTROL, and the only line here that can fail: nothing is due
             # between 03-20 and 03-25, so the fold holds at the trued-up balance.

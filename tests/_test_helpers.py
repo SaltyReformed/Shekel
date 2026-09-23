@@ -2838,7 +2838,8 @@ def load_init_database_module():
 
     ``scripts`` has no ``__init__``, so the deploy host is loaded by absolute
     path -- the same importlib idiom :func:`load_migration_module` uses -- so a
-    test can call its post-migration backfill hooks directly.  The script
+    test can run its one-transaction deploy (``initialise_database``) or one of
+    its pieces directly.  The script
     mutates ``DATABASE_URL_APP`` to ``""`` at import time (its deploy-host
     owner-role override, which must run BEFORE the ``app`` import), a
     process-global side effect this restores around the load so it never leaks
@@ -2847,9 +2848,9 @@ def load_init_database_module():
     finding otherwise).
 
     Returns:
-        The loaded ``init_database`` module object, exposing the deploy hooks
-        (``backfill_loan_payment_postings_after_migration`` /
-        ``backfill_all_account_anchor_postings_after_migration``).
+        The loaded ``init_database`` module object, exposing
+        ``initialise_database`` (entrypoint step 3, ONE transaction since plan
+        step ``balance:X-cv``) and the pieces it runs.
     """
     script_path = (
         pathlib.Path(__file__).resolve().parents[1] / "scripts" / "init_database.py"

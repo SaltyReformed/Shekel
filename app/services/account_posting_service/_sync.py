@@ -543,10 +543,10 @@ def backfill_all_account_anchor_postings() -> list[int]:
     counter row), staying hard-deletable.
 
     Flushes but does NOT commit -- the caller owns the transaction boundary: the
-    deploy hook
-    (``scripts.init_database.backfill_all_account_anchor_postings_after_migration``,
-    which initialises ``ref_cache`` first because the migration host does not),
-    the backfill suite, or the reconciliation oracle.
+    deploy (``scripts.init_database.initialise_database``, whose ONE commit
+    covers the migrations and all three deploy hooks, and which initialises
+    ``ref_cache`` first because the migration host does not; plan step
+    ``balance:X-cv``), the backfill suite, or the reconciliation oracle.
 
     **The one transaction in the app that reconciles more than one OWNER**, so
     it is also the only one that takes more than one per-user write lock -- and

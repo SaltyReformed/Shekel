@@ -17,7 +17,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-bi-6-3 `f1abdbbb` -- THE LEDGER TAKES SHAPE C** (**R-BAL98**..**R-BAL105**; its own PR and release, migration `c7d1e9a4b2f8`): a settled transfer is two entries, each side's covering movement on its own day against the owner's Transfers-in-transit account; the loan split is a date-keyed correction with no row link; the deploy's resync re-books every source, re-checks the anchors once, and refuses while a legacy one-entry net stands, at the cost of a manual dump restore if it ever fires (**R-BAL105**; `X-cv` is the all-or-nothing deploy that removes that cost). Rehearsed 48/48 on the 2026-09-21 10:33 and 2026-09-22 17:06 production dumps: 19 settled transfers (38 movements) re-booked in 57 entries, no anchor correction, a redeploy writing nothing. `X-cu` (a loan's charges posted on their own days) was minted beside it. The previous landing, **X-ci-1 `465f91cd`** -- the transfer twin takes `recurs` (**R-BAL92**..**R-BAL97**). | Section 5, X-bi-6 / X-cu / X-cv; archive/x_bi_6_3_as_built_2026-09-22.md; ../../plans/rulings.md R-BAL98..R-BAL105 |
+| **just landed** | **X-cv `832c30bd` -- ENTRYPOINT STEP 3 IS ALL-OR-NOTHING** (**R-BAL109**..**R-BAL115**, **R-BAL118**..**R-BAL124**, **R-BAL127**, **R-BAL129**; no migration, no money moved): entrypoint step 3 builds or migrates the schema, seeds the reference rows, loads the cache, runs the three deploy hooks (existing databases), seeds the tax defaults and checks the audit triggers in ONE transaction committed once, so a refusal anywhere in it leaves the stamp unmoved and `shekel-deploy` re-pins the previous image: **R-BAL105**'s manual dump restore is gone for every failure inside step 3. The previous landing, **X-bi-6-3 `f1abdbbb`** -- the ledger takes shape C (**R-BAL98**..**R-BAL105**; `X-cu` minted beside it). | Section 5, X-cv; archive/x_cv_as_built_2026-09-23.md; ../../plans/rulings.md R-BAL109..R-BAL115, R-BAL118..R-BAL124, R-BAL127, R-BAL129 |
 | **in flight** | **X-f3c-2b-2c** (the account-10 repair), RE-RULED 2026-09-05 by **R-BAL3**: act 4b is DELETED rather than answered, both accounts open 2026-03-25 at their banks own closes, and the step waits on `pay_calendar:C18`. **X-f3c-2b-3** was MINTED by X-f3c-3 and sequenced behind THE FLIP: nothing bounds an assertion at its account's `opened_on` (**N-400**), and after X-f3c-5 an assertion stops resetting a PLAIN account, so what the bound should refuse is decided against what an assertion then IS. It legalises nothing -- zero rows sit below their books on either database. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 / X-f3c-2b-3 |
 | **what changed the plan** | **Every plan item has exactly one definition (R-BAL20, 2026-09-12), and `X-bi-7` is the family that builds it**: a one-off becomes a rule-less definition plus one placed row, both flag cells leave `budget.transactions`, and `X-bi-5` was re-pointed at the DEFINITION's `is_envelope` (DISSOLVED 2026-09-20, **R-BAL85**: the kind stays). Ruled when the lane recommended a CHECK on a dead cell and the developer refused the premise. Four leaves (`recurs`, the doors, the fixtures, the cutover) and a transfer sibling `X-ci`, ranked in `../../plans/steps.md`; the argument and the ten traces are `../../design/from_scratch_architecture.md` section 10, the six fork rulings **R-BAL21** to **R-BAL26**. The cutover writes 26 due dates nobody stated; **R-BAL22** rules that it may, the question trace 8 asks of **R-HJ**, cost accepted | Section 5, X-bi-7 / X-ci; Section 4, balance:R-BAL20 to R-BAL26 |
 | **blocked on you** | **The first SECU import LANDED 2026-09-16** (on the 2026-09-19 07:21 restore: 1 statement import, 306 bank lines, 163 matches; the observation records are the coordinator's `N-368-observation-2026-09-15.md` / `-18.md`, their rows BAL-497 / BAL-498 / BI-499 / BI-500); the second import waits on `bank_import:X-f6b-2`. What gates this arc now is the developer's file-or-not BATCH the coordinator holds and rule 5's archive: this document is measured by `wc -l` against the gate's cap and its 20-line headroom, and the next balance tick archives a completed span before it writes. Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md BAL-497, BAL-498; ../../plans/steps.md |
@@ -379,7 +379,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
       (`statement_match/{_candidates,_offers,_moving,_variance,_destinations}`,
       `reconcile_service/{_transfers,_rows,_assemble,_transactions}`), settling through `settle_transfer`.
       After `bank_import:X-f6b-2`, whose lane owns `statement_match/*`.
-    * [x] **X-bi-6-3** `f1abdbbb` -- the ledger takes shape C (**R-BAL45**): the owner-bucket chart row (`is_fallback` -> `is_owner_bucket`, **R-BAL99**) gives each owner a Transfers-in-transit account, and ONE movement writer posts each side's covering movement on its own day against it (**R-BAL101**); the split a date-keyed correction with no row link (**R-BAL102**), reconciled in the anchor corrections' one loop; migration `c7d1e9a4b2f8` renames and re-keys the bucket, seeds transit and unlinks the 25 splits, re-booking nothing -- the deploy's resync re-books every source and re-checks the anchors once (**R-BAL98**, **R-BAL103**), refusing while a legacy one-entry net stands (**R-BAL104**; its cost a manual dump restore, **R-BAL105**); DC-12 detects a broken pair.
+    * [x] **X-bi-6-3** `f1abdbbb` -- the ledger takes shape C (**R-BAL45**): the owner-bucket chart row (`is_fallback` -> `is_owner_bucket`, **R-BAL99**) gives each owner a Transfers-in-transit account, and ONE movement writer posts each side's covering movement on its own day against it (**R-BAL101**); the split a date-keyed correction with no row link (**R-BAL102**), reconciled in the anchor corrections' one loop; migration `c7d1e9a4b2f8` renames and re-keys the bucket, seeds transit and unlinks the 25 splits, re-booking nothing -- the deploy's resync re-books every source and re-checks the anchors once (**R-BAL98**, **R-BAL103**), refusing while a legacy one-entry net stands (**R-BAL104**; its cost a manual dump restore, **R-BAL105**, until `X-cv`); DC-12 detects a broken pair.
       Leaves `1c3b05c8` (+ `5320632a`), `c9c63e61`, `6a0b5154`, `e2275ba9` + `f1abdbbb`. Rehearsed 48/48 on the 2026-09-21 10:33 and 2026-09-22 17:06 production dumps: 19 settled transfers (38 movements) re-booked in 57 entries, no anchor correction, a redeploy writing nothing. Record: `archive/x_bi_6_3_as_built_2026-09-22.md`.
     * [ ] **X-bi-6-4** the record half re-parents and the writers stop mirroring. `transfer_service/_endpoints.py:265-269`'s docstring ("the movement adds no failure its parent does not have", false since `credit_card:CC-5-4a-1`: a matched leg's payment member refuses where the parent holds none, BAL-503's clause) is this leaf's to correct. TWO FORKS FOR THE DEVELOPER
       FIRST, with worked dollars (`HANDOFF-X-bi-6.md` s.5): the movement's transfer link's shape, and what ONE
@@ -502,8 +502,8 @@ the cost is not the wasted pass but that the two can PART. **Agreement is not th
 was REFUTED at 500,000, `$565.37` against `$565.36`. **Where a layer puts the shared leaf out of
 reach, MOVE THE LEAF** -- `X-au-g-2c-3a` deleted three restatements that placement had FORCED, two
 walks sitting BELOW the allocation so that reaching it was an import cycle. This phase does not own
-the rule but carries instances of it: **N-409**'s escrow floor is a SECOND allocation rule for a
-question the fold already answers, and the two DISAGREE.
+the rule, and its instance here has left it: **N-409**'s escrow floor, a SECOND allocation
+rule for a question the fold already answers, is `recurrence:R16-e`'s with walk 3 (**R-R93**).
 
 **One ground is REFUTED and must not be re-argued**: that `ondelete="SET NULL"` on the template link
 would make a "derived rows have a link" CHECK refuse a definition delete. `budget.transfers` already
@@ -531,42 +531,20 @@ in SILENCE where a refused DELETE is loud.
   blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
 * [x] **X-au-d** `ed06acf6` -- a paycheck's amount is its salary profile's and it stores none; 59 rows declared (**R-JB**), FOUR absorbed defects closed or filed. `archive/x_au_d_as_built_2026-09-03.md`.
 * [x] **X-au-e** `c000d7f6` `b846386a` -- a template row reads its template's series; 525 rows declared, the `$502.45` class dead. Closed **N-244**, **N-247**, **N-444**. Its own keep-vs-use claim was REFUTED (**R-JD**) -- see `archive/seven_shipped_pointers_2026-09-05.md` and `archive/x_au_e_as_built_2026-09-03.md`.
-* [ ] **X-au-g** the DECOMPOSED parent of the LOAN-PAYMENT cutover, split 2026-08-31 into four
-  leaves: the pricing cycle's deletion, the tier move that unwinds the amount model's reach into the
-  loan service, the ruling that puts a loan's terms on the installment they govern, and the cutover
-  those three unblock.
-  * [ ] **X-au-g-2c** the DECOMPOSED parent of the CUTOVER, split 2026-09-01 into the readers,
-    the declaration, and the escrow rule. It ticks with the last of its three leaves.
-    * [ ] **X-au-g-2c-3** the DECOMPOSED parent of the escrow rule, split 2026-09-02. It ticks
-      with the last of its leaves.
-      **N-409 named ONE floor; the trace found the defect is a CLASS, and the class is a LAYERING
-      one.** Four independent walks fold a loan -- the settled walk, the forward plan, the
-      resolver's replay and its projection -- and the rule each needs sat ABOVE two of them in the
-      import graph, so reaching it was the cycle `loan_ledger._split -> rate_period_engine ->
-      amortization_engine`. Each restated it instead: FOUR statements of the allocation and TWO of
-      the charge calendar. **The duplication was FORCED, not chosen, which is why every remedy here
-      is a MOVE or a DELETION and none is a guard.** Measured on the production Mortgage: a
-      `$1,700.00` payment against its `$1,910.95` installment reports `$1,293.96` -- the contractual
-      P&I to the cent, so the schedule and its 2048-12-01 payoff are byte-identical to an
-      on-schedule month while the seam's fold puts the owner `$210.95` further behind and dates the
-      payoff 2049-01-01. Two answers, one screen.
-      * [ ] **X-au-g-2c-3b** the DECOMPOSED parent of the CHARGE-CALENDAR half, split 2026-09-02.
+* [x] **X-au-g** `3b7716f8` -- the DECOMPOSED parent of the LOAN-PAYMENT cutover (split 2026-08-31),
+  ticked 2026-09-23 when its last open leaf was WITHDRAWN (**R-R93**); closed **N-297**, whose
+  loan-basis read of the payment history left at `X-au-g-1` (`af61263d`). Its shipped leaves are in
+  `archive/shipped_steps_archived_2026-09-16.md` and `archive/x_au_g_2c_3b_2_2026-09-02.md`.
+  * [x] **X-au-g-2c** `3b7716f8` -- the CUTOVER's parent (the readers, the declaration, the escrow
+    rule); ticked with X-au-g.
+    * [x] **X-au-g-2c-3** `3b7716f8` -- the escrow rule's parent: FOUR walks each restated one
+      allocation because the rule sat above them in the import graph, so every remedy was a MOVE or
+      a DELETION (**R-IZ**, **R-R53**); ticked with X-au-g.
+      * [x] **X-au-g-2c-3b** `3b7716f8` -- the charge calendar: `3b-1` `fd3afc59` moved it to the
+        leaf both walks reach, `3b-2` below. `3b-3`, the engine feed's floor (**N-409**), was
+        WITHDRAWN 2026-09-23 (**R-R93**): nothing has read the feed's amounts since
+        `recurrence:R7d-g-3`, and `recurrence:R16-e` deletes the feed with walk 3.
         * [x] **X-au-g-2c-3b-2** `3b7716f8` -- ONE accrual and ONE escrow per INSTALLMENT, both tiers on the ONE replay (rule 14). Rules **R-IX**, files **N-439**. **A later step must NOT delete `tests/oracles/loan_monthly_composition.py`.** `archive/x_au_g_2c_3b_2_2026-09-02.md`.
-        * [ ] **X-au-g-2c-3b-3** `fix(loans): the engine feed states no allocation` -- the feed
-          passes the CASH and `project_forward` charges the month's escrow, which DELETES the floor
-          rather than re-dating it. Two earlier remedies were measured wrong first: re-keying the
-          threshold to the installment (built at `X-au-g-2b`, a REGRESSION, reverted) and expecting
-          the resolver routing to make `amount - escrow == period_pi(due)` an IDENTITY (`2c-1`
-          showed the feed also carries settled, MANUAL-mode and non-payment rows). Closes
-          **N-409**. **MOVES MONEY.**
-          **What it orphans, AST-verified over all modules in `app/`:** `LoanContext.contractual_pi`
-          has ZERO attribute reads, and `compute_contractual_pi` has ONE call site which exists only
-          to feed the floor -- both are deleted with it, taking a `date.today()` read off the loan
-          context (ruling **R-IJ**'s direction).
-          **The trap it must not walk into:** `PaymentRecord.__post_init__` REFUSES a negative
-          amount, and `cash - escrow` goes negative on a payment below its escrow -- measured live
-          at `-416.99` by typing `$200.00` into a projected mortgage payment. Passing the CASH is
-          what keeps that invariant TRUE rather than relaxing it.
 * [ ] **X-au-m** `fix(transfers): an owner-priced pair states its figure ONCE` -- Transfer Invariant
   3's AMOUNT clause, the half `X-au-g-2c-2` did not reach (**R-JA**).
   `transfer_service/_amount.apply_amount_ownership`'s TAKE arm calls `state_own_amount` on the
@@ -1059,9 +1037,22 @@ section 4, under their unchanged ids.*
   `test_grid`'s uncompared `baseline`; `test_race_conditions.py`'s one live request per race. (Its
   other two rows, BAL-516 / BAL-517, closed at `X-bi-4b-2`: `settlement_columns` and its 16 copies
   were DELETED with the columns, not consolidated.)
-* [ ] **X-cv** `chore(deploy): a deploy is all-or-nothing` -- **R-BAL105**'s future step. Today `scripts/init_database.py` commits the migrations (in `migrations/env.py`'s own transaction) BEFORE the three deploy hooks run, so a hook that refuses (**R-BAL104**'s legacy-net refusal, hook 2's loan checked-projection assert that is **R-BAL98**'s fail-closed gate, an unbalanced entry at commit, the anchor walk's refusals) leaves a stamp the previous image cannot resolve and `deploy/shekel-deploy.sh` refuses to re-pin: a manual dump restore.
-  The step: one connection and ONE transaction for entrypoint step 3 -- `env.py` configured with the caller's connection (Alembic's shared-connection recipe), `ref_cache` and the three hooks on that session, one commit, each hook's leading `rollback()` gone -- graded by a rehearsal in which a forged hook refusal leaves `alembic_version` at the pre-deploy stamp and the re-pin fires.
-  Precondition checked 2026-09-22: no migration uses `autocommit_block` or `CONCURRENTLY`. It moves no money; it changes how every release deploys.
+* [x] **X-cv** `832c30bd` -- entrypoint step 3 is all-or-nothing (**R-BAL105**'s future step; **R-BAL109**..**R-BAL115**, **R-BAL118**..**R-BAL124**, **R-BAL127**, **R-BAL129**): `scripts/init_database.py` runs the schema build or the migrations (through `app/migration_runner.py`, the runner the test template shares), the reference seed, `ref_cache`, the three deploy hooks (existing databases), the tax seed and the audit-trigger check in ONE transaction it opens and commits once, the session joined to it with autobegin off; `deploy/shekel-deploy.sh` stops a target-image container before it re-reads the stamp `FOR SHARE`, saves the failed container's log beside the dump, and re-pins or refuses by what that stamp shows. Closed **BAL-535**, **BAL-536**; filed **BAL-540**.
+  Leaves 1 `a8480560`, 1b `5f83439c`, 2 `be1bdb35`, 2b `c6efbbe7` + `832c30bd`; no migration, no money moved; rehearsed on `c6efbbe7`'s tree on a throwaway stack (**R-BAL127**; the S0 + S5 re-run on the merged tree is owed before the release). A failure after step 3's commit in a release that adds a migration (a failure in the first-boot user seed, the static-file copy, the app start or the health check) still meets `refuse_to_repin`, which names the no-loss restart when the new image resolves the stamp; one that adds none leaves the stamp where the previous image resolves it, and `shekel-deploy` re-pins (the rehearsal's S6). Record: `archive/x_cv_as_built_2026-09-23.md`.
+* [ ] **X-cw** `feat(hooks): a real production value is refused in anything committed` --
+  **R-BAL132**'s build step. The repository is PUBLIC, and its documents, code comments, tests and
+  commit messages have carried real production figures; the developer kept it public and ruled that
+  a real value be refused at commit time instead. **Decided (the ruling):** a local, UNTRACKED list
+  of real values -- balances, paycheck amounts, merchant names -- generated from production, which
+  the pre-commit hook refuses the way gitleaks refuses a secret; committed text uses made-up
+  figures, measured production figures stay in the handoff folder outside the repository, and what
+  is already public stays public. **The building lane designs, with the developer:** where the list
+  lives and how it stays out of every commit; how it is generated from production READ-ONLY (a
+  same-day dump or a clone) and refreshed; what counts as a real value without drowning in false
+  positives against synthetic test amounts; which surfaces are read (the staged diff, the commit
+  message, both) and by which hooks; how a refused session is told what to write instead; where that
+  practice is written; and whether "stays public" means nothing already committed is rewritten. It
+  moves no money.
 * [ ] **X-bw** `fix(migrations): the downgrade restores a paycheck's OWN figure` -- owns **BAL-464**.
   `_RESTORE_FROM_DEFINITION_SQL` restores the template's `default_amount` rather than the row's own,
   so the 38-step downgrade runs clean (exit 0, stamp back to `a4c6f1d92b73`) while flattening 43
@@ -1235,7 +1226,7 @@ section 4, under their unchanged ids.*
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 46 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
+  **RE-RUN, not remembered** (it read 47 and 36, measured 2026-08-25): (census 47 code lines `Numeric\(12, ?2\)` in `app/**/*.py`) columns and (census 34 code lines `\.quantize\(` in `app/**/*.py`) sites,
   (census 17 code lines `\.quantize\((?![^)]*rounding=)` in `app/**/*.py`) bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
   blast radius is the type rather than the call sites) or as a hand conversion -- the
   `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.

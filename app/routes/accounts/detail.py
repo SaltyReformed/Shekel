@@ -64,7 +64,7 @@ from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.interest_params import InterestParams
 from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts._cash_page import load_cash_account_or_404
+from app.routes.accounts._cash_page import cash_detail_wrong_type, load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
 from app.routes.accounts.outstanding import outstanding_context
 from app.routes.accounts.reconcile import (
@@ -637,27 +637,29 @@ def cash_band(account_id):
     )
 
 
-@accounts_bp.route("/accounts/<int:account_id>/details/balance-hero")
-@require_owner
-def cash_balance_hero(account_id):
-    """HTMX partial: the cash balance hero cell (D14 click-to-edit port).
+def render_cash_balance_hero(account: Account) -> str | None:
+    """Draw the cash balance hero cell, or ``None`` if the cash page hides it.
 
-    The Cancel / Escape and 409-conflict revert target for the cash
-    detail page's click-to-edit anchor editor:
-    ``accounts._anchor_revert_url`` maps ``revert=cash`` here, mirroring
-    how the cockpit's ``revert=accounts`` maps to
-    ``savings.cockpit_balance``.  Renders
-    ``accounts/_cash_balance_hero.html`` with the resolver
-    current-period balance the detail headline shows, so a reverted
-    cell restores the exact figure.  (A SAVE does not land here -- the
-    editor's success response fires ``balanceChanged`` and the whole
-    band re-renders via :func:`cash_band`.)
+    The cash page's DRAW (rulings R-CC74 / R-CC77, finding CC-365): the ONE
+    function behind :func:`cash_balance_hero` -- the Cancel / Escape target
+    ``accounts.anchor._anchor_revert_url`` maps ``revert=cash`` to -- and
+    behind the anchor save opened from the hero, which answered with the
+    grid's cell until then.  Renders ``accounts/_cash_balance_hero.html``
+    with the resolver current-period balance the detail headline shows, off
+    the page's own context builder and a read pass this opens, as the GET
+    always has.  It never aborts: the save calls it after its write has
+    committed.
 
-    Non-HTMX requests redirect to the detail page.
+    Args:
+        account: The loaded, ownership-checked account.
+
+    Returns:
+        The rendered cell, or ``None`` for a kind this page does not serve
+        (:func:`cash_detail_wrong_type`) -- which the save answers with an
+        empty cell, and which the GET's own gate 404s before drawing.
     """
-    if not request.headers.get("HX-Request"):
-        return redirect(url_for("accounts.cash_detail", account_id=account_id))
-    account = load_cash_account_or_404(account_id)
+    if cash_detail_wrong_type(account):
+        return None
     context = _cash_detail_context(
         account, BalanceContext.build(current_user.id),
     )
@@ -666,6 +668,24 @@ def cash_balance_hero(account_id):
         account=account,
         current_balance=context["current_balance"],
     )
+
+
+@accounts_bp.route("/accounts/<int:account_id>/details/balance-hero")
+@require_owner
+def cash_balance_hero(account_id):
+    """HTMX partial: the cash balance hero cell (D14 click-to-edit port).
+
+    The Cancel / Escape revert target for the cash detail page's
+    click-to-edit anchor editor: ``accounts._anchor_revert_url`` maps
+    ``revert=cash`` here.  The cell is :func:`render_cash_balance_hero`'s --
+    the draw a save opened from the hero answers with too, before its
+    ``balanceChanged`` re-renders the whole band via :func:`cash_band`.
+    The gate 404s every kind that draw declines, so it cannot answer
+    ``None`` here.  Non-HTMX requests redirect to the detail page.
+    """
+    if not request.headers.get("HX-Request"):
+        return redirect(url_for("accounts.cash_detail", account_id=account_id))
+    return render_cash_balance_hero(load_cash_account_or_404(account_id))
 
 
 def _redirect_to_cash_detail(account_id):

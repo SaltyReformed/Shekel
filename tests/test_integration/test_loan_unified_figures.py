@@ -43,6 +43,7 @@ from app.utils.dates import add_months, months_between
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
+from app.services.liability_sign import owed
 from tests._test_helpers import (
     bind_rule_to_loan,
     contract_forward_references,
@@ -849,6 +850,13 @@ def test_standing_extra_folds_past_the_shadow_horizon(
     (extra-free) balance -- a THIRD independent reference that fails the day the
     extra stops being applied to the tail (the pre-C8a state, where fold ==
     contractual there).
+
+    **Every fold read is taken through ``owed()``.**  The seam reports the loan
+    HELD since plan step credit_card:CC-5-5c -- negative when owed (ruling
+    R-CC47) -- while both engine references are what the loan OWES, so the
+    parallel-run and the teeth compare what the fold owes.  The teeth need it
+    most: a held figure is negative, so it would sit below any owed balance and
+    pass whatever the tail carried.
     """
     with app.app_context():
         current_period = next(
@@ -933,8 +941,8 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         # ``as_of + 1 day`` (``balance_at._plan`` for loans, ``_cash_fold`` for
         # cash, ruling D1 / R-G: "a plan cannot have already happened").  So on a
         # day that IS an installment due date, ``balance_at(today)`` is the
-        # still-owed balance while the engine's row for that same day is the
-        # post-payment projection.  Both are right and they answer different
+        # balance before that payment while the engine's row for that same day
+        # is the post-payment projection.  Both are right and they answer different
         # questions; comparing them is a category error, and it fired as a real
         # CI failure on 2026-08-01 because this fixture originates at the current
         # period with ``payment_day=1``.  On every other day of the month the
@@ -947,7 +955,9 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             "would be vacuous"
         )
         for row in comparable:
-            folded = balance_at.balance_at(account, ctx, row.payment_date)
+            # What the fold OWES: the seam reports the loan held (see the
+            # docstring), and ``remaining_balance`` is what the engine owes.
+            folded = owed(balance_at.balance_at(account, ctx, row.payment_date))
             assert folded == row.remaining_balance, (
                 f"Fold {folded} != the engine's {row.remaining_balance} at "
                 f"{row.payment_date}: the ESTIMATED tail dropped the standing "
@@ -957,7 +967,10 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         # Teeth: a post-horizon date (~3 years out, well past the 24-month
         # window) must fold BELOW the extra-free contractual balance -- proof the
         # extra reaches the tail.  Pre-C8a the ESTIMATED tail carried no extra, so
-        # the fold equalled the contractual balance here and this failed.
+        # the fold equalled the contractual balance here and this failed.  Read
+        # as what the fold OWES, like the parallel-run above: the held figure is
+        # negative and would sit below the contractual balance whatever the tail
+        # carried.
         probe_date = date(as_of.year + 3, as_of.month, payment_day)
         assert probe_date in contractual_by_date, (
             "probe date not on the contractual grid; adjust the fixture"
@@ -966,7 +979,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             probe_date.month - as_of.month
         )
         assert months_out > 24, "probe date is inside the materialized horizon"
-        folded_probe = balance_at.balance_at(account, ctx, probe_date)
+        folded_probe = owed(balance_at.balance_at(account, ctx, probe_date))
         assert folded_probe < contractual_by_date[probe_date], (
             f"Fold at {probe_date} ({folded_probe}) is not below the "
             f"contractual {contractual_by_date[probe_date]}; the standing extra "
