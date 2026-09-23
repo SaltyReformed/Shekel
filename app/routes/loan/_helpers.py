@@ -37,6 +37,7 @@ from app.services import (
     balance_at,
     cash_ledger,
     escrow_calculator,
+    liability_sign,
     loan_resolver,
 )
 from app.services.amortization_engine import AmortizationRow
@@ -111,9 +112,11 @@ def render_loan_setup(account, account_type):
     The ONE renderer of ``loan/setup.html`` -- the dashboard shows it for an
     unconfigured loan, and ``create_params`` re-shows it on a refused POST --
     so the two prefills are spelled once: the "balance today" field opens on
-    the account's latest cash assertion
+    what the account's latest cash assertion
     (:func:`app.services.cash_ledger.resolve_anchor`, the ONE answer to "what
-    balance has this account been asserted to hold"; plan step X-f1c3a), and
+    balance has this account been asserted to hold"; plan step X-f1c3a) says
+    it OWES (:func:`app.services.liability_sign.entered_figure`, plan step
+    credit_card:CC-5-5b), and
     its "as of" date on today, the setup date (plan step ``recurrence:R20``,
     ruling **R-R72** part 3: the stated balance is a dated assertion, dated by
     the owner and defaulting to the day it is typed).  Today is the DISPLAY
@@ -131,7 +134,15 @@ def render_loan_setup(account, account_type):
         "loan/setup.html",
         account=account,
         account_type=account_type,
-        anchor_balance=cash_ledger.resolve_anchor(account).balance,
+        # The field is the loan's balance OWED (``min="0"``, and the loan
+        # domain's store is positive-owed), while the assertion it opens on is
+        # HELD since plan step credit_card:CC-5-5b -- a car loan created owing
+        # 5,000.00 holds -5,000.00 -- so the pre-fill crosses through the
+        # door's one function (ruling R-CC52) and opens on 5,000.00.  Read
+        # raw, it would pre-fill a negative figure the box refuses.
+        anchor_balance=liability_sign.entered_figure(
+            account_type, cash_ledger.resolve_anchor(account).balance,
+        ),
         today_iso=display_today().isoformat(),
     )
 

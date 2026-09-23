@@ -67,6 +67,17 @@ class AnchorUpdateSchema(BaseSchema):
     # schema owns neither clock nor query.  ``anchor_service`` refuses both
     # (ruling R-ER), so the two anchor write doors share one rule.
     observed_on = fields.Date()
+    # What the box ASKED when the form was rendered (plan step
+    # credit_card:CC-5-5b, ruling R-CC61): a liability's editor submits
+    # ``asks_owed=true`` because it asked for the amount owed, and every other
+    # editor submits nothing, which reads as the balance it asked for.  It is a
+    # fact the FORM states about itself, not a branch on account class (ruling
+    # R-J keeps that out of this tier): the route compares it with what the
+    # account asks NOW and refuses a mismatch, so a save typed under one
+    # meaning is never stored under the other.  Absent is ``False``, which also
+    # fails a pre-CC-5-5b card editor closed -- that page pre-filled the held
+    # figure.
+    asks_owed = fields.Boolean(load_default=False)
 
 
 class OpeningRestatementSchema(BaseSchema):
@@ -108,6 +119,10 @@ class OpeningRestatementSchema(BaseSchema):
 
     opened_on = fields.Date(required=True)
     opening_equity = fields.Decimal(required=True, places=2, as_string=True)
+    # What the card ASKED when it was rendered -- the amount owed on a
+    # liability -- for the stale-form refusal :class:`AnchorUpdateSchema`
+    # describes (plan step credit_card:CC-5-5b, ruling R-CC61).
+    asks_owed = fields.Boolean(load_default=False)
 
 
 class AccountCreateSchema(BaseSchema):

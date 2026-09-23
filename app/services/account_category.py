@@ -107,7 +107,31 @@ def account_category(account) -> AcctCategoryEnum | None:
         The account type's :class:`~app.enums.AcctCategoryEnum` member, or
         ``None`` when it has no category this application models.
     """
-    acct_type = account.account_type
+    return account_type_category(account.account_type)
+
+
+def account_type_category(acct_type) -> AcctCategoryEnum | None:
+    """Return the :class:`~app.enums.AcctCategoryEnum` for an account TYPE.
+
+    The rule :func:`account_category` answers for an account, asked of the type
+    itself -- because one door has to ask it BEFORE the account exists.  The
+    create form's balance box is typed against the account type the owner
+    picked, and plan step credit_card:CC-5-5b (ruling **R-CC52**) makes that door
+    store a liability's balance in the held sign, so the create route classifies
+    the submitted type before
+    :func:`app.services.account_service.create_account` builds the row.
+    :func:`account_category` is this function applied to
+    ``account.account_type``, so the two cannot disagree: one dict read,
+    reached through two entrances.
+
+    Args:
+        acct_type: A :class:`~app.models.ref.AccountType`, or ``None`` -- the
+            transient-account state :func:`account_category` documents.
+
+    Returns:
+        The type's category member, or ``None`` for no type or for a category
+        this application does not model.
+    """
     if acct_type is None:
         return None
     return ref_cache.acct_category_member(acct_type.category_id)
@@ -123,10 +147,12 @@ def is_liability_account(account) -> bool:
     figure and the per-cell danger ink -- so an account can never count as an
     asset on one surface and a liability on another.
 
-    DERIVED from :func:`account_category` since plan step X-z (ruling R-CP,
-    finding N-118), where it was a second, independent comparison of the same
-    column against the same cached id.  An account with no modelled category
-    (see :func:`account_category` for the two states that produces) is not a
+    DERIVED from :func:`account_category`'s one read since plan step X-z
+    (ruling R-CP, finding N-118), where it was a second, independent comparison
+    of the same column against the same cached id; since plan step
+    credit_card:CC-5-5b both reach that read through
+    :func:`account_type_category`.  An account with no modelled category (see
+    :func:`account_category` for the two states that produces) is not a
     liability.
 
     Args:
@@ -136,4 +162,22 @@ def is_liability_account(account) -> bool:
         ``True`` when the account's type's category is LIABILITY,
         ``False`` otherwise.
     """
-    return account_category(account) is AcctCategoryEnum.LIABILITY
+    return is_liability_type(account.account_type)
+
+
+def is_liability_type(acct_type) -> bool:
+    """Return whether an account TYPE is in the LIABILITY category.
+
+    :func:`is_liability_account` asked of the type, for the one door that
+    classifies a balance before its account exists (see
+    :func:`account_type_category`).  :func:`is_liability_account` reads this, so
+    an account and its type cannot be classified two ways.
+
+    Args:
+        acct_type: A :class:`~app.models.ref.AccountType`, or ``None`` -- not a
+            liability, the safe direction :func:`account_category` names.
+
+    Returns:
+        ``True`` when the type's category is LIABILITY, ``False`` otherwise.
+    """
+    return account_type_category(acct_type) is AcctCategoryEnum.LIABILITY

@@ -2,9 +2,31 @@
 {# Anchor balance -- toggles between display and edit mode.
    Expected context: account, anchor_balance (Decimal -- the account's latest
    balance ASSERTION; a raw submitted STRING when re-rendered after a
-   rejection), editing (bool), revert_context (str|None, optional --
+   rejection; ABSENT for an amortizing account, whose cell shows no figure),
+   editing (bool), revert_context (str|None, optional --
    the normalized surface token that opened the editor, e.g. 'dashboard' or
    'accounts').
+
+   EDIT MODE SPEAKS OWED FOR A LIABILITY (plan step credit_card:CC-5-5b,
+   rulings R-CC52 / R-CC57): ``asks_owed`` (bool) labels the box "Amount owed",
+   and the route pre-fills it with the owed figure
+   (``liability_sign.entered_figure``) and stores the held sign.  A card
+   showing -$1,000 on its grid opens on 1,000.00.  The label is VISIBLE and is
+   the box's accessible name, so the owed branch gives the input an ``id`` for
+   it and NO aria-label -- the one-name rule the "Balance as of" label below
+   states -- and carries the account's name in a visually-hidden span, so a
+   screen reader hears "Amount owed on Visa" as it heard "Visa account
+   balance".  The owed branch also submits ``asks_owed=true``: what the box
+   ASKED, which the save and the preview compare with what the account asks
+   now and refuse on a mismatch (ruling R-CC61); an asset's editor submits
+   nothing, which reads as the balance.  Both conditionals sit INLINE rather
+   than on lines of their own,
+   because this project sets neither ``trim_blocks`` nor ``lstrip_blocks``: a
+   block tag on its own line would leave blank lines in an ASSET's editor,
+   which must render byte-identical to before (the CC-5-5b screen diff grades
+   it).  DISPLAY mode is NOT crossed: the cell keeps the sign of the surface it
+   sits on (a card's grid, cash page and dashboard show the held balance their
+   rows are summed in), so only the figure the door asks for speaks owed.
 
    EDIT MODE also expects (plan step X-f1c4c, rulings R-EE / R-EI):
    observed_on_value (str, already ISO-formatted or echoed raw from the
@@ -80,12 +102,14 @@
       hx-disinherit="hx-target hx-swap hx-disabled-elt"
       class="d-inline-block">
   <div class="d-flex align-items-center gap-2">
-    <div class="input-group input-group-sm mw-px-200">
+    {% if asks_owed %}<input type="hidden" name="asks_owed" value="true">
+    <label for="anchor-balance-{{ account.id }}" class="form-label form-label-sm text-muted mb-0">Amount owed<span class="visually-hidden"> on {{ account.name }}</span></label>
+    {% endif %}<div class="input-group input-group-sm mw-px-200">
       <span class="input-group-text">$</span>
       <input type="number" step="0.01" inputmode="decimal" name="anchor_balance"
              value="{{ anchor_balance }}"
              class="form-control" autofocus
-             aria-label="{{ account.name }} account balance"
+             {% if asks_owed %}id="anchor-balance-{{ account.id }}"{% else %}aria-label="{{ account.name }} account balance"{% endif %}
              data-action="anchor-cancel-on-escape"
              data-revert-url="{{ revert_url }}">
     </div>
@@ -98,7 +122,8 @@
             hx-swap="outerHTML">
       <i class="bi bi-x"></i>
     </button>
-  </div>
+  </div>{% if asks_owed %}
+  <div class="form-text mt-1 mb-0">A credit is a negative amount.</div>{% endif %}
   {# The statement day, on its OWN LINE (ruling R-EI) -- the balance keeps the
      first line so the one-click habit is type-a-number-and-Enter exactly as
      before, and the day is a deliberate second act rather than a field to tab
@@ -211,17 +236,24 @@
    string.  The service-layer refusals STAY: they answer a forged or raced
    request (an account's kind is editable, so a form opened on a cash account
    can be submitted after it became a loan), and this template is display, not
-   a guard. #}
-<div class="anchor-balance-display font-mono"
-     title="A loan's balance is recorded on the loan's own page">
-  {{ money(anchor_balance, cents=false) }}
+   a guard.
+
+   **It shows NO figure, and that is ruling R-CC53** (plan step
+   credit_card:CC-5-5b).  It printed the account's cash ASSERTION, which for a
+   loan is a row typed at creation and not the loan's balance -- the
+   production Mortgage's read ``$178,103`` while the loan owed
+   ``$176,719.77``, and it was typed in the owed sign R-CC47 retires.  The
+   loan's balance is its own page's, so the cell links there, and the routes
+   that render it read no assertion (``accounts.anchor._loan_cell``). #}
+<div class="anchor-balance-display">
+  <a href="{{ url_for('loan.dashboard', account_id=account.id) }}">Balance on the loan's page</a>
 </div>
 {% if error %}
 {# The REFUSAL, when a submission raced the account's kind: the editor was
    opened while the account was cash and submitted after it became a loan.
-   Rendered beside the read-only figure rather than beside a live input,
-   because there is nothing here to resubmit -- the message names where the
-   balance is recorded instead. #}
+   Rendered beside the pointer rather than beside a live input, because there
+   is nothing here to resubmit -- the message names where the balance is
+   recorded instead. #}
 <div class="small text-danger mt-1" role="alert">{{ error }}</div>
 {% endif %}
 {% else %}

@@ -98,10 +98,13 @@ kill.
   plan step credit_card:CC-1 it is kind-blind: every liability's future is the
   kind-correct multi-date read (``_kind_correct.balance_at_dates``, which the
   scalar is a one-date reading of), so a Credit Card's projected balance reaches
-  the horizon instead of holding flat.  See :mod:`._liability`, which also
-  holds the seam's ONE sign flip, :func:`owed` (what an account owes is minus
-  the balance it holds; ruling R-CC29's flip, moved here from
-  ``card_statement`` at plan step credit_card:CC-5-5a, ruling R-CC47).
+  the horizon instead of holding flat.  See :mod:`._liability`.  The ONE sign
+  flip (what an account owes is minus the balance it holds; ruling R-CC29's
+  flip) is NOT a seam export: it was one from plan step credit_card:CC-5-5a
+  (ruling R-CC47) until CC-5-5b moved it to
+  :func:`app.services.liability_sign.owed`, beside the crossing the balance
+  doors read, and outside the seam so the seam's own configured-loan arms can
+  read it at CC-5-5c without a circular import.
 * The LOAN-FIGURES entry (:func:`loan_figures`) answers everything a loan tile
   wants BESIDE its balance -- the payment, the rate, the payoff date, whether it
   is retired -- and deliberately carries NO balance, so a consumer holding it
@@ -270,7 +273,7 @@ from ._kind_correct import (
     build_maps,
     investment_growth_since_anchor,
 )
-from ._liability import liability_owed_at_dates, owed
+from ._liability import liability_owed_at_dates
 from ._resolution import is_standing_loan_payment
 from ._loan_figures import (
     LoanFigures,
@@ -375,7 +378,6 @@ __all__ = [
     "interest_projection_for_account",
     "investment_growth_since_anchor",
     "liability_owed_at_dates",
-    "owed",
     "is_standing_loan_payment",
     "loan_closing_date",
     "loan_figures",

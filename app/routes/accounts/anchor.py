@@ -51,6 +51,7 @@ from app.routes.accounts.reconcile import prompt_fragment
 from app.services import (
     anchor_service,
     cash_ledger,
+    liability_sign,
     pay_period_service,
 )
 from app.services.account_projection import (
@@ -74,6 +75,48 @@ LOAN_ANCHOR_REFUSAL = (
     "A loan's balance is not a cash anchor. Record a balance true-up "
     "on the loan's own page instead."
 )
+
+
+def door_meaning_refusal(account: Account, asked_owed: bool) -> str | None:
+    """Return why a balance form rendered under the OTHER meaning is refused.
+
+    **Ruling R-CC61** (plan step credit_card:CC-5-5b): a liability's box asks
+    for the amount OWED and every other account's asks for its balance
+    (:func:`app.services.liability_sign.asks_owed`), and an account's kind is
+    EDITABLE -- an account with no postings may be re-typed across asset and
+    liability in another tab while a form is open (finding N-199's race, one
+    field over).  Read at SAVE, the typed figure would be crossed under a
+    meaning the box never showed: a $0.00 Checking editor re-typed to a Credit
+    Card, saved at 2,500.00, would store a card owing $2,500.00 where the base
+    code stored a $2,500.00 balance -- $5,000.00 apart (measured by the
+    CC-5-5b adversarial review).  So every form states what it asked
+    (``asks_owed``, which the schema reads), and a mismatch is refused with
+    nothing stored; the caller re-renders the form under the meaning the
+    account has now, so the owner checks the figure against the new words.
+
+    Shared by the anchor editor's save and its difference preview (a preview
+    of a save that would be refused says why instead) and by the
+    books-opening card's POST.  The create form is R-CC61's stated exception:
+    its type is picked in the same submission.
+
+    Args:
+        account: The owned, attached :class:`Account` being saved.
+        asked_owed: What the submitted form says its box asked -- ``True``
+            for the amount owed.  A form that states nothing asked for the
+            balance.
+
+    Returns:
+        The refusal to show, or ``None`` when the form's meaning is the
+        account's.
+    """
+    now_owed = liability_sign.asks_owed(account.account_type)
+    if asked_owed == now_owed:
+        return None
+    asks_for = "the amount owed" if now_owed else "the account's balance"
+    return (
+        "This account's type changed while you were editing; the box now asks "
+        f"for {asks_for}. Check the figure and save again."
+    )
 
 
 # ── Anchor Balance True-up (Grid) ─────────────────────────────────
@@ -189,7 +232,14 @@ class _AnchorSubmission:
     arrived, not a working value.
 
     Attributes:
-        balance: The validated :class:`Decimal` balance being asserted.
+        balance: The validated :class:`Decimal` balance being asserted, HELD --
+            the figure typed, crossed ONCE by
+            :func:`app.services.liability_sign.held_balance` (plan step
+            credit_card:CC-5-5b, rulings R-CC52 / R-CC57): a liability's box
+            asks for the amount owed, so ``1,200.00`` typed on a card is
+            ``-1,200.00`` here, and an asset's figure is here as typed.  Held
+            because the write door stores held and the governing comparison
+            below compares held; the acknowledgement crosses it back.
         observed_on: The civil day the form submitted, or ``None`` when its date
             box was left blank -- which the write door reads as the user's today
             (:func:`app.services.anchor_service.resolve_observation_day`).  It is
@@ -345,7 +395,13 @@ def _true_up_success_response(
         feedback = render_template(
             "accounts/_anchor_recorded_toast.html",
             account=account,
-            balance=submission.balance,
+            # The figure the owner TYPED, crossed back from the held balance
+            # the gate stored: a card's "$1,200.00 owed" (ruling R-CC57), an
+            # asset's balance as typed.
+            balance=liability_sign.entered_figure(
+                account.account_type, submission.balance,
+            ),
+            asks_owed=liability_sign.asks_owed(account.account_type),
             # The day the SUBMISSION asserted, resolved: a blank date box means
             # the user's today, and the acknowledgement names the day the
             # balance is about rather than leaving it to be guessed from a
@@ -436,15 +492,34 @@ def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
     Returns:
         The designed-fragment ``(body, 422, headers)`` triple.
     """
-    return designed_error(
-        render_template(
-            "grid/_anchor_edit.html",
-            account=account,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-            editing=False,
-            error=LOAN_ANCHOR_REFUSAL,
-        ),
-        422,
+    return designed_error(_loan_cell(account, LOAN_ANCHOR_REFUSAL), 422)
+
+
+def _loan_cell(account: Account, error: str | None = None) -> str:
+    """Render an AMORTIZING account's read-only cell: a pointer, no figure.
+
+    **It shows no balance, and that is ruling R-CC53** (plan step
+    credit_card:CC-5-5b).  The cell printed the account's cash ASSERTION, which
+    for a loan is a row typed at account creation that is not the loan's
+    balance in size or, typed before this step, in sign: the production
+    Mortgage's reads ``$178,103`` where the loan owes ``$176,719.77``.  A loan's
+    balance is its own page's, so the cell points there instead -- and reads no
+    assertion at all, which is what leaves nothing on this surface for such a
+    row's sign to reach.
+
+    Reached by :func:`anchor_display` on a direct request and by
+    :func:`_anchor_kind_refusal` on the N-199 race; no ordinary click opens it,
+    because every surface renders a loan's balance read-only.
+
+    Args:
+        account: The owned, attached amortizing :class:`Account`.
+        error: The refusal to show beside the pointer, or ``None``.
+
+    Returns:
+        The rendered cell.
+    """
+    return render_template(
+        "grid/_anchor_edit.html", account=account, editing=False, error=error,
     )
 
 
@@ -452,6 +527,11 @@ def _anchor_editor_error(
     account: Account, revert_context: str | None, message: str,
 ) -> ResponseReturnValue:
     """Re-render the anchor editor in place, carrying *message*, as a 400.
+
+    **The echo is NOT crossed, and that is deliberate** (plan step
+    credit_card:CC-5-5b): the boxes held what the owner typed, which on a
+    liability is already the amount OWED, so the redisplay shows it back as
+    typed and keeps the box's "Amount owed" label (``asks_owed``).
 
     **The ONE rejection surface this door has** (plan step X-f1c4c).  Until that
     step its only rejection answered ``jsonify(errors=...)`` with no marker
@@ -488,6 +568,7 @@ def _anchor_editor_error(
             anchor_balance=request.form.get("anchor_balance", ""),
             observed_on_value=request.form.get("observed_on", ""),
             editing=True,
+            asks_owed=liability_sign.asks_owed(account.account_type),
             error=message,
             revert_url=_anchor_revert_url(account.id, revert_context),
             revert_context=revert_context,
@@ -568,8 +649,18 @@ def _true_up_request_gates(
         )
 
     data = _anchor_schema.load(request.form)
+    # Ruling R-CC61: a form rendered under the other meaning is refused BEFORE
+    # anything is staged, and re-rendered under the account's meaning now.
+    stale = door_meaning_refusal(account, data["asks_owed"])
+    if stale is not None:
+        return None, _anchor_editor_error(account, revert_context, stale)
+    # The ONE crossing this door makes (plan step credit_card:CC-5-5b, rulings
+    # R-CC52 / R-CC57): a liability's box asks for the amount OWED, on every
+    # surface the editor opens from, and the write door stores the held sign.
     return _AnchorSubmission(
-        balance=Decimal(str(data["anchor_balance"])),
+        balance=liability_sign.held_balance(
+            account.account_type, Decimal(str(data["anchor_balance"])),
+        ),
         observed_on=data.get("observed_on"),
     ), None
 
@@ -793,8 +884,15 @@ def anchor_form(account_id):
     return render_template(
         "grid/_anchor_edit.html",
         account=account,
-        anchor_balance=cash_ledger.resolve_anchor(account).balance,
+        # The pre-fill speaks the door's language (plan step
+        # credit_card:CC-5-5b, ruling R-CC57): a card holding -1,000.00 opens
+        # on 1,000.00 owed, whichever surface opened it; an asset opens on its
+        # balance.  The surface the editor replaces keeps its own sign.
+        anchor_balance=liability_sign.entered_figure(
+            account.account_type, cash_ledger.resolve_anchor(account).balance,
+        ),
         editing=True,
+        asks_owed=liability_sign.asks_owed(account.account_type),
         # The statement day defaults to TODAY, not to the governing assertion's
         # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
         # the user reading their bank NOW in the overwhelming case, and R-EE
@@ -812,10 +910,20 @@ def anchor_form(account_id):
 @accounts_bp.route("/accounts/<int:account_id>/anchor-display", methods=["GET"])
 @require_owner
 def anchor_display(account_id):
-    """HTMX partial: return the anchor balance display (non-editing)."""
+    """HTMX partial: return the anchor balance display (non-editing).
+
+    The display cell keeps the sign of the surface it sits on -- a card's
+    grid shows the held balance its rows are summed in (ruling R-CC57) -- so
+    it is NOT crossed; only the editor it opens speaks owed.  An AMORTIZING
+    account answers :func:`_loan_cell`, which reads no assertion (ruling
+    R-CC53).
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         return "Not found", 404
+
+    if classify_account(account) is AccountProjectionKind.AMORTIZING:
+        return _loan_cell(account)
 
     return render_template(
         "grid/_anchor_edit.html",

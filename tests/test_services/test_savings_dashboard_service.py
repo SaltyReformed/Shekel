@@ -6560,8 +6560,8 @@ class TestTheRevolvingFooterCountsWhatEachAccountOwes:
     Developer ruling **R-CC49** (plan step credit_card:CC-5-5a, ledger row
     **CC-354**): "Each account's owed amount, floored at zero, then summed. A
     credit on one card is not debt and does not pay down another card; the
-    footer counts the debt a payoff date leaves out."  Owed is the seam's one
-    flip, :func:`app.services.balance_at.owed`, of the held balance.
+    footer counts the debt a payoff date leaves out."  Owed is the one
+    flip, :func:`app.services.liability_sign.owed`, of the held balance.
 
     The three rules the ruling chose between each give a DIFFERENT figure on
     the second case, so it grades the choice and not just the sign: ``abs()``
