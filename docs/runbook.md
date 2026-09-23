@@ -250,8 +250,9 @@ the database's Alembic stamp. That stamp, not the release, decides what happens:
   failed and rolled back: since plan step `X-cv` the migrations, the reference and tax seeds, the
   ledger hooks and the audit-trigger check are ONE transaction, so a failure there leaves the stamp
   unmoved even for a migration-bearing release. The script saves the failed container's log beside
-  the dump (its name with `.failed-container.log` for `.dump`), re-pins the previous digest and
-  waits for it to be healthy. Nothing is restored.
+  the dump (its name with `.failed-container.log` for `.dump`) and re-pins the previous digest.
+  After a health failure it then waits for that image to be healthy; after a compose failure it does
+  not wait. Nothing is restored. When the previous image does not come up either, see below.
 - **The previous image cannot resolve the stamp.** Step 3 COMMITTED and something later failed (the
   first-boot user seed, the static copy, or the app never became healthy). Re-pinning would give a
   second dead container -- reproduced as `CommandError: Can't locate revision identified by ...`
@@ -272,6 +273,53 @@ the database's Alembic stamp. That stamp, not the release, decides what happens:
 
 **Read the saved log first** (the path is in the output and the ntfy alert). It names the step that
 failed, and whether a restart can clear it.
+
+**When the re-pinned previous image does not come up either.** After a health failure the script
+then ends `rollback container also unhealthy; manual intervention required` (it prints the same line
+when the re-pin's own `compose up` failed and usually nothing started, finding BAL-540;
+`docker compose ps` tells the two apart). The previous image knows the stamp's revision, so the
+migration level is not the cause; something both images meet is: schema drift the stamp does not
+record, the data, or the environment. Whether the dump can help turns on step 3. For a release since
+plan step `X-cv`: if the saved log has no `Database initialised: ONE transaction, committed.`, the
+failed release committed nothing past entrypoint steps 2 and 2b (idempotent schema and role
+provisioning, which every image re-runs on each boot), so the fault predates the deploy and the dump
+holds it too: restoring cannot help, and the fault is repaired in place. If step 3 did commit, what
+it wrote may be the fault, and restoring the dump (below) is a candidate. An image older than `X-cv`
+never prints that line and commits its seeds after step 3 (entrypoint steps 4 and 6), so for one the
+dump is a candidate either way. When `docker compose ps` shows the previous container restarting, it
+re-runs its entrypoint on every pass (an image older than plan step `X-cv` also commits its hooks
+and seeds each time), so stop it before repairing and start it after:
+
+```bash
+cd /opt/docker/shekel
+docker compose stop app      # it retries on its own under `restart: unless-stopped`
+# ... repair what the saved log names ...
+docker compose up -d app
+```
+
+A missing audit trigger is the case the X-cv rehearsal measured: every image since C-13 counts them
+at start, so the release refuses and the re-pinned image refuses the same database. Since ruling
+`R-BAL129` the release's refusal names each audited table missing its trigger and, for a trigger
+dropped by hand, prints the statements that re-create them, each ending in `;`. Each has this form
+and runs as the database owner (the app role has DML only), between the stop and the start above:
+
+```sql
+CREATE TRIGGER audit_<table> AFTER INSERT OR UPDATE OR DELETE ON <schema>.<table>
+    FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func();
+```
+
+```bash
+docker exec shekel-prod-db psql -U shekel_user -d shekel -v ON_ERROR_STOP=1 \
+    -c '<the statements from the saved log>'
+```
+
+If the refusal names a table newly added to `AUDITED_TABLES`, its migration did not attach the
+trigger, and the migration is the fix. An image older than `R-BAL129` prints only a count, and its
+`flask db upgrade` advice does not re-create a dropped trigger. (Measured 2026-09-23, before
+`R-BAL129`, on the 6-3 release image `876fbf5c5bf7`: one dropped trigger, re-created from the
+definition saved before it was dropped while the container crash-looped, and nothing else; the image
+came up under its restart policy and no table changed. The stop, repair and start above, and the
+statements `R-BAL129` prints, were not part of that run.)
 
 **Restoring discards everything written since the dump was taken** -- minutes of real entries in a
 budgeting app. Capture the failed state first so that window stays recoverable.

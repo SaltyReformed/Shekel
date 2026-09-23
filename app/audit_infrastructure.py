@@ -139,20 +139,26 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
 # row above is the only edit a future commit needs to make.
 EXPECTED_TRIGGER_COUNT: int = len(AUDITED_TABLES)
 
+#: The prefix every audit trigger's name carries (:func:`_audit_trigger_name`),
+#: and the one :data:`AUDIT_TRIGGER_COUNT_SQL` counts by.
+_AUDIT_TRIGGER_PREFIX = "audit_"
+
 # The one spelling of "how many audit triggers does this database carry"
 # that the deploy's check and the test-template build share (plan step
-# balance:X-cv leaf 2): the non-internal triggers named ``audit_<table>``
-# (:func:`_trigger_sql_for_table`).  The tests count with spellings of their
+# balance:X-cv leaf 2): the non-internal triggers whose name starts with
+# :data:`_AUDIT_TRIGGER_PREFIX`.  The tests count with spellings of their
 # own on purpose -- an oracle that shared this one could not see it wrong --
 # and ``scripts/build_test_db_image.py``'s image check still carries its own
 # ``LIKE 'audit\_%'``.  ``starts_with`` rather than ``LIKE 'audit_%'``:
 # LIKE reads a bare ``_`` as any one character, and a ``%`` means something
-# different to each driver path that runs this text -- the deploy's
-# SQLAlchemy connection and the test-template build's raw psycopg2 cursor
-# both read it verbatim.
+# different to each driver path that runs this text.  The test-template
+# build runs it verbatim on a raw psycopg2 cursor, and the deploy runs it
+# EMBEDDED in a statement with named parameters
+# (:data:`_AUDIT_TRIGGER_CENSUS_SQL`), where a ``%`` would be read as a
+# placeholder: this text must never contain one.
 AUDIT_TRIGGER_COUNT_SQL = (
     "SELECT count(*) FROM pg_trigger "
-    "WHERE starts_with(tgname, 'audit_') AND NOT tgisinternal"
+    f"WHERE starts_with(tgname, '{_AUDIT_TRIGGER_PREFIX}') AND NOT tgisinternal"
 )
 
 
@@ -173,6 +179,20 @@ def require_audit_triggers(connection) -> int:
     :data:`AUDITED_TABLES` does not name) is not; the test-template build
     asks for the exact number instead, because it builds from this list.
 
+    **The refusal names every audited table missing its trigger, and the
+    statement that re-creates it** (ruling **R-BAL129**, X-cv leaf 2b).  The
+    count alone told an operator nothing they could act on: the X-cv rehearsal
+    dropped one trigger, the release refused and re-pinned the previous image,
+    that image refused the same database, and neither log named the table.
+    The names are read per table from :data:`AUDITED_TABLES`, never inferred
+    from the count, so once the count is short a surplus trigger cannot keep a
+    missing one out of the list.  A surplus can still keep the count from
+    being short (one audited trigger fewer than
+    :data:`EXPECTED_TRIGGER_COUNT` plus one surplus passes, R-BAL122's AT
+    LEAST), and then nothing is refused or named: the pass/fail rule is the
+    count, unchanged.  The count and the list are read in one statement
+    (:func:`_audit_trigger_census`), so they describe one snapshot.
+
     Args:
         connection: A SQLAlchemy ``Connection``; on the deploy, the one its
             transaction runs on, so the count sees that transaction's own DDL.
@@ -181,18 +201,81 @@ def require_audit_triggers(connection) -> int:
         int: The number of audit triggers found, for the deploy log.
 
     Raises:
-        RuntimeError: When fewer than :data:`EXPECTED_TRIGGER_COUNT` exist.
+        RuntimeError: When fewer than :data:`EXPECTED_TRIGGER_COUNT` exist,
+            naming each missing table and, for a trigger dropped by hand, the
+            statements that re-create them, runnable as printed.
     """
-    found = connection.exec_driver_sql(AUDIT_TRIGGER_COUNT_SQL).scalar_one()
+    found, missing = _audit_trigger_census(connection)
     if found < EXPECTED_TRIGGER_COUNT:
         raise RuntimeError(
             f"Audit trigger check failed: {found} audit trigger(s), at least "
             f"{EXPECTED_TRIGGER_COUNT} expected (one per "
-            "app.audit_infrastructure.AUDITED_TABLES entry).  A table added "
-            "to AUDITED_TABLES whose migration did not attach its trigger is "
-            "the usual cause; writes to that table would leave no audit row."
+            "app.audit_infrastructure.AUDITED_TABLES entry).  Missing: "
+            + ", ".join(f"{schema}.{table}" for schema, table in missing)
+            + " (writes to them leave no audit row).  If a trigger was "
+            "dropped by hand, re-create it as the database owner: "
+            + " ".join(
+                f"{_create_trigger_sql(schema, table)};"
+                for schema, table in missing
+            )
+            + "  If instead a table newly added to AUDITED_TABLES is named, "
+            "its migration did not attach the trigger, and the migration is "
+            "the fix."
         )
     return found
+
+
+#: The count :data:`AUDIT_TRIGGER_COUNT_SQL` makes, and every
+#: :data:`AUDITED_TABLES` entry whose OWN audit trigger is absent (in list
+#: order), in ONE statement.  The list is driven by three parallel arrays built
+#: from :data:`AUDITED_TABLES` and :func:`_audit_trigger_name`, so neither the
+#: audited set nor the naming rule is spelled a second time here.
+_AUDIT_TRIGGER_CENSUS_SQL = (
+    f"SELECT ({AUDIT_TRIGGER_COUNT_SQL}) AS found, "
+    "ARRAY("
+    "  SELECT ARRAY[a.schema_name, a.table_name] "
+    "  FROM unnest(%(schemas)s::text[], %(tables)s::text[], %(names)s::text[]) "
+    "    WITH ORDINALITY AS a(schema_name, table_name, trigger_name, position) "
+    "  WHERE NOT EXISTS ("
+    "    SELECT 1 FROM pg_trigger tg "
+    "    JOIN pg_class c ON c.oid = tg.tgrelid "
+    "    JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "    WHERE n.nspname = a.schema_name AND c.relname = a.table_name "
+    "      AND tg.tgname = a.trigger_name AND NOT tg.tgisinternal"
+    "  ) "
+    "  ORDER BY a.position"
+    ") AS missing"
+)
+
+
+def _audit_trigger_census(connection) -> tuple[int, list[tuple[str, str]]]:
+    """Count the audit triggers and list the audited tables missing theirs.
+
+    ONE statement, so both answers read one snapshot.  As two statements under
+    READ COMMITTED, a trigger re-created between them (an operator repairing
+    during a crash loop) left a short count whose list named nothing
+    (measured by the adversarial review of ruling R-BAL129: a trigger
+    committed between the two reads gave 55 found and an empty list).  Within one
+    snapshot a short count always names at least one table: the audited
+    entries are distinct, and each one present is counted.
+
+    Args:
+        connection: A SQLAlchemy ``Connection``.
+
+    Returns:
+        tuple[int, list[tuple[str, str]]]: The number of audit triggers, and
+        the missing ``(schema, table)`` entries in :data:`AUDITED_TABLES`
+        order.
+    """
+    row = connection.exec_driver_sql(
+        _AUDIT_TRIGGER_CENSUS_SQL,
+        {
+            "schemas": [schema for schema, _ in AUDITED_TABLES],
+            "tables": [table for _, table in AUDITED_TABLES],
+            "names": [_audit_trigger_name(table) for _, table in AUDITED_TABLES],
+        },
+    ).one()
+    return row.found, [(pair[0], pair[1]) for pair in row.missing]
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +470,57 @@ def bind_audit_actor(connection, user_id) -> None:
     connection.exec_driver_sql(_BIND_AUDIT_ACTOR_SQL, {"uid": str(user_id)})
 
 
+def _audit_trigger_name(table: str) -> str:
+    """Return the name of *table*'s audit trigger: ``audit_<table>``.
+
+    The one spelling of the naming rule; its prefix is
+    :data:`_AUDIT_TRIGGER_PREFIX`, which :data:`AUDIT_TRIGGER_COUNT_SQL`
+    counts by.  :func:`_audit_trigger_census` looks each trigger up by the
+    name, and every builder below attaches or drops by it.
+
+    Args:
+        table: Table name (e.g. ``"transactions"``).
+
+    Returns:
+        str: The trigger name.
+    """
+    return f"{_AUDIT_TRIGGER_PREFIX}{table}"
+
+
+def _create_trigger_sql(schema: str, table: str) -> str:
+    """Return the bare ``CREATE TRIGGER`` statement that attaches *table*'s audit trigger.
+
+    The one spelling in code of the trigger's definition:
+    :func:`_trigger_sql_for_table` wraps it in its existence guard, and
+    :func:`require_audit_triggers`' refusal quotes it for the operator to run.
+
+    Args:
+        schema: PostgreSQL schema (e.g. ``"budget"``).
+        table:  Table name (e.g. ``"transactions"``).
+
+    Returns:
+        str: One statement, without a trailing semicolon.
+    """
+    return (
+        f"CREATE TRIGGER {_audit_trigger_name(table)} "
+        f"AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table} "
+        "FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()"
+    )
+
+
+def _drop_trigger_sql(schema: str, table: str) -> str:
+    """Return the ``DROP TRIGGER IF EXISTS`` statement for *table*'s audit trigger.
+
+    Args:
+        schema: PostgreSQL schema (e.g. ``"budget"``).
+        table:  Table name (e.g. ``"transactions"``).
+
+    Returns:
+        str: One statement, without a trailing semicolon.
+    """
+    return f"DROP TRIGGER IF EXISTS {_audit_trigger_name(table)} ON {schema}.{table}"
+
+
 def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:
     """Yield the (idempotent) SQL statements that attach an audit trigger.
 
@@ -424,8 +558,7 @@ def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:
         Trigger name is fixed at ``audit_<table>`` to keep counting by
         that prefix (:data:`AUDIT_TRIGGER_COUNT_SQL`) simple.
     """
-    trigger_name = f"audit_{table}"
-    yield f"DROP TRIGGER IF EXISTS {trigger_name} ON {schema}.{table}"
+    yield _drop_trigger_sql(schema, table)
     # ``IF EXISTS`` guard via the ``pg_class``/``pg_namespace`` system
     # catalogues.  The CREATE TRIGGER fires only when the target table
     # is materialised; on a fresh-DB migration replay where a later
@@ -438,9 +571,7 @@ def _trigger_sql_for_table(schema: str, table: str) -> Iterable[str]:
         "  JOIN pg_namespace n ON n.oid = c.relnamespace "
         f"  WHERE n.nspname = '{schema}' AND c.relname = '{table}'"
         ") THEN "
-        f"  CREATE TRIGGER {trigger_name} "
-        f"  AFTER INSERT OR UPDATE OR DELETE ON {schema}.{table} "
-        "    FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func(); "
+        f"  {_create_trigger_sql(schema, table)}; "
         "END IF; END $$"
     )
 
@@ -515,6 +646,6 @@ def remove_audit_infrastructure(executor: Callable[[str], object]) -> None:
             :func:`apply_audit_infrastructure`.
     """
     for schema, table in AUDITED_TABLES:
-        executor(f"DROP TRIGGER IF EXISTS audit_{table} ON {schema}.{table}")
+        executor(_drop_trigger_sql(schema, table))
     executor("DROP FUNCTION IF EXISTS system.audit_trigger_func()")
     executor("DROP TABLE IF EXISTS system.audit_log CASCADE")

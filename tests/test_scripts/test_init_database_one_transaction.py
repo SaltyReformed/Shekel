@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import re
 import textwrap
 from datetime import date
 from decimal import Decimal
@@ -39,7 +40,10 @@ from sqlalchemy import event, text
 from sqlalchemy.exc import InternalError, InvalidRequestError
 
 from app import migration_runner, ref_cache
-from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT
+from app.audit_infrastructure import (
+    EXPECTED_TRIGGER_COUNT,
+    require_audit_triggers,
+)
 from app.enums import PostingKindEnum, PostingSourceEnum, StatementSourceEnum
 from app.models.category import Category
 from app.ref_seeds import ACCT_TYPE_SEEDS
@@ -473,6 +477,66 @@ class TestTheSeedsAndTheCheckAreInsideTheOneTransaction:
         assert _committed(db, uncorrected_payment) == {
             "stamp": _PROBE_REVISION, "probe": True, "corrections": 1,
         }
+
+    def test_the_refusal_names_each_missing_table_and_re_creates_it(
+        self, app, db,
+    ):
+        """The refusal names every missing table, and its repair text repairs it.
+
+        Ruling R-BAL129 (X-cv leaf 2b): the X-cv rehearsal dropped one trigger;
+        the release refused, the script re-pinned the previous image, which
+        refused the same database, and neither log named the table.  Two
+        triggers dropped, and a surplus one added that carries the name of one
+        of them on the OTHER dropped table (``audit_transactions`` on
+        ``budget.categories``), leaves the count one short: the refusal must
+        still name BOTH tables, by the trigger's own name on its own table --
+        neither any ``audit_`` trigger on the table nor the name alone
+        anywhere, and not inferred from the count.  The repair text is then
+        run verbatim, as one string, the way ``psql -c`` sends a pasted line,
+        and every resulting definition is compared with a fixed string rather
+        than with a trigger the code under test built.
+        """
+        db.session.execute(text(
+            "DROP TRIGGER audit_transactions ON budget.transactions"
+        ))
+        db.session.execute(text(
+            "DROP TRIGGER audit_categories ON budget.categories"
+        ))
+        db.session.execute(text(
+            "CREATE TRIGGER audit_transactions AFTER INSERT "
+            "ON budget.categories "
+            "FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()"
+        ))
+        db.session.commit()
+
+        with db.engine.connect() as conn:
+            with pytest.raises(RuntimeError) as refused:
+                require_audit_triggers(conn)
+        message = str(refused.value)
+        assert "Missing: budget.categories, budget.transactions (" in message
+        repair = re.search(
+            r"re-create it as the database owner: (.*?)  If instead", message,
+        ).group(1)
+
+        with db.engine.begin() as conn:
+            conn.exec_driver_sql(repair)
+        with db.engine.connect() as conn:
+            assert require_audit_triggers(conn) == EXPECTED_TRIGGER_COUNT + 1
+            assert conn.execute(text(
+                "SELECT pg_get_triggerdef(oid) FROM pg_trigger "
+                "WHERE tgname IN ('audit_categories', 'audit_transactions') "
+                "ORDER BY 1"
+            )).scalars().all() == [
+                "CREATE TRIGGER audit_categories AFTER INSERT OR DELETE OR "
+                "UPDATE ON budget.categories FOR EACH ROW EXECUTE FUNCTION "
+                "system.audit_trigger_func()",
+                "CREATE TRIGGER audit_transactions AFTER INSERT ON "
+                "budget.categories FOR EACH ROW EXECUTE FUNCTION "
+                "system.audit_trigger_func()",
+                "CREATE TRIGGER audit_transactions AFTER INSERT OR DELETE OR "
+                "UPDATE ON budget.transactions FOR EACH ROW EXECUTE FUNCTION "
+                "system.audit_trigger_func()",
+            ]
 
 
 def _with_stray_calls(monkeypatch, db, hook, *, before=None, after=None):
